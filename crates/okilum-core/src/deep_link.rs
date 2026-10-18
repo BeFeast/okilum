@@ -200,30 +200,57 @@ fn resolve_with_name_case(
                     "This file does not exist on this computer.".into(),
                 );
             };
-            // Canonical POSIX paths retain their case, including on a
-            // case-sensitive macOS volume. Windows spelling compatibility
-            // depends on the path syntax, so it is also testable on Linux.
-            let fold = windows_path(&file.to_string_lossy());
-            let file_parts = parts(&file.to_string_lossy());
-            // The deepest known vault that contains the file.
-            let root = known
-                .iter()
-                .filter_map(|root| {
-                    let root_parts = parts(&root.to_string_lossy());
-                    (file_parts.len() > root_parts.len()
-                        && root_parts
-                            .iter()
-                            .zip(&file_parts)
-                            .all(|(a, b)| same_part(a, b, fold)))
-                    .then_some((root, root_parts.len()))
-                })
-                .max_by_key(|(_, depth)| *depth);
-            match root {
-                Some((root, depth)) => Resolution::Open {
+            // Only Windows paths need spelling/prefix compatibility. POSIX
+            // containment must compare native path components: lossy UTF-8 can
+            // collapse two different directory names into the same identity.
+            let matched = if let Some(file_text) = file.to_str().filter(|path| windows_path(path)) {
+                let file_parts = parts(file_text);
+                known
+                    .iter()
+                    .filter_map(|root| {
+                        let root_text = root.to_str().filter(|path| windows_path(path))?;
+                        let root_parts = parts(root_text);
+                        (file_parts.len() > root_parts.len()
+                            && root_parts
+                                .iter()
+                                .zip(&file_parts)
+                                .all(|(a, b)| same_part(a, b, true)))
+                        .then(|| {
+                            (
+                                root,
+                                file_parts[root_parts.len()..].join("/"),
+                                root_parts.len(),
+                            )
+                        })
+                    })
+                    .max_by_key(|(_, _, depth)| *depth)
+                    .map(|(root, rel, _)| (root, Some(rel)))
+            } else {
+                // The deepest containing root wins even if its relative path
+                // cannot be represented by the Reader's UTF-8 note identity.
+                known
+                    .iter()
+                    .filter_map(|root| {
+                        let relative = file.strip_prefix(root).ok()?;
+                        (!relative.as_os_str().is_empty()).then_some((root, relative))
+                    })
+                    .max_by_key(|(root, _)| root.components().count())
+                    .map(|(root, relative)| {
+                        (
+                            root,
+                            relative.to_str().map(|_| crate::vault::note_path(relative)),
+                        )
+                    })
+            };
+            match matched {
+                Some((root, Some(rel))) => Resolution::Open {
                     root: root.clone(),
-                    rel: file_parts[depth..].join("/"),
+                    rel,
                     position,
                 },
+                Some((_, None)) => {
+                    Resolution::Unavailable("The document path is not valid UTF-8.".into())
+                }
                 // No known vault has it: the file opens on its own.
                 None => Resolution::Single {
                     path: file,
@@ -994,6 +1021,72 @@ mod tests {
                 Resolution::Open { root: matched, .. } if matched == root
             ),
             "positive control: case-insensitive vault-name fallback is active"
+        );
+    }
+
+    /// #1414: a UTF-8 link through a symlink may canonicalize to raw POSIX
+    /// bytes. Distinct byte names must not alias through replacement characters.
+    #[cfg(unix)]
+    #[test]
+    fn canonical_posix_file_containment_preserves_raw_bytes() {
+        use std::{
+            ffi::OsString,
+            os::unix::{ffi::OsStringExt, fs::symlink},
+            path::Path,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let target = base.join(OsString::from_vec(vec![0xff]));
+        let other = base.join(OsString::from_vec(vec![0xfe]));
+        for root in [&target, &other] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("a.md"), "# Different notes in different roots").unwrap();
+        }
+        assert_ne!(target, other);
+        assert_eq!(
+            target.to_string_lossy(),
+            other.to_string_lossy(),
+            "positive control: lossy names collide"
+        );
+        let alias = base.join("utf8-alias");
+        symlink(&target, &alias).unwrap();
+        let link = parse(&format!(
+            "okilum://file/{}?line=3",
+            alias.join("a.md").to_str().unwrap()
+        ))
+        .unwrap();
+        let file = target.join("a.md");
+        assert_eq!(
+            alias.join("a.md").canonicalize().unwrap(),
+            file,
+            "the link really reaches the raw-byte target"
+        );
+        let env = Env {
+            is_file: &Path::is_file,
+            canonical: &|path| path.canonicalize().ok(),
+            vault_id: &|_| None,
+        };
+        assert_eq!(
+            resolve(&link, std::slice::from_ref(&other), &env),
+            Resolution::Single {
+                path: file,
+                position: link.position.clone(),
+            },
+            "a lossy-name sibling must not capture the link"
+        );
+        assert_eq!(
+            resolve(&link, &[target.clone(), other], &env),
+            Resolution::Open {
+                root: target,
+                rel: "a.md".into(),
+                position: link.position.clone(),
+            },
+            "positive control: the genuinely containing raw-byte root matches"
+        );
+        assert_eq!(
+            resolve(&link, &[base], &env),
+            Resolution::Unavailable("The document path is not valid UTF-8.".into()),
+            "an unrepresentable relative identity is refused, never replaced"
         );
     }
 

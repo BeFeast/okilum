@@ -58,7 +58,9 @@ rendered link is rewritten to the `v/` form.
 
 1. **Vault.**
    - `v/<vault>` looks at the known vaults: open windows first, then reading
-     history. With an `id`, the vault that carries that id is the one,
+     history. Quick-viewer folders in history are not known vaults; only an
+     explicit full-vault open authorizes vault behavior. With an `id`, the
+     vault that carries that id is the one,
      whatever its folder is called here. Without an `id`, or when no known
      vault carries it, the folder name decides (exact after NFC, and
      case-insensitive on macOS and Windows); but with an `id` a folder of that
@@ -91,7 +93,9 @@ rendered link is rewritten to the `v/` form.
      known roots have), then the known vault whose root contains it, with the
      deepest root winning. Canonical POSIX paths retain their case, including
      on case-sensitive macOS volumes; Windows path spelling and prefix variants
-     still match. If no known vault contains it, the file opens on its
+     still match. POSIX containment compares native path components without
+     lossy UTF-8 conversion; an unrepresentable vault-relative note path is
+     refused explicitly. If no known vault contains it, the file opens on its
      own as the single-file view, after the first-use confirmation below. A
      file that is not there is said: «This file does not exist on this
      computer.»
@@ -113,7 +117,11 @@ rendered link is rewritten to the `v/` form.
      as a wikilink.
    - `page` uses the PDF viewer's page.
 4. **Window.** A vault already open in a window is reused and that window is
-   raised. Otherwise the link opens a window as Open folder… does.
+   raised. A standalone file link reuses the quick Reader for that exact
+   canonical file, including while it is loading; a different file gets its
+   own quick Reader. Otherwise the link opens a window as Open folder… does.
+   Accepted consent closes once the requested Reader window exists, without
+   waiting for a quick folder to become a vault.
 
 ## Delivery and single instance
 

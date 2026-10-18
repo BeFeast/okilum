@@ -841,10 +841,24 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
 /// Vault roots this machine knows: open windows first, then reading history.
 fn known_roots(cx: &App) -> Vec<PathBuf> {
     let mut roots = reusable_roots(cx);
-    if let Ok(directory) = super::reader_history::state_directory() {
+    #[cfg(not(test))]
+    let directory = super::reader_history::state_directory().ok();
+    // Match Reader::new's state isolation; tests must never read user history.
+    #[cfg(test)]
+    let directory = cx
+        .try_global::<super::reader_history::TestSessionDirectory>()
+        .map(|state| state.0.clone());
+    if let Some(directory) = directory {
         if let Ok((_, history)) = super::reader_history::ReadingHistory::startup_roots(&directory) {
             for root in history {
-                if !roots.contains(&root) {
+                // A quick folder is history, not vault enrollment. A live
+                // full-vault window already in `roots` retains its authority.
+                if !roots.contains(&root)
+                    && matches!(
+                        super::reader_history::ReadingHistory::quick_document(&directory, &root),
+                        Ok(None)
+                    )
+                {
                     roots.push(root);
                 }
             }
@@ -908,7 +922,7 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
             let open_now = opts.reusable_roots.contains(&root)
                 || super::reader_ui_state::link_trusted(&root, cx);
             if open_now {
-                if let Err(error) = open_window(opts, cx) {
+                if let Err(error) = open_link_window(opts, cx) {
                     show_error(error, cx);
                 }
             } else {
@@ -929,7 +943,7 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
                 ..Default::default()
             };
             if super::reader_ui_state::link_trusted(&folder, cx) {
-                if let Err(error) = open_window(opts, cx) {
+                if let Err(error) = open_link_window(opts, cx) {
                     show_error(error, cx);
                 }
             } else {
@@ -962,10 +976,29 @@ fn dispatch_path(path: &Path, cx: &mut App) {
 /// in one UI transaction. A window is registered before preparation starts so
 /// simultaneous OS deliveries cannot create duplicate vault readers.
 pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
+    open_window_with_quick_reuse(opts, false, cx)
+}
+
+fn open_link_window(opts: super::Opts, cx: &mut App) -> Result<()> {
+    // Public-entrypoint tests isolate caches as well as durable Reader state.
+    #[cfg(test)]
+    let opts = {
+        let mut opts = opts;
+        if opts.cache_base_override.is_none() {
+            opts.cache_base_override = cx
+                .try_global::<super::reader_history::TestSessionDirectory>()
+                .map(|state| state.0.join("cache"));
+        }
+        opts
+    };
+    open_window_with_quick_reuse(opts, true, cx)
+}
+
+fn open_window_with_quick_reuse(opts: super::Opts, quick_reuse: bool, cx: &mut App) -> Result<()> {
     let resolving = resolve(opts, cx);
     cx.spawn(async move |cx| {
         let resolved = resolving.await;
-        cx.update(|cx| finish_open(resolved, cx));
+        cx.update(|cx| finish_open_with_quick_reuse(resolved, quick_reuse, cx));
     })
     .detach();
     Ok(())
@@ -1009,9 +1042,13 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
 }
 
 pub(crate) fn finish_open(resolved: Result<super::Opts>, cx: &mut App) {
+    finish_open_with_quick_reuse(resolved, false, cx);
+}
+
+fn finish_open_with_quick_reuse(resolved: Result<super::Opts>, quick_reuse: bool, cx: &mut App) {
     match resolved {
         Ok(opts) => {
-            if !focus_existing(&opts, cx) {
+            if !focus_existing(&opts, quick_reuse, cx) {
                 if let Err(error) = create_window(opts, None, None, cx) {
                     show_error(error, cx);
                 }
@@ -1021,15 +1058,37 @@ pub(crate) fn finish_open(resolved: Result<super::Opts>, cx: &mut App) {
     }
 }
 
-fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
+/// Exact quick-file identity, including the reserved Reader before publication.
+fn quick_file(reader: &super::Reader) -> Option<PathBuf> {
+    if !reader.single_file {
+        return None;
+    }
+    if reader.document_ready() {
+        Some(reader.vault_root.join(reader.selected_file()))
+    } else {
+        let opts = &reader.loading.as_ref()?.opts;
+        Some(opts.vault.as_ref()?.join(opts.note.as_ref()?))
+    }
+}
+
+fn focus_existing(opts: &super::Opts, quick_reuse: bool, cx: &mut App) -> bool {
     let existing = cx.try_global::<Readers>().and_then(|readers| {
         readers.0.iter().rev().find_map(|(weak, root)| {
             let reader = weak.upgrade()?;
             let state = reader.read(cx);
-            if state.single_file || !cx.windows().contains(&state.reader_window) {
+            if !cx.windows().contains(&state.reader_window) {
                 return None;
             }
-            let note = if opts.single_file {
+            let note = if state.single_file {
+                if !quick_reuse || !opts.single_file {
+                    return None;
+                }
+                let requested = opts.vault.as_ref()?.join(opts.note.as_ref()?);
+                if quick_file(state).as_ref() != Some(&requested) {
+                    return None;
+                }
+                opts.note.clone()
+            } else if opts.single_file {
                 let path = opts.vault.as_ref()?.join(opts.note.as_ref()?);
                 let relative = path.strip_prefix(root).ok()?;
                 Some(okilum_core::vault::note_path(relative))
@@ -1114,12 +1173,16 @@ fn create_window(
         }
         let selected = opts.note.clone().unwrap_or_default();
         let root_path = opts.vault.clone();
-        let full_vault = !opts.single_file;
+        let single_file = opts.single_file;
         let reader = cx.new(|cx| super::Reader::new(opts, window, cx));
-        if full_vault {
-            if let Some(root) = root_path {
-                register(reader.downgrade(), root, cx);
-            }
+        // Reserve quick Readers as well as vault Readers before preparation
+        // publishes. Their mode must be visible immediately so registration
+        // cannot temporarily authorize vault reuse or persisted vault windows.
+        if single_file {
+            reader.update(cx, |reader, _| reader.single_file = true);
+        }
+        if let Some(root) = root_path {
+            register(reader.downgrade(), root, cx);
         }
         if let Some(session) = shared {
             reader.update(cx, |reader, cx| {
@@ -1352,14 +1415,16 @@ fn answer_link_vault(root: &Path, open: bool, window: &mut Window, cx: &mut App)
 /// consent, so links may open it from now on.
 fn open_from_prompt(root: &Path, opts: super::Opts, window: &mut Window, cx: &mut App) {
     super::reader_ui_state::trust_for_links(root, cx);
-    if let Err(error) = open_window(opts, cx) {
+    let quick_path = opts.open_path.clone();
+    if let Err(error) = open_link_window(opts, cx) {
         window.remove_window();
         show_error(error, cx);
         return;
     }
     // The Reader window is created after a background step. Closing the
     // prompt first would leave no window, which ends the app on Linux, so
-    // the prompt goes once the vault's window exists (or after 10 s).
+    // the prompt goes once the requested Reader's window exists (or after
+    // 10 s on failure). Quick Readers never become reusable vault roots.
     let prompt = window.window_handle();
     let root = root.to_owned();
     cx.spawn(async move |cx| {
@@ -1367,7 +1432,14 @@ fn open_from_prompt(root: &Path, opts: super::Opts, window: &mut Window, cx: &mu
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(50))
                 .await;
-            if cx.update(|cx| reusable_roots(cx).contains(&root)) {
+            if cx.update(|cx| match &quick_path {
+                Some(path) => readers(cx).iter().any(|reader| {
+                    let reader = reader.read(cx);
+                    cx.windows().contains(&reader.reader_window)
+                        && quick_file(reader).as_ref() == Some(path)
+                }),
+                None => reusable_roots(cx).contains(&root),
+            }) {
                 break;
             }
         }
@@ -3466,7 +3538,9 @@ mod entry_tests {
     /// same folder opens at once. A file that is not there opens nothing.
     #[gpui::test]
     fn a_file_link_outside_every_vault_opens_the_file_on_its_own(cx: &mut TestAppContext) {
+        use super::super::reader_history::{ReadingHistory, TestSessionDirectory};
         let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
         let vault = fixture.path().join("Notes");
         let loose = fixture.path().join("loose");
         std::fs::create_dir_all(&vault).unwrap();
@@ -3482,6 +3556,8 @@ mod entry_tests {
             gpui_component::init(cx);
             super::super::bind_keys(cx);
             install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
         });
         let settle = |cx: &mut TestAppContext| {
@@ -3497,9 +3573,14 @@ mod entry_tests {
             let path = okilum_core::vault::display_path(&loose.join(name)).replace('\\', "/");
             format!("okilum://file/{path}{query}")
         };
-        let known = [vault.clone()];
+        ReadingHistory::record_usable_document(&state, &vault, "Plan.md").unwrap();
+        assert_eq!(
+            cx.update(|cx| known_roots(cx)),
+            vec![vault.clone()],
+            "positive control: full-vault history is known"
+        );
         let open = |link: String, cx: &mut TestAppContext| {
-            cx.update(|cx| open_deep_link_among(&link, &known, cx));
+            cx.update(|cx| open_deep_link(&link, cx));
             settle(cx);
         };
         let readers = |cx: &mut TestAppContext| {
@@ -3508,6 +3589,7 @@ mod entry_tests {
                     .0
                     .iter()
                     .filter_map(|(weak, _)| weak.upgrade())
+                    .filter(|reader| cx.windows().contains(&reader.read(cx).reader_window))
                     .map(|reader| {
                         let reader = reader.read(cx);
                         (
@@ -3545,12 +3627,16 @@ mod entry_tests {
         let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
         visual.simulate_keystrokes("enter");
         settle(cx);
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(500));
-        settle(cx);
+        // 1.5 seconds of test clock since Enter, far below the 10-second
+        // failure timeout. The actual prompt window handle must be gone.
+        assert!(
+            cx.update(|cx| !cx.windows().contains(&prompt)),
+            "accepted quick-file prompt closes promptly"
+        );
         let opened = readers(cx);
         assert_eq!(opened.len(), 1, "the file opened");
         assert!(opened[0].0, "as a single file, not as a vault");
+        cx.update(|cx| assert!(super::readers(cx)[0].read(cx).document_ready()));
         assert_eq!(opened[0].2, 40, "on the line of the link");
         assert!(cx.update(|cx| super::super::reader_ui_state::link_trusted(&loose, cx)));
 
@@ -3606,13 +3692,71 @@ mod entry_tests {
         };
         copy_single_file_links(cx);
 
+        // Real publication persisted quick history. The public entrypoint
+        // must not interpret it as enrollment on the next delivery.
+        assert_eq!(
+            ReadingHistory::quick_document(&state, &loose)
+                .unwrap()
+                .as_deref(),
+            Some("target.md")
+        );
+        assert!(ReadingHistory::startup_roots(&state)
+            .unwrap()
+            .1
+            .contains(&loose));
+        let loose_cache = OpenIntent {
+            root: loose.clone(),
+            single_file: true,
+            note: None,
+        }
+        .cache_path(&state.join("cache"));
+        assert!(!loose_cache.exists());
+
         // Trusted now: another file of the folder opens without asking.
         open(link("other.md", ""), cx);
         assert!(cx.update(|cx| cx
             .try_global::<LinkPrompts>()
             .is_none_or(|prompts| prompts.0.is_empty())));
-        assert!(!readers(cx).is_empty());
+        assert_eq!(
+            readers(cx).len(),
+            2,
+            "distinct files retain separate quick Readers"
+        );
         assert!(readers(cx).iter().all(|(single, ..)| *single));
+        cx.update(|cx| {
+            for reader in super::readers(cx) {
+                let reader = reader.read(cx);
+                assert!(
+                    reader.index_dir.is_none()
+                        && reader.cache_lease.is_none()
+                        && reader.searcher.is_none()
+                        && reader.watcher.is_none()
+                );
+            }
+        });
+        assert!(
+            !loose_cache.exists(),
+            "second public link creates no cache or lease"
+        );
+
+        // Closing and redelivering a quick file cannot promote its folder.
+        let other_window = cx.update(|cx| {
+            super::readers(cx)
+                .iter()
+                .find(|reader| reader.read(cx).current_rel == "other.md")
+                .unwrap()
+                .read(cx)
+                .reader_window
+        });
+        cx.update(|cx| {
+            other_window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap()
+        });
+        open(link("other.md", ""), cx);
+        assert_eq!(readers(cx).len(), 2);
+        assert!(readers(cx).iter().all(|(single, ..)| *single));
+        assert!(!loose_cache.exists());
 
         // A separate vault window for this same folder must not grant the
         // single-file window permission to create metadata, including via
@@ -3637,7 +3781,254 @@ mod entry_tests {
             })),
             "positive control: the same folder is also open as a vault"
         );
+        assert!(
+            fixture.path().join("loose-index").exists(),
+            "positive control: explicit full-vault open creates its index"
+        );
+        // A quick window can record after a full one. Live full-vault
+        // authority must survive even when the latest history row is quick.
+        ReadingHistory::record_document_mode(&state, &loose, "target.md", true).unwrap();
+        assert!(
+            cx.update(|cx| known_roots(cx).contains(&loose)),
+            "explicit open full vault remains known alongside quick history"
+        );
+        let full_window = cx.update(|cx| {
+            super::readers(cx)
+                .iter()
+                .find(|reader| !reader.read(cx).single_file)
+                .unwrap()
+                .read(cx)
+                .reader_window
+        });
+        let before = cx.windows().len();
+        open(link("other.md", ""), cx);
+        assert_eq!(
+            cx.windows().len(),
+            before,
+            "a genuine full vault is reused by the public entrypoint"
+        );
+        cx.update(|cx| {
+            let full = super::readers(cx)
+                .into_iter()
+                .find(|reader| reader.read(cx).reader_window == full_window)
+                .unwrap();
+            assert!(!full.read(cx).single_file);
+            assert_eq!(full.read(cx).current_rel, "other.md");
+            assert!(full.read(cx).cache_lease.is_some() && full.read(cx).searcher.is_some());
+        });
         copy_single_file_links(cx);
+
+        // With every window gone, persisted quick history alone still grants
+        // only file scope. Retained test entities are not visible windows.
+        cx.update(|cx| {
+            for window in cx.windows() {
+                window
+                    .update(cx, |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        });
+        settle(cx);
+        ReadingHistory::record_document_mode(&state, &loose, "target.md", true).unwrap();
+        assert!(!cx.update(|cx| known_roots(cx).contains(&loose)));
+        open(link("target.md", "?line=81"), cx);
+        let restored = readers(cx);
+        assert_eq!(restored, vec![(true, "target.md".into(), 40)]);
+        assert_eq!(
+            cx.windows().len(),
+            1,
+            "trusted quick history opens only the file"
+        );
+        assert!(
+            !loose_cache.exists(),
+            "history-only redelivery never acquires the default vault cache"
+        );
+    }
+
+    /// #1414: exact-file reuse is reserved before the first document can
+    /// publish. Changed landings use the same entity/window while loading and
+    /// after publication; a different file still gets an independent Reader.
+    #[gpui::test]
+    fn repeated_quick_file_links_reuse_the_reserved_reader_and_latest_landing(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::reader_history::{ReadingHistory, TestSessionDirectory};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("loose");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        for name in ["target.md", "other.md"] {
+            std::fs::write(root.join(name), &body).unwrap();
+        }
+        let link = |name: &str, line: u32| {
+            let path = okilum_core::vault::display_path(&root.join(name)).replace('\\', "/");
+            format!("okilum://file/{path}?line={line}")
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            super::super::reader_ui_state::install(&state.join("ui-state"), cx);
+            open_deep_link(&link("target.md", 1), cx);
+        });
+        cx.run_until_parked();
+        let (release, hold) = async_channel::bounded(1);
+        let prompt = cx.update(|cx| {
+            let (prompt, opts) = cx.global_mut::<LinkPrompts>().0.get_mut(&root).unwrap();
+            opts.validation_hold = Some(hold);
+            *prompt
+        });
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        visual.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let (reader, window) = cx.update(|cx| {
+            let readers = readers(cx);
+            assert_eq!(
+                readers.len(),
+                1,
+                "positive control: a Reader was reserved while validation is held"
+            );
+            let reader = readers[0].clone();
+            let view = reader.read(cx);
+            assert!(view.single_file && !view.document_ready());
+            assert_eq!(quick_file(view), Some(root.join("target.md")));
+            assert!(
+                reusable_roots(cx).is_empty(),
+                "a pending quick Reader cannot authorize a vault"
+            );
+            (reader.clone(), view.reader_window)
+        });
+        // Successful window creation is sufficient for retiring consent even
+        // while the document worker is intentionally held.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        assert!(cx.update(|cx| !cx.windows().contains(&prompt)));
+        assert_eq!(
+            cx.windows().len(),
+            1,
+            "only the actual Reader window remains"
+        );
+        for line in [1, 41, 81] {
+            cx.update(|cx| open_deep_link(&link("target.md", line), cx));
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let current = readers(cx);
+                assert_eq!(
+                    current.len(),
+                    1,
+                    "identical and changed-line deliveries cannot duplicate a pending Reader"
+                );
+                assert_eq!(current[0].entity_id(), reader.entity_id());
+                assert_eq!(current[0].read(cx).reader_window, window);
+                let view = reader.read(cx);
+                assert!(
+                    !view.document_ready(),
+                    "positive control: preparation is still held"
+                );
+                assert_eq!(view.queued_open_note.as_deref(), Some("target.md"));
+                assert_eq!(view.queued_landing.as_ref().unwrap().line, Some(line));
+            });
+        }
+        release.send_blocking(()).unwrap();
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(200));
+            }
+            cx.run_until_parked();
+        };
+        settle(cx);
+        let assert_target = |line_block: usize, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let current = readers(cx);
+                assert_eq!(current.len(), 1);
+                assert_eq!(current[0].entity_id(), reader.entity_id());
+                let view = reader.read(cx);
+                assert_eq!(view.reader_window, window);
+                assert!(view.single_file && view.document_ready());
+                assert_eq!(view.current_rel, "target.md");
+                assert_eq!(
+                    view.content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top()
+                        .item_ix,
+                    line_block
+                );
+                assert!(
+                    view.index_dir.is_none()
+                        && view.cache_lease.is_none()
+                        && view.searcher.is_none()
+                        && view.watcher.is_none()
+                );
+            });
+        };
+        assert_target(40, cx);
+        assert_eq!(
+            ReadingHistory::quick_document(&state, &root)
+                .unwrap()
+                .as_deref(),
+            Some("target.md")
+        );
+        for (line, block) in [(81, 40), (1, 0), (41, 20)] {
+            cx.update(|cx| open_deep_link(&link("target.md", line), cx));
+            settle(cx);
+            assert_target(block, cx);
+        }
+        #[cfg(unix)]
+        {
+            // A different link spelling through a symlink still identifies
+            // the same canonical file and must retain the Reader/window.
+            let alias = fixture.path().join("alias.md");
+            std::os::unix::fs::symlink(root.join("target.md"), &alias).unwrap();
+            let alias_link = format!("okilum://file/{}?line=41", alias.to_str().unwrap());
+            cx.update(|cx| open_deep_link(&alias_link, cx));
+            settle(cx);
+            assert_target(20, cx);
+        }
+        // A second file is a positive control against folder-wide quick reuse.
+        cx.update(|cx| open_deep_link(&link("other.md", 81), cx));
+        settle(cx);
+        cx.update(|cx| {
+            let current = readers(cx);
+            assert_eq!(current.len(), 2);
+            let other = current
+                .iter()
+                .find(|r| r.entity_id() != reader.entity_id())
+                .unwrap();
+            let other = other.read(cx);
+            assert!(other.single_file && other.document_ready());
+            assert_ne!(other.reader_window, window);
+            assert_eq!(other.current_rel, "other.md");
+            assert_eq!(
+                other
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
+                40
+            );
+            assert_eq!(
+                reader
+                    .read(cx)
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
+                20
+            );
+        });
+        // Generic file delivery keeps its existing separate-quick-window policy.
+        cx.update(|cx| dispatch_path(&root.join("target.md"), cx));
+        settle(cx);
+        assert_eq!(cx.windows().len(), 3);
     }
 
     /// #1414: the same synced vault is «Obsidian Vault» on one machine and
