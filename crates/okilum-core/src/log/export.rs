@@ -51,10 +51,22 @@
 //! record its text without colour codes. Fields the view does not show as a
 //! column are not exported; JSON lines has them all.
 //!
-//! Values are written as they are in the log. A spreadsheet reads a cell that
-//! starts with `=`, `+`, `-` or `@` as a formula; the export does not alter a
-//! value to prevent that.
+//! # Formula guard
+//!
+//! A spreadsheet reads a cell that starts with `=`, `+`, `-` or `@` as a
+//! formula, and a log can carry such text (a user agent, a path): CSV injection
+//! (CWE-1236). So by default every cell that starts with one of those, or with
+//! a tab or a carriage return (the other characters the OWASP guidance lists),
+//! gets an apostrophe in front: `-5` is written `'-5`, `=HYPERLINK(...)` is
+//! written `'=HYPERLINK(...)`. A spreadsheet shows the apostrophe and does not
+//! evaluate the cell. The header names are guarded the same way (they are
+//! field names from the log). Nothing else is changed.
+//!
+//! With raw values ([`CsvColumns::with_raw_values`]) the cells are written
+//! byte for byte as they are in the log, formulas included; the viewer's
+//! export menu offers that as "Raw values in CSV" (Oleg, 18.10).
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use super::{ansi, block, timestamp, Format, Level, LogEntry, Record, Role, ValueKind};
@@ -68,16 +80,33 @@ pub enum ExportFormat {
 }
 
 /// The columns of a CSV export: the field columns the view shows, in their
-/// order, and whether the view merges several files (a `source` column).
+/// order, whether the view merges several files (a `source` column), and
+/// whether cells are written raw or with the formula guard (the default).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CsvColumns {
     fields: Vec<String>,
     source: bool,
+    raw_values: bool,
 }
 
 impl CsvColumns {
     pub fn new(fields: Vec<String>, source: bool) -> Self {
-        Self { fields, source }
+        Self {
+            fields,
+            source,
+            raw_values: false,
+        }
+    }
+
+    /// Writes the cells byte for byte as they are in the log, without the
+    /// formula guard.
+    pub fn with_raw_values(mut self, raw_values: bool) -> Self {
+        self.raw_values = raw_values;
+        self
+    }
+
+    pub fn raw_values(&self) -> bool {
+        self.raw_values
     }
 
     /// The header row's names.
@@ -110,7 +139,7 @@ pub fn write_header(out: &mut dyn Write, format: &ExportFormat) -> io::Result<()
     match format {
         ExportFormat::Csv(columns) => {
             let names = columns.header();
-            out.write_all(csv_line(names.iter().copied()).as_bytes())
+            out.write_all(csv_line(names.iter().copied(), columns.raw_values).as_bytes())
         }
         ExportFormat::Raw | ExportFormat::JsonLines => Ok(()),
     }
@@ -185,16 +214,29 @@ pub fn write_csv(out: &mut dyn Write, row: &Row, columns: &CsvColumns) -> io::Re
         }
         None => String::from_utf8_lossy(&ansi::strip(bytes)).into_owned(),
     });
-    out.write_all(csv_line(cells.iter().map(String::as_str)).as_bytes())
+    out.write_all(csv_line(cells.iter().map(String::as_str), columns.raw_values).as_bytes())
 }
 
-/// One CSV row with its `CRLF`.
-fn csv_line<'a>(cells: impl Iterator<Item = &'a str>) -> String {
+/// `cell` as a spreadsheet must read it: with an apostrophe in front when it
+/// starts with a character that makes a formula (the formula guard, see the
+/// module docs); `raw` writes it unchanged.
+fn guarded(cell: &str, raw: bool) -> Cow<'_, str> {
+    if !raw && cell.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        Cow::Owned(format!("'{cell}"))
+    } else {
+        Cow::Borrowed(cell)
+    }
+}
+
+/// One CSV row with its `CRLF`; the cells go through the formula guard unless
+/// `raw`.
+fn csv_line<'a>(cells: impl Iterator<Item = &'a str>, raw: bool) -> String {
     let mut line = String::new();
     for (at, cell) in cells.enumerate() {
         if at > 0 {
             line.push(',');
         }
+        let cell = guarded(cell, raw);
         if cell.contains([',', '"', '\r', '\n']) {
             line.push('"');
             for ch in cell.chars() {
@@ -205,7 +247,7 @@ fn csv_line<'a>(cells: impl Iterator<Item = &'a str>) -> String {
             }
             line.push('"');
         } else {
-            line.push_str(cell);
+            line.push_str(&cell);
         }
     }
     line.push_str("\r\n");
@@ -543,8 +585,95 @@ plain words, with a comma
     fn csv_quotes_only_what_needs_it() {
         let cells = ["a,b", "say \"hi\"", "line\nbreak", "cr\rhere", "plain", ""];
         assert_eq!(
-            csv_line(cells.into_iter()),
+            csv_line(cells.into_iter(), true),
             "\"a,b\",\"say \"\"hi\"\"\",\"line\nbreak\",\"cr\rhere\",plain,\r\n"
+        );
+    }
+
+    /// A log whose values are what a spreadsheet would run: every cell the
+    /// guard has to catch, and cells it must leave alone.
+    const FORMULA_LOG: &str = "\
+{\"level\":\"info\",\"msg\":\"=HYPERLINK(\\\"http://x\\\",\\\"y\\\")\",\"a\":\"-5\",\"b\":\"@SUM(1)\",\"=x\":\"+49 30 1\"}
+{\"level\":\"info\",\"msg\":\"=== start ===\",\"a\":\"\\tTab\",\"b\":\"\\rCR\",\"=x\":\"=a,b\"}
+{\"level\":\"info\",\"msg\":\"a=b\",\"a\":\"5-3\",\"b\":\"'quoted\",\"=x\":\"\"}
+";
+
+    fn formula_columns() -> CsvColumns {
+        CsvColumns::new(strings(&["a", "b", "=x"]), false)
+    }
+
+    #[test]
+    fn csv_guards_cells_that_a_spreadsheet_would_run_as_formulas() {
+        let file = csv_file(FORMULA_LOG.as_bytes(), &formula_columns(), None);
+        let (header, parsed) = parse_csv(&file).unwrap();
+        // The field names come from the log: a key can start with `=` too.
+        assert_eq!(
+            header,
+            strings(&["time_utc", "level", "a", "b", "'=x", "message"])
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                strings(&[
+                    "",
+                    "info",
+                    "'-5",
+                    "'@SUM(1)",
+                    "'+49 30 1",
+                    "'=HYPERLINK(\"http://x\",\"y\")"
+                ]),
+                strings(&["", "info", "'\tTab", "'\rCR", "'=a,b", "'=== start ==="]),
+                // Not at the start of the cell: unchanged. Neither is an
+                // apostrophe that is already there, nor an empty cell.
+                strings(&["", "info", "5-3", "'quoted", "", "a=b"]),
+            ],
+            "a leading = + - @ tab or CR gets an apostrophe, nothing else changes"
+        );
+        // The guard and the quoting work together: the comma stays inside the
+        // quotes and the apostrophe goes inside them.
+        let text = String::from_utf8(file).unwrap();
+        assert!(text.contains("\"'=a,b\""), "{text}");
+    }
+
+    #[test]
+    fn csv_with_raw_values_writes_every_cell_as_it_is_in_the_log() {
+        let columns = formula_columns().with_raw_values(true);
+        assert!(columns.raw_values());
+        let file = csv_file(FORMULA_LOG.as_bytes(), &columns, None);
+        let (header, parsed) = parse_csv(&file).unwrap();
+        assert_eq!(
+            header,
+            strings(&["time_utc", "level", "a", "b", "=x", "message"])
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                strings(&[
+                    "",
+                    "info",
+                    "-5",
+                    "@SUM(1)",
+                    "+49 30 1",
+                    "=HYPERLINK(\"http://x\",\"y\")"
+                ]),
+                strings(&["", "info", "\tTab", "\rCR", "=a,b", "=== start ==="]),
+                strings(&["", "info", "5-3", "'quoted", "", "a=b"]),
+            ],
+            "byte for byte, formulas included"
+        );
+    }
+
+    #[test]
+    fn the_formula_guard_is_on_unless_raw_values_is_asked_for() {
+        // The default must be the safe one, and the guard must be what makes
+        // the difference: the same cells, one switch.
+        assert!(!formula_columns().raw_values());
+        assert_eq!(guarded("=1+1", false), "'=1+1");
+        assert_eq!(guarded("=1+1", true), "=1+1");
+        assert_eq!(
+            csv_line(["-5", "ok"].into_iter(), false),
+            "'-5,ok\r\n",
+            "an apostrophe, not a quoted cell"
         );
     }
 
