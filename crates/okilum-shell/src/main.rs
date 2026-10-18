@@ -1351,6 +1351,8 @@ struct Reader {
     tree_preview: reader_tree_preview::Session,
     project: Option<Entity<project::ProjectView>>,
     project_open: bool,
+    project_request: u64,
+    project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
     /// Undo history and selection of the editor last left for the Reader, by
@@ -1794,6 +1796,8 @@ impl Reader {
             tree_preview: Default::default(),
             project: None,
             project_open: false,
+            project_request: 0,
+            project_views: Default::default(),
             file_menu: None,
             tree_focus: cx.focus_handle(),
             typed_navigation: Default::default(),

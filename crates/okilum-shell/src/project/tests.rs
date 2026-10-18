@@ -161,3 +161,93 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
     });
     assert!(visual.debug_bounds("project-error").is_some());
 }
+
+#[gpui::test]
+fn project_tab_opens_inside_the_reader_and_returns_to_the_same_note(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        bind_keys(cx);
+    });
+    let fixture = tempfile::tempdir().unwrap();
+    let vault = fixture.path().join("vault");
+    std::fs::create_dir(&vault).unwrap();
+    std::fs::write(
+        vault.join("note.md"),
+        "# Retained note\n\nReader content.\n",
+    )
+    .unwrap();
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(vault.clone()),
+                    note: Some("note.md".into()),
+                    index_dir: Some(fixture.path().join("index")),
+                    session_directory: Some(fixture.path().join("state")),
+                    ..Opts::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    visual.simulate_resize(size(px(1200.), px(800.)));
+    visual.run_until_parked();
+    let retained = reader.read_with(visual, |view, _| {
+        assert_eq!(view.current_rel, "note.md");
+        view.content.clone()
+    });
+    let tab = visual
+        .debug_bounds("reader-project")
+        .expect("Reader Project control positive control");
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-tab").is_some());
+    let project = reader.read_with(visual, |view, _| {
+        assert!(view.project_open);
+        view.project.clone().unwrap()
+    });
+    visual.update(|window, cx| {
+        project.update(cx, |view, cx| {
+            view.compose.update(cx, |input, cx| {
+                input.set_value("Retain this draft", window, cx)
+            })
+        })
+    });
+    let tab = visual.debug_bounds("reader-project").unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert!(!view.project_open);
+        assert_eq!(view.current_rel, "note.md");
+        assert!(view.content == retained);
+    });
+    assert!(visual.debug_bounds("project-tab").is_none());
+    let tab = visual.debug_bounds("reader-project").unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert!(view.project.as_ref().unwrap() == &project)
+    });
+    project.read_with(visual, |view, cx| {
+        assert_eq!(view.compose.read(cx).value().as_ref(), "Retain this draft")
+    });
+    std::fs::write(vault.join("other.md"), "# Another note\n").unwrap();
+    visual.update(|window, cx| {
+        reader.update(cx, |view, cx| view.open_note("other.md", None, window, cx))
+    });
+    visual.run_until_parked();
+    let tab = visual.debug_bounds("reader-project").unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert!(view.project.as_ref().unwrap() == &project)
+    });
+    project.read_with(visual, |view, cx| {
+        assert_eq!(view.compose.read(cx).value().as_ref(), "Retain this draft")
+    });
+}

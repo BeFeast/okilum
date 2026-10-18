@@ -72,13 +72,8 @@ impl MessageJournal {
             receipt: None,
         };
         let path = self.path(&record)?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        file.write_all(&serde_json::to_vec(&record)?)?;
-        file.sync_all()?;
-        sync_directory(&self.directory)?;
+        let payload = serde_json::to_vec(&record)?;
+        publish(&path, |file| file.write_all(&payload))?;
         Ok(record)
     }
 
@@ -148,10 +143,58 @@ impl MessageJournal {
     }
 }
 
+/// No final record exists until the complete, synced intent is published.
+/// Interrupted temporary writes cannot poison a subsequent journal read.
+fn publish(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<()> {
+    let directory = path.parent().context("message directory is missing")?;
+    let temporary = directory.join(format!(".message-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        write(&mut file)?;
+        file.sync_all()?;
+        // Atomic create without replacing an existing operation identity.
+        std::fs::hard_link(&temporary, path)?;
+        sync_directory(directory)
+    })();
+    let _ = std::fs::remove_file(temporary);
+    result
+}
+
 fn sync_directory(directory: &Path) -> Result<()> {
     #[cfg(unix)]
     std::fs::File::open(directory)?.sync_all()?;
     #[cfg(not(unix))]
     let _ = directory;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_partial_write_never_publishes_a_broken_intent() {
+        let directory =
+            std::env::temp_dir().join(format!("okilum-journal-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let final_path = directory.join("operation.json");
+        assert!(publish(&final_path, |file| {
+            file.write_all(b"{partial")?;
+            Err(std::io::Error::other("simulated disk full"))
+        })
+        .is_err());
+        assert!(!final_path.exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        publish(&final_path, |file| file.write_all(b"{}\n")).unwrap();
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"{}\n");
+        assert!(publish(&final_path, |file| file.write_all(b"replacement")).is_err());
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"{}\n");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

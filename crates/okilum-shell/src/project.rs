@@ -32,8 +32,7 @@ pub(crate) struct ProjectView {
 
 impl ProjectView {
     pub(crate) fn new(
-        vault: PathBuf,
-        note: PathBuf,
+        binding: Option<AreaBinding>,
         state: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -44,8 +43,6 @@ impl ProjectView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let area = connections::area_for(&vault, &note)?;
-                    let binding = AreaBinding::read(&area)?;
                     let env = match (&binding, &state_copy) {
                         (Some(binding), Some(state)) => connections::load(state, binding)?,
                         _ => None,
@@ -357,7 +354,9 @@ impl ProjectView {
                 });
                 break;
             }
-            gpui::Timer::after(Duration::from_millis(next)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(next))
+                .await;
         })
         .detach();
     }
@@ -656,22 +655,67 @@ impl Render for ProjectView {
 
 impl Reader {
     pub(super) fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_request = self.project_request.wrapping_add(1);
         if let Some(project) = self.project.as_ref().filter(|_| self.project_open) {
             project.update(cx, |project, cx| project.set_active(false, window, cx));
         }
         self.project_open = false;
     }
 
-    fn toggle_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn toggle_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.project_open {
             self.close_project(window, cx);
-        } else {
-            let vault = self.vault_root.clone();
-            let note = vault.join(&self.current_rel);
-            let state = self.session_directory.clone();
-            self.project = Some(cx.new(|cx| ProjectView::new(vault, note, state, window, cx)));
-            self.project_open = true;
+            cx.notify();
+            return;
         }
+        self.project_open = true;
+        self.project = None;
+        self.project_request = self.project_request.wrapping_add(1);
+        let request = self.project_request;
+        let vault = self.vault_root.clone();
+        let note = vault.join(&self.current_rel);
+        cx.spawn_in(window, async move |this, cx| {
+            // Re-read the explicit pointer on every activation. A rotation gets
+            // its own view; returning to an existing binding retains its draft.
+            let binding = cx
+                .background_executor()
+                .spawn(async move {
+                    let area = connections::area_for(&vault, &note)?;
+                    let binding = AreaBinding::read(&area)?;
+                    let key = (area, serde_json::to_string(&binding)?);
+                    Ok::<_, anyhow::Error>((key, binding))
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.project_request != request || !this.project_open {
+                    return;
+                }
+                let project = match binding {
+                    Ok((key, binding)) => match this.project_views.get(&key).cloned() {
+                        Some(project) => {
+                            project.update(cx, |project, cx| project.set_active(true, window, cx));
+                            project
+                        }
+                        None => {
+                            let state = this.session_directory.clone();
+                            let project = cx.new(|cx| ProjectView::new(binding, state, window, cx));
+                            this.project_views.insert(key, project.clone());
+                            project
+                        }
+                    },
+                    Err(error) => cx.new(|cx| {
+                        let mut view =
+                            ProjectView::empty(this.session_directory.clone(), window, cx);
+                        view.reason = None;
+                        view.error = Some(format!("{error:#}"));
+                        view
+                    }),
+                };
+                this.project = Some(project);
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 }
