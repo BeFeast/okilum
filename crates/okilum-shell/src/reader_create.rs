@@ -308,6 +308,7 @@ impl Reader {
         {
             folder.clear();
         }
+        folder = existing_creation_folder(&self.vault_root, &folder);
         let error = templates.as_ref().err().map(|e| format!("{e:#}"));
         let templates = templates.ok();
         let selected_template = templates.as_ref().and_then(|c| c.default_file());
@@ -381,7 +382,8 @@ impl Reader {
         let root = create.root.clone();
         let directory = create.directory;
         let name = create.input.read(cx).value().to_string();
-        let folder = create.folder.clone();
+        // The destination may disappear while the inline row is open too.
+        let folder = existing_creation_folder(&root, &create.folder);
         let templates = create.templates.clone();
         let selected_template = create.selected_template.clone();
         let result = (|| -> anyhow::Result<(String, Option<String>)> {
@@ -401,7 +403,7 @@ impl Reader {
                 None
             } else {
                 anyhow::ensure!(
-                    self.save_source(cx),
+                    self.save_source_for_navigation(cx),
                     "Resolve the current note's save before creating another"
                 );
                 let state = self
@@ -515,10 +517,252 @@ impl Reader {
     }
 }
 
+/// Fall back only for missing paths. Existing unsafe or inaccessible entries
+/// stay subject to create-only validation and its visible error.
+fn existing_creation_folder(root: &Path, folder: &str) -> String {
+    let mut path = Path::new(folder);
+    while !path.as_os_str().is_empty()
+        && std::fs::symlink_metadata(root.join(path))
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        path = path.parent().unwrap_or(Path::new(""));
+    }
+    path.to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    fn deleted_folder_operation(cx: &mut TestAppContext, operation: &str, nested: bool) {
+        use gpui_component::WindowExt;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        let folder = if nested { "Parent/mytpl" } else { "mytpl" };
+        let note = format!("{folder}/Note.md");
+        std::fs::create_dir_all(root.join(folder)).unwrap();
+        std::fs::write(root.join(&note), "# Note\n").unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some(note.clone()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.selected_file(), note);
+            r.toggle_source(window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("# Unsaved שלום\r\n", window, cx);
+            r.tree.cursor = Some(folder.into());
+            assert!(r.tree.rows.iter().any(|row| row.path == folder));
+        });
+        visual.run_until_parked();
+        std::fs::remove_dir_all(root.join(folder)).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.refresh_source_from_disk(window, cx);
+            assert!(r
+                .link_notice
+                .as_deref()
+                .unwrap()
+                .contains("moved or deleted"));
+            assert_eq!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input()
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                "# Unsaved שלום\r\n"
+            );
+            r.apply_vault_changes(
+                okilum_core::Changes {
+                    directories: std::collections::BTreeSet::from([folder.into()]),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(!r.tree.rows.iter().any(|row| row.path == folder));
+        });
+        if operation == "recovery_failure" {
+            let journal = std::fs::read_dir(state.join("editor-drafts"))
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .unwrap();
+            std::fs::remove_file(&journal).unwrap();
+            std::fs::create_dir(&journal).unwrap();
+            reader.update_in(visual, |r, window, cx| {
+                r.open_note("start.md", None, window, cx);
+                assert_eq!(r.selected_file(), note);
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .input()
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "# Unsaved שלום\r\n"
+                );
+                assert!(r
+                    .link_notice
+                    .as_deref()
+                    .unwrap()
+                    .contains("recovery copy couldn’t be saved"));
+                r.new_note(None, window, cx);
+                r.creation
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .update(cx, |input, cx| input.set_value("Blocked", window, cx));
+                r.commit_creation(window, cx);
+                assert!(r.creation.as_ref().unwrap().error.is_some());
+                assert!(r.editing.is_some());
+            });
+            visual.run_until_parked();
+            assert!(!root.join("Blocked.md").exists());
+            visual.update(|window, cx| assert!(!window.notifications(cx).is_empty()));
+            return;
+        }
+        if operation == "quick_open" {
+            reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+            visual.simulate_keystrokes("ctrl-k");
+            visual.simulate_input("start");
+            visual.run_until_parked();
+            reader.read_with(visual, |r, _| {
+                assert!(r.quick_open.open);
+                assert!(r.quick_open.rows.iter().any(|row| row.path == "start.md"));
+            });
+            visual.simulate_keystrokes("enter");
+        } else if operation == "sidebar" {
+            reader.update_in(visual, |r, window, cx| {
+                r.reveal_in_tree("start.md", window, cx);
+            });
+            visual.run_until_parked();
+            let row = visual.debug_bounds("tree-row-start.md").unwrap();
+            visual.simulate_click(row.center(), gpui::Modifiers::default());
+        } else {
+            if operation == "keyboard" {
+                reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+                visual.simulate_keystrokes("ctrl-n");
+            } else {
+                reader.update_in(visual, |r, _, cx| {
+                    r.panels.open(reader_layout::Panel::Notes);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let button = visual.debug_bounds("sidebar-new-note").unwrap();
+                visual.simulate_click(button.center(), gpui::Modifiers::default());
+            }
+            visual.run_until_parked();
+            reader.read_with(visual, |r, _| {
+                assert_eq!(
+                    r.creation.as_ref().unwrap().folder,
+                    if nested { "Parent" } else { "" }
+                );
+            });
+            visual.simulate_input("Created");
+            visual.simulate_keystrokes("enter");
+        }
+        visual.run_until_parked();
+        let destination = if operation == "quick_open" || operation == "sidebar" {
+            "start.md"
+        } else if nested {
+            "Parent/Created.md"
+        } else {
+            "Created.md"
+        };
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(
+                r.selected_file(),
+                destination,
+                "navigation must not depend on saving a deleted path"
+            );
+            assert!(
+                !window.notifications(cx).is_empty(),
+                "draft recovery must be announced"
+            );
+        });
+        assert!(root.join(destination).is_file());
+        assert!(
+            !root.join(folder).exists(),
+            "never recreate the deleted folder"
+        );
+        let drafts = state.join("editor-drafts");
+        let listing = okilum_core::source_history::drafts(&drafts, &root).unwrap();
+        let draft = listing
+            .versions
+            .iter()
+            .find(|v| v.note.ends_with(&note))
+            .expect("deleted source remains recoverable");
+        assert_eq!(draft.text, "# Unsaved שלום\r\n");
+        okilum_core::source_history::save_copy(
+            &root,
+            Path::new("Recovered.md"),
+            &drafts,
+            &draft.text,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("Recovered.md")).unwrap(),
+            draft.text
+        );
+    }
+
+    #[gpui::test]
+    fn deleted_folder_keyboard_creation_preserves_draft(cx: &mut TestAppContext) {
+        deleted_folder_operation(cx, "keyboard", false);
+    }
+
+    #[gpui::test]
+    fn deleted_folder_header_creation_uses_surviving_ancestor(cx: &mut TestAppContext) {
+        deleted_folder_operation(cx, "header", true);
+    }
+
+    #[gpui::test]
+    fn deleted_folder_quick_open_preserves_draft(cx: &mut TestAppContext) {
+        deleted_folder_operation(cx, "quick_open", false);
+    }
+
+    #[gpui::test]
+    fn deleted_folder_sidebar_navigation_preserves_draft(cx: &mut TestAppContext) {
+        deleted_folder_operation(cx, "sidebar", false);
+    }
+
+    #[gpui::test]
+    fn deleted_folder_failed_recovery_blocks_navigation_and_creation(cx: &mut TestAppContext) {
+        deleted_folder_operation(cx, "recovery_failure", false);
+    }
+
     #[test]
     fn creation_undo_guard_preserves_changed_replaced_and_nonempty_items() {
         let temp = tempfile::tempdir().unwrap();
@@ -1449,6 +1693,12 @@ mod tests {
             std::fs::read_to_string(root.join("_Assets/Templates/Meeting.md")).unwrap(),
             "Meeting {{title}} {{date:YYYY-MM-DD}}"
         );
+        std::fs::remove_dir_all(root.join("_Assets/Templates")).unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.new_note(Some("_Assets/Templates"), window, cx);
+            assert_eq!(reader.creation.as_ref().unwrap().folder, "");
+            reader.cancel_creation(window, cx);
+        });
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
