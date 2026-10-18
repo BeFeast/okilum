@@ -2392,6 +2392,13 @@ impl LogView {
                                 .bg(mark_color),
                         )
                     })
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.modifiers().shift {
+                            this.extend_to(index, false, window, cx)
+                        } else {
+                            this.select(index, false, window, cx)
+                        }
+                    }))
                     .context_menu(move |menu, _, _| {
                         use gpui_component::menu::PopupMenuItem;
                         let item = |label: &str,
@@ -2514,13 +2521,6 @@ impl LogView {
                                 .child(format!("▸ {} lines", grouped(lines as u64))),
                         )
                     })
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        if event.modifiers().shift {
-                            this.extend_to(index, false, window, cx)
-                        } else {
-                            this.select(index, false, window, cx)
-                        }
-                    }))
                     .into_any_element()
             })
             .collect()
