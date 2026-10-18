@@ -4018,6 +4018,7 @@ impl LogView {
             .text_color(cx.theme().muted_foreground)
             .child(
                 div()
+                    .id("log-status")
                     .debug_selector(|| "log-status".into())
                     .truncate()
                     .child(text.clone())
