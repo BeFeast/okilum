@@ -134,3 +134,30 @@ fn nearest_area_is_explicit_and_connections_never_contain_token_bytes() {
     let source = std::fs::read_to_string(state.path().join("t3-connections.json")).unwrap();
     assert_eq!(source, "{\"test\":\"https://t3.example.test\"}");
 }
+
+#[gpui::test]
+fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake {
+        wrong_project: true,
+        ..Default::default()
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture::view(state.path().to_owned(), gateway, window, cx));
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert!(!view.can_send());
+        assert!(view
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("another T3 project"));
+    });
+    assert!(visual.debug_bounds("project-error").is_some());
+}

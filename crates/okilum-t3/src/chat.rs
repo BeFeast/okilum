@@ -15,6 +15,7 @@ const MAX_CHUNKS: usize = 128;
 #[derive(Clone, Debug)]
 pub struct Conversation {
     pub thread_id: String,
+    pub project_id: Option<String>,
     pub items: BTreeMap<u64, TimelineItem>,
     pub cursor: Option<u64>,
     pub has_more: bool,
@@ -25,6 +26,7 @@ impl Conversation {
     pub fn new(thread_id: impl Into<String>) -> Self {
         Self {
             thread_id: thread_id.into(),
+            project_id: None,
             items: BTreeMap::new(),
             cursor: None,
             has_more: true,
@@ -66,6 +68,7 @@ impl Conversation {
         }
         let questions = gateway.pending_requests(&self.thread_id)?;
         self.items.extend(refreshed);
+        self.project_id = Some(page.thread.project_id);
         if let Some(cursor) = page.next_position {
             self.cursor = Some(cursor);
         }

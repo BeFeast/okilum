@@ -11,6 +11,7 @@ type Result<T> = std::result::Result<T, GatewayError>;
 #[derive(Default)]
 pub(super) struct Fake {
     pub revoked: bool,
+    pub wrong_project: bool,
     pub fail_first: bool,
     pub sends: Mutex<Vec<OutgoingMessage>>,
     pub grown: Mutex<bool>,
@@ -51,7 +52,7 @@ impl ManagerGateway for Fake {
             ])
         };
         serde_json::from_value(serde_json::json!({
-            "thread":{"threadId":"mcp:fixture-manager","projectId":"fixture-managers","title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
+            "thread":{"threadId":"mcp:fixture-manager","projectId":if self.wrong_project {"different-project"}else{"fixture-managers"},"title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
             "items":items,"nextPosition":1,"hasMore":false
         })).map_err(|error|GatewayError::Protocol(error.to_string()))
     }

@@ -252,6 +252,16 @@ impl ProjectView {
         cx.notify();
     }
 
+    fn can_send(&self) -> bool {
+        self.identity.is_some()
+            && self.gateway.as_ref().is_some_and(|gateway| {
+                matches!(
+                    gateway.status(),
+                    GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
+                )
+            })
+    }
+
     fn journal(&self) -> Option<MessageJournal> {
         Some(MessageJournal::new(
             self.state.as_ref()?,
@@ -289,11 +299,13 @@ impl ProjectView {
                         this.journal(),
                         this.generation,
                         window.is_window_active(),
+                        this.binding.as_ref()?.manager.project_id.clone()?,
                     ))
                 })
                 .ok()
                 .flatten();
-            let Some((gateway, mut chat, journal, generation, focused)) = job else {
+            let Some((gateway, mut chat, journal, generation, focused, expected_project)) = job
+            else {
                 break;
             };
             let result = cx
@@ -301,6 +313,10 @@ impl ProjectView {
                 .spawn(async move {
                     let identity = gateway.server_identity()?;
                     chat.poll(gateway.as_ref())?;
+                    anyhow::ensure!(
+                        chat.project_id.as_deref() == Some(expected_project.as_str()),
+                        "The linked manager belongs to another T3 project. Check the area binding."
+                    );
                     let records = journal
                         .map(|journal| journal.records())
                         .transpose()?
@@ -325,6 +341,7 @@ impl ProjectView {
                             this.error = None;
                         }
                         Err(error) => {
+                            this.identity = None;
                             this.error = Some(format!("{error:#}"));
                             delay = 15_000;
                         }
@@ -346,7 +363,7 @@ impl ProjectView {
     }
 
     fn send(&mut self, retry: Option<MessageRecord>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || !self.can_send() {
             return;
         }
         let Some(gateway) = self.gateway.clone() else {
@@ -430,10 +447,7 @@ impl Render for ProjectView {
             .as_ref()
             .map(|g| g.status())
             .unwrap_or(GatewayStatus::NotConnected);
-        let enabled = matches!(
-            status,
-            GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
-        );
+        let enabled = self.can_send();
         let note = status_note(&status);
         let pending = self
             .chat
