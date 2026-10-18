@@ -61,19 +61,43 @@ pub(crate) fn read_id(root: &Path) -> Option<String> {
 /// vault gives it an id, and Syncthing carries it to the other machines).
 /// The copy helper must check that this is a vault, not a single-file
 /// view's folder, without rereading a Reader leased for an update.
-/// `None` when the vault cannot be written (read-only share): the link then
-/// names the folder only, as before ids.
+/// `None` when metadata cannot be safely read or written: the link then
+/// names the folder only, as before ids. Copy never repairs broken metadata.
 pub(crate) fn link_id(root: &Path) -> Option<String> {
     read_id(root).or_else(|| {
         let id = uuid::Uuid::new_v4().to_string();
-        write_with(root, |object| {
-            object.insert("id".into(), id.clone().into());
-        })
-        .ok()?;
-        // Another machine may have written one in the same moment; the file
-        // that won is the id.
-        read_id(root)
+        write_link_id(root, &id).ok()
     })
+}
+
+/// Read the latest metadata strictly, separately from display-name writes:
+/// only an absent file or a valid object permits first-time id creation.
+/// This reread can observe another writer's id, but read/rename is not CAS
+/// across processes or machines, and a later sync can still replace it.
+fn write_link_id(root: &Path, generated: &str) -> anyhow::Result<String> {
+    let mut value: serde_json::Value = match std::fs::read(file(root)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && std::fs::symlink_metadata(file(root))
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            serde_json::json!({})
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Vault metadata is not a JSON object"))?;
+    if let Some(id) = object.get("id").and_then(serde_json::Value::as_str) {
+        if okilum_core::deep_link::valid_vault_id(id) {
+            return Ok(id.to_owned());
+        }
+    }
+    object.entry("version").or_insert(1.into());
+    object.insert("id".into(), generated.into());
+    write_value(root, &value)?;
+    read_id(root).ok_or_else(|| anyhow::anyhow!("Cannot read the saved vault id"))
 }
 
 /// Write the name into the vault's file, keeping anything else in it; `None`
@@ -106,8 +130,14 @@ fn write_with(
     let object = value.as_object_mut().expect("an object");
     object.insert("version".into(), 1.into());
     change(object);
+    write_value(root, &value)
+}
+
+fn write_value(root: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    let directory = root.join(DIRECTORY);
+    std::fs::create_dir_all(&directory)?;
     let temporary = directory.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4()));
-    let bytes = serde_json::to_vec_pretty(&value)?;
+    let bytes = serde_json::to_vec_pretty(value)?;
     // A failed write or rename leaves no temporary file to sync.
     std::fs::write(&temporary, bytes)
         .and_then(|()| std::fs::rename(&temporary, file(root)))
@@ -435,6 +465,175 @@ mod tests {
         // Positive control: a good file reads.
         std::fs::write(file(root), br#"{"version":1,"name":"Work"}"#).unwrap();
         assert_eq!(read(root).as_deref(), Some("Work"));
+    }
+
+    fn assert_only_metadata_entry(root: &Path) {
+        let entries: Vec<_> = std::fs::read_dir(root.join(DIRECTORY))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from(FILE)], "no stray temp");
+    }
+
+    #[test]
+    fn copying_a_link_creates_a_stable_id_when_metadata_is_absent() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        assert!(!file(root).exists());
+        let id = link_id(root).expect("missing metadata permits creation");
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        let bytes = std::fs::read(file(root)).unwrap();
+        assert_eq!(link_id(root).as_deref(), Some(id.as_str()));
+        assert_eq!(std::fs::read(file(root)).unwrap(), bytes);
+        assert_only_metadata_entry(root);
+    }
+
+    #[test]
+    fn copying_a_link_adds_an_id_without_changing_existing_object_fields() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        let original = serde_json::json!({
+            "version": 7,
+            "name": "Work",
+            "unknown": {"color": "teal", "items": [1, null, true]},
+        });
+        std::fs::write(file(root), serde_json::to_vec(&original).unwrap()).unwrap();
+        let id = link_id(root).expect("a valid object permits creation");
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file(root)).unwrap()).unwrap();
+        assert_eq!(saved.as_object_mut().unwrap().remove("id"), Some(id.into()));
+        assert_eq!(saved, original, "every pre-existing field survives");
+        assert_only_metadata_entry(root);
+    }
+
+    #[test]
+    fn the_latest_metadata_id_wins_over_the_generated_candidate() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        // Another writer supplies an id after the initial read saw none.
+        assert_eq!(read_id(root), None);
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        let bytes =
+            br#"{ "version":7, "id":"existing-vault-id", "name":"Work", "unknown":{"keep":true} }"#;
+        std::fs::write(file(root), bytes).unwrap();
+        assert_eq!(
+            write_link_id(root, "generated-vault-id").unwrap(),
+            "existing-vault-id",
+            "the latest write input already has a valid id"
+        );
+        assert_eq!(link_id(root).as_deref(), Some("existing-vault-id"));
+        assert_eq!(std::fs::read(file(root)).unwrap(), bytes, "no rewrite");
+        assert_only_metadata_entry(root);
+        // This covers an intervening completed write, not concurrent CAS.
+    }
+
+    #[test]
+    fn copying_a_link_leaves_malformed_and_non_object_metadata_byte_exact() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        for bytes in [
+            &b""[..],
+            b"{ not json",
+            b"[1,2]",
+            b"null",
+            b"42",
+            br#""a name""#,
+        ] {
+            std::fs::write(file(root), bytes).unwrap();
+            assert_eq!(link_id(root), None, "folder-only fallback");
+            assert_eq!(std::fs::read(file(root)).unwrap(), bytes);
+            assert_only_metadata_entry(root);
+        }
+        // Positive control: the same path accepts a valid object.
+        std::fs::write(file(root), b"{}").unwrap();
+        assert!(link_id(root).is_some());
+    }
+
+    #[test]
+    fn copying_a_link_preserves_metadata_that_cannot_be_read_as_a_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        // A directory reliably fails fs::read, including when run as root.
+        std::fs::create_dir_all(file(root)).unwrap();
+        let sentinel = file(root).join("keep");
+        let bytes = b"existing unreadable-path contents\0\xff";
+        std::fs::write(&sentinel, bytes).unwrap();
+        assert!(std::fs::read(file(root)).is_err(), "positive control");
+        assert_eq!(link_id(root), None);
+        assert!(file(root).is_dir());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(file(root)).unwrap().count(), 1);
+        assert_only_metadata_entry(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copying_a_link_does_not_replace_an_unreadable_metadata_symlink() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let target = root.join("metadata-directory");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        let bytes = b"preserved metadata-path contents\0\xff";
+        std::fs::write(target.join("keep"), bytes).unwrap();
+        std::os::unix::fs::symlink(&target, file(root)).unwrap();
+        assert!(std::fs::read(file(root)).is_err(), "positive control");
+        // Unlike a directory at vault.json itself, this symlink could be
+        // replaced by rename: a tolerant read fallback would destroy it.
+        assert_eq!(link_id(root), None);
+        assert_eq!(std::fs::read_link(file(root)).unwrap(), target);
+        assert_eq!(std::fs::read(target.join("keep")).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+        assert_only_metadata_entry(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copying_a_link_does_not_replace_a_dangling_metadata_symlink() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        let target = root.join("not-yet-synced.json");
+        std::os::unix::fs::symlink(&target, file(root)).unwrap();
+        assert_eq!(
+            link_id(root),
+            None,
+            "a dangling link is not absent metadata"
+        );
+        assert_eq!(std::fs::read_link(file(root)).unwrap(), target);
+        assert!(!target.exists());
+        assert_only_metadata_entry(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_metadata_directory_write_returns_no_link_id() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let directory = root.join(DIRECTORY);
+        let target = root.join("missing-service-folder");
+        // Metadata is absent, but create_dir_all cannot replace this link.
+        std::os::unix::fs::symlink(&target, &directory).unwrap();
+        assert!(
+            std::fs::create_dir_all(&directory).is_err(),
+            "positive control"
+        );
+        assert_eq!(
+            link_id(root),
+            None,
+            "failed write retains folder-only fallback"
+        );
+        assert_eq!(std::fs::read_link(&directory).unwrap(), target);
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 1, "no stray temp");
+        // The same root permits id creation once the write blocker is gone.
+        std::fs::remove_file(&directory).unwrap();
+        assert!(
+            link_id(root).is_some(),
+            "positive control: writable metadata"
+        );
     }
 
     /// Typing goes straight into the field: the dialog must not keep the

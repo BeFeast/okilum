@@ -72,6 +72,14 @@ rendered link is rewritten to the `v/` form.
      link never writes. (The Syncthing folder id is not
      used: it lives in Syncthing's own configuration, not in the vault, and not
      every vault is a Syncthing folder.)
+     Copy creates an id only when metadata is absent or is a readable JSON
+     object; it preserves existing fields and reuses any valid id found on
+     its latest read. Broken, non-object or unreadable metadata is left alone;
+     read/write failure leaves Copy using the folder-only link. The local
+     read and atomic rename are not compare-and-swap across processes or
+     machines. Independently copying before metadata sync can create conflicting
+     ids; a different id still refuses the match as above. Recovery and
+     cross-machine acceptance for that case remain pending a product decision.
    - One match: use it.
    - None: «Vault “X” is not on this computer.» with Open folder….
    - Several (two copies of one vault, or two vaults named alike): a chooser
@@ -161,7 +169,9 @@ rendered link is rewritten to the `v/` form.
   non-`okilum` schemes passed as the argument.
 - No network fetch for any link. The web page only redirects.
 - Repeated identical links (link spam or double delivery) reuse the window and
-  do not stack dialogs: one prompt at a time per vault.
+  do not stack dialogs: one prompt at a time per vault or outside-file folder.
+  A newer link for that same key replaces both the pending open target and
+  the displayed target, full path and vault/file consent wording.
 
 ## Copy link
 

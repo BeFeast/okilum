@@ -1275,6 +1275,7 @@ impl Global for LinkPrompts {}
 /// to a file in no vault (`file`) asks the same way, once per folder; `root`
 /// is then the file's folder.
 fn confirm_link_vault(root: PathBuf, file: Option<PathBuf>, opts: super::Opts, cx: &mut App) {
+    let name = super::vault_name::shown(&root, cx);
     let open = cx
         .default_global::<LinkPrompts>()
         .0
@@ -1285,12 +1286,27 @@ fn confirm_link_vault(root: PathBuf, file: Option<PathBuf>, opts: super::Opts, c
         if let Some((_, latest)) = cx.global_mut::<LinkPrompts>().0.get_mut(&root) {
             *latest = opts;
         }
-        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        let _ = handle
+            .downcast::<Root>()
+            .expect("a link prompt has a Root")
+            .update(cx, |root, window, cx| {
+                root.view()
+                    .clone()
+                    .downcast::<LinkConfirm>()
+                    .expect("a link prompt has a LinkConfirm")
+                    .update(cx, |prompt, cx| {
+                        // The visible target and consent scope must follow the
+                        // latest options, including vault/file reuse of a folder.
+                        prompt.name = name;
+                        prompt.file = file;
+                        cx.notify();
+                    });
+                window.activate_window();
+            });
         return;
     }
     // A prompt closed with its window button left a stale entry.
     cx.global_mut::<LinkPrompts>().0.remove(&root);
-    let name = super::vault_name::shown(&root, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
             size(px(560.), px(240.)),
@@ -1478,9 +1494,36 @@ struct LinkConfirm {
     file: Option<PathBuf>,
     focus: FocusHandle,
 }
+impl LinkConfirm {
+    /// All visible consent text comes from the same current target.
+    fn text(&self) -> (String, String, &'static str) {
+        let (message, scope) = match &self.file {
+            Some(file) => (
+                format!(
+                    "A link asks to open the file \u{201c}{}\u{201d}, which is not in a vault.",
+                    file.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
+                "Links only open files. Okilum asks once per folder.",
+            ),
+            None => (
+                format!("A link asks to open vault \u{201c}{}\u{201d}.", self.name),
+                "Links only open notes. Okilum asks once per vault.",
+            ),
+        };
+        (
+            message,
+            // Without Windows' `\\?\` prefix (#1270).
+            okilum_core::vault::display_path(self.file.as_deref().unwrap_or(&self.root)),
+            scope,
+        )
+    }
+}
 impl Render for LinkConfirm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (open_root, cancel_root) = (self.root.clone(), self.root.clone());
+        let (message, path, scope) = self.text();
         v_flex()
             .track_focus(&self.focus)
             // Enter is the primary button (Open), Esc is Cancel (#1271).
@@ -1496,29 +1539,14 @@ impl Render for LinkConfirm {
             .p_4()
             .gap_3()
             .child(TitleBar::new().child("Open link"))
-            .child(match &self.file {
-                Some(file) => format!(
-                    "A link asks to open the file \u{201c}{}\u{201d}, which is not in a vault.",
-                    file.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                ),
-                None => format!("A link asks to open vault \u{201c}{}\u{201d}.", self.name),
-            })
+            .child(message)
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    // Without Windows' `\\?\` prefix (#1270).
-                    .child(okilum_core::vault::display_path(
-                        self.file.as_deref().unwrap_or(&self.root),
-                    )),
+                    .child(path),
             )
-            .child(if self.file.is_some() {
-                "Links only open files. Okilum asks once per folder."
-            } else {
-                "Links only open notes. Okilum asks once per vault."
-            })
+            .child(scope)
             .child(
                 h_flex()
                     .gap_2()
@@ -3794,6 +3822,168 @@ mod entry_tests {
             both,
             "another vault of the same name stays closed"
         );
+    }
+
+    /// #1414: replacement must change the rendered consent as well as the
+    /// pending options; Enter opens exactly the file currently displayed.
+    #[gpui::test]
+    fn a_reused_file_link_prompt_displays_and_opens_the_latest_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("loose");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["A.md", "B.md"] {
+            std::fs::write(root.join(name), format!("# {name}\n")).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+        });
+        let open = |name: &str, cx: &mut TestAppContext| {
+            let path = okilum_core::vault::display_path(&root.join(name)).replace('\\', "/");
+            cx.update(|cx| open_deep_link_among(&format!("okilum://file/{path}"), &[], cx));
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert_eq!(cx.global::<LinkPrompts>().0.len(), 1, "one per folder");
+                assert_eq!(cx.windows().len(), 1, "only the prompt");
+                assert!(readers(cx).is_empty(), "consent is still pending");
+                assert!(!super::super::reader_ui_state::link_trusted(&root, cx));
+                let (handle, opts) = cx.global::<LinkPrompts>().0.get(&root).unwrap();
+                assert_eq!(opts.open_path.as_deref(), Some(root.join(name).as_path()));
+                *handle
+            })
+        };
+        let displayed = |handle: AnyWindowHandle, name: &str, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                handle
+                    .downcast::<Root>()
+                    .unwrap()
+                    .update(cx, |view, window, cx| {
+                        let view = view.view().clone().downcast::<LinkConfirm>().unwrap();
+                        let view = view.read(cx);
+                        assert!(view.focus.is_focused(window), "focus survives reuse");
+                        let (message, path, scope) = view.text();
+                        assert_eq!(
+                            message,
+                            format!(
+                                "A link asks to open the file \u{201c}{name}\u{201d}, which is not in a vault."
+                            )
+                        );
+                        assert_eq!(path, okilum_core::vault::display_path(&root.join(name)));
+                        assert_eq!(scope, "Links only open files. Okilum asks once per folder.");
+                        view.file.clone().unwrap()
+                    })
+                    .unwrap()
+            })
+        };
+
+        let prompt = open("A.md", cx);
+        assert_eq!(
+            displayed(prompt, "A.md", cx),
+            root.join("A.md"),
+            "positive control"
+        );
+        assert_eq!(open("B.md", cx), prompt, "the same window is reused");
+        let target = displayed(prompt, "B.md", cx);
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        visual.simulate_keystrokes("enter");
+        for _ in 0..5 {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(300));
+        }
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let opened = readers(cx);
+            assert_eq!(opened.len(), 1, "Enter opens one Reader");
+            let reader = opened[0].read(cx);
+            assert!(reader.single_file);
+            assert_eq!(reader.vault_root.join(&reader.current_rel), target);
+            assert_eq!(reader.current_rel, "B.md");
+            assert!(super::super::reader_ui_state::link_trusted(&root, cx));
+            assert!(cx.global::<LinkPrompts>().0.is_empty());
+        });
+    }
+
+    /// The key is shared by a vault and files in that folder. Both directions
+    /// must update the target path, display name and consent scope together.
+    #[gpui::test]
+    fn a_reused_link_prompt_updates_vault_and_file_consent_in_both_directions(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("A.md"), "# A\n").unwrap();
+        std::fs::write(root.join("B.md"), "# B\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            open_deep_link_among("okilum://v/Notes/A.md", std::slice::from_ref(&root), cx);
+        });
+        cx.run_until_parked();
+        let prompt = cx.update(|cx| cx.global::<LinkPrompts>().0[&root].0);
+        let check = |file: bool, name: &str, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let prompts = &cx.global::<LinkPrompts>().0;
+                assert_eq!(prompts.len(), 1);
+                let (handle, opts) = &prompts[&root];
+                assert_eq!(*handle, prompt, "same folder, same prompt");
+                if file {
+                    assert_eq!(opts.open_path.as_deref(), Some(root.join("B.md").as_path()));
+                    assert!(opts.vault.is_none());
+                } else {
+                    assert_eq!(opts.vault.as_deref(), Some(root.as_path()));
+                    assert_eq!(opts.note.as_deref(), Some("A.md"));
+                    assert!(opts.open_path.is_none());
+                }
+                prompt
+                    .downcast::<Root>()
+                    .unwrap()
+                    .update(cx, |view, window, cx| {
+                        let view = view.view().clone().downcast::<LinkConfirm>().unwrap();
+                        let view = view.read(cx);
+                        assert!(view.focus.is_focused(window));
+                        let (message, path, scope) = view.text();
+                        if file {
+                            assert_eq!(message, "A link asks to open the file \u{201c}B.md\u{201d}, which is not in a vault.");
+                            assert_eq!(path, okilum_core::vault::display_path(&root.join("B.md")));
+                            assert_eq!(scope, "Links only open files. Okilum asks once per folder.");
+                        } else {
+                            assert_eq!(message, format!("A link asks to open vault \u{201c}{name}\u{201d}."));
+                            assert_eq!(path, okilum_core::vault::display_path(&root));
+                            assert_eq!(scope, "Links only open notes. Okilum asks once per vault.");
+                        }
+                    })
+                    .unwrap();
+            });
+        };
+        check(false, "Notes", cx); // Positive control: initial vault prompt.
+        let path = okilum_core::vault::display_path(&root.join("B.md")).replace('\\', "/");
+        cx.update(|cx| open_deep_link_among(&format!("okilum://file/{path}"), &[], cx));
+        cx.run_until_parked();
+        check(true, "", cx);
+        cx.update(|cx| {
+            super::super::vault_name::set(&root, "Work", cx);
+            open_deep_link_among("okilum://v/Notes/A.md", std::slice::from_ref(&root), cx);
+        });
+        cx.run_until_parked();
+        check(false, "Work", cx);
+
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        visual.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(!cx.windows().contains(&prompt), "Esc still cancels");
+            assert!(readers(cx).is_empty());
+            assert!(cx.global::<LinkPrompts>().0.is_empty());
+            assert!(!super::super::reader_ui_state::link_trusted(&root, cx));
+        });
     }
 
     /// #1271: the link confirmation answers the keyboard like any dialog:
