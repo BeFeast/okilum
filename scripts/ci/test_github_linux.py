@@ -1,6 +1,8 @@
 """Hosted pilot must preserve the full exact-head Linux gate."""
 import copy
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -8,7 +10,9 @@ import re
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
+import urllib.error
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('linux_bridge', Path(__file__).with_name('github-linux.py'))
@@ -16,6 +20,131 @@ linux = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(linux)
 SHA = 'a' * 40
 BRANCH = 'forgejo-linux-pr/1/' + SHA
+
+
+class PublicArchiveReadTests(unittest.TestCase):
+    KEY = f'okilum/releases/{SHA}/linux.json'
+    URL = 'https://updates.befeast.com/' + KEY
+    SENTINEL = 'private-error-detail-sentinel'
+
+    def http_error(self, status):
+        error = urllib.error.HTTPError(self.URL, status, self.SENTINEL, {}, io.BytesIO())
+        self.addCleanup(error.close)
+        return error
+
+    def assert_request(self, opener, key=KEY):
+        opener.assert_called_once()
+        args, kwargs = opener.call_args
+        self.assertEqual(len(args), 1)
+        request = args[0]
+        self.assertIsInstance(request, urllib.request.Request)
+        self.assertEqual(request.full_url, 'https://updates.befeast.com/' + key)
+        self.assertEqual(request.get_method(), 'GET')
+        self.assertIsNone(request.data)
+        self.assertEqual(dict(request.header_items()), {'User-agent': 'okilum/0.1.0'})
+        self.assertEqual(kwargs, {'timeout': 60})
+
+    def failures(self):
+        for status in (401, 403, 500, 503):
+            yield str(status), self.http_error(status)
+        yield 'timeout', TimeoutError(self.SENTINEL)
+        yield 'url-timeout', urllib.error.URLError(TimeoutError(self.SENTINEL))
+        yield 'network', urllib.error.URLError(self.SENTINEL)
+        yield 'network-404-text', urllib.error.URLError('HTTP 404 ' + self.SENTINEL)
+
+    def test_product_request_returns_exact_200_bytes(self):
+        for key in (self.KEY, 'okilum/arch/builds/7000/okilum-0.1.7000-1-x86_64.pkg.tar.zst.sig'):
+            with self.subTest(key=key):
+                body = b'\x00\xffarchive\r\nbytes\x80'
+                with patch.object(linux.urllib.request, 'urlopen', return_value=io.BytesIO(body)) as opener:
+                    self.assertEqual(linux.public_read(key), body)
+                    self.assert_request(opener, key)
+
+    def test_only_actual_http_404_is_missing(self):
+        error = self.http_error(404)
+        with patch.object(linux.urllib.request, 'urlopen', side_effect=error) as opener:
+            self.assertIsNone(linux.public_read(self.KEY))
+            self.assert_request(opener)
+
+    def test_http_timeout_and_network_errors_are_sanitized_unavailable(self):
+        for name, error in self.failures():
+            with self.subTest(error=name), \
+                    patch.object(linux.urllib.request, 'urlopen', side_effect=error) as opener:
+                with self.assertRaises(linux.transport.Unavailable) as raised:
+                    linux.public_read(self.KEY)
+                self.assertNotIn(self.SENTINEL, str(raised.exception))
+                self.assertTrue(raised.exception.__suppress_context__)
+                self.assert_request(opener)
+
+    def test_response_read_timeout_is_sanitized_unavailable(self):
+        with patch.object(linux.urllib.request, 'urlopen') as opener:
+            opener.return_value.__enter__.return_value.read.side_effect = TimeoutError(self.SENTINEL)
+            with self.assertRaises(linux.transport.Unavailable) as raised:
+                linux.public_read(self.KEY)
+            self.assertNotIn(self.SENTINEL, str(raised.exception))
+            self.assert_request(opener)
+
+    def test_unsafe_keys_fail_before_opening(self):
+        with patch.object(linux.urllib.request, 'urlopen') as opener:
+            for key in ('../linux.json', 'okilum/../linux.json', 'https://other.test/linux.json',
+                        '/?token=sentinel', 'okilum/secret\nheader'):
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'Unsafe archive key'):
+                    linux.public_read(key)
+            opener.assert_not_called()
+
+    def test_public_read_failure_stops_bridge_consumer_and_producer(self):
+        current = dict(id=7, run_attempt=1, head_sha=SHA, event='push', path=linux.WORKFLOW,
+            repository={'full_name': 'BeFeast/okilum'},
+            head_branch=f'forgejo-linux-pr/1/{SHA}-91-1-b9108-' + 'a' * 32)
+        for command in ('request', 'resolve', 'produce'):
+            for name, error in self.failures():
+                with self.subTest(command=command, error=name), tempfile.TemporaryDirectory() as tmp:
+                    api = Mock()
+                    api.request.return_value = current
+                    output = io.StringIO()
+                    with patch.dict(os.environ, dict(PR_HEAD_SHA=SHA, MIRROR_TOKEN='fixture-token',
+                            GITHUB_RUN_ID='7', GITHUB_RUN_ATTEMPT='1', OKILUM_ARTIFACT_DIR=tmp,
+                            GITHUB_OUTPUT=str(Path(tmp) / 'result')), clear=True), \
+                            patch.object(linux.payload, 'config', return_value='b' * 64), \
+                            patch.object(linux.transport, 'GitHub', return_value=api), \
+                            patch.object(linux.urllib.request, 'urlopen', side_effect=error) as opener, \
+                            patch.object(linux, 'discover') as discover, \
+                            patch.object(linux.transport, 'push_head') as push, \
+                            patch.object(linux.transport, 'wait_for_run') as wait, \
+                            patch.object(linux, 'authorize_claim') as authorize, \
+                            patch.object(linux, 'await_claim') as claim, \
+                            patch.object(linux.subprocess, 'run') as compiler, redirect_stdout(output):
+                        self.assertEqual(linux.main(command), 1)
+                        self.assert_request(opener)
+                        for boundary in (discover, push, wait, authorize, claim, compiler):
+                            boundary.assert_not_called()
+                        self.assertEqual(api.request.call_args_list,
+                            [call('actions/runs/7')] if command == 'produce' else [])
+                    self.assertIn('Linux production unavailable; no compiler fallback:', output.getvalue())
+                    self.assertNotIn(self.SENTINEL, output.getvalue())
+                    self.assertFalse((Path(tmp) / 'receipt.json').exists())
+
+    def test_404_positive_control_reaches_cold_request_dispatch_stub(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, dict(PR_HEAD_SHA=SHA, MIRROR_TOKEN='fixture-token',
+                    GITHUB_RUN_ID='91', GITHUB_RUN_ATTEMPT='1', GITHUB_RUN_NUMBER='9108',
+                    OKILUM_ARTIFACT_DIR=tmp), clear=True), \
+                patch.object(linux.payload, 'config', return_value='b' * 64), \
+                patch.object(linux.transport, 'GitHub'), \
+                patch.object(linux.urllib.request, 'urlopen', side_effect=
+                    self.http_error(404)) as opener, \
+                patch.object(linux, 'discover', return_value=(None, [])) as discover, \
+                patch.object(linux, 'read_claim', return_value=None), \
+                patch.object(linux.transport, 'push_head') as push, \
+                patch.object(linux.transport, 'wait_for_run', return_value=('failure', 'fixture gate stop')) as wait, \
+                patch.object(linux.subprocess, 'run') as compiler, redirect_stdout(io.StringIO()):
+            self.assertEqual(linux.main('request'), 1)  # Stub gate deliberately fails after dispatch.
+            self.assert_request(opener)
+            discover.assert_called_once()
+            push.assert_called_once()
+            self.assertEqual(push.call_args.args[1:], (SHA, 'fixture-token'))
+            wait.assert_called_once()
+            compiler.assert_not_called()
 
 
 class LinuxBridgeTests(unittest.TestCase):

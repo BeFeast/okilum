@@ -279,13 +279,15 @@ def download(api, match, sha, configuration, output, inspector=payload.verify_bi
 def public_read(key):
     payload.require(re.fullmatch(r'[A-Za-z0-9/._-]+', key) and '..' not in key.split('/'), 'Unsafe archive key')
     try:
-        with urllib.request.urlopen('https://updates.befeast.com/' + key, timeout=60) as response:
+        request = urllib.request.Request('https://updates.befeast.com/' + key,
+            headers={'User-Agent': 'okilum/0.1.0'})
+        with urllib.request.urlopen(request, timeout=60) as response:
             return response.read()
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return None
         raise transport.Unavailable('Public archive read failed') from None
-    except urllib.error.URLError:
+    except (urllib.error.URLError, TimeoutError):
         raise transport.Unavailable('Public archive unavailable; no compiler fallback') from None
 
 
