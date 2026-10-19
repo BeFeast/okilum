@@ -3768,12 +3768,21 @@ mod entry_tests {
         // A separate vault window for this same folder must not grant the
         // single-file window permission to create metadata, including via
         // its App-level menu callback.
+        // Use a managed cache: an explicit index_dir intentionally has no lease.
+        let full_cache_base = fixture.path().join("full-vault-cache");
+        let full_cache = OpenIntent {
+            root: loose.clone(),
+            single_file: false,
+            note: None,
+        }
+        .cache_path(&full_cache_base);
+        assert!(!full_cache.exists());
         cx.update(|cx| {
             open_window(
                 super::super::Opts {
                     vault: Some(loose.clone()),
                     note: Some("target.md".into()),
-                    index_dir: Some(fixture.path().join("loose-index")),
+                    cache_base_override: Some(full_cache_base.clone()),
                     ..Default::default()
                 },
                 cx,
@@ -3789,7 +3798,7 @@ mod entry_tests {
             "positive control: the same folder is also open as a vault"
         );
         assert!(
-            fixture.path().join("loose-index").exists(),
+            full_cache.exists(),
             "positive control: explicit full-vault open creates its index"
         );
         // A quick window can record after a full one. Live full-vault
@@ -3821,6 +3830,7 @@ mod entry_tests {
                 .unwrap();
             assert!(!full.read(cx).single_file);
             assert_eq!(full.read(cx).current_rel, "other.md");
+            assert_eq!(full.read(cx).index_dir.as_ref(), Some(&full_cache));
             assert!(full.read(cx).cache_lease.is_some() && full.read(cx).searcher.is_some());
         });
         copy_single_file_links(cx);
