@@ -3744,11 +3744,27 @@ mod entry_tests {
                 assert!(!known_roots(cx).contains(&loose));
             });
         }
-        // Caret Copy uses the same production helper and preserves line/column.
-        let caret_link = window
+        // Source entry asynchronously places the caret at the Reader's heading.
+        // Finish that placement before the independent caret Copy/away controls;
+        // returning to the initial selection could otherwise look untouched.
+        window
             .update(cx, |_, window, cx| {
                 reader.update(cx, |reader, cx| {
                     reader.toggle_source(window, cx);
+                });
+            })
+            .unwrap();
+        settle(cx);
+        cx.update(|cx| {
+            assert_eq!(
+                reader.read(cx).editing_caret_line(cx),
+                Some(121),
+                "positive control: Source entry settled at the Reader's heading"
+            );
+        });
+        window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| {
                     reader.open_link(
                         "target.md",
                         okilum_core::deep_link::Position {
@@ -3758,6 +3774,25 @@ mod entry_tests {
                         },
                         window,
                         cx,
+                    );
+                });
+            })
+            .unwrap();
+        settle(cx);
+        // Caret Copy uses the same production helper and preserves line/column.
+        let caret_link = window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| {
+                    assert_eq!(reader.editing_caret_line(cx), Some(81));
+                    assert_eq!(
+                        reader
+                            .source_input()
+                            .unwrap()
+                            .read(cx)
+                            .cursor_position()
+                            .character,
+                        3,
+                        "positive control: copied position settled before Copy"
                     );
                     reader.copy_link_to_line(window, cx);
                     cx.read_from_clipboard().unwrap().text().unwrap()
