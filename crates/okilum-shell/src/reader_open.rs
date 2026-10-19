@@ -4414,6 +4414,241 @@ mod entry_tests {
         );
     }
 
+    /// Decision 26: a losing first-Copy id is refused, including through
+    /// public delivery with history as the authority for known vaults.
+    #[gpui::test]
+    fn a_losing_id_link_shows_refusal_without_selecting_or_rebinding_a_vault(
+        cx: &mut TestAppContext,
+    ) {
+        losing_id_boundary(false, cx);
+    }
+
+    #[gpui::test]
+    fn an_idless_namesake_cannot_hide_a_known_identity_conflict(cx: &mut TestAppContext) {
+        losing_id_boundary(true, cx);
+    }
+
+    fn losing_id_boundary(include_idless: bool, cx: &mut TestAppContext) {
+        use super::super::reader_history::{ReadingHistory, TestSessionDirectory};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let actual = fixture.path().join("synced/Brain");
+        let decoy = fixture.path().join("other/Obsidian Vault");
+        let idless = fixture.path().join("unsynced/Obsidian Vault");
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        for (root, metadata) in [
+            (
+                &actual,
+                "{\n  \"version\": 1, \"name\": \"Synced display name\", \"id\": \"winning-id\",\n  \"future\": {\"nested\": [1, {\"keep\": true}], \"opaque\": \"retain\"}\n}\n",
+            ),
+            (
+                &decoy,
+                "{ \"version\":1, \"name\":\"Different vault\", \"id\":\"decoy-id\", \"unknown\":{\"nested\":[false,2]} }\n",
+            ),
+            (
+                &idless,
+                "{ \"version\":1, \"name\":\"Never copied\", \"unknown\":{\"nested\":[\"keep\"]} }\n",
+            ),
+        ] {
+            std::fs::create_dir_all(root.join(".okilum")).unwrap();
+            std::fs::write(root.join(".okilum/vault.json"), metadata).unwrap();
+            for note in ["target.md", "other.md"] {
+                std::fs::write(root.join(note), &body).unwrap();
+            }
+        }
+        let actual = actual.canonicalize().unwrap();
+        let decoy = decoy.canonicalize().unwrap();
+        let idless = idless.canonicalize().unwrap();
+        let before: Vec<_> = [&actual, &decoy, &idless]
+            .into_iter()
+            .map(|root| (root.clone(), tree(root)))
+            .collect();
+        let unchanged = || {
+            for (root, expected) in &before {
+                assert_eq!(
+                    tree(root),
+                    *expected,
+                    "vault files, exact metadata bytes and directory entries must be unchanged: {root:?}"
+                );
+            }
+        };
+        ReadingHistory::record_usable_document(&state, &decoy, "target.md").unwrap();
+        if include_idless {
+            ReadingHistory::record_usable_document(&state, &idless, "target.md").unwrap();
+        }
+        let (requests, receiver) = async_channel::bounded(1);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            super::super::reader_ui_state::install(&state.join("ui-state"), cx);
+            super::super::reader_instance::receive(receiver, cx);
+            let known = known_roots(cx);
+            assert!(known.contains(&decoy), "positive history-discovery control");
+            assert_eq!(known.contains(&idless), include_idless);
+            assert!(!known.contains(&actual));
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        // Inspect the entity used by OpenError::render, not stderr or a
+        // test-only diagnostic. Exactly one new window must be the refusal.
+        let refusal = |reader_window: Option<AnyWindowHandle>, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                assert!(cx
+                    .try_global::<LinkPrompts>()
+                    .is_none_or(|prompts| prompts.0.is_empty()));
+                assert!(cx
+                    .try_global::<LinkChooser>()
+                    .is_none_or(|chooser| chooser.0.is_none()));
+                let windows = cx.windows();
+                assert_eq!(windows.len(), 1 + usize::from(reader_window.is_some()));
+                let error = windows
+                    .into_iter()
+                    .find(|window| Some(*window) != reader_window)
+                    .unwrap();
+                error
+                    .downcast::<Root>()
+                    .unwrap()
+                    .update(cx, |root, window, cx| {
+                        let view = root
+                            .view()
+                            .clone()
+                            .downcast::<OpenError>()
+                            .expect("the request must show an actual refusal window");
+                        let message = &view.read(cx).0;
+                        assert!(message.contains("different vault ID"), "{message}");
+                        assert!(
+                            message.contains("will not select a vault or change its identity"),
+                            "{message}"
+                        );
+                        assert!(message.contains("separate recovery"), "{message}");
+                        window.remove_window();
+                    })
+                    .unwrap();
+            });
+        };
+        cx.update(|cx| {
+            dispatch_urls(
+                vec!["okilum://v/Obsidian%20Vault/other.md?id=losing-id&line=1".into()],
+                cx,
+            );
+        });
+        settle(cx);
+        unchanged();
+        cx.update(|cx| {
+            assert!(cx.global::<Readers>().0.is_empty(), "no vault was selected");
+            assert!(reusable_roots(cx).is_empty());
+            assert!(!super::super::reader_ui_state::link_trusted(&decoy, cx));
+            assert!(!super::super::reader_ui_state::link_trusted(&idless, cx));
+        });
+        assert!(
+            !state.join("cache").exists(),
+            "refusal starts no vault preparation"
+        );
+        refusal(None, cx);
+
+        // Positive control through the same public dispatcher: the matching
+        // id finds Brain despite the link's differently identified namesake.
+        ReadingHistory::record_usable_document(&state, &actual, "target.md").unwrap();
+        cx.update(|cx| {
+            dispatch_urls(
+                vec!["okilum://v/Obsidian%20Vault/target.md?id=winning-id&line=81".into()],
+                cx,
+            );
+        });
+        settle(cx);
+        unchanged();
+        let prompt = cx.update(|cx| {
+            assert!(cx.global::<Readers>().0.is_empty());
+            let prompts = &cx.global::<LinkPrompts>().0;
+            assert_eq!(
+                prompts.len(),
+                1,
+                "exactly the matching root asks for consent"
+            );
+            assert_eq!(cx.windows().len(), 1);
+            prompts.get(&actual).expect("consent must name Brain").0
+        });
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        visual.simulate_keystrokes("enter");
+        settle(cx);
+        let (reader, window) = cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 1);
+            let reader = all[0].clone();
+            let view = reader.read(cx);
+            assert_eq!(view.vault_root, actual, "never the same-name decoy");
+            assert!(!view.single_file && view.document_ready());
+            assert_eq!(view.current_rel, "target.md");
+            assert_eq!(
+                view.content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
+                40,
+                "positive control: line 81 actually landed"
+            );
+            assert!(view
+                .index_dir
+                .as_ref()
+                .unwrap()
+                .starts_with(state.join("cache")));
+            assert_eq!(reusable_roots(cx), vec![actual.clone()]);
+            assert_eq!(cx.windows(), vec![view.reader_window]);
+            (reader.clone(), view.reader_window)
+        });
+        unchanged();
+
+        // Real single-instance request delivery must refuse before focus or
+        // navigation, even when the actual vault is already on screen. Both
+        // the old remote folder name and the current local name are covered.
+        for name in ["Obsidian%20Vault", "Brain"] {
+            requests
+                .send_blocking(
+                    serde_json::from_value(serde_json::json!({
+                        "nonce": "isolated-test-request",
+                        "link": format!("okilum://v/{name}/other.md?id=losing-id&line=1"),
+                        "use_html": false, "copy_source": false, "jump": false
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            settle(cx);
+            unchanged();
+            refusal(Some(window), cx);
+            cx.update(|cx| {
+                let all = readers(cx);
+                assert_eq!(all.len(), 1);
+                assert_eq!(all[0].entity_id(), reader.entity_id());
+                let view = reader.read(cx);
+                assert_eq!(view.reader_window, window);
+                assert_eq!(view.vault_root, actual, "no silent rebind");
+                assert_eq!(view.current_rel, "target.md", "no navigation to other.md");
+                assert_eq!(
+                    view.content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top()
+                        .item_ix,
+                    40
+                );
+                assert!(view.queued_open_note.is_none() && view.queued_landing.is_none());
+                assert_eq!(reusable_roots(cx), vec![actual.clone()]);
+                assert!(!super::super::reader_ui_state::link_trusted(&decoy, cx));
+                assert!(!super::super::reader_ui_state::link_trusted(&idless, cx));
+            });
+        }
+    }
+
     /// #1414: replacement must change the rendered consent as well as the
     /// pending options; Enter opens exactly the file currently displayed.
     #[gpui::test]

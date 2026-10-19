@@ -143,9 +143,9 @@ fn resolve_with_name_case(
         Address::Vault { vault, path, id } => {
             let mut roots: Vec<PathBuf> = Vec::new();
             // A vault that carries the link's id is that vault, whatever its
-            // folder is called here. Without one, the folder name decides; a
-            // vault of that name with another id is another vault, so it is
-            // not offered: the user would open the wrong notes.
+            // folder is called here. Only if no id matches may the folder
+            // name decide. A known conflicting namesake blocks that fallback,
+            // including an idless namesake that could conceal the conflict.
             if let Some(id) = id {
                 for root in known {
                     if (env.vault_id)(root).as_deref() == Some(id.as_str()) && !roots.contains(root)
@@ -156,15 +156,26 @@ fn resolve_with_name_case(
             }
             if roots.is_empty() {
                 for root in known {
-                    if same_name(&name_of(root), vault)
-                        && !roots.contains(root)
-                        && (id.is_none() || (env.vault_id)(root).is_none())
-                    {
+                    if !same_name(&name_of(root), vault) {
+                        continue;
+                    }
+                    if id.is_some() && (env.vault_id)(root).is_some() {
+                        return Resolution::Unavailable(format!(
+                            "Vault \u{201c}{vault}\u{201d} has a different vault ID from this link. \
+                             Okilum will not select a vault or change its identity. \
+                             Using this link requires separate recovery."
+                        ));
+                    }
+                    if !roots.contains(root) {
                         roots.push(root.clone());
                     }
                 }
             }
             match roots.len() {
+                0 if id.is_some() => Resolution::Unavailable(format!(
+                    "Cannot identify vault \u{201c}{vault}\u{201d} using this link's vault ID. \
+                     No matching ID or safe folder-name fallback was found on this computer."
+                )),
                 0 => Resolution::Unavailable(format!(
                     "Vault \u{201c}{vault}\u{201d} is not on this computer."
                 )),
@@ -931,6 +942,22 @@ mod tests {
             r("okilum://v/Brain/Dev/Plan.md", &["/home/god/Obsidian Vault"]),
             Resolution::Unavailable(m) if m.contains("Brain")
         ));
+        // Exact id wins even when a differently identified vault has the
+        // link's folder name. Its note must never win by name or ordering.
+        assert_eq!(
+            r(
+                &format!("okilum://v/Notes/Dev/Plan.md?id={id}&line=5"),
+                &["/home/god/Notes", "/home/god/Obsidian Vault"]
+            ),
+            Resolution::Open {
+                root: "/home/god/Obsidian Vault".into(),
+                rel: "Dev/Plan.md".into(),
+                position: Position {
+                    line: Some(5),
+                    ..Default::default()
+                }
+            }
+        );
         // An old link (folder name, no id) still opens the vault of that name.
         assert!(matches!(
             r(
@@ -946,7 +973,7 @@ mod tests {
                 &format!("okilum://v/Notes/Dev/Plan.md?id={id}"),
                 &["/home/god/Notes"]
             ),
-            Resolution::Unavailable(m) if m.contains("not on this computer")
+            Resolution::Unavailable(m) if m.contains("different vault ID")
         ));
         // A folder with the name and no id yet (never linked from, or not
         // synced yet): the name still decides.
@@ -970,6 +997,82 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_losing_vault_id_refuses_conflicting_and_idless_namesakes() {
+        use std::{cell::Cell, path::Path};
+        let file_probes = Cell::new(0);
+        let id_probes = Cell::new(0);
+        let env = Env {
+            is_file: &|_| {
+                file_probes.set(file_probes.get() + 1);
+                true // Every candidate has the note: refusal is about identity.
+            },
+            canonical: &|p| Some(p.to_owned()),
+            vault_id: &|p| {
+                id_probes.set(id_probes.get() + 1);
+                (p == Path::new("/synced/Brain")).then(|| "winning-id".into())
+            },
+        };
+        let link = parse("okilum://v/Brain/Plan.md?id=losing-id").unwrap();
+        for known in [
+            vec!["/synced/Brain".into()],
+            vec!["/synced/Brain".into(), "/idless/Brain".into()],
+            vec!["/idless/Brain".into(), "/synced/Brain".into()],
+        ] {
+            assert!(matches!(
+                resolve(&link, &known, &env),
+                Resolution::Unavailable(message)
+                    if message.contains("Brain")
+                        && message.contains("different vault ID")
+                        && message.contains("will not select a vault or change its identity")
+                        && message.contains("separate recovery")
+            ));
+        }
+        assert!(id_probes.get() > 0, "identity checks actually ran");
+        assert_eq!(file_probes.get(), 0, "refusal precedes note selection");
+        // Positive control: removing the conflicting namesake preserves the
+        // established idless folder fallback, including the note/position.
+        assert_eq!(
+            resolve(&link, &["/idless/Brain".into()], &env),
+            Resolution::Open {
+                root: "/idless/Brain".into(),
+                rel: "Plan.md".into(),
+                position: Position::default(),
+            }
+        );
+        assert!(file_probes.get() > 0, "the same note probe detects an open");
+        // An old link intentionally uses names, even when those roots now
+        // have different ids. Keep its visible ambiguity rather than guessing.
+        assert!(matches!(
+            resolve(
+                &parse("okilum://v/Brain/Plan.md").unwrap(),
+                &["/synced/Brain".into(), "/idless/Brain".into()],
+                &env
+            ),
+            Resolution::Choose { roots, .. } if roots.len() == 2
+        ));
+    }
+
+    #[test]
+    fn an_unknown_vault_id_is_distinct_from_an_absent_legacy_folder() {
+        let env = Env {
+            is_file: &|_| panic!("an absent vault must not probe notes"),
+            canonical: &|_| None,
+            vault_id: &|_| None,
+        };
+        assert!(matches!(
+            resolve(&parse("okilum://v/Brain/Plan.md?id=losing-id").unwrap(), &[], &env),
+            Resolution::Unavailable(message)
+                if message.contains("Cannot identify vault")
+                    && message.contains("vault ID")
+                    && !message.contains("different vault ID")
+        ));
+        assert_eq!(
+            resolve(&parse("okilum://v/Brain/Plan.md").unwrap(), &[], &env),
+            Resolution::Unavailable("Vault \u{201c}Brain\u{201d} is not on this computer.".into())
+        );
     }
 
     /// #1414: canonical paths on case-sensitive macOS volumes must not

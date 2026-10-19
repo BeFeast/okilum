@@ -61,12 +61,14 @@ rendered link is rewritten to the `v/` form.
      history. Quick-viewer folders in history are not known vaults; only an
      explicit full-vault open authorizes vault behavior. With an `id`, the
      vault that carries that id is the one,
-     whatever its folder is called here. Without an `id`, or when no known
-     vault carries it, the folder name decides (exact after NFC, and
-     case-insensitive on macOS and Windows); but with an `id` a folder of that
-     name that carries a *different* id is another vault and is not taken for
-     this one. A folder of that name with no id yet (never linked from, or
-     not synced yet) still matches by name.
+     whatever its folder is called here, even if a same-name decoy carries a
+     different id. Without an `id`, the folder name decides (exact after NFC,
+     and case-insensitive on macOS and Windows). If no known vault carries a
+     supplied id, an idless folder of that name (never linked from, or not
+     synced yet) may still match. However, any known same-name folder carrying
+     a different id blocks that fallback for all namesakes, including idless
+     ones: Okilum refuses explicitly rather than concealing the conflict by
+     selecting another folder. Resolution never rebinds an id or writes metadata.
    - A vault's id is a UUID in `.okilum/vault.json` (`"id"`), the file that
      already holds its display name and travels with it (Syncthing). The first
      «Copy Okilum link» from a vault open in a window writes it, if the vault
@@ -80,10 +82,19 @@ rendered link is rewritten to the `v/` form.
      read/write failure leaves Copy using the folder-only link. The local
      read and atomic rename are not compare-and-swap across processes or
      machines. Independently copying before metadata sync can create conflicting
-     ids; a different id still refuses the match as above. Recovery and
-     cross-machine acceptance for that case remain pending a product decision.
+     ids. Decision 26 (19 October, 08:02 Israel; recorded in the 18 October ops
+     decisions) accepts explicit refusal for that case: links carrying the
+     losing id do not work until a separate recovery/merge-id decision. There
+     are no aliases, recovery or id merging in #1414.
    - One match: use it.
-   - None: «Vault “X” is not on this computer.» with Open folder….
+   - Identity conflict: «Vault “X” has a different vault ID from this link.
+     Okilum will not select a vault or change its identity. Using this link
+     requires separate recovery.» No vault, chooser or consent is opened.
+   - None with a supplied id and no conflicting namesake: «Cannot identify
+     vault “X” using this link's vault ID. No matching ID or safe folder-name
+     fallback was found on this computer.»
+   - None without an id (legacy link): «Vault “X” is not on this computer.»
+     with Open folder….
    - Several (two copies of one vault, or two vaults named alike): a chooser
      listing the full paths. It never guesses (AGENTS: ambiguity is
      surfaced). A vault without the note is listed but cannot be chosen;
@@ -217,6 +228,34 @@ a newer Okilum» and do nothing.
   first-use confirmation, remembered per folder.
 - A vault's identity in links is an id stored in the vault (`.okilum/vault.json`),
   with the folder name as the fallback; old links keep working.
+
+## Accepted identity boundary (#1414, decision 26, 19.10)
+
+Concurrent first Copy on machines whose metadata has not synced can create
+different ids. Explicit mismatch refusal is the accepted current-slice limitation;
+the product decision is resolved. Losing-id links remain unusable pending a
+separate recovery/merge-id decision. This work is not part of the already delivered
+LinuxStable14238.
+
+Acceptance remains to be verified after resource GO:
+
+- A losing-id request shows the explicit error and selects no vault; it opens
+  neither chooser nor consent and does not navigate or rebind an existing Reader.
+  Metadata bytes (including name, id and unknown nested fields) and directory
+  entries stay unchanged; no temporary metadata file is left behind.
+- A matching id opens the actual root under a different folder name despite a
+  conflicting namesake, with the requested note and landing. Legacy folder links
+  and unconflicted idless fallback remain supported; conflicting/idless namesakes
+  refuse visibly. Resolution never writes metadata.
+- Regression tests, meaningful mutation controls and restored positive controls,
+  required CI and one independent review remain required. No runtime gate is
+  claimed by this document. All changes after tested checkpoint `4525f4bf` remain
+  uncompiled/untested until an authorized run.
+- The retained pre-merge data-risk exception requires native checks on **two OS**:
+  first Copy durably adds/reuses the synced id while preserving other metadata
+  fields, write failures leave metadata intact and use a folder-only link, and
+  reopen retains the identity. Check legacy links and differing folder names too.
+  The accepted limitation does not waive these checks or grant a shared slot.
 
 ## Decisions (Oleg, 10.10)
 
