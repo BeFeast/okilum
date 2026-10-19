@@ -1,5 +1,7 @@
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub mod exact_wayland_clipboard;
+#[cfg(any(windows, test))]
+pub mod exact_windows_clipboard;
 
 pub mod labels;
 
@@ -21,7 +23,7 @@ use std::sync::Arc;
 pub struct ManagedClipboard(pub Arc<dyn ExactClipboardProvider>);
 impl Global for ManagedClipboard {}
 
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(any(target_os = "macos", windows, all(test, target_os = "linux")))]
 mod clipboard_process;
 #[cfg(target_os = "macos")]
 pub mod exact_macos_clipboard;
@@ -31,7 +33,11 @@ pub fn managed_clipboard() -> Arc<dyn ExactClipboardProvider> {
     {
         Arc::new(exact_macos_clipboard::MacClipboard)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Arc::new(exact_windows_clipboard::WindowsClipboard)
+    }
+    #[cfg(target_os = "linux")]
     {
         Arc::new(exact_wayland_clipboard::WaylandClipboard::new(
             exact_wayland_clipboard::existing_compositor(),
@@ -39,3 +45,6 @@ pub fn managed_clipboard() -> Arc<dyn ExactClipboardProvider> {
         ))
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_clipboard_tests;

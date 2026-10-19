@@ -1,8 +1,11 @@
-//! Finite, bounded transport for the same-executable macOS pasteboard reader.
+//! Finite, bounded transport for same-executable native clipboard readers.
 use gpui_component::input::clipboard::ClipboardReadError as Error;
+#[cfg(unix)]
 use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
+#[cfg(unix)]
+use std::io::ErrorKind;
 use std::{
-    io::{ErrorKind, Read},
+    io::Read,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -20,8 +23,57 @@ impl Drop for Reap {
         tests::REAPED.with(|reaped| {
             *reaped.borrow_mut() = Some((self.0.id(), status));
         });
-        #[cfg(not(all(test, target_os = "linux")))]
+        #[cfg(all(test, windows))]
+        windows_tests::REAPED.with(|reaped| {
+            *reaped.borrow_mut() = Some((self.0.id(), status));
+        });
+        #[cfg(not(any(all(test, target_os = "linux"), all(test, windows))))]
         let _ = status;
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    thread_local! {
+        pub(super) static REAPED: std::cell::RefCell<Option<(u32, std::io::Result<std::process::ExitStatus>)>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn windows_clipboard_pipe_deadline_and_cancel_kill_and_reap_child() {
+        for cancel in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let marker = temp.path().join("reader.ready");
+            // cmd's builtins avoid cold PowerShell/.NET startup exceeding the
+            // very deadline being tested. No descendants inherit the pipe.
+            let mut command = Command::new("cmd.exe");
+            command
+                .raw_arg(r#"/D /Q /C echo ready>"%OKILUM_TEST_MARKER%" & for /L %i in (0,0,1) do @rem wait"#)
+                .env("OKILUM_TEST_MARKER", &marker)
+                .creation_flags(CREATE_NO_WINDOW);
+            REAPED.with(|slot| *slot.borrow_mut() = None);
+            let start = Instant::now();
+            let ready =
+                || std::fs::read_to_string(&marker).is_ok_and(|text| text.trim() == "ready");
+            let result = read(&mut command, start + TIMEOUT, || cancel && ready());
+            assert_eq!(
+                result,
+                Err(if cancel {
+                    Error::Cancelled
+                } else {
+                    Error::Timeout
+                })
+            );
+            assert!(ready(), "child-start positive control");
+            let (actual, status) = REAPED
+                .with(|slot| slot.borrow_mut().take())
+                .expect("cleanup ran");
+            assert!(actual > 0, "actual spawned child handle was waited/reaped");
+            assert!(!status.expect("wait reaped the process").success());
+            assert!(start.elapsed() < Duration::from_secs(4));
+        }
     }
 }
 
@@ -43,9 +95,26 @@ pub(super) fn read(
         .spawn()
         .map_err(|_| Error::Io)?;
     let mut child = Reap(child);
-    let mut stdout = child.0.stdout.take().ok_or(Error::Io)?;
-    let flags = fcntl_getfl(&stdout).map_err(|_| Error::Io)?;
-    fcntl_setfl(&stdout, flags | OFlags::NONBLOCK).map_err(|_| Error::Io)?;
+    let stdout = child.0.stdout.take().ok_or(Error::Io)?;
+    #[cfg(windows)]
+    return read_windows(child, stdout, deadline, cancelled);
+    #[cfg(unix)]
+    {
+        read_unix(&mut child, stdout, deadline, cancelled)
+    }
+}
+
+#[cfg(unix)]
+fn read_unix(
+    child: &mut Reap,
+    mut stdout: std::process::ChildStdout,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<String>, Error> {
+    {
+        let flags = fcntl_getfl(&stdout).map_err(|_| Error::Io)?;
+        fcntl_setfl(&stdout, flags | OFlags::NONBLOCK).map_err(|_| Error::Io)?;
+    }
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 8192];
     let mut eof = false;
@@ -87,6 +156,71 @@ pub(super) fn read(
     }
 }
 
+/// Drain synchronous Windows pipes continuously, including near-limit offers.
+/// Only this reader thread blocks; the parent retains deadline/cancel control.
+#[cfg(windows)]
+fn read_windows(
+    mut child: Reap,
+    stdout: std::process::ChildStdout,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<String>, Error> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::Builder::new()
+        .name("clipboard-pipe".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            // One status byte, at most MAX_BYTES payload, and one overflow
+            // byte. A faulty helper cannot allocate an unbounded parent buffer.
+            let result = stdout
+                .take((MAX_BYTES + 2) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|_| Error::Io)
+                .and_then(|_| {
+                    if bytes.len() > MAX_BYTES + 1 {
+                        Err(Error::TooLarge)
+                    } else {
+                        Ok(bytes)
+                    }
+                });
+            let _ = tx.send(result);
+        })
+        .map_err(|_| Error::Io)?;
+    let result = (|| {
+        let mut bytes = None;
+        loop {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(Error::Timeout)?;
+            if bytes.is_none() {
+                match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                    Ok(result) => bytes = Some(result?),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => return Err(Error::Io),
+                }
+            }
+            if let Some(status) = child.0.try_wait().map_err(|_| Error::Io)? {
+                if !status.success() {
+                    return Err(Error::Io);
+                }
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                return decode(bytes.as_deref().ok_or(Error::Io)?);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+        }
+    })();
+    // This same-executable helper creates no descendants. Killing/reaping it
+    // closes the sole writer and unblocks Read before joining on every result.
+    drop(child);
+    let _ = reader.join();
+    result
+}
+
 fn decode(bytes: &[u8]) -> Result<Option<String>, Error> {
     let (&status, payload) = bytes.split_first().ok_or(Error::Io)?;
     if status == 0 {
@@ -102,11 +236,12 @@ fn decode(bytes: &[u8]) -> Result<Option<String>, Error> {
         2 => Err(Error::TooLarge),
         3 => Err(Error::InvalidUtf8),
         4 => Err(Error::ChangedOffer),
+        6 => Err(Error::Unavailable),
         _ => Err(Error::Io),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     // Capture the actual child handle's wait result, not a reusable /proc PID.
@@ -131,6 +266,7 @@ mod tests {
         assert_eq!(decode(&[1]), Ok(None));
         assert_eq!(decode(&[0, 255]), Err(Error::InvalidUtf8));
         assert_eq!(decode(&[4]), Err(Error::ChangedOffer));
+        assert_eq!(decode(&[6]), Err(Error::Unavailable));
         assert_eq!(decode(&[1, 0]), Err(Error::Io));
     }
     #[cfg(target_os = "linux")]

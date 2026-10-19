@@ -10,6 +10,15 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Windows Source and Live Preview use an app-owned exact Unicode clipboard reader
+(#1434). A restricted mode of the same executable reads `CF_UNICODETEXT` before
+updater, state or GUI initialization. Its parent limits the entire request to two
+seconds and 8 MiB of UTF-8, cancels and reaps the child, and retains the editor's
+source, selection and focus guards. Strict UTF-16 decoding preserves authored
+Unicode, BOM and line endings. Empty text is distinct from unavailable or denied
+clipboard data; changed offers and malformed text are refused. HTML/RTF are not
+parsed as fallback, and no lossy platform reader is substituted.
+
 A byte comparison with the opened base guards every changed save. An external
 change blocks navigation and app-owned Quit until Reload or Keep mine resolves
 it. Compare shows the current disk source above the editable draft. Keep mine is
