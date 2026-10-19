@@ -90,6 +90,62 @@ def accepted(api, run):
     return job
 
 
+def workflow_failure_report(api, run, branch, sha):
+    """Best-effort Linux phase facts; never change workflow/artifact acceptance."""
+    prefix = 'Required Linux producer workflow did not pass'
+    unknown = 'phase unknown (exact-attempt job facts unavailable)'
+    try:
+        producer(run, sha)
+        payload.require(run['head_branch'] == branch and run['status'] == 'completed'
+                        and all(type(run[k]) is int and run[k] > 0 for k in ('id', 'run_attempt')),
+                        'Unavailable report identity')
+        job = jobs(api, run)
+        payload.require(job is not None and job['status'] == 'completed'
+                        and all(job[k] == run[k] for k in ('run_attempt', 'head_sha', 'head_branch'))
+                        and job['run_id'] == run['id'], 'Unavailable report job linkage')
+        steps = job['steps']
+        conclusions = {'success', 'failure', 'skipped', 'cancelled', 'timed_out',
+                       'neutral', 'action_required', 'startup_failure', 'stale'}
+        payload.require(job['conclusion'] in conclusions, 'Unavailable report job status')
+        payload.require(isinstance(steps, list) and all(
+            s['status'] == 'completed' and s['conclusion'] in conclusions
+            and type(s['number']) is int and s['number'] > 0
+            and (s['conclusion'] != 'success' or bool(s.get('started_at'))) for s in steps)
+            and len({s['number'] for s in steps}) == len(steps), 'Unavailable report steps')
+        required = [[s for s in steps if s['name'] == name] for name in (BUILD_STEP, PRODUCE_STEP)]
+        payload.require(all(len(found) == 1 for found in required), 'Unavailable report phases')
+        gate, production = (found[0] for found in required)
+        payload.require(gate['number'] < production['number'], 'Unavailable report phase order')
+        # Only repository-known names are printable. Never echo arbitrary external
+        # names, conclusions or exception text (which may contain credentials).
+        names = {BUILD_STEP, PRODUCE_STEP, 'Identify production configuration',
+                 'Run actions/upload-artifact@v4', 'Post Run actions/checkout@v4', 'Complete job'}
+        def step_fact(step):
+            name = step['name'] if step['name'] in names else 'unrecognized step (name omitted)'
+            return f"#{step['number']} {name}={step['conclusion']}"
+        subsequent = [s for s in steps if s['number'] > production['number']]
+        failed = [s for s in steps if s['conclusion'] not in ('success', 'skipped', 'neutral')]
+        phase = unknown
+        if gate['conclusion'] != 'success':
+            phase = 'full gate did not pass'
+        elif production['conclusion'] == 'failure':
+            phase = 'production failed after successful full gate'
+        elif production['conclusion'] != 'success':
+            phase = 'production did not pass after successful full gate'
+        elif any(s in failed for s in subsequent):
+            phase = 'post-production/upload failed after successful full gate and production'
+        details = (f"run={run['id']} attempt={run['run_attempt']}; job={job['conclusion']}; "
+                   f"full_gate={gate['conclusion']}; production={production['conclusion']}; {phase}")
+        if subsequent:
+            details += '; subsequent steps: ' + ', '.join(step_fact(s) for s in subsequent)
+        if failed:
+            details += '; failed steps: ' + ', '.join(step_fact(s) for s in failed)
+        return prefix + '; ' + details
+    except Exception:
+        # Secondary metadata must never hide the original unsuccessful result.
+        return prefix + '; ' + unknown
+
+
 def discover(api, sha, configuration, exclude=None):
     """No dispatch here. A missing/expired attempted payload is never a cache miss."""
     name = payload.artifact_name(sha, configuration)
@@ -490,7 +546,10 @@ def main(command='request'):
                   forgejo_run_number=number, forgejo_started_at=os.environ.get('OKILUM_TASK_STARTED_AT'))
             transport.push_head(branch, sha, token)
             observed = []
+            report_run = None
             def record_run(run):
+                nonlocal report_run
+                report_run = run
                 authorize_claim(api, run, sha, configuration)
                 state = (run['id'], run['status'], run.get('conclusion'))
                 if not observed or observed[-1] != state:
@@ -501,7 +560,8 @@ def main(command='request'):
             result, message = transport.wait_for_run(api, branch, sha, workflow=WORKFLOW,
                 job_name='linux', build_step=BUILD_STEP, queue_timeout=900, run_timeout=5400, on_run=record_run)
             print(message)
-            payload.require(result == 'success', 'Required full Linux gate did not pass')
+            if result != 'success':
+                raise ValueError(workflow_failure_report(api, report_run, branch, sha))
         resolve(api, sha, output)
         if command == 'resolve':
             event(output / 'delivery.jsonl', 'qa_requested', sha)
