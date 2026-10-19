@@ -116,6 +116,16 @@ def workflow_failure_report(api, run, branch, sha):
         payload.require(all(len(found) == 1 for found in required), 'Unavailable report phases')
         gate, production = (found[0] for found in required)
         payload.require(gate['number'] < production['number'], 'Unavailable report phase order')
+        # This single-job workflow failed. A successful run or Linux job cannot
+        # corroborate that result. Do not infer job failure from every failed
+        # step: cache/evidence uploads allow errors, and post-jobs can fail later.
+        payload.require(run['conclusion'] in conclusions - {'success'}
+                        and job['conclusion'] != 'success', 'Inconsistent report result')
+        # Neither required step allows errors; production has the default
+        # success condition. A failed gate permits only skipped/cancelled work.
+        payload.require(gate['conclusion'] == 'success'
+                        or production['conclusion'] in ('skipped', 'cancelled'),
+                        'Inconsistent report phases')
         # Only repository-known names are printable. Never echo arbitrary external
         # names, conclusions or exception text (which may contain credentials).
         names = {BUILD_STEP, PRODUCE_STEP, 'Identify production configuration',

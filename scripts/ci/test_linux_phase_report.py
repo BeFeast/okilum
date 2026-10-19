@@ -90,6 +90,56 @@ class LinuxPhaseReportTests(unittest.TestCase):
         self.assertEqual([p for m, p in self.api.calls if '/jobs?' in p], [
             'actions/runs/39187802433/attempts/1/jobs?per_page=100&page=1'])
 
+    def assert_unknown_phase(self):
+        for text in (self.report(), self.assert_failed(self.main())):
+            self.assertIn('phase unknown (exact-attempt job facts unavailable)', text)
+            self.assertNotIn('full_gate=', text)
+            self.assertNotIn('production failed after successful full gate', text)
+
+    def test_r1_1_job_success_with_required_production_failure_is_unknown(self):
+        self.job['conclusion'] = 'success'
+        self.assert_unknown_phase()
+
+    def test_r1_1_run_success_with_job_and_production_failure_is_unknown(self):
+        self.run['conclusion'] = 'success'
+        self.assert_unknown_phase()
+
+    def test_r1_1_failed_gate_with_successful_production_is_unknown(self):
+        self.step(linux.BUILD_STEP)['conclusion'] = 'failure'
+        self.step(linux.PRODUCE_STEP)['conclusion'] = 'success'
+        self.assert_unknown_phase()
+
+    def test_production_failure_after_failed_gate_and_unknown_run_status_are_unknown(self):
+        self.step(linux.BUILD_STEP)['conclusion'] = 'failure'
+        self.assert_unknown_phase()
+        self.step(linux.BUILD_STEP)['conclusion'] = 'success'
+        self.run['conclusion'] = 'unexpected-secret'
+        self.assert_unknown_phase()
+
+    def test_continue_on_error_failures_do_not_invalidate_recorded_production_failure(self):
+        # Both steps have continue-on-error in the exact workflow. Their failure
+        # does not contradict successful gate execution or the required failure.
+        for index in (5, 10):
+            with self.subTest(step=index):
+                self.job['steps'] = copy.deepcopy(FIXTURE['jobs'][0]['steps'])
+                self.job['steps'][index]['conclusion'] = 'failure'
+                text = self.assert_failed(self.main())
+                self.assertIn('production failed after successful full gate', text)
+                self.assertNotIn('phase unknown', text)
+
+    def test_continue_on_error_failures_with_green_required_steps_remain_green(self):
+        self.run['conclusion'] = self.job['conclusion'] = 'success'
+        for index in (5, 10):
+            with self.subTest(step=index):
+                self.job['steps'] = copy.deepcopy(FIXTURE['jobs'][0]['steps'])
+                self.step(linux.PRODUCE_STEP)['conclusion'] = 'success'
+                self.job['steps'][index]['conclusion'] = 'failure'
+                with patch.object(linux, 'workflow_failure_report') as report:
+                    code, written, _, resolver = self.main()
+                    report.assert_not_called()
+                self.assertEqual((code, written), (0, 'result=success\n'))
+                resolver.assert_called_once()
+
     def test_full_gate_failure_or_skipped_is_reported_as_recorded(self):
         for conclusion in ('failure', 'skipped', 'cancelled', 'timed_out'):
             with self.subTest(conclusion=conclusion):
