@@ -12,15 +12,20 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
+# The real entrypoints mutate sys.path for sibling imports. Do not let their
+# fixture loads redirect unittest discovery to scripts/releases/test_publish.py.
 fixture_spec = importlib.util.spec_from_file_location('native_fixture', ROOT / 'scripts/ci/test_linux_binary.py')
 f = importlib.util.module_from_spec(fixture_spec)
-fixture_spec.loader.exec_module(f)
+with patch.object(sys, 'path', sys.path.copy()):
+    fixture_spec.loader.exec_module(f)
 spec = importlib.util.spec_from_file_location('arch_production', ROOT / 'scripts/arch/publish.py')
 publish = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(publish)
+with patch.object(sys, 'path', sys.path.copy()):
+    spec.loader.exec_module(publish)
 spec = importlib.util.spec_from_file_location('release_production', ROOT / 'scripts/releases/publication.py')
 publication = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(publication)
+with patch.object(sys, 'path', sys.path.copy()):
+    spec.loader.exec_module(publication)
 
 
 class Store:

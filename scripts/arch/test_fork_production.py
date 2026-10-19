@@ -20,7 +20,10 @@ ROOT = Path(__file__).resolve().parents[2]
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Production imports prepend sibling script directories. Keep those paths
+    # local to this fixture load so unittest still discovers the Arch modules.
+    with patch.object(sys, 'path', sys.path.copy()):
+        spec.loader.exec_module(mod)
     return mod
 
 
