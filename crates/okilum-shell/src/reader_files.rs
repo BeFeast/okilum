@@ -10,7 +10,7 @@ pub(crate) enum FileAction {
     Absolute,
     Relative,
     Wiki,
-    /// `okilum://v/…` for this file (#1049).
+    /// External vault or absolute-file link, according to Reader scope (#1049).
     OkilumLink,
     Open,
     QuickLook,
@@ -94,7 +94,7 @@ fn run_in_scope(
                     None
                 }
             }
-            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default(), scope)),
+            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default(), scope)?),
             FileAction::Absolute | FileAction::Relative | FileAction::Wiki => {
                 copied_text(action, rel, &path)
             }
@@ -129,24 +129,28 @@ fn copied_text(action: FileAction, rel: &str, path: &Path) -> Option<String> {
     }
 }
 
-/// The external link to `rel` in the vault at `root`: the vault is named by
-/// its folder and carries its own id, which finds it on a machine where the
-/// folder is called something else (docs/deep-links.md, #1414).
+/// Full Readers copy vault identity; quick Readers copy the absolute file
+/// without reading or creating vault metadata (docs/deep-links.md, #1414/#1439).
 pub(crate) fn okilum_link(
     root: &Path,
     rel: &str,
     position: &okilum_core::deep_link::Position,
     scope: LinkScope,
-) -> String {
+) -> anyhow::Result<String> {
+    if matches!(scope, LinkScope::SingleFile) {
+        return okilum_core::deep_link::build_file(&root.join(rel), position);
+    }
     let vault = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let id = match scope {
-        LinkScope::Vault => super::vault_name::link_id(root),
-        LinkScope::SingleFile => None,
-    };
-    okilum_core::deep_link::build_with_id(&vault, id.as_deref(), rel, position)
+    let id = super::vault_name::link_id(root);
+    Ok(okilum_core::deep_link::build_with_id(
+        &vault,
+        id.as_deref(),
+        rel,
+        position,
+    ))
 }
 
 /// Shows the item in the platform file manager; a failure of every route is
@@ -163,6 +167,12 @@ pub(crate) fn reveal(path: &Path, window: &mut Window, cx: &mut App) {
             }
         })
         .detach();
+}
+
+/// Shared by the Note menu and file menus; scope belongs to the clicked window.
+pub(crate) fn okilum_link_item(root: PathBuf, rel: String) -> PopupMenuItem {
+    PopupMenuItem::new("Copy Okilum link")
+        .on_click(move |_, window, cx| run(FileAction::OkilumLink, &root, &rel, window, cx))
 }
 
 pub(crate) fn menu(
@@ -183,6 +193,10 @@ pub(crate) fn menu(
         ("Open with default app", FileAction::Open),
     ];
     for (label, action) in actions {
+        if matches!(action, FileAction::OkilumLink) {
+            menu = menu.item(okilum_link_item(root.clone(), rel.clone()));
+            continue;
+        }
         let root = root.clone();
         let rel = rel.clone();
         // The bound Reader action only shows its key; the click acts on this row.

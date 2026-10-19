@@ -11,8 +11,12 @@ not read for inventory; there is no search index, warm snapshot, cache lease,
 recursive watcher, backlinks reconciliation, or Inbox computation in quick mode.
 Session and source-edit history remain durable application state outside the
 notes, and session restore preserves quick mode. Rescan and source saves do not
-upgrade the viewer. Full-text search and vault-wide backlinks require the explicit
-**Open folder as vault** header action.
+upgrade the viewer. Copy Okilum link, Copy link to heading, and Copy link to line
+use absolute `okilum://file/` URLs with their position preserved; copying never
+creates or reads vault identity metadata. If the canonical absolute path is not
+valid UTF-8, these Copy actions refuse visibly and preserve the clipboard; raw-byte
+paths are not converted into URLs with replacement characters. Full-text search
+and vault-wide backlinks require the explicit **Open folder as vault** header action.
 
 Known folder names support ordinary wikilink resolution, including visible
 ambiguity. Explicit Markdown paths and adjacent images can resolve without a

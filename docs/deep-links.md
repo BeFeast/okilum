@@ -17,18 +17,19 @@ okilum://task/<task-id>      (reserved)
 okilum://project/<project-id> (reserved, projects of the server model)
 ```
 
-- `v/<vault>/<path>`: the canonical form, which «Copy Okilum link» produces.
+- `v/<vault>/<path>`: the canonical form copied by full-vault Readers.
   `<vault>` is the vault's folder name on the machine that made the link and
   `<path>` is vault-relative, with its extension. Example:
   `okilum://v/Notes/Projects/Launch%20plan.md?line=12&column=4`.
 - `id=<vault-id>` (#1414): the vault's own id. The same synced vault can have
   another folder name on another machine (`Obsidian Vault` on three, `Brain`
   on idunn), so the name alone does not find it there. «Copy Okilum link»
-  adds the id; a link without one (every link made before) is looked up by
+  adds the id in full-vault scope; a link without one (every link made before) is looked up by
   folder name, as before. An id that is not 8–64 letters, digits and `-` is
   ignored. Older Okilum versions ignore the parameter and use the name.
 - `file/<absolute path>`: for tools that know a file but not a vault
-  (T3 Code, editors, terminals). The path is absolute, `/`-separated; on
+  (T3 Code, editors, terminals), and for Copy in a single-file quick viewer.
+  The path is absolute, `/`-separated; on
   Windows it is `file/C:/Users/…` (`C:\…` and the verbatim `\\?\C:\…` form
   are read too: they are the same file). Okilum finds the vault that contains
   it; a file in no known vault opens on its own (see Resolution).
@@ -52,7 +53,7 @@ Rendered notes already use `okilum://open/…`, `okilum://attachment/…`,
 inside the Reader. They are resolved against the window's current vault and are
 never valid as external links. The external handler rejects these hosts with
 «This link only works inside a note». «Copy link» never copies them: a copied
-rendered link is rewritten to the `v/` form.
+rendered link uses `v/` in a full vault and absolute `file/` in a quick viewer.
 
 ## Resolution
 
@@ -194,11 +195,18 @@ rendered link is rewritten to the `v/` form.
 
 ## Copy link
 
-- Note ⋯ menu: «Copy Okilum link» (`v/` form, no position).
+- Note ⋯ menu: «Copy Okilum link» (no position). Full-vault Readers use
+  `v/` with the vault id when available; single-file quick viewers use absolute
+  `file/` without reading or creating vault metadata. Heading, caret, and file
+  menu Copy actions use the same Reader scope.
 - Editor context menu: «Copy link to line» (`line` and `column` of the caret).
 - File tree and file menus: «Copy Okilum link» for notes and files.
 - Heading context in the outline: «Copy link to heading» (`#Heading`).
-- Clipboard is plain text; the toast says «Link copied».
+- Clipboard is plain text; the toast says «Link copied». If the quick viewer's
+  full absolute path cannot be represented losslessly as UTF-8 (including a
+  UTF-8 symlink alias that canonicalizes to a raw-byte POSIX parent), Copy
+  refuses with an explicit error, preserves the clipboard, and shows no success
+  toast. It never substitutes replacement characters or a vault link.
 
 ## Stable ids
 

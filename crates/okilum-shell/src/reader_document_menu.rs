@@ -362,6 +362,13 @@ impl Reader {
                             ("Copy path", reader_files::FileAction::Absolute),
                             ("Copy Okilum link", reader_files::FileAction::OkilumLink),
                         ] {
+                            if matches!(action, reader_files::FileAction::OkilumLink) {
+                                menu = menu.item(reader_files::okilum_link_item(
+                                    root.clone(),
+                                    rel.clone(),
+                                ));
+                                continue;
+                            }
                             let root = root.clone();
                             let rel = rel.clone();
                             menu = menu.item(PopupMenuItem::new(label).on_click(

@@ -13,14 +13,19 @@ pub(crate) fn heading_link_item(
     reader: &WeakEntity<Reader>,
     heading: String,
 ) -> gpui_component::menu::PopupMenu {
+    menu.item(heading_copy_item(reader, heading))
+}
+
+pub(crate) fn heading_copy_item(
+    reader: &WeakEntity<Reader>,
+    heading: String,
+) -> gpui_component::menu::PopupMenuItem {
     let reader = reader.clone();
-    menu.item(
-        gpui_component::menu::PopupMenuItem::new("Copy link to heading").on_click(
-            move |_, window, cx| {
-                let heading = heading.clone();
-                let _ = reader.update(cx, |this, cx| this.copy_heading_link(heading, window, cx));
-            },
-        ),
+    gpui_component::menu::PopupMenuItem::new("Copy link to heading").on_click(
+        move |_, window, cx| {
+            let heading = heading.clone();
+            let _ = reader.update(cx, |this, cx| this.copy_heading_link(heading, window, cx));
+        },
     )
 }
 
@@ -237,8 +242,13 @@ impl Reader {
             },
             self.link_scope(),
         );
-        cx.write_to_clipboard(ClipboardItem::new_string(link));
-        crate::reader_toast::transient("Link copied", window, cx);
+        match link {
+            Ok(link) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(link));
+                crate::reader_toast::transient("Link copied", window, cx);
+            }
+            Err(error) => crate::reader_toast::error(error.to_string(), window, cx),
+        }
     }
 
     /// «Copy link to line»: the caret's line and column in this note (#1049).
@@ -257,8 +267,13 @@ impl Reader {
             },
             self.link_scope(),
         );
-        cx.write_to_clipboard(ClipboardItem::new_string(link));
-        crate::reader_toast::transient("Link copied", window, cx);
+        match link {
+            Ok(link) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(link));
+                crate::reader_toast::transient("Link copied", window, cx);
+            }
+            Err(error) => crate::reader_toast::error(error.to_string(), window, cx),
+        }
     }
 
     /// Caret at a 1-based `line:column` (column in characters), scrolled into

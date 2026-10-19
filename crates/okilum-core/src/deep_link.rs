@@ -440,7 +440,53 @@ pub fn build(vault: &str, rel: &str, position: &Position) -> String {
 /// without it (every link made before ids) keeps working by folder name.
 pub fn build_with_id(vault: &str, id: Option<&str>, rel: &str, position: &Position) -> String {
     let path = rel.split('/').map(encode).collect::<Vec<_>>().join("/");
-    let mut link = format!("okilum://v/{}/{path}", encode(vault));
+    let link = format!("okilum://v/{}/{path}", encode(vault));
+    build_position(link, id, position)
+}
+
+/// An absolute-file link for a quick Reader, without vault identity or enrollment.
+/// Reuse the ordinary path spelling (including Windows verbatim/UNC conversion)
+/// and the same position encoding as vault links.
+pub fn build_file(path: &std::path::Path, position: &Position) -> anyhow::Result<String> {
+    // Validate before display-oriented platform conversion: a replacement
+    // character could otherwise identify a different, existing file.
+    anyhow::ensure!(
+        path.to_str().is_some(),
+        "Cannot copy link: the absolute file path is not valid UTF-8."
+    );
+    anyhow::ensure!(
+        path.is_absolute(),
+        "Cannot copy link: the file path must be absolute."
+    );
+    let path = crate::vault::plain_path(path);
+    let path = path
+        .to_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!("Cannot copy link: the absolute file path is not valid UTF-8.")
+        })?
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let path = path
+        .split('/')
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0
+                && matches!(part.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic())
+            {
+                part.to_owned()
+            } else {
+                encode(part)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(build_position(
+        format!("okilum://file/{path}"),
+        None,
+        position,
+    ))
+}
+
+fn build_position(mut link: String, id: Option<&str>, position: &Position) -> String {
     let mut query = Vec::new();
     if let Some(line) = position.line {
         query.push(format!("line={line}"));
@@ -598,6 +644,163 @@ mod tests {
                 position,
             } => (vault, path, position),
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn absolute_file_builder_round_trips_encoded_paths_and_every_position() {
+        let path = if cfg!(windows) {
+            std::path::Path::new(r"C:\Outside\שלום #100%.md")
+        } else {
+            std::path::Path::new("/Outside/שלום #100%.md")
+        };
+        for position in [
+            Position::default(),
+            Position {
+                heading: Some("Distant checkpoint & שלום".into()),
+                ..Default::default()
+            },
+            Position {
+                block: Some("block-1".into()),
+                ..Default::default()
+            },
+            Position {
+                line: Some(81),
+                column: Some(4),
+                page: Some(2),
+                heading: Some("Line wins".into()),
+                ..Default::default()
+            },
+        ] {
+            let link = build_file(path, &position).unwrap();
+            assert!(link.starts_with("okilum://file/"));
+            assert!(link.contains("%20%23100%25.md"), "{link}");
+            assert!(!link.contains("id="));
+            assert_eq!(
+                parse(&link).unwrap(),
+                Link {
+                    address: Address::File(crate::vault::note_path(&crate::vault::plain_path(
+                        path
+                    ))),
+                    position,
+                }
+            );
+        }
+        // Full-vault and legacy builders retain their distinct address/ID forms.
+        assert_eq!(
+            build("Notes", "a.md", &Position::default()),
+            "okilum://v/Notes/a.md"
+        );
+        assert_eq!(
+            build_with_id("Notes", Some("12345678"), "a.md", &Position::default()),
+            "okilum://v/Notes/a.md?id=12345678"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_file_builder_refuses_raw_root_with_real_replacement_sibling() {
+        use std::{
+            ffi::OsString,
+            os::unix::{ffi::OsStringExt, fs::symlink},
+            path::Path,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let raw = base.join(OsString::from_vec(vec![0xff]));
+        let replacement = base.join("\u{fffd}");
+        let alias = base.join("utf8-alias");
+        for (root, source) in [(&raw, "# Source A"), (&replacement, "# Source B")] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("target.md"), source).unwrap();
+        }
+        symlink(&raw, &alias).unwrap();
+        let file = alias.join("target.md").canonicalize().unwrap();
+        assert_eq!(file, raw.join("target.md"));
+        assert_eq!(
+            file.to_string_lossy(),
+            replacement.join("target.md").to_str().unwrap()
+        );
+        assert_ne!(
+            std::fs::read(&file).unwrap(),
+            std::fs::read(replacement.join("target.md")).unwrap()
+        );
+        let env = Env {
+            is_file: &Path::is_file,
+            canonical: &|path| path.canonicalize().ok(),
+            vault_id: &|_| None,
+        };
+        // Positive controls: both textual addresses work, and identify DIFFERENT
+        // files. Losing raw bytes would thus silently authorize Source B.
+        for (spelling, expected) in [(&alias, &raw), (&replacement, &replacement)] {
+            let url = build_file(&spelling.join("target.md"), &Position::default()).unwrap();
+            assert_eq!(
+                resolve(&parse(&url).unwrap(), &[], &env),
+                Resolution::Single {
+                    path: expected.join("target.md"),
+                    position: Position::default(),
+                }
+            );
+        }
+        for position in [
+            Position::default(),
+            Position {
+                heading: Some("Source A".into()),
+                ..Default::default()
+            },
+            Position {
+                line: Some(3),
+                column: Some(4),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                build_file(&file, &position).unwrap_err().to_string(),
+                "Cannot copy link: the absolute file path is not valid UTF-8."
+            );
+        }
+        assert_eq!(
+            build_file(
+                Path::new("/Outside/שלום #100%\\literal.md"),
+                &Position::default()
+            )
+            .unwrap(),
+            "okilum://file//Outside/%D7%A9%D7%9C%D7%95%D7%9D%20%23100%25%5Cliteral.md"
+        );
+    }
+
+    #[test]
+    fn absolute_file_builder_refuses_relative_paths() {
+        assert!(build_file(std::path::Path::new("relative.md"), &Position::default()).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_file_builder_uses_plain_drive_and_unc_paths_from_verbatim_roots() {
+        let position = Position {
+            line: Some(3),
+            heading: Some("Checkpoint".into()),
+            ..Default::default()
+        };
+        for (ordinary, verbatim, expected) in [
+            (
+                r"C:\Outside\Landing.md",
+                r"\\?\C:\Outside\Landing.md",
+                "okilum://file/C:/Outside/Landing.md?line=3#Checkpoint",
+            ),
+            (
+                r"\\server\share\Outside\Landing.md",
+                r"\\?\UNC\server\share\Outside\Landing.md",
+                "okilum://file///server/share/Outside/Landing.md?line=3#Checkpoint",
+            ),
+        ] {
+            let ordinary = build_file(std::path::Path::new(ordinary), &position).unwrap();
+            assert_eq!(ordinary, expected);
+            assert_eq!(
+                build_file(std::path::Path::new(verbatim), &position).unwrap(),
+                ordinary
+            );
+            assert_eq!(parse(&ordinary).unwrap().position, position);
         }
     }
 

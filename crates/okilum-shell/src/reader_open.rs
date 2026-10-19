@@ -2730,7 +2730,8 @@ mod entry_tests {
                 "Plan.md",
                 &Default::default(),
                 super::super::reader_files::LinkScope::Vault,
-            );
+            )
+            .unwrap();
             assert!(link.contains("Gate2") && !link.contains("Work"), "{link}");
         });
         // The link opens the renamed vault: its window comes forward, no
@@ -2740,7 +2741,8 @@ mod entry_tests {
             "Plan.md",
             &Default::default(),
             super::super::reader_files::LinkScope::Vault,
-        );
+        )
+        .unwrap();
         cx.update(|cx| open_deep_link_among(&link, &roots, cx));
         cx.run_until_parked();
         assert_eq!(
@@ -3554,7 +3556,11 @@ mod entry_tests {
         std::fs::create_dir_all(&loose).unwrap();
         std::fs::write(vault.join("Plan.md"), "# Plan\n").unwrap();
         // Paragraph i is block i-1 on file line 2i-1 (line 81: block 40).
-        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        let mut body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        body.push_str("## Distant checkpoint\n\nQA1439_HEADING_LANDING_MARKER\n\n");
+        for i in 61..=90 {
+            body.push_str(&format!("Tail paragraph {i}.\n\n"));
+        }
         std::fs::write(loose.join("target.md"), &body).unwrap();
         std::fs::write(loose.join("other.md"), &body).unwrap();
         let vault = vault.canonicalize().unwrap();
@@ -3659,8 +3665,9 @@ mod entry_tests {
         });
         assert!(!loose.join(super::super::vault_name::DIRECTORY).exists());
         let copy_single_file_links = |cx: &mut TestAppContext| {
-            window
+            let links = window
                 .update(cx, |_, window, cx| {
+                    let mut links = Vec::new();
                     reader.update(cx, |reader, cx| {
                         assert!(reader.single_file, "positive control: single-file scope");
                         reader.file_action(
@@ -3668,36 +3675,151 @@ mod entry_tests {
                             window,
                             cx,
                         );
-                        assert_eq!(
-                            cx.read_from_clipboard().unwrap().text().unwrap(),
-                            "okilum://v/loose/target.md"
-                        );
-                        reader.copy_heading_link("Heading".into(), window, cx);
-                        assert_eq!(
-                            cx.read_from_clipboard().unwrap().text().unwrap(),
-                            "okilum://v/loose/target.md#Heading"
-                        );
+                        links.push(cx.read_from_clipboard().unwrap().text().unwrap());
+                        reader.copy_heading_link("Distant checkpoint".into(), window, cx);
+                        links.push(cx.read_from_clipboard().unwrap().text().unwrap());
                     });
-                    // The menu entry uses an App callback outside the lease.
-                    super::super::reader_files::run(
-                        super::super::reader_files::FileAction::OkilumLink,
-                        &loose,
-                        "target.md",
-                        window,
-                        cx,
-                    );
-                    assert_eq!(
-                        cx.read_from_clipboard().unwrap().text().unwrap(),
-                        "okilum://v/loose/target.md"
-                    );
+                    // Invoke the actual Note/file and TOC menu item callbacks,
+                    // outside the lease, exactly as PopupMenu does on activation.
+                    for item in [
+                        super::super::reader_files::okilum_link_item(
+                            loose.clone(),
+                            "target.md".into(),
+                        ),
+                        super::super::reader_deep_link::heading_copy_item(
+                            &reader.downgrade(),
+                            "Distant checkpoint".into(),
+                        ),
+                    ] {
+                        let gpui_component::menu::PopupMenuItem::Item {
+                            handler: Some(handler),
+                            disabled: false,
+                            ..
+                        } = item
+                        else {
+                            panic!("Copy must have an enabled menu callback")
+                        };
+                        handler(&gpui::ClickEvent::default(), window, cx);
+                        links.push(cx.read_from_clipboard().unwrap().text().unwrap());
+                    }
+                    links
                 })
                 .unwrap();
+            assert_eq!(links[0], link("target.md", ""));
+            assert_eq!(links[1], link("target.md", "#Distant%20checkpoint"));
+            assert_eq!(links[2], links[0], "Note menu uses the quick window scope");
+            assert_eq!(links[3], links[1], "TOC menu retains heading intent");
             assert!(
                 !loose.join(super::super::vault_name::DIRECTORY).exists(),
                 "single-file copies never create vault metadata"
             );
+            links
         };
-        copy_single_file_links(cx);
+        let copied = copy_single_file_links(cx);
+        // Deliver exact clipboard strings through the application URL entrypoint.
+        // No known vault contains this file: a vault URL cannot pass this control.
+        for (url, block) in copied.iter().zip([0, 60, 0, 60]) {
+            cx.update(|cx| dispatch_urls(vec![url.clone()], cx));
+            settle(cx);
+            assert_eq!(readers(cx), vec![(true, "target.md".into(), block)]);
+            cx.update(|cx| {
+                let live = super::readers(cx);
+                assert_eq!(live.len(), 1);
+                assert_eq!(
+                    live[0], reader,
+                    "clipboard redelivery reuses the same Reader"
+                );
+                let reader = reader.read(cx);
+                assert_eq!(reader.reader_window, window);
+                assert!(
+                    reader.link_notice.is_none(),
+                    "the requested landing succeeds"
+                );
+                assert!(
+                    reader.index_dir.is_none()
+                        && reader.cache_lease.is_none()
+                        && reader.searcher.is_none()
+                        && reader.watcher.is_none()
+                );
+                assert!(!known_roots(cx).contains(&loose));
+            });
+        }
+        // Caret Copy uses the same production helper and preserves line/column.
+        let caret_link = window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| {
+                    reader.toggle_source(window, cx);
+                    reader.open_link(
+                        "target.md",
+                        okilum_core::deep_link::Position {
+                            line: Some(81),
+                            column: Some(4),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    reader.copy_link_to_line(window, cx);
+                    cx.read_from_clipboard().unwrap().text().unwrap()
+                })
+            })
+            .unwrap();
+        assert_eq!(caret_link, link("target.md", "?line=81&column=4"));
+        window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| {
+                    reader.open_link(
+                        "target.md",
+                        okilum_core::deep_link::Position {
+                            line: Some(1),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                });
+            })
+            .unwrap();
+        settle(cx);
+        cx.update(|cx| {
+            let reader = reader.read(cx);
+            assert_eq!(
+                reader.editing_caret_line(cx),
+                Some(1),
+                "settled away from copied line"
+            );
+            assert_eq!(
+                reader
+                    .source_input()
+                    .unwrap()
+                    .read(cx)
+                    .cursor_position()
+                    .character,
+                0
+            );
+        });
+        cx.update(|cx| dispatch_urls(vec![caret_link], cx));
+        settle(cx);
+        cx.update(|cx| {
+            let reader = reader.read(cx);
+            assert!(reader.single_file);
+            assert_eq!(reader.editing_caret_line(cx), Some(81));
+            assert_eq!(
+                reader
+                    .source_input()
+                    .unwrap()
+                    .read(cx)
+                    .cursor_position()
+                    .character,
+                3
+            );
+        });
+        window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| reader.toggle_source(window, cx));
+            })
+            .unwrap();
+        settle(cx);
 
         // Real publication persisted quick history. The public entrypoint
         // must not interpret it as enrollment on the next delivery.
@@ -3859,6 +3981,189 @@ mod entry_tests {
             !loose_cache.exists(),
             "history-only redelivery never acquires the default vault cache"
         );
+    }
+
+    /// #1439/r22: accepted UTF-8 delivery can canonicalize to a raw-byte root.
+    /// Copy must refuse rather than redirect identity to a replacement-name sibling.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn quick_copy_refuses_raw_byte_root_without_replacing_clipboard(cx: &mut TestAppContext) {
+        use super::super::reader_history::TestSessionDirectory;
+        use gpui_component::WindowExt as _;
+        use std::{
+            ffi::OsString,
+            os::unix::{ffi::OsStringExt, fs::symlink},
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let raw = base.join(OsString::from_vec(vec![0xff]));
+        let replacement = base.join("\u{fffd}");
+        let alias = base.join("utf8-alias");
+        let source_a = "# Source A\n\nOriginal raw-byte root.\n";
+        let source_b = "# Source B\n\nDifferent replacement-name root.\n";
+        for (root, source) in [(&raw, source_a), (&replacement, source_b)] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("target.md"), source).unwrap();
+        }
+        symlink(&raw, &alias).unwrap();
+        assert_ne!(raw, replacement);
+        assert_eq!(raw.to_string_lossy(), replacement.to_str().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(replacement.join("target.md")).unwrap(),
+            source_b
+        );
+        let intent = OpenIntent::validate(&alias.join("target.md"), None, None).unwrap();
+        assert!(intent.single_file);
+        assert_eq!(intent.root, raw);
+        assert_eq!(intent.note.as_deref(), Some("target.md"));
+        let url = okilum_core::deep_link::build_file(&alias.join("target.md"), &Default::default())
+            .unwrap();
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(base.join("state")));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            super::super::reader_ui_state::install(&base.join("ui-state"), cx);
+            super::super::reader_ui_state::trust_for_links(&raw, cx);
+            assert!(known_roots(cx).is_empty());
+            dispatch_urls(vec![url], cx);
+        });
+        for _ in 0..5 {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(300));
+        }
+        cx.run_until_parked();
+        let (reader, window) = cx.update(|cx| {
+            let live = readers(cx);
+            assert_eq!(live.len(), 1);
+            let reader = live[0].clone();
+            let window = reader.read(cx).reader_window;
+            assert!(reader.read(cx).document_ready());
+            assert_eq!(
+                reader.read(cx).note_source,
+                source_a,
+                "actual accepted Reader shows A"
+            );
+            (reader, window)
+        });
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        // Raw roots cannot be serialized in reading history. Observe and close
+        // that independent startup notice before measuring Copy feedback.
+        visual.update(|window, cx| {
+            let state = reader.read(cx);
+            let notice = state.link_notice.as_ref().expect("raw-root history fails");
+            assert!(notice.starts_with("Reading history could not be saved:"));
+            assert!(notice.contains("invalid UTF-8"));
+            window.draw(cx).clear(cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(window.notifications(cx).len(), 1, "startup history notice");
+            assert!(super::super::reader_toast::dismiss(window, cx));
+        });
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(reader.read(cx).link_notice.is_none());
+            assert!(window.notifications(cx).is_empty());
+        });
+        // Leased Note, heading and caret actions plus actual Note/file and TOC
+        // menu callbacks. Every refusal must keep the sentinel and show an error.
+        for action in 0..5 {
+            visual.update(|window, cx| {
+                assert!(window.notifications(cx).is_empty());
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string("clipboard sentinel".into()));
+                if action < 3 {
+                    reader.update(cx, |reader, cx| match action {
+                        0 => reader.file_action(
+                            super::super::reader_files::FileAction::OkilumLink,
+                            window,
+                            cx,
+                        ),
+                        1 => reader.copy_heading_link("Source A".into(), window, cx),
+                        _ => {
+                            reader.toggle_source(window, cx);
+                            assert!(reader.source_input().is_some(), "caret Copy really fires");
+                            reader.copy_link_to_line(window, cx);
+                        }
+                    });
+                } else {
+                    let item = if action == 3 {
+                        super::super::reader_files::okilum_link_item(
+                            raw.clone(),
+                            "target.md".into(),
+                        )
+                    } else {
+                        super::super::reader_deep_link::heading_copy_item(
+                            &reader.downgrade(),
+                            "Source A".into(),
+                        )
+                    };
+                    let gpui_component::menu::PopupMenuItem::Item {
+                        handler: Some(handler),
+                        disabled: false,
+                        ..
+                    } = item
+                    else {
+                        panic!("Copy must have an enabled production callback")
+                    };
+                    handler(&gpui::ClickEvent::default(), window, cx);
+                }
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().unwrap(),
+                    "clipboard sentinel"
+                );
+                assert_eq!(
+                    window.notifications(cx).len(),
+                    1,
+                    "only refusal, no success toast"
+                );
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual.debug_bounds("reader-error-toast").is_some(),
+                "explicit UI error for Copy action {action}"
+            );
+            visual.update(|window, cx| {
+                assert!(super::super::reader_toast::dismiss(window, cx));
+            });
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            visual.run_until_parked();
+        }
+        visual.update(|_, cx| {
+            let live = readers(cx);
+            assert_eq!(live, vec![reader.clone()], "no sibling Reader is selected");
+            let reader = reader.read(cx);
+            assert_eq!(reader.vault_root, raw);
+            assert_eq!(reader.current_rel, "target.md");
+            assert_eq!(reader.note_source, source_a);
+            assert!(reader.single_file);
+            assert!(
+                reader.index_dir.is_none()
+                    && reader.cache_lease.is_none()
+                    && reader.searcher.is_none()
+                    && reader.watcher.is_none()
+            );
+            assert!(known_roots(cx).is_empty(), "no enrollment");
+        });
+        for (root, source) in [(&raw, source_a), (&replacement, source_b)] {
+            assert!(!root.join(super::super::vault_name::DIRECTORY).exists());
+            assert_eq!(
+                std::fs::read_to_string(root.join("target.md")).unwrap(),
+                source
+            );
+        }
     }
 
     /// #1414: exact-file reuse is reserved before the first document can
