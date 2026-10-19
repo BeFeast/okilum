@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import re
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -80,7 +81,35 @@ class LinuxWindowTests(unittest.TestCase):
         self.assertIn('  workflow_dispatch:', workflow)
         self.assertIn('runs-on: bridge', workflow)
         # The release checkout builds the commit select chose (main tip on a tick).
-        self.assertIn("(inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source", workflow)
+        release = workflow.split('  release:\n', 1)[1].split('\n  arch-github:\n', 1)[0]
+        header, *steps = re.split(r'\n      - ', release)
+        checkouts = [s for s in steps if s.startswith('uses:') and 'checkout@' in s.splitlines()[0]]
+        self.assertEqual(len(checkouts), 2)
+        trusted, selected = checkouts
+        self.assertNotRegex(trusted, r'(?m)^          ref:')
+        self.assertRegex(selected, r'(?m)^          ref: \$\{\{ needs.select.outputs.source \}\}$')
+        for checkout in checkouts:
+            self.assertRegex(checkout, r'(?m)^          fetch-depth: 0$')
+            self.assertRegex(checkout, r'(?m)^          persist-credentials: false$')
+        guard = next(s for s in steps if s.startswith('name: Reject unsupported selected consumer tooling before checkout\n'))
+        self.assertEqual(steps.index(guard), steps.index(trusted) + 1)
+        self.assertEqual(steps.index(selected), steps.index(guard) + 1)
+        self.assertIn('OKILUM_SELECTED_SOURCE: ${{ needs.select.outputs.source }}', guard)
+        self.assertIn('run: python3 scripts/arch/select-source.py "$OKILUM_SELECTED_SOURCE"', guard)
+        self.assertNotRegex(guard, r'(?m)^        if:')
+        resolve = next(s for s in steps if s.startswith('name: Resolve exact required-CI production bytes\n'))
+        self.assertLess(steps.index(selected), steps.index(resolve))
+        self.assertIn('OKILUM_SELECTED_SOURCE: ${{ needs.select.outputs.source }}', resolve)
+        self.assertIn("if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository", resolve)
+        self.assertEqual([line.strip() for line in resolve.split('        run: |\n', 1)[1].splitlines()], [
+            'export PR_HEAD_SHA="$(git rev-parse HEAD)"',
+            'test "$PR_HEAD_SHA" = "$OKILUM_SELECTED_SOURCE"',
+            'python3 scripts/ci/github-linux.py resolve',
+        ])
+        self.assertIn("if: needs.select.outputs.build == 'true'", header)
+        for step in (next(s for s in steps if '          name: arch-publication\n' in s),
+                     next(s for s in steps if s.startswith('name: Dispatch protected publication\n'))):
+            self.assertRegex(step, r"(?m)^        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'$")
         self.assertIn('python3 scripts/releases/coalesce.py linux', workflow)
         self.assertIn("if: needs.select.outputs.build == 'true'", workflow)
         self.assertIn('cancel-in-progress: false', workflow)

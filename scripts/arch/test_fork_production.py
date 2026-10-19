@@ -12,7 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -235,12 +235,32 @@ pathlib.Path('okilum-0.1.%s-1-x86_64.pkg.tar.zst' % receipt['manifest']['build']
         with self.assertRaises(ValueError):
             fork.p.package_receipt(path, f.SHA, BUILD)
         store, key = Mock(), Mock()
+        store.call.return_value = None
         args = argparse.Namespace(command='publish', package=str(path), source=f.SHA, build=BUILD)
-        with self.assertRaises(ValueError):
-            publisher.execute(args, store, key, self.root)
-        store.call.assert_not_called()
+        with patch.object(publisher.native_payload, 'package_receipt',
+                wraps=publisher.native_payload.package_receipt) as canonical, \
+                patch.object(publisher.native_payload, 'authenticate_receipt',
+                    side_effect=AssertionError('Fork receipt must not reach unsigned authentication')) as authenticate, \
+                patch.object(publisher, 'publish_channel') as channel, \
+                patch.object(publisher.catalog, 'record') as catalog_record:
+            with self.assertRaisesRegex(ValueError, 'Wrong schema/source'):
+                publisher.execute(args, store, key, self.root)
+            canonical.assert_called_once_with(path, f.SHA, BUILD)
+            authenticate.assert_not_called()
+            channel.assert_not_called()
+            catalog_record.assert_not_called()
+        # Direct publication checks known-build signature authority first. An
+        # absent archive permits only these reads before canonical fork refusal.
+        archive = f'okilum/arch/builds/{BUILD}'
+        name = path.name
+        self.assertEqual(store.mock_calls, [
+            call.call('GET', f'{archive}/manifest.json'),
+            call.call('GET', f'{archive}/{name}'),
+            call.call('GET', f'{archive}/{name}.sig'),
+        ])
         store.put.assert_not_called()
         key.sign.assert_not_called()
+        self.assertEqual(key.mock_calls, [])
         # A package transformation must fail before upload/install. The compiler
         # count remains unchanged even on this failed packaging invocation.
         stripped = subprocess.run(['bash', str(source / 'build.sh')], cwd=self.root,
