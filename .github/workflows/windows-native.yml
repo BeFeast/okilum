@@ -1,36 +1,32 @@
-name: Windows native diagnostics
+# Diagnostic-ref-only replacement of an already registered dispatch workflow.
+# No push trigger. This ref has no native/Cargo/producer/upload job.
+name: Claim visibility metadata 1431 R3
 on:
   workflow_dispatch:
-    inputs:
-      package: {required: true, default: okilum-sync-controller}
-      features: {required: false, default: ''}
-      test-filter: {description: 'One test-name substring, not multiple filters or extra flags', required: false, default: ''}
-permissions: {contents: read}
-concurrency: {group: 'windows-native-${{ github.ref }}', cancel-in-progress: true}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: claim-metadata-1431-r3-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  native:
-    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main'
-    runs-on: windows-2022
-    timeout-minutes: 30
+  claim-metadata:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'BeFeast/okilum' &&
+      github.ref == 'refs/heads/diagnostic/1431-claim-metadata-r3-20261019' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Keep checkout and vendor patches in LF format
-        shell: bash
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-      - uses: actions/checkout@v4
-      - name: Diagnose patch line endings
-        shell: bash
-        run: |
-          git config --show-origin core.autocrlf
-          git ls-files --eol scripts/patches
-          if LC_ALL=C grep -l $'\r' scripts/patches/*.diff; then
-            echo '::error::CRLF detected in vendor patches; checkout must preserve LF'
-            exit 1
-          fi
-      - run: bash scripts/vendor-setup.sh
-      - shell: pwsh
-        env: {PKG: '${{ inputs.package }}', FEATURES: '${{ inputs.features }}', FILTER: '${{ inputs.test-filter }}'}
-        run: |
-          Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+      - name: Read allowlisted claim metadata only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/ci/claim-metadata-probe.py
