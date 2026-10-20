@@ -5,11 +5,10 @@ use super::{
     Source, MAX_EVENT_BYTES, MAX_ROWS, PAGE_ROWS,
 };
 use anyhow::{bail, ensure, Context, Result};
-use reqwest::{blocking::Client, Method};
+use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
-    io::Read,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -41,10 +40,40 @@ impl Drop for ApiKey {
     }
 }
 
+/// Only explicit transport outages retry automatically; query/auth/quality errors do not.
+#[derive(Debug)]
+pub(super) struct Transient(pub &'static str);
+impl std::fmt::Display for Transient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for Transient {}
+
+#[derive(Debug)]
+pub(super) struct Incomplete(pub String);
+impl std::fmt::Display for Incomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Incomplete {}
+
+#[derive(Debug)]
+struct Rejected(String);
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Rejected {}
+
+#[derive(Clone)]
 pub struct Kibana {
     client: Client,
     endpoint: Url,
-    key: ApiKey,
+    key: Arc<ApiKey>,
+    runtime: Arc<tokio::runtime::Runtime>,
     cancelled: Arc<AtomicBool>,
 }
 impl Kibana {
@@ -52,7 +81,16 @@ impl Kibana {
         source.validate()?;
         Self::with_endpoint(Url::parse(&source.endpoint)?, key, cancelled)
     }
-    fn with_endpoint(endpoint: Url, key: ApiKey, cancelled: Arc<AtomicBool>) -> Result<Self> {
+    pub(super) fn with_endpoint(
+        endpoint: Url,
+        key: ApiKey,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        );
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))
@@ -61,9 +99,16 @@ impl Kibana {
         Ok(Self {
             client,
             endpoint,
-            key,
+            key: Arc::new(key),
+            runtime,
             cancelled,
         })
+    }
+    pub(super) fn with_cancellation(&self, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            ..self.clone()
+        }
     }
     fn request(
         &self,
@@ -101,35 +146,69 @@ impl Kibana {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().map_err(|error| {
-            if error.is_timeout() { anyhow::anyhow!("Kibana request timed out; check VPN and server availability") }
-            else { anyhow::anyhow!("Kibana connection failed; check VPN, HTTPS certificate trust and the saved source") }
-        })?;
-        let status = response.status().as_u16();
-        let backend = response
-            .headers()
-            .get("x-console-proxy-status-code")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u16>().ok());
-        match status {
-            401 | 403 => bail!("Kibana authentication or permission denied (HTTP {status}); update this source's OS-stored key"),
-            300..=399 => bail!("Kibana redirected the request; credentials were not forwarded. Import the final HTTPS Discover URL"),
-            400 => bail!("Kibana rejected the query or internal route (HTTP 400); this Kibana/Elasticsearch capability may be unsupported"),
-            200..=299 => {},
-            _ => bail!("Kibana request failed (HTTP {status})"),
-        }
-        if proxy {
-            ensure!(backend.is_some_and(|s| (200..300).contains(&s)), "Elasticsearch console-proxy request failed or its backend status is unknown ({backend:?})");
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(RESPONSE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .context("Cannot read the Kibana response")?;
-        ensure!(
-            bytes.len() as u64 <= RESPONSE_BYTES,
-            "Kibana response exceeds 8 MiB; use a narrower time range"
+        request = request.timeout(
+            if cleanup
+                && !query
+                    .iter()
+                    .any(|(key, value)| *key == "method" && *value == "POST")
+            {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_secs(10)
+            },
         );
+        let execute = async {
+            let mut response = request.send().await.map_err(|error| {
+                anyhow::anyhow!(Transient(if error.is_timeout() {
+                    "Kibana request timed out; check VPN and server availability"
+                } else {
+                    "Kibana connection failed; check VPN, HTTPS trust and the saved source"
+                }))
+            })?;
+            let status = response.status().as_u16();
+            let backend = response
+                .headers()
+                .get("x-console-proxy-status-code")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u16>().ok());
+            match status {
+                401 | 403 => return Err(anyhow::anyhow!(Rejected(format!("Kibana authentication or permission denied (HTTP {status}); update this source's OS-stored key")))),
+                300..=399 => bail!("Kibana redirected the request; credentials were not forwarded. Import the final HTTPS Discover URL"),
+                400 => return Err(anyhow::anyhow!(Rejected("Kibana rejected the query or internal route (HTTP 400); this Kibana/Elasticsearch capability may be unsupported".into()))),
+                500..=599 => return Err(anyhow::anyhow!(Transient("Kibana server is unavailable"))),
+                200..=299 => {},
+                _ => bail!("Kibana request failed (HTTP {status})"),
+            }
+            if proxy {
+                ensure!(backend.is_some_and(|s| (200..300).contains(&s)), "Elasticsearch console-proxy request failed or its backend status is unknown ({backend:?})");
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| anyhow::anyhow!(Transient("Kibana response was interrupted")))?
+            {
+                ensure!(
+                    bytes.len() + chunk.len() <= RESPONSE_BYTES as usize,
+                    "Kibana response exceeds 8 MiB; use a narrower time range"
+                );
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok::<_, anyhow::Error>(bytes)
+        };
+        let bytes = self.runtime.block_on(async {
+            if cleanup {
+                return execute.await;
+            }
+            tokio::select! {
+                result = execute => result,
+                _ = async {
+                    while !self.cancelled.load(Ordering::Acquire) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => bail!("Log request cancelled"),
+            }
+        })?;
         let value: Value =
             serde_json::from_slice(&bytes).context("Kibana did not return valid JSON")?;
         ensure!(
@@ -184,11 +263,39 @@ pub struct History {
     seen: HashSet<(String, String)>,
     bytes: usize,
     finished: bool,
+    unacknowledged_search: bool,
     pub pattern: String,
 }
+// A failed acquisition still owns a received handle when cleanup is unavailable.
+// The session extracts this owner before returning the underlying visible error.
+pub(super) struct AcquireFailure {
+    pub error: anyhow::Error,
+    pub history: Box<History>,
+}
+impl std::fmt::Debug for AcquireFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AcquireFailure").field(&self.error).finish()
+    }
+}
+impl std::fmt::Display for AcquireFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+impl std::error::Error for AcquireFailure {}
+
 impl History {
+    pub fn set_cancellation(&mut self, cancelled: Arc<AtomicBool>) {
+        self.kibana.cancelled = cancelled;
+    }
+    pub(super) fn uncertain(&self) -> bool {
+        self.unacknowledged_search
+    }
+    pub(super) fn has_resources(&self) -> bool {
+        self.unacknowledged_search || self.pit.is_some() || !self.async_ids.is_empty()
+    }
     pub fn can_page(&self) -> bool {
-        !self.finished && self.pit.is_some()
+        !self.finished && !self.unacknowledged_search && self.pit.is_some()
     }
     pub fn open(kibana: Kibana, state: Discover) -> Result<Self> {
         state.validate()?;
@@ -218,12 +325,18 @@ impl History {
             "Only data views using @timestamp are currently supported"
         );
         let path = format!("{pattern}/_pit?keep_alive=1m&allow_partial_search_results=false");
-        let opened = kibana.proxy("POST", &path, None, false).context("Cannot open history snapshot; if the server created a PIT without returning its ID, cleanup is unconfirmed")?;
+        ensure!(
+            !kibana.cancelled.load(Ordering::Acquire),
+            "Log request cancelled"
+        );
+        // Shield handle acquisition from local cancellation, then close a stale
+        // acquired handle. An unreceived handle cannot be retried as an outage.
+        let opened = kibana.proxy("POST", &path, None, true).map_err(|error| anyhow::anyhow!("Cannot open history snapshot: {error}; server cleanup is unconfirmed if an ID was not received; automatic retry stopped"))?;
         let pit = opened["id"]
             .as_str()
             .context("PIT ID missing; server cleanup is unconfirmed")?
             .to_owned();
-        let history = Self {
+        let mut history = Self {
             kibana,
             state,
             range,
@@ -233,10 +346,28 @@ impl History {
             seen: HashSet::new(),
             bytes: 0,
             finished: false,
+            unacknowledged_search: false,
             pattern,
         };
         // A successfully acquired handle is already guarded before inspecting quality.
-        quality(&opened, history.pattern.contains(':'))?;
+        if let Err(error) = quality(&opened, history.pattern.contains(':')) {
+            let cleanup = history.close();
+            let error = anyhow::anyhow!(Incomplete(format!(
+                "{error}; PIT cleanup {}",
+                if cleanup.is_ok() {
+                    "confirmed"
+                } else {
+                    "unconfirmed"
+                }
+            )));
+            if history.has_resources() {
+                return Err(anyhow::anyhow!(AcquireFailure {
+                    error,
+                    history: Box::new(history)
+                }));
+            }
+            return Err(error);
+        }
         Ok(history)
     }
     pub fn page(&mut self) -> Result<Page> {
@@ -246,12 +377,16 @@ impl History {
         );
         match self.read_page() {
             Ok(page) => Ok(page),
-            Err(error) => match self.close() {
-                Ok(()) => Err(error),
-                Err(_) => Err(anyhow::anyhow!(
-                    "{error}; resource cleanup could not be confirmed"
-                )),
-            },
+            Err(error) => {
+                let cleanup = self.close();
+                if self.unacknowledged_search {
+                    return Err(anyhow::anyhow!(Incomplete(format!("{error:#}; latest PIT/async handle may be unreceived. Cleanup unconfirmed; automatic continuation stopped"))));
+                }
+                match cleanup {
+                    Ok(()) => Err(error),
+                    Err(_) => Err(error.context("Resource cleanup could not be confirmed")),
+                }
+            }
         }
     }
     fn read_page(&mut self) -> Result<Page> {
@@ -268,14 +403,26 @@ impl History {
             .state
             .search_body(&self.range, self.after.as_ref(), size)?;
         let payload = json!({"params":{"pit":{"id":pit,"keep_alive":"1m"},"body":body,"track_total_hits":false,"timeout":"5s","allow_partial_search_results":false},"legacyHitsTotal":false});
-        let mut response = self.kibana.request(
-            Method::POST,
-            "/internal/search/es",
-            &[],
-            Some(&payload),
-            false,
-            false,
-        )?;
+        ensure!(
+            !self.kibana.cancelled.load(Ordering::Acquire),
+            "Log request cancelled"
+        );
+        self.unacknowledged_search = true;
+        let mut response = self
+            .kibana
+            .request(
+                Method::POST,
+                "/internal/search/es",
+                &[],
+                Some(&payload),
+                false,
+                false,
+            )
+            .inspect_err(|error| {
+                if error.is::<Rejected>() {
+                    self.unacknowledged_search = false;
+                }
+            })?;
         for poll in 0..=2 {
             if let Some(id) = response.get("id").and_then(Value::as_str) {
                 self.async_ids.insert(id.into());
@@ -283,6 +430,7 @@ impl History {
             let raw = response.get("rawResponse").unwrap_or(&response);
             if let Some(id) = raw.get("pit_id").and_then(Value::as_str) {
                 self.pit = Some(id.to_owned());
+                self.unacknowledged_search = false;
             }
             ensure!(
                 response["isRunning"].is_boolean() && response["isPartial"].is_boolean(),
@@ -300,14 +448,21 @@ impl History {
                 .as_str()
                 .context("Async search ID is missing")?;
             let route = Kibana::route_id("/internal/search/es", id);
+            self.unacknowledged_search = true;
             response =
                 self.kibana
                     .request(Method::POST, &route, &[], Some(&payload), false, false)?;
         }
-        ensure!(
-            response["isPartial"] == false,
-            "Kibana returned an incomplete result; previous results are retained"
-        );
+        if self.unacknowledged_search {
+            return Err(anyhow::anyhow!(Incomplete(
+                "Search did not acknowledge its current PIT handle".into()
+            )));
+        }
+        if response["isPartial"] != false {
+            return Err(anyhow::anyhow!(Incomplete(
+                "Kibana returned an incomplete result; previous results are retained".into()
+            )));
+        }
         let raw = response
             .get("rawResponse")
             .context("Search raw response is missing")?;
@@ -315,7 +470,8 @@ impl History {
             raw["timed_out"] == false,
             "Search timed out or its timeout status is unknown"
         );
-        quality(raw, self.pattern.contains(':'))?;
+        quality(raw, self.pattern.contains(':'))
+            .map_err(|error| anyhow::anyhow!(Incomplete(error.to_string())))?;
         let hits = raw["hits"]["hits"]
             .as_array()
             .context("Search hits are missing")?;
@@ -379,22 +535,31 @@ impl History {
     }
     pub fn close(&mut self) -> Result<()> {
         self.finished = true;
-        let mut failed = false;
-        for id in self.async_ids.drain() {
+        let mut failed = self.unacknowledged_search;
+        for id in self.async_ids.clone() {
             let route = Kibana::route_id("/internal/search/es", &id);
-            failed |= self
+            if self
                 .kibana
                 .request(Method::DELETE, &route, &[], None, false, true)
-                .is_err();
+                .is_ok()
+            {
+                self.async_ids.remove(&id);
+            } else {
+                failed = true;
+            }
         }
-        if let Some(id) = self.pit.take() {
-            let result = self
+        if let Some(id) = self.pit.clone() {
+            match self
                 .kibana
-                .proxy("DELETE", "_pit", Some(&json!({"id":id})), true);
-            failed |= result.is_err()
-                || result
-                    .as_ref()
-                    .is_ok_and(|v| v["succeeded"] != true || v["num_freed"].as_u64().is_none());
+                .proxy("DELETE", "_pit", Some(&json!({"id":id})), true)
+            {
+                Ok(value)
+                    if value["succeeded"] == true && value["num_freed"].as_u64().is_some() =>
+                {
+                    self.pit = None
+                }
+                _ => failed = true,
+            }
         }
         ensure!(!failed, "PIT or async cleanup could not be confirmed");
         Ok(())
@@ -439,7 +604,7 @@ fn quality(raw: &Value, ccs: bool) -> Result<()> {
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
         sync::Mutex,
         thread,
@@ -625,7 +790,7 @@ mod tests {
         let token = client.cancelled.clone();
         let mut history = History::open(client, super::super::tests::state()).unwrap();
         token.store(true, Ordering::Relaxed);
-        let error = history.page().unwrap_err().to_string();
+        let error = format!("{:#}", history.page().unwrap_err());
         assert!(error.contains("cancelled") && error.contains("cleanup"));
         drop(history);
         thread.join().unwrap();

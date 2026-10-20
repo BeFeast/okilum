@@ -558,6 +558,41 @@ impl LogView {
         data: Arc<okilum_core::remote_log::EventWindow>,
         cx: &mut Context<Self>,
     ) {
+        let positions = match &self.state {
+            State::Remote(old) if old.identity_scope == data.identity_scope => {
+                let identity = |event: &serde_json::Value| -> Option<(String, String)> {
+                    Some((
+                        event["_index"].as_str()?.into(),
+                        event["_id"].as_str()?.into(),
+                    ))
+                };
+                let next: std::collections::HashMap<_, _> = data
+                    .events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, event)| Some((identity(event)?, index)))
+                    .collect();
+                old.events
+                    .iter()
+                    .map(|event| identity(event).and_then(|key| next.get(&key).copied()))
+                    .collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        };
+        let remap = |index: usize| positions.get(index).copied().flatten();
+        self.selected = self.selected.and_then(remap);
+        self.anchor = self.anchor.and_then(remap);
+        self.marks = self
+            .marks
+            .iter()
+            .filter_map(|&(source, index)| {
+                if source == 0 {
+                    remap(index).map(|index| (0, index))
+                } else {
+                    None
+                }
+            })
+            .collect();
         self.generations.next();
         self._filtering = None;
         self.filter_running = None;
@@ -565,9 +600,6 @@ impl LogView {
         self.histogram = None;
         self._histogram = None;
         self.state = State::Remote(data);
-        self.selected = None;
-        self.anchor = None;
-        self.marks.clear();
         self.rows = None;
         self.refilter(cx);
         self.after_rows_changed();

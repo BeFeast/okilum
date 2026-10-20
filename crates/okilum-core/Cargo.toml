@@ -55,6 +55,9 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 tar = { version = "0.4", optional = true }
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+# Reuse the existing HTTP runtime/channel versions for cancellable remote sessions.
+tokio = { version = "1", features = ["rt", "sync", "macros", "time", "net"] }
+async-channel = "2"
 
 [dev-dependencies]
 # The default reader parses Markdown with markdown-rs inside gpui-component

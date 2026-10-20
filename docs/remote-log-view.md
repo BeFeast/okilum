@@ -113,3 +113,73 @@ a late-arrival-safe strategy is established. Event-time watermarks and a short
 overlap are not treated as that strategy. T3 remote payload encoding/parsing is an
 independent tested seam; production vault routing waits on the owner of #1414.
 No deep-link source from PR #1438 is modified by this slice.
+
+
+## Live reconciliation slice (#1441)
+
+Start is explicit and applies to the last successfully applied query. A fixed
+historical range first offers a rolling window of the same exact duration or
+continued reconciliation of the fixed range. Import refresh/pause never starts
+network following. The session continues independently of window focus; closing
+its window cancels the request and worker. Apply, including an invalid draft,
+stops the old generation while retaining the previous applied query and rows.
+
+Each cycle opens a **new PIT**, freezes that cycle's absolute range, and traverses
+ALL pages in the imported sort using verbatim nanos/search_after values and the
+PIT tie-breaker. The cursor is never reused across cycles. A document becoming
+searchable behind the previous cycle's cursor is included by a later complete
+cycle if its event time remains inside that cycle's selected range. No ingest
+clock or positive timestamp offset is assumed. This relies on the already
+researched PIT snapshot/paging contract; synthetic real-HTTP controls exercise
+the worker against an independent frozen-snapshot server, not corporate latency
+or universal KQL parity.
+
+Coverage is a completed PIT snapshot, not continuous present-time completeness.
+The UI shows Catching up and scanned pages/events, cycle start/range/duration,
+reconnecting, incomplete, stopped and terminal errors. A complete cycle atomically
+replaces the displayed window; a failed/partial/bounded cycle retains the previous
+snapshot and does not silently evict unseen older pages. Sort, identities, details,
+selection and marks follow document identity within the same source/endpoint/data
+view. Rolling windows deliberately expire events outside their stated interval.
+Offline intervals outside the current selected window are not recovered.
+
+Polling waits two seconds AFTER completion, with only one request in flight.
+Outages before resource-producing search reconnect with bounded backoff and full-window paginated reconciliation;
+no missed-interval shortcut or timestamp watermark is used. Known PIT/async IDs
+remain owned until successful cleanup; reconnect retries cleanup before acquiring
+another PIT. Failure to receive an opened PIT ID stops automatic retry with an
+explicit unconfirmed-cleanup error. Handle acquisition is shielded from local
+cancellation for its bounded request deadline, so a returned stale handle can be
+closed. Ordinary search requests are actually aborted when the generation is
+cancelled. Cleanup has its own bounded deadline and remains possible after cancel.
+
+The existing 10,000-event / 16 MiB serialized-event / 64 MiB display limits remain.
+A full cycle exceeding them, or 60 seconds, stops following with **Incomplete** and
+asks for a narrower range. Even an exact limit is treated conservatively as
+incomplete until exhaustion is established. No lower page is silently dropped to
+claim coverage. There is one candidate plus the previous displayed snapshot and a
+bounded latest-command/latest-update mailbox, not an accumulating poll queue.
+Large 24-hour windows can take many pages or exceed these bounds; this design
+makes **no five-second guarantee**. Visibility-to-UI latency, native keychain,
+corporate-source UI acceptance, T3 routing and delivery remain separate evidence.
+
+An interrupted search can leave its newest PIT/async ID unreceived. The existing
+live receipts do not establish that closing an older acknowledged ID frees all
+possibly rotated contexts. The client attempts known cleanup, reports cleanup
+unconfirmed, retains the previous rows, and blocks new PIT acquisition in that
+session. It does not claim unrestricted mid-search reconnect or certified cleanup
+for unreceived handles. This is a concrete compatibility gap tracked with #1440,
+not a successful cancellation-cleanup claim or a reason to substitute an event
+watermark. Normal complete cycles and safe pre-search reconnect remain available.
+
+The pinned Kibana 9.5.4 [`es` strategy](https://github.com/elastic/kibana/blob/abf4eb613d64cdb3a6290671ce1cb67399677ab3/src/platform/plugins/shared/data/server/search/strategies/es_search/es_search_strategy.ts#L29-L90)
+wraps ordinary ES search, with `isRunning:false` and `isPartial:false`; it does not
+provide a retained async-search ID or cancellation API. Defensive async handling
+in the client is not evidence that this deployment supports another strategy.
+ES 9.5.4 [PIT relocation](https://github.com/elastic/elasticsearch/blob/9170df19cae1adb107b7b489b4d82dec66d7a337/server/src/main/java/org/elasticsearch/action/search/AbstractSearchAsyncAction.java#L727-L791)
+can re-encode resource locations after eligible retries, whereas
+[close](https://github.com/elastic/elasticsearch/blob/9170df19cae1adb107b7b489b4d82dec66d7a337/server/src/main/java/org/elasticsearch/action/search/TransportClosePointInTimeAction.java#L59-L129)
+addresses the locations in the supplied ID. Applicability to Integration is
+unknown; this source counterexample is not an observed leak. It explains the
+conservative lost-response restriction above, including when last-known close
+succeeds. Socket cancellation and PIT deletion have distinct lifecycles.
