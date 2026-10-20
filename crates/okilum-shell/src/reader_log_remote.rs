@@ -1,17 +1,8 @@
 //! Kibana controls around the existing LogView, not a second event renderer.
 use crate::*;
 use anyhow::Context as _;
-use okilum_core::remote_log::{
-    self,
-    discover::TimeRange,
-    transport::{ApiKey, History, Kibana},
-    EventWindow, Source,
-};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
-
+use okilum_core::remote_log::live::{Mode, Status, Update, Worker};
+use okilum_core::remote_log::{self, discover::TimeRange, transport::ApiKey, EventWindow, Source};
 #[derive(Default)]
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
@@ -86,145 +77,12 @@ fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &m
     }
 }
 
-enum Command {
-    Apply(Box<Source>, ApiKey),
-    More,
-}
-struct Loaded {
-    window: Arc<EventWindow>,
-    source: Source,
-    range: TimeRange,
-    more: bool,
-    message: String,
-}
-enum Reply {
-    Loaded(Box<Loaded>),
-    Error(String, bool),
-    Idle,
-}
-struct Worker {
-    sender: mpsc::Sender<Command>,
-    cancelled: Arc<AtomicBool>,
-}
-type ActiveHistory = (History, Source, Vec<Arc<serde_json::Value>>);
-impl Drop for Worker {
-    fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Relaxed);
-    }
-}
-impl Worker {
-    fn start() -> (Self, async_channel::Receiver<Reply>) {
-        let (sender, commands) = mpsc::channel();
-        let (replies, receiver) = async_channel::bounded(2);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let token = cancelled.clone();
-        std::thread::spawn(move || {
-            let mut current: Option<ActiveHistory> = None;
-            loop {
-                let command = match commands.recv_timeout(Duration::from_secs(45)) {
-                    Ok(command) => command,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if let Some((mut history, _, _)) = current.take() {
-                            let reply = match history.close() {
-                                Ok(()) => Reply::Idle,
-                                Err(error) => Reply::Error(error.to_string(), false),
-                            };
-                            if replies.send_blocking(reply).is_err() {
-                                break;
-                            }
-                        }
-                        continue;
-                    }
-                };
-                if token.load(Ordering::Relaxed) {
-                    break;
-                }
-                let result: Result<Loaded> = (|| match command {
-                    Command::Apply(source, key) => {
-                        let source = *source;
-                        let client = Kibana::new(&source, key, token.clone())?;
-                        let mut history = History::open(client, source.discover.clone())?;
-                        let page = history.page()?;
-                        let events: Vec<_> = page.events.into_iter().map(Arc::new).collect();
-                        let data = Arc::new(EventWindow::new(events.clone(), &source)?);
-                        let mut message = format!("History loaded: {} events", data.events.len());
-                        if page.complete {
-                            message.push_str(" · End of this snapshot");
-                        }
-                        if page.limited {
-                            message.push_str(" · Loaded limit reached; narrow the query");
-                        }
-                        if let Some(warning) = page.cleanup_warning {
-                            message.push_str(&format!(" · {warning}"));
-                        }
-                        if let Some((mut old, _, _)) = current.take() {
-                            if old.close().is_err() {
-                                message.push_str(" · Previous snapshot cleanup unconfirmed");
-                            }
-                        }
-                        let loaded = Loaded {
-                            window: data,
-                            source: source.clone(),
-                            range: page.range,
-                            more: !page.complete && !page.limited,
-                            message,
-                        };
-                        current = Some((history, source, events));
-                        Ok(loaded)
-                    }
-                    Command::More => {
-                        let (history, source, events) = current
-                            .as_mut()
-                            .context("History snapshot closed; Apply to restart")?;
-                        let page = history.page()?;
-                        events.extend(page.events.into_iter().map(Arc::new));
-                        let data = match EventWindow::new(events.clone(), source) {
-                            Ok(data) => Arc::new(data),
-                            Err(error) => {
-                                let _ = history.close();
-                                return Err(error);
-                            }
-                        };
-                        let mut message = format!("{} loaded events", data.events.len());
-                        if page.complete {
-                            message.push_str(" · End of this snapshot");
-                        }
-                        if page.limited {
-                            message.push_str(" · Loaded limit reached; narrow the query");
-                        }
-                        if let Some(warning) = page.cleanup_warning {
-                            message.push_str(&format!(" · {warning}"));
-                        }
-                        Ok(Loaded {
-                            window: data,
-                            source: source.clone(),
-                            range: page.range,
-                            more: !page.complete && !page.limited,
-                            message,
-                        })
-                    }
-                })();
-                let reply = match result {
-                    Ok(loaded) => Reply::Loaded(Box::new(loaded)),
-                    Err(error) => Reply::Error(
-                        format!("{error:#}"),
-                        current.as_ref().is_some_and(|(h, _, _)| h.can_page()),
-                    ),
-                };
-                if replies.send_blocking(reply).is_err() {
-                    break;
-                }
-            }
-            // All HTTP/PIT destructors run on this worker, never the UI thread.
-            drop(current);
-        });
-        (Self { sender, cancelled }, receiver)
-    }
-}
-
 struct Panel {
     pending_link: Option<remote_log::link::RemoteLink>,
+    generation: u64,
+    following: bool,
+    credential_pending: bool,
+    proposal: Option<Mode>,
     sources_loaded: bool,
     vault: PathBuf,
     state: PathBuf,
@@ -270,40 +128,16 @@ impl Panel {
         let (worker, events) = Worker::start();
         let _events = cx.spawn(async move |this, cx| {
             while let Ok(reply) = events.recv().await {
-                if this.update(cx, |this, cx| {
-                    match reply {
-                        Reply::Error(error, more) => {
-                            this.busy = false;
-                            this.more = more;
-                            this.message = "History request failed; previous applied results are retained.".into();
-                            this.error = Some(error);
+                if this
+                    .update(cx, |this, cx| {
+                        if reply.generation != this.generation || this.credential_pending {
+                            return;
                         }
-                        Reply::Idle => {
-                            this.more = false;
-                            this.message = "History snapshot closed after idle; Apply to refresh. Loaded events retained.".into();
-                        }
-                        Reply::Loaded(loaded) => {
-                            let Loaded { window, source, range, more, message } = *loaded;
-                            this.busy = false;
-                            this.error = None;
-                            this.more = more;
-                            this.range = Some(range);
-                            this.message = message;
-                            reader_ui_state::set_log_columns(
-                                &window.path.to_string_lossy(),
-                                source.discover.columns.clone(),
-                                cx,
-                            );
-                            this.applied = Some(source);
-                            this.data = Some(window.clone());
-                            if let Some(view) = &this.view {
-                                view.update(cx, |view, cx| view.replace_remote(window, cx));
-                            }
-                            // Initial view construction needs a Window; render creates it once.
-                        }
-                    }
-                    cx.notify();
-                }).is_err() {
+                        this.receive(reply, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -328,9 +162,10 @@ impl Panel {
                 cx.notify();
             });
         });
-        Self{pending_link:None,sources_loaded:false,vault,state,name,url,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        Self{generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
     }
     fn choose(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop();
         self.key = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Encoded API key → OS credential storage")
@@ -398,9 +233,8 @@ impl Panel {
         Ok(source)
     }
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
+        self.stop();
+        let requested_generation = self.generation;
         let source = match self.candidate(cx) {
             Ok(source) => source,
             Err(error) => {
@@ -426,6 +260,7 @@ impl Panel {
         let root = self.vault.clone();
         let directory = self.state.clone();
         self.busy = true;
+        self.credential_pending = true;
         self.error = None;
         self.message =
             "Loading history… previous applied rows are retained until the request succeeds".into();
@@ -456,6 +291,10 @@ impl Panel {
                 Err(error) => Err(error),
             };
             let _ = this.update(cx, |this, cx| {
+                if this.generation != requested_generation {
+                    return;
+                }
+                this.credential_pending = false;
                 match result {
                     Ok(key) => {
                         if let Some(old) = this.sources.iter_mut().find(|s| s.id == source.id) {
@@ -464,15 +303,7 @@ impl Panel {
                             this.sources.push(source.clone());
                         }
                         this.draft = Some(source.clone());
-                        if this
-                            .worker
-                            .sender
-                            .send(Command::Apply(Box::new(source), key))
-                            .is_err()
-                        {
-                            this.busy = false;
-                            this.error = Some("History worker stopped; reopen this window".into());
-                        }
+                        this.generation = this.worker.apply(source, key);
                     }
                     Err(error) => {
                         this.busy = false;
@@ -485,6 +316,143 @@ impl Panel {
             });
         }));
         cx.notify();
+    }
+    fn stop(&mut self) {
+        self._credential = None;
+        self.credential_pending = false;
+        self.generation = self.worker.stop();
+        self.following = false;
+        self.busy = false;
+        self.more = false;
+        self.proposal = None;
+    }
+    fn propose_start(&mut self, cx: &mut Context<Self>) {
+        if self.following || self.busy {
+            return;
+        }
+        let result = self
+            .range
+            .as_ref()
+            .context("Apply history first")
+            .and_then(Mode::rolling_same_duration);
+        match result {
+            Ok(mode)
+                if self
+                    .applied
+                    .as_ref()
+                    .is_some_and(|s| s.discover.time.absolute()) =>
+            {
+                self.proposal = Some(mode)
+            }
+            Ok(mode) => self.begin_live(mode),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+    fn begin_live(&mut self, mode: Mode) {
+        let Some(applied) = &self.applied else {
+            return;
+        };
+        self.generation = self.worker.start_live(mode, applied);
+        self.following = true;
+        self.busy = true;
+        self.error = None;
+        self.message = "Catching up — reconciling every page of the selected window".into();
+    }
+    fn receive(&mut self, update: Update, cx: &mut Context<Self>) {
+        self.following = update.following;
+        self.more = false;
+        self.busy = matches!(update.status, Status::CatchingUp { .. });
+        if let Some(loaded) = update.loaded {
+            let changed = self
+                .data
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &loaded.window));
+            if changed {
+                if self.applied.as_ref().is_none_or(|previous| {
+                    previous.id != loaded.source.id
+                        || previous.discover.columns != loaded.source.discover.columns
+                }) {
+                    reader_ui_state::set_log_columns(
+                        &loaded.window.path.to_string_lossy(),
+                        loaded.source.discover.columns.clone(),
+                        cx,
+                    );
+                }
+                self.applied = Some(loaded.source.clone());
+                self.range = Some(loaded.range.clone());
+                self.data = Some(loaded.window.clone());
+                if let Some(view) = &self.view {
+                    view.update(cx, |view, cx| {
+                        view.replace_remote(loaded.window.clone(), cx)
+                    });
+                }
+            }
+            if matches!(update.status, Status::History { .. }) {
+                self.more = loaded.more;
+            }
+        }
+        match update.status {
+            Status::History {
+                complete,
+                limited,
+                warning,
+            } => {
+                self.error = warning;
+                self.message = format!(
+                    "History loaded{}{}",
+                    if complete { " · End of snapshot" } else { "" },
+                    if limited {
+                        " · Loaded limit reached; older pages not covered"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Status::CatchingUp {
+                range,
+                pages,
+                scanned,
+            } => {
+                self.error = None;
+                self.message = format!("Catching up · {pages} pages / {scanned} events scanned · {} → {} · Previous snapshot shown until the whole cycle completes", range.from, range.to);
+            }
+            Status::Complete {
+                range,
+                began,
+                seconds,
+                pages,
+            } => {
+                self.error = None;
+                self.message = format!("Window snapshot complete · {pages} pages in {seconds:.2}s · cycle began {began} · {} → {}. Later searchable arrivals await a new cycle; no five-second guarantee.", range.from, range.to);
+            }
+            Status::Reconnecting {
+                attempt,
+                after_seconds,
+                error,
+            } => {
+                self.error = Some(error);
+                self.message = format!("Reconnecting · attempt {attempt}, retry in {after_seconds}s · Next cycle catches up every page in the current selected window. Offline periods outside that window are not recovered.");
+            }
+            Status::Incomplete {
+                range,
+                scanned,
+                reason,
+            } => {
+                self.error = Some(reason);
+                self.message = format!("Incomplete · {scanned} scanned · Following stopped; previous snapshot retained{}", range.map(|r|format!(" · {} → {}",r.from,r.to)).unwrap_or_default());
+            }
+            Status::Error(error) => {
+                self.error = Some(error);
+                self.message = "Request failed; previous applied query and rows retained. Correct the source/query and Apply.".into();
+            }
+            Status::Stopped { warning } => {
+                if warning.is_some() {
+                    self.error = warning;
+                }
+                self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
+            }
+        }
     }
     fn export(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
@@ -601,14 +569,19 @@ impl Render for Panel {
             .child(v_flex().p_3().gap_2().flex_none()
                 .child(h_flex().gap_2().child(div().w(px(180.)).child(Input::new(&self.name).small())).child(div().flex_1().child(Input::new(&self.url).small())).child(Button::new("remote-import").small().label("Import Discover URL").disabled(self.busy).on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))).child(saved))
                 .child(Input::new(&self.key).small())
-                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.kql).small())).child(Button::new("remote-apply").small().label("Apply query and filters").disabled(self.busy).on_click(cx.listener(|this,_,window,cx|this.apply(window,cx)))))
+                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.kql).small())).child(Button::new("remote-apply").small().label("Apply query and filters").on_click(cx.listener(|this,_,window,cx|this.apply(window,cx)))))
                 .child(div().text_xs().child("Filters JSON — includes disabled, negated and pinned filters; edits apply together with KQL"))
                 .child(Input::new(&self.filters).small())
                 .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.from).small())).child(div().flex_1().child(Input::new(&self.to).small()))
                     .child(Button::new("remote-reverse").small().label("Reverse sort (Apply)").disabled(self.busy).on_click(cx.listener(|this,_,_,cx|{if let Some(draft)=this.draft.as_mut(){for sort in &mut draft.discover.sort{sort.order=if sort.order=="asc"{"desc"}else{"asc"}.into();}cx.notify();}}))))
-                .child(h_flex().gap_2().child(Button::new("remote-more").small().label(if self.applied.as_ref().is_some_and(|s|s.discover.sort[0].order=="asc"){ "Load later" }else{"Load older"}).disabled(self.busy||!self.more).on_click(cx.listener(|this,_,_,cx|{this.busy=true;if this.worker.sender.send(Command::More).is_err(){this.busy=false;this.error=Some("History worker stopped".into());}cx.notify();})))
+                .child(h_flex().gap_2().child(Button::new("remote-more").small().label(if self.applied.as_ref().is_some_and(|s|s.discover.sort[0].order=="asc"){ "Load later" }else{"Load older"}).disabled(self.busy||!self.more).on_click(cx.listener(|this,_,_,cx|{this.busy=true;this.generation=this.worker.more();cx.notify();})))
                     .child(Button::new("remote-export").small().label("Export loaded JSONL").disabled(self.data.is_none()||self.exporting).on_click(cx.listener(|this,_,_,cx|this.export(cx))))
-                    .child(Button::new("remote-start").small().label("Start live — unavailable").disabled(true)))
+                    .child(Button::new("remote-start").small().label("Start applied query").disabled(self.applied.is_none()||self.following||self.busy).on_click(cx.listener(|this,_,_,cx|this.propose_start(cx))))
+                    .child(Button::new("remote-stop").small().label("Stop").disabled(!self.following&&!self.busy).on_click(cx.listener(|this,_,_,cx|{this.stop();cx.notify();}))))
+                .when(self.proposal.is_some(),|body|body.child(h_flex().gap_2()
+                    .child(div().flex_1().text_sm().child("Choose a rolling window of the same duration or keep this fixed historical range. Following starts only after you choose."))
+                    .child(Button::new("remote-confirm-rolling").small().label("Follow rolling window").on_click(cx.listener(|this,_,_,cx|{if let Some(mode)=this.proposal.take(){this.begin_live(mode);cx.notify();}})))
+                    .child(Button::new("remote-confirm-fixed").small().label("Follow fixed range").on_click(cx.listener(|this,_,_,cx|{this.proposal=None;if let Some(range)=this.range.clone(){this.begin_live(Mode::Fixed(range));cx.notify();}})))))
                 .child(div().text_xs().child(remote_log::LIVE_LIMITATION))
                 .child(div().text_xs().child(remote_log::KQL_LIMITATION))
                 .child(div().text_sm().child(self.message.clone()))
@@ -626,7 +599,6 @@ impl Render for Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::core::prelude::v1::test;
 
     fn source() -> Source {
         Source::import("Work", "https://logs.example/app/discover#/?_a=(index:events,query:(language:kuery,query:''),columns:!(description),sort:!(!('@timestamp',desc)))&_g=(time:(from:'2026-10-20T12:00:00Z',to:'2026-10-20T12:15:00Z'),refreshInterval:(pause:!t,value:0))").unwrap()
@@ -724,14 +696,69 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(std::fs::read(output).unwrap(), exported);
         panel.read_with(visual, |panel, _| assert!(!panel.exporting));
+        panel.update(visual, |panel, cx| {
+            panel.range = Some(source().discover.time);
+            let before = panel.worker.generation();
+            panel.propose_start(cx);
+            assert!(panel.proposal.is_some());
+            assert!(!panel.following);
+            assert_eq!(
+                panel.worker.generation(),
+                before,
+                "historical proposal sends no live command before a choice"
+            );
+        });
         cx.quit();
     }
-    #[test]
-    fn closing_worker_cancels_future_requests_without_needing_ui_or_host_state() {
-        let (worker, replies) = Worker::start();
-        let cancelled = worker.cancelled.clone();
-        drop(worker);
-        assert!(cancelled.load(Ordering::Relaxed));
-        drop(replies);
+    #[gpui::test]
+    fn reconciled_windows_keep_selection_marks_and_old_snapshot_by_document_identity(
+        cx: &mut TestAppContext,
+    ) {
+        let source = source();
+        let event = |id: &str| {
+            Arc::new(
+                serde_json::json!({"_index":"events","_id":id,"_source":{"@timestamp":"2026-10-20T12:01:00.123456789Z","description":id}}),
+            )
+        };
+        let initial = Arc::new(EventWindow::new(vec![event("a"), event("b")], &source).unwrap());
+        cx.update(gpui_component::init);
+        let mut view = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| reader_log::LogView::remote(initial.clone(), window, cx));
+            view = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let view = view.unwrap();
+        visual.run_until_parked();
+        let old = view.update(visual, |view, _| {
+            view.selected = Some(0);
+            view.anchor = Some(0);
+            view.marks.insert((0, 0));
+            view.snapshot_of(0).unwrap()
+        });
+        let updated = Arc::new(
+            EventWindow::new(vec![event("b"), event("new"), event("a")], &source).unwrap(),
+        );
+        view.update(visual, |view, cx| view.replace_remote(updated, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.selected, Some(2));
+            assert_eq!(view.anchor, Some(2));
+            assert!(view.marks.contains(&(0, 2)));
+        });
+        let reader_log::Snapshot::Remote(old) = old else {
+            panic!("expected an immutable remote snapshot")
+        };
+        assert!(Arc::ptr_eq(&old, &initial));
+        assert_eq!(old.events[0]["_id"], "a");
+        let mut other = source;
+        other.endpoint = "https://other.example".into();
+        let updated = Arc::new(EventWindow::new(vec![event("a")], &other).unwrap());
+        view.update(visual, |view, cx| view.replace_remote(updated, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(view.selected.is_none() && view.marks.is_empty())
+        });
+        cx.quit();
     }
 }

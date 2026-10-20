@@ -3,6 +3,7 @@
 //! from event timestamps, bounded compatibility checks, or history pagination.
 pub mod discover;
 pub mod link;
+pub mod live;
 mod rison;
 #[cfg(test)]
 mod tests;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 pub const PAGE_ROWS: usize = 200;
 pub const MAX_ROWS: usize = 10_000;
 pub const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
-pub const LIVE_LIMITATION: &str = "Live is not available: a strategy that includes late arrivals throughout the selected period has not been verified. History remains available.";
+pub const LIVE_LIMITATION: &str = "Live reconciles the entire selected window through a fresh PIT each cycle, including late arrivals still in that window. Coverage is confirmed only after ALL pages complete. Bounds stop follow explicitly; large windows have no five-second guarantee.";
 pub const KQL_LIMITATION: &str = "Server-side KQL; general parity with Discover has not been established. Unsupported queries leave the previous results intact.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -135,6 +136,7 @@ pub struct EventWindow {
     pub bytes: Vec<u8>,
     pub index: crate::log::LogIndex,
     pub path: std::path::PathBuf,
+    pub identity_scope: String,
 }
 impl EventWindow {
     pub fn new(events: Vec<Arc<serde_json::Value>>, source: &Source) -> Result<Self> {
@@ -174,6 +176,11 @@ impl EventWindow {
             bytes,
             index,
             path: std::path::PathBuf::from(format!("kibana-{}.jsonl", source.id)),
+            identity_scope: serde_json::to_string(&(
+                source.id,
+                &source.endpoint,
+                &source.discover.data_view,
+            ))?,
         })
     }
     pub fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {

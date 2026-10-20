@@ -2,7 +2,7 @@ use super::*;
 use discover::{Discover, TimeRange};
 use serde_json::{json, Value};
 
-fn url(app: &str, global: &str) -> String {
+pub(super) fn url(app: &str, global: &str) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("_a", app)
         .append_pair("_g", global)

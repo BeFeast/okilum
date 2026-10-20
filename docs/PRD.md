@@ -31,7 +31,9 @@ provider jobs, canonical enrollment or deployment.
 
 **Remote Log view extension (2026-10-20, #1441):** [vault-scoped Kibana sources](remote-log-view.md)
 adds explicit Discover import and bounded remote history in the existing Log view.
-Credentials use OS storage; event data stays session-only. Live late-arrival completeness
+Credentials use OS storage; event data stays session-only. Live reconciliation reads the
+whole selected window through a fresh PIT per cycle and confirms coverage only after
+all pages finish; bounds stop explicitly as incomplete. Corporate/native live acceptance
 and the visibility target remain unproven and cannot be silently substituted.
 
 ## 1. What Okilum is
