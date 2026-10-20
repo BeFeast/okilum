@@ -606,9 +606,12 @@ mod tests {
         Source::import("Work", "https://logs.example/app/discover#/?_a=(index:events,query:(language:kuery,query:''),columns:!(description),sort:!(!('@timestamp',desc)))&_g=(time:(from:'2026-10-20T12:00:00Z',to:'2026-10-20T12:15:00Z'),refreshInterval:(pause:!t,value:0))").unwrap()
     }
     #[gpui::test]
-    fn invalid_apply_and_missing_keychain_preserve_applied_history_without_file_fallback(
+    async fn invalid_apply_and_missing_keychain_preserve_applied_history_without_file_fallback(
         cx: &mut TestAppContext,
     ) {
+        // The real session worker wakes this test from an OS thread, just like
+        // PDF and file-watcher tests; it is not driven by GPUI's test scheduler.
+        cx.executor().allow_parking();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("vault");
         let state = dir.path().join("state");
@@ -709,6 +712,15 @@ mod tests {
                 before,
                 "historical proposal sends no live command before a choice"
             );
+            panel.message = "Waiting for the real worker Stop acknowledgement".into();
+            panel.stop();
+        });
+        visual
+            .condition(&panel, |panel, _| panel.message.starts_with("Stopped ·"))
+            .await;
+        panel.read_with(visual, |panel, _| {
+            assert!(!panel.following && !panel.busy);
+            assert!(Arc::ptr_eq(panel.data.as_ref().unwrap(), &data));
         });
         cx.quit();
     }
