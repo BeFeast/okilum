@@ -282,6 +282,7 @@ fn worker(server: &Server) -> (Worker, async_channel::Receiver<Update>) {
             retry: Duration::from_millis(100),
             cycle: Duration::from_secs(10),
             idle: Duration::from_secs(45),
+            after_page: None,
         },
         Some(server.endpoint.clone()),
     )
@@ -517,4 +518,82 @@ fn rolling_proposal_keeps_duration_with_nanos_and_does_not_mutate_fixed_input() 
     assert_eq!(range.to, "2026-10-21T10:00:00.123456789Z");
     assert_eq!(range.from, "2026-10-20T10:00:00.123456789Z");
     assert_eq!(fixed.from, "2026-10-19T12:00:01Z");
+}
+
+#[test]
+fn cancel_between_pages_retains_handle_after_cleanup_failure_before_any_new_pit() {
+    let server = serve(201);
+    let (arrived, ready) = std::sync::mpsc::sync_channel(1);
+    let (release, proceed) = std::sync::mpsc::sync_channel(1);
+    let proceed = Mutex::new(proceed);
+    let (worker, events) = Worker::spawn(
+        Timing {
+            after_page: Some(Arc::new(move |page| {
+                if page == 1 {
+                    arrived.send(()).unwrap();
+                    proceed
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }
+            })),
+            ..Timing::default()
+        },
+        Some(server.endpoint.clone()),
+    );
+    let previous = applied(&worker, &events);
+    start(&worker, &previous);
+    ready.recv_timeout(Duration::from_secs(5)).unwrap(); // actual first HTTP page finished; PIT still owned.
+    server.state.lock().unwrap().fail_close = true;
+    let generation = worker.stop();
+    release.send(()).unwrap();
+    let stopped = until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Stopped { warning: Some(_) })
+    });
+    assert!(!stopped.following);
+    assert_eq!(server.state.lock().unwrap().pits.len(), 1);
+    assert_eq!(
+        server.state.lock().unwrap().opens,
+        2,
+        "no replacement snapshot while cleanup is unconfirmed"
+    );
+    let generation = worker.apply(
+        previous.source.clone(),
+        ApiKey::new(b"test-secret".to_vec()).unwrap(),
+    );
+    until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    });
+    assert_eq!(server.state.lock().unwrap().opens, 3);
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .closes
+        .iter()
+        .any(|id| id == "pit-2-r"));
+    close(worker, &events, &server);
+}
+#[test]
+fn final_page_crossing_cycle_deadline_stays_incomplete_and_keeps_previous_snapshot() {
+    let server = serve(2);
+    let (worker, events) = Worker::spawn(
+        Timing {
+            cycle: Duration::from_millis(50),
+            ..Timing::default()
+        },
+        Some(server.endpoint.clone()),
+    );
+    let previous = applied(&worker, &events);
+    server.state.lock().unwrap().delay = Duration::from_millis(100);
+    start(&worker, &previous);
+    let incomplete = until(&events, |u| matches!(u.status, Status::Incomplete { .. }));
+    assert!(!incomplete.following);
+    assert!(Arc::ptr_eq(
+        &incomplete.loaded.unwrap().window,
+        &previous.window
+    ));
+    assert!(server.state.lock().unwrap().pits.is_empty());
+    close(worker, &events, &server);
 }

@@ -136,6 +136,8 @@ struct Timing {
     retry: Duration,
     cycle: Duration,
     idle: Duration,
+    #[cfg(test)]
+    after_page: Option<Arc<dyn Fn(usize) + Send + Sync>>,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -144,6 +146,8 @@ impl Default for Timing {
             retry: Duration::from_secs(2),
             cycle: Duration::from_secs(60),
             idle: Duration::from_secs(45),
+            #[cfg(test)]
+            after_page: None,
         }
     }
 }
@@ -308,10 +312,7 @@ impl Engine {
                 }
                 Some(Command::Start(mode, expected)) => {
                     self.mode = None;
-                    let warning = self.close_history();
-                    if let Some(reason) = warning {
-                        Status::Error(reason)
-                    } else if !self.applied.as_ref().is_some_and(|a| {
+                    if !self.applied.as_ref().is_some_and(|a| {
                         a.source.id == expected.id
                             && a.source.endpoint == expected.endpoint
                             && a.source.discover == expected.discover
@@ -456,6 +457,13 @@ impl Engine {
             }
         }
     }
+    fn abandon_cycle(&mut self, mut history: History, range: TimeRange, scanned: usize) -> Status {
+        let cleanup = history.close();
+        if history.has_resources() {
+            self.applied.as_mut().unwrap().history = Some(history);
+        }
+        Status::Incomplete { range: Some(range), scanned, reason: format!("Full-window cycle exceeded {:.2}s; previous snapshot retained. Narrow the range. Cleanup: {}", self.timing.cycle.as_secs_f64(), if cleanup.is_ok() { "confirmed" } else { "unconfirmed" }) }
+    }
     fn scan(
         &mut self,
         shared: &Shared,
@@ -499,13 +507,14 @@ impl Engine {
         let mut events = Vec::new();
         let mut pages = 0;
         loop {
-            ensure!(!cancel.load(Ordering::Acquire), "Log request cancelled");
+            if cancel.load(Ordering::Acquire) {
+                // The pending Stop/Apply owns cleanup, including retry after a
+                // temporary outage; do not lose known handles through Drop.
+                self.applied.as_mut().unwrap().history = Some(history);
+                anyhow::bail!("Log request cancelled");
+            }
             if clock.elapsed() >= self.timing.cycle {
-                let cleanup = history.close();
-                if history.has_resources() {
-                    self.applied.as_mut().unwrap().history = Some(history);
-                }
-                return Ok(Status::Incomplete { range: Some(range), scanned: events.len(), reason: format!("Full-window cycle exceeded 60 seconds; previous snapshot retained. Narrow the range. Cleanup: {}", if cleanup.is_ok() { "confirmed" } else { "unconfirmed" }) });
+                return Ok(self.abandon_cycle(history, range, events.len()));
             }
             let page = match history.page() {
                 Ok(page) => page,
@@ -525,6 +534,13 @@ impl Engine {
             };
             pages += 1;
             events.extend(page.events.into_iter().map(Arc::new));
+            #[cfg(test)]
+            if let Some(hook) = &self.timing.after_page {
+                hook(pages);
+            }
+            if clock.elapsed() >= self.timing.cycle {
+                return Ok(self.abandon_cycle(history, range, events.len()));
+            }
             if page.limited || page.cleanup_warning.is_some() {
                 if history.has_resources() {
                     self.applied.as_mut().unwrap().history = Some(history);
@@ -534,6 +550,9 @@ impl Engine {
             if page.complete {
                 ensure!(!cancel.load(Ordering::Acquire), "Log request cancelled");
                 let window = Arc::new(EventWindow::new(events.clone(), &source)?);
+                if clock.elapsed() >= self.timing.cycle {
+                    return Ok(self.abandon_cycle(history, range, events.len()));
+                }
                 let current = shared.0.lock().unwrap();
                 ensure!(
                     current.generation == generation && !current.closing,
