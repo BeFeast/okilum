@@ -171,3 +171,15 @@ session. It does not claim unrestricted mid-search reconnect or certified cleanu
 for unreceived handles. This is a concrete compatibility gap tracked with #1440,
 not a successful cancellation-cleanup claim or a reason to substitute an event
 watermark. Normal complete cycles and safe pre-search reconnect remain available.
+
+The pinned Kibana 9.5.4 [`es` strategy](https://github.com/elastic/kibana/blob/abf4eb613d64cdb3a6290671ce1cb67399677ab3/src/platform/plugins/shared/data/server/search/strategies/es_search/es_search_strategy.ts#L29-L90)
+wraps ordinary ES search, with `isRunning:false` and `isPartial:false`; it does not
+provide a retained async-search ID or cancellation API. Defensive async handling
+in the client is not evidence that this deployment supports another strategy.
+ES 9.5.4 [PIT relocation](https://github.com/elastic/elasticsearch/blob/9170df19cae1adb107b7b489b4d82dec66d7a337/server/src/main/java/org/elasticsearch/action/search/AbstractSearchAsyncAction.java#L727-L791)
+can re-encode resource locations after eligible retries, whereas
+[close](https://github.com/elastic/elasticsearch/blob/9170df19cae1adb107b7b489b4d82dec66d7a337/server/src/main/java/org/elasticsearch/action/search/TransportClosePointInTimeAction.java#L59-L129)
+addresses the locations in the supplied ID. Applicability to Integration is
+unknown; this source counterexample is not an observed leak. It explains the
+conservative lost-response restriction above, including when last-known close
+succeeds. Socket cancellation and PIT deletion have distinct lifecycles.
