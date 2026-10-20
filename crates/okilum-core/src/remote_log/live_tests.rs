@@ -729,3 +729,110 @@ fn failed_pit_acquisition_retains_its_known_owner_until_cleanup_before_replaceme
         .any(|id| id == "pit-1"));
     close(worker, &events, &server);
 }
+
+#[test]
+fn superseded_initial_page_retains_cleanup_owner_before_publication() {
+    initial_page_publication_failure(false);
+}
+
+#[test]
+fn failed_initial_display_retains_cleanup_owner_before_publication() {
+    initial_page_publication_failure(true);
+}
+
+fn initial_page_publication_failure(fail_display: bool) {
+    let server = serve(201);
+    let shared = Arc::new((
+        Mutex::new(Mailbox {
+            generation: 1,
+            pending: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            closing: false,
+        }),
+        Condvar::new(),
+    ));
+    let worker = Worker {
+        shared: shared.clone(),
+    };
+    let mut engine = Engine::new(Timing::default(), Some(server.endpoint.clone()));
+    let key = || ApiKey::new(b"test-secret".to_vec()).unwrap();
+    let cancel = shared.0.lock().unwrap().cancel.clone();
+    engine.apply(source(), key(), cancel, &shared, 1).unwrap();
+    let previous = engine.loaded.clone().unwrap();
+    assert!(engine.close_history().is_none());
+    let (arrived, ready) = std::sync::mpsc::sync_channel(1);
+    let (release, proceed) = std::sync::mpsc::sync_channel(1);
+    let control = shared.clone();
+    let cancel = shared.0.lock().unwrap().cancel.clone();
+    let (sender, events) = async_channel::bounded(1);
+    let task = thread::spawn(move || {
+        let result =
+            engine.apply_with_window(source(), key(), cancel, &control, 1, |events, source| {
+                assert_eq!(
+                    events.len(),
+                    PAGE_ROWS,
+                    "real successful nonfinal page reached display construction"
+                );
+                arrived.send(()).unwrap();
+                proceed.recv_timeout(Duration::from_secs(5)).unwrap();
+                if fail_display {
+                    anyhow::bail!("injected display construction failure");
+                }
+                EventWindow::new(events, source)
+            });
+        let error = result.err().expect("publication must fail").to_string();
+        assert!(error.contains(if fail_display {
+            "display construction failure"
+        } else {
+            "cancelled"
+        }));
+        assert!(Arc::ptr_eq(
+            &engine.loaded.as_ref().unwrap().window,
+            &previous.window
+        ));
+        // Resume the actual command loop, including its replacement cleanup gate.
+        engine.run(control, sender);
+    });
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    {
+        let mut state = server.state.lock().unwrap();
+        assert_eq!(state.opens, 2);
+        assert_eq!(state.searches, 2);
+        assert_eq!(state.pits.len(), 1);
+        state.fail_close = true;
+    }
+    let generation = worker.stop();
+    release.send(()).unwrap();
+    until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Stopped { warning: Some(_) })
+    });
+    assert_eq!(
+        server.state.lock().unwrap().pits.len(),
+        1,
+        "failed close retains latest acknowledged scalar"
+    );
+    server.state.lock().unwrap().fail_close = true;
+    let generation = worker.apply(source(), key());
+    until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Error(_))
+    });
+    assert_eq!(
+        server.state.lock().unwrap().opens,
+        2,
+        "replacement is blocked while known cleanup fails"
+    );
+    let generation = worker.apply(source(), key());
+    until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    });
+    assert_eq!(server.state.lock().unwrap().opens, 3);
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .closes
+        .iter()
+        .any(|id| id == "pit-2-r"));
+    close(worker, &events, &server);
+    task.join().unwrap();
+}

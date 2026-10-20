@@ -387,28 +387,35 @@ impl Engine {
         shared: &Shared,
         generation: u64,
     ) -> Result<Status> {
+        self.apply_with_window(source, key, cancel, shared, generation, EventWindow::new)
+    }
+    fn apply_with_window(
+        &mut self,
+        source: Source,
+        key: ApiKey,
+        cancel: Arc<AtomicBool>,
+        shared: &Shared,
+        generation: u64,
+        build_window: impl FnOnce(Vec<Arc<serde_json::Value>>, &Source) -> Result<EventWindow>,
+    ) -> Result<Status> {
         source.validate()?;
         let client = match &self.endpoint {
             Some(endpoint) => Kibana::with_endpoint(endpoint.clone(), key, cancel)?,
             None => Kibana::new(&source, key, cancel)?,
         };
-        let mut history = self.acquire(client.clone(), source.discover.clone())?;
-        let page = match history.page() {
-            Ok(page) => page,
-            Err(error) => {
-                if history.has_resources() {
-                    self.pending_cleanup = Some(history);
-                }
-                return Err(error);
-            }
-        };
+        // Own the resource before any paging, fallible display construction or
+        // generation check. Early returns must leave cleanup retryable by the
+        // next command rather than relying on History's best-effort Drop.
+        self.pending_cleanup = Some(self.acquire(client.clone(), source.discover.clone())?);
+        let page = self.pending_cleanup.as_mut().unwrap().page()?;
         let events: Vec<_> = page.events.into_iter().map(Arc::new).collect();
-        let window = Arc::new(EventWindow::new(events.clone(), &source)?);
+        let window = Arc::new(build_window(events.clone(), &source)?);
         let current = shared.0.lock().unwrap();
         ensure!(
             current.generation == generation && !current.closing,
             "Log request cancelled"
         );
+        let history = self.pending_cleanup.take().unwrap();
         self.loaded = Some(Arc::new(Loaded {
             window,
             source: source.clone(),

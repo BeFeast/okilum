@@ -418,11 +418,10 @@ impl History {
                 false,
                 false,
             )
-            .map_err(|error| {
+            .inspect_err(|error| {
                 if error.is::<Rejected>() {
                     self.unacknowledged_search = false;
                 }
-                error
             })?;
         for poll in 0..=2 {
             if let Some(id) = response.get("id").and_then(Value::as_str) {
