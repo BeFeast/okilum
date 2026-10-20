@@ -934,6 +934,13 @@ impl Settings {
                                 cx.notify();
                             })))
                     }))
+                    .child(Button::new("settings-kibana-sources").label("Kibana sources…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this,_,_,cx| {
+                        if let Some(reader)=this.vault(cx) {
+                            let root=reader.read(cx).vault_root.clone();
+                            reader_log::remote::show(root,cx);
+                        }
+                    })))
+                    .child(div().text_sm().child("Import Discover URLs for the current vault. API keys stay in OS credential storage; loaded events stay in memory."))
                     .child(self.log_editor_controls(cx))
                     .children(root.map(|root| self.source_map_controls(&root, cx)))
                     .into_any_element()

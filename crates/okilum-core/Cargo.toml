@@ -20,7 +20,7 @@ tantivy = "0.26"
 rust-stemmers = "1"
 # For the index's date field: tantivy re-exports `time`, and parsing a
 # frontmatter date needs the same version it stores.
-time = { version = "0.3", features = ["macros", "parsing"] }
+time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
 walkdir = "2"
 # Vault change watcher (#6). Version already in the lockfile via gpui.
 notify = "7"
@@ -54,6 +54,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 # Portable, independently extractable exact brain archives.
 tar = { version = "0.4", optional = true }
 url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 
 [dev-dependencies]
 # The default reader parses Markdown with markdown-rs inside gpui-component

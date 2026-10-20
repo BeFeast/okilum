@@ -29,6 +29,11 @@ provider jobs, canonical enrollment or deployment.
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
 
+**Remote Log view extension (2026-10-20, #1441):** [vault-scoped Kibana sources](remote-log-view.md)
+adds explicit Discover import and bounded remote history in the existing Log view.
+Credentials use OS storage; event data stays session-only. Live late-arrival completeness
+and the visibility target remain unproven and cannot be silently substituted.
+
 ## 1. What Okilum is
 
 A local-first desktop knowledge environment that replaces Obsidian without taking
