@@ -87,7 +87,7 @@ fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &m
 }
 
 enum Command {
-    Apply(Source, ApiKey),
+    Apply(Box<Source>, ApiKey),
     More,
 }
 struct Loaded {
@@ -98,7 +98,7 @@ struct Loaded {
     message: String,
 }
 enum Reply {
-    Loaded(Loaded),
+    Loaded(Box<Loaded>),
     Error(String, bool),
     Idle,
 }
@@ -106,6 +106,7 @@ struct Worker {
     sender: mpsc::Sender<Command>,
     cancelled: Arc<AtomicBool>,
 }
+type ActiveHistory = (History, Source, Vec<Arc<serde_json::Value>>);
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
@@ -118,7 +119,7 @@ impl Worker {
         let cancelled = Arc::new(AtomicBool::new(false));
         let token = cancelled.clone();
         std::thread::spawn(move || {
-            let mut current: Option<(History, Source, Vec<Arc<serde_json::Value>>)> = None;
+            let mut current: Option<ActiveHistory> = None;
             loop {
                 let command = match commands.recv_timeout(Duration::from_secs(45)) {
                     Ok(command) => command,
@@ -141,6 +142,7 @@ impl Worker {
                 }
                 let result: Result<Loaded> = (|| match command {
                     Command::Apply(source, key) => {
+                        let source = *source;
                         let client = Kibana::new(&source, key, token.clone())?;
                         let mut history = History::open(client, source.discover.clone())?;
                         let page = history.page()?;
@@ -204,7 +206,7 @@ impl Worker {
                     }
                 })();
                 let reply = match result {
-                    Ok(loaded) => Reply::Loaded(loaded),
+                    Ok(loaded) => Reply::Loaded(Box::new(loaded)),
                     Err(error) => Reply::Error(
                         format!("{error:#}"),
                         current.as_ref().is_some_and(|(h, _, _)| h.can_page()),
@@ -411,7 +413,7 @@ impl Panel {
                         "OS credential storage could not save the key; no file fallback is used",
                     )?;
                 }
-                let read = cx.update(|cx| cx.read_credentials(&credential))?;
+                let read = cx.update(|cx| cx.read_credentials(&credential));
                 let (_, bytes) = read
                     .await
                     .context("OS credential storage is unavailable")?
@@ -442,7 +444,7 @@ impl Panel {
                         if this
                             .worker
                             .sender
-                            .send(Command::Apply(source, key))
+                            .send(Command::Apply(Box::new(source), key))
                             .is_err()
                         {
                             this.busy = false;
@@ -471,12 +473,23 @@ impl Panel {
         self.exporting = true;
         let destination = cx.prompt_for_new_path(&self.vault, Some("loaded-kibana-events.jsonl"));
         cx.spawn(async move |this, cx| {
-            let Ok(Some(path)) = destination.await else {
-                let _ = this.update(cx, |this, cx| {
-                    this.exporting = false;
-                    cx.notify();
-                });
-                return;
+            let selected = match destination.await {
+                Ok(Ok(path)) => Ok(path),
+                Ok(Err(_)) => Err("The export save dialog could not be opened"),
+                Err(_) => Err("The export save dialog closed unexpectedly"),
+            };
+            let path = match selected {
+                Ok(Some(path)) => path,
+                result => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.exporting = false;
+                        if let Err(error) = result {
+                            this.error = Some(error.into());
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
             };
             let result = cx
                 .background_executor()
@@ -665,6 +678,29 @@ mod tests {
         let row: serde_json::Value = serde_json::from_slice(&exported).unwrap();
         assert_eq!(row["_id"], "kept");
         assert_eq!(row["_source"]["nested"]["all"], serde_json::json!([1, 2]));
+
+        // Exercise the platform dialog receiver's nested result rather than
+        // only the serializer. Cancel retains the session; selection writes
+        // the same original all-fields event, without credential input.
+        panel.update(visual, |panel, cx| panel.export(cx));
+        assert!(
+            visual.did_prompt_for_new_path(),
+            "export reached the dialog"
+        );
+        visual.simulate_new_path_selection(|_| None);
+        visual.run_until_parked();
+        panel.read_with(visual, |panel, _| {
+            assert!(!panel.exporting);
+            assert!(Arc::ptr_eq(panel.data.as_ref().unwrap(), &data));
+        });
+        let output = dir.path().join("loaded.jsonl");
+        let selected = output.clone();
+        panel.update(visual, |panel, cx| panel.export(cx));
+        assert!(visual.did_prompt_for_new_path());
+        visual.simulate_new_path_selection(move |_| Some(selected));
+        visual.run_until_parked();
+        assert_eq!(std::fs::read(output).unwrap(), exported);
+        panel.read_with(visual, |panel, _| assert!(!panel.exporting));
         cx.quit();
     }
     #[test]
