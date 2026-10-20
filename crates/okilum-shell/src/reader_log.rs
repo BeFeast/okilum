@@ -24,6 +24,8 @@ use okilum_core::log::{
     LogSnapshot, LogTail, Query, Record, Role, TimeWindow, ValueKind, WindowInfo,
 };
 use std::ops::Range;
+#[path = "reader_log_remote.rs"]
+pub(crate) mod remote;
 
 const CONTEXT: &str = "ReaderLog";
 const ROW_HEIGHT: f32 = 24.;
@@ -163,6 +165,7 @@ enum State {
     Ready(LogDocument),
     Following { rel: String },
     Failed(String),
+    Remote(Arc<okilum_core::remote_log::EventWindow>),
 }
 
 /// What the view reads: the indexed file, or the followed file (#1159).
@@ -173,6 +176,31 @@ pub(crate) trait LogData {
     fn record(&self, index: usize) -> Option<Record>;
     fn path(&self) -> &Path;
     fn window(&self) -> WindowInfo;
+}
+
+impl LogData for okilum_core::remote_log::EventWindow {
+    fn index(&self) -> &LogIndex {
+        &self.index
+    }
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    fn raw(&self, index: usize) -> Option<&[u8]> {
+        self.index.raw(&self.bytes, index)
+    }
+    fn record(&self, index: usize) -> Option<Record> {
+        self.index.record(self.raw(index)?)
+    }
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn window(&self) -> WindowInfo {
+        WindowInfo {
+            end: self.bytes.len() as u64,
+            file_len: self.bytes.len() as u64,
+            ..Default::default()
+        }
+    }
 }
 
 impl LogData for LogFile {
@@ -222,6 +250,7 @@ enum Snapshot {
     File(Arc<LogFile>),
     Segment(Arc<Segment>),
     Held(Arc<LogSnapshot>),
+    Remote(Arc<okilum_core::remote_log::EventWindow>),
 }
 
 /// The name being typed to save the shown filter (#1169).
@@ -323,6 +352,7 @@ impl IndexCopy {
 impl Snapshot {
     fn window(&self) -> WindowInfo {
         match self {
+            Self::Remote(data) => data.window(),
             Self::File(file) => file.window(),
             Self::Segment(segment) => segment.window(),
             Self::Held(snapshot) => snapshot.window(),
@@ -330,6 +360,7 @@ impl Snapshot {
     }
     fn parts(&self) -> (&LogIndex, &[u8]) {
         match self {
+            Self::Remote(data) => (&data.index, &data.bytes),
             Snapshot::File(file) => (file.index(), file.bytes()),
             Snapshot::Segment(segment) => (segment.index(), segment.bytes()),
             Snapshot::Held(snapshot) => (snapshot.index(), snapshot.bytes()),
@@ -514,6 +545,35 @@ pub(crate) struct LogView {
 }
 
 impl LogView {
+    pub(crate) fn remote(
+        data: Arc<okilum_core::remote_log::EventWindow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new(State::Remote(data), window, cx)
+    }
+
+    pub(crate) fn replace_remote(
+        &mut self,
+        data: Arc<okilum_core::remote_log::EventWindow>,
+        cx: &mut Context<Self>,
+    ) {
+        self.generations.next();
+        self._filtering = None;
+        self.filter_running = None;
+        self.filter_again = false;
+        self.histogram = None;
+        self._histogram = None;
+        self.state = State::Remote(data);
+        self.selected = None;
+        self.anchor = None;
+        self.marks.clear();
+        self.rows = None;
+        self.refilter(cx);
+        self.after_rows_changed();
+        cx.notify();
+    }
+
     fn new(state: State, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter text…"));
         let events = cx.subscribe_in(
@@ -528,8 +588,13 @@ impl LogView {
                 _ => {}
             },
         );
+        let remote = matches!(&state, State::Remote(_));
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Query: level>=warn and status>=500")
+            InputState::new(window, cx).placeholder(if remote {
+                "Local loaded-row query (not KQL)"
+            } else {
+                "Query: level>=warn and status>=500"
+            })
         });
         let query_events = cx.subscribe_in(
             &query_input,
@@ -675,6 +740,9 @@ impl LogView {
 
     /// The records shown: the followed file once follow has opened it.
     fn data(&self) -> Option<&dyn LogData> {
+        if let State::Remote(data) = &self.state {
+            return Some(data.as_ref());
+        }
         match &self.follow {
             Some(follow) => Some(&follow.tail),
             None => self.file().map(|file| file.as_ref() as &dyn LogData),
@@ -682,6 +750,11 @@ impl LogView {
     }
 
     fn snapshot_of(&self, source: usize) -> Option<Snapshot> {
+        if source == 0 {
+            if let State::Remote(data) = &self.state {
+                return Some(Snapshot::Remote(data.clone()));
+            }
+        }
         match (source, &self.follow) {
             (0, Some(follow)) => Some(Snapshot::Held(follow.tail.snapshot())),
             (0, None) => self.file().cloned().map(Snapshot::File),
@@ -2501,6 +2574,9 @@ impl LogView {
         self.after_rows_changed();
     }
     fn window_notice(&self) -> Option<String> {
+        if matches!(&self.state, State::Remote(_)) {
+            return Some("Remote history — only loaded events are shown. Search, local filters and histogram cover these rows, not the full server result. Use Export loaded JSONL for original events and identities.".into());
+        }
         let windows: Vec<_> = self
             .enabled_sources()
             .into_iter()
@@ -3352,13 +3428,22 @@ impl LogView {
                     .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
             }))
             .children(history)
-            .child(self.regex_button(cx))
+            .when(!matches!(&self.state, State::Remote(_)), |bar| {
+                bar.child(self.regex_button(cx))
+            })
             .child(self.saved_button(cx))
-            .child(self.export_button(cx))
+            .when(!matches!(&self.state, State::Remote(_)), |bar| {
+                bar.child(self.export_button(cx))
+            })
             .child(self.columns_button(cx))
-            .child(self.files_button(cx))
+            .when(!matches!(&self.state, State::Remote(_)), |bar| {
+                bar.child(self.files_button(cx))
+            })
             // A compressed log does not grow (#1164).
-            .when(!self.compressed(), |bar| bar.child(self.follow_button(cx)))
+            .when(
+                !self.compressed() && !matches!(&self.state, State::Remote(_)),
+                |bar| bar.child(self.follow_button(cx)),
+            )
             .child(
                 div()
                     .flex_none()
@@ -4191,6 +4276,10 @@ impl LogView {
 
     fn status(&self) -> String {
         let mut text = match (&self.state, &self.follow) {
+            (State::Remote(data), _) => format!(
+                "{} loaded remote events · Local filters affect loaded rows only",
+                grouped(data.events.len() as u64)
+            ),
             (State::Indexing, _) => "Indexing…".to_owned(),
             (State::Failed(error), _) => format!("Cannot show this log: {error}"),
             (State::Ready(_) | State::Following { .. }, Some(follow)) => {
@@ -4337,6 +4426,7 @@ impl Render for LogView {
         } else {
             let message = match &self.state {
                 State::Ready(_) | State::Following { .. } => "This log is empty",
+                State::Remote(_) => "No remote events loaded",
                 State::Indexing | State::Failed(_) => "",
             };
             list.flex()

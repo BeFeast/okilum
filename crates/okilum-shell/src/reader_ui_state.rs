@@ -229,6 +229,13 @@ struct Store {
     serial: Arc<AtomicU64>,
     pending: Option<Task<()>>,
 }
+
+pub(crate) fn state_directory(cx: &App) -> anyhow::Result<PathBuf> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.path.parent())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("Application state is unavailable; sources were not saved"))
+}
 impl Global for Store {}
 
 fn read(path: &Path) -> anyhow::Result<Saved> {
