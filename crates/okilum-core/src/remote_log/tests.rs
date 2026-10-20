@@ -126,6 +126,37 @@ fn sources_are_vault_scoped_durable_and_contain_no_key_or_original_url() {
 }
 
 // Used by transport's real loopback-HTTP controls; never a live compatibility claim.
+#[test]
+fn ambiguous_enabled_filters_and_unproven_time_rounding_refuse_execution() {
+    let mut state = state();
+    state.filters = vec![
+        json!({"meta":{"disabled":false},"query":{"term":{"a":"b"}},"range":{"@timestamp":{"gte":"now-1m"}}}),
+    ];
+    assert!(state
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("exactly one"));
+    // Keeping a disabled filter is intentional; enabling it must not select
+    // one of its clauses invisibly by precedence.
+    state.filters[0]["meta"]["disabled"] = json!(true);
+    assert!(state.validate().is_ok());
+    state.filters.clear();
+    state.time.to = "now-1d/d".into();
+    assert!(state
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("Rounded date math"));
+    state.time.to = "now".into();
+    state.time.from = "now-2d/d".into();
+    assert!(state
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("Rounded date math"));
+}
+
 pub(super) fn state() -> Discover {
     discover::import(&sample()).unwrap().1
 }

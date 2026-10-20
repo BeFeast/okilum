@@ -306,6 +306,14 @@ impl Discover {
                 continue;
             }
             ensure!(
+                ["query", "range", "exists"]
+                    .iter()
+                    .filter(|key| filter.get(**key).is_some())
+                    .count()
+                    == 1,
+                "An enabled filter must contain exactly one query, range or exists clause"
+            );
+            ensure!(
                 meta.get("index")
                     .is_none_or(|id| id.is_null() || id.as_str() == Some(&self.data_view)),
                 "Active filter references a different data view"
@@ -420,8 +428,9 @@ impl TimeRange {
             }
             let re = regex::Regex::new(r"^now-(\d+)(ms|s|m|h|d|w)(?:/([smhd]))?$").unwrap();
             let c = re.captures(text).context(
-                "Unsupported date math; use now or now-Nms/s/m/h/d/w, optionally rounded /s/m/h/d",
+                "Unsupported date math; use now or now-Nms/s/m/h/d/w; rounding is not supported",
             )?;
+            ensure!(c.get(3).is_none(), "Rounded date math is not supported without established timezone and upper-bound semantics; use an explicit RFC3339 range");
             let scale = |unit: &str| -> i128 {
                 match unit {
                     "ms" => 1_000_000,
@@ -436,13 +445,10 @@ impl TimeRange {
             let offset = n
                 .checked_mul(scale(&c[2]))
                 .context("Time range is too large")?;
-            let mut stamp = now
+            let stamp = now
                 .unix_timestamp_nanos()
                 .checked_sub(offset)
                 .context("Time range is too large")?;
-            if let Some(unit) = c.get(3) {
-                stamp -= stamp.rem_euclid(scale(unit.as_str()));
-            }
             time::OffsetDateTime::from_unix_timestamp_nanos(stamp)
                 .context("Time range is outside the supported dates")
         }
