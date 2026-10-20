@@ -780,7 +780,7 @@ fn initial_page_publication_failure(fail_display: bool) {
                 }
                 EventWindow::new(events, source)
             });
-        let error = result.err().expect("publication must fail").to_string();
+        let error = result.expect_err("publication must fail").to_string();
         assert!(error.contains(if fail_display {
             "display construction failure"
         } else {
