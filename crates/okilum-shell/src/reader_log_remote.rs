@@ -268,21 +268,44 @@ impl Panel {
         let from = input("From: now-15m or RFC3339", cx, window);
         let to = input("To: now or RFC3339", cx, window);
         let (worker, events) = Worker::start();
-        let _events=cx.spawn(async move |this,cx| {
-            while let Ok(reply)=events.recv().await {
-                if this.update(cx,|this,cx| {
+        let _events = cx.spawn(async move |this, cx| {
+            while let Ok(reply) = events.recv().await {
+                if this.update(cx, |this, cx| {
                     match reply {
-                        Reply::Error(error,more)=>{this.busy=false;this.more=more;this.message="History request failed; previous applied results are retained.".into();this.error=Some(error);},
-                        Reply::Idle=>{this.more=false;this.message="History snapshot closed after idle; Apply to refresh. Loaded events retained.".into();},
-                        Reply::Loaded(loaded)=>{
-                            this.busy=false;this.error=None;this.more=loaded.more;this.range=Some(loaded.range);this.message=loaded.message;
-                            reader_ui_state::set_log_columns(&loaded.window.path.to_string_lossy(),loaded.source.discover.columns.clone(),cx);
-                            this.applied=Some(loaded.source);this.data=Some(loaded.window.clone());
-                            if let Some(view)=&this.view{view.update(cx,|view,cx|view.replace_remote(loaded.window,cx));}
+                        Reply::Error(error, more) => {
+                            this.busy = false;
+                            this.more = more;
+                            this.message = "History request failed; previous applied results are retained.".into();
+                            this.error = Some(error);
+                        }
+                        Reply::Idle => {
+                            this.more = false;
+                            this.message = "History snapshot closed after idle; Apply to refresh. Loaded events retained.".into();
+                        }
+                        Reply::Loaded(loaded) => {
+                            let Loaded { window, source, range, more, message } = *loaded;
+                            this.busy = false;
+                            this.error = None;
+                            this.more = more;
+                            this.range = Some(range);
+                            this.message = message;
+                            reader_ui_state::set_log_columns(
+                                &window.path.to_string_lossy(),
+                                source.discover.columns.clone(),
+                                cx,
+                            );
+                            this.applied = Some(source);
+                            this.data = Some(window.clone());
+                            if let Some(view) = &this.view {
+                                view.update(cx, |view, cx| view.replace_remote(window, cx));
+                            }
                             // Initial view construction needs a Window; render creates it once.
                         }
-                    }cx.notify();
-                }).is_err(){break;}
+                    }
+                    cx.notify();
+                }).is_err() {
+                    break;
+                }
             }
         });
         let directory = state.clone();
