@@ -40,23 +40,34 @@ impl RemoteLink {
     /// `Some(Err)` claims a malformed logs route so the router must refuse it,
     /// never fall through to note/file or name-based vault resolution.
     pub fn parse(input: &str) -> Option<Result<Self>> {
+        // Bound work before URL parsing or case conversion. This deliberately
+        // only inspects the route prefix, even for an untrusted enormous URL.
+        let claims_logs = input
+            .get(..13)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("okilum://logs"))
+            && input.as_bytes().get(13).is_none_or(|b| {
+                matches!(
+                    b,
+                    b'/' | b'?' | b'#' | b':' | b'\\' | b'%' | b' ' | b'\t' | b'\r' | b'\n'
+                )
+            });
+        if input.len() > MAX_LINK_BYTES {
+            return claims_logs.then(|| Err(anyhow::anyhow!("Remote log link exceeds 128 KiB")));
+        }
         let url = match url::Url::parse(input) {
             Ok(url) => url,
             Err(_) => {
-                return input
-                    .to_ascii_lowercase()
-                    .starts_with("okilum://logs")
-                    .then(|| Err(anyhow::anyhow!("Malformed remote log link")))
+                return claims_logs.then(|| Err(anyhow::anyhow!("Malformed remote log link")))
             }
         };
-        if url.scheme() != "okilum" || url.host_str() != Some("logs") {
+        if url.scheme() != "okilum"
+            || !url
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("logs"))
+        {
             return None;
         }
         Some((|| {
-            ensure!(
-                input.len() <= MAX_LINK_BYTES,
-                "Remote log link exceeds 128 KiB"
-            );
             ensure!(
                 url.username().is_empty()
                     && url.password().is_none()
@@ -108,6 +119,29 @@ mod tests {
         let encoded = link.encode().unwrap();
         assert!(encoded.starts_with("okilum://logs?"));
         assert_eq!(RemoteLink::parse(&encoded).unwrap().unwrap(), link);
+        assert_eq!(
+            RemoteLink::parse(&encoded.replacen("//logs", "//LOGS", 1))
+                .unwrap()
+                .unwrap(),
+            link
+        );
+        assert!(RemoteLink::parse("okilum://LoGs?v=2").unwrap().is_err());
+        assert!(RemoteLink::parse("okilum://LoGs?payload=invalid")
+            .unwrap()
+            .is_err());
+        for prefix in ["okilum://LOGS?payload=", "okilum://logs:invalid/"] {
+            let oversized = format!("{prefix}{}", "x".repeat(MAX_LINK_BYTES));
+            assert!(RemoteLink::parse(&oversized)
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("128 KiB"));
+        }
+        assert!(RemoteLink::parse(&format!(
+            "okilum://file?path={}",
+            "x".repeat(MAX_LINK_BYTES)
+        ))
+        .is_none());
         assert!(!encoded.contains("https"));
         assert!(RemoteLink::parse(&(encoded + "&payload=x"))
             .unwrap()

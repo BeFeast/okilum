@@ -244,18 +244,15 @@ impl History {
             !self.finished,
             "This history snapshot has ended; Apply to start a new query"
         );
-        let result = self.read_page();
-        if result.is_err() {
-            let cleanup = self.close();
-            return match cleanup {
-                Ok(()) => result,
+        match self.read_page() {
+            Ok(page) => Ok(page),
+            Err(error) => match self.close() {
+                Ok(()) => Err(error),
                 Err(_) => Err(anyhow::anyhow!(
-                    "{}; resource cleanup could not be confirmed",
-                    result.unwrap_err()
+                    "{error}; resource cleanup could not be confirmed"
                 )),
-            };
+            },
         }
-        result
     }
     fn read_page(&mut self) -> Result<Page> {
         let pit = self
@@ -452,6 +449,7 @@ mod tests {
         body: Value,
         backend: Option<u16>,
     }
+    type RecordedCalls = Arc<Mutex<Vec<(String, Value)>>>;
     fn ok(body: Value) -> Reply {
         Reply {
             status: 200,
@@ -459,21 +457,29 @@ mod tests {
             backend: Some(200),
         }
     }
-    fn server(
-        replies: Vec<Reply>,
-    ) -> (
-        Url,
-        Arc<Mutex<Vec<(String, Value)>>>,
-        thread::JoinHandle<()>,
-    ) {
+    fn server(replies: Vec<Reply>) -> (Url, RecordedCalls, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let endpoint =
             Url::parse(&format!("http://{}/s/test", listener.local_addr().unwrap())).unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorded = calls.clone();
         let thread = thread::spawn(move || {
             for reply in replies {
-                let (mut stream, _) = listener.accept().unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "expected HTTP request never arrived"
+                            );
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("mock listener failed: {error}"),
+                    }
+                };
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
