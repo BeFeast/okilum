@@ -599,6 +599,7 @@ impl Render for Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     fn source() -> Source {
         Source::import("Work", "https://logs.example/app/discover#/?_a=(index:events,query:(language:kuery,query:''),columns:!(description),sort:!(!('@timestamp',desc)))&_g=(time:(from:'2026-10-20T12:00:00Z',to:'2026-10-20T12:15:00Z'),refreshInterval:(pause:!t,value:0))").unwrap()
