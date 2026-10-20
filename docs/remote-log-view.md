@@ -144,7 +144,7 @@ view. Rolling windows deliberately expire events outside their stated interval.
 Offline intervals outside the current selected window are not recovered.
 
 Polling waits two seconds AFTER completion, with only one request in flight.
-Outages reconnect with bounded backoff and full-window paginated reconciliation;
+Outages before resource-producing search reconnect with bounded backoff and full-window paginated reconciliation;
 no missed-interval shortcut or timestamp watermark is used. Known PIT/async IDs
 remain owned until successful cleanup; reconnect retries cleanup before acquiring
 another PIT. Failure to receive an opened PIT ID stops automatic retry with an
@@ -162,3 +162,12 @@ bounded latest-command/latest-update mailbox, not an accumulating poll queue.
 Large 24-hour windows can take many pages or exceed these bounds; this design
 makes **no five-second guarantee**. Visibility-to-UI latency, native keychain,
 corporate-source UI acceptance, T3 routing and delivery remain separate evidence.
+
+An interrupted search can leave its newest PIT/async ID unreceived. The existing
+live receipts do not establish that closing an older acknowledged ID frees all
+possibly rotated contexts. The client attempts known cleanup, reports cleanup
+unconfirmed, retains the previous rows, and blocks new PIT acquisition in that
+session. It does not claim unrestricted mid-search reconnect or certified cleanup
+for unreceived handles. This is a concrete compatibility gap tracked with #1440,
+not a successful cancellation-cleanup claim or a reason to substitute an event
+watermark. Normal complete cycles and safe pre-search reconnect remain available.

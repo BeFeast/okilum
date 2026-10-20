@@ -59,6 +59,15 @@ impl std::fmt::Display for Incomplete {
 }
 impl std::error::Error for Incomplete {}
 
+#[derive(Debug)]
+struct Rejected(String);
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Rejected {}
+
 #[derive(Clone)]
 pub struct Kibana {
     client: Client,
@@ -163,10 +172,10 @@ impl Kibana {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u16>().ok());
             match status {
-                401 | 403 => bail!("Kibana authentication or permission denied (HTTP {status}); update this source's OS-stored key"),
+                401 | 403 => return Err(anyhow::anyhow!(Rejected(format!("Kibana authentication or permission denied (HTTP {status}); update this source's OS-stored key")))),
                 300..=399 => bail!("Kibana redirected the request; credentials were not forwarded. Import the final HTTPS Discover URL"),
-                400 => bail!("Kibana rejected the query or internal route (HTTP 400); this Kibana/Elasticsearch capability may be unsupported"),
-                500..=599 => return Err(anyhow::anyhow!(Transient("Kibana server is unavailable; reconnecting will reconcile the full selected window"))),
+                400 => return Err(anyhow::anyhow!(Rejected("Kibana rejected the query or internal route (HTTP 400); this Kibana/Elasticsearch capability may be unsupported".into()))),
+                500..=599 => return Err(anyhow::anyhow!(Transient("Kibana server is unavailable"))),
                 200..=299 => {},
                 _ => bail!("Kibana request failed (HTTP {status})"),
             }
@@ -254,17 +263,39 @@ pub struct History {
     seen: HashSet<(String, String)>,
     bytes: usize,
     finished: bool,
+    unacknowledged_search: bool,
     pub pattern: String,
 }
+// A failed acquisition still owns a received handle when cleanup is unavailable.
+// The session extracts this owner before returning the underlying visible error.
+pub(super) struct AcquireFailure {
+    pub error: anyhow::Error,
+    pub history: Box<History>,
+}
+impl std::fmt::Debug for AcquireFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AcquireFailure").field(&self.error).finish()
+    }
+}
+impl std::fmt::Display for AcquireFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+impl std::error::Error for AcquireFailure {}
+
 impl History {
     pub fn set_cancellation(&mut self, cancelled: Arc<AtomicBool>) {
         self.kibana.cancelled = cancelled;
     }
+    pub(super) fn uncertain(&self) -> bool {
+        self.unacknowledged_search
+    }
     pub(super) fn has_resources(&self) -> bool {
-        self.pit.is_some() || !self.async_ids.is_empty()
+        self.unacknowledged_search || self.pit.is_some() || !self.async_ids.is_empty()
     }
     pub fn can_page(&self) -> bool {
-        !self.finished && self.pit.is_some()
+        !self.finished && !self.unacknowledged_search && self.pit.is_some()
     }
     pub fn open(kibana: Kibana, state: Discover) -> Result<Self> {
         state.validate()?;
@@ -315,19 +346,27 @@ impl History {
             seen: HashSet::new(),
             bytes: 0,
             finished: false,
+            unacknowledged_search: false,
             pattern,
         };
         // A successfully acquired handle is already guarded before inspecting quality.
         if let Err(error) = quality(&opened, history.pattern.contains(':')) {
             let cleanup = history.close();
-            return Err(anyhow::anyhow!(Incomplete(format!(
+            let error = anyhow::anyhow!(Incomplete(format!(
                 "{error}; PIT cleanup {}",
                 if cleanup.is_ok() {
                     "confirmed"
                 } else {
                     "unconfirmed"
                 }
-            ))));
+            )));
+            if history.has_resources() {
+                return Err(anyhow::anyhow!(AcquireFailure {
+                    error,
+                    history: Box::new(history)
+                }));
+            }
+            return Err(error);
         }
         Ok(history)
     }
@@ -338,10 +377,16 @@ impl History {
         );
         match self.read_page() {
             Ok(page) => Ok(page),
-            Err(error) => match self.close() {
-                Ok(()) => Err(error),
-                Err(_) => Err(error.context("Resource cleanup could not be confirmed")),
-            },
+            Err(error) => {
+                let cleanup = self.close();
+                if self.unacknowledged_search {
+                    return Err(anyhow::anyhow!(Incomplete(format!("{error:#}; latest PIT/async handle may be unreceived. Cleanup unconfirmed; automatic continuation stopped"))));
+                }
+                match cleanup {
+                    Ok(()) => Err(error),
+                    Err(_) => Err(error.context("Resource cleanup could not be confirmed")),
+                }
+            }
         }
     }
     fn read_page(&mut self) -> Result<Page> {
@@ -358,14 +403,27 @@ impl History {
             .state
             .search_body(&self.range, self.after.as_ref(), size)?;
         let payload = json!({"params":{"pit":{"id":pit,"keep_alive":"1m"},"body":body,"track_total_hits":false,"timeout":"5s","allow_partial_search_results":false},"legacyHitsTotal":false});
-        let mut response = self.kibana.request(
-            Method::POST,
-            "/internal/search/es",
-            &[],
-            Some(&payload),
-            false,
-            false,
-        )?;
+        ensure!(
+            !self.kibana.cancelled.load(Ordering::Acquire),
+            "Log request cancelled"
+        );
+        self.unacknowledged_search = true;
+        let mut response = self
+            .kibana
+            .request(
+                Method::POST,
+                "/internal/search/es",
+                &[],
+                Some(&payload),
+                false,
+                false,
+            )
+            .map_err(|error| {
+                if error.is::<Rejected>() {
+                    self.unacknowledged_search = false;
+                }
+                error
+            })?;
         for poll in 0..=2 {
             if let Some(id) = response.get("id").and_then(Value::as_str) {
                 self.async_ids.insert(id.into());
@@ -373,6 +431,7 @@ impl History {
             let raw = response.get("rawResponse").unwrap_or(&response);
             if let Some(id) = raw.get("pit_id").and_then(Value::as_str) {
                 self.pit = Some(id.to_owned());
+                self.unacknowledged_search = false;
             }
             ensure!(
                 response["isRunning"].is_boolean() && response["isPartial"].is_boolean(),
@@ -390,9 +449,15 @@ impl History {
                 .as_str()
                 .context("Async search ID is missing")?;
             let route = Kibana::route_id("/internal/search/es", id);
+            self.unacknowledged_search = true;
             response =
                 self.kibana
                     .request(Method::POST, &route, &[], Some(&payload), false, false)?;
+        }
+        if self.unacknowledged_search {
+            return Err(anyhow::anyhow!(Incomplete(
+                "Search did not acknowledge its current PIT handle".into()
+            )));
         }
         if response["isPartial"] != false {
             return Err(anyhow::anyhow!(Incomplete(
@@ -471,7 +536,7 @@ impl History {
     }
     pub fn close(&mut self) -> Result<()> {
         self.finished = true;
-        let mut failed = false;
+        let mut failed = self.unacknowledged_search;
         for id in self.async_ids.clone() {
             let route = Kibana::route_id("/internal/search/es", &id);
             if self

@@ -585,6 +585,7 @@ impl Render for Panel {
                 .child(div().text_xs().child(remote_log::LIVE_LIMITATION))
                 .child(div().text_xs().child(remote_log::KQL_LIMITATION))
                 .child(div().text_sm().child(self.message.clone()))
+                .children(self.applied.as_ref().map(|source|div().text_xs().child(format!("Applied source: {} · Start follows the applied query; draft edits require Apply",source.name))))
                 .children(self.range.as_ref().map(|range|div().text_xs().child(format!("Applied absolute range: {} → {} · Limit 10,000 events / 16 MiB original JSON; loaded-only export",range.from,range.to))))
                 .children(self.error.as_ref().map(|error|div().text_sm().text_color(brand::palette(cx).danger).child(error.clone()))));
         body = if let Some(view) = &self.view {

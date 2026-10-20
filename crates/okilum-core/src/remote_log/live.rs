@@ -2,7 +2,7 @@
 //! A timestamp/search_after cursor is scoped to ONE snapshot, never a live watermark.
 use super::{
     discover::TimeRange,
-    transport::{ApiKey, History, Incomplete, Kibana, Transient},
+    transport::{AcquireFailure, ApiKey, History, Incomplete, Kibana, Transient},
     EventWindow, Source,
 };
 use anyhow::{ensure, Context, Result};
@@ -210,6 +210,7 @@ struct Engine {
     endpoint: Option<url::Url>,
     applied: Option<Applied>,
     loaded: Option<Arc<Loaded>>,
+    pending_cleanup: Option<History>,
     mode: Option<Mode>,
     due: Instant,
     failures: u32,
@@ -221,12 +222,29 @@ impl Engine {
             endpoint,
             applied: None,
             loaded: None,
+            pending_cleanup: None,
             mode: None,
             due: Instant::now(),
             failures: 0,
         }
     }
+    fn uncertain(&self) -> bool {
+        self.pending_cleanup
+            .as_ref()
+            .is_some_and(History::uncertain)
+            || self
+                .applied
+                .as_ref()
+                .and_then(|a| a.history.as_ref())
+                .is_some_and(History::uncertain)
+    }
     fn close_history(&mut self) -> Option<String> {
+        if let Some(history) = self.pending_cleanup.as_mut() {
+            if let Err(error) = history.close() {
+                return Some(error.to_string());
+            }
+            self.pending_cleanup = None;
+        }
         let applied = self.applied.as_mut()?;
         let result = applied.history.as_mut()?.close();
         match result {
@@ -263,7 +281,9 @@ impl Engine {
                 loop {
                     if control.closing {
                         drop(control);
-                        self.close_history();
+                        if let Some(warning) = self.close_history() {
+                            eprintln!("Remote log cleanup unconfirmed at close: {warning}");
+                        }
                         return;
                     }
                     if let Some(command) = control.pending.take() {
@@ -300,6 +320,7 @@ impl Engine {
                             }
                             status
                         }
+                        Err(error) if self.uncertain() => Status::Incomplete { range: None, scanned: 0, reason: format!("{error:#}; latest PIT/async handle may be unreceived. Automatic continuation unavailable in this session") },
                         Err(error) => Status::Error(format!("{error:#}")),
                     }
                 }
@@ -307,6 +328,13 @@ impl Engine {
                     self.mode = None;
                     match self.more(cancel.clone(), &shared, generation) {
                         Ok(status) => status,
+                        Err(e) if self.uncertain() => Status::Incomplete {
+                            range: None,
+                            scanned: 0,
+                            reason: format!(
+                                "{e:#}; automatic continuation unavailable in this session"
+                            ),
+                        },
                         Err(e) => Status::Error(format!("{e:#}")),
                     }
                 }
@@ -339,6 +367,18 @@ impl Engine {
             }
         }
     }
+    fn acquire(&mut self, client: Kibana, query: super::discover::Discover) -> Result<History> {
+        match History::open(client, query) {
+            Ok(history) => Ok(history),
+            Err(error) => match error.downcast::<AcquireFailure>() {
+                Ok(failure) => {
+                    self.pending_cleanup = Some(*failure.history);
+                    Err(failure.error)
+                }
+                Err(error) => Err(error),
+            },
+        }
+    }
     fn apply(
         &mut self,
         source: Source,
@@ -352,8 +392,16 @@ impl Engine {
             Some(endpoint) => Kibana::with_endpoint(endpoint.clone(), key, cancel)?,
             None => Kibana::new(&source, key, cancel)?,
         };
-        let mut history = History::open(client.clone(), source.discover.clone())?;
-        let page = history.page()?;
+        let mut history = self.acquire(client.clone(), source.discover.clone())?;
+        let page = match history.page() {
+            Ok(page) => page,
+            Err(error) => {
+                if history.has_resources() {
+                    self.pending_cleanup = Some(history);
+                }
+                return Err(error);
+            }
+        };
         let events: Vec<_> = page.events.into_iter().map(Arc::new).collect();
         let window = Arc::new(EventWindow::new(events.clone(), &source)?);
         let current = shared.0.lock().unwrap();
@@ -460,7 +508,7 @@ impl Engine {
     fn abandon_cycle(&mut self, mut history: History, range: TimeRange, scanned: usize) -> Status {
         let cleanup = history.close();
         if history.has_resources() {
-            self.applied.as_mut().unwrap().history = Some(history);
+            self.pending_cleanup = Some(history);
         }
         Status::Incomplete { range: Some(range), scanned, reason: format!("Full-window cycle exceeded {:.2}s; previous snapshot retained. Narrow the range. Cleanup: {}", self.timing.cycle.as_secs_f64(), if cleanup.is_ok() { "confirmed" } else { "unconfirmed" }) }
     }
@@ -471,6 +519,9 @@ impl Engine {
         generation: u64,
         cancel: Arc<AtomicBool>,
     ) -> Result<Status> {
+        if self.uncertain() {
+            return Ok(Status::Incomplete { range: None, scanned: 0, reason: "An interrupted search may have returned an unreceived PIT/async handle. Known cleanup was attempted, but complete cleanup cannot be confirmed. Automatic continuation is unavailable in this session.".into() });
+        }
         if self.close_history().is_some() {
             return Err(anyhow::anyhow!(Transient("Reconnecting: previous PIT cleanup is unconfirmed; retrying cleanup before any new snapshot")));
         }
@@ -493,7 +544,7 @@ impl Engine {
                 scanned: 0,
             },
         );
-        let mut history = match History::open(client, query) {
+        let mut history = match self.acquire(client, query) {
             Ok(history) => history,
             Err(error) if error.is::<Incomplete>() => {
                 return Ok(Status::Incomplete {
@@ -510,7 +561,7 @@ impl Engine {
             if cancel.load(Ordering::Acquire) {
                 // The pending Stop/Apply owns cleanup, including retry after a
                 // temporary outage; do not lose known handles through Drop.
-                self.applied.as_mut().unwrap().history = Some(history);
+                self.pending_cleanup = Some(history);
                 anyhow::bail!("Log request cancelled");
             }
             if clock.elapsed() >= self.timing.cycle {
@@ -520,7 +571,7 @@ impl Engine {
                 Ok(page) => page,
                 Err(error) => {
                     if history.has_resources() {
-                        self.applied.as_mut().unwrap().history = Some(history);
+                        self.pending_cleanup = Some(history);
                     }
                     if error.is::<Incomplete>() {
                         return Ok(Status::Incomplete {
@@ -543,7 +594,7 @@ impl Engine {
             }
             if page.limited || page.cleanup_warning.is_some() {
                 if history.has_resources() {
-                    self.applied.as_mut().unwrap().history = Some(history);
+                    self.pending_cleanup = Some(history);
                 }
                 return Ok(Status::Incomplete { range: Some(range), scanned: events.len(), reason: page.cleanup_warning.unwrap_or_else(|| "Full window exceeds 10,000 events / 16 MiB. Following stopped; older pages are NOT covered. Narrow the range. Previous snapshot retained.".into()) });
             }

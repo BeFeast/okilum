@@ -18,8 +18,10 @@ struct State {
     cursors: Vec<Value>,
     late_on_pit: Option<usize>,
     fail_next: bool,
+    reject_next: bool,
     fail_close: bool,
     partial_next: bool,
+    partial_open: bool,
     slow_next: bool,
     active: usize,
     peak: usize,
@@ -36,7 +38,10 @@ struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.thread.take().unwrap().join().unwrap();
+        let joined = self.thread.take().unwrap().join();
+        if !std::thread::panicking() {
+            joined.unwrap();
+        }
     }
 }
 fn hit(id: usize) -> Value {
@@ -154,7 +159,13 @@ fn respond(
     let response = {
         let mut s = state.lock().unwrap();
         if target.contains("/api/status") {
-            json!({"version":{"number":"9.5.4"}})
+            if s.fail_next {
+                s.fail_next = false;
+                status = 503;
+                json!({"error":"offline before resource acquisition"})
+            } else {
+                json!({"version":{"number":"9.5.4"}})
+            }
         } else if target.contains("/api/data_views/") {
             json!({"data_view":{"title":"*:log-2","timeFieldName":"@timestamp"}})
         } else if target.contains("/api/console/proxy") && target.contains("method=POST") {
@@ -172,6 +183,10 @@ fn respond(
             s.pits.insert(id.clone(), snapshot);
             let mut v = quality();
             v["id"] = json!(id);
+            if s.partial_open {
+                s.partial_open = false;
+                v["_clusters"]["skipped"] = json!(1);
+            }
             v
         } else if target.contains("/api/console/proxy") && target.contains("method=DELETE") {
             if s.fail_close {
@@ -183,12 +198,13 @@ fn respond(
                     .as_str()
                     .expect("latest scalar PIT ID")
                     .to_owned();
-                assert!(
-                    s.pits.remove(&id).is_some(),
-                    "cleanup must use latest rotated handle"
-                );
-                s.closes.push(id);
-                json!({"succeeded":true,"num_freed":1})
+                if s.pits.remove(&id).is_some() {
+                    s.closes.push(id);
+                    json!({"succeeded":true,"num_freed":1})
+                } else {
+                    status = 404;
+                    json!({"error":"unknown or superseded handle"})
+                }
             }
         } else if target == "/s/test/internal/search/es" {
             assert!(body["params"].get("index").is_none());
@@ -217,7 +233,11 @@ fn respond(
                 gone.store(true, Ordering::Release);
                 return;
             }
-            if s.fail_next {
+            if s.reject_next {
+                s.reject_next = false;
+                status = 400;
+                json!({"error":"invalid query"})
+            } else if s.fail_next {
                 s.fail_next = false;
                 status = 503;
                 json!({"error":"offline"})
@@ -424,7 +444,7 @@ fn reconnect_catches_up_several_pages_and_partial_ccs_is_incomplete_not_success(
     close(worker, &events, &server);
 }
 #[test]
-fn apply_and_close_abort_slow_search_without_publishing_stale_generation() {
+fn interrupted_search_aborts_socket_preserves_rows_and_blocks_new_pit_when_handover_is_unknown() {
     let server = serve(201);
     let (worker, events) = worker(&server);
     let initial = applied(&worker, &events);
@@ -433,31 +453,74 @@ fn apply_and_close_abort_slow_search_without_publishing_stale_generation() {
     wait(|| server.slow_started.load(Ordering::Acquire));
     let mut next = source();
     next.discover.query.query = "service:new".into();
-    let started = Instant::now();
+    let began = Instant::now();
     let generation = worker.apply(next, ApiKey::new(b"test-secret".to_vec()).unwrap());
-    let replaced = until(&events, |u| {
-        u.generation == generation && matches!(u.status, Status::History { .. })
+    let blocked = until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Incomplete { .. })
     });
-    let replacement = replaced.loaded.unwrap();
-    assert_eq!(replacement.source.discover.query.query, "service:new");
+    assert!(Arc::ptr_eq(
+        &blocked.loaded.unwrap().window,
+        &initial.window
+    ));
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "Apply aborts socket; it does not wait the ten-second request deadline"
+        began.elapsed() < Duration::from_secs(2),
+        "cancellation aborts the socket rather than waiting the ten-second request deadline"
     );
     assert!(server.disconnected.load(Ordering::Acquire));
-    server.slow_started.store(false, Ordering::Release);
-    server.disconnected.store(false, Ordering::Release);
+    assert_eq!(server.state.lock().unwrap().opens,2,"no new PIT after an unacknowledged search response, even if closing last-known handle succeeded");
+    let generation = start(&worker, &initial);
+    let blocked = until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Incomplete { .. })
+    });
+    assert!(!blocked.following);
+    assert_eq!(server.state.lock().unwrap().opens, 2);
+    close(worker, &events, &server); // this fixture did not rotate; the client cannot assume that fact.
+}
+#[test]
+fn closing_during_search_aborts_the_socket_and_attempts_last_known_cleanup() {
+    let server = serve(201);
+    let (worker, events) = worker(&server);
+    let initial = applied(&worker, &events);
     server.state.lock().unwrap().slow_next = true;
-    start(&worker, &replacement);
+    start(&worker, &initial);
     wait(|| server.slow_started.load(Ordering::Acquire));
     close(worker, &events, &server);
     assert!(server.disconnected.load(Ordering::Acquire));
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .closes
+        .iter()
+        .any(|id| id == "pit-2"));
+    // A dropped response cannot prove absence of a rotated handle in a real
+    // backend. This proves cancellation and the LAST KNOWN cleanup attempt only.
 }
 #[test]
 fn background_consumer_is_not_needed_for_polling_stop_or_bounded_cleanup() {
     let server = serve(2);
     server.state.lock().unwrap().delay = Duration::from_millis(100);
-    let (worker, events) = worker(&server);
+    let (arrived, ready) = std::sync::mpsc::sync_channel(1);
+    let (release, proceed) = std::sync::mpsc::sync_channel(1);
+    let proceed = Mutex::new(proceed);
+    let cycles = std::sync::atomic::AtomicUsize::new(0);
+    let (worker, events) = Worker::spawn(
+        Timing {
+            poll: Duration::from_millis(50),
+            after_page: Some(Arc::new(move |_| {
+                if cycles.fetch_add(1, Ordering::AcqRel) == 2 {
+                    arrived.send(()).unwrap();
+                    proceed
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }
+            })),
+            ..Timing::default()
+        },
+        Some(server.endpoint.clone()),
+    );
     let initial = applied(&worker, &events);
     thread::sleep(Duration::from_millis(150));
     assert_eq!(
@@ -468,7 +531,8 @@ fn background_consumer_is_not_needed_for_polling_stop_or_bounded_cleanup() {
     start(&worker, &initial);
     // No event consumption simulates a background/suspended view. The channel
     // remains one coherent latest state, and polling never waits for rendering.
-    wait(|| server.state.lock().unwrap().opens >= 4);
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(server.state.lock().unwrap().opens >= 4);
     assert!(events.len() <= 1);
     assert_eq!(
         server.state.lock().unwrap().peak,
@@ -476,6 +540,7 @@ fn background_consumer_is_not_needed_for_polling_stop_or_bounded_cleanup() {
         "positive control: several slow real polling cycles never overlap"
     );
     let generation = worker.stop();
+    release.send(()).unwrap();
     until(&events, |u| {
         u.generation == generation && matches!(u.status, Status::Stopped { .. })
     });
@@ -595,5 +660,72 @@ fn final_page_crossing_cycle_deadline_stays_incomplete_and_keeps_previous_snapsh
         &previous.window
     ));
     assert!(server.state.lock().unwrap().pits.is_empty());
+    close(worker, &events, &server);
+}
+
+#[test]
+fn rejected_apply_preserves_previous_query_and_corrected_query_can_open_after_known_cleanup() {
+    let server = serve(201);
+    let (worker, events) = worker(&server);
+    let previous = applied(&worker, &events);
+    server.state.lock().unwrap().reject_next = true;
+    let mut next = source();
+    next.discover.query.query = "invalid:".into();
+    let generation = worker.apply(next, ApiKey::new(b"test-secret".to_vec()).unwrap());
+    let refused = until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Error(_))
+    });
+    assert!(Arc::ptr_eq(
+        &refused.loaded.unwrap().window,
+        &previous.window
+    ));
+    assert!(server.state.lock().unwrap().pits.is_empty());
+    let mut next = source();
+    next.discover.query.query = "service:valid".into();
+    let generation = worker.apply(next, ApiKey::new(b"test-secret".to_vec()).unwrap());
+    let corrected = until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    });
+    assert_eq!(
+        corrected.loaded.unwrap().source.discover.query.query,
+        "service:valid"
+    );
+    close(worker, &events, &server);
+}
+
+#[test]
+fn failed_pit_acquisition_retains_its_known_owner_until_cleanup_before_replacement() {
+    let server = serve(201);
+    {
+        let mut state = server.state.lock().unwrap();
+        state.partial_open = true;
+        state.fail_close = true;
+    }
+    let (worker, events) = worker(&server);
+    let generation = worker.apply(source(), ApiKey::new(b"test-secret".to_vec()).unwrap());
+    until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::Error(_))
+    });
+    assert_eq!(
+        server.state.lock().unwrap().searches,
+        0,
+        "incomplete open metadata forbids search execution"
+    );
+    assert_eq!(
+        server.state.lock().unwrap().pits.len(),
+        1,
+        "failed acquisition keeps the received handle, not a Drop-only cleanup attempt"
+    );
+    let generation = worker.apply(source(), ApiKey::new(b"test-secret".to_vec()).unwrap());
+    until(&events, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    });
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .closes
+        .iter()
+        .any(|id| id == "pit-1"));
     close(worker, &events, &server);
 }
