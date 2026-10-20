@@ -485,6 +485,28 @@ fn c16b_deleting_a_note_removes_it_from_the_index() {
 fn c17_a_full_rebuild_reproduces_the_same_results() {
     let f = corpus();
     let before = f.paths("zarquon");
+    assert!(
+        !before.is_empty(),
+        "positive control: the original index has hits"
+    );
+    use tantivy::directory::{error::LockError, Directory, MmapDirectory, INDEX_WRITER_LOCK};
+    let directory = MmapDirectory::open(&f.index).unwrap();
+    assert!(
+        matches!(
+            directory.acquire_lock(&INDEX_WRITER_LOCK),
+            Err(LockError::LockBusy)
+        ),
+        "positive control: the original writer still owns this directory"
+    );
+    // C17 tests a rebuild after deleting the index, not replacement underneath
+    // an active writer. Join indexing AND merge work before reclaiming its path.
+    f.searcher.finish_build().unwrap();
+    drop(
+        directory
+            .acquire_lock(&INDEX_WRITER_LOCK)
+            .expect("the previous writer must release ownership before deletion"),
+    );
+    drop(directory);
     let vault = Vault::scan(&f.root).unwrap();
     let rebuilt = Searcher::build(&vault, &f.index).unwrap();
     let after: Vec<String> = rebuilt
@@ -494,6 +516,7 @@ fn c17_a_full_rebuild_reproduces_the_same_results() {
         .map(|h| h.path)
         .collect();
     assert_eq!(before, after, "a rebuild from scratch must be reproducible");
+    rebuilt.finish_build().unwrap();
 }
 
 // -------------------------------------------------------------------- latency
