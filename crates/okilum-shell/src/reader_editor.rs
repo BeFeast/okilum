@@ -2286,7 +2286,8 @@ mod tests {
                 );
             });
         });
-        visual.simulate_keystrokes("secondary-l");
+        let key = "secondary-l";
+        visual.simulate_keystrokes(key);
         visual.run_until_parked();
         assert_eq!(value(visual), "# Tasks\n\n1. [ ] first\n2. [x] second\n");
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
