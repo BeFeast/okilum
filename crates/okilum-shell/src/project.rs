@@ -316,6 +316,8 @@ impl ProjectView {
                             | GatewayStatus::Revoked
                     ) {
                         this.polling = false;
+                        this.identity = None;
+                        this.executors_error = Some("T3 connection is unavailable or expired; executor status was not refreshed.".into());
                         cx.notify();
                         return None;
                     }
@@ -409,6 +411,10 @@ impl ProjectView {
                         }
                         Err(error) => {
                             this.identity = None;
+                            // This cycle aborted before a new executor snapshot
+                            // could be published. Unrelated send/connect errors
+                            // must not make a successful status read stale.
+                            this.executors_error = Some(format!("{error:#}"));
                             this.error = Some(format!("{error:#}"));
                             delay = 15_000;
                         }

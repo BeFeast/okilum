@@ -76,7 +76,7 @@ impl ProjectView {
             .as_ref()
             .and_then(|b| b.manager.thread_id.as_deref())
             .unwrap_or("");
-        let stale = self.executors_error.as_ref().or(self.error.as_ref());
+        let stale = self.executors_error.as_ref();
         for (index, record, request) in &requests {
             let projected = request
                 .as_ref()
@@ -496,6 +496,57 @@ mod tests {
         visual.executor().advance_clock(Duration::from_secs(20));
         visual.run_until_parked();
         view.read_with(visual, |v, _| assert_eq!(phase(v), Phase::Running));
+        // Fail a real send preparation after a successful status poll. This
+        // project-level error must not pretend the executor read itself failed.
+        let message_dir = std::fs::read_dir(files.path().join("state/t3-messages"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let damaged = message_dir.join("damaged.json");
+        std::fs::write(&damaged, b"{incomplete").unwrap();
+        visual.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.compose.update(cx, |input, cx| {
+                    input.set_value("Retain this independent draft", window, cx)
+                });
+                v.send(None, window, cx);
+            })
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, cx| {
+            assert!(
+                v.error.is_some(),
+                "send failure must actually reach its UI callback"
+            );
+            assert!(
+                v.executors_error.is_none(),
+                "an unrelated send failure does not invalidate status"
+            );
+            assert_eq!(phase(v), Phase::Running);
+            assert_eq!(
+                v.compose.read(cx).value().as_ref(),
+                "Retain this independent draft"
+            );
+        });
+        assert!(visual.debug_bounds("project-launch-stale-0").is_none());
+        // The next poll now fails while reading the damaged journal, before
+        // its executor listing. That aborted cycle DOES make retained rows stale.
+        visual.executor().advance_clock(Duration::from_secs(20));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(v.executors_error.is_some());
+            assert_eq!(phase(v), Phase::Running);
+        });
+        assert!(visual.debug_bounds("project-launch-stale-0").is_some());
+        std::fs::remove_file(damaged).unwrap();
+        visual.executor().advance_clock(Duration::from_secs(20));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(v.executors_error.is_none());
+            assert!(v.error.is_none());
+        });
         *gateway.list_error.lock().unwrap() = Some("status unavailable".into());
         visual.executor().advance_clock(Duration::from_secs(20));
         visual.run_until_parked();
