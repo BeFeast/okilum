@@ -36,7 +36,7 @@ mkdir -p "$OUTPUT/sparkle-bin"
 tar -xJf "$SPARKLE_ARCHIVE" -C "$OUTPUT/sparkle-bin" --include='*bin/sign_update'
 cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # The sync helper (#1013): its signature policy is compiled in from the build configuration.
-source scripts/ci/supervisor-bundle.sh
+source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/ci/supervisor-bundle.sh"
 BUNDLE_ID="${OKILUM_BUNDLE_ID:-com.befeast.okilum}"
 TEAM_ID="$(supervisor_team_id "$OKILUM_SIGNING_IDENTITY")"
 supervisor_build "$TEAM_ID" "$BUNDLE_ID" aarch64-apple-darwin
@@ -107,8 +107,8 @@ PLIST
 plutil -lint "$APP/Contents/Info.plist"
 [[ $(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw "$APP/Contents/Info.plist") == okilum ]]
 
-source scripts/updater/sign-bundle.sh
-source scripts/updater/make-dmg.sh
+source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/updater/sign-bundle.sh"
+source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/updater/make-dmg.sh"
 cat >"$OUTPUT/release.env" <<EOF
 BUILD=$OKILUM_BUILD_VERSION
 DISPLAY_VERSION=$DISPLAY_VERSION

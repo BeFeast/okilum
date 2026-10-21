@@ -87,16 +87,25 @@ class ShippingPolicy(unittest.TestCase):
             m.preflight(self.env())
 
     def test_build_records_executed_source_not_workflow_and_rejects_bad_outputs(self):
+        repo = Path(__file__).resolve().parents[2]
+        names = ['scripts/build-macos-ci.sh', 'scripts/ci/supervisor-bundle.sh',
+                 'scripts/updater/sign-bundle.sh', 'scripts/updater/make-dmg.sh']
+        scripts = {name: (repo / name).read_bytes() for name in names}
         for wrong in [None, 'source', 'notary', 'plist']:
             with self.subTest(wrong=wrong), tempfile.TemporaryDirectory() as tmp:
                 old = os.getcwd()
                 os.chdir(tmp)
+                for name, data in scripts.items():
+                    dest = Path(name); dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
                 try:
                     def execute(argv, **kwargs):
                         if argv[0] == 'git':
                             self.assertEqual(argv, ['git', 'checkout', '--detach', SOURCE])
                             return
-                        self.assertEqual(argv[:2], ['bash', 'scripts/build-macos-ci.sh'])
+                        self.assertEqual(argv[0], 'bash')
+                        self.assertTrue(argv[1].endswith('/scripts/build-macos-ci.sh'))
+                        self.assertEqual(Path(argv[1]).read_bytes(), scripts['scripts/build-macos-ci.sh'])
+                        self.assertEqual(kwargs['env']['OKILUM_DELIVERY_TOOLS'], str(Path(argv[1]).parents[1]))
                         self.assertEqual(kwargs['env']['OKILUM_BUILD_VERSION'], '5600')
                         out = Path(argv[2]);app = out / 'Okilum.app/Contents'
                         app.mkdir(parents=True)
@@ -137,7 +146,10 @@ class ShippingPolicy(unittest.TestCase):
         self.assertIn("needs.select.outputs.lane == 'hosted' && github.event_name == 'workflow_dispatch'", fj)
         self.assertIn('python3 scripts/releases/macos-hosted.py route', fj)
         self.assertIn('persist-credentials: false', gh)
-        self.assertNotIn('secrets.', gh)
+        self.assertNotIn('secrets.MIRROR_TOKEN', gh)
+        self.assertNotIn('secrets.SPARKLE_ED_PRIVATE_KEY', gh)
+        self.assertIn('secrets.OKILUM_MAC_DEVELOPER_ID_P12', gh)
+        self.assertIn('if: always()', gh)
         self.assertNotIn('security import', gh)
         self.assertNotIn('publication.py', gh)
         self.assertNotIn('release-publish', gh)
