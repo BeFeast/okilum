@@ -136,15 +136,17 @@ impl Request {
             "Brief resolves outside this vault area; nothing was read or sent."
         );
         ensure!(brief.is_file(), "Brief must be a regular file");
-        let mut brief_source = String::new();
+        let mut brief_bytes = Vec::new();
         std::fs::File::open(brief)?
             .take((MAX_BRIEF_BYTES + 1) as u64)
-            .read_to_string(&mut brief_source)
-            .context("Cannot read the vault brief as UTF-8")?;
+            .read_to_end(&mut brief_bytes)
+            .context("Cannot read the vault brief")?;
         ensure!(
-            brief_source.len() <= MAX_BRIEF_BYTES,
+            brief_bytes.len() <= MAX_BRIEF_BYTES,
             "Brief exceeds 64 KiB; nothing was truncated or requested."
         );
+        let brief_source =
+            String::from_utf8(brief_bytes).context("Cannot read the vault brief as UTF-8")?;
         ensure!(!brief_source.trim().is_empty(), "The vault brief is empty");
         let model = draft
             .model_override

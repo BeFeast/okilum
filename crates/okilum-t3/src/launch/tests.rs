@@ -92,6 +92,30 @@ fn refuses_binding_rotation_missing_brief_oversize_and_unknown_model_without_tru
         .unwrap_err()
         .to_string()
         .contains("64 KiB"));
+    // The bounded read stops one byte into an emoji. Size rejection must
+    // precede decoding so a valid large Unicode file is not called corrupt.
+    std::fs::write(
+        area.0.join("brief.md"),
+        "🦀".repeat(MAX_BRIEF_BYTES / 4 + 1),
+    )
+    .unwrap();
+    assert!(Request::prepare(&area.0, &binding, &context, &draft)
+        .unwrap_err()
+        .to_string()
+        .contains("64 KiB"));
+    let exact = "א".repeat(MAX_BRIEF_BYTES / 2);
+    std::fs::write(area.0.join("brief.md"), &exact).unwrap();
+    assert_eq!(
+        Request::prepare(&area.0, &binding, &context, &draft)
+            .unwrap()
+            .brief_source,
+        exact
+    );
+    std::fs::write(area.0.join("brief.md"), [0xff, 0xfe]).unwrap();
+    assert!(Request::prepare(&area.0, &binding, &context, &draft)
+        .unwrap_err()
+        .to_string()
+        .contains("UTF-8"));
     std::fs::write(area.0.join("brief.md"), "brief").unwrap();
     draft.model_override = Some(ModelSelection {
         instance_id: "codex".into(),
