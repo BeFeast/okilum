@@ -259,6 +259,27 @@ fn project_tab_opens_inside_the_reader_and_returns_to_the_same_note(cx: &mut Tes
 #[gpui::test]
 fn a_failed_new_intent_keeps_a_draft_even_when_old_text_matches(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::process::CommandExt;
+
+    // The local CI container can run as root, which bypasses directory mode
+    // bits. Run this same test unprivileged in a child; never change the UID
+    // of the shared, multithreaded test runner.
+    #[cfg(target_os = "linux")]
+    if rustix::process::geteuid().as_raw() == 0 {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "project::tests::a_failed_new_intent_keeps_a_draft_even_when_old_text_matches",
+                "--nocapture",
+            ])
+            .gid(65534)
+            .uid(65534)
+            .status()
+            .expect("run the actual draft regression without root's permission bypass");
+        assert!(status.success(), "unprivileged draft regression failed");
+        return;
+    }
 
     cx.update(gpui_component::init);
     let state = tempfile::tempdir().unwrap();
@@ -287,6 +308,17 @@ fn a_failed_new_intent_keeps_a_draft_even_when_old_text_matches(cx: &mut TestApp
         .path();
     let original_permissions = std::fs::metadata(&directory).unwrap().permissions();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let denied = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("write-positive-control"))
+        .expect_err("the journal must actually reject a new write");
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+    view.read_with(visual, |view, _| {
+        let records = view.journal().unwrap().records().unwrap();
+        assert_eq!(records.len(), 1, "the older intent must remain readable");
+        assert!(records[0].receipt.is_some());
+    });
     let send = visual
         .debug_bounds("project-send")
         .expect("connected send control");
