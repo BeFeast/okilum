@@ -142,3 +142,45 @@ Rollback before provisioning/build: revert #1445; no keychain, secret, service,
 runner or feed rollback is needed. Do not flip the lane or dispatch the legacy
 local path during workday as a rollback. A failed/ambiguous hosted run is a stop,
 not permission for rerun, fallback, a second compilation or a new version claim.
+
+## Observe an already completed macOS gate without another compiler
+
+`github-macos.py run` always creates a unique hosted ref. Do not rerun it to
+repair a bridge observation mismatch: that starts another compiler. The
+read-only `reconcile` command instead accepts explicit original identities,
+performs exactly three GETs, and preserves run/attempt-jobs/workflow API JSON
+in a new exclusive evidence directory. It validates repository, source, original
+PR/Forgejo run/attempt ref, registered workflow, one exact successful native job,
+one completed compile/native step, and execution chronology. Missing, ambiguous,
+failed, rerun or unavailable evidence refuses; it never dispatches, retries,
+cancels, writes `GITHUB_OUTPUT`, or publishes a commit status.
+
+For the observed #1456 mismatch (use a reviewed checkout and the existing
+approved `MIRROR_TOKEN` environment; no token acquisition/login):
+
+```bash
+python3 scripts/ci/github-macos.py reconcile \
+  --source db413780a600d67fdf1374fbb6b468f8cfdae8dd --pr 1456 \
+  --forgejo-run 15277 --attempt 1 \
+  --github-run 39604244715 --github-job 119236245615 \
+  --evidence /home/god/work/qa-evidence/1456-macos-reconciliation-20261021/live-once
+```
+
+API15277 is Forgejo UI9765. The retained current response passes both the original
+native predicate and this strict verification; the historical bridge jobs
+response was not retained, so the historical mismatch cause remains UNKNOWN.
+Current exact native success is an observation, not retroactive bridge success.
+The original `ci / macos` and `ci / check` remain failed. This command supplies
+reviewable evidence for a separately authorized gate reconciliation path; it
+cannot repair the original aggregate and is not a merge override. No supported
+interface currently replaces the original job's output or re-evaluates its
+required aggregate from this receipt. A new workflow on main would report
+main's SHA, not this PR head. Do not publish manual green statuses, fabricate
+outputs, rerun unchanged native code, or weaken the required gate to bridge that
+gap. Any live gate mutation needs a concrete separately reviewed supported
+consumer/authority; this read-only command does not grant one.
+
+The fixture `scripts/ci/fixtures/macos9765-current.json` retains the current API
+fields used in the acceptance decision and the actual attempt-jobs response.
+Finite negative controls mutate every binding and native execution boundary;
+none re-execute native tests or infer historical root cause.

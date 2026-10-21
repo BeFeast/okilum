@@ -5,6 +5,7 @@ No Forgejo credentials reach GitHub. The caller's final `macos` job reports the
 result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
+from datetime import datetime
 import http.client
 import json
 import os
@@ -146,11 +147,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     return "failure", f"GitHub native gate: {run['conclusion']} — {url}"
                 jobs = hosted_request(api, f"actions/runs/{run['id']}/jobs?per_page=100", sleep=sleep)["jobs"]
                 # A green workflow with a skipped/removed native job is not evidence.
-                native = [job for job in jobs if job["name"] == job_name]
-                if len(native) != 1 or native[0]["conclusion"] != "success" or not any(
-                    step["name"] == build_step and step["conclusion"] == "success"
-                    for step in native[0]["steps"]
-                ):
+                if not native_gate_executed(jobs, job_name, build_step):
                     return "failure", f"GitHub did not execute the native gate: {url}"
                 return "success", f"GitHub native gate passed: {url}"
             if run["status"] == "in_progress":
@@ -187,6 +184,80 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
         sleep(20)
 
 
+
+def native_gate_executed(jobs, job_name="macos", build_step=BUILD_STEP):
+    """The original required predicate, shared by polling and reconciliation."""
+    native = [job for job in jobs if job.get("name") == job_name]
+    return (len(native) == 1 and native[0].get("conclusion") == "success"
+            and any(step.get("name") == build_step and step.get("conclusion") == "success"
+                    for step in native[0].get("steps", [])))
+
+
+def reconcile(api, *, sha, number, forgejo_run, attempt, run_id, job_id, evidence):
+    """Read an existing exact native result. Never write gate outputs or statuses.
+
+    An observation cannot retroactively repair the original Forgejo aggregate.
+    The exclusive receipt retains the API inputs even when validation refuses.
+    """
+    ref_name(number, sha, forgejo_run, attempt)
+    if str(attempt) != "1" or any(not re.fullmatch(r"[1-9][0-9]*", str(n))
+                                for n in (run_id, job_id)):
+        raise ValueError("Only exact first-attempt run/job identities are accepted")
+    evidence = Path(evidence)
+    evidence.mkdir(mode=0o700, parents=False, exist_ok=False)
+    def read(path, name):
+        # No polling/retry/path variants: retain the exact current API response.
+        value = api.request(path)
+        (evidence / name).write_text(json.dumps(value, indent=2) + "\n")
+        return value
+    run = read(f"actions/runs/{run_id}", "run.json")
+    jobs = read(f"actions/runs/{run_id}/attempts/1/jobs?per_page=100", "jobs.json")
+    workflow = read("actions/workflows/forgejo-macos.yml", "workflow.json")
+    expected = ref_name(number, sha, forgejo_run, attempt)
+    branch = run.get("head_branch", "")
+    if not re.fullmatch(re.escape(expected) + r"-[0-9a-f]{32}", branch):
+        raise ValueError("Run does not belong to the exact original Forgejo invocation")
+    if (type(run.get("id")) is not int or run["id"] != int(run_id)
+            or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1 or run.get("head_sha") != sha
+            or run.get("event") != "push" or run.get("path") != WORKFLOW
+            or run.get("status") != "completed" or run.get("conclusion") != "success"
+            or run.get("repository", {}).get("full_name") != REPOSITORY
+            or run.get("head_repository", {}).get("full_name") != REPOSITORY
+            or run.get("html_url") != f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
+            or workflow.get("path") != WORKFLOW or workflow.get("state") != "active"
+            or type(workflow.get("id")) is not int
+            or run.get("workflow_id") != workflow["id"]):
+        raise ValueError("Missing or inconsistent run/source/workflow identity")
+    items = jobs.get("jobs", [])
+    if type(jobs.get("total_count")) is not int or jobs["total_count"] != 1 or len(items) != 1 or not native_gate_executed(items):
+        raise ValueError("Missing, ambiguous or unexecuted native job")
+    job = items[0]
+    steps = [s for s in job.get("steps", []) if s.get("name") == BUILD_STEP]
+    if (type(job.get("id")) is not int or job["id"] != int(job_id)
+            or type(job.get("run_id")) is not int or job["run_id"] != int(run_id)
+            or type(job.get("run_attempt")) is not int or job["run_attempt"] != 1 or job.get("head_sha") != sha
+            or job.get("status") != "completed" or len(steps) != 1
+            or steps[0].get("status") != "completed"
+            or not steps[0].get("started_at") or not steps[0].get("completed_at")):
+        raise ValueError("Missing or inconsistent exact job/attempt/executed step")
+    def timestamp(value):
+        if not isinstance(value, str) or not value.endswith("Z"):
+            raise ValueError("Missing or malformed execution timestamp")
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not (timestamp(job.get("started_at")) <= timestamp(steps[0]["started_at"])
+            < timestamp(steps[0]["completed_at"]) <= timestamp(job.get("completed_at"))
+            <= timestamp(run.get("updated_at"))):
+        raise ValueError("Inconsistent native execution chronology")
+    result = {"classification": "CURRENT_EXACT_NATIVE_SUCCESS",
+              "source": sha, "pr": int(number), "forgejo_run": int(forgejo_run),
+              "github_run": int(run_id), "github_job": int(job_id), "attempt": 1,
+              "branch": branch, "workflow": WORKFLOW,
+              "historical_mismatch_cause": "UNKNOWN",
+              "required_forgejo_aggregate": "UNCHANGED",
+              "compiler_dispatches": 0, "status_writes": 0}
+    return result
+
+
 def cleanup(api, number):
     if not re.fullmatch(r"[1-9][0-9]*", str(number)):
         raise ValueError("Expected a positive PR number")
@@ -200,8 +271,24 @@ def cleanup(api, number):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["run", "cleanup"])
+    parser.add_argument("command", choices=["run", "cleanup", "reconcile"])
+    for name in ("source", "pr", "forgejo-run", "attempt", "github-run", "github-job", "evidence"):
+        parser.add_argument("--" + name)
     args = parser.parse_args()
+    if args.command == "reconcile":
+        required = (args.source, args.pr, args.forgejo_run, args.attempt,
+                    args.github_run, args.github_job, args.evidence)
+        if not all(required):
+            parser.error("reconcile requires all exact identities and a NEW evidence directory")
+        token = os.environ.get("MIRROR_TOKEN", "")
+        if not token:
+            raise Unavailable("GitHub mirror token is unavailable")
+        result = reconcile(GitHub(token), sha=args.source, number=args.pr,
+                           forgejo_run=args.forgejo_run, attempt=args.attempt,
+                           run_id=args.github_run, job_id=args.github_job, evidence=args.evidence)
+        (Path(args.evidence) / "receipt.json").write_text(json.dumps(result, indent=2) + "\n")
+        print(json.dumps(result))
+        return
     token = os.environ.get("MIRROR_TOKEN", "")
     if args.command == "cleanup":
         if not token:

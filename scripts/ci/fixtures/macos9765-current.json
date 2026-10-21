@@ -1,0 +1,132 @@
+{
+  "origin": "Current read-only GitHub API after Forgejo9765 failure; historical bridge response NOT RETAINED, cause UNKNOWN.",
+  "run": {
+    "id": 39604244715,
+    "run_attempt": 1,
+    "head_sha": "db413780a600d67fdf1374fbb6b468f8cfdae8dd",
+    "head_branch": "forgejo-pr/1456/db413780a600d67fdf1374fbb6b468f8cfdae8dd-15277-1-f9ba886e83484fd5bff41ef83b0f4f75",
+    "path": ".github/workflows/forgejo-macos.yml",
+    "event": "push",
+    "status": "completed",
+    "conclusion": "success",
+    "repository": {
+      "full_name": "BeFeast/okilum"
+    },
+    "head_repository": {
+      "full_name": "BeFeast/okilum"
+    },
+    "html_url": "https://github.com/BeFeast/okilum/actions/runs/39604244715",
+    "workflow_id": 376350175,
+    "updated_at": "2026-10-21T13:16:13Z"
+  },
+  "jobs": {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 119236245615,
+        "run_id": 39604244715,
+        "workflow_name": "forgejo-macos",
+        "head_branch": "forgejo-pr/1456/db413780a600d67fdf1374fbb6b468f8cfdae8dd-15277-1-f9ba886e83484fd5bff41ef83b0f4f75",
+        "run_url": "https://api.github.com/repos/BeFeast/okilum/actions/runs/39604244715",
+        "run_attempt": 1,
+        "node_id": "CR_kwDOU8el2s8AAAAbwwi4bw",
+        "head_sha": "db413780a600d67fdf1374fbb6b468f8cfdae8dd",
+        "url": "https://api.github.com/repos/BeFeast/okilum/actions/jobs/119236245615",
+        "html_url": "https://github.com/BeFeast/okilum/actions/runs/39604244715/job/119236245615",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-21T13:00:36Z",
+        "started_at": "2026-10-21T13:00:39Z",
+        "completed_at": "2026-10-21T13:16:12Z",
+        "name": "macos",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1,
+            "started_at": "2026-10-21T13:00:40Z",
+            "completed_at": "2026-10-21T13:00:41Z"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2,
+            "started_at": "2026-10-21T13:00:41Z",
+            "completed_at": "2026-10-21T13:00:45Z"
+          },
+          {
+            "name": "Verify native runner",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3,
+            "started_at": "2026-10-21T13:00:45Z",
+            "completed_at": "2026-10-21T13:00:45Z"
+          },
+          {
+            "name": "Restore native Cargo cache",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4,
+            "started_at": "2026-10-21T13:00:45Z",
+            "completed_at": "2026-10-21T13:02:14Z"
+          },
+          {
+            "name": "Compile Reader and run quick native regressions",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5,
+            "started_at": "2026-10-21T13:02:14Z",
+            "completed_at": "2026-10-21T13:16:04Z"
+          },
+          {
+            "name": "Save shared native Cargo cache",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 6,
+            "started_at": "2026-10-21T13:16:04Z",
+            "completed_at": "2026-10-21T13:16:04Z"
+          },
+          {
+            "name": "Save native thumbnail evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7,
+            "started_at": "2026-10-21T13:16:04Z",
+            "completed_at": "2026-10-21T13:16:06Z"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14,
+            "started_at": "2026-10-21T13:16:06Z",
+            "completed_at": "2026-10-21T13:16:06Z"
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15,
+            "started_at": "2026-10-21T13:16:06Z",
+            "completed_at": "2026-10-21T13:16:10Z"
+          }
+        ],
+        "check_run_url": "https://api.github.com/repos/BeFeast/okilum/check-runs/119236245615",
+        "labels": [
+          "macos-15"
+        ],
+        "runner_id": 1000027897,
+        "runner_name": "GitHub Actions 1000027897",
+        "runner_group_id": 0,
+        "runner_group_name": "GitHub Actions"
+      }
+    ]
+  },
+  "workflow": {
+    "id": 376350175,
+    "path": ".github/workflows/forgejo-macos.yml",
+    "state": "active"
+  }
+}
