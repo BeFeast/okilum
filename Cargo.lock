@@ -5447,6 +5447,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "okilum-core",
+ "okilum-t3",
  "okilum-sync-controller",
  "regex",
  "resvg 0.45.1",

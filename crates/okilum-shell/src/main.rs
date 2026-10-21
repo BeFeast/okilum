@@ -25,6 +25,7 @@ mod open_in;
 mod pdf_engine;
 mod platform;
 mod prepared_links;
+mod project;
 mod quick_open;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
@@ -1348,6 +1349,10 @@ struct Reader {
     hover_preview: reader_hover::HoverPreview,
     file_preview: Option<reader_files::FilePreview>,
     tree_preview: reader_tree_preview::Session,
+    project: Option<Entity<project::ProjectView>>,
+    project_open: bool,
+    project_request: u64,
+    project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
     /// Undo history and selection of the editor last left for the Reader, by
@@ -1789,6 +1794,10 @@ impl Reader {
             hover_preview: Default::default(),
             file_preview: None,
             tree_preview: Default::default(),
+            project: None,
+            project_open: false,
+            project_request: 0,
+            project_views: Default::default(),
             file_menu: None,
             tree_focus: cx.focus_handle(),
             typed_navigation: Default::default(),
@@ -2023,6 +2032,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_project(window, cx);
         self.tree_preview.close();
         if rel.is_empty() {
             self.show_empty_vault(window, cx);
@@ -3530,6 +3540,16 @@ impl Reader {
                     ),
             )
             .child(div().flex_1().min_w_0())
+            .when(!self.single_file, |row| {
+                row.child(
+                    reader_icon_button("reader-project", IconName::Folder, "Project", cx)
+                        .debug_selector(|| "reader-project".into())
+                        .selected(self.project_open)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.toggle_project(window, cx)),
+                        ),
+                )
+            })
             .child(
                 header_controls()
                     .flex_shrink(1.)
@@ -7391,6 +7411,10 @@ fn main() {
         }
 
         brand::apply_theme(cx);
+        #[cfg(feature = "project-ui-harness")]
+        if project::open_harness(cx) {
+            return;
+        }
         // A theme can swap the fonts behind a run; shaped lines start over.
         cx.observe_global::<Theme>(|_| {
             platform::shaped_line_cache::ShapedLineCache::clear_installed()

@@ -10,6 +10,7 @@
 //! [`StoredToken::to_secret`] under [`Environment::credential_url`]), never in
 //! a file or in the vault, and its `Debug` output is redacted.
 
+pub mod chat;
 mod environment;
 mod gateway;
 pub mod manifest;
@@ -27,8 +28,8 @@ pub use mcp::McpGateway;
 pub use token::{StoredToken, TokenFreshness, EXPIRES_SOON_SECS};
 pub use types::{
     Capabilities, ModelInfo, ModelOption, ModelSelection, OutgoingMessage, Project,
-    ProviderCapability, SendMode, SendReceipt, ThreadConfiguration, ThreadDetail, ThreadPage,
-    ThreadQuery, ThreadSummary, TimelineItem,
+    ProviderCapability, SendMode, SendReceipt, ServerIdentity, ThreadConfiguration, ThreadDetail,
+    ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
 };
 
 /// Seconds since the Unix epoch, the clock tokens are compared against.

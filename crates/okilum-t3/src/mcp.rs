@@ -295,6 +295,10 @@ impl McpGateway {
 }
 
 impl ManagerGateway for McpGateway {
+    fn server_identity(&self) -> GatewayResult<crate::ServerIdentity> {
+        self.call("t3_environment_read", json!({}))
+    }
+
     fn status(&self) -> GatewayStatus {
         let Some(token) = self.token.lock().unwrap().clone() else {
             return GatewayStatus::NotConnected;

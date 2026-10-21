@@ -16,10 +16,13 @@ brain = ["okilum-core/brain"]
 settings-ui-harness = []
 # Non-publishing downloaded-update visual fixture; never starts an updater.
 updater-ui-harness = []
+# Non-publishing Project UI fixture; never registers OAuth clients or threads.
+project-ui-harness = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 okilum-core = { workspace = true, default-features = false }
+okilum-t3 = { path = "../okilum-t3" }
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-base = { path = "../../vendor/gpui-component/crates/base" }
