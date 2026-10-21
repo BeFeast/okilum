@@ -47,6 +47,102 @@ jobs:
         if: github.ref != 'refs/heads/main' || steps.native-cache.outputs.cache-hit != 'true'
         shell: bash
         run: bash scripts/ci/check-macos.sh
+      # Retain the production executable this job already built; never compile here.
+      # Cache-only main runs cannot attest an app from this source and publish none.
+      - name: Package compiled arm64 test app
+        if: success() && steps.native.outcome == 'success'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ $(uname -sm) == 'Darwin arm64' ]]
+          [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
+          export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
+          TARGET="$CARGO_TARGET_DIR/aarch64-apple-darwin/release"
+          OUTPUT="$RUNNER_TEMP/macos-test-artifact"
+          export APP="$OUTPUT/Okilum Test.app"
+          test ! -e "$OUTPUT"
+          for binary in "$TARGET/okilum" "$TARGET/okilum-sync-supervisor" "$TARGET/examples/bundled_plist"; do
+            test -x "$binary"
+            [[ $(lipo -archs "$binary") == arm64 ]]
+          done
+          python3 scripts/updater/sparkle.py verify vendor/sparkle
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$APP/Contents/Library/LaunchAgents"
+          cp "$TARGET/okilum" "$APP/Contents/MacOS/okilum"
+          cp "$TARGET/okilum-sync-supervisor" "$APP/Contents/MacOS/okilum-sync-supervisor"
+          ditto vendor/sparkle/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
+          python3 scripts/third-party-notices.py --stage "$APP/Contents/Resources/Licenses"
+          # Execute the existing compiled plist generator directly: no cargo run/build.
+          "$TARGET/examples/bundled_plist" Contents/MacOS/okilum-sync-supervisor "$APP/Contents/Library/LaunchAgents"
+          plutil -lint "$APP"/Contents/Library/LaunchAgents/*.plist
+          python3 - <<'PYAPP'
+          import os, plistlib
+          from pathlib import Path
+          app = Path(os.environ['APP'])
+          info = dict(CFBundleExecutable='okilum-test', CFBundleIdentifier='com.befeast.okilum.arm64-test',
+                      CFBundleName='Okilum Test', CFBundleDisplayName='Okilum Test', CFBundlePackageType='APPL',
+                      CFBundleVersion=os.environ['GITHUB_RUN_NUMBER'], CFBundleShortVersionString='0.0.0',
+                      NSHighResolutionCapable=True, SUEnableAutomaticChecks=False)
+          # Reader state/instance/drafts/config/cache use the existing absolute QA override.
+          # XDG_CONFIG_HOME also isolates legacy Brain outboxes; do not override HOME.
+          source = os.environ['GITHUB_SHA']
+          launcher = app / 'Contents/MacOS/okilum-test'
+          launcher.write_text('#!/bin/bash\nset -Eeuo pipefail\n'
+              ': "${HOME:?An absolute user home is required}"\n[[ $HOME == /* ]]\n'
+              'export OKILUM_STATE_DIR="$HOME/Library/Application Support/com.befeast.okilum.arm64-test/' + source + '"\n'
+              'export XDG_CONFIG_HOME="$OKILUM_STATE_DIR/config"\n'
+              'export XDG_CACHE_HOME="$OKILUM_STATE_DIR/cache"\n'
+              'export XDG_STATE_HOME="$OKILUM_STATE_DIR/state"\n'
+              'unset OKILUM_INDEX_DIR OKILUM_VAULT\n'
+              'umask 077\nmkdir -p "$OKILUM_STATE_DIR"\n'
+              'exec "$(cd -- "$(dirname -- "$0")" && pwd)/okilum" "$@"\n')
+          launcher.chmod(0o755)
+          # No SUFeedURL, SUPublicEDKey, or okilum: URL registration in this standalone test app.
+          (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+          PYAPP
+          plutil -lint "$APP/Contents/Info.plist"
+          FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+          for component in "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc" \
+            "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc" "$FRAMEWORK/Versions/B/Updater.app" \
+            "$FRAMEWORK/Versions/B/Autoupdate" "$FRAMEWORK"; do
+            codesign --force --preserve-metadata=identifier,entitlements --sign - "$component"
+          done
+          codesign --force --identifier com.befeast.okilum.arm64-test.sync --sign - "$APP/Contents/MacOS/okilum-sync-supervisor"
+          codesign --force --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          export QA_ARCHIVE="$OUTPUT/Okilum-arm64-test-$GITHUB_SHA.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$QA_ARCHIVE"
+          python3 - <<'PYRECEIPT'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          app, archive = Path(os.environ['APP']), Path(os.environ['QA_ARCHIVE'])
+          sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          manifest = dict(source=os.environ['GITHUB_SHA'], tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
+                          run=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+                          ref=os.environ['GITHUB_REF'], platform='macos-arm64', signing='ad-hoc', notarized=False,
+                          provenance='Same-job successful native production compilation; binary retains development version/source labels',
+                          managed_sync='NOT VERIFIED: existing helper Team-ID policy remains strict; ad-hoc has no production Team ID',
+                          archive=archive.name, size=archive.stat().st_size, sha256=sha(archive),
+                          executable_sha256=sha(app/'Contents/MacOS/okilum'), helper_sha256=sha(app/'Contents/MacOS/okilum-sync-supervisor'))
+          (archive.parent/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          (archive.parent/'README.txt').write_text('Standalone Apple Silicon TEST app. Not notarized, not Stable; Gatekeeper may refuse normal launch.\n'
+              'Unzip and copy Okilum Test.app to a test location; use the existing macOS user-approved Open Anyway flow if permitted.\n'
+              'Open this app through Finder/the bundle launcher; executing Contents/MacOS/okilum directly bypasses QA state isolation.\n'
+              'State/locks/drafts/config/cache use an absolute source-specific QA directory, not merely a different bundle ID.\n'
+              'Selected vault files and OS keychain are not sandboxed; use a disposable copy of data for testing.\n'
+              'No update feed. Native UI/product acceptance NOT RUN. Managed Sync remains fail-closed under the production Team-ID policy.\n'
+              'No quarantine removal, production replacement, or global service registration is performed by this package.\n')
+          PYRECEIPT
+      - name: Retain standalone arm64 test app
+        if: success() && steps.native.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: okilum-macos-arm64-test-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/macos-test-artifact/*.zip
+            ${{ runner.temp }}/macos-test-artifact/manifest.json
+            ${{ runner.temp }}/macos-test-artifact/README.txt
+          if-no-files-found: error
+          retention-days: 7
       - name: Save shared native Cargo cache
         if: github.ref == 'refs/heads/main' && steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
