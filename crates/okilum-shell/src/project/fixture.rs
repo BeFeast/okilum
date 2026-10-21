@@ -14,6 +14,7 @@ pub(super) struct Fake {
     pub wrong_project: bool,
     pub fail_first: bool,
     pub sends: Mutex<Vec<OutgoingMessage>>,
+    pub reads: Mutex<Vec<ThreadQuery>>,
     pub grown: Mutex<bool>,
 }
 impl ManagerGateway for Fake {
@@ -39,6 +40,7 @@ impl ManagerGateway for Fake {
         unimplemented!()
     }
     fn read_thread(&self, q: &ThreadQuery) -> Result<ThreadPage> {
+        self.reads.lock().unwrap().push(q.clone());
         if self.revoked {
             return Err(GatewayError::Revoked);
         }
@@ -52,7 +54,7 @@ impl ManagerGateway for Fake {
             ])
         };
         serde_json::from_value(serde_json::json!({
-            "thread":{"threadId":"mcp:fixture-manager","projectId":if self.wrong_project {"different-project"}else{"fixture-managers"},"title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
+            "thread":{"threadId":q.thread_id,"projectId":if self.wrong_project {"different-project"}else{"fixture-managers"},"title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
             "items":items,"nextPosition":1,"hasMore":false
         })).map_err(|error|GatewayError::Protocol(error.to_string()))
     }
