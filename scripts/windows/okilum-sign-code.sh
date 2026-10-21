@@ -23,22 +23,122 @@ lock="${XDG_RUNTIME_DIR:-/tmp}/okilum-sign-code.lock.d"
 mkdir "$lock" 2>/dev/null || { say "another okilum-sign-code run holds $lock"; exit 1; }
 trap 'rmdir "$lock"' EXIT
 
+# This file is also the source of truth for the installed, standalone helper.
+# Explicit operator approval only: JSON array of exact identities, default [].
+# Inventory and every cancel decision finish BEFORE reading the one-use OTP.
+python3 - <<'CANCEL_GUARD'
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+BASE = "https://git.oklabs.uk/api/v1/repos/BeFeast/okilum"
+WORKFLOW = "windows-diagnostic.yml"
+ACTIVE = {"waiting", "running", "blocked", "queued"}
+FIELDS = {"id", "index_in_repo", "workflow_id", "ref", "commit_sha", "owner", "repo"}
+deadline = time.monotonic() + 60
+
+
+def stop(reason):
+    raise ValueError(reason)
+
+
+def request(path, post=False):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        stop("inventory/cancellation deadline exceeded")
+    # No retries: a timeout or partial response must never become an empty inventory.
+    args = ["curl", "-fsS", "--connect-timeout", "5", "--max-time", "20",
+            "-H", "Authorization: token " + os.environ["FORGEJO_TOKEN"]]
+    if post:
+        args += ["-X", "POST"]
+    result = subprocess.run(args + [BASE + path], capture_output=True,
+                            timeout=min(20, remaining), check=True)
+    return None if post else json.loads(result.stdout)
+
+
+def identity(run):
+    if (type(run["id"]) is not int or run["id"] <= 0
+            or type(run["index_in_repo"]) is not int or run["index_in_repo"] <= 0):
+        stop("invalid run identity")
+    repo = run["repository"]
+    if (repo["full_name"] != "BeFeast/okilum" or repo["owner"]["login"] != "BeFeast"
+            or repo["name"] != "okilum" or repo["fork"] is not False
+            or run["is_fork_pull_request"] is not False
+            or run["trigger_event"] != "schedule" or run["is_ref_deleted"] is not False):
+        stop("foreign, fork, deleted ref or non-scheduled run")
+    return dict(id=run["id"], index_in_repo=run["index_in_repo"],
+                workflow_id=run["workflow_id"], ref=run["prettyref"],
+                commit_sha=run["commit_sha"], owner=repo["owner"]["login"], repo=repo["name"])
+
+
+def inventory():
+    # Forgejo's nonterminal statuses, including unknown (which is rejected below).
+    # Hard bound: one complete page of <=50. Larger inventories require disposition.
+    data = request("/actions/runs?workflow_id=" + WORKFLOW +
+                   "&status=unknown&status=waiting&status=running&status=blocked&status=queued&limit=50&page=1")
+    runs = data["workflow_runs"]
+    count = data["total_count"]
+    if (not isinstance(runs, list) or type(count) is not int
+            or count != len(runs) or not 0 <= count <= 50):
+        stop("incomplete or oversized inventory")
+    found = {}
+    for run in runs:
+        actual = identity(run)
+        rid = actual["id"]
+        if (run["status"] not in ACTIVE or actual["workflow_id"] != WORKFLOW
+                or rid not in approved or actual != approved[rid] or rid in found):
+            stop("new, unknown or mismatched run in inventory")
+        found[rid] = actual
+    return found
+
+
+try:
+    entries = json.loads(os.environ.get("OKILUM_SIGN_CANCEL_ALLOWLIST", "[]"))
+    if not isinstance(entries, list) or len(entries) > 10:
+        stop("allowlist must be an array of at most 10 identities")
+    approved = {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or set(entry) != FIELDS
+                or type(entry["id"]) is not int or entry["id"] <= 0
+                or type(entry["index_in_repo"]) is not int or entry["index_in_repo"] <= 0
+                or entry["workflow_id"] != WORKFLOW or entry["ref"] != "refs/heads/main"
+                or not isinstance(entry["commit_sha"], str)
+                or not re.fullmatch("[0-9a-f]{40}", entry["commit_sha"])
+                or entry["owner"] != "BeFeast" or entry["repo"] != "okilum"
+                or entry["id"] in approved):
+            stop("invalid or duplicate approved identity")
+        approved[entry["id"]] = entry
+    # Forgejo exposes prettyref as 'main'; approval uses an unambiguous full ref.
+    for entry in approved.values():
+        entry["ref"] = "main"
+    if set(inventory()) != set(approved):
+        stop("approved targets missing from initial inventory")
+    for rid, expected in approved.items():
+        current = inventory()
+        if rid not in current:
+            stop("target disappeared before cancellation")
+        # Detail read is the last request immediately before the cancel POST.
+        target = request("/actions/runs/" + str(rid))
+        if identity(target) != expected or target["status"] not in ACTIVE:
+            stop("target changed before cancellation")
+        request("/actions/runs/" + str(rid) + "/cancel", post=True)
+        print("Requested cancellation of explicitly approved run " + str(expected["index_in_repo"]), flush=True)
+    if inventory():
+        stop("cancellation not yet complete; OTP was not read")
+except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+    # Do not echo API bodies, credentials or command arguments.
+    reason = str(error) if type(error) is ValueError else type(error).__name__
+    print("BLOCKER: cancellation guard stopped (" + reason + "); OTP was not read", file=sys.stderr)
+    sys.exit(1)
+CANCEL_GUARD
+
 if [ -t 0 ]; then read -rsp 'SimplySign code: ' code; echo; else read -r code; fi
 [[ "$code" =~ ^[0-9]{6}$ ]] || { say "the code must be 6 digits; nothing was sent"; exit 2; }
 email=$(api "$A/actions/variables/OKILUM_CERTUM_EMAIL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"])')
 [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || { echo "OKILUM_CERTUM_EMAIL is not a plain e-mail address" >&2; exit 1; }
-
-# The re-sign shares the windows-build concurrency group with the scheduled beta build, and a
-# running beta build would hold it past the 20-minute session (2026-10-12, run 7396). The beta
-# is rebuilt every hour, so cancelling it costs nothing: clear the group before the code is spent.
-api "$A/actions/runs?limit=30" | python3 -c '
-import json, sys
-for r in json.load(sys.stdin)["workflow_runs"]:
-    if (r["workflow_id"] == "windows-diagnostic.yml" and r["trigger_event"] == "schedule"
-            and r["status"] in ("running", "waiting", "blocked", "queued")):
-        print(r["id"], r["index_in_repo"])' | while read -r id index; do
-    api -o /dev/null -X POST "$A/actions/runs/$id/cancel" && say "cancelled scheduled beta run $index (it would hold the re-sign)"
-done
 
 say "logging in on the signer with the code (dry-sign of the test PE)"
 # The code and the e-mail travel on ssh's stdin into ssign's environment only; the remote
