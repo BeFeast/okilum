@@ -16,9 +16,9 @@
 
 # Okilum
 
-Okilum is a fast, native desktop app for a folder of Markdown notes — an
-Obsidian-style vault. Your notes stay ordinary files on your disk: no account,
-no server, no import. Indexes and previews are rebuildable caches.
+Okilum is a fast, native desktop app for folders of Markdown notes.
+Your notes stay ordinary files on your disk: no account, no server, no import.
+Indexes and previews are rebuildable caches.
 
 <p align="center">
   <picture>
@@ -30,15 +30,15 @@ no server, no import. Indexes and previews are rebuildable caches.
 
 ## What it does
 
-- **Reads your whole vault.** Wikilinks and backlinks with context, frontmatter
-  properties, wide tables, code with language labels, images, SVG and native
-  Excalidraw drawings inside notes. Obsidian-style links with spaces, `%20` and
-  absolute paths resolve the same way everywhere.
+- **Reads your whole vault.** Wiki-links (`[[…]]`) and backlinks with context,
+  frontmatter properties, callouts, wide tables, code with language labels,
+  images, SVG and native `.excalidraw.md` drawings inside notes. Links with
+  spaces, `%20` and absolute paths resolve the same way everywhere.
 - **Finds things fast.** ⌘K quick open, full-text search, hover previews of
   linked notes, a table of contents that follows you.
-- **Edits safely.** Source + preview editing with atomic saves, per-note history
-  with restore, and rename/move that updates every link after showing you the
-  exact changes.
+- **Edits safely.** Source + preview editing with atomic saves, a templates
+  folder, per-note history with restore, and rename/move that updates every
+  link after showing you the exact changes.
 - **Stays out of your way.** Opens the last vault and note on launch, remembers
   window layout, and updates itself.
 
