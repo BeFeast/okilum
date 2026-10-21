@@ -118,3 +118,23 @@ class CanaryRoutingTests(unittest.TestCase):
         ]:
             self.assertEqual(evaluate('linux-github', event, value, number, fork), hosted)
             self.assertEqual(evaluate('linux-local', event, value, number, fork), not hosted)
+
+
+class UnconfirmedRefTests(unittest.TestCase):
+    def test_unconfirmed_push_or_failed_observation_never_deletes_possible_live_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env=dict(MIRROR_TOKEN='test-token', PR_HEAD_SHA='a'*40, PR_NUMBER='1',
+                     GITHUB_RUN_ID='2', GITHUB_RUN_ATTEMPT='1', CI_LANE='perf-linux',
+                     GITHUB_OUTPUT=str(Path(tmp)/'output'))
+            for scenario in ['push_ambiguous','runs_ambiguous','success']:
+                with self.subTest(scenario=scenario), patch.dict(os.environ,env), \
+                        patch.object(linux.transport,'GitHub') as api_class, \
+                        patch.object(linux.transport,'push_head') as push, \
+                        patch.object(linux.transport,'wait_for_run',return_value=(
+                            'success' if scenario=='success' else 'failure','observation')):
+                    if scenario=='push_ambiguous':
+                        push.side_effect=linux.transport.Unavailable('acceptance unknown')
+                    linux.main()
+                    calls=api_class.return_value.request.call_args_list
+                    self.assertEqual(any(len(c.args)>1 and c.args[1]=='DELETE' for c in calls),
+                                     scenario=='success')

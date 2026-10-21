@@ -81,3 +81,23 @@ class HostedPRTests(unittest.TestCase):
                         expected = event == 'pull_request' and setting != 'local' and not fork
                         self.assertEqual(evaluate(lane+'-github', event, setting, fork), expected)
                         self.assertEqual(evaluate(job, event, setting, fork), not expected)
+
+
+class UnconfirmedRefTests(unittest.TestCase):
+    def test_unconfirmed_push_or_failed_observation_never_deletes_possible_live_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env=dict(MIRROR_TOKEN='test-token', PR_HEAD_SHA='a'*40, PR_NUMBER='1',
+                     GITHUB_RUN_ID='2', GITHUB_RUN_ATTEMPT='1', CI_LANE='perf-linux',
+                     GITHUB_OUTPUT=str(Path(tmp)/'output'))
+            for scenario in ['push_ambiguous','runs_ambiguous','success']:
+                with self.subTest(scenario=scenario), patch.dict(os.environ,env), \
+                        patch.object(bridge.transport,'GitHub') as api_class, \
+                        patch.object(bridge.transport,'push_head') as push, \
+                        patch.object(bridge.transport,'wait_for_run',return_value=(
+                            'success' if scenario=='success' else 'failure','observation')):
+                    if scenario=='push_ambiguous':
+                        push.side_effect=bridge.transport.Unavailable('acceptance unknown')
+                    bridge.main()
+                    calls=api_class.return_value.request.call_args_list
+                    self.assertEqual(any(len(c.args)>1 and c.args[1]=='DELETE' for c in calls),
+                                     scenario=='success')

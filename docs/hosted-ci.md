@@ -251,3 +251,25 @@ missing/ambiguous status/artifact, evidence failure, accepted-but-response-lost
 POST, durable mutation journal, failed readback and concurrent publication.
 Fixtures model the new CI execution explicitly; they are not a live recovery
 receipt or proof that workflow-token permissions will succeed at runtime.
+
+### One-push admission and unresolved refs
+
+All hosted PR lanes use `push_head` once per invocation. A client timeout or git
+error can occur after remote acceptance; neither proves that the unique ref did
+not create a workflow run. Therefore no automatic push retry occurs, including
+a rejection/error whose acceptance cannot be established. The result remains
+unavailable/failure and ambiguous workflow matches still refuse; no run is
+arbitrarily selected. Linux/generic-lane cleanup deletes its temporary ref only
+after successful completed gate acceptance. On failed/unavailable/ambiguous
+observation, preserve the ref because a remote job may still need to fetch it;
+no speculative ref deletion/cancel/retry is performed.
+
+On PR1458 head3f15, perf bridge job33434 reported ambiguous runs. Current API
+retains two distinct attempt1 push runs39612150096/39612176836 for the SAME exact
+unique ref/source/workflow. Historical push attempt responses were not logged,
+so duplicate creation cause remains UNKNOWN. The existing automatic retry after
+ambiguous client failure is a proven admission risk, not a proven explanation
+of those particular remote events. Finite accepted-then-response-lost controls
+prove that the new code issues one push only and retains unresolved refs;
+they do not claim a live provider defect is repaired. No compiler rerun is
+used for diagnosis and no existing run/ref is cancelled/reset by this patch.

@@ -325,37 +325,38 @@ class TransportRetryTests(unittest.TestCase):
         self.assertNotIn('secret', str(raised.exception))
 
 
-class PushRetryTests(unittest.TestCase):
-    """A transient GitHub rejection is retried; a lasting one names git's reason."""
+class PushAdmissionTests(unittest.TestCase):
+    """Local timeout/rejection cannot prove remote nonacceptance."""
 
-    def run_push(self, outcomes):
-        import subprocess as sp
-        calls = []
+    def test_success_uses_one_ordinary_nonforced_push(self):
+        with patch.object(bridge.subprocess, 'check_output', return_value='a'*40+'\n'), \
+                patch.object(bridge.subprocess, 'run') as push:
+            bridge.push_head('forgejo-pr/test', 'a'*40, 'test-token')
+        self.assertEqual(push.call_count,1)
+        self.assertNotIn('--force',push.call_args.args[0])
+        self.assertEqual(push.call_args.kwargs['timeout'],120)
+        self.assertNotIn('test-token',' '.join(push.call_args.args[0]))
 
-        def fake_run(args, **kwargs):
-            calls.append(args)
-            result = outcomes[min(len(calls), len(outcomes)) - 1]
-            if result is not None:
-                raise sp.CalledProcessError(1, args, stderr=result)
-            return sp.CompletedProcess(args, 0)
-        sleeps = []
-        with patch.object(bridge.subprocess, 'check_output', return_value='a' * 40 + '\n'), \
-                patch.object(bridge.subprocess, 'run', side_effect=fake_run):
-            try:
-                bridge.push_head('forgejo-pr/x', 'a' * 40, 'token', sleep=sleeps.append)
-                return calls, sleeps, None
-            except bridge.Unavailable as error:
-                return calls, sleeps, str(error)
+    def test_remote_acceptance_then_lost_response_never_repeats_push(self):
+        for failure in ['timeout','error']:
+            accepted=[]
+            def accept_then_fail(args,**kwargs):
+                accepted.append(args[-1])
+                if failure=='timeout':
+                    raise subprocess.TimeoutExpired(args,120)
+                raise subprocess.CalledProcessError(1,args,stderr=b'possibly sensitive remote body')
+            with self.subTest(failure=failure), \
+                    patch.object(bridge.subprocess,'check_output',return_value='a'*40+'\n'), \
+                    patch.object(bridge.subprocess,'run',side_effect=accept_then_fail):
+                with self.assertRaises(bridge.Unavailable) as caught:
+                    bridge.push_head('forgejo-pr/test','a'*40,'test-token')
+                self.assertEqual(len(accepted),1)
+                self.assertIn('no retry',str(caught.exception))
+                self.assertNotIn('sensitive',str(caught.exception))
+                self.assertNotIn('test-token',str(caught.exception))
 
-    def test_transient_rejection_is_retried(self):
-        rejected = b'To https://github.com/BeFeast/okilum.git\n ! [remote rejected] x -> x (failed)\n'
-        calls, sleeps, error = self.run_push([rejected, None])
-        self.assertEqual((len(calls), error), (2, None))
-        self.assertEqual(sleeps, [bridge.PUSH_RETRY_SECONDS])
-
-    def test_lasting_failure_reports_git_reason_without_the_token(self):
-        rejected = b' ! [remote rejected] x -> x (failed)\nerror: failed to push some refs\n'
-        calls, sleeps, error = self.run_push([rejected])
-        self.assertEqual(len(calls), bridge.PUSH_ATTEMPTS)
-        self.assertIn('failed to push some refs', error)
-        self.assertNotIn('token', error)
+    def test_wrong_local_source_refuses_before_push(self):
+        with patch.object(bridge.subprocess,'check_output',return_value='b'*40+'\n'), \
+                patch.object(bridge.subprocess,'run') as push:
+            with self.assertRaises(ValueError): bridge.push_head('forgejo-pr/test','a'*40,'test-token')
+            push.assert_not_called()

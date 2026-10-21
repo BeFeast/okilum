@@ -63,11 +63,7 @@ def ref_name(number, sha, run_id, attempt, invocation=None):
     return f"forgejo-pr/{number}/{sha}-{run_id}-{attempt}{suffix}"
 
 
-PUSH_ATTEMPTS = 3
-PUSH_RETRY_SECONDS = 15
-
-
-def push_head(branch, sha, token, *, sleep=time.sleep):
+def push_head(branch, sha, token):
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != sha:
         raise ValueError("Checkout is not the requested PR head")
@@ -79,26 +75,16 @@ def push_head(branch, sha, token, *, sleep=time.sleep):
         askpass.chmod(0o700)
         env = dict(os.environ, MIRROR_TOKEN=token, GIT_ASKPASS=str(askpass),
                    GIT_TERMINAL_PROMPT="0")
-        # GitHub sometimes rejects a push transiently ("remote rejected ... (failed)"):
-        # retry before reporting the lane unavailable, and say what git said. The token
-        # reaches git through askpass, never on the command line or in its output.
-        reason = ""
-        for attempt in range(PUSH_ATTEMPTS):
-            try:
-                # Unique ref: never replace another attempt or publish internal tags.
-                subprocess.run(["git", "-c", "credential.helper=", "push",
-                                f"https://github.com/{REPOSITORY}.git",
-                                f"{sha}:refs/heads/{branch}"], env=env, check=True,
-                               timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                return
-            except subprocess.CalledProcessError as error:
-                lines = (error.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-                reason = lines[-1] if lines else f"git exit {error.returncode}"
-            except subprocess.TimeoutExpired:
-                reason = "git push timed out"
-            if attempt + 1 < PUSH_ATTEMPTS:
-                sleep(PUSH_RETRY_SECONDS * (attempt + 1))
-        raise Unavailable(f"Could not push the GitHub native-check ref: {reason}")
+        # A failed/timed-out client may already have created the remote ref and
+        # triggered a compiler. Never repeat a mutation with ambiguous acceptance.
+        try:
+            subprocess.run(["git", "-c", "credential.helper=", "push",
+                            f"https://github.com/{REPOSITORY}.git",
+                            f"{sha}:refs/heads/{branch}"], env=env, check=True,
+                           timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            reason = "timeout" if isinstance(error, subprocess.TimeoutExpired) else "git rejection/error"
+            raise Unavailable(f"GitHub push acceptance unconfirmed ({reason}); no retry; retain ref {branch}") from None
 
 
 def hosted_request(api, path, *, sleep=time.sleep):
@@ -519,7 +505,7 @@ def main():
         print(message)
     except Unavailable as error:
         result = "unavailable"
-        print(f"GitHub macOS unavailable — rerun later: {error}")
+        print(f"GitHub macOS unavailable — STOP; no automatic retry: {error}")
     finally:
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"result={result}\n")

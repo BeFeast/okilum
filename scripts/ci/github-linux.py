@@ -32,7 +32,7 @@ def main():
     finally:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'result={result}\n')
-        if branch and api:
+        if branch and api and result == 'success':
             try:
                 api.request('git/refs/heads/' + branch, 'DELETE')
             except transport.Unavailable:
