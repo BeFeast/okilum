@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "30 10 * * *"
   workflow_dispatch:
+    inputs:
+      source:
+        description: 'Exact main ancestor for a manual hosted shipping artifact; empty selects workflow SHA'
+        required: false
+        default: ''
 
 # Finish the selected daily/manual snapshot even when main advances.
 concurrency:
@@ -19,17 +24,26 @@ jobs:
     timeout-minutes: 3
     outputs:
       build: ${{ steps.select.outputs.build }}
+      lane: ${{ steps.route.outputs.lane }}
+      source: ${{ steps.route.outputs.source }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select delivery route without a local fallback
+        id: route
+        env:
+          MACOS_LANE: ${{ vars.OKILUM_MACOS_LANE }}
+          PRODUCT_SOURCE: ${{ inputs.source }}
+        run: python3 scripts/releases/macos-hosted.py route
       - name: Select hourly or manual build
         id: select
         run: python3 scripts/releases/coalesce.py macos
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true'
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'local'
     runs-on: macos
     timeout-minutes: 90
     env:
@@ -118,3 +132,22 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
         run: python3 scripts/releases/publication.py dispatch macos
+
+  hosted-artifact:
+    needs: select
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && github.event_name == 'workflow_dispatch'
+    runs-on: bridge
+    timeout-minutes: 105
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Produce a source-pinned hosted shipping artifact
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          PRODUCT_SOURCE: ${{ needs.select.outputs.source }}
+          OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
+          OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
+        run: python3 scripts/ci/github-macos-shipping.py

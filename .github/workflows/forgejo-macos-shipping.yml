@@ -1,0 +1,64 @@
+# No signing secrets are provisioned by this workflow. Missing approved runner
+# keychain/notary capability fails before Cargo; CI success is not provisioning.
+name: forgejo-macos-shipping
+run-name: Mac shipping Forgejo ${{ inputs.producer }} attempt ${{ inputs.attempt }}
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        required: true
+      build:
+        required: true
+      producer:
+        required: true
+      producer_number:
+        required: true
+      attempt:
+        required: true
+      signing_identity:
+        required: true
+      notary_profile:
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: macos-shipping-${{ inputs.source }}
+  cancel-in-progress: false
+jobs:
+  shipping:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source and approved signing capability before compilation
+        env:
+          PRODUCT_SOURCE: ${{ inputs.source }}
+          SHIPPING_BUILD: ${{ inputs.build }}
+          PRODUCER: ${{ inputs.producer }}
+          PRODUCER_NUMBER: ${{ inputs.producer_number }}
+          PRODUCER_ATTEMPT: ${{ inputs.attempt }}
+          OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
+          OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
+        run: python3 scripts/releases/macos-hosted.py preflight
+      - name: Build, sign and notarize exact product source
+        env:
+          PRODUCT_SOURCE: ${{ inputs.source }}
+          SHIPPING_BUILD: ${{ inputs.build }}
+          PRODUCER: ${{ inputs.producer }}
+          PRODUCER_NUMBER: ${{ inputs.producer_number }}
+          PRODUCER_ATTEMPT: ${{ inputs.attempt }}
+          OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
+          OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
+          SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=
+        run: python3 scripts/releases/macos-hosted.py build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-shipping-${{ inputs.source }}-${{ inputs.build }}
+          path: dist/shipping-download/*
+          if-no-files-found: error
+          retention-days: 7
