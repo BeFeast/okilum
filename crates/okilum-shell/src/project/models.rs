@@ -149,7 +149,7 @@ impl ProjectView {
                 .max_h(px(140.))
                 .overflow_y_scroll()
                 .gap_1();
-            let mut index = 0;
+            let mut index = 0usize;
             for provider in &snapshot.catalog.providers {
                 for model in &provider.models {
                     let candidate = snapshot.selection(&provider.provider_instance_id, &model.id);
