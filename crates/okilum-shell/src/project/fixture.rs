@@ -15,6 +15,8 @@ pub(super) struct Fake {
     pub fail_first: bool,
     pub sends: Mutex<Vec<OutgoingMessage>>,
     pub reads: Mutex<Vec<ThreadQuery>>,
+    pub threads: Mutex<Vec<ThreadSummary>>,
+    pub list_error: Mutex<Option<String>>,
     pub grown: Mutex<bool>,
 }
 impl ManagerGateway for Fake {
@@ -37,7 +39,10 @@ impl ManagerGateway for Fake {
         unimplemented!()
     }
     fn list_threads(&self, _: &str) -> Result<Vec<ThreadSummary>> {
-        unimplemented!()
+        if let Some(error) = self.list_error.lock().unwrap().clone() {
+            return Err(GatewayError::Protocol(error));
+        }
+        Ok(self.threads.lock().unwrap().clone())
     }
     fn read_thread(&self, q: &ThreadQuery) -> Result<ThreadPage> {
         self.reads.lock().unwrap().push(q.clone());

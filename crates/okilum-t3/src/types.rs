@@ -61,6 +61,7 @@ pub struct ThreadSummary {
     pub model: String,
     pub runtime_mode: String,
     pub linked_pull_request: Option<Value>,
+    pub pull_requests: Option<Vec<Value>>,
     #[serde(default)]
     pub settled: bool,
     pub parent_thread_id: Option<String>,
@@ -72,6 +73,22 @@ pub struct ThreadSummary {
 impl ThreadSummary {
     pub fn pull_request_url(&self) -> Option<&str> {
         pull_request_url(self.linked_pull_request.as_ref())
+    }
+
+    /// Modern T3 lists all linked PRs; the legacy single link may be null.
+    pub fn pull_request_urls(&self) -> Vec<&str> {
+        let mut urls = Vec::new();
+        for url in self.pull_request_url().into_iter().chain(
+            self.pull_requests
+                .iter()
+                .flatten()
+                .filter_map(|pr| pr.get("url")?.as_str()),
+        ) {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 }
 
@@ -102,6 +119,16 @@ impl ThreadDetail {
 
 fn pull_request_url(linked: Option<&Value>) -> Option<&str> {
     linked?.get("url")?.as_str()
+}
+
+/// External PR actions accept ordinary web links without embedded credentials.
+pub fn is_http_link(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "https" | "http")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
 }
 
 /// One timeline entry. An assistant message that is still streaming keeps

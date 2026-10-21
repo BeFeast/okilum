@@ -37,7 +37,32 @@ its historical frames do not certify OAuth, send or reconnect against a live
 server. Current runtime/human acceptance is pending. No production manager,
 vault, token or T3 resource is migrated by this change.
 
-Executors/tree/launch/model UI (#1419–1420), isolated onboarding and integrated
+Executor launch/model UI (#1420), isolated onboarding and integrated
 acceptance (#1421–1422) remain open. Scheduled-task model following is unsupported;
 a thread model change must not imply that task models followed it. The active
 manager must not migrate before the agreed T3 scheduler fix and acceptance.
+
+## Executors (#1419)
+
+The Executors segment reads the area’s existing `ops/thread-ids.md` current
+registry and projects statuses from its bound executor T3 project. It supports
+one `## Current threads` or `## Текущие threads` section (a dated suffix is fine),
+one table beginning `Role | Thread` or `Роль | Thread`, and one inline
+backtick-quoted `mcp:` ID per row. The sole Manager row must match the explicit
+manifest manager. History sections are ignored; duplicate/ambiguous IDs, missing
+manager, unsupported format, registries over256KiB or over128 executors fail
+visibly instead of selecting a partial registry or guessing ownership.
+
+Registered executors remain under the manager even when T3’s `parentThreadId`
+is null. Each matching row shows run status, item count, all linked PRs, pending
+question count and Open in T3 with the actual server identity. A registry entry
+missing from the bound T3 project is shown as missing. Other T3 threads appear
+in an explicit unregistered group with ownership/question status not established.
+A failed question read is unknown, never zero. PR actions accept HTTP(S) web
+URLs without embedded credentials.
+
+The existing serial manager poll refreshes this segment while it is selected;
+closing Project deactivates that poller. Metadata/registry errors retain the last
+executor projection and manager draft with an error. No area registry, manager
+binding, T3 resource or provider setting is written by this read-only slice.
+Runtime/live OAuth acceptance and ordinary human UI QA remain pending.

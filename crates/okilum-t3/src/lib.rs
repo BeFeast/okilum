@@ -12,6 +12,7 @@
 
 pub mod chat;
 mod environment;
+pub mod executors;
 mod gateway;
 pub mod manifest;
 mod mcp;
@@ -27,7 +28,7 @@ pub use gateway::{GatewayError, GatewayStatus, ManagerGateway};
 pub use mcp::McpGateway;
 pub use token::{StoredToken, TokenFreshness, EXPIRES_SOON_SECS};
 pub use types::{
-    Capabilities, ModelInfo, ModelOption, ModelSelection, OutgoingMessage, Project,
+    is_http_link, Capabilities, ModelInfo, ModelOption, ModelSelection, OutgoingMessage, Project,
     ProviderCapability, SendMode, SendReceipt, ServerIdentity, ThreadConfiguration, ThreadDetail,
     ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
 };

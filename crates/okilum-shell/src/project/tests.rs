@@ -502,3 +502,94 @@ fn deactivation_and_reactivation_with_a_read_awaiting_publication_keep_one_polle
         "deactivation cancels future reads"
     );
 }
+
+#[gpui::test]
+fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_draft_on_error(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let files = tempfile::tempdir().unwrap();
+    let area = files.path().join("area");
+    std::fs::create_dir_all(area.join("ops")).unwrap();
+    let registry = "## Current threads\n\n| Role | Thread |\n|---|---|\n| Manager | `mcp:fixture-manager` |\n| UI | `mcp:ui` |\n| Missing | `mcp:missing` |\n";
+    std::fs::write(area.join("ops/thread-ids.md"), registry).unwrap();
+    let summary = |id: &str| {
+        serde_json::from_value::<okilum_t3::ThreadSummary>(serde_json::json!({
+        "threadId":id,"title":id,"status":"running","latestRunId":"r","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","parentThreadId":null,"itemCount":19,"updatedAt":"now","linkedPullRequest":null,"pullRequests":[{"url":"https://git.example/pulls/9"}]
+    })).unwrap()
+    };
+    let gateway = Arc::new(fixture::Fake::default());
+    *gateway.threads.lock().unwrap() = vec![summary("mcp:ui"), summary("mcp:unknown")];
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+            view.area = Some(area.clone());
+            view.compose.update(cx, |input, cx| {
+                input.set_value("Keep manager draft", window, cx)
+            });
+            view
+        });
+        entity = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let view = entity.unwrap();
+    let tab = visual
+        .debug_bounds("project-executors")
+        .expect("real Executors segment");
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.executor().advance_clock(Duration::from_secs(20));
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| {
+        assert!(v.executors_open);
+        let s = v
+            .executors
+            .as_ref()
+            .expect("registry and actual gateway projection");
+        assert_eq!(s.registered.len(), 2);
+        assert_eq!(s.registered[0].entry.thread_id, "mcp:ui");
+        assert_eq!(s.registered[0].thread.as_ref().unwrap().item_count, 19);
+        assert_eq!(s.registered[0].pending_questions, Some(1));
+        assert_eq!(
+            s.registered[0].thread.as_ref().unwrap().pull_request_urls(),
+            ["https://git.example/pulls/9"]
+        );
+        assert!(s.registered[1].thread.is_none());
+        assert_eq!(s.unregistered[0].thread_id, "mcp:unknown");
+    });
+    assert!(visual.debug_bounds("project-executors-list").is_some());
+    assert!(visual.debug_bounds("project-executor-0").is_some());
+    *gateway.list_error.lock().unwrap() = Some("metadata unavailable".into());
+    visual.executor().advance_clock(Duration::from_secs(20));
+    visual.run_until_parked();
+    view.read_with(visual, |v, cx| {
+        assert!(v
+            .executors_error
+            .as_deref()
+            .unwrap()
+            .contains("metadata unavailable"));
+        assert_eq!(v.executors.as_ref().unwrap().registered.len(), 2);
+        assert_eq!(v.compose.read(cx).value().as_ref(), "Keep manager draft");
+    });
+    // A registry/manifest mismatch is equally visible and never rebinds ownership.
+    *gateway.list_error.lock().unwrap() = None;
+    std::fs::write(
+        area.join("ops/thread-ids.md"),
+        registry.replace("mcp:fixture-manager", "mcp:other-manager"),
+    )
+    .unwrap();
+    visual.executor().advance_clock(Duration::from_secs(20));
+    visual.run_until_parked();
+    view.read_with(visual, |v, cx| {
+        assert!(v
+            .executors_error
+            .as_deref()
+            .unwrap()
+            .contains("Registry Manager differs"));
+        assert_eq!(
+            v.executors.as_ref().unwrap().registered[0].entry.thread_id,
+            "mcp:ui"
+        );
+        assert_eq!(v.compose.read(cx).value().as_ref(), "Keep manager draft");
+    });
+}
