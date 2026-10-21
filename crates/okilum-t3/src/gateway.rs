@@ -62,6 +62,8 @@ pub type GatewayResult<T> = Result<T, GatewayError>;
 pub trait ManagerGateway: Send + Sync {
     fn status(&self) -> GatewayStatus;
 
+    fn server_identity(&self) -> GatewayResult<crate::ServerIdentity>;
+
     fn list_projects(&self) -> GatewayResult<Vec<Project>>;
 
     /// All threads of a project, subagents included.

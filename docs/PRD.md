@@ -38,6 +38,12 @@ and the visibility target remain unproven and cannot be silently substituted.
 
 ## 1. What Okilum is
 
+**Project manager extension (2026-10-21, #1418 / #1415):**
+[Project manager chat](project-manager.md) connects an area's explicit T3 binding
+to the existing Reader window through `ManagerGateway`. Managers remain in T3;
+credentials use OS storage and sends retain durable request identities. Executor
+controls, scheduled-task model following and live-server acceptance remain separate.
+
 A local-first desktop knowledge environment that replaces Obsidian without taking
 ownership of the files.
 

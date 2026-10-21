@@ -7,6 +7,25 @@ use serde_json::{json, Value};
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ServerIdentity {
+    pub environment_id: String,
+    pub label: String,
+}
+
+impl ServerIdentity {
+    pub fn thread_url(&self, thread_id: &str) -> String {
+        let mut url = url::Url::parse("t3code://threads/").unwrap();
+        url.path_segments_mut()
+            .unwrap()
+            .pop_if_empty()
+            .push(&self.environment_id)
+            .push(thread_id);
+        url.into()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub title: String,
@@ -167,7 +186,8 @@ impl ThreadQuery {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SendMode {
     /// Waits behind the manager's active turn; the default for the remote.
     Queue,
@@ -187,7 +207,7 @@ impl SendMode {
 /// A message for a manager thread. The `client_request_id` is minted once,
 /// with the message, and kept by the caller: re-sending the same value after
 /// a dropped connection is how T3 knows not to deliver it twice.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutgoingMessage {
     pub thread_id: String,
     pub text: String,
@@ -215,7 +235,7 @@ impl OutgoingMessage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendReceipt {
     pub thread_id: String,

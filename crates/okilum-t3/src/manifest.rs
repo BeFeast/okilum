@@ -5,11 +5,11 @@
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context, Result};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Environment, ModelSelection};
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AreaBinding {
     pub schema_version: u32,
@@ -19,7 +19,7 @@ pub struct AreaBinding {
     pub default_models: DefaultModels,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagerBinding {
     // Both fields are required even when explicitly unbound (null).
@@ -34,19 +34,19 @@ fn required_nullable<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, 
     Option::deserialize(d)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceMode {
     Local,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorBinding {
     pub project_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DefaultModels {
     pub manager: ModelSelection,
