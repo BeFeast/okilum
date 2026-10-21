@@ -10,15 +10,20 @@ use okilum_t3::{
 use std::time::Duration;
 
 mod connections;
+mod executors;
 
 pub(crate) struct ProjectView {
     binding: Option<AreaBinding>,
+    area: Option<PathBuf>,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     gateway: Option<Arc<dyn ManagerGateway>>,
     identity: Option<ServerIdentity>,
     chat: Option<Conversation>,
     records: Vec<MessageRecord>,
+    executors_open: bool,
+    executors: Option<okilum_t3::executors::Snapshot>,
+    executors_error: Option<String>,
     origin: Entity<InputState>,
     compose: Entity<TextareaState>,
     reason: Option<String>,
@@ -34,10 +39,12 @@ impl ProjectView {
     pub(crate) fn new(
         binding: Option<AreaBinding>,
         state: Option<PathBuf>,
+        area: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let view = Self::empty(state.clone(), window, cx);
+        let mut view = Self::empty(state.clone(), window, cx);
+        view.area = Some(area);
         let state_copy = state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -120,12 +127,16 @@ impl ProjectView {
         let input = cx.subscribe(&compose, |_, _, _: &InputEvent, cx| cx.notify());
         Self {
             binding: None,
+            area: None,
             state,
             environment: None,
             gateway: None,
             identity: None,
             chat: None,
             records: Vec::new(),
+            executors_open: false,
+            executors: None,
+            executors_error: None,
             origin,
             compose,
             reason: Some("Loading project…".into()),
@@ -297,11 +308,22 @@ impl ProjectView {
                         this.generation,
                         window.is_window_active(),
                         this.binding.as_ref()?.manager.project_id.clone()?,
+                        this.executors_open
+                            .then(|| this.area.clone().zip(this.binding.clone()))
+                            .flatten(),
                     ))
                 })
                 .ok()
                 .flatten();
-            let Some((gateway, mut chat, journal, generation, focused, expected_project)) = job
+            let Some((
+                gateway,
+                mut chat,
+                journal,
+                generation,
+                focused,
+                expected_project,
+                executor_binding,
+            )) = job
             else {
                 break;
             };
@@ -318,7 +340,10 @@ impl ProjectView {
                         .map(|journal| journal.records())
                         .transpose()?
                         .unwrap_or_default();
-                    Ok::<_, anyhow::Error>((chat, identity, records))
+                    let executors = executor_binding.map(|(area, binding)| {
+                        okilum_t3::executors::Snapshot::load(gateway.as_ref(), &area, &binding)
+                    });
+                    Ok::<_, anyhow::Error>((chat, identity, records, executors))
                 })
                 .await;
             let next = this
@@ -328,7 +353,7 @@ impl ProjectView {
                     }
                     let mut delay = if focused { 2_000 } else { 15_000 };
                     match result {
-                        Ok((chat, identity, records)) => {
+                        Ok((chat, identity, records, executors)) => {
                             if chat.has_more {
                                 delay = 100;
                             }
@@ -336,6 +361,15 @@ impl ProjectView {
                             this.identity = Some(identity);
                             this.records = records;
                             this.error = None;
+                            if let Some(result) = executors {
+                                match result {
+                                    Ok(snapshot) => {
+                                        this.executors = Some(snapshot);
+                                        this.executors_error = None;
+                                    }
+                                    Err(error) => this.executors_error = Some(format!("{error:#}")),
+                                }
+                            }
                         }
                         Err(error) => {
                             this.identity = None;
@@ -558,13 +592,23 @@ impl Render for ProjectView {
                                 Button::new("project-manager")
                                     .ghost()
                                     .label("Manager")
-                                    .selected(true),
+                                    .selected(!self.executors_open)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.executors_open = false;
+                                        cx.notify();
+                                    })),
                             )
                             .child(
                                 Button::new("project-executors")
                                     .ghost()
                                     .label("Executors")
-                                    .disabled(true),
+                                    .debug_selector(|| "project-executors".into())
+                                    .selected(self.executors_open)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.executors_open = true;
+                                        this.start_polling(window, cx);
+                                        cx.notify();
+                                    })),
                             ),
                     )
                     .child(div().flex_1())
@@ -630,28 +674,34 @@ impl Render for ProjectView {
                         .child(error),
                 )
             })
-            .child(history)
-            .child(
-                h_flex()
-                    .items_end()
-                    .gap_2()
-                    .child(Textarea::new(&self.compose).flex_1())
-                    .child(
-                        Button::new("project-send")
-                            .debug_selector(|| "project-send".into())
-                            .ghost()
-                            .icon(IconName::ArrowUp)
-                            .tooltip("Send to manager")
-                            .disabled(
-                                self.busy
-                                    || !enabled
-                                    || self.compose.read(cx).value().trim().is_empty(),
-                            )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.send(None, window, cx)),
-                            ),
-                    ),
-            )
+            .child(if self.executors_open {
+                self.render_executors(cx)
+            } else {
+                history.into_any_element()
+            })
+            .when(!self.executors_open, |view| {
+                view.child(
+                    h_flex()
+                        .items_end()
+                        .gap_2()
+                        .child(Textarea::new(&self.compose).flex_1())
+                        .child(
+                            Button::new("project-send")
+                                .debug_selector(|| "project-send".into())
+                                .ghost()
+                                .icon(IconName::ArrowUp)
+                                .tooltip("Send to manager")
+                                .disabled(
+                                    self.busy
+                                        || !enabled
+                                        || self.compose.read(cx).value().trim().is_empty(),
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.send(None, window, cx)),
+                                ),
+                        ),
+                )
+            })
     }
 }
 
@@ -700,7 +750,9 @@ impl Reader {
                         }
                         None => {
                             let state = this.session_directory.clone();
-                            let project = cx.new(|cx| ProjectView::new(binding, state, window, cx));
+                            let project = cx.new(|cx| {
+                                ProjectView::new(binding, state, key.0.clone(), window, cx)
+                            });
                             this.project_views.insert(key, project.clone());
                             project
                         }
