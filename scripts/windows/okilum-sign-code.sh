@@ -75,10 +75,11 @@ def identity(run):
 
 
 def inventory():
-    # Forgejo's nonterminal statuses, including unknown (which is rejected below).
+    # Forgejo's API calls queued runs 'waiting'; 'queued' is not a valid query
+    # status. Include unknown so unexpected nonterminal runs stop the guard.
     # Hard bound: one complete page of <=50. Larger inventories require disposition.
     data = request("/actions/runs?workflow_id=" + WORKFLOW +
-                   "&status=unknown&status=waiting&status=running&status=blocked&status=queued&limit=50&page=1")
+                   "&status=unknown&status=waiting&status=running&status=blocked&limit=50&page=1")
     runs = data["workflow_runs"]
     count = data["total_count"]
     if (not isinstance(runs, list) or type(count) is not int
