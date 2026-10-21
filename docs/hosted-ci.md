@@ -69,3 +69,45 @@ API run id, so `GET /actions/runs/6123/jobs` reads another run or nothing.
     (likely infrastructure).
 
   Files are kept for 30 days. Start with `column -t -s$'\t' index.tsv | tail`.
+
+## Mac shipping artifacts (delivery #1445)
+
+The trusted `macos-release.yml` selector now honors `OKILUM_MACOS_LANE`.
+`local` keeps the existing keychain/sign/notarize/beta-publication path. `hosted`
+never falls back to the local Mac: scheduled ticks stop before selecting a
+compiler; a separately authorized manual run on `main` can request `source=<full
+main ancestor SHA>` and hands one artifact job to GitHub's arm64 runner. The
+bridge uses the existing mirror credential only on Forgejo; GitHub receives no
+Forgejo/private cache/signing secrets. Required CI remains unchanged.
+
+Product source and reviewed workflow SHA are distinct. The bridge checks both,
+pins the mirror workflow SHA, retains the original Forgejo `5000+run_number`
+version, and accepts only its exact workflow/ref/run/attempt/job/artifact. The
+hosted job checks out the product source and executes its existing
+`build-macos-ci.sh`, which performs Developer ID signing, notarization, stapling
+and Gatekeeper checks for the app ZIP and DMG. Provenance records both SHAs and
+the actual app plist/source/tree/version. No fabricated source marker, CI cache
+export, signing bypass or #1431 claim reuse is involved.
+
+**Current blocker:** standard hosted runners have no approved Developer ID
+private-key identity or notary profile. Preflight checks that existing capability
+before Cargo and fails closed if unavailable. This PR imports no keychain, binds
+no signing secret and does not provision credentials. Do not dispatch an artifact
+build until an approved signing route exists. Providing a PKCS#12 private key and
+notary credential to an ephemeral GitHub runner would create a new trust boundary;
+it requires a separate concrete reviewed provisioning/cleanup plan and approval.
+No private material is moved by this code. Alternatively an explicitly approved
+signing service could be designed; none is assumed or contacted here.
+
+On success the authenticated GitHub run provides `macos-shipping-<source>-<build>`:
+only the signed/notarized app ZIP, first-install DMG and `provenance.json`. Download
+with the existing GitHub artifact UI/API, verify the API artifact digest and asset
+SHA256s, and mount the DMG/drag Okilum.app to Applications (or unpack the app ZIP).
+This is QA distribution: **no Stable or beta feed mutation and no automatic
+promotion completion** in the hosted route. Native product acceptance stays
+separate. Existing local shipping beta publication is unchanged.
+
+Rollback before provisioning/build: revert #1445; no keychain, secret, service,
+runner or feed rollback is needed. Do not flip the lane or dispatch the legacy
+local path during workday as a rollback. A failed/ambiguous hosted run is a stop,
+not permission for rerun, fallback, a second compilation or a new version claim.
