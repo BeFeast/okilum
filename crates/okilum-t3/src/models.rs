@@ -69,30 +69,7 @@ impl Target {
 
 impl Snapshot {
     pub fn validate(&self, selection: &ModelSelection) -> Result<()> {
-        let providers: Vec<_> = self
-            .catalog
-            .providers
-            .iter()
-            .filter(|p| p.provider_instance_id == selection.instance_id)
-            .collect();
-        ensure!(
-            providers.len() == 1,
-            "Provider is missing or ambiguous in the live catalog. Refresh models."
-        );
-        ensure!(
-            providers[0]
-                .models
-                .iter()
-                .filter(|m| m.id == selection.model)
-                .count()
-                == 1,
-            "Model is missing or ambiguous in the live catalog. Refresh models."
-        );
-        ensure!(
-            options(selection).is_some(),
-            "Model options contain duplicate identifiers."
-        );
-        Ok(())
+        validate_selection(&self.catalog, selection)
     }
 
     /// Keep the current options when reselecting the current model. A different
@@ -110,6 +87,32 @@ impl Snapshot {
             },
         }
     }
+}
+
+pub(crate) fn validate_selection(catalog: &Capabilities, selection: &ModelSelection) -> Result<()> {
+    let providers: Vec<_> = catalog
+        .providers
+        .iter()
+        .filter(|p| p.provider_instance_id == selection.instance_id)
+        .collect();
+    ensure!(
+        providers.len() == 1,
+        "Provider is missing or ambiguous in the live catalog. Refresh models."
+    );
+    ensure!(
+        providers[0]
+            .models
+            .iter()
+            .filter(|m| m.id == selection.model)
+            .count()
+            == 1,
+        "Model is missing or ambiguous in the live catalog. Refresh models."
+    );
+    ensure!(
+        options(selection).is_some(),
+        "Model options contain duplicate identifiers."
+    );
+    Ok(())
 }
 
 fn options(

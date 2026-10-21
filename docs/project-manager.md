@@ -90,3 +90,30 @@ beside the controls and remains visible after success or failure. Manager migrat
 and scheduler acceptance remain blocked under decision24. Launch requests through
 the manager are the next part of #1420; this slice does not create T3 resources.
 Real OAuth/model mutation and human UI acceptance remain unverified by these tests.
+
+### Executor requests through the manager (#1420)
+
+**Request executor** collects a role, a UTF-8 brief file relative to the selected
+vault area, an absolute worktree path on the Unix T3 server, a branch, and either
+the bound repo project's live default model or an explicit live-catalog override.
+The actual bound T3 project's title/root is shown. Local device paths are never
+used to open/create remote worktrees. Briefs are limited to 64 KiB; missing,
+invalid, escaping or oversized briefs and changed area bindings reject the request
+without truncation. Inputs and the independent manager chat draft are retained.
+
+Before sending, Okilum rechecks the manager's project, the bound executor project,
+current model catalog and on-disk area binding. It captures the complete brief and
+request identity in the existing durable message journal outside the index, then
+queues the request to the manager. Okilum does not call `t3_thread_launch` directly.
+An unconfirmed send blocks a second intent; use the retained message's **Retry**
+in Manager, which keeps the original clientRequestId and complete request payload.
+After confirmed delivery a separate new request requires an explicit user action.
+
+A delivered message means **launch requested**, not manager acceptance or a
+running executor. The UI says so. The manager is instructed to reconcile ambiguous
+launch responses, register the actual thread and report its lifecycle in chat;
+the registered executor list shows actual T3 states. Automatic correlation of a
+request to manager acceptance and its resulting thread is not implemented in this
+slice, and must not be inferred from queue receipts, titles or parentThreadId.
+Scheduled-task model following, manager migration and live integrated acceptance
+remain pending/blocked as described above. #1420 is not closed by request queuing.

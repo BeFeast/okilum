@@ -40,7 +40,16 @@ impl ManagerGateway for Fake {
         })
     }
     fn list_projects(&self) -> Result<Vec<Project>> {
-        unimplemented!()
+        Ok(vec![Project {
+            id: "fixture-executors".into(),
+            title: "Executors".into(),
+            workspace_root: "/server/repo".into(),
+            default_model_selection: Some(ModelSelection {
+                instance_id: "codex".into(),
+                model: "gpt-6.1-sol".into(),
+                options: vec![],
+            }),
+        }])
     }
     fn list_threads(&self, _: &str) -> Result<Vec<ThreadSummary>> {
         if let Some(error) = self.list_error.lock().unwrap().clone() {
