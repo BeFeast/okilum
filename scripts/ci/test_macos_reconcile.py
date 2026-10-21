@@ -125,5 +125,143 @@ class ReconcileTests(unittest.TestCase):
             self.assertEqual(len(api.calls), 1)
 
 
+FORGEJO = json.loads((Path(__file__).with_name('fixtures')/'macos9765-forgejo.json').read_text())
+TOOLING = 'b'*40
+EXECUTION = {'tooling': TOOLING, 'id': 999, 'number': 888}
+INPUTS = {'source': FIXTURE['run']['head_sha'], 'pr': '1456', 'forgejo_run': '15277',
+          'github_run': '39604244715', 'github_job': '119236245615'}
+
+
+class Forgejo:
+    """Original gate responses retained; own new workflow/API reporting synthetic."""
+    def __init__(self):
+        self.data = copy.deepcopy(FORGEJO)
+        self.own = {'id': 999, 'index_in_repo': 888, 'workflow_id': 'ci-reconcile.yml',
+                    'event': 'workflow_dispatch', 'commit_sha': TOOLING,
+                    'repository': {'full_name': bridge.REPOSITORY}, 'status': 'running',
+                    'event_payload': json.dumps({'inputs': INPUTS})}
+        self.own_jobs = [{'name': 'reconcile', 'run_id': 999, 'attempt': 1, 'status': 'running'}]
+        self.artifacts = {'artifacts': [{'id': 123, 'name': 'ci-reconcile-999-'+INPUTS['source'],
+                                        'expired': False, 'size_in_bytes': 100}]}
+        self.calls = []
+        self.main = TOOLING
+        self.main_ci = {'statuses':[{'context':c,'status':'success'} for c in ['ci / linux (push)','ci / check (push)']]}
+        self.fail_second_post = False
+
+    def call(self, method, path, body=None):
+        self.calls.append((method, path, copy.deepcopy(body)))
+        if method == 'POST':
+            assert path == '/statuses/'+INPUTS['source']
+            if self.fail_second_post and body['context'].startswith('ci / check'):
+                raise bridge.Unavailable('report unavailable')
+            self.data['statuses']['statuses'] = [s for s in self.data['statuses']['statuses']
+                                                if s['context'] != body['context']]
+            self.data['statuses']['statuses'].append({'context': body['context'],
+                                                     'status': body['state'], 'target_url': body['target_url']})
+            return {}
+        return {'/pulls/1456': self.data['pr'], '/branches/main': {'commit': {'id': self.main}},
+                '/commits/'+TOOLING+'/status': self.main_ci,
+                '/actions/runs/999': self.own, '/actions/runs/999/jobs': self.own_jobs,
+                '/branch_protections/main': self.data['protection'],
+                '/actions/runs/15277': self.data['original'],
+                '/actions/runs/15277/jobs': self.data['jobs'],
+                '/commits/'+INPUTS['source']+'/status': self.data['statuses'],
+                '/actions/runs/999/artifacts': self.artifacts}[path]
+
+
+class GateConsumerTests(unittest.TestCase):
+    def prepare(self, forgejo, directory):
+        return bridge.prepare_gates(forgejo, API(copy.deepcopy(FIXTURE)), EXECUTION,
+                                    sha=INPUTS['source'], number='1456', forgejo_run='15277',
+                                    attempt='1', run_id='39604244715', job_id='119236245615',
+                                    evidence=directory)
+
+    def test_retained_all_gates_then_automatic_status_report_has_distinct_execution_target(self):
+        f = Forgejo()
+        with tempfile.TemporaryDirectory() as root:
+            proof = self.prepare(f, Path(root)/'proof')
+            self.assertTrue(all(c[0] == 'GET' for c in f.calls))
+            self.assertEqual(f.data['original']['status'], 'failure')
+            result = bridge.report_gates(f, proof, evidence_uploaded='success')
+            self.assertEqual(result['source'], INPUTS['source'])
+            self.assertNotEqual(result['source'], result['tooling'])
+            posts = [c for c in f.calls if c[0] == 'POST']
+            self.assertEqual(len(posts), 2)
+            self.assertEqual([c[2]['context'] for c in posts], proof['report_contexts'])
+            self.assertTrue(all(c[2]['target_url'].endswith('/actions/runs/888') for c in posts))
+            self.assertEqual(f.data['original']['status'], 'failure')
+            self.assertEqual(next(j['status'] for j in f.data['jobs'] if j['name']=='macos'), 'failure')
+            self.assertTrue((Path(root)/'proof'/'original-jobs.json').exists())
+
+    def test_any_other_failed_missing_rerun_or_ambiguous_original_gate_refuses_before_status(self):
+        for index, job in enumerate(FORGEJO['jobs']):
+            for field, value in [('status','failure' if job['status'] != 'failure' else 'success'),
+                                 ('attempt',2),('run_id',1)]:
+                with self.subTest(job=job['name'],field=field), tempfile.TemporaryDirectory() as root:
+                    f=Forgejo(); f.data['jobs'][index][field]=value
+                    with self.assertRaises(ValueError): self.prepare(f,Path(root)/'proof')
+                    self.assertTrue(all(c[0]=='GET' for c in f.calls))
+        for change in ['extra_context','stale_status','duplicate_status','missing_job','foreign_original','wrong_original_sha',
+                       'different_main','red_main','wrong_execution','wrong_inputs','rerun_execution','new_pr_source','draft','closed']:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                f=Forgejo()
+                if change=='extra_context': f.data['protection']['status_check_contexts'].append('new-required-gate')
+                elif change=='stale_status': f.data['statuses']['statuses'][0]['target_url']='/unrelated'
+                elif change=='duplicate_status': f.data['statuses']['statuses'].append(dict(f.data['statuses']['statuses'][0]))
+                elif change=='missing_job': f.data['jobs'].pop()
+                elif change=='foreign_original': f.data['original']['repository']['full_name']='fork/okilum'
+                elif change=='wrong_original_sha': f.data['original']['commit_sha']='f'*40
+                elif change=='different_main': f.main='f'*40
+                elif change=='red_main': f.main_ci['statuses'][0]['status']='failure'
+                elif change=='wrong_execution': f.own['workflow_id']='ci.yml'
+                elif change=='wrong_inputs': f.own['event_payload']='{}'
+                elif change=='rerun_execution': f.own_jobs[0]['attempt']=2
+                elif change=='new_pr_source': f.data['pr']['head']['sha']='f'*40
+                elif change=='draft': f.data['pr']['draft']=True
+                elif change=='closed': f.data['pr']['state']='closed'
+                with self.assertRaises(ValueError): self.prepare(f,Path(root)/'proof')
+                self.assertTrue(all(c[0]=='GET' for c in f.calls))
+
+    def test_upload_failure_missing_artifact_or_changed_head_never_reports(self):
+        for change in ['upload','artifact','source']:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                f=Forgejo(); proof=self.prepare(f,Path(root)/'proof')
+                if change=='artifact': f.artifacts={'artifacts':[]}
+                if change=='source': f.data['pr']['head']['sha']='f'*40
+                with self.assertRaises(ValueError):
+                    bridge.report_gates(f,proof,evidence_uploaded='failure' if change=='upload' else 'success')
+                self.assertFalse(any(c[0]=='POST' for c in f.calls))
+
+    def test_partial_two_status_failure_leaves_required_check_failed_without_retry(self):
+        f=Forgejo();f.fail_second_post=True
+        with tempfile.TemporaryDirectory() as root:
+            proof=self.prepare(f,Path(root)/'proof')
+            with self.assertRaises(bridge.Unavailable): bridge.report_gates(f,proof,evidence_uploaded='success')
+        posts=[c for c in f.calls if c[0]=='POST']
+        self.assertEqual(len(posts),3)
+        self.assertEqual(next(s['status'] for s in f.data['statuses']['statuses']
+                              if s['context']=='ci / check (pull_request)'), 'failure')
+
+    def test_context_rejects_interactive_fork_nonmain_and_rerun(self):
+        env={'GITHUB_REPOSITORY':bridge.REPOSITORY,'GITHUB_REF':'refs/heads/main',
+             'GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1',
+             'GITHUB_JOB':'reconcile','GITHUB_SHA':TOOLING,'GITHUB_RUN_ID':'999','GITHUB_RUN_NUMBER':'888'}
+        self.assertEqual(bridge.gate_execution(env,TOOLING),EXECUTION)
+        for key,value in [('GITHUB_EVENT_NAME','pull_request'),('GITHUB_REF','refs/heads/feature'),
+                          ('GITHUB_REPOSITORY','fork/okilum'),('GITHUB_RUN_ATTEMPT','2'),
+                          ('GITHUB_JOB','unrelated'),('GITHUB_SHA','f'*40)]:
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                bridge.gate_execution(dict(env,**{key:value}),TOOLING)
+
+    def test_workflow_uses_main_tooling_explicit_source_and_evidence_before_report(self):
+        text=(Path(__file__).resolve().parents[2]/'.forgejo/workflows/ci-reconcile.yml').read_text()
+        self.assertIn('ref: ${{ github.sha }}',text)
+        self.assertIn('persist-credentials: false',text)
+        self.assertLess(text.index('id: evidence'),text.index('--phase report'))
+        self.assertNotIn('cargo ',text)
+        self.assertNotIn('github-macos.py run',text)
+        self.assertNotIn('pull_request:',text)
+
+
 if __name__ == '__main__':
     unittest.main()

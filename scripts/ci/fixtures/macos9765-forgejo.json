@@ -1,0 +1,287 @@
+{
+  "origin": "Actual retained Forgejo15277/UI9765 identities/jobs/statuses; own reconciliation execution is separately synthetic in test code.",
+  "pr": {
+    "head": {
+      "sha": "db413780a600d67fdf1374fbb6b468f8cfdae8dd",
+      "repo": {
+        "full_name": "BeFeast/okilum"
+      }
+    },
+    "base": {
+      "ref": "main"
+    },
+    "draft": false,
+    "merged": false,
+    "state": "open"
+  },
+  "original": {
+    "id": 15277,
+    "workflow_id": "ci.yml",
+    "commit_sha": "db413780a600d67fdf1374fbb6b468f8cfdae8dd",
+    "event": "pull_request",
+    "is_fork_pull_request": false,
+    "status": "failure",
+    "index_in_repo": 9765,
+    "repository": {
+      "full_name": "BeFeast/okilum"
+    },
+    "event_payload": "{\"number\": 1456, \"pull_request\": {\"head\": {\"sha\": \"db413780a600d67fdf1374fbb6b468f8cfdae8dd\", \"repo\": {\"full_name\": \"BeFeast/okilum\"}}, \"base\": {\"ref\": \"main\"}, \"draft\": false, \"merged\": false, \"state\": \"open\"}}"
+  },
+  "jobs": [
+    {
+      "id": 33349,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "94dd0c6d-257a-40f9-88c6-43118e8f0e4e",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "native-scope",
+      "needs": null,
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21526,
+      "status": "success"
+    },
+    {
+      "id": 33350,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "d5eda07b-6f36-4e17-9f63-85e9c311af06",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "linux-local",
+      "needs": null,
+      "runs_on": [
+        "ubuntu-latest"
+      ],
+      "task_id": 0,
+      "status": "skipped"
+    },
+    {
+      "id": 33351,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "f0f65a96-16b8-4748-afdc-c94f42453e2f",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "linux-github",
+      "needs": null,
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21527,
+      "status": "success"
+    },
+    {
+      "id": 33352,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "91752c0b-e582-4c44-bdcc-ad98aec7077f",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "main-health",
+      "needs": [
+        "linux-local"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 0,
+      "status": "skipped"
+    },
+    {
+      "id": 33353,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "ae965041-e180-4b47-8ddc-ea4499c798ce",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "linux",
+      "needs": [
+        "linux-local",
+        "linux-github"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21539,
+      "status": "success"
+    },
+    {
+      "id": 33354,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "6d2e07e6-0175-4821-82d4-06ab46a06ee9",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "macos-github",
+      "needs": [
+        "native-scope"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21528,
+      "status": "success"
+    },
+    {
+      "id": 33355,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "ab6f29da-aa2f-4163-85e2-e18e5df83fbe",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "macos-local",
+      "needs": [
+        "native-scope"
+      ],
+      "runs_on": [
+        "macos"
+      ],
+      "task_id": 0,
+      "status": "skipped"
+    },
+    {
+      "id": 33356,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "190ef1c9-31c2-4575-90ca-beedc65a8c20",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "windows-github",
+      "needs": [
+        "native-scope"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21529,
+      "status": "success"
+    },
+    {
+      "id": 33357,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "e2448bd2-55f9-4e01-aa36-493c2c0009b0",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "perf-linux",
+      "needs": [
+        "native-scope"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21530,
+      "status": "success"
+    },
+    {
+      "id": 33358,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "3a3d63f3-d671-4f1d-a3c0-484e7184de4e",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "macos",
+      "needs": [
+        "linux",
+        "native-scope",
+        "macos-github",
+        "macos-local"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21544,
+      "status": "failure"
+    },
+    {
+      "id": 33359,
+      "run_id": 15277,
+      "attempt": 1,
+      "handle": "9fceb7c2-d713-42a1-876e-1e0ef698e50f",
+      "repo_id": 54,
+      "owner_id": 3,
+      "name": "check",
+      "needs": [
+        "linux",
+        "native-scope",
+        "macos",
+        "windows-github",
+        "perf-linux"
+      ],
+      "runs_on": [
+        "bridge"
+      ],
+      "task_id": 21545,
+      "status": "failure"
+    }
+  ],
+  "statuses": {
+    "statuses": [
+      {
+        "context": "ci / linux-local (pull_request)",
+        "status": "skipped",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/1"
+      },
+      {
+        "context": "ci / main-health (pull_request)",
+        "status": "skipped",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/3"
+      },
+      {
+        "context": "ci / native-scope (pull_request)",
+        "status": "success",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/0"
+      },
+      {
+        "context": "ci / macos-local (pull_request)",
+        "status": "skipped",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/6"
+      },
+      {
+        "context": "ci / linux-github (pull_request)",
+        "status": "success",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/2"
+      },
+      {
+        "context": "ci / linux (pull_request)",
+        "status": "success",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/4"
+      },
+      {
+        "context": "ci / perf-linux (pull_request)",
+        "status": "success",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/8"
+      },
+      {
+        "context": "ci / windows-github (pull_request)",
+        "status": "success",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/7"
+      },
+      {
+        "context": "ci / macos-github (pull_request)",
+        "status": "success",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/5"
+      },
+      {
+        "context": "ci / macos (pull_request)",
+        "status": "failure",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/9"
+      },
+      {
+        "context": "ci / check (pull_request)",
+        "status": "failure",
+        "target_url": "/BeFeast/okilum/actions/runs/9765/jobs/10"
+      }
+    ]
+  },
+  "protection": {
+    "enable_status_check": true,
+    "status_check_contexts": [
+      "ci / check (pull_request)",
+      "ci / macos (pull_request)"
+    ]
+  }
+}

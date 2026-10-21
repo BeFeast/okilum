@@ -1,0 +1,73 @@
+# Trusted metadata-only recovery; never pushes native refs or runs product code.
+name: ci-reconcile
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact unchanged PR source SHA
+        required: true
+      pr:
+        description: Existing same-repository PR number
+        required: true
+      forgejo_run:
+        description: Original Forgejo API run ID (not UI index)
+        required: true
+      github_run:
+        description: Existing successful GitHub native run ID
+        required: true
+      github_job:
+        description: Exact executed native job ID
+        required: true
+permissions:
+  contents: read
+  actions: read
+  statuses: write
+concurrency:
+  group: ci-reconcile-${{ inputs.pr }}-${{ inputs.source }}
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    if: github.repository == 'BeFeast/okilum' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: bridge
+    timeout-minutes: 5
+    env:
+      FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+      SOURCE: ${{ inputs.source }}
+      PR: ${{ inputs.pr }}
+      ORIGINAL_RUN: ${{ inputs.forgejo_run }}
+      NATIVE_RUN: ${{ inputs.github_run }}
+      NATIVE_JOB: ${{ inputs.github_job }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify exact reused native and all original required gates
+        run: >-
+          python3 scripts/ci/github-macos.py reconcile-gates --phase verify
+          --source "$SOURCE" --pr "$PR" --forgejo-run "$ORIGINAL_RUN" --attempt 1
+          --github-run "$NATIVE_RUN" --github-job "$NATIVE_JOB"
+          --evidence "$RUNNER_TEMP/reconcile-proof"
+      - name: Retain proof before reporting any status
+        id: evidence
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: ci-reconcile-${{ github.run_id }}-${{ inputs.source }}
+          path: ${{ runner.temp }}/reconcile-proof/
+      - name: Reverify and report required statuses for explicit PR source
+        env:
+          EVIDENCE_UPLOADED: ${{ steps.evidence.outcome }}
+        run: >-
+          python3 scripts/ci/github-macos.py reconcile-gates --phase report
+          --source "$SOURCE" --pr "$PR" --forgejo-run "$ORIGINAL_RUN" --attempt 1
+          --github-run "$NATIVE_RUN" --github-job "$NATIVE_JOB"
+          --evidence "$RUNNER_TEMP/reconcile-report"
+      - name: Retain reporting readback
+        continue-on-error: true
+        if: always()
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: ci-reconcile-report-${{ github.run_id }}-${{ inputs.source }}
+          path: ${{ runner.temp }}/reconcile-report/

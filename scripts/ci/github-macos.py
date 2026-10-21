@@ -258,6 +258,190 @@ def reconcile(api, *, sha, number, forgejo_run, attempt, run_id, job_id, evidenc
     return result
 
 
+def gate_execution(env, checkout):
+    """Only this trusted manual CI execution may report for a distinct product SHA."""
+    if (env.get('GITHUB_REPOSITORY') != REPOSITORY or env.get('GITHUB_REF') != 'refs/heads/main'
+            or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+            or env.get('GITHUB_RUN_ATTEMPT') != '1' or env.get('GITHUB_JOB') != 'reconcile'
+            or env.get('GITHUB_SHA') != checkout or not re.fullmatch('[0-9a-f]{40}', checkout)):
+        raise ValueError('Only first-attempt trusted main reconciliation CI may report')
+    for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_NUMBER']:
+        if not re.fullmatch('[1-9][0-9]*', env.get(name, '')):
+            raise ValueError('Missing reconciliation execution identity')
+    return {'tooling': checkout, 'id': int(env['GITHUB_RUN_ID']),
+            'number': int(env['GITHUB_RUN_NUMBER'])}
+
+
+def prepare_gates(forgejo, github, execution, *, sha, number, forgejo_run, attempt,
+                  run_id, job_id, evidence):
+    """Re-evaluate the original required gates; no compiler or status mutation."""
+    # Native verifier creates the exclusive root and retains its exact API inputs.
+    proof = reconcile(github, sha=sha, number=number, forgejo_run=forgejo_run,
+                      attempt=attempt, run_id=run_id, job_id=job_id, evidence=evidence)
+    root = Path(evidence)
+    def read(path, name):
+        data = forgejo.call('GET', path)
+        (root / name).write_text(json.dumps(data, indent=2) + '\n')
+        return data
+    current = read(f'/pulls/{number}', 'pr.json')
+    validate_pr(current, sha)
+    main = read('/branches/main', 'main.json')
+    if main.get('commit', {}).get('id') != execution['tooling']:
+        raise ValueError('Trusted main changed; no reconciliation report')
+    tooling_ci = read(f"/commits/{execution['tooling']}/status", 'tooling-ci.json')
+    for context in ['ci / linux (push)', 'ci / check (push)']:
+        matches = [s for s in tooling_ci.get('statuses', []) if s.get('context') == context]
+        if len(matches) != 1 or matches[0].get('status') != 'success':
+            raise ValueError('Reviewed main tooling has not passed its normal CI gates')
+    own = read(f"/actions/runs/{execution['id']}", 'execution.json')
+    if (own.get('id') != execution['id'] or own.get('index_in_repo') != execution['number']
+            or own.get('workflow_id') != 'ci-reconcile.yml' or own.get('event') != 'workflow_dispatch'
+            or own.get('commit_sha') != execution['tooling']
+            or own.get('repository', {}).get('full_name') != REPOSITORY
+            or own.get('status') not in ['running', 'waiting']):
+        raise ValueError('Reconciliation execution is not the trusted workflow/source')
+    own_inputs = json.loads(own.get('event_payload', '{}')).get('inputs', {})
+    expected_inputs = {'source': sha, 'pr': str(number), 'forgejo_run': str(forgejo_run),
+                       'github_run': str(run_id), 'github_job': str(job_id)}
+    if own_inputs != expected_inputs:
+        raise ValueError('Execution dispatch inputs do not bind this reconciliation')
+    protection = read('/branch_protections/main', 'required-contexts.json')
+    if (protection.get('enable_status_check') is not True
+            or set(protection.get('status_check_contexts', [])) != {
+                'ci / macos (pull_request)', 'ci / check (pull_request)'}):
+        raise ValueError('Required branch-gate policy changed; explicit review needed')
+    own_jobs = read(f"/actions/runs/{execution['id']}/jobs", 'execution-jobs.json')
+    if (not isinstance(own_jobs, list) or len(own_jobs) != 1
+            or own_jobs[0].get('name') != 'reconcile'
+            or type(own_jobs[0].get('attempt')) is not int or own_jobs[0]['attempt'] != 1
+            or own_jobs[0].get('run_id') != execution['id']
+            or own_jobs[0].get('status') != 'running'):
+        raise ValueError('Reconciliation is not one first-attempt trusted CI job')
+    original = read(f'/actions/runs/{forgejo_run}', 'original-run.json')
+    event = json.loads(original.get('event_payload', '{}'))
+    if (original.get('id') != int(forgejo_run) or original.get('workflow_id') != 'ci.yml'
+            or original.get('commit_sha') != sha or original.get('event') != 'pull_request'
+            or original.get('repository', {}).get('full_name') != REPOSITORY
+            or original.get('status') != 'failure'
+            or type(original.get('index_in_repo')) is not int
+            or original.get('is_fork_pull_request') is not False
+            or event.get('number') != int(number)):
+        raise ValueError('Original CI run does not belong to this trusted PR/source')
+    validate_pr(event.get('pull_request', {}), sha, require_open=False)
+    jobs = read(f'/actions/runs/{forgejo_run}/jobs', 'original-jobs.json')
+    if not isinstance(jobs, list):
+        raise ValueError('Missing original jobs')
+    # This is the existing hosted code-PR branch of ci.yml, not docs/local fallback.
+    expected = {'native-scope': 'success', 'linux-local': 'skipped',
+                'linux-github': 'success', 'main-health': 'skipped', 'linux': 'success',
+                'macos-github': 'success', 'macos-local': 'skipped',
+                'windows-github': 'success', 'perf-linux': 'success',
+                'macos': 'failure', 'check': 'failure'}
+    if len(jobs) != len(expected) or {j.get('name') for j in jobs} != set(expected):
+        raise ValueError('Changed, missing or ambiguous original CI gate schema')
+    for j in jobs:
+        if (j.get('run_id') != int(forgejo_run)
+                or type(j.get('attempt')) is not int or j['attempt'] != 1
+                or j.get('status') != expected[j['name']]):
+            raise ValueError('Another required job failed, reran or is incomplete')
+    statuses = read(f'/commits/{sha}/status', 'original-statuses.json')
+    by_context = {s['context']: s for s in statuses.get('statuses', [])}
+    if len(by_context) != len(statuses.get('statuses', [])):
+        raise ValueError('Ambiguous latest commit statuses')
+    for index, j in enumerate(jobs):
+        context = f"ci / {j['name']} (pull_request)"
+        observed = by_context.get(context, {})
+        target = f"/BeFeast/okilum/actions/runs/{original['index_in_repo']}/jobs/{index}"
+        if (observed.get('status') != expected[j['name']]
+                or observed.get('target_url') not in [target, 'https://git.oklabs.uk' + target]):
+            raise ValueError('Latest required status is not the exact original CI execution')
+    proof.update({'classification': 'EXACT_REQUIRED_GATES_REEVALUATED', 'execution': execution,
+                  'original_index': original['index_in_repo'], 'original_failure_retained': True,
+                  'report_contexts': ['ci / macos (pull_request)', 'ci / check (pull_request)']})
+    (root / 'gate-receipt.json').write_text(json.dumps(proof, indent=2) + '\n')
+    return proof
+
+
+def validate_pr(pr, sha, require_open=True):
+    if (pr.get('head', {}).get('sha') != sha
+            or pr.get('head', {}).get('repo', {}).get('full_name') != REPOSITORY
+            or pr.get('base', {}).get('ref') != 'main' or pr.get('draft') is not False
+            or (require_open and (pr.get('state') != 'open' or pr.get('merged') is not False))):
+        raise ValueError('PR source/repository/base/draft/state changed')
+
+
+def report_gates(forgejo, proof, *, evidence_uploaded):
+    """Automatic CI reporting only after fresh full verification and evidence upload."""
+    if evidence_uploaded != 'success' or proof.get('classification') != 'EXACT_REQUIRED_GATES_REEVALUATED':
+        raise ValueError('No uploaded verified gate evidence')
+    execution = proof['execution']
+    if proof['report_contexts'] != ['ci / macos (pull_request)', 'ci / check (pull_request)']:
+        raise ValueError('Unexpected reporting contexts')
+    artifacts = forgejo.call('GET', f"/actions/runs/{execution['id']}/artifacts")
+    expected_name = f"ci-reconcile-{execution['id']}-{proof['source']}"
+    matches = [a for a in artifacts.get('artifacts', []) if a.get('name') == expected_name]
+    if (len(matches) != 1 or not isinstance(matches[0].get('id'), int)
+            or matches[0]['id'] <= 0 or matches[0].get('expired') is not False
+            or matches[0].get('size_in_bytes', 0) <= 0):
+        raise ValueError('Required evidence artifact not retained for this execution/source')
+    target = f"https://git.oklabs.uk/BeFeast/okilum/actions/runs/{execution['number']}"
+    # Source may advance while metadata is read. A new head refuses reporting.
+    # Status API appends records: the original failed jobs/statuses remain history.
+    try:
+        for context in proof['report_contexts']:
+            validate_pr(forgejo.call('GET', f"/pulls/{proof['pr']}"), proof['source'])
+            forgejo.call('POST', f"/statuses/{proof['source']}", {
+                'state': 'success', 'context': context, 'target_url': target,
+                'description': f"Verified native reuse; CI {execution['number']}; original {proof['original_index']} retained"})
+        current = forgejo.call('GET', f"/commits/{proof['source']}/status")
+        for context in proof['report_contexts']:
+            statuses = [s for s in current.get('statuses', []) if s.get('context') == context]
+            if len(statuses) != 1 or statuses[0].get('status') != 'success' or statuses[0].get('target_url') != target:
+                raise ValueError('Reported status readback unavailable/inconsistent; no retry')
+    except Exception:
+        # Revoke only this execution's own derived successes if reporting is partial.
+        # Never overwrite a newer result from another execution, reset old jobs,
+        # retry a status POST, or claim rollback when the service is unavailable.
+        try:
+            current = forgejo.call('GET', f"/commits/{proof['source']}/status")
+            for context in proof['report_contexts']:
+                own = [s for s in current.get('statuses', [])
+                       if s.get('context') == context and s.get('target_url') == target
+                       and s.get('status') == 'success']
+                if len(own) == 1:
+                    forgejo.call('POST', f"/statuses/{proof['source']}", {
+                        'state': 'error', 'context': context, 'target_url': target,
+                        'description': 'Reconciliation reporting incomplete; STOP, no retry'})
+        except Exception:
+            print('Reconciliation reporting/rollback UNCONFIRMED; STOP, no retry')
+        raise
+    return {'classification': 'RECONCILED_REQUIRED_GATES_REPORTED', 'target': target,
+            'source': proof['source'], 'tooling': execution['tooling'], 'status_writes': 2,
+            'compiler_dispatches': 0, 'original_failure_retained': True}
+
+
+def reconcile_gates_main(args):
+    # Reuse the repository's existing authenticated Forgejo status/issue API client.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('main_health_api', Path(__file__).with_name('main-health.py'))
+    health = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(health)
+    checkout = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    execution = gate_execution(os.environ, checkout)
+    forgejo = health.Api('https://git.oklabs.uk', REPOSITORY, os.environ['FORGEJO_TOKEN'])
+    github = GitHub(os.environ['MIRROR_TOKEN'])
+    kwargs = dict(sha=args.source, number=args.pr, forgejo_run=args.forgejo_run,
+                  attempt=args.attempt, run_id=args.github_run, job_id=args.github_job)
+    proof = prepare_gates(forgejo, github, execution, evidence=args.evidence, **kwargs)
+    if args.phase == 'report':
+        # Only the trusted workflow supplies this literal previous-step outcome.
+        result = report_gates(forgejo, proof, evidence_uploaded=os.environ.get('EVIDENCE_UPLOADED'))
+        (Path(args.evidence)/'report.json').write_text(json.dumps(result, indent=2)+'\n')
+        print(json.dumps(result))
+    else:
+        print(json.dumps(proof))
+
+
 def cleanup(api, number):
     if not re.fullmatch(r"[1-9][0-9]*", str(number)):
         raise ValueError("Expected a positive PR number")
@@ -271,15 +455,19 @@ def cleanup(api, number):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["run", "cleanup", "reconcile"])
+    parser.add_argument("command", choices=["run", "cleanup", "reconcile", "reconcile-gates"])
     for name in ("source", "pr", "forgejo-run", "attempt", "github-run", "github-job", "evidence"):
         parser.add_argument("--" + name)
+    parser.add_argument("--phase", choices=["verify", "report"], default="verify")
     args = parser.parse_args()
-    if args.command == "reconcile":
+    if args.command in ["reconcile", "reconcile-gates"]:
         required = (args.source, args.pr, args.forgejo_run, args.attempt,
                     args.github_run, args.github_job, args.evidence)
         if not all(required):
             parser.error("reconcile requires all exact identities and a NEW evidence directory")
+        if args.command == "reconcile-gates":
+            reconcile_gates_main(args)
+            return
         token = os.environ.get("MIRROR_TOKEN", "")
         if not token:
             raise Unavailable("GitHub mirror token is unavailable")

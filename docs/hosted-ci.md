@@ -143,44 +143,96 @@ runner or feed rollback is needed. Do not flip the lane or dispatch the legacy
 local path during workday as a rollback. A failed/ambiguous hosted run is a stop,
 not permission for rerun, fallback, a second compilation or a new version claim.
 
-## Observe an already completed macOS gate without another compiler
+## Reconcile a successful exact native run without another compiler
 
-`github-macos.py run` always creates a unique hosted ref. Do not rerun it to
-repair a bridge observation mismatch: that starts another compiler. The
-read-only `reconcile` command instead accepts explicit original identities,
-performs exactly three GETs, and preserves run/attempt-jobs/workflow API JSON
-in a new exclusive evidence directory. It validates repository, source, original
-PR/Forgejo run/attempt ref, registered workflow, one exact successful native job,
-one completed compile/native step, and execution chronology. Missing, ambiguous,
-failed, rerun or unavailable evidence refuses; it never dispatches, retries,
-cancels, writes `GITHUB_OUTPUT`, or publishes a commit status.
+A completed native workflow can be independently observed with
+`github-macos.py reconcile`. It performs exactly three GETs, retains raw API
+responses in a new exclusive directory, and never reports statuses, writes
+`GITHUB_OUTPUT`, pushes, dispatches, retries or cancels. The current retained
+GitHub39604244715/job119236245615 evidence passes the original native predicate;
+the historical jobs response seen by Forgejo9765 was not retained, so the
+historical mismatch cause remains UNKNOWN. Do not classify it as product failure
+or infer a transport/cache cause from current visibility.
 
-For the observed #1456 mismatch (use a reviewed checkout and the existing
-approved `MIRROR_TOKEN` environment; no token acquisition/login):
+### Trusted CI consumer and authoritative source
 
-```bash
-python3 scripts/ci/github-macos.py reconcile \
-  --source db413780a600d67fdf1374fbb6b468f8cfdae8dd --pr 1456 \
-  --forgejo-run 15277 --attempt 1 \
-  --github-run 39604244715 --github-job 119236245615 \
-  --evidence /home/god/work/qa-evidence/1456-macos-reconciliation-20261021/live-once
+The manual-only `.forgejo/workflows/ci-reconcile.yml` is the supported consumer.
+It executes reviewed **main tooling**, while `source` explicitly identifies the
+**unchanged PR head**. These are separate identities. The existing Forgejo
+commit-status API reports for `/statuses/<source>`, not for the tooling SHA.
+The target URL is the NEW reconciliation execution, never the old failed job.
+Original9765 jobs, outputs and failed status records remain immutable history.
+This is machine-evaluated CI reporting, not an interactive green-status command.
+
+Only first-attempt trusted main/repository/job execution is accepted. The
+workflow checks out its exact tooling SHA without persisted credentials, runs
+on the existing bridge, and has contents/actions read plus statuses write. It
+uses the existing workflow token and approved GitHub mirror credential; it never
+sends Forgejo credentials to GitHub. No runner/lane/secret change is needed.
+Token policy/API denial is STOP, not a request for broader credentials.
+
+Before reporting it independently verifies:
+
+- The current open, non-draft same-repository PR still has the exact head/base.
+- Own live CI run, manual inputs, SHA and one first-attempt running job match
+  this execution; current main still equals its tooling SHA.
+- Existing branch protection still requires exactly `ci / macos (pull_request)`
+  and `ci / check (pull_request)`; policy changes refuse pending explicit review.
+- The original CI run belongs to that PR/source/event and all original jobs and
+  latest contexts still match its exact execution. Linux/native-scope/hosted
+  bridge/Windows/performance passed, local lane skipped, and only macos/check
+  failed. Missing/extra/rerun/cancelled/pending/failed other gates refuse.
+- GitHub repository/source/original PR+Forgejo run+attempt+unique ref/registered
+  workflow/run/job/native step and execution timestamps match. The workflow and
+  exact compile/native step actually completed successfully on attempt1.
+
+The full proof is uploaded BEFORE reporting. A second fresh full verification
+then requires the exact own evidence artifact to exist and checks the current
+PR before each status POST. Only the two protected contexts are appended with
+success, both linked to this execution, followed by exact readback. Other
+statuses, old job/output records and branch policy are untouched. `GITHUB_OUTPUT`
+is not patched or fabricated. The diagnostic final upload may fail without
+masking a retained proof or a completed gate decision.
+
+### Exact proposed live operation — separate manager GO required
+
+After this implementation is reviewed/merged and exact main is green, freeze
+that main SHA separately from the product head. First verify source/head and
+no conflicting publisher/reconciliation once. The ONE approved operation would
+POST the following to the existing Forgejo workflow-dispatch API:
+
+```text
+POST /api/v1/repos/BeFeast/okilum/actions/workflows/ci-reconcile.yml/dispatches
 ```
 
-API15277 is Forgejo UI9765. The retained current response passes both the original
-native predicate and this strict verification; the historical bridge jobs
-response was not retained, so the historical mismatch cause remains UNKNOWN.
-Current exact native success is an observation, not retroactive bridge success.
-The original `ci / macos` and `ci / check` remain failed. This command supplies
-reviewable evidence for a separately authorized gate reconciliation path; it
-cannot repair the original aggregate and is not a merge override. No supported
-interface currently replaces the original job's output or re-evaluates its
-required aggregate from this receipt. A new workflow on main would report
-main's SHA, not this PR head. Do not publish manual green statuses, fabricate
-outputs, rerun unchanged native code, or weaken the required gate to bridge that
-gap. Any live gate mutation needs a concrete separately reviewed supported
-consumer/authority; this read-only command does not grant one.
+```json
+{"ref":"main","inputs":{"source":"db413780a600d67fdf1374fbb6b468f8cfdae8dd","pr":"1456","forgejo_run":"15277","github_run":"39604244715","github_job":"119236245615"}}
+```
 
-The fixture `scripts/ci/fixtures/macos9765-current.json` retains the current API
-fields used in the acceptance decision and the actual attempt-jobs response.
-Finite negative controls mutate every binding and native execution boundary;
-none re-execute native tests or infer historical root cause.
+Use the existing approved Actions API credential and a JSON body file. API15277
+is UI9765. No source push, PR update, unchanged-head native rerun, direct GitHub
+dispatch, manual status CLI or output edit is part of this operation. One bridge
+job has a5min timeout and bounded API requests; no compiler, app/native/GUI,
+M4/host/runner/service/key/lane/signing/publication operations. Existing app-owned
+completion/watch only; no additional polling service. This dispatch and its
+status/artifact writes have NOT been executed by code preparation or review.
+
+**Effects and failure boundary:** two new success-status records on the verified
+product SHA plus evidence artifacts for the new execution. GitHub reads only;
+no original run mutation. Status pair is sequential, not atomic. Validation or
+upload failure writes no success. Reporting failure performs one bounded
+readback and appends `error` only for successes still owned by this execution;
+it never overwrites another execution's newer target. At most two success and
+two rollback-error POSTs, no retries. API uncertainty may prevent confirmed
+rollback: record UNCONFIRMED, stop and retain actual checkpoint; no automatic
+rerun or claim of recovery. Original failures remain inspectable regardless.
+Rollback before dispatch is simply no execution/revert of this route. Code
+revert prevents future use but does not erase a reported status; after any
+partial/ambiguous report use the retained evidence and explicit manager
+disposition, never delete/reset history or manually manufacture green.
+
+The retained fixture data and finite controls exercise wrong PR/source/ref/run/
+job/attempt/workflow/step/time, changed policy/main/source, other gate failure,
+missing/ambiguous status/artifact, evidence failure and partial-report rollback.
+Fixtures model the new CI execution explicitly; they are not a live recovery
+receipt or proof that workflow-token permissions will succeed at runtime.
