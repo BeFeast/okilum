@@ -70,7 +70,7 @@ def identity(run):
             or run["trigger_event"] != "schedule" or run["is_ref_deleted"] is not False):
         stop("foreign, fork, deleted ref or non-scheduled run")
     return dict(id=run["id"], index_in_repo=run["index_in_repo"],
-                workflow_id=run["workflow_id"], ref=run["prettyref"],
+                workflow_id=run["workflow_id"], ref="refs/heads/" + run["prettyref"],
                 commit_sha=run["commit_sha"], owner=repo["owner"]["login"], repo=repo["name"])
 
 
@@ -112,17 +112,23 @@ try:
                 or entry["id"] in approved):
             stop("invalid or duplicate approved identity")
         approved[entry["id"]] = entry
-    # Forgejo exposes prettyref as 'main'; approval uses an unambiguous full ref.
-    for entry in approved.values():
-        entry["ref"] = "main"
     if set(inventory()) != set(approved):
         stop("approved targets missing from initial inventory")
     for rid, expected in approved.items():
         current = inventory()
         if rid not in current:
             stop("target disappeared before cancellation")
-        # Detail read is the last request immediately before the cancel POST.
-        target = request("/actions/runs/" + str(rid))
+        # prettyref alone cannot distinguish branch 'main' from tag 'main'.
+        # Forgejo's exact full-ref filter proves that binding in the LAST read
+        # immediately before POST; the run number is the repository index, not id.
+        exact = request("/actions/runs?run_number=" + str(expected["index_in_repo"]) +
+                        "&ref=refs/heads/main&workflow_id=" + WORKFLOW +
+                        "&head_sha=" + expected["commit_sha"] + "&limit=50&page=1")
+        if (type(exact["total_count"]) is not int or exact["total_count"] != 1
+                or not isinstance(exact["workflow_runs"], list)
+                or len(exact["workflow_runs"]) != 1):
+            stop("full-ref run binding missing or ambiguous")
+        target = exact["workflow_runs"][0]
         if identity(target) != expected or target["status"] not in ACTIVE:
             stop("target changed before cancellation")
         request("/actions/runs/" + str(rid) + "/cancel", post=True)

@@ -29,8 +29,9 @@ below. These are placeholders, not authorized targets:
 Only scheduled, non-fork runs from this repository and main are eligible. The
 source SHA identifies the run being cancelled; it need not equal the payload
 being signed. All approved runs must appear in the initial inventory. Every
-cancellation gets a fresh complete inventory followed immediately by a detail
-read and an exact identity check before POST. Unknown/new/foreign runs, identity
+cancellation gets a fresh complete inventory followed immediately by an exact run-number/full-ref/SHA/workflow query and
+an identity check before POST. Forgejo exposes only `prettyref` in run bodies;
+the server's full-ref filter distinguishes a branch from a same-named tag. Unknown/new/foreign runs, identity
 mismatches, missing fields, incomplete responses, API failures and timeouts stop
 the operation. There are no retries. Inventory is bounded to 50 active runs;
 more than one page stops. The entire guard has a 60-second deadline and each

@@ -79,12 +79,12 @@ print(json.dumps(response))
         self.assert_stopped([page(RUN)])
 
     def test_exact_match_revalidates_before_post_and_before_otp(self):
-        result, calls = self.run_helper([page(RUN), page(RUN), RUN, {}, page()], [APPROVED])
+        result, calls = self.run_helper([page(RUN), page(RUN), page(RUN), {}, page()], [APPROVED])
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(len(calls), 5)
         self.assertIn('status=unknown&status=waiting&status=running&status=blocked&limit=50&page=1', calls[0])
         self.assertNotIn('status=queued', calls[0])
-        self.assertTrue(calls[2].endswith('/actions/runs/123'))
+        self.assertIn('/actions/runs?run_number=99&ref=refs/heads/main&workflow_id=windows-diagnostic.yml&head_sha=' + SHA, calls[2])
         self.assertEqual(calls[3], 'POST https://git.oklabs.uk/api/v1/repos/BeFeast/okilum/actions/runs/123/cancel')
         self.assertIn('code must be 6 digits', result.stdout)
 
@@ -111,14 +111,19 @@ print(json.dumps(response))
 
     def test_new_run_after_post_stops_before_otp(self):
         new = dict(RUN, id=124, index_in_repo=100)
-        self.assert_stopped([page(RUN), page(RUN), RUN, {}, page(new)], [APPROVED], posts=1)
+        self.assert_stopped([page(RUN), page(RUN), page(RUN), {}, page(new)], [APPROVED], posts=1)
 
     def test_detail_mismatch_stops_before_post(self):
-        self.assert_stopped([page(RUN), page(RUN), dict(RUN, commit_sha='e' * 40)], [APPROVED])
+        self.assert_stopped([page(RUN), page(RUN), page(dict(RUN, commit_sha='e' * 40))], [APPROVED])
+
+    def test_full_ref_missing_or_ambiguous_stops_before_post(self):
+        # A same-named tag does not match the server's refs/heads/main query.
+        for exact in [page(), page(RUN, RUN)]:
+            self.assert_stopped([page(RUN), page(RUN), exact], [APPROVED])
 
     def test_inventory_timeout_at_each_boundary(self):
         for responses, posts in [(['timeout'], 0), ([page(RUN), 'timeout'], 0),
-                                  ([page(RUN), page(RUN), RUN, {}, 'timeout'], 1)]:
+                                  ([page(RUN), page(RUN), page(RUN), {}, 'timeout'], 1)]:
             with self.subTest(responses=responses):
                 self.assert_stopped(responses, [APPROVED], posts)
 
@@ -130,10 +135,10 @@ print(json.dumps(response))
         self.assert_stopped([page()], [APPROVED])
 
     def test_cancel_failure_is_terminal(self):
-        self.assert_stopped([page(RUN), page(RUN), RUN, 'timeout'], [APPROVED], posts=1)
+        self.assert_stopped([page(RUN), page(RUN), page(RUN), 'timeout'], [APPROVED], posts=1)
 
     def test_pending_cancellation_stops_before_otp(self):
-        self.assert_stopped([page(RUN), page(RUN), RUN, {}, page(RUN)], [APPROVED], posts=1)
+        self.assert_stopped([page(RUN), page(RUN), page(RUN), {}, page(RUN)], [APPROVED], posts=1)
 
     def test_invalid_or_unbounded_allowlist_never_calls_api(self):
         for entries in [{}, [dict(APPROVED, ref='main')], [APPROVED] * 11,
