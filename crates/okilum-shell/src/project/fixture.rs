@@ -19,6 +19,7 @@ pub(super) struct Fake {
     pub list_error: Mutex<Option<String>>,
     pub model_current: Mutex<Option<ModelSelection>>,
     pub model_failure: Mutex<Option<GatewayError>>,
+    pub model_read_failure: Mutex<Option<GatewayError>>,
     pub model_writes: Mutex<Vec<ModelSelection>>,
     pub grown: Mutex<bool>,
 }
@@ -91,6 +92,9 @@ impl ManagerGateway for Fake {
             .map_err(|error| GatewayError::Protocol(error.to_string()))
     }
     fn thread_configuration(&self, thread: &str) -> Result<ThreadConfiguration> {
+        if let Some(error) = self.model_read_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
         Ok(ThreadConfiguration {
             thread_id: thread.into(),
             model_selection: self

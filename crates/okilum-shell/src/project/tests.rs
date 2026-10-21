@@ -100,6 +100,36 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
         gateway.sends.lock().unwrap().is_empty(),
         "model errors must not send the draft"
     );
+    *gateway.model_read_failure.lock().unwrap() = Some(okilum_t3::GatewayError::Unreachable(
+        "Read interrupted".into(),
+    ));
+    let refresh = visual.debug_bounds("project-model-refresh").unwrap();
+    visual.simulate_click(refresh.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |view, cx| {
+        let error = view.model_error.as_ref().unwrap();
+        assert!(error.starts_with("Cannot read thread models; no change was requested."));
+        assert!(error.contains("Read interrupted"));
+        assert!(!error.contains("Model change not confirmed"));
+        assert_eq!(
+            view.models
+                .as_ref()
+                .unwrap()
+                .configuration
+                .model_selection
+                .model,
+            "gpt-6-astra"
+        );
+        assert_eq!(
+            view.compose.read(cx).value().as_ref(),
+            "Retain the manager draft"
+        );
+    });
+    assert_eq!(
+        gateway.model_writes.lock().unwrap().len(),
+        2,
+        "a failed Refresh never dispatches a model change"
+    );
 }
 
 #[gpui::test]

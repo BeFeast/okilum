@@ -41,6 +41,7 @@ impl ProjectView {
             return;
         };
         let generation = self.generation;
+        let applying = selection.is_some();
         self.model_busy = true;
         self.model_error = None;
         cx.spawn_in(window, async move |this, cx| {
@@ -65,7 +66,16 @@ impl ProjectView {
                             this.model_candidate = None;
                             this.model_error = None;
                         }
-                        Err(error) => this.model_error = Some(format!("{error:#}")),
+                        Err(error) => {
+                            let action = if applying {
+                                "Model change not confirmed"
+                            } else {
+                                "Cannot read thread models; no change was requested"
+                            };
+                            this.model_error = Some(format!(
+                                "{action}. {error:#} Refresh to read the current configuration; no automatic retry."
+                            ));
+                        }
                     }
                 }
                 cx.notify();
@@ -87,6 +97,7 @@ impl ProjectView {
                     .child(format!("Thread model · {}", target.thread_id))
                     .child(
                         Button::new("project-model-refresh")
+                            .debug_selector(|| "project-model-refresh".into())
                             .ghost()
                             .label("Refresh models")
                             .disabled(!enabled)
@@ -113,9 +124,12 @@ impl ProjectView {
             panel = panel.child("Waiting for T3 configuration readback…");
         }
         if let Some(error) = &self.model_error {
-            panel = panel.child(div().debug_selector(|| "project-model-error".into())
-                .text_color(cx.theme().danger)
-                .child(format!("Model change not confirmed. {error} Refresh to read the current model; no automatic retry.")));
+            panel = panel.child(
+                div()
+                    .debug_selector(|| "project-model-error".into())
+                    .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
         }
         if let Some(snapshot) = &self.models {
             let current = &snapshot.configuration.model_selection;
