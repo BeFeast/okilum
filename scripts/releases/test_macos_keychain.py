@@ -102,9 +102,9 @@ class EphemeralSigning(unittest.TestCase):
         repo=Path(__file__).resolve().parents[2]
         for file in ['scripts/updater/sign-bundle.sh','scripts/updater/make-dmg.sh']:
             text=(repo/file).read_text()
-            self.assertIn('codesign "${SIGNING_KEYCHAIN_ARGS[@]}" --force',text)
-            self.assertIn('"${NOTARY_KEYCHAIN_ARGS[@]}" --wait',text)
-        self.assertIn('codesign "${keychain_args[@]}" --force',(repo/'scripts/ci/supervisor-bundle.sh').read_text())
+            self.assertIn('codesign ${SIGNING_KEYCHAIN_ARGS[@]+"${SIGNING_KEYCHAIN_ARGS[@]}"} --force',text)
+            self.assertIn('${NOTARY_KEYCHAIN_ARGS[@]+"${NOTARY_KEYCHAIN_ARGS[@]}"} --wait',text)
+        self.assertIn('codesign ${keychain_args[@]+"${keychain_args[@]}"} --force',(repo/'scripts/ci/supervisor-bundle.sh').read_text())
 
 
 if __name__=='__main__':unittest.main()

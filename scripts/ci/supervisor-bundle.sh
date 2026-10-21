@@ -20,7 +20,7 @@ supervisor_team_id() {
     # not abort this function under pipefail before the fallback below can run.
     local keychain_args=()
     if [[ -n ${OKILUM_SIGNING_KEYCHAIN:-} ]]; then keychain_args=("$OKILUM_SIGNING_KEYCHAIN"); fi
-    listing="$(security find-identity -v -p codesigning "${keychain_args[@]}")"
+    listing="$(security find-identity -v -p codesigning ${keychain_args[@]+"${keychain_args[@]}"})"
     derived="$(printf '%s\n' "$listing" | grep -F "$identity" \
         | sed -En 's/.*\(([A-Z0-9]{10})\)"[[:space:]]*$/\1/p' | head -1 || true)"
     if [[ -n $derived && -n $configured && $derived != "$configured" ]]; then
@@ -62,7 +62,7 @@ supervisor_sign() {
     shift 3
     local keychain_args=()
     if [[ -n ${OKILUM_SIGNING_KEYCHAIN:-} ]]; then keychain_args=(--keychain "$OKILUM_SIGNING_KEYCHAIN"); fi
-    codesign "${keychain_args[@]}" --force --options runtime --identifier "$bundle.sync" "$@" \
+    codesign ${keychain_args[@]+"${keychain_args[@]}"} --force --options runtime --identifier "$bundle.sync" "$@" \
         --sign "$identity" "$app/$SUPERVISOR_RELATIVE"
     codesign --verify --strict "$app/$SUPERVISOR_RELATIVE"
 }

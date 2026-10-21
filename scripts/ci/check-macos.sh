@@ -2,6 +2,8 @@
 # Native PR gate: no signing, packaging, notarization or publishing.
 set -Eeuo pipefail
 [[ $(uname -s) = Darwin && $(uname -m) = arm64 ]]
+# Exercise optional signing arrays with macOS /bin/bash 3.2 before any Cargo work.
+python3 scripts/ci/test_supervisor_bundle.py
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
