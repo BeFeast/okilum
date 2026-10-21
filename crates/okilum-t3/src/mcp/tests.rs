@@ -668,3 +668,47 @@ fn expiry_takes_precedence_over_an_observed_connection_failure() {
     assert_eq!(gateway.capabilities().unwrap_err(), GatewayError::Expired);
     assert!(server.requests().is_empty());
 }
+
+#[test]
+fn launch_context_resolves_only_the_bound_manager_and_executor_project_over_mcp() {
+    for invalid in ["", "manager", "project"] {
+        let server = fake_t3(move |name, _| {
+            structured(match name {
+                "t3_thread_read" => model_page(if invalid == "manager" {
+                    "moved"
+                } else {
+                    "managers"
+                }),
+                "t3_project_list" => {
+                    json!({"projects": if invalid == "project" { json!([]) } else { json!([
+                {"id":"executors","title":"Repo","workspaceRoot":"/server/repo","defaultModelSelection":{"instanceId":"claudeAgent","model":"new"}}]) }})
+                }
+                "orchestrator_capabilities" => model_catalog(),
+                other => panic!("request preparation must not launch or mutate anything: {other}"),
+            })
+        });
+        let gateway = gateway(&server, Some(token("good")));
+        let source = include_str!("../../tests/fixtures/area/ops/project.yaml")
+            .replace("poc-managers", "managers")
+            .replace("mcp:poc-manager", "mcp:manager")
+            .replace("poc-executors", "executors");
+        let binding = crate::manifest::AreaBinding::parse(&source)
+            .unwrap()
+            .unwrap();
+        let result = crate::launch::LaunchContext::load(&gateway, &binding);
+        if invalid.is_empty() {
+            let context = result.unwrap();
+            assert_eq!(context.project.id, "executors");
+            assert_eq!(
+                context.project.default_model_selection.unwrap().model,
+                "new"
+            );
+        } else {
+            assert!(result.is_err());
+        }
+        assert!(tool_calls(&server.requests()).iter().all(|c| matches!(
+            c["name"].as_str(),
+            Some("t3_thread_read" | "t3_project_list" | "orchestrator_capabilities")
+        )));
+    }
+}

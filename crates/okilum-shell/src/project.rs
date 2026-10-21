@@ -11,6 +11,7 @@ use std::time::Duration;
 
 mod connections;
 mod executors;
+mod launch;
 mod models;
 
 pub(crate) struct ProjectView {
@@ -30,6 +31,7 @@ pub(crate) struct ProjectView {
     model_candidate: Option<okilum_t3::ModelSelection>,
     model_error: Option<String>,
     model_busy: bool,
+    launch: launch::Form,
     origin: Entity<InputState>,
     compose: Entity<TextareaState>,
     reason: Option<String>,
@@ -148,6 +150,7 @@ impl ProjectView {
             model_candidate: None,
             model_error: None,
             model_busy: false,
+            launch: launch::Form::new(window, cx),
             origin,
             compose,
             reason: Some("Loading project…".into()),
@@ -627,6 +630,16 @@ impl Render for ProjectView {
                             ),
                     )
                     .child(div().flex_1())
+                    .child(
+                        Button::new("project-launch")
+                            .debug_selector(|| "project-launch".into())
+                            .ghost()
+                            .label("Request executor")
+                            .disabled(self.busy || self.model_busy || !enabled)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_launch(window, cx)),
+                            ),
+                    )
                     .when_some(self.manager_model_target(), |row, target| {
                         row.child(
                             Button::new("project-manager-model")
@@ -704,6 +717,7 @@ impl Render for ProjectView {
             .when(self.model_target.is_some(), |view| {
                 view.child(self.render_models(cx))
             })
+            .when(self.launch.open, |view| view.child(self.render_launch(cx)))
             .child(if self.executors_open {
                 self.render_executors(cx)
             } else {

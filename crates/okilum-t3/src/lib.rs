@@ -14,6 +14,7 @@ pub mod chat;
 mod environment;
 pub mod executors;
 mod gateway;
+pub mod launch;
 pub mod manifest;
 mod mcp;
 pub mod models;
