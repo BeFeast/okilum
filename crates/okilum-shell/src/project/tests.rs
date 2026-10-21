@@ -452,11 +452,19 @@ fn deactivation_and_reactivation_with_a_read_awaiting_publication_keep_one_polle
     });
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| fixture::view(state.path().to_owned(), gateway.clone(), window, cx));
+        let view = cx.new(|cx| {
+            let mut view = fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
+            // add_window_view drains the scheduler before returning. Keep the
+            // view inactive through that drain, then step its first real read.
+            view.set_active(false, window, cx);
+            view
+        });
         entity = Some(view.clone());
         Root::new(view, window, cx)
     });
     let view = entity.unwrap();
+    assert!(gateway.reads.lock().unwrap().is_empty());
+    visual.update(|window, cx| view.update(cx, |v, cx| v.set_active(true, window, cx)));
     for _ in 0..1000 {
         if !gateway.reads.lock().unwrap().is_empty() {
             break;
