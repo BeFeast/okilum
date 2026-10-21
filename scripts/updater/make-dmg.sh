@@ -24,9 +24,9 @@ rm -f "$DMG"
     -D app="$APP" -D icon="$APP/Contents/Resources/Okilum.icns" \
     -D background="$PWD/scripts/macos-dmg/background.png" \
     Okilum "$DMG"
-codesign "${SIGNING_KEYCHAIN_ARGS[@]}" --force --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$DMG"
+codesign ${SIGNING_KEYCHAIN_ARGS[@]+"${SIGNING_KEYCHAIN_ARGS[@]}"} --force --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
-xcrun notarytool submit "$DMG" --keychain-profile "$OKILUM_NOTARY_PROFILE" "${NOTARY_KEYCHAIN_ARGS[@]}" --wait --output-format json | tee "$OUTPUT/notarization-dmg.json"
+xcrun notarytool submit "$DMG" --keychain-profile "$OKILUM_NOTARY_PROFILE" ${NOTARY_KEYCHAIN_ARGS[@]+"${NOTARY_KEYCHAIN_ARGS[@]}"} --wait --output-format json | tee "$OUTPUT/notarization-dmg.json"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["status"]; sys.exit(s!="Accepted" and f"DMG notarization: {s}")' "$OUTPUT/notarization-dmg.json"
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"

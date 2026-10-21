@@ -10,14 +10,14 @@ if [[ -n ${OKILUM_SIGNING_KEYCHAIN:-} ]]; then
     IDENTITY_KEYCHAIN_ARGS=("$OKILUM_SIGNING_KEYCHAIN")
 fi
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
-security find-identity -v -p codesigning "${IDENTITY_KEYCHAIN_ARGS[@]}" | grep -F "$OKILUM_SIGNING_IDENTITY" >/dev/null
+security find-identity -v -p codesigning ${IDENTITY_KEYCHAIN_ARGS[@]+"${IDENTITY_KEYCHAIN_ARGS[@]}"} | grep -F "$OKILUM_SIGNING_IDENTITY" >/dev/null
 for COMPONENT in \
     "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc" \
     "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc" \
     "$FRAMEWORK/Versions/B/Updater.app" \
     "$FRAMEWORK/Versions/B/Autoupdate" \
     "$FRAMEWORK"; do
-    codesign "${SIGNING_KEYCHAIN_ARGS[@]}" --force --preserve-metadata=identifier,entitlements --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$COMPONENT"
+    codesign ${SIGNING_KEYCHAIN_ARGS[@]+"${SIGNING_KEYCHAIN_ARGS[@]}"} --force --preserve-metadata=identifier,entitlements --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$COMPONENT"
 done
 [[ $(lipo -archs "$APP/Contents/MacOS/okilum") == arm64 ]]
 # The sync helper first (inside-out), with the explicit identifier its policy requires;
@@ -25,10 +25,10 @@ done
 [[ $(lipo -archs "$APP/$SUPERVISOR_RELATIVE") == arm64 ]]
 supervisor_sign "$APP" "$OKILUM_SIGNING_IDENTITY" "$BUNDLE_ID" --timestamp
 codesign -dv --verbose=4 "$APP/$SUPERVISOR_RELATIVE" 2>&1 | grep -Fx "TeamIdentifier=$TEAM_ID" >/dev/null
-codesign "${SIGNING_KEYCHAIN_ARGS[@]}" --force --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$APP"
+codesign ${SIGNING_KEYCHAIN_ARGS[@]+"${SIGNING_KEYCHAIN_ARGS[@]}"} --force --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUTPUT/notarization-app.zip"
-xcrun notarytool submit "$OUTPUT/notarization-app.zip" --keychain-profile "$OKILUM_NOTARY_PROFILE" "${NOTARY_KEYCHAIN_ARGS[@]}" --wait --output-format json | tee "$OUTPUT/notarization.json"
+xcrun notarytool submit "$OUTPUT/notarization-app.zip" --keychain-profile "$OKILUM_NOTARY_PROFILE" ${NOTARY_KEYCHAIN_ARGS[@]+"${NOTARY_KEYCHAIN_ARGS[@]}"} --wait --output-format json | tee "$OUTPUT/notarization.json"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["status"]; sys.exit(s!="Accepted" and f"Notarization: {s}")' "$OUTPUT/notarization.json"
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
