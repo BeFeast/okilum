@@ -66,3 +66,27 @@ closing Project deactivates that poller. Metadata/registry errors retain the las
 executor projection and manager draft with an error. No area registry, manager
 binding, T3 resource or provider setting is written by this read-only slice.
 Runtime/live OAuth acceptance and ordinary human UI QA remain pending.
+
+### Thread model controls (#1420, next production slice)
+
+The Manager header and registered, matched executor rows offer **Model**. Opening
+it reads the live T3 catalog and the exact thread configuration. Selecting a model
+is local; **Apply thread model** rechecks the thread's bound project and current
+catalog before calling T3, then shows the configuration read back from T3. A queued
+or successful mutation acknowledgement alone is not confirmation. A mismatched
+readback, permission error, revoked token or failed request is visible without
+changing the manager draft or automatically retrying the mutation. **Refresh
+models** explicitly reads the current configuration after an uncertain result.
+Unregistered or missing executor rows do not offer mutation controls.
+
+Reselecting the current provider/model preserves its option overrides. Selecting
+a different model clears those overrides and requests T3 defaults. The UI does
+not edit model options in this slice; strict readback differences remain explicit.
+The last successful read is labelled **Last confirmed readback**, rather than
+asserting that another client cannot change the thread afterwards.
+
+**Scheduled tasks do not follow this model change.** This restriction is displayed
+beside the controls and remains visible after success or failure. Manager migration
+and scheduler acceptance remain blocked under decision24. Launch requests through
+the manager are the next part of #1420; this slice does not create T3 resources.
+Real OAuth/model mutation and human UI acceptance remain unverified by these tests.

@@ -30,6 +30,21 @@ impl ProjectView {
                 .child(div().child(row.entry.role.clone()));
             if let Some(thread) = &row.thread {
                 entry = entry.child(self.executor_thread(thread, index, cx));
+                if let Some(binding) = &self.binding {
+                    let target = okilum_t3::models::Target {
+                        thread_id: thread.thread_id.clone(),
+                        project_id: binding.executor.project_id.clone(),
+                    };
+                    entry = entry.child(
+                        Button::new(("executor-model", index))
+                            .ghost()
+                            .label("Model")
+                            .disabled(self.busy || self.model_busy || !self.can_send())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_models(target.clone(), window, cx)
+                            })),
+                    );
+                }
                 entry = entry.child(match row.pending_questions {
                     Some(0) => "No pending questions".to_owned(),
                     Some(count) => format!("Question in T3 · {count} pending"),

@@ -2,6 +2,137 @@ use super::*;
 use ::core::prelude::v1::test;
 
 #[gpui::test]
+fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake::default());
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let view = fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
+            view.compose.update(cx, |input, cx| {
+                input.set_value("Retain the manager draft", window, cx)
+            });
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    let button = visual
+        .debug_bounds("project-manager-model")
+        .expect("manager model control");
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("project-model-scheduler-limit")
+        .is_some());
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "opening the catalog is read-only"
+    );
+    let alternative = visual
+        .debug_bounds("project-model-choice-1")
+        .expect("model from live catalog");
+    visual.simulate_click(alternative.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "selection requires explicit Apply"
+    );
+    let apply = visual.debug_bounds("project-model-apply").unwrap();
+    visual.simulate_click(apply.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.models
+                .as_ref()
+                .unwrap()
+                .configuration
+                .model_selection
+                .model,
+            "gpt-6-astra"
+        );
+        assert!(view.model_error.is_none());
+        assert_eq!(
+            view.compose.read(cx).value().as_ref(),
+            "Retain the manager draft"
+        );
+    });
+    *gateway.model_failure.lock().unwrap() = Some(okilum_t3::GatewayError::Tool {
+        code: "capability_denied".into(),
+        message: "Cannot configure full-access thread".into(),
+    });
+    let original = visual.debug_bounds("project-model-choice-0").unwrap();
+    visual.simulate_click(original.center(), Modifiers::default());
+    visual.run_until_parked();
+    let apply = visual.debug_bounds("project-model-apply").unwrap();
+    visual.simulate_click(apply.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |view, cx| {
+        assert!(view
+            .model_error
+            .as_ref()
+            .unwrap()
+            .contains("capability_denied"));
+        assert_eq!(
+            view.models
+                .as_ref()
+                .unwrap()
+                .configuration
+                .model_selection
+                .model,
+            "gpt-6-astra",
+            "a refused mutation cannot replace the last confirmed configuration"
+        );
+        assert_eq!(view.model_candidate.as_ref().unwrap().model, "gpt-6.1-sol");
+        assert_eq!(
+            view.compose.read(cx).value().as_ref(),
+            "Retain the manager draft"
+        );
+    });
+    assert_eq!(
+        gateway.model_writes.lock().unwrap().len(),
+        2,
+        "no automatic retry"
+    );
+    assert!(
+        gateway.sends.lock().unwrap().is_empty(),
+        "model errors must not send the draft"
+    );
+    *gateway.model_read_failure.lock().unwrap() = Some(okilum_t3::GatewayError::Unreachable(
+        "Read interrupted".into(),
+    ));
+    let refresh = visual.debug_bounds("project-model-refresh").unwrap();
+    visual.simulate_click(refresh.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |view, cx| {
+        let error = view.model_error.as_ref().unwrap();
+        assert!(error.starts_with("Cannot read thread models; no change was requested."));
+        assert!(error.contains("Read interrupted"));
+        assert!(!error.contains("Model change not confirmed"));
+        assert_eq!(
+            view.models
+                .as_ref()
+                .unwrap()
+                .configuration
+                .model_selection
+                .model,
+            "gpt-6-astra"
+        );
+        assert_eq!(
+            view.compose.read(cx).value().as_ref(),
+            "Retain the manager draft"
+        );
+    });
+    assert_eq!(
+        gateway.model_writes.lock().unwrap().len(),
+        2,
+        "a failed Refresh never dispatches a model change"
+    );
+}
+
+#[gpui::test]
 fn manager_history_and_questions_render_through_the_gateway(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let state = tempfile::tempdir().unwrap();

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 mod connections;
 mod executors;
+mod models;
 
 pub(crate) struct ProjectView {
     binding: Option<AreaBinding>,
@@ -24,6 +25,11 @@ pub(crate) struct ProjectView {
     executors_open: bool,
     executors: Option<okilum_t3::executors::Snapshot>,
     executors_error: Option<String>,
+    model_target: Option<okilum_t3::models::Target>,
+    models: Option<okilum_t3::models::Snapshot>,
+    model_candidate: Option<okilum_t3::ModelSelection>,
+    model_error: Option<String>,
+    model_busy: bool,
     origin: Entity<InputState>,
     compose: Entity<TextareaState>,
     reason: Option<String>,
@@ -137,6 +143,11 @@ impl ProjectView {
             executors_open: false,
             executors: None,
             executors_error: None,
+            model_target: None,
+            models: None,
+            model_candidate: None,
+            model_error: None,
+            model_busy: false,
             origin,
             compose,
             reason: Some("Loading project…".into()),
@@ -173,6 +184,10 @@ impl ProjectView {
                     .and_then(|b| b.manager.thread_id.as_ref())
                     .map(Conversation::new);
                 self.identity = None;
+                self.model_target = None;
+                self.models = None;
+                self.model_candidate = None;
+                self.model_error = None;
                 self.error = None;
                 self.generation += 1;
                 self.start_polling(window, cx);
@@ -183,7 +198,7 @@ impl ProjectView {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.model_busy {
             return;
         }
         let Some(binding) = &self.binding else {
@@ -612,6 +627,18 @@ impl Render for ProjectView {
                             ),
                     )
                     .child(div().flex_1())
+                    .when_some(self.manager_model_target(), |row, target| {
+                        row.child(
+                            Button::new("project-manager-model")
+                                .debug_selector(|| "project-manager-model".into())
+                                .ghost()
+                                .label("Model")
+                                .disabled(self.busy || self.model_busy || !enabled)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_models(target.clone(), window, cx);
+                                })),
+                        )
+                    })
                     .when(pending > 0, |row| {
                         row.child(
                             div()
@@ -658,7 +685,7 @@ impl Render for ProjectView {
                                     .ghost()
                                     .icon(IconName::RotateCw)
                                     .tooltip("Connect or reconnect to T3")
-                                    .disabled(self.busy)
+                                    .disabled(self.busy || self.model_busy)
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.connect(window, cx)),
                                     ),
@@ -673,6 +700,9 @@ impl Render for ProjectView {
                         .text_color(cx.theme().danger)
                         .child(error),
                 )
+            })
+            .when(self.model_target.is_some(), |view| {
+                view.child(self.render_models(cx))
             })
             .child(if self.executors_open {
                 self.render_executors(cx)
