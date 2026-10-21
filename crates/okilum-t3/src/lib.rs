@@ -16,6 +16,7 @@ pub mod executors;
 mod gateway;
 pub mod manifest;
 mod mcp;
+pub mod models;
 pub mod oauth;
 mod token;
 mod types;

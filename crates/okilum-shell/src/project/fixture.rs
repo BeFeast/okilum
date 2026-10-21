@@ -17,6 +17,9 @@ pub(super) struct Fake {
     pub reads: Mutex<Vec<ThreadQuery>>,
     pub threads: Mutex<Vec<ThreadSummary>>,
     pub list_error: Mutex<Option<String>>,
+    pub model_current: Mutex<Option<ModelSelection>>,
+    pub model_failure: Mutex<Option<GatewayError>>,
+    pub model_writes: Mutex<Vec<ModelSelection>>,
     pub grown: Mutex<bool>,
 }
 impl ManagerGateway for Fake {
@@ -83,13 +86,38 @@ impl ManagerGateway for Fake {
         Ok(vec!["question-1".into()])
     }
     fn capabilities(&self) -> Result<Capabilities> {
-        unimplemented!()
+        serde_json::from_value(serde_json::json!({"runtimeMode":"full-access","providers":[
+            {"providerInstanceId":"codex","driverKind":"codex","models":[{"id":"gpt-6.1-sol"},{"id":"gpt-6-astra"}]}]}))
+            .map_err(|error| GatewayError::Protocol(error.to_string()))
     }
-    fn thread_configuration(&self, _: &str) -> Result<ThreadConfiguration> {
-        unimplemented!()
+    fn thread_configuration(&self, thread: &str) -> Result<ThreadConfiguration> {
+        Ok(ThreadConfiguration {
+            thread_id: thread.into(),
+            model_selection: self
+                .model_current
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(ModelSelection {
+                    instance_id: "codex".into(),
+                    model: "gpt-6.1-sol".into(),
+                    options: vec![],
+                }),
+            runtime_mode: "full-access".into(),
+            interaction_mode: "default".into(),
+        })
     }
-    fn configure_model(&self, _: &str, _: &ModelSelection) -> Result<ThreadConfiguration> {
-        unimplemented!()
+    fn configure_model(
+        &self,
+        thread: &str,
+        selection: &ModelSelection,
+    ) -> Result<ThreadConfiguration> {
+        self.model_writes.lock().unwrap().push(selection.clone());
+        if let Some(error) = self.model_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
+        *self.model_current.lock().unwrap() = Some(selection.clone());
+        self.thread_configuration(thread)
     }
 }
 

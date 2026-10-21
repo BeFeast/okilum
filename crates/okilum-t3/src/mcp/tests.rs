@@ -380,6 +380,142 @@ fn configure_model_returns_the_configuration_read_back() {
     assert_eq!(confirmed.model_selection.model, "claude-opus-5-5");
 }
 
+fn model_page(project: &str) -> Value {
+    json!({"thread":{"threadId":"mcp:manager","projectId":project,"title":"Manager",
+        "status":"idle","providerInstanceId":"claudeAgent","model":"old",
+        "runtimeMode":"full-access","updatedAt":"now"},"items":[]})
+}
+
+fn model_catalog() -> Value {
+    json!({"runtimeMode":"full-access","providers":[{"providerInstanceId":"claudeAgent",
+        "driverKind":"claude","models":[{"id":"old"},{"id":"new"}]}]})
+}
+
+#[test]
+fn project_model_control_uses_live_catalog_and_confirms_actual_configuration() {
+    let selected = Arc::new(std::sync::Mutex::new(
+        json!({"instanceId":"claudeAgent","model":"old",
+        "options":[{"id":"effort","value":"high"}]}),
+    ));
+    let retained = selected.clone();
+    let server = fake_t3(move |name, args| {
+        structured(match name {
+            "t3_thread_read" => model_page("managers"),
+            "orchestrator_capabilities" => model_catalog(),
+            "t3_thread_configuration" => {
+                json!({"threadId":"mcp:manager","modelSelection":*retained.lock().unwrap(),
+            "runtimeMode":"full-access","interactionMode":"default"})
+            }
+            "t3_thread_configure" => {
+                *retained.lock().unwrap() = args["modelSelection"].clone();
+                json!({})
+            }
+            other => panic!("unexpected {other}"),
+        })
+    });
+    let gateway = gateway(&server, Some(token("good")));
+    let target = crate::models::Target {
+        thread_id: "mcp:manager".into(),
+        project_id: "managers".into(),
+    };
+    let snapshot = target.load(&gateway).unwrap();
+    assert_eq!(snapshot.selection("claudeAgent", "old").options.len(), 1);
+    let selection = snapshot.selection("claudeAgent", "new");
+    assert!(
+        selection.options.is_empty(),
+        "old model options must not leak to a new model"
+    );
+    let confirmed = target.configure(&gateway, &selection).unwrap();
+    assert_eq!(confirmed.configuration.model_selection, selection);
+    let calls = tool_calls(&server.requests());
+    assert_eq!(calls[calls.len() - 2]["name"], "t3_thread_configure");
+    assert_eq!(calls[calls.len() - 1]["name"], "t3_thread_configuration");
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c["name"] == "t3_thread_configure")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn project_model_control_never_claims_a_configure_ack_or_permission_error_as_confirmation() {
+    for deny in [false, true] {
+        let server = fake_t3(move |name, _| {
+            if name == "t3_thread_configure" && deny {
+                return json!({"isError":true,"structuredContent":{"code":"capability_denied","message":"Credential cannot configure this full-access thread"}});
+            }
+            structured(match name {
+                "t3_thread_read" => model_page("managers"),
+                "orchestrator_capabilities" => model_catalog(),
+                // Even a successful configure ACK does not establish the new model.
+                "t3_thread_configuration" => configuration("old"),
+                "t3_thread_configure" => json!({"success":true}),
+                other => panic!("unexpected {other}"),
+            })
+        });
+        let gateway = gateway(&server, Some(token("good")));
+        let target = crate::models::Target {
+            thread_id: "mcp:manager".into(),
+            project_id: "managers".into(),
+        };
+        let selection = ModelSelection {
+            instance_id: "claudeAgent".into(),
+            model: "new".into(),
+            options: vec![],
+        };
+        let error = target
+            .configure(&gateway, &selection)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(if deny {
+                "capability_denied"
+            } else {
+                "unconfirmed"
+            }),
+            "{error}"
+        );
+        assert_eq!(
+            tool_calls(&server.requests())
+                .iter()
+                .filter(|c| c["name"] == "t3_thread_configure")
+                .count(),
+            1,
+            "an unconfirmed write must not trigger another write"
+        );
+    }
+}
+
+#[test]
+fn project_model_control_refuses_moved_targets_and_models_removed_from_live_catalog() {
+    for moved in [false, true] {
+        let server = fake_t3(move |name, _| {
+            structured(match name {
+                "t3_thread_read" => model_page(if moved { "elsewhere" } else { "managers" }),
+                "orchestrator_capabilities" => model_catalog(),
+                "t3_thread_configuration" => configuration("old"),
+                other => panic!("no write is permitted here: {other}"),
+            })
+        });
+        let gateway = gateway(&server, Some(token("good")));
+        let target = crate::models::Target {
+            thread_id: "mcp:manager".into(),
+            project_id: "managers".into(),
+        };
+        let selection = ModelSelection {
+            instance_id: "claudeAgent".into(),
+            model: "removed".into(),
+            options: vec![],
+        };
+        assert!(target.configure(&gateway, &selection).is_err());
+        assert!(tool_calls(&server.requests())
+            .iter()
+            .all(|c| c["name"] != "t3_thread_configure"));
+    }
+}
+
 #[test]
 fn reads_a_thread_page_and_a_growing_item() {
     let server = fake_t3(|name, arguments| {
