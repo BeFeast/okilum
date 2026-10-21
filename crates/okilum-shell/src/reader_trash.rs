@@ -830,10 +830,7 @@ mod tests {
                 assert!(!r.trash_undo.visible.get(), "{dismissal}");
                 assert_eq!(r.trash_undo.items.len(), 1);
             });
-            #[cfg(target_os = "macos")]
-            visual.simulate_keystrokes("cmd-z");
-            #[cfg(not(target_os = "macos"))]
-            visual.simulate_keystrokes("ctrl-z");
+            visual.simulate_keystrokes("secondary-z");
             visual.run_until_parked();
             assert_eq!(
                 std::fs::read_to_string(root.join("gone.md")).unwrap(),
@@ -915,10 +912,7 @@ mod tests {
         };
         let undo = |visual: &mut VisualTestContext, keyboard: bool| {
             if keyboard {
-                #[cfg(target_os = "macos")]
-                visual.simulate_keystrokes("cmd-z");
-                #[cfg(not(target_os = "macos"))]
-                visual.simulate_keystrokes("ctrl-z");
+                visual.simulate_keystrokes("secondary-z");
             } else {
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 let button = visual
