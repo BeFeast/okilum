@@ -182,7 +182,7 @@ class GateConsumerTests(unittest.TestCase):
             proof = self.prepare(f, Path(root)/'proof')
             self.assertTrue(all(c[0] == 'GET' for c in f.calls))
             self.assertEqual(f.data['original']['status'], 'failure')
-            result = bridge.report_gates(f, proof, evidence_uploaded='success')
+            result = bridge.report_gates(f, proof, evidence_uploaded='success', evidence=Path(root)/'proof')
             self.assertEqual(result['source'], INPUTS['source'])
             self.assertNotEqual(result['source'], result['tooling'])
             posts = [c for c in f.calls if c[0] == 'POST']
@@ -229,18 +229,89 @@ class GateConsumerTests(unittest.TestCase):
                 if change=='artifact': f.artifacts={'artifacts':[]}
                 if change=='source': f.data['pr']['head']['sha']='f'*40
                 with self.assertRaises(ValueError):
-                    bridge.report_gates(f,proof,evidence_uploaded='failure' if change=='upload' else 'success')
+                    bridge.report_gates(f,proof,evidence_uploaded='failure' if change=='upload' else 'success', evidence=Path(root)/'proof')
                 self.assertFalse(any(c[0]=='POST' for c in f.calls))
 
     def test_partial_two_status_failure_leaves_required_check_failed_without_retry(self):
         f=Forgejo();f.fail_second_post=True
         with tempfile.TemporaryDirectory() as root:
             proof=self.prepare(f,Path(root)/'proof')
-            with self.assertRaises(bridge.Unavailable): bridge.report_gates(f,proof,evidence_uploaded='success')
+            with self.assertRaises(bridge.Unavailable): bridge.report_gates(f,proof,evidence_uploaded='success', evidence=Path(root)/'proof')
         posts=[c for c in f.calls if c[0]=='POST']
-        self.assertEqual(len(posts),3)
+        self.assertEqual(len(posts),2)
         self.assertEqual(next(s['status'] for s in f.data['statuses']['statuses']
                               if s['context']=='ci / check (pull_request)'), 'failure')
+
+    def test_response_lost_after_acceptance_retains_durable_checkpoint_and_no_retry(self):
+        class LostResponse(Forgejo):
+            def call(self, method, path, body=None):
+                result = super().call(method, path, body)
+                if method == 'POST' and body['context'].startswith('ci / check'):
+                    raise bridge.Unavailable('response lost AFTER acceptance')
+                return result
+        f=LostResponse()
+        with tempfile.TemporaryDirectory() as root:
+            directory=Path(root)/'proof'; proof=self.prepare(f,directory)
+            with self.assertRaises(bridge.Unavailable):
+                bridge.report_gates(f,proof,evidence_uploaded='success',evidence=directory)
+            entries=[json.loads(s) for s in (directory/'reporting.jsonl').read_text().splitlines()]
+            self.assertEqual(sum(e['event']=='status_attempted' for e in entries),2)
+            self.assertEqual(sum(e['event']=='status_confirmed' for e in entries),1)
+            self.assertEqual(sum(e['event']=='status_unconfirmed' for e in entries),1)
+            self.assertEqual(entries[-1]['event'],'stop_readback')
+            self.assertTrue(any(s['context']=='ci / check (pull_request)' and s['status']=='success'
+                                for s in entries[-1]['response']['statuses']))
+            stop=json.loads((directory/'report-stop.json').read_text())
+            self.assertEqual(stop['classification'],'REPORTING_UNCONFIRMED_STOP')
+            self.assertEqual(stop['unconfirmed'],['ci / check (pull_request)'])
+            self.assertEqual(len([c for c in f.calls if c[0]=='POST']),2)
+
+    def test_concurrent_publication_after_stop_read_has_no_compensating_overwrite(self):
+        class Interleaving(Forgejo):
+            def call(self,method,path,body=None):
+                result=super().call(method,path,body)
+                if method=='GET' and path.endswith('/status') and self.fail_second_post:
+                    snapshot=copy.deepcopy(result)
+                    for status in self.data['statuses']['statuses']:
+                        if status['context']=='ci / macos (pull_request)':
+                            status['target_url']='https://git.oklabs.uk/newer-execution'
+                            status['status']='failure'
+                    return snapshot
+                return result
+        f=Interleaving()
+        with tempfile.TemporaryDirectory() as root:
+            directory=Path(root)/'proof';proof=self.prepare(f,directory);f.fail_second_post=True
+            with self.assertRaises(bridge.Unavailable):
+                bridge.report_gates(f,proof,evidence_uploaded='success',evidence=directory)
+            current=next(s for s in f.data['statuses']['statuses'] if s['context']=='ci / macos (pull_request)')
+            self.assertEqual(current['target_url'],'https://git.oklabs.uk/newer-execution')
+            self.assertEqual(current['status'],'failure')
+            self.assertEqual(len([c for c in f.calls if c[0]=='POST']),2)
+            self.assertTrue((directory/'report-stop.json').exists())
+
+    def test_stop_read_failure_is_retained_and_intent_precedes_each_mutation(self):
+        class ReadUnavailable(Forgejo):
+            directory=None
+            def call(self,method,path,body=None):
+                if method=='POST':
+                    entries=[json.loads(s) for s in (self.directory/'reporting.jsonl').read_text().splitlines()]
+                    self_test.assertEqual(entries[-1]['event'],'status_attempted')
+                    self_test.assertEqual(entries[-1]['source'],INPUTS['source'])
+                    self_test.assertEqual(entries[-1]['context'],body['context'])
+                    self_test.assertEqual(entries[-1]['target'],body['target_url'])
+                if self.fail_second_post and method=='GET' and path.endswith('/status'):
+                    raise bridge.Unavailable('read unavailable')
+                return super().call(method,path,body)
+        self_test=self;f=ReadUnavailable()
+        with tempfile.TemporaryDirectory() as root:
+            directory=Path(root)/'proof';proof=self.prepare(f,directory)
+            f.directory=directory;f.fail_second_post=True
+            with self.assertRaises(bridge.Unavailable):
+                bridge.report_gates(f,proof,evidence_uploaded='success',evidence=directory)
+            entries=[json.loads(s) for s in (directory/'reporting.jsonl').read_text().splitlines()]
+            self.assertEqual(entries[-1]['event'],'stop_readback_unavailable')
+            self.assertTrue((directory/'report-stop.json').exists())
+            self.assertEqual(len([c for c in f.calls if c[0]=='POST']),2)
 
     def test_context_rejects_interactive_fork_nonmain_and_rerun(self):
         env={'GITHUB_REPOSITORY':bridge.REPOSITORY,'GITHUB_REF':'refs/heads/main',

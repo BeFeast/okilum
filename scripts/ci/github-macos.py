@@ -5,7 +5,7 @@ No Forgejo credentials reach GitHub. The caller's final `macos` job reports the
 result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 import http.client
 import json
 import os
@@ -370,7 +370,7 @@ def validate_pr(pr, sha, require_open=True):
         raise ValueError('PR source/repository/base/draft/state changed')
 
 
-def report_gates(forgejo, proof, *, evidence_uploaded):
+def report_gates(forgejo, proof, *, evidence_uploaded, evidence):
     """Automatic CI reporting only after fresh full verification and evidence upload."""
     if evidence_uploaded != 'success' or proof.get('classification') != 'EXACT_REQUIRED_GATES_REEVALUATED':
         raise ValueError('No uploaded verified gate evidence')
@@ -385,39 +385,63 @@ def report_gates(forgejo, proof, *, evidence_uploaded):
             or matches[0].get('size_in_bytes', 0) <= 0):
         raise ValueError('Required evidence artifact not retained for this execution/source')
     target = f"https://git.oklabs.uk/BeFeast/okilum/actions/runs/{execution['number']}"
-    # Source may advance while metadata is read. A new head refuses reporting.
-    # Status API appends records: the original failed jobs/statuses remain history.
+    # No status API compare-and-swap exists here. A compensating POST could
+    # overwrite a newer publisher, so uncertainty must STOP without rollback.
+    journal = Path(evidence) / 'reporting.jsonl'
+    with journal.open('x') as stream:
+        stream.flush()
+        os.fsync(stream.fileno())
+    def record(event, **data):
+        entry = {'at': datetime.now(timezone.utc).isoformat(), 'event': event, **data}
+        with journal.open('a') as stream:
+            stream.write(json.dumps(entry) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    attempted, confirmed, uncertain = [], [], []
+    record('report_started', source=proof['source'], tooling=execution['tooling'], target=target)
     try:
         for context in proof['report_contexts']:
-            validate_pr(forgejo.call('GET', f"/pulls/{proof['pr']}"), proof['source'])
-            forgejo.call('POST', f"/statuses/{proof['source']}", {
-                'state': 'success', 'context': context, 'target_url': target,
-                'description': f"Verified native reuse; CI {execution['number']}; original {proof['original_index']} retained"})
+            current_pr = forgejo.call('GET', f"/pulls/{proof['pr']}")
+            record('pr_readback', response=current_pr)
+            validate_pr(current_pr, proof['source'])
+            body = {'state': 'success', 'context': context, 'target_url': target,
+                    'description': f"Verified native reuse; CI {execution['number']}; original {proof['original_index']} retained"}
+            # fsync attempted intent BEFORE making each non-idempotent request.
+            record('status_attempted', source=proof['source'], context=context, target=target, request=body)
+            attempted.append(context)
+            try:
+                response = forgejo.call('POST', f"/statuses/{proof['source']}", body)
+            except Exception as error:
+                uncertain.append(context)
+                record('status_unconfirmed', context=context, error_class=type(error).__name__)
+                raise
+            confirmed.append(context)
+            record('status_confirmed', context=context, response=response)
         current = forgejo.call('GET', f"/commits/{proof['source']}/status")
+        record('status_readback', response=current)
         for context in proof['report_contexts']:
             statuses = [s for s in current.get('statuses', []) if s.get('context') == context]
             if len(statuses) != 1 or statuses[0].get('status') != 'success' or statuses[0].get('target_url') != target:
                 raise ValueError('Reported status readback unavailable/inconsistent; no retry')
-    except Exception:
-        # Revoke only this execution's own derived successes if reporting is partial.
-        # Never overwrite a newer result from another execution, reset old jobs,
-        # retry a status POST, or claim rollback when the service is unavailable.
+    except Exception as error:
+        record('report_stopped', error_class=type(error).__name__, attempted=attempted,
+               confirmed=confirmed, unconfirmed=uncertain, compensating_writes=0)
         try:
             current = forgejo.call('GET', f"/commits/{proof['source']}/status")
-            for context in proof['report_contexts']:
-                own = [s for s in current.get('statuses', [])
-                       if s.get('context') == context and s.get('target_url') == target
-                       and s.get('status') == 'success']
-                if len(own) == 1:
-                    forgejo.call('POST', f"/statuses/{proof['source']}", {
-                        'state': 'error', 'context': context, 'target_url': target,
-                        'description': 'Reconciliation reporting incomplete; STOP, no retry'})
-        except Exception:
-            print('Reconciliation reporting/rollback UNCONFIRMED; STOP, no retry')
+            record('stop_readback', response=current)
+        except Exception as read_error:
+            record('stop_readback_unavailable', error_class=type(read_error).__name__)
+        result = {'classification': 'REPORTING_UNCONFIRMED_STOP', 'source': proof['source'],
+                  'target': target, 'attempted': attempted, 'confirmed': confirmed,
+                  'unconfirmed': uncertain, 'compensating_writes': 0}
+        (Path(evidence)/'report-stop.json').write_text(json.dumps(result, indent=2)+'\n')
         raise
-    return {'classification': 'RECONCILED_REQUIRED_GATES_REPORTED', 'target': target,
-            'source': proof['source'], 'tooling': execution['tooling'], 'status_writes': 2,
-            'compiler_dispatches': 0, 'original_failure_retained': True}
+    result = {'classification': 'RECONCILED_REQUIRED_GATES_REPORTED', 'target': target,
+              'source': proof['source'], 'tooling': execution['tooling'], 'status_writes': 2,
+              'compiler_dispatches': 0, 'original_failure_retained': True,
+              'attempted': attempted, 'confirmed': confirmed, 'unconfirmed': uncertain}
+    record('report_completed', result=result)
+    return result
 
 
 def reconcile_gates_main(args):
@@ -435,7 +459,7 @@ def reconcile_gates_main(args):
     proof = prepare_gates(forgejo, github, execution, evidence=args.evidence, **kwargs)
     if args.phase == 'report':
         # Only the trusted workflow supplies this literal previous-step outcome.
-        result = report_gates(forgejo, proof, evidence_uploaded=os.environ.get('EVIDENCE_UPLOADED'))
+        result = report_gates(forgejo, proof, evidence_uploaded=os.environ.get('EVIDENCE_UPLOADED'), evidence=args.evidence)
         (Path(args.evidence)/'report.json').write_text(json.dumps(result, indent=2)+'\n')
         print(json.dumps(result))
     else:

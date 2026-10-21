@@ -220,19 +220,34 @@ status/artifact writes have NOT been executed by code preparation or review.
 **Effects and failure boundary:** two new success-status records on the verified
 product SHA plus evidence artifacts for the new execution. GitHub reads only;
 no original run mutation. Status pair is sequential, not atomic. Validation or
-upload failure writes no success. Reporting failure performs one bounded
-readback and appends `error` only for successes still owned by this execution;
-it never overwrites another execution's newer target. At most two success and
-two rollback-error POSTs, no retries. API uncertainty may prevent confirmed
-rollback: record UNCONFIRMED, stop and retain actual checkpoint; no automatic
-rerun or claim of recovery. Original failures remain inspectable regardless.
-Rollback before dispatch is simply no execution/revert of this route. Code
-revert prevents future use but does not erase a reported status; after any
-partial/ambiguous report use the retained evidence and explicit manager
-disposition, never delete/reset history or manually manufacture green.
+upload failure writes no success. Before each mutation the consumer fsyncs a
+journal entry with exact SHA/context/target/request; responses or sanitized
+exception classes and actual status readbacks are retained in `reporting.jsonl`.
+An accepted POST with a lost response is explicitly UNCONFIRMED, not failed or
+retried. `report-stop.json` and the journal survive exceptions for the final
+diagnostic upload. Durable attempted intent remains even if response persistence
+subsequently fails; storage failure before the intent blocks the mutation.
+
+The status API offers no conditional update here. A rollback GET then POST could
+overwrite another publisher between those operations. Therefore **there are no
+compensating status writes**: on reporting/readback uncertainty, retain one
+bounded observational readback or its unavailability, STOP and report the actual
+attempted/confirmed/unconfirmed checkpoint for manager disposition. Never claim
+an own-target rollback guarantee. At most two status POST attempts; no retry.
+Original failures remain inspectable, while one or both new statuses might have
+been accepted despite a transport error. That outcome is not claimed as verified
+recovery. No generic lock/service or interactive manual green is introduced.
+
+Rollback before dispatch is no execution/revert of this route. A code revert
+prevents future use but cannot erase an appended result. Post-mutation correction
+has no safe compare-and-swap interface in this implementation and needs a new
+concrete authority after examining the retained execution/history. Do not
+blindly publish compensating error/green statuses, delete/reset history, or
+rerun the native compiler.
 
 The retained fixture data and finite controls exercise wrong PR/source/ref/run/
 job/attempt/workflow/step/time, changed policy/main/source, other gate failure,
-missing/ambiguous status/artifact, evidence failure and partial-report rollback.
+missing/ambiguous status/artifact, evidence failure, accepted-but-response-lost
+POST, durable mutation journal, failed readback and concurrent publication.
 Fixtures model the new CI execution explicitly; they are not a live recovery
 receipt or proof that workflow-token permissions will succeed at runtime.
