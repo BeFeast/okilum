@@ -3,7 +3,8 @@ use super::*;
 
 pub(crate) const PROJECT_URL: &str = "https://git.oklabs.uk/BeFeast/okilum";
 const TAGLINE: &str = "Your notes. Clearly connected.";
-const DESCRIPTION: &str = "A fast Markdown reader and editor for your local, Obsidian-style vault.";
+const DESCRIPTION: &str =
+    "A fast Markdown reader and editor for notes that stay plain files on your disk.";
 const FEATURES: [&str; 4] = [
     "Read rich notes, tables, code and diagrams.",
     "Find the right passage with full-text search.",
