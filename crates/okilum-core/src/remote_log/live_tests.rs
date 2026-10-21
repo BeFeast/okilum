@@ -462,6 +462,9 @@ fn interrupted_search_aborts_socket_preserves_rows_and_blocks_new_pit_when_hando
         &blocked.loaded.unwrap().window,
         &initial.window
     ));
+    // The worker update does not acknowledge the independent server handler's
+    // EOF observation. Include that observation in the original cancellation bound.
+    wait(|| server.disconnected.load(Ordering::Acquire));
     assert!(
         began.elapsed() < Duration::from_secs(2),
         "cancellation aborts the socket rather than waiting the ten-second request deadline"
@@ -485,6 +488,7 @@ fn closing_during_search_aborts_the_socket_and_attempts_last_known_cleanup() {
     start(&worker, &initial);
     wait(|| server.slow_started.load(Ordering::Acquire));
     close(worker, &events, &server);
+    wait(|| server.disconnected.load(Ordering::Acquire));
     assert!(server.disconnected.load(Ordering::Acquire));
     assert!(server
         .state
