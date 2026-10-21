@@ -1,5 +1,5 @@
-# No signing secrets are provisioned by this workflow. Missing approved runner
-# keychain/notary capability fails before Cargo; CI success is not provisioning.
+# Signing inputs must be separately approved/provisioned. Missing credentials stop
+# before Cargo; tests/merge do not authorize secret/key-holder mutations.
 name: forgejo-macos-shipping
 run-name: Mac shipping Forgejo ${{ inputs.producer }} attempt ${{ inputs.attempt }}
 on:
@@ -35,6 +35,20 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Prepare explicitly scoped ephemeral signing keychain
+        env:
+          PRODUCT_SOURCE: ${{ inputs.source }}
+          OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
+          OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
+          OKILUM_MAC_CERT_SHA256: ${{ vars.OKILUM_MAC_CERT_SHA256 }}
+          OKILUM_MAC_DEVELOPER_ID_P12: ${{ secrets.OKILUM_MAC_DEVELOPER_ID_P12 }}
+          OKILUM_MAC_DEVELOPER_ID_PASSWORD: ${{ secrets.OKILUM_MAC_DEVELOPER_ID_PASSWORD }}
+          OKILUM_MAC_NOTARY_APPLE_ID: ${{ secrets.OKILUM_MAC_NOTARY_APPLE_ID }}
+          OKILUM_MAC_NOTARY_PASSWORD: ${{ secrets.OKILUM_MAC_NOTARY_PASSWORD }}
+          OKILUM_MAC_NOTARY_TEAM: ${{ secrets.OKILUM_MAC_NOTARY_TEAM }}
+        run: |
+          cp scripts/releases/macos-keychain.py "$RUNNER_TEMP/okilum-keychain-cleanup.py"
+          python3 scripts/releases/macos-keychain.py setup
       - name: Validate source and approved signing capability before compilation
         env:
           PRODUCT_SOURCE: ${{ inputs.source }}
@@ -56,6 +70,12 @@ jobs:
           OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
           SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=
         run: python3 scripts/releases/macos-hosted.py build
+      - name: Remove ephemeral signing material
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/okilum-keychain-cleanup.py" ]; then
+            python3 "$RUNNER_TEMP/okilum-keychain-cleanup.py" cleanup
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: macos-shipping-${{ inputs.source }}-${{ inputs.build }}

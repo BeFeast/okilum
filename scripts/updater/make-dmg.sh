@@ -3,6 +3,14 @@
 # a first-install DMG (app + Applications link, branded window), signs it with the
 # Developer ID, notarizes and staples it, and checks it the way Gatekeeper sees a
 # download. Sets $DMG. The zip in $ARCHIVE stays the Sparkle update payload.
+SIGNING_KEYCHAIN_ARGS=()
+NOTARY_KEYCHAIN_ARGS=()
+IDENTITY_KEYCHAIN_ARGS=()
+if [[ -n ${OKILUM_SIGNING_KEYCHAIN:-} ]]; then
+    SIGNING_KEYCHAIN_ARGS=(--keychain "$OKILUM_SIGNING_KEYCHAIN")
+    NOTARY_KEYCHAIN_ARGS=(--keychain "$OKILUM_SIGNING_KEYCHAIN")
+    IDENTITY_KEYCHAIN_ARGS=("$OKILUM_SIGNING_KEYCHAIN")
+fi
 DMG="$OUTPUT/Okilum-$DISPLAY_VERSION.dmg"
 # The M4 runner's python3 is the system 3.9: these are the last releases that support it.
 python3 -m venv "$OUTPUT/dmgbuild-env"
@@ -16,9 +24,9 @@ rm -f "$DMG"
     -D app="$APP" -D icon="$APP/Contents/Resources/Okilum.icns" \
     -D background="$PWD/scripts/macos-dmg/background.png" \
     Okilum "$DMG"
-codesign --force --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$DMG"
+codesign "${SIGNING_KEYCHAIN_ARGS[@]}" --force --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
-xcrun notarytool submit "$DMG" --keychain-profile "$OKILUM_NOTARY_PROFILE" --wait --output-format json | tee "$OUTPUT/notarization-dmg.json"
+xcrun notarytool submit "$DMG" --keychain-profile "$OKILUM_NOTARY_PROFILE" "${NOTARY_KEYCHAIN_ARGS[@]}" --wait --output-format json | tee "$OUTPUT/notarization-dmg.json"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["status"]; sys.exit(s!="Accepted" and f"DMG notarization: {s}")' "$OUTPUT/notarization-dmg.json"
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"

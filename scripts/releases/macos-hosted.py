@@ -7,6 +7,8 @@ import os
 import plistlib
 from pathlib import Path
 import re
+import tempfile
+import shutil
 import subprocess
 
 
@@ -50,13 +52,15 @@ def preflight(env):
     profile = env.get('OKILUM_NOTARY_PROFILE', '')
     if not identity or not profile:
         raise ValueError('Approved Developer ID identity and notary profile required before Cargo')
-    listing = subprocess.check_output(['security', 'find-identity', '-v', '-p', 'codesigning'], text=True)
+    keychain = env.get('OKILUM_SIGNING_KEYCHAIN')
+    keys = [keychain] if keychain else []
+    listing = subprocess.check_output(['security', 'find-identity', '-v', '-p', 'codesigning', *keys], text=True)
     if not any(identity in line and re.search(r'"Developer ID Application: .+ \([A-Z0-9]{10}\)"', line)
                for line in listing.splitlines()):
         raise ValueError('BLOCKED: hosted runner has no approved Developer ID private-key identity; no compilation')
     # Uses only an already-provisioned profile. Never store credentials or print bodies.
     subprocess.run(['xcrun', 'notarytool', 'history', '--keychain-profile', profile,
-                    '--output-format', 'json'], check=True, stdout=subprocess.DEVNULL,
+                    '--output-format', 'json', *(['--keychain', keychain] if keychain else [])], check=True, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, timeout=30)
     return source, workflow
 
@@ -67,11 +71,19 @@ def build(env):
     if output.exists():
         raise ValueError('Shipping output already exists; never overwrite/reuse ambiguous work')
     output.mkdir(parents=True)
+    # Preserve only reviewed delivery scripts before selecting the older product tree.
+    tools = Path(tempfile.mkdtemp(prefix='okilum-delivery-tools-', dir=env.get('RUNNER_TEMP')))
+    tool_hashes = {}
+    for name in ['scripts/build-macos-ci.sh', 'scripts/ci/supervisor-bundle.sh',
+                 'scripts/updater/sign-bundle.sh', 'scripts/updater/make-dmg.sh']:
+        dest = tools / name; dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(name, dest)
+        tool_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()
     subprocess.run(['git', 'checkout', '--detach', source], check=True)
     if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
         raise ValueError('Product source checkout mismatch')
-    build_env = {**env, 'OKILUM_BUILD_VERSION': env['SHIPPING_BUILD']}
-    subprocess.run(['bash', 'scripts/build-macos-ci.sh', str(output)], env=build_env, check=True)
+    build_env = {**env, 'OKILUM_BUILD_VERSION': env['SHIPPING_BUILD'], 'OKILUM_DELIVERY_TOOLS': str(tools)}
+    subprocess.run(['bash', str(tools / 'scripts/build-macos-ci.sh'), str(output)], env=build_env, check=True)
     values = dict(line.split('=', 1) for line in (output / 'release.env').read_text().splitlines())
     tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
     if (values['SOURCE_SHA'] != source or values['SOURCE_TREE'] != tree
@@ -95,6 +107,7 @@ def build(env):
                'build': int(env['SHIPPING_BUILD']), 'producer': env['PRODUCER'],
                'producer_number': env['PRODUCER_NUMBER'], 'producer_attempt': env['PRODUCER_ATTEMPT'], 'github_run': env['GITHUB_RUN_ID'],
                'signature': 'Developer ID + notarization Accepted + stapler/Gatekeeper verified by shipping script',
+               'delivery_script_sha256': tool_hashes,
                'publication': 'NONE; QA artifact only, not Stable or beta feed', 'assets': files}
     (output / 'provenance.json').write_text(json.dumps(receipt, indent=2) + '\n')
     # Only release payloads and nonsecret provenance leave this job; no keychains/env.

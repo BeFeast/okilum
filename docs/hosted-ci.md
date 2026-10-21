@@ -89,15 +89,46 @@ and Gatekeeper checks for the app ZIP and DMG. Provenance records both SHAs and
 the actual app plist/source/tree/version. No fabricated source marker, CI cache
 export, signing bypass or #1431 claim reuse is involved.
 
-**Current blocker:** standard hosted runners have no approved Developer ID
-private-key identity or notary profile. Preflight checks that existing capability
-before Cargo and fails closed if unavailable. This PR imports no keychain, binds
-no signing secret and does not provision credentials. Do not dispatch an artifact
-build until an approved signing route exists. Providing a PKCS#12 private key and
-notary credential to an ephemeral GitHub runner would create a new trust boundary;
-it requires a separate concrete reviewed provisioning/cleanup plan and approval.
-No private material is moved by this code. Alternatively an explicitly approved
-signing service could be designed; none is assumed or contacted here.
+**Runtime prerequisite:** separately approved signing inputs must be provisioned
+before an artifact dispatch. Empty/missing credentials, wrong certificate SHA256,
+team or private identity, unavailable notary authentication and any partial setup
+fail before Cargo. Code/CI/merge do not authorize reading/exporting the existing
+key-holder identity, creating GitHub secrets or dispatching a build.
+
+The setup step consumes only `OKILUM_MAC_DEVELOPER_ID_P12` (base64 PKCS#12),
+`OKILUM_MAC_DEVELOPER_ID_PASSWORD`, `OKILUM_MAC_NOTARY_APPLE_ID`,
+`OKILUM_MAC_NOTARY_PASSWORD`, `OKILUM_MAC_NOTARY_TEAM`, plus the frozen public
+certificate pin `OKILUM_MAC_CERT_SHA256` (repository variable). No credential is
+present in the repository; these bindings remain unprovisioned until separately
+approved. No new account/token/identity is requested by the code.
+
+`scripts/releases/macos-keychain.py` creates a unique mode0700 directory under
+`RUNNER_TEMP/okilum-signing-<run>-<attempt>/`, imports into its own
+`shipping.keychain-db`, matches certificate SHA256 to the one private-key identity
+and team, and stores the existing notary credential only there. It captures the
+original default/search-list and restores/verifies them immediately after
+`create-keychain` (which may add itself), and again during cleanup. Every signing,
+identity lookup and notary command uses the explicit ephemeral keychain; no
+persistent login-keychain lookup/fallback. Secret command argv/stdout/errors are
+never printed. Only sanitized ready/failed state is logged.
+
+An `always()` cleanup copied outside the product checkout deletes only the exact
+operation keychain/files and restores/verifies baseline before artifact upload.
+Partial import/notary failure is cleaned; unknown/foreign/aliased residue stops
+rather than removing it. Private keychain/P12/env never enter caches/artifacts.
+The four reviewed delivery scripts are retained before checkout of an older
+product source: app/Rust source remains that exact tree, while provenance records
+workflow SHA and delivery-script hashes. No tracked product-source overlay or
+fabricated source marker is used.
+
+Live operation/rollback (separate approval): first freeze the existing identity
+SHA256/team/exportability and approved existing notary credential; provision only
+the five named secrets and public pin, then one normal source-pinned artifact job.
+No private material is copied by preparation/tests. Rollback deletes only secrets
+created by that recorded operation and its private transient copies; preserve the
+original key-holder login identity/profile and encrypted backup. No rotate/revoke,
+M4 SSH, lane/runner/service changes or Stable mutation. Revert the integration to
+rollback code; never dispatch the old local path during workday as fallback.
 
 On success the authenticated GitHub run provides `macos-shipping-<source>-<build>`:
 only the signed/notarized app ZIP, first-install DMG and `provenance.json`. Download

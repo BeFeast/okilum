@@ -18,7 +18,9 @@ supervisor_team_id() {
     local identity="$1" listing derived configured="${OKILUM_SIGNING_TEAM_ID:-}"
     # A failing `security` is an error. No matching line is not: `grep` exiting 1 must
     # not abort this function under pipefail before the fallback below can run.
-    listing="$(security find-identity -v -p codesigning)"
+    local keychain_args=()
+    if [[ -n ${OKILUM_SIGNING_KEYCHAIN:-} ]]; then keychain_args=("$OKILUM_SIGNING_KEYCHAIN"); fi
+    listing="$(security find-identity -v -p codesigning "${keychain_args[@]}")"
     derived="$(printf '%s\n' "$listing" | grep -F "$identity" \
         | sed -En 's/.*\(([A-Z0-9]{10})\)"[[:space:]]*$/\1/p' | head -1 || true)"
     if [[ -n $derived && -n $configured && $derived != "$configured" ]]; then
@@ -58,7 +60,9 @@ supervisor_stage() {
 supervisor_sign() {
     local app="$1" identity="$2" bundle="$3"
     shift 3
-    codesign --force --options runtime --identifier "$bundle.sync" "$@" \
+    local keychain_args=()
+    if [[ -n ${OKILUM_SIGNING_KEYCHAIN:-} ]]; then keychain_args=(--keychain "$OKILUM_SIGNING_KEYCHAIN"); fi
+    codesign "${keychain_args[@]}" --force --options runtime --identifier "$bundle.sync" "$@" \
         --sign "$identity" "$app/$SUPERVISOR_RELATIVE"
     codesign --verify --strict "$app/$SUPERVISOR_RELATIVE"
 }
