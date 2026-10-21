@@ -673,7 +673,7 @@ mod tests {
         } else {
             if operation == "keyboard" {
                 reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
-                visual.simulate_keystrokes("ctrl-n");
+                visual.simulate_keystrokes("secondary-n");
             } else {
                 reader.update_in(visual, |r, _, cx| {
                     r.panels.open(reader_layout::Panel::Notes);
@@ -901,7 +901,7 @@ mod tests {
                     r.tree_focus.focus(window, cx);
                 });
                 visual.run_until_parked();
-                visual.simulate_keystrokes("ctrl-z");
+                visual.simulate_keystrokes("secondary-z");
             }
             visual.run_until_parked();
             reader.read_with(visual, |r, cx| {
@@ -1071,7 +1071,7 @@ mod tests {
             assert!(!r.source_is_dirty(cx));
             assert!(!r.loading.as_ref().is_some_and(|l| l.active));
         });
-        visual.simulate_keystrokes("ctrl-z");
+        visual.simulate_keystrokes("secondary-z");
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(

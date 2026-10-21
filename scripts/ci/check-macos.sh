@@ -68,6 +68,8 @@ run_tests okilum-shell --bins reader_settings::tests::settings_files_shows_the_s
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
+# #1462: use the platform NewNote shortcut after an external folder deletion.
+run_tests okilum-shell --bins reader_create::tests::deleted_folder_keyboard_creation_preserves_draft --exact
 # #1110 (AGENTS 9a): first run → choose a vault → a window always exists; this
 # replaces the manual first-launch check on every PR. #1137: a reopen with no
 # window restores the last vault or the start screen.

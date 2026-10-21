@@ -801,11 +801,7 @@ mod tests {
             assert_eq!(this.current_rel, "One.md", "loaded-note positive control");
             this.focus_handle.focus(window, cx);
         });
-        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-            "cmd-w"
-        } else {
-            "ctrl-w"
-        });
+        visual.simulate_keystrokes("secondary-w");
         reader.read_with(visual, |this, _| {
             assert!(this.current_rel.is_empty());
             assert_eq!(this.vault_root, root);
@@ -835,11 +831,7 @@ mod tests {
             "empty selection still offers document history navigation"
         );
         let before = visual.windows().len();
-        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-            "cmd-w"
-        } else {
-            "ctrl-w"
-        });
+        visual.simulate_keystrokes("secondary-w");
         assert_eq!(
             visual.windows().len(),
             before - 1,

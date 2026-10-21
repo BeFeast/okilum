@@ -598,11 +598,7 @@ mod tests {
             this.focus_handle.focus(window, cx);
         });
         assert!(visual.debug_bounds("shortcut-sheet").is_none());
-        let toggle = if cfg!(target_os = "macos") {
-            "cmd-/"
-        } else {
-            "ctrl-/"
-        };
+        let toggle = "secondary-/";
         visual.simulate_keystrokes(toggle);
         visual.run_until_parked();
         assert!(visual.debug_bounds("shortcut-sheet").is_some());

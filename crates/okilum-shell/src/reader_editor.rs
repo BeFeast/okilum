@@ -2286,11 +2286,7 @@ mod tests {
                 );
             });
         });
-        let key = if cfg!(target_os = "macos") {
-            "cmd-l"
-        } else {
-            "ctrl-l"
-        };
+        let key = "secondary-l";
         visual.simulate_keystrokes(key);
         visual.run_until_parked();
         assert_eq!(value(visual), "# Tasks\n\n1. [ ] first\n2. [x] second\n");
