@@ -17,6 +17,8 @@ pub(super) struct Fake {
     pub reads: Mutex<Vec<ThreadQuery>>,
     pub threads: Mutex<Vec<ThreadSummary>>,
     pub list_error: Mutex<Option<String>>,
+    pub list_calls: Mutex<Vec<String>>,
+    pub question_calls: Mutex<Vec<String>>,
     pub model_current: Mutex<Option<ModelSelection>>,
     pub model_failure: Mutex<Option<GatewayError>>,
     pub model_read_failure: Mutex<Option<GatewayError>>,
@@ -51,7 +53,8 @@ impl ManagerGateway for Fake {
             }),
         }])
     }
-    fn list_threads(&self, _: &str) -> Result<Vec<ThreadSummary>> {
+    fn list_threads(&self, project: &str) -> Result<Vec<ThreadSummary>> {
+        self.list_calls.lock().unwrap().push(project.into());
         if let Some(error) = self.list_error.lock().unwrap().clone() {
             return Err(GatewayError::Protocol(error));
         }
@@ -92,7 +95,8 @@ impl ManagerGateway for Fake {
             delivery: "queued".into(),
         })
     }
-    fn pending_requests(&self, _: &str) -> Result<Vec<String>> {
+    fn pending_requests(&self, thread: &str) -> Result<Vec<String>> {
+        self.question_calls.lock().unwrap().push(thread.into());
         Ok(vec!["question-1".into()])
     }
     fn capabilities(&self) -> Result<Capabilities> {

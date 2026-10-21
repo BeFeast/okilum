@@ -112,8 +112,39 @@ After confirmed delivery a separate new request requires an explicit user action
 A delivered message means **launch requested**, not manager acceptance or a
 running executor. The UI says so. The manager is instructed to reconcile ambiguous
 launch responses, register the actual thread and report its lifecycle in chat;
-the registered executor list shows actual T3 states. Automatic correlation of a
-request to manager acceptance and its resulting thread is not implemented in this
-slice, and must not be inferred from queue receipts, titles or parentThreadId.
+the registered executor list shows actual T3 states. Automatic correlation uses only the explicit Launch request column described
+below. Queue receipts, titles and parentThreadId never establish this relation.
 Scheduled-task model following, manager migration and live integrated acceptance
 remain pending/blocked as described above. #1420 is not closed by request queuing.
+
+
+### Launch lifecycle correlation (#1420)
+
+The existing current registry table may include one optional **Launch request**
+column. The manager records the exact `okilum-launch-<UUID>` from the request,
+in inline backticks, on the resulting executor row; Manager and older rows leave
+it blank. No registry write or T3 resource creation is performed by the UI.
+Malformed/duplicate request identities, multiple such columns or a request ID on
+the Manager row reject that refresh. Legacy registries remain valid and show
+requests as awaiting explicit correlation.
+
+A matching registry row is the explicit manager acknowledgement of that launch.
+If its thread is missing from the bound T3 project, the UI says **Manager accepted ·
+registered** with execution status unavailable. Once listed, that exact thread's
+T3 status supplies preparing/running/waiting/completed/failed/cancelled/interrupted
+or idle; idle and unknown statuses are never called completed. Duplicate retained
+request IDs and manager/project mismatches show an error rather than selecting a
+thread. Open executor in T3 uses that registered ID and the actual environment.
+No pre-registration acknowledgement is invented: before the manager writes the
+correlation the state remains Requested, even if message delivery is confirmed.
+
+The existing single Project poll refreshes launch state while Manager is selected,
+including after reopening from durable request records. This path reads the
+registry and project thread listing without issuing executor question calls;
+the Executors segment still loads question indicators normally. A refresh failure
+keeps the last rows with **Last observed** and an explicit stale warning. Closing
+Project stops future polls. Failed delivery remains a separate, visible receipt
+state and never triggers another launch. Existing pre-correlation requests may
+need their manager to add the known request ID; do not create a new request to
+obtain a status. Live launch/OAuth, scheduler following, manager migration and
+human runtime acceptance remain unverified/blocked; no whole-epic acceptance claim.

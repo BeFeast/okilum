@@ -326,9 +326,10 @@ impl ProjectView {
                         this.generation,
                         window.is_window_active(),
                         this.binding.as_ref()?.manager.project_id.clone()?,
-                        this.executors_open
-                            .then(|| this.area.clone().zip(this.binding.clone()))
-                            .flatten(),
+                        this.area
+                            .clone()
+                            .zip(this.binding.clone())
+                            .map(|(area, binding)| (area, binding, this.executors_open)),
                     ))
                 })
                 .ok()
@@ -358,8 +359,25 @@ impl ProjectView {
                         .map(|journal| journal.records())
                         .transpose()?
                         .unwrap_or_default();
-                    let executors = executor_binding.map(|(area, binding)| {
-                        okilum_t3::executors::Snapshot::load(gateway.as_ref(), &area, &binding)
+                    let has_launches = records
+                        .iter()
+                        .any(|r| r.message.text.starts_with(okilum_t3::launch::PREFIX));
+                    let executors = executor_binding.and_then(|(area, binding, questions)| {
+                        if questions {
+                            Some(okilum_t3::executors::Snapshot::load(
+                                gateway.as_ref(),
+                                &area,
+                                &binding,
+                            ))
+                        } else if has_launches {
+                            Some(okilum_t3::executors::Snapshot::load_status(
+                                gateway.as_ref(),
+                                &area,
+                                &binding,
+                            ))
+                        } else {
+                            None
+                        }
                     });
                     Ok::<_, anyhow::Error>((chat, identity, records, executors))
                 })
@@ -718,6 +736,12 @@ impl Render for ProjectView {
                 view.child(self.render_models(cx))
             })
             .when(self.launch.open, |view| view.child(self.render_launch(cx)))
+            .when(
+                self.records
+                    .iter()
+                    .any(|r| r.message.text.starts_with(okilum_t3::launch::PREFIX)),
+                |view| view.child(self.render_launch_progress(cx)),
+            )
             .child(if self.executors_open {
                 self.render_executors(cx)
             } else {

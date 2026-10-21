@@ -43,6 +43,116 @@ impl Form {
 }
 
 impl ProjectView {
+    pub(super) fn render_launch_progress(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = v_flex()
+            .id("project-launch-progress")
+            .debug_selector(|| "project-launch-progress".into())
+            .max_h(px(160.))
+            .overflow_y_scroll()
+            .gap_2();
+        let requests = self
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.message.text.starts_with(okilum_t3::launch::PREFIX))
+            .map(|(index, record)| {
+                (
+                    index,
+                    record,
+                    Request::from_message(&record.message.text).and_then(|request| {
+                        request.ok_or_else(|| anyhow::anyhow!("Missing launch request payload"))
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut counts = std::collections::BTreeMap::new();
+        for (_, _, request) in &requests {
+            if let Ok(request) = request {
+                *counts.entry(request.request_id.clone()).or_insert(0usize) += 1;
+            }
+        }
+        let manager = self
+            .binding
+            .as_ref()
+            .and_then(|b| b.manager.thread_id.as_deref())
+            .unwrap_or("");
+        let stale = self.executors_error.as_ref().or(self.error.as_ref());
+        for (index, record, request) in &requests {
+            let projected = request
+                .as_ref()
+                .map_err(|e| e.to_string())
+                .and_then(|request| {
+                    if counts.get(&request.request_id) != Some(&1) {
+                        return Err(
+                            "Duplicate retained launch request identity; no executor was inferred."
+                                .into(),
+                        );
+                    }
+                    okilum_t3::launch::progress(request, manager, self.executors.as_ref())
+                        .map_err(|e| e.to_string())
+                });
+            let mut row = v_flex().id(("project-launch-progress-row", *index)).gap_1();
+            match projected {
+                Ok(progress) => {
+                    let role = request
+                        .as_ref()
+                        .map(|r| r.role.as_str())
+                        .unwrap_or("Executor");
+                    let prefix = if stale.is_some() || self.identity.is_none() {
+                        "Last observed · "
+                    } else {
+                        ""
+                    };
+                    row = row
+                        .child(
+                            div()
+                                .debug_selector({
+                                    let id = *index;
+                                    move || format!("project-launch-phase-{id}")
+                                })
+                                .child(format!("{role} · {prefix}{}", progress.phase.label())),
+                        )
+                        .child(progress.detail);
+                    if let Some(url) = progress
+                        .thread_id
+                        .as_ref()
+                        .zip(self.identity.as_ref())
+                        .map(|(thread, identity)| identity.thread_url(thread))
+                    {
+                        row = row.child(
+                            Button::new(("project-launch-open-thread", *index))
+                                .ghost()
+                                .label("Open executor in T3")
+                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                        );
+                    }
+                }
+                Err(error) => {
+                    row = row.child(
+                        div()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Launch status unavailable: {error}")),
+                    )
+                }
+            }
+            if record.receipt.is_none() {
+                row = row.child("Message delivery receipt is unconfirmed; retry the retained request, never a new launch.");
+            }
+            if let Some(error) = stale {
+                row = row.child(
+                    div()
+                        .debug_selector({
+                            let id = *index;
+                            move || format!("project-launch-stale-{id}")
+                        })
+                        .child(format!("Current status could not be refreshed: {error}")),
+                );
+            }
+            panel = panel.child(row);
+        }
+        panel.into_any_element()
+    }
+
     fn unresolved_launch(&self) -> bool {
         self.launch.requested.as_ref().is_some_and(|id| {
             self.records
@@ -293,6 +403,145 @@ impl ProjectView {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn launch_progress_polls_explicit_registry_while_manager_is_open_and_marks_retained_status_stale(
+        cx: &mut TestAppContext,
+    ) {
+        use okilum_t3::launch::{progress, Phase};
+        cx.update(gpui_component::init);
+        let files = tempfile::tempdir().unwrap();
+        let area = files.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("brief.md"), "# UI brief\n").unwrap();
+        let gateway = Arc::new(fixture::Fake::default());
+        let summary = serde_json::from_value(serde_json::json!({"threadId":"mcp:ui","title":"UI",
+            "status":"preparing","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access",
+            "updatedAt":"now","parentThreadId":"mcp:fixture-manager"})).unwrap();
+        *gateway.threads.lock().unwrap() = vec![summary];
+        let registry = |request: &str| {
+            format!("## Current threads\n\n| Role | Thread | Launch request |\n|---|---|---|\n| Manager | `mcp:fixture-manager` | |\n| UI | `mcp:ui` | {request} |\n")
+        };
+        std::fs::write(area.join("ops/thread-ids.md"), registry("")).unwrap();
+        let mut entity = None;
+        let mut request_id = String::new();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+                view.area = Some(area.clone());
+                let binding = view.binding.clone().unwrap();
+                std::fs::write(
+                    area.join("ops/project.yaml"),
+                    serde_yaml::to_string(&serde_json::json!({"t3":binding})).unwrap(),
+                )
+                .unwrap();
+                let context = LaunchContext {
+                    project: gateway.list_projects().unwrap().remove(0),
+                    catalog: gateway.capabilities().unwrap(),
+                };
+                let request = Request::prepare(
+                    &area,
+                    &binding,
+                    &context,
+                    &Draft {
+                        role: "UI".into(),
+                        brief_path: "brief.md".into(),
+                        worktree_path: "/server/ui".into(),
+                        branch: "feature/ui".into(),
+                        model_override: None,
+                    },
+                )
+                .unwrap();
+                request_id = request.request_id.clone();
+                let journal = view.journal().unwrap();
+                let retained = journal.prepare(&request.message().unwrap()).unwrap();
+                journal.send(gateway.as_ref(), &retained).unwrap();
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        let phase = |view: &ProjectView| {
+            let request = Request::from_message(&view.records[0].message.text)
+                .unwrap()
+                .unwrap();
+            progress(&request, "mcp:fixture-manager", view.executors.as_ref())
+                .unwrap()
+                .phase
+        };
+        view.read_with(visual, |v, _| {
+            assert!(!v.executors_open);
+            assert!(
+                v.executors.is_some(),
+                "Manager's first poll loads status for retained launches"
+            );
+            assert_eq!(
+                phase(v),
+                Phase::Requested,
+                "role/parent and queue receipt cannot establish acceptance"
+            );
+        });
+        assert!(visual.debug_bounds("project-launch-progress").is_some());
+        std::fs::write(
+            area.join("ops/thread-ids.md"),
+            registry(&format!("`{request_id}`")),
+        )
+        .unwrap();
+        visual.executor().advance_clock(Duration::from_secs(20));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert_eq!(phase(v), Phase::Preparing));
+        gateway.threads.lock().unwrap()[0].status = "running".into();
+        visual.executor().advance_clock(Duration::from_secs(20));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert_eq!(phase(v), Phase::Running));
+        *gateway.list_error.lock().unwrap() = Some("status unavailable".into());
+        visual.executor().advance_clock(Duration::from_secs(20));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(
+                phase(v),
+                Phase::Running,
+                "retain last observed rows, not a new state"
+            );
+            assert!(v
+                .executors_error
+                .as_ref()
+                .unwrap()
+                .contains("status unavailable"));
+        });
+        assert!(
+            visual.debug_bounds("project-launch-stale-0").is_some(),
+            "staleness must actually render"
+        );
+        *gateway.list_error.lock().unwrap() = None;
+        gateway.threads.lock().unwrap()[0].status = "completed".into();
+        visual.executor().advance_clock(Duration::from_secs(20));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(phase(v), Phase::Completed);
+            assert!(v.executors_error.is_none());
+        });
+        assert!(
+            gateway
+                .question_calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|id| id == "mcp:fixture-manager"),
+            "Manager lifecycle refresh does not issue executor question reads"
+        );
+        let calls = gateway.list_calls.lock().unwrap().len();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.set_active(false, window, cx)));
+        visual.executor().advance_clock(Duration::from_secs(60));
+        visual.run_until_parked();
+        assert_eq!(
+            gateway.list_calls.lock().unwrap().len(),
+            calls,
+            "closing Project stops future lifecycle polls"
+        );
+    }
 
     #[gpui::test]
     fn launch_validation_and_lost_receipt_preserve_form_and_retry_one_retained_intent(

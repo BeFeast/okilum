@@ -18,6 +18,12 @@ mod tests;
 pub const PREFIX: &str = "Okilum executor launch request (v1)\n";
 const MAX_BRIEF_BYTES: usize = 64 * 1024;
 
+pub(crate) fn valid_request_id(value: &str) -> bool {
+    value
+        .strip_prefix("okilum-launch-")
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+
 #[derive(Clone, Debug)]
 pub struct LaunchContext {
     pub project: Project,
@@ -159,7 +165,7 @@ impl Request {
             brief_path: draft.brief_path.clone(), brief_source,
             executor_project_id: context.project.id.clone(), executor_project_root: context.project.workspace_root.clone(),
             worktree_path: draft.worktree_path.clone(), branch: draft.branch.clone(), model_selection: model,
-            manager_instructions: "This is an explicit user request for ONE executor. Recheck your area rules, brief and target project; create/select the requested worktree through t3_thread_launch workspaceStrategy and use the requested model. For a Codex executor, prepend a bootstrap that reads the canonical server absolute paths for _AgentContract.md, vault/Dev/area AGENTS.md, manifest and brief before work; resolve these from your own vault, never from device-local paths. Record the resulting thread in the area's registry. Report actual acceptance, preparing/running/completed state and the exact thread ID in manager chat; a message queue receipt is not launch acceptance. Keep this request_id for reconciliation. t3_thread_launch has no idempotency key: after an ambiguous response reconcile the project thread list before any further launch; NEVER blindly launch again. Scheduled-task model following remains unsupported; do not migrate the production manager.".into(),
+            manager_instructions: "This is an explicit user request for ONE executor. Recheck your area rules, brief and target project; create/select the requested worktree through t3_thread_launch workspaceStrategy and use the requested model. For a Codex executor, prepend a bootstrap that reads the canonical server absolute paths for _AgentContract.md, vault/Dev/area AGENTS.md, manifest and brief before work; resolve these from your own vault, never from device-local paths. Record the resulting thread in the area's current ops/thread-ids.md table with an optional Launch request column containing this exact request_id in backticks on its executor row (blank for Manager/older rows); this is the explicit request-to-thread correlation. Never attach this request ID to another executor. Report actual acceptance, preparing/running/completed state and the exact thread ID in manager chat; a message queue receipt is not launch acceptance. Keep this request_id for reconciliation. t3_thread_launch has no idempotency key: after an ambiguous response reconcile the project thread list before any further launch; NEVER blindly launch again. Scheduled-task model following remains unsupported; do not migrate the production manager.".into(),
         })
     }
 
@@ -168,9 +174,116 @@ impl Request {
     }
 
     pub fn from_message(text: &str) -> Result<Option<Self>> {
-        text.strip_prefix(PREFIX)
+        let request: Option<Self> = text
+            .strip_prefix(PREFIX)
             .map(serde_json::from_str)
             .transpose()
-            .map_err(Into::into)
+            .map_err(anyhow::Error::from)?;
+        if let Some(request) = &request {
+            ensure!(
+                valid_request_id(&request.request_id),
+                "Invalid retained launch request identity"
+            );
+        }
+        Ok(request)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Requested,
+    Accepted,
+    Preparing,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+    Idle,
+    Unknown,
+}
+
+impl Phase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Requested => "Requested",
+            Self::Accepted => "Manager accepted · registered",
+            Self::Preparing => "T3 preparing",
+            Self::Running => "Running",
+            Self::Waiting => "Waiting in T3",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+            Self::Interrupted => "Interrupted",
+            Self::Idle => "T3 idle",
+            Self::Unknown => "T3 status unknown",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Progress {
+    pub phase: Phase,
+    pub thread_id: Option<String>,
+    pub detail: String,
+}
+
+/// The only correlation proof is an explicit request ID on a registry row in
+/// the expected manager/project. Titles, parent IDs and send receipts are not
+/// executor identities or proof of manager acceptance.
+pub fn progress(
+    request: &Request,
+    manager: &str,
+    snapshot: Option<&crate::executors::Snapshot>,
+) -> Result<Progress> {
+    let Some(snapshot) = snapshot else {
+        return Ok(Progress {
+            phase: Phase::Requested,
+            thread_id: None,
+            detail: "Registry status has not loaded; manager acceptance is not established.".into(),
+        });
+    };
+    ensure!(
+        snapshot.manager == manager && snapshot.project_id == request.executor_project_id,
+        "Launch status belongs to a different manager or repo project; no thread was inferred."
+    );
+    let rows = snapshot
+        .registered
+        .iter()
+        .filter(|r| r.entry.launch_request.as_deref() == Some(&request.request_id))
+        .collect::<Vec<_>>();
+    ensure!(
+        rows.len() <= 1,
+        "Ambiguous launch request registry match; no thread was selected."
+    );
+    let Some(row) = rows.first() else {
+        return Ok(Progress { phase: Phase::Requested, thread_id: None, detail: "Awaiting an explicit launch-request entry from the manager; message delivery is not acceptance.".into() });
+    };
+    let Some(thread) = &row.thread else {
+        return Ok(Progress { phase: Phase::Accepted, thread_id: Some(row.entry.thread_id.clone()), detail: "Manager registered this launch; its thread is missing from the bound T3 project, so execution status is unavailable.".into() });
+    };
+    ensure!(
+        thread.thread_id == row.entry.thread_id,
+        "Registry/T3 thread identity mismatch"
+    );
+    let phase = match thread.status.as_str() {
+        "preparing" | "queued" | "starting" => Phase::Preparing,
+        "running" => Phase::Running,
+        "waiting" => Phase::Waiting,
+        "completed" => Phase::Completed,
+        "failed" | "error" | "rolled_back" => Phase::Failed,
+        "cancelled" => Phase::Cancelled,
+        "interrupted" => Phase::Interrupted,
+        "idle" => Phase::Idle,
+        _ => Phase::Unknown,
+    };
+    Ok(Progress {
+        phase,
+        thread_id: Some(thread.thread_id.clone()),
+        detail: format!(
+            "T3 reports {} · last updated {}",
+            thread.status, thread.updated_at
+        ),
+    })
 }

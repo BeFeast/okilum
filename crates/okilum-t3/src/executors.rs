@@ -15,6 +15,7 @@ const MAX_EXECUTORS: usize = 128;
 pub struct Entry {
     pub role: String,
     pub thread_id: String,
+    pub launch_request: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registry {
@@ -75,6 +76,18 @@ impl Registry {
         let mut manager = None;
         let mut executors = Vec::new();
         let mut ids = BTreeSet::new();
+        let header = cells(section[tables[0]]);
+        let request_columns = header
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == "Launch request")
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        ensure!(
+            request_columns.len() <= 1,
+            "Duplicate Launch request columns in executor registry"
+        );
+        let mut request_ids = BTreeSet::new();
         for line in section.iter().skip(tables[0] + 1) {
             if !line.trim().starts_with('|') {
                 break;
@@ -104,11 +117,37 @@ impl Registry {
                 "Expected one inline mcp: thread ID per registry row"
             );
             let id = values[0].to_owned();
+            let request = request_columns
+                .first()
+                .and_then(|i| row.get(*i))
+                .copied()
+                .unwrap_or("");
+            let launch_request = if matches!(request, "" | "-" | "—") {
+                None
+            } else {
+                let value = request
+                    .strip_prefix('`')
+                    .and_then(|s| s.strip_suffix('`'))
+                    .context("Launch request must contain one inline okilum-launch UUID")?;
+                ensure!(
+                    crate::launch::valid_request_id(value),
+                    "Invalid launch request identity in registry"
+                );
+                ensure!(
+                    request_ids.insert(value.to_owned()),
+                    "Duplicate launch request identity in registry; no thread was selected"
+                );
+                Some(value.to_owned())
+            };
             ensure!(
                 ids.insert(id.clone()),
                 "Duplicate thread ID in executor registry"
             );
             if row[0].eq_ignore_ascii_case("manager") {
+                ensure!(
+                    launch_request.is_none(),
+                    "Manager row cannot acknowledge an executor launch request"
+                );
                 ensure!(
                     manager.replace(id).is_none(),
                     "Multiple managers in current registry"
@@ -121,6 +160,7 @@ impl Registry {
                 executors.push(Entry {
                     role: row[0].to_owned(),
                     thread_id: id,
+                    launch_request,
                 });
             }
         }
@@ -149,23 +189,49 @@ pub struct Row {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub manager: String,
+    pub project_id: String,
     pub registered: Vec<Row>,
     /// Listing alone does not establish manager ownership. Keep these separate.
     pub unregistered: Vec<ThreadSummary>,
 }
 impl Snapshot {
     pub fn load(gateway: &dyn ManagerGateway, area: &Path, binding: &AreaBinding) -> Result<Self> {
+        Self::load_with_questions(gateway, area, binding, true)
+    }
+    /// Lifecycle polling in Manager needs status, not up to128 question calls.
+    /// The Executors segment still loads question counts through `load`.
+    pub fn load_status(
+        gateway: &dyn ManagerGateway,
+        area: &Path,
+        binding: &AreaBinding,
+    ) -> Result<Self> {
+        Self::load_with_questions(gateway, area, binding, false)
+    }
+    fn load_with_questions(
+        gateway: &dyn ManagerGateway,
+        area: &Path,
+        binding: &AreaBinding,
+        questions: bool,
+    ) -> Result<Self> {
         let registry = Registry::read(area)?;
         ensure!(
             Some(&registry.manager) == binding.manager.thread_id.as_ref(),
             "Registry Manager differs from the area manifest; executor ownership was not inferred"
         );
-        Self::refresh(gateway, registry, &binding.executor.project_id)
+        Self::refresh_with_questions(gateway, registry, &binding.executor.project_id, questions)
     }
     pub fn refresh(
         gateway: &dyn ManagerGateway,
         registry: Registry,
         project: &str,
+    ) -> Result<Self> {
+        Self::refresh_with_questions(gateway, registry, project, true)
+    }
+    fn refresh_with_questions(
+        gateway: &dyn ManagerGateway,
+        registry: Registry,
+        project: &str,
+        questions: bool,
     ) -> Result<Self> {
         let mut threads = BTreeMap::new();
         for thread in gateway.list_threads(project)? {
@@ -177,7 +243,7 @@ impl Snapshot {
         let mut registered = Vec::new();
         for entry in registry.executors {
             let thread = threads.remove(&entry.thread_id);
-            let (pending_questions, question_error) = if thread.is_some() {
+            let (pending_questions, question_error) = if questions && thread.is_some() {
                 match gateway.pending_requests(&entry.thread_id) {
                     Ok(ids) => (Some(ids.len()), None),
                     Err(error) => (None, Some(error.to_string())),
@@ -195,6 +261,7 @@ impl Snapshot {
         threads.remove(&registry.manager); // Explicit manager is not an unregistered executor.
         Ok(Self {
             manager: registry.manager,
+            project_id: project.into(),
             registered,
             unregistered: threads.into_values().collect(),
         })
