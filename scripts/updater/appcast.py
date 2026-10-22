@@ -6,8 +6,14 @@ Every item names a channel, `beta` or `stable`; the app always accepts `stable`.
 """
 import argparse
 import email.utils
+import json
+import os
+from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
+import release_notes
 
 SPARKLE = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
 OKILUM = 'https://git.oklabs.uk/BeFeast/okilum/update-metadata'
@@ -64,6 +70,13 @@ def add(tree, a):
         (t('tree'), a.tree),
     ):
         ET.SubElement(item, tag).text = text
+    notes_path = os.environ.get('OKILUM_RELEASE_NOTES')
+    if notes_path:
+        notes = json.loads(Path(notes_path).read_text())
+        if (notes['build'] != a.build or notes['source'] != a.source
+                or notes['platform'] != 'macos' or notes['channel'] != a.channel):
+            raise ValueError('Release notes do not belong to this appcast item')
+        ET.SubElement(item, 'description').text = release_notes.description(notes)
     ET.SubElement(item, 'enclosure', {
         'url': a.url,
         'length': str(a.length),
