@@ -31,12 +31,10 @@ fn yaml_keys_keep_source_lines_nesting_and_scalar_boundaries() {
         Some("flags")
     );
     assert_eq!(parent_label(&outline, find(&outline, "name")), Some("[0]"));
-    assert!(
-        !outline
-            .entries
-            .iter()
-            .any(|entry| entry.label == "not_a_key")
-    );
+    assert!(!outline
+        .entries
+        .iter()
+        .any(|entry| entry.label == "not_a_key"));
 }
 
 #[test]
@@ -113,12 +111,10 @@ fn rust_symbols_group_impls_and_traits_without_scanning_strings_or_comments() {
         Some("trait Stop")
     );
     assert_eq!(find(&outline, "fn main").line, 7);
-    assert!(
-        !outline
-            .entries
-            .iter()
-            .any(|entry| entry.label.contains("not_a_symbol"))
-    );
+    assert!(!outline
+        .entries
+        .iter()
+        .any(|entry| entry.label.contains("not_a_symbol")));
 }
 
 #[test]
@@ -131,22 +127,18 @@ fn python_symbols_include_decorated_classes_methods_and_async_functions() {
         Some("class Service")
     );
     assert_eq!(find(&outline, "def main").line, 10);
-    assert!(
-        !outline
-            .entries
-            .iter()
-            .any(|entry| entry.label.contains("not_a_symbol"))
-    );
+    assert!(!outline
+        .entries
+        .iter()
+        .any(|entry| entry.label.contains("not_a_symbol")));
 }
 
 #[test]
 fn malformed_yaml_is_partial_or_empty_and_never_an_error() {
     // Positive control: the same parser finds actual YAML keys.
-    assert!(
-        !parse::parse("yaml", "valid:\n  child: true\n")
-            .entries
-            .is_empty()
-    );
+    assert!(!parse::parse("yaml", "valid:\n  child: true\n")
+        .entries
+        .is_empty());
     let source = include_str!("fixtures/malformed.yaml");
     let outline = parse::parse("yaml", source);
     for entry in &outline.entries {
