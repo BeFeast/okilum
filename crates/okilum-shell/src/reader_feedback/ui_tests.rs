@@ -431,3 +431,35 @@ fn feedback_keeps_the_main_window_interactive_and_metadata_belongs_to_its_source
         });
     });
 }
+
+#[gpui::test]
+fn one_click_sprint_send_reuses_the_non_modal_feedback_draft(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        let original_window = feedback.window_handle();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
+        let calls = sent.clone();
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.text
+                .update(cx, |text, cx| text.set_value("Sprint result", window, cx));
+            view.include_log = false; // The mock has no native report collector.
+            view.sender = Arc::new(move |report| {
+                calls.lock().unwrap().push(report);
+                Ok(Receipt {
+                    issue_number: 42,
+                    issue_url: "https://git.oklabs.uk/BeFeast/okilum/issues/42".into(),
+                })
+            });
+        });
+        reader.update(|window, cx| show_mode(window, cx, true));
+        reader.run_until_parked();
+        feedback.run_until_parked();
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        assert_eq!(sent.lock().unwrap()[0].text, "Sprint result");
+        assert_eq!(feedback_context(reader).window_handle(), original_window);
+        view.read_with(&feedback, |view, _| {
+            assert!(matches!(view.state, SendState::Sent(_)))
+        });
+        reader.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+    });
+}
