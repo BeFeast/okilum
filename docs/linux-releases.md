@@ -164,6 +164,9 @@ of the GitHub Linux aggregate. Missing producer, running producer, unaccepted sm
 and absent/expired payload are typed `APPIMAGE_REUSE_SKIP` outcomes with source and
 reason: reuse succeeds with `accepted=false` and produces no handoff. Malformed,
 ambiguous or mismatched evidence and transport/authentication errors remain failures.
+Producer, AppImage job and smoke status/conclusion must be recognized and coherent;
+malformed evidence fails reuse. A cancelled original GitHub producer is explicitly
+rejected even when its AppImage job and smoke succeeded.
 There is no fallback build, relabelling or duplicate producer dispatch.
 
 Arch and AppImage publication are independent in both directions. Arch dispatch

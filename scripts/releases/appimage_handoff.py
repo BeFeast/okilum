@@ -29,29 +29,62 @@ def stage_result(api, source, directory, fetch):
     return True
 
 
+def execution_state(record, label, active):
+    """Validate GitHub evidence before classifying ordinary unavailability."""
+    conclusions = {'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                   'timed_out', 'action_required', 'stale', 'startup_failure'}
+    if not isinstance(record, dict):
+        raise ValueError(f'Malformed {label} evidence')
+    status = record.get('status')
+    conclusion = record.get('conclusion')
+    if (not isinstance(status, str) or status not in active | {'completed'}
+            or 'conclusion' not in record
+            or (status == 'completed' and
+                (not isinstance(conclusion, str) or conclusion not in conclusions))
+            or (status != 'completed' and conclusion is not None)):
+        raise ValueError(f'Malformed {label} status/conclusion')
+
+
 def accepted(run, jobs, source):
+    execution_state(run, 'producer', {'queued', 'in_progress', 'waiting', 'pending', 'requested'})
+    if (not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs)
+            or not isinstance(run.get('repository'), dict)
+            or type(run.get('id')) is not int or run['id'] <= 0):
+        raise ValueError('Malformed producer/job evidence')
     if (not re.fullmatch('[0-9a-f]{40}', source)
             or run.get('repository', {}).get('full_name') != artifact.REPOSITORY
             or run.get('path') != artifact.WORKFLOW or run.get('head_sha') != source
             or run.get('head_branch') != 'main' or run.get('event') != 'push'
-            or run.get('run_attempt') != 1
+            or type(run.get('run_attempt')) is not int or run['run_attempt'] != 1
             or type(run.get('run_number')) is not int or run['run_number'] <= 0):
         raise ValueError('Expected original main AppImage producer')
-    if run.get('status') in ('queued', 'in_progress', 'waiting', 'pending'):
-        raise ReuseUnavailable('producer-not-completed')
-    if run.get('status') != 'completed':
-        raise ValueError('Malformed producer status')
+    if run['conclusion'] == 'cancelled':
+        raise ValueError('Cancelled original AppImage producer')
     matches = [job for job in jobs if job.get('name') == 'appimage']
     if not matches:
+        if run['status'] != 'completed':
+            raise ReuseUnavailable('producer-not-completed')
         raise ReuseUnavailable('appimage-job-absent')
     if len(matches) != 1:
         raise ValueError('Ambiguous AppImage job')
     job = matches[0]
     if job.get('run_id') != run['id'] or job.get('head_sha') != source:
         raise ValueError('AppImage job identity mismatch')
-    smoke = [step for step in job.get('steps', []) if step.get('name') == artifact.SMOKE]
+    execution_state(job, 'AppImage job', {'queued', 'in_progress', 'waiting', 'pending'})
+    steps = job.get('steps')
+    if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+        raise ValueError('Malformed AppImage steps')
+    smoke = [step for step in steps if step.get('name') == artifact.SMOKE]
     if len(smoke) > 1:
         raise ValueError('Ambiguous AppImage smoke')
+    if smoke:
+        execution_state(smoke[0], 'AppImage smoke', {'queued', 'in_progress', 'pending'})
+        if job['status'] == 'completed' and smoke[0]['status'] != 'completed':
+            raise ValueError('Completed AppImage job has unfinished smoke')
+    if run['status'] != 'completed':
+        raise ReuseUnavailable('producer-not-completed')
+    if job['status'] != 'completed':
+        raise ValueError('Completed producer has unfinished AppImage job')
     if (job.get('status') != 'completed' or job.get('conclusion') != 'success'
             or not smoke or smoke[0].get('conclusion') != 'success'):
         raise ReuseUnavailable('appimage-smoke-not-accepted')

@@ -79,13 +79,64 @@ class ReuseOutcomes(unittest.TestCase):
 
     def test_expected_absence_has_no_handoff(self):
         changes = [lambda r, x: x['runs'].update(workflow_runs=[]),
-                   lambda r, x: r['run'].update(status='in_progress'),
+                   lambda r, x: r['run'].update(status='in_progress', conclusion=None),
                    lambda r, x: r['jobs'][0].update(conclusion='failure'),
                    lambda r, x: x['artifacts'].update(artifacts=[]),
                    lambda r, x: r['artifact'].update(expired=True)]
         for change in changes:
             with self.subTest(change=change):
                 self.assertFalse(self.stage(change))
+
+    def test_cancelled_producer_is_explicit_error_despite_successful_smoke(self):
+        with self.assertRaisesRegex(ValueError, 'Cancelled original') as caught:
+            self.stage(lambda r, x: r['run'].update(conclusion='cancelled'))
+        self.assertNotIsInstance(caught.exception, handoff.ReuseUnavailable)
+
+    def test_legitimate_smoke_outcomes_skip_without_handoff(self):
+        for conclusion in ['failure', 'skipped', 'cancelled', 'timed_out']:
+            def unsuccessful(r, x):
+                r['run']['conclusion'] = 'failure'
+                r['jobs'][0]['conclusion'] = conclusion
+                r['jobs'][0]['steps'][0]['conclusion'] = conclusion
+            with self.subTest(conclusion=conclusion):
+                self.assertFalse(self.stage(unsuccessful))
+        def running(r, x):
+            for record in [r['run'], r['jobs'][0], r['jobs'][0]['steps'][0]]:
+                record.update(status='in_progress', conclusion=None)
+        self.assertFalse(self.stage(running))
+        self.assertFalse(self.stage(lambda r, x:
+            r['jobs'][0]['steps'][0].update(conclusion='skipped')))
+        self.assertFalse(self.stage(lambda r, x: r['jobs'][0].update(steps=[])))
+        self.assertFalse(self.stage(lambda r, x: r['jobs'].pop(0)))
+
+    def test_malformed_execution_evidence_is_error_never_successful_skip(self):
+        # Exercise stage_result itself: ValueError alone would also match SKIP's
+        # ReuseUnavailable subclass and miss the original regression.
+        for level in ['producer', 'job', 'smoke']:
+            for field in ['status', 'conclusion']:
+                for value in ['missing', 'unknown', 42, [], None]:
+                    def malformed(r, x):
+                        record = {'producer': r['run'], 'job': r['jobs'][0],
+                                  'smoke': r['jobs'][0]['steps'][0]}[level]
+                        if value == 'missing':
+                            record.pop(field)
+                        else:
+                            record[field] = value
+                    with self.subTest(level=level, field=field, value=value):
+                        with self.assertRaises(ValueError) as caught:
+                            self.stage(malformed)
+                        self.assertNotIsInstance(caught.exception, handoff.ReuseUnavailable)
+        changes = [lambda r, x: r['run'].update(status='in_progress'),
+                   lambda r, x: r['jobs'][0].update(status='queued'),
+                   lambda r, x: r['jobs'][0]['steps'][0].update(status='in_progress'),
+                   lambda r, x: r['jobs'][0].update(steps=None),
+                   lambda r, x: r['jobs'][0].update(steps=[None]),
+                   lambda r, x: r['jobs'][0]['steps'].append(r['jobs'][0]['steps'][0]),
+                   lambda r, x: x['jobs'].update(jobs=[None])]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ValueError) as caught:
+                self.stage(change)
+            self.assertNotIsInstance(caught.exception, handoff.ReuseUnavailable)
 
     def test_identity_ambiguity_digest_and_transport_remain_errors(self):
         changes = [lambda r, x: x['runs']['workflow_runs'].append(r['run']),
