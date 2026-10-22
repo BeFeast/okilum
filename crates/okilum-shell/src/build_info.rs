@@ -41,13 +41,15 @@ pub(crate) fn gpui_test_support() -> bool {
 /// appears only when the installed package differs from the build (#1319).
 pub(crate) fn report() -> String {
     format!(
-        "version: {}\n{}build: {}\ngpui-test-support: {}\n",
+        "version: {}\n{}build: {}\nsource: {}\ngpui-test-support: {}\nappimage-gui-acceptance: {}\n",
         env!("OKILUM_RELEASE_VERSION"),
         crate::version_info::package()
             .map(|package| format!("package: {package}\n"))
             .unwrap_or_default(),
         env!("OKILUM_BUILD_VERSION"),
-        if gpui_test_support() { "yes" } else { "no" }
+        env!("OKILUM_SOURCE_COMMIT"),
+        if gpui_test_support() { "yes" } else { "no" },
+        if cfg!(all(target_os = "linux", feature = "appimage-acceptance-harness")) { "yes" } else { "no" }
     )
 }
 

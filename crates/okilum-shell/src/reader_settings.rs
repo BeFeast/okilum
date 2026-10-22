@@ -2012,3 +2012,48 @@ mod tests {
         });
     }
 }
+
+// Native QA uses the exact Settings methods/actions, without preview status or
+// channel fixtures. These adapters are absent from normal product builds.
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_show(cx: &mut App) {
+    show_section(None, Some(Section::Updates), cx);
+}
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_channel(beta: bool, cx: &mut App) -> anyhow::Result<()> {
+    let handle = cx
+        .try_global::<SettingsWindow>()
+        .and_then(|s| s.0)
+        .ok_or_else(|| anyhow::anyhow!("Open native Settings first"))?;
+    handle.update(cx, |root, _, cx| {
+        let settings = root
+            .view()
+            .clone()
+            .downcast::<Settings>()
+            .map_err(|_| anyhow::anyhow!("Not native Settings"))?;
+        settings.update(cx, |settings, cx| settings.select_update_channel(beta, cx));
+        Ok(())
+    })?
+}
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_activate(cx: &mut App) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cx.try_global::<SettingsWindow>()
+            .and_then(|s| s.0)
+            .is_some(),
+        "Open native Settings first"
+    );
+    updater::activate(cx);
+    Ok(())
+}
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_section(cx: &mut App) -> Option<String> {
+    let handle = cx.try_global::<SettingsWindow>()?.0?;
+    handle
+        .update(cx, |root, _, cx| {
+            let settings = root.view().clone().downcast::<Settings>().ok()?;
+            Some(settings.read(cx).section.label().to_string())
+        })
+        .ok()
+        .flatten()
+}

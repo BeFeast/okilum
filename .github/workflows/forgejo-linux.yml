@@ -48,6 +48,8 @@ jobs:
             ~/.cargo/git/
             target/
           key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+      - name: Verify acceptance instrument failure controls
+        run: python3 scripts/appimage/test_update_acceptance.py
       - name: Run full Linux gate
         run: bash scripts/ci/check-linux.sh
 

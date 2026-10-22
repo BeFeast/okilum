@@ -97,3 +97,54 @@ window/document restoration must additionally be driven through the actual GUI;
 the early CLI pair driver does not exercise those paths. Those native GUI controls
 and the two-artifact execution remain open acceptance work, requiring independent
 review; neither this document nor hosted unit tests substitute for them.
+
+## Review 3789 follow-up (execution still pending)
+
+The pair driver no longer accepts an identity file alone. It requires the real
+startup acknowledgement, the restarted child's successful compiled-identity marker,
+the helper's committed log and acquisition of that transaction's exact flock before
+checking installed/backup hashes. New helpers additionally persist an atomic
+`completed` acknowledgement. The external CLI identity receipt is now published
+atomically after successful startup confirmation. Failure workspaces are retained;
+no driver cleanup removes a live target or stage. Hosted instrument controls cover
+identity without startup, startup without commit, commit while the lock is held,
+full completion as a positive control, and explicit rollback rejection.
+
+The native feature now also exposes an explicit `--appimage-gui-acceptance DIR`
+route. Main/release builds omit this route. It runs the normal GPUI application,
+Reader editors, native Settings/About methods and the production protected Restart
+path; it does not enable `gpui-test-support` or the preview-status/channel fixtures.
+Only that explicit non-shipping route may stage a public-key disposable fixture,
+after first proving production rejects its valid signature. A bounded command
+harness records actual windows, documents, geometry, editor text and compiled
+build/source/installed hash. `gui-acceptance.py` drives Stable/Beta persistence,
+About, a real failed editor recovery write and refused Restart, repair and successful
+protected Restart, then actual multi-window/document/geometry restoration. With the
+new GUI still open it verifies the helper lock is released and restages/discards
+the exact signed current payload through production staging as a lock positive
+control. That last control does not install or invent an N+2 release.
+
+The runtime-only `appimage-acceptance.yml` workflow takes accepted old/current
+producer run IDs and full SHAs, validates successful source-pinned producer results,
+downloads their retained artifacts and runs the pair plus required GUI gate under
+Xvfb as an unprivileged user on Ubuntu and Fedora. It contains no compile step.
+The parent runs it only after accepting those producer results. Before the
+workflow exists on default, push the already-built exact new source to
+`forgejo-linux-acceptance-pr/**`: this starts only the runtime job, discovers its
+single existing exact-source producer and uses retained run `39764166082` as the
+intended N (requiring success). It never starts a new compile. Once the workflow is
+on default, explicit workflow-dispatch inputs support other accepted pairs. Disposable
+signer private material is removed before evidence upload; artifact copies/stages
+are retained in the hosted workspace, and uploaded diagnostic evidence excludes
+AppImage copies. No release feed or production signing authority changes.
+
+**Concrete retained-artifact limitation:** `3c2532e3` has only the early CLI fixture
+entry, so its normal native Settings process cannot stage a disposable-key fixture
+or enter the new GUI harness. Preserve it as intended working N if its existing
+hosted gates pass. It can prove the repaired transaction pair with a genuine later
+artifact, but the full GUI-pair workflow must report BLOCKED for that older binary.
+Do not relabel/recompile it, inject trust into its production Settings process, or
+claim the CLI pair satisfies native GUI acceptance. A real GUI pair needs two
+meaningful source artifacts that actually contain the native route. This new route
+and all regression/runtime results still require hosted execution and independent
+exact-head review; source inspection is not PASS evidence.

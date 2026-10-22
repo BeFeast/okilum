@@ -73,6 +73,10 @@ pub(super) fn ready() -> bool {
     PENDING.lock().unwrap().is_some()
 }
 pub(super) fn start() {
+    #[cfg(feature = "appimage-acceptance-harness")]
+    if crate::appimage_acceptance::active() {
+        return;
+    }
     if packaged() && std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none() {
         check();
     }
@@ -126,7 +130,10 @@ pub(super) fn restart(cx: &mut gpui::App) {
         return;
     }
     let result = (|| -> anyhow::Result<()> {
-        let args = prepare_restart(cx)?;
+        #[allow(unused_mut)]
+        let mut args = prepare_restart(cx)?;
+        #[cfg(feature = "appimage-acceptance-harness")]
+        crate::appimage_acceptance::restart_arguments(&mut args);
         let staged = PENDING
             .lock()
             .unwrap()
@@ -172,4 +179,10 @@ pub(crate) fn prepare_restart(cx: &mut gpui::App) -> anyhow::Result<Vec<std::ffi
     );
     crate::reader_ui_state::prepare_for_restart(cx)?;
     Ok(args)
+}
+
+#[cfg(feature = "appimage-acceptance-harness")]
+pub(crate) fn acceptance_stage(staged: okilum_appimage::Staged) {
+    *PENDING.lock().unwrap() = Some(staged);
+    status::set(CheckStatus::Ready);
 }

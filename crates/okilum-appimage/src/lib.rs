@@ -409,6 +409,10 @@ while test ! -f "$stage/started" && kill -0 "$child" 2>/dev/null; do
     sleep 1
 done
 if test -f "$stage/started"; then
+    printf 'committed\n' > "$stage/completed.tmp"
+    sync -f "$stage/completed.tmp"
+    mv -- "$stage/completed.tmp" "$stage/completed"
+    sync -f "$stage"
     echo 'Startup confirmed; transaction committed and update lock released'
     exit 0
 fi
@@ -727,15 +731,120 @@ pub fn confirm_startup(build: &str, source: &str) -> Result<bool> {
             && expected.sha256 == sha(&target.path)?,
         "Restarted AppImage identity mismatch"
     );
-    let mut receipt = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(directory.join("started"))?;
-    use std::io::Write;
-    receipt.write_all(b"startup confirmed\n")?;
-    receipt.sync_all()?;
+    atomic_receipt(&directory.join("started"), b"startup confirmed\n")?;
     Ok(true)
+}
+
+/// Publish a complete receipt only after its contents are durable.
+fn atomic_receipt(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path.parent().context("Missing receipt parent")?;
+    let mut receipt = tempfile::NamedTempFile::new_in(parent)?;
+    receipt.write_all(bytes)?;
+    receipt.as_file().sync_all()?;
+    receipt.persist_noclobber(path)?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+/// Compiled callers supply their own immutable identity, never fixture metadata.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_identity(build: &str, source: &str) -> Result<serde_json::Value> {
+    let target = Target::detect()?;
+    Ok(
+        serde_json::json!({"build":build,"source":source,"sha256":sha(&target.path)?,"path":target.path}),
+    )
+}
+
+/// Explicit fixture authority for the non-shipping native GUI harness only.
+/// Production check/prepare never call this function.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_prepare(
+    fixture: &Path,
+    fingerprint: &str,
+    build: &str,
+    source: &str,
+) -> Result<Staged> {
+    acceptance_prepare_inner(fixture, fingerprint, build, source, false)
+}
+
+/// Positive lock/staging control while the replaced native GUI remains open.
+/// Reverify and stage its exact signed current payload, then discard it. This
+/// does not fabricate a newer version or permit an equal-build installation.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_restage_current(
+    fixture: &Path,
+    fingerprint: &str,
+    build: &str,
+    source: &str,
+) -> Result<()> {
+    drop(acceptance_prepare_inner(
+        fixture,
+        fingerprint,
+        build,
+        source,
+        true,
+    )?);
+    Ok(())
+}
+
+#[cfg(feature = "acceptance-harness")]
+fn acceptance_prepare_inner(
+    fixture: &Path,
+    fingerprint: &str,
+    build: &str,
+    source: &str,
+    current_control: bool,
+) -> Result<Staged> {
+    let target = Target::detect()?;
+    ensure!(fixture.is_absolute(), "Fixture path must be absolute");
+    ensure!(
+        fingerprint != FINGERPRINT && fingerprint.len() == 40,
+        "Fixture must use a disposable authority"
+    );
+    let key = fs::read_to_string(fixture.join("public.asc"))?;
+    let gpgv = std::env::current_exe()?
+        .parent()
+        .context("Missing AppDir")?
+        .join("gpgv");
+    let private = tempfile::tempdir()?;
+    let descriptor = fixture.join("release.json");
+    let sig = fixture.join("release.json.sig");
+    ensure!(
+        verify(&gpgv, &descriptor, &sig, private.path()).is_err(),
+        "Production verifier accepted fixture trust"
+    );
+    verify_authority(&gpgv, &descriptor, &sig, private.path(), &key, fingerprint)?;
+    eprintln!("APPIMAGE_PRODUCTION_REJECTED_VALID_FIXTURE");
+    let release: Release = serde_json::from_slice(&fs::read(descriptor)?)?;
+    release.validate_authority("beta", fingerprint)?;
+    if current_control {
+        ensure!(
+            release.build == build.parse::<u64>()? && release.source == source,
+            "Restaging control must match this executable's compiled identity"
+        );
+    } else {
+        ensure!(
+            release.build > build.parse::<u64>()? && release.source != source,
+            "Acceptance requires two genuinely different builds/sources"
+        );
+    }
+    Staged::prepare_with(
+        target,
+        release,
+        &gpgv,
+        &key,
+        fingerprint,
+        |key, output, limit| {
+            let input = fixture.join(key);
+            ensure!(
+                fs::metadata(&input)?.len() <= limit,
+                "Fixture exceeds size limit"
+            );
+            fs::copy(input, output)?;
+            Ok(())
+        },
+    )
 }
 
 /// Non-shipping, explicit native QA entry. The only alternate trust call sites
@@ -756,65 +865,32 @@ pub fn acceptance_entry(build: &str, source: &str) -> Option<Result<()>> {
             args.len() == 5,
             "Expected fixture-directory fingerprint receipt, or receipt build source"
         );
-        let target = Target::detect()?;
         if action == "--appimage-update-acceptance-confirm" {
             ensure!(
                 args[3] == build && args[4] == source,
                 "Relaunched executable build/source mismatch"
             );
-            let receipt = serde_json::json!({"build":build,"source":source,"sha256":sha(&target.path)?,"path":target.path});
-            fs::write(&args[2], serde_json::to_vec(&receipt)?)?;
-            confirm_startup(build, source)?;
+            let receipt = acceptance_identity(build, source)?;
+            // Open the external destination before confirming: an invalid receipt
+            // destination is an actual early-child failure/rollback control.
+            let destination = PathBuf::from(&args[2]);
+            let probe = tempfile::NamedTempFile::new_in(
+                destination.parent().context("Missing receipt parent")?,
+            )?;
+            drop(probe);
+            ensure!(
+                confirm_startup(build, source)?,
+                "Missing startup transaction"
+            );
+            atomic_receipt(&destination, &serde_json::to_vec(&receipt)?)?;
             println!("APPIMAGE_NATIVE_RESTART_IDENTITY_PASS {receipt}");
             return Ok(());
         }
         let fixture = PathBuf::from(&args[2]);
-        ensure!(fixture.is_absolute(), "Fixture path must be absolute");
         let fingerprint = args[3].to_str().context("Invalid fixture fingerprint")?;
-        ensure!(
-            fingerprint != FINGERPRINT && fingerprint.len() == 40,
-            "Fixture must use a disposable authority"
-        );
-        let key = fs::read_to_string(fixture.join("public.asc"))?;
-        let gpgv = std::env::current_exe()?
-            .parent()
-            .context("Missing AppDir")?
-            .join("gpgv");
-        let private = tempfile::tempdir()?;
-        let descriptor = fixture.join("release.json");
-        let sig = fixture.join("release.json.sig");
-        // Positive trust-isolation control on the actual old executable.
-        ensure!(
-            verify(&gpgv, &descriptor, &sig, private.path()).is_err(),
-            "Production verifier accepted fixture trust"
-        );
-        verify_authority(&gpgv, &descriptor, &sig, private.path(), &key, fingerprint)?;
-        let release: Release = serde_json::from_slice(&fs::read(descriptor)?)?;
-        release.validate_authority("beta", fingerprint)?;
-        ensure!(
-            release.build > build.parse::<u64>()? && release.source != source,
-            "Acceptance requires two genuinely different builds/sources"
-        );
-        let next_build = release.build.to_string();
-        let next_source = release.source.clone();
-        let staged = Staged::prepare_with(
-            target,
-            release,
-            &gpgv,
-            &key,
-            fingerprint,
-            |key, output, limit| {
-                // Validated immutable keys contain no traversal; all fixture assets
-                // are local and the production downloader is never redirected.
-                let input = fixture.join(key);
-                ensure!(
-                    fs::metadata(&input)?.len() <= limit,
-                    "Fixture exceeds size limit"
-                );
-                fs::copy(input, output)?;
-                Ok(())
-            },
-        )?;
+        let staged = acceptance_prepare(&fixture, fingerprint, build, source)?;
+        let next_build = staged.release.build.to_string();
+        let next_source = staged.release.source.clone();
         let directory = staged.arm(&[
             "--appimage-update-acceptance-confirm".into(),
             args[4].clone(),
