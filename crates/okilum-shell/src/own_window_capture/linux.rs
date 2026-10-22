@@ -21,18 +21,7 @@ pub(super) fn capture() -> Result<PngBytes, Unsupported> {
         return Err(Unsupported::Backend);
     }
     let (conn, _) = RustConnection::connect(None).map_err(|_| Unsupported::Backend)?;
-    // Freeze window destruction/focus changes only until pixels have been read.
-    conn.grab_server()
-        .map_err(|_| Unsupported::CaptureFailed)?
-        .check()
-        .map_err(|_| Unsupported::CaptureFailed)?;
-    let result = read_window(&conn);
-    let ungrab = conn
-        .ungrab_server()
-        .map_err(|_| Unsupported::CaptureFailed)?
-        .check();
-    ungrab.map_err(|_| Unsupported::CaptureFailed)?;
-    let (w, h, pixels) = result?;
+    let (w, h, pixels) = read_window(&conn)?;
     encode(w, h, &pixels)
 }
 fn own(conn: &RustConnection, window: u32) -> Result<bool, Unsupported> {
@@ -74,6 +63,19 @@ fn read_window(conn: &RustConnection) -> Result<(u32, u32, Vec<u8>), Unsupported
         }
         window = tree.parent;
     }
+    read_owned_window(conn, window)
+}
+
+fn read_owned_window(
+    conn: &RustConnection,
+    window: u32,
+) -> Result<(u32, u32, Vec<u8>), Unsupported> {
+    fn fail<T>(_: T) -> Unsupported {
+        Unsupported::CaptureFailed
+    }
+    if window <= 1 || !own(conn, window)? {
+        return Err(Unsupported::NoOwnWindow);
+    }
     let attrs = conn
         .get_window_attributes(window)
         .map_err(fail)?
@@ -89,6 +91,11 @@ fn read_window(conn: &RustConnection) -> Result<(u32, u32, Vec<u8>), Unsupported
         .map_err(fail)?;
     let (width, height) = (u32::from(geom.width), u32::from(geom.height));
     let len = dimensions(width, height)?;
+    // Do not freeze the X server. Check actual client ownership at the read
+    // boundary and discard the image if the resource disappears or changes.
+    if !own(conn, window)? {
+        return Err(Unsupported::NoOwnWindow);
+    }
     let image = conn
         .get_image(
             ImageFormat::Z_PIXMAP,
@@ -102,6 +109,17 @@ fn read_window(conn: &RustConnection) -> Result<(u32, u32, Vec<u8>), Unsupported
         .map_err(fail)?
         .reply()
         .map_err(fail)?;
+    if !own(conn, window)? {
+        return Err(Unsupported::NoOwnWindow);
+    }
+    let after = conn
+        .get_window_attributes(window)
+        .map_err(fail)?
+        .reply()
+        .map_err(fail)?;
+    if after.map_state != MapState::VIEWABLE || after.visual != attrs.visual {
+        return Err(Unsupported::NoOwnWindow);
+    }
     let setup = conn.setup();
     let format = setup
         .pixmap_formats
@@ -229,5 +247,9 @@ mod tests {
             .unwrap();
         assert_eq!(capture(), Err(Unsupported::NoOwnWindow));
         conn.destroy_window(window).unwrap().check().unwrap();
+        assert!(
+            read_owned_window(&conn, window).is_err(),
+            "a destroyed target must not produce PNG bytes"
+        );
     }
 }

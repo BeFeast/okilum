@@ -21,9 +21,8 @@ preview/removal and explicit Send remain the caller's responsibility.
   A failed or unpainted readback returns Unsupported; no desktop-DC fallback.
 - Linux X11: XRes 1.2 supplies the focused window's real client PID. The module
   walks owned parents only and uses XGetImage on that window. XRes absence,
-  foreign focus, unmapped windows and X errors fail to Unsupported. A short
-  server grab protects the identity/readback sequence; encoding happens after
-  releasing it. X11 does not promise useful pixels for obscured window regions.
+  foreign focus, unmapped windows and X errors fail to Unsupported. Ownership is rechecked immediately before and after readback; a vanished or
+  changed target is discarded. The module never grabs the X server. X11 does not promise useful pixels for obscured window regions.
 - Wayland, including an XWayland DISPLAY inside a Wayland session: Unsupported,
   meaning attach-only. No desktop capture or crop.
 
