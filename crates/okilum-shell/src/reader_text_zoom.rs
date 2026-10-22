@@ -39,6 +39,22 @@ fn modifier(modifiers: gpui::Modifiers, mac: bool) -> bool {
         }
 }
 
+fn wheel_delta(delta: gpui::ScrollDelta) -> Option<f32> {
+    let amount = match delta {
+        // System line-count preferences must not multiply a physical wheel tick.
+        gpui::ScrollDelta::Lines(lines) => {
+            if lines.y.is_finite() && lines.y != 0. {
+                lines.y.signum() * 0.1
+            } else {
+                return None;
+            }
+        }
+        // Precision devices retain smooth deltas, bounded to 10% per event.
+        gpui::ScrollDelta::Pixels(pixels) => (f32::from(pixels.y) / 400.).clamp(-0.1, 0.1),
+    };
+    (amount.is_finite() && amount != 0.).then_some(amount)
+}
+
 pub(crate) fn document<E: ParentElement + InteractiveElement>(
     view: E,
     cx: &mut Context<Reader>,
@@ -65,7 +81,7 @@ pub(crate) fn document<E: ParentElement + InteractiveElement>(
                             return;
                         }
                         let _ = weak.update(cx, |this, cx| {
-                            let zoom = reader_ui_state::text_zoom(cx) + delta.clamp(-0.5, 0.5);
+                            let zoom = reader_ui_state::text_zoom(cx) + delta;
                             change(this, zoom, Some(event.position), window, cx);
                         });
                     });
@@ -76,7 +92,7 @@ pub(crate) fn document<E: ParentElement + InteractiveElement>(
     )
     .capture_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
         if cfg!(target_os = "macos") && event.delta.is_finite() && event.delta != 0. {
-            let zoom = reader_ui_state::text_zoom(cx) * (1. + event.delta);
+            let zoom = reader_ui_state::text_zoom(cx) * (1. + event.delta.clamp(-0.2, 0.2));
             change(this, zoom, Some(event.position), window, cx);
         }
     }))
@@ -157,6 +173,17 @@ mod tests {
             reader_ui_state::set_text_zoom(1., cx);
             assert_eq!(reader_ui_state::font_size(cx), 20.);
         });
+        assert_eq!(wheel_delta(ScrollDelta::Lines(point(0., 1.))), Some(0.1));
+        assert_eq!(wheel_delta(ScrollDelta::Lines(point(0., 3.))), Some(0.1));
+        assert_eq!(wheel_delta(ScrollDelta::Lines(point(0., 0.))), None);
+        assert_eq!(
+            wheel_delta(ScrollDelta::Pixels(point(px(0.), px(1000.)))),
+            Some(0.1)
+        );
+        assert_eq!(
+            wheel_delta(ScrollDelta::Pixels(point(px(0.), px(4.)))),
+            Some(0.01)
+        );
         assert!(modifier(
             gpui::Modifiers {
                 platform: true,
