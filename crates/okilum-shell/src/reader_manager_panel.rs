@@ -274,6 +274,19 @@ impl ManagerPanel {
                         window.ipc.postMessage('escape');
                     }
                 }, true);
+                // Preserve the approved c1dc8dc6 behavior: after page handlers,
+                // keep the active form focused until a pressed button can click.
+                // WebKit otherwise blurs to body and T3 collapses/unmounts the X.
+                window.addEventListener('mousedown', event => {
+                    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+                    const button = target?.closest('button, [role="button"]');
+                    const form = button?.closest('form');
+                    const active = document.activeElement;
+                    const keep = event.button === 0 && !event.defaultPrevented && !!form
+                        && !button.disabled && !button.closest('[draggable="true"]')
+                        && active !== button && form.contains(active);
+                    if (keep) event.preventDefault();
+                });
             "#,
             )
             .with_ipc_handler(move |request| {

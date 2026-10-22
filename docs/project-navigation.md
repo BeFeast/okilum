@@ -101,3 +101,9 @@ No GPUI core patch is used.
 Oleg approved T3 visibility and Cmd+C/V in Sprint cfceebcc. This acceptance does
 not establish image paste, IME, undo/redo, or all overlay scenarios. Sprint runner,
 signing, reporting and self-check tooling are separate from this product change.
+
+Oleg also approved attached-image removal in Sprint c1dc8dc6. Its init listener
+preserves focus in an already active form while a button is pressed, after page
+handlers run, so WebKit does not blur the composer and unmount the image X before
+mouseup. Disabled/draggable buttons, other forms and cancelled events retain
+normal behavior. Pointer diagnostics are not included.

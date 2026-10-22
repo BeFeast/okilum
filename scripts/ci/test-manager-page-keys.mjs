@@ -119,3 +119,47 @@ for (const foreign of ['selection', 'input']) {
     assert.equal(p.state.observe(before, 'paste:').cancel, true, 'delayed native probe must not bless foreign page changes');
     assert.equal(p.state.rebase(before, native.context).cancel, true, 'queued command must not move to foreign selection/edit');
 }
+
+// Exercise the shipped init listener: keep T3's active form mounted through click.
+{
+    const panel = fs.readFileSync('crates/okilum-shell/src/reader_manager_panel.rs', 'utf8');
+    const init = panel.match(/\.with_initialization_script\(\s*r#"([\s\S]*?)"#/)[1];
+    const events = new Map();
+    class Element {
+        closest(selector) {
+            if (selector === 'button, [role="button"]') return this.button ?? null;
+            if (selector === 'form') return this.form ?? null;
+            return this.draggable ?? null;
+        }
+    }
+    const active = new Element();
+    const button = new Element();
+    const icon = new Element();
+    icon.button = button;
+    button.form = {contains: node => node === active};
+    const document = {activeElement: active, addEventListener() {}};
+    vm.runInNewContext(init, {Element, document, window: {addEventListener(name, fn) {events.set(name, fn);}}});
+    const down = events.get('mousedown');
+    assert.equal(typeof down, 'function', 'positive control: shipped listener registered');
+    function press(overrides = {}) {
+        let prevented = false;
+        down({target: icon, button: 0, defaultPrevented: false,
+            preventDefault() {prevented = true;}, ...overrides});
+        return prevented;
+    }
+    assert.equal(press(), true, 'keep focused composer mounted for its remove button');
+    assert.equal(press({button: 2}), false);
+    assert.equal(press({defaultPrevented: true}), false, 'respect page handlers');
+    button.disabled = true;
+    assert.equal(press(), false);
+    button.disabled = false;
+    button.draggable = {};
+    assert.equal(press(), false);
+    button.draggable = null;
+    document.activeElement = button;
+    assert.equal(press(), false);
+    document.activeElement = new Element();
+    assert.equal(press(), false, 'do not change another form focus');
+    assert.equal(press({target: new Element()}), false, 'non-buttons retain native defaults');
+}
+console.log('PASS: shipped button focus guard preserves composer and respects other targets');
