@@ -233,41 +233,45 @@ impl Project {
     }
 }
 
+/// The one source range used for both role reads and lossless replacements.
+/// Fenced examples cannot become operational registry rows.
+fn manager_cell(source: &str) -> Result<std::ops::Range<usize>> {
+    let mut found = None;
+    let mut fenced = false;
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && line.trim_start().starts_with('|') {
+            let pipes: Vec<_> = line.match_indices('|').map(|(index, _)| index).collect();
+            if pipes.len() >= 2 && line[pipes[0] + 1..pipes[1]].trim() == "Manager" {
+                ensure!(
+                    found.is_none(),
+                    "more than one Manager role; no thread selected"
+                );
+                let end = pipes.get(2).context("Manager row has no thread cell")?;
+                found = Some(offset + pipes[1] + 1..offset + end);
+            }
+        }
+        offset += line.len();
+    }
+    found.context("Manager role is missing from thread-ids.md")
+}
+
 /// Exact role + leading inline-code id; links and historical IDs elsewhere in
 /// the cell cannot select a thread. Duplicate roles are explicit ambiguity.
 pub fn manager_role(registry: &str) -> Result<Manager> {
-    let mut found = None;
-    let mut fenced = false;
-    for line in registry.lines() {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced || !line.trim_start().starts_with('|') {
-            continue;
-        }
-        let cells: Vec<_> = line.split('|').map(str::trim).collect();
-        if cells.get(1) != Some(&"Manager") {
-            continue;
-        }
-        ensure!(
-            found.is_none(),
-            "more than one Manager role; no thread selected"
-        );
-        let cell = cells.get(2).context("Manager row has no thread cell")?;
-        found = Some(if *cell == "— (not started)" {
-            Manager::NotStarted
-        } else {
-            let value = cell
-                .strip_prefix('`')
-                .context("Manager cell must start with an inline-code thread id")?;
-            let (id, _) = value
-                .split_once('`')
-                .context("unterminated Manager thread id")?;
-            Manager::Thread(thread_id(id)?)
-        });
+    let cell = registry[manager_cell(registry)?].trim();
+    if cell == "— (not started)" {
+        return Ok(Manager::NotStarted);
     }
-    found.context("Manager role is missing from thread-ids.md")
+    let value = cell
+        .strip_prefix('`')
+        .context("Manager cell must start with an inline-code thread id")?;
+    let (id, _) = value
+        .split_once('`')
+        .context("unterminated Manager thread id")?;
+    Ok(Manager::Thread(thread_id(id)?))
 }
 
 /// Replace only the current Manager cell, preserving all unrelated source bytes.
@@ -277,24 +281,10 @@ pub fn register_manager(source: &str, expected: &Manager, id: &str) -> Result<St
         &manager_role(source)? == expected,
         "Manager role changed; retain the created thread and reconcile explicitly"
     );
-    let mut offset = 0;
-    for line in source.split_inclusive('\n') {
-        let cells: Vec<_> = line.split('|').collect();
-        if cells.get(1).is_some_and(|cell| cell.trim() == "Manager") {
-            let first = line.find('|').unwrap();
-            let second = first + 1 + line[first + 1..].find('|').unwrap();
-            let third = second
-                + 1
-                + line[second + 1..]
-                    .find('|')
-                    .context("invalid Manager row")?;
-            let mut updated = source.to_owned();
-            updated.replace_range(offset + second + 1..offset + third, &format!(" `{id}` "));
-            return Ok(updated);
-        }
-        offset += line.len();
-    }
-    anyhow::bail!("Manager role missing")
+    let cell = manager_cell(source)?;
+    let mut updated = source.to_owned();
+    updated.replace_range(cell, &format!(" `{id}` "));
+    Ok(updated)
 }
 
 fn thread_id(id: &str) -> Result<String> {
@@ -414,6 +404,19 @@ pub fn manager_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fenced_example_before_registry_never_receives_the_operational_id() {
+        let source = "# Format example\r\n```markdown\r\n| Manager | `mcp:example` |\r\n```\r\n\r\n# Current registry\r\n| Manager | — (not started) | today |\r\n";
+        assert_eq!(manager_role(source).unwrap(), Manager::NotStarted);
+        let updated = register_manager(source, &Manager::NotStarted, "mcp:created").unwrap();
+        assert_eq!(updated, source.replace("— (not started)", "`mcp:created`"));
+        assert_eq!(
+            manager_role(&updated).unwrap(),
+            Manager::Thread("mcp:created".into())
+        );
+        assert!(updated.contains("| Manager | `mcp:example` |"));
+    }
 
     #[test]
     fn browser_route_uses_the_configured_origin_and_server_environment() {
