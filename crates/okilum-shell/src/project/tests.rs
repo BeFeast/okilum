@@ -503,7 +503,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
         rotated.manager.thread_id = Some("mcp:rotated-manager".into());
         std::fs::write(
             vault.join("ops/project.yaml"),
-            serde_yaml::to_string(&serde_json::json!({"t3": binding})).unwrap(),
+            serde_yaml::to_string(&serde_json::json!({"kind": "code", "t3": binding})).unwrap(),
         )
         .unwrap();
         old.update(cx, |view, cx| {
@@ -563,7 +563,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
     );
     std::fs::write(
         vault.join("ops/project.yaml"),
-        serde_yaml::to_string(&serde_json::json!({"t3": rotated})).unwrap(),
+        serde_yaml::to_string(&serde_json::json!({"kind": "code", "t3": rotated})).unwrap(),
     )
     .unwrap();
     visual.update(|window, cx| reader.update(cx, |r, cx| r.toggle_project(window, cx)));
@@ -595,7 +595,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
     visual.update(|window, cx| reader.update(cx, |r, cx| r.close_project(window, cx)));
     std::fs::write(
         vault.join("ops/project.yaml"),
-        serde_yaml::to_string(&serde_json::json!({"t3": binding})).unwrap(),
+        serde_yaml::to_string(&serde_json::json!({"kind": "code", "t3": binding})).unwrap(),
     )
     .unwrap();
     visual.update(|window, cx| reader.update(cx, |r, cx| r.toggle_project(window, cx)));
