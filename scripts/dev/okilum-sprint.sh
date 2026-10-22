@@ -142,7 +142,7 @@ def collect(context, stage, app_log=None):
                    XDG_CONFIG_HOME=str(state / 'config'), XDG_CACHE_HOME=str(state / 'cache'),
                    XDG_STATE_HOME=str(state / 'state'), XDG_DATA_HOME=str(state / 'data'))
         add('Direct binary execution (10 second deadline)', run([str(app / 'Contents/MacOS/okilum')], timeout=10, env=env))
-    add('Unified app log (last 2 minutes)', run(['/usr/bin/log', 'show', '--style', 'compact', '--predicate', 'process == "okilum"', '--last', '2m']))
+    add('Sprint process stdout/stderr', '\n'.join(tail(Path.home() / 'Library/Logs/okilum-sprint-app.log', 250)))
     if app_log:
         add('App diagnostics', '\n'.join(tail(app_log, 250)))
     add('Sprint key diagnostics', '\n'.join(tail(Path.home() / 'Library/Logs/okilum-sprint-keys.log', 500)))
@@ -375,7 +375,11 @@ mkdir -p "$OKILUM_STATE_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HO
 cd "$(dirname "$0")"
 export OKILUM_SPRINT_REPORT_HELPER="$PWD/../Resources/sprint-report.py"
 export OKILUM_SPRINT_CONTEXT="$PWD/../Resources/sprint-context.json"
-exec ./okilum "$@"
+# LaunchServices stdout/stderr are otherwise lost. Only this Sprint process
+# writes this file; no shared process-name log query can include normal Okilum.
+umask 077
+mkdir -p "$HOME/Library/Logs"
+exec ./okilum "$@" >> "$HOME/Library/Logs/okilum-sprint-app.log" 2>&1
 LAUNCH
 chmod +x "$bundle_stage/Contents/MacOS/sprint-launch"
 # Reuse the canonical bundle/Info.plist template from build-macos-ci.sh.
