@@ -356,6 +356,30 @@ jobs:
           CI_LANE: perf-linux
         run: python3 scripts/ci/github-pr.py
 
+  # Start the signed PR preview as soon as macOS passes; Linux/Windows do not
+  # delay this coordinator. The serialized signer revalidates the current head.
+  macos-preview:
+    needs: [native-scope, macos]
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      needs.macos.result == 'success' && needs.native-scope.outputs.macos == 'true' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: publish
+    timeout-minutes: 3
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Select the newest green Mac PR head
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          MACOS_PREVIEW_PR: ${{ github.event.pull_request.number }}
+          MACOS_PREVIEW_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/releases/coalesce.py macos
+
   macos:
     needs: [linux, native-scope, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
