@@ -95,11 +95,13 @@ pub(super) fn parse(language: &str, source: &str) -> Outline {
         let count = node
             .named_child_count()
             .min(MAX_NODES.saturating_sub(visited + stack.len()));
-        for ix in (0..count).rev() {
-            // The visited-node cap is below u32::MAX (the tree-sitter index type).
-            if let Some(child) = node.named_child(ix as u32) {
-                stack.push((child, parent, depth + 1, array.then_some(ix)));
-            }
+        // YAML comments are named children too, but are not array elements.
+        let children: Vec<_> = (0..count)
+            .filter_map(|ix| node.named_child(ix as u32))
+            .filter(|child| child.kind() != "comment")
+            .collect();
+        for (ix, child) in children.into_iter().enumerate().rev() {
+            stack.push((child, parent, depth + 1, array.then_some(ix)));
         }
     }
     outline
@@ -193,18 +195,5 @@ impl Outline {
                 visible[ix].then_some(ix)
             })
             .collect()
-    }
-
-    pub fn current(&self, top_line: usize, visible: &[usize]) -> Option<usize> {
-        let mut ix = self
-            .entries
-            .partition_point(|entry| entry.line <= top_line)
-            .checked_sub(1)?;
-        loop {
-            if visible.binary_search(&ix).is_ok() {
-                return Some(ix);
-            }
-            ix = self.entries[ix].parent?;
-        }
     }
 }

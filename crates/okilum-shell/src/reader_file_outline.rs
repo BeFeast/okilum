@@ -16,9 +16,6 @@ pub(crate) struct View {
     data: Arc<parse::Outline>,
     expanded: BTreeSet<usize>,
     visible: Vec<usize>,
-    current: Option<usize>,
-    window: Option<gpui::AnyWindowHandle>,
-    frame_pending: bool,
     list: ListState,
 }
 
@@ -35,9 +32,6 @@ impl View {
             data: Arc::default(),
             expanded: BTreeSet::new(),
             visible: Vec::new(),
-            current: None,
-            window: None,
-            frame_pending: false,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
         }
     }
@@ -86,10 +80,6 @@ impl View {
         self.input_observers.clear();
         self.input = input.clone();
         if let Some(input) = input {
-            // Event-time notifications can precede paint, which publishes the
-            // viewport. Coalesce them into a finite post-layout sample.
-            self.input_observers
-                .push(cx.observe(&input, |this, _, cx| this.queue_current(cx)));
             self.input_observers
                 .push(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
@@ -116,7 +106,6 @@ impl View {
         self.data = Arc::default();
         self.visible.clear();
         self.expanded.clear();
-        self.current = None;
         self.list.reset(0);
         cx.notify();
         let Some((input, language)) = self.input.as_ref().zip(self.language) else {
@@ -159,48 +148,7 @@ impl View {
                 offset_in_item: top.offset_in_item,
             });
         }
-        self.sync_current(cx);
         cx.notify();
-    }
-
-    fn queue_current(&mut self, cx: &mut Context<Self>) {
-        if self.frame_pending {
-            return;
-        }
-        let Some(window) = self.window else {
-            return;
-        };
-        self.frame_pending = true;
-        let view = cx.entity().downgrade();
-        cx.defer(move |cx| {
-            let _ = window.update(cx, |_, window, _| {
-                // The first callback may precede the pending editor paint;
-                // the second samples the viewport published by that paint.
-                window.on_next_frame(move |window, _| {
-                    window.on_next_frame(move |_, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.frame_pending = false;
-                            this.sync_current(cx);
-                        });
-                    });
-                });
-            });
-        });
-    }
-
-    fn sync_current(&mut self, cx: &mut Context<Self>) {
-        let current = self.section(cx);
-        if self.current != current {
-            self.current = current;
-            cx.notify();
-        }
-    }
-
-    fn section(&self, cx: &App) -> Option<usize> {
-        self.input
-            .as_ref()
-            .and_then(|input| input.read(cx).top_visible_line())
-            .and_then(|line| self.data.current(line, &self.visible))
     }
 
     pub(super) fn has_entries(&self) -> bool {
@@ -228,8 +176,7 @@ impl View {
 }
 
 impl Render for View {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.window = Some(window.window_handle());
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("file-outline")
             .debug_selector(|| "file-outline-list".into())
@@ -249,7 +196,6 @@ impl Render for View {
                         let entry = &this.data.entries[ix];
                         let p = brand::palette(cx);
                         let hover = brand::reader_palette(cx).hover;
-                        let current = this.current == Some(ix);
                         h_flex()
                             .id(("file-outline-row", ix))
                             .debug_selector(move || format!("file-outline-row-{ix}"))
@@ -259,13 +205,8 @@ impl Render for View {
                             .pl(px(14. + entry.depth.min(12) as f32 * 12.))
                             .pr_3()
                             .border_l_2()
-                            .border_color(if current {
-                                p.accent
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .text_color(if current { p.text } else { p.text_muted })
-                            .when(current, |row| row.font_weight(FontWeight::MEDIUM))
+                            .border_color(gpui::transparent_black())
+                            .text_color(p.text_muted)
                             .overflow_hidden()
                             .cursor_pointer()
                             .hover(move |row| row.bg(hover))

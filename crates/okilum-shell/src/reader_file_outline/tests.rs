@@ -38,6 +38,19 @@ fn yaml_keys_keep_source_lines_nesting_and_scalar_boundaries() {
 }
 
 #[test]
+fn yaml_comments_do_not_consume_sequence_indices() {
+    for source in [
+        "items: [one, # comment\n two]\n",
+        "items:\n  - one\n  # comment\n  - two\n",
+    ] {
+        let outline = parse::parse("yaml", source);
+        assert_eq!(parent_label(&outline, find(&outline, "[0]")), Some("items"));
+        assert_eq!(parent_label(&outline, find(&outline, "[1]")), Some("items"));
+        assert!(!outline.entries.iter().any(|entry| entry.label == "[2]"));
+    }
+}
+
+#[test]
 fn json_keys_arrays_and_escaped_labels_use_displayed_source_lines() {
     let source = include_str!("fixtures/config.json");
     let outline = parse::parse("json", source);
@@ -148,7 +161,7 @@ fn malformed_yaml_is_partial_or_empty_and_never_an_error() {
 }
 
 #[test]
-fn parsing_and_tree_expansion_are_capped_and_current_child_falls_back_to_parent() {
+fn parsing_and_tree_expansion_are_capped() {
     assert!(parse::parse("json", &" ".repeat(parse::MAX_BYTES + 1))
         .entries
         .is_empty());
@@ -164,11 +177,8 @@ fn parsing_and_tree_expansion_are_capped_and_current_child_falls_back_to_parent(
     let outline = parse::parse("yaml", "first:\n  child: true\nsecond: true\n");
     let mut expanded = BTreeSet::new();
     assert_eq!(outline.visible(&expanded), vec![0, 2]);
-    assert_eq!(outline.current(1, &outline.visible(&expanded)), Some(0));
     expanded.insert(0);
     assert_eq!(outline.visible(&expanded), vec![0, 1, 2]);
-    assert_eq!(outline.current(1, &outline.visible(&expanded)), Some(1));
-    assert_eq!(outline.current(2, &outline.visible(&expanded)), Some(2));
 }
 
 struct Surface {
@@ -191,7 +201,7 @@ impl Render for Surface {
 }
 
 #[gpui::test]
-fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppContext) {
+fn expanding_and_clicking_use_the_real_editor_lines(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let source = format!(
         "first:\n  child: true\n{}second:\n  value: true\n{}",
@@ -239,47 +249,14 @@ fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppCo
         .expect("a real row click target");
     visual.simulate_click(second.center(), Modifiers::default());
     visual.run_until_parked();
-    // As in the cached Markdown panel regression, the test platform needs an
-    // explicit display frame. Paint publishes the viewport; observers then run.
-    let frame = |visual: &mut VisualTestContext| {
-        // Deliver the finite post-layout callbacks as a real platform would.
-        for _ in 0..2 {
-            visual.update(|window, cx| {
-                window.simulate_next_frame(cx);
-                window.draw(cx).clear(cx);
-            });
-            visual.run_until_parked();
-        }
-        visual.run_until_parked();
-    };
-    frame(visual);
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual.run_until_parked();
     input.read_with(visual, |input, _| {
         assert_eq!(input.top_visible_line(), Some(102))
     });
-    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(2)));
-    // A real wheel scroll is independent of the outline's jump API and caret.
-    let editor = visual.debug_bounds("outline-editor-viewport").unwrap();
-    visual.simulate_event(ScrollWheelEvent {
-        position: editor.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
-        ..Default::default()
-    });
-    visual.run_until_parked();
-    frame(visual);
-    input.read_with(visual, |input, _| {
-        assert!((2..102).contains(&input.top_visible_line().unwrap()))
-    });
-    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(1)));
     input.read_with(visual, |input, _| {
         assert_eq!(input.cursor_position(), Position::default())
     });
-    // Frame demand must drain once the viewport settles. Deliver callbacks
-    // without forcing extra paints (as the platform's idle frame loop does).
-    for _ in 0..2 {
-        visual.update(|window, cx| window.simulate_next_frame(cx));
-        visual.run_until_parked();
-    }
-    outline.read_with(visual, |view, _| assert!(!view.frame_pending));
 }
 
 #[gpui::test]
