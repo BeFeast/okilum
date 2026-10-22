@@ -337,9 +337,10 @@ impl Searcher {
             .unwrap_or_else(|| "memory".into());
         if let Some(index_dir) = index_dir {
             if index_dir.exists() {
-                // Enforce the caller-owned staging precondition before deletion.
+                // Detect a previous writer still active at this caller-owned path.
                 // Release the probe before removing files (Windows locks are handles).
-                // The caller's exclusive path ownership excludes a new writer here.
+                // This probe is not a concurrency guard: the caller must exclude
+                // new writers for the entire replacement (see build()).
                 let directory = tantivy::directory::MmapDirectory::open(index_dir)?;
                 drop(
                     directory
