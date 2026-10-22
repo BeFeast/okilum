@@ -108,9 +108,11 @@ impl ProjectsPicker {
         });
         let subscription = cx.subscribe_in(&input, window, |this, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
-                this.model
-                    .set_query(this.input.read(cx).value().to_string());
-                this.rebuild(cx);
+                let query = this.input.read(cx).value().to_string();
+                if this.model.query() != query {
+                    this.model.set_query(query);
+                    this.rebuild(cx);
+                }
             }
         });
         let mut picker = Self {
@@ -135,6 +137,9 @@ impl ProjectsPicker {
         cx: &mut Context<Self>,
     ) {
         let query = query.into();
+        if self.model.query() == query && self.input.read(cx).value().as_str() == query {
+            return;
+        }
         self.model.set_query(query.clone());
         self.input
             .update(cx, |input, cx| input.set_value(query, window, cx));
