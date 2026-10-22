@@ -1,0 +1,288 @@
+diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.rs
+--- a/crates/base/src/text_selection.rs
++++ b/crates/base/src/text_selection.rs
+@@ -8,9 +8,9 @@
+ use gpui::{
+     App, AppContext as _, Bounds, Context, Element, ElementId, Entity, EntityId, EventEmitter,
+     Global, GlobalElementId, Half, Hitbox, InputEvent as _, InspectorElementId, IntoElement,
+-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+-    ScrollDelta, ScrollWheelEvent, SharedString, Style, Subscription, TextLayout, WeakEntity,
+-    Window, point, px,
++    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels,
++    Point, ScrollDelta, ScrollWheelEvent, SharedString, Style, Subscription, TextLayout,
++    WeakEntity, Window, point, px,
+ };
+ 
+ use crate::text_boundary::{line_range_at, word_range_at};
+@@ -849,6 +849,7 @@
+     did_hit_text: bool,
+     frame_generation: u64,
+     finish_frame_scheduled: bool,
++    lifecycle: Vec<Subscription>,
+     mouse_down_prepared: bool,
+     // Opt-in control geometry is rebuilt each frame, independently of paint order.
+     pending_preserve_regions: Vec<PreservePointerPredicate>,
+@@ -1054,6 +1055,12 @@
+         }
+         self.stop_anchor_auto_scroll(cx);
+         self.publish_snapshots(cx);
++    }
++
++    fn cancel_pointer_gesture(&mut self, cx: &mut App) {
++        self.mouse_down_prepared = false;
++        self.preserving_pointer_gesture = false;
++        self.end(cx);
+     }
+ 
+     /// Clears both window selection and every participant's local selection.
+@@ -1718,7 +1725,7 @@
+     /// Ends the current drag while leaving its selection visible.
+     pub fn end(window: &mut Window, cx: &mut App) {
+         if let Some(state) = live_text_selection_state(window, cx) {
+-            state.update(cx, |state, cx| state.end(cx));
++            state.update(cx, |state, cx| state.cancel_pointer_gesture(cx));
+         }
+     }
+ 
+@@ -1918,6 +1925,18 @@
+     cx.global_mut::<SelectionStateRegistry>()
+         .0
+         .insert(window_id, state.downgrade());
++    state.update(cx, |state, cx| {
++        if state.lifecycle.is_empty() {
++            state.lifecycle = vec![
++                cx.observe_window_bounds(window, |state, _, cx| state.cancel_pointer_gesture(cx)),
++                cx.observe_window_activation(window, |state, window, cx| {
++                    if !window.is_window_active() {
++                        state.cancel_pointer_gesture(cx);
++                    }
++                }),
++            ];
++        }
++    });
+     state
+ }
+ 
+@@ -1993,15 +2012,28 @@
+ 
+     let mouse_move_state = state.downgrade();
+     window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+-        if phase.bubble()
+-            && let Some(state) = mouse_move_state.upgrade()
++        if let Some(state) = mouse_move_state.upgrade() {
++            if phase.capture() && event.pressed_button != Some(MouseButton::Left) {
++                // A compositor resize grab can consume MouseUp. The event,
++                // not the retained gesture, owns the current button state.
++                state.update(cx, |state, cx| state.cancel_pointer_gesture(cx));
++            } else if phase.bubble() && event.pressed_button == Some(MouseButton::Left) {
++                state.update(cx, |state, cx| {
++                    if !state.preserving_pointer_gesture {
++                        state.update_in_window(event.position, window, cx);
++                    }
++                });
++                WindowSelectionState::resolve_content_keys(&state, cx);
++            }
++        }
++    });
++
++    let mouse_exit_state = state.downgrade();
++    window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
++        if phase.capture()
++            && let Some(state) = mouse_exit_state.upgrade()
+         {
+-            state.update(cx, |state, cx| {
+-                if !state.preserving_pointer_gesture {
+-                    state.update_in_window(event.position, window, cx);
+-                }
+-            });
+-            WindowSelectionState::resolve_content_keys(&state, cx);
++            state.update(cx, |state, cx| state.cancel_pointer_gesture(cx));
+         }
+     });
+ 
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -714,6 +714,9 @@
+             // Blink the cursor when the window is active, pause when it's not.
+             cx.observe_window_activation(window, |input, window, cx| {
+                 input.exact_clipboard.invalidate();
++                if !window.is_window_active() {
++                    input.cancel_mouse_gesture(cx);
++                }
+                 if window.is_window_active() {
+                     let focus_handle = input.focus_handle.clone();
+                     if focus_handle.is_focused(window) {
+@@ -723,6 +726,7 @@
+                     }
+                 }
+             }),
++            cx.observe_window_bounds(window, |input, _, cx| input.cancel_mouse_gesture(cx)),
+             cx.on_focus(&focus_handle, window, Self::on_focus),
+             cx.on_blur(&focus_handle, window, Self::on_blur),
+         ];
+@@ -2484,6 +2488,24 @@
+         self.auto_scroll.stop();
+     }
+ 
++    pub(super) fn cancel_mouse_gesture(&mut self, cx: &mut Context<Self>) {
++        let active = self.selecting
++            || self.projection_mouse_hold
++            || self.armed_task.is_some()
++            || self.projection_pending_click.is_some();
++        self.selecting = false;
++        self.projection_mouse_hold = false;
++        self.projection_pending_click = None;
++        self.projection_lease_release = None;
++        self.armed_task = None;
++        self.drag_anchors.clear();
++        self.auto_scroll.stop();
++        if active {
++            self.projection.presentation_changed();
++            cx.notify();
++        }
++    }
++
+     /// Releasing the mouse does not reveal source or adopt a new hit map.
+     /// Capture the final selection while the gesture still pins painted geometry.
+     pub(super) fn finish_projection_mouse_gesture(&mut self) {
+@@ -3405,8 +3427,7 @@
+     }
+ 
+     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+-        self.selecting = false;
+-        self.auto_scroll.stop();
++        self.cancel_mouse_gesture(cx);
+         self.projection.presentation_changed();
+         self.exact_clipboard.invalidate();
+         if M::is_context_menu_open(self, cx) {
+@@ -3481,6 +3502,10 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if event.pressed_button != Some(MouseButton::Left) {
++            self.cancel_mouse_gesture(cx);
++            return;
++        }
+         if self.text.len() == 0 {
+             return;
+         }
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -563,11 +563,27 @@
+         window.on_mouse_event({
+             let state = self.state.clone();
+ 
+-            move |event: &MouseMoveEvent, _, window, cx| {
++            move |event: &MouseMoveEvent, phase, window, cx| {
+                 if event.pressed_button == Some(MouseButton::Left) {
+                     state.update(cx, |state, cx| {
+                         state.on_drag_move(event, window, cx);
+                     });
++                } else if phase.capture() {
++                    state.update(cx, |state, cx| {
++                        // A normal MouseUp keeps a short projection lease for
++                        // multi-click hit testing. Only a lost release cancels it.
++                        if state.selecting {
++                            state.cancel_mouse_gesture(cx);
++                        }
++                    });
++                }
++            }
++        });
++        window.on_mouse_event({
++            let state = self.state.clone();
++            move |_: &gpui::MouseExitEvent, phase, _, cx| {
++                if phase.capture() {
++                    state.update(cx, |state, cx| state.cancel_mouse_gesture(cx));
+                 }
+             }
+         });
+diff --git a/crates/base/src/resizable/resize_handle.rs b/crates/base/src/resizable/resize_handle.rs
+--- a/crates/base/src/resizable/resize_handle.rs
++++ b/crates/base/src/resizable/resize_handle.rs
+@@ -2,8 +2,9 @@
+ 
+ use gpui::{
+     AnyElement, App, Axis, Element, ElementId, Entity, GlobalElementId, InteractiveElement,
+-    IntoElement, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
+-    StatefulInteractiveElement, Styled as _, Window, div, prelude::FluentBuilder as _, px,
++    IntoElement, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
++    ParentElement as _, Pixels, Point, Render, StatefulInteractiveElement, Styled as _, Window,
++    div, prelude::FluentBuilder as _, px,
+ };
+ 
+ use crate::{AxisExt as _, Side, theme::ActiveTheme as _};
+@@ -99,7 +100,7 @@
+ 
+ #[derive(Default, Debug, Clone)]
+ struct ResizeHandleState {
+-    active: Cell<bool>,
++    active: Rc<Cell<bool>>,
+ }
+ 
+ impl ResizeHandleState {
+@@ -254,8 +255,35 @@
+             window.on_mouse_event({
+                 let state = state.clone();
+                 move |ev: &MouseDownEvent, phase, window, _| {
+-                    if bounds.contains(&ev.position) && phase.bubble() {
++                    if ev.button == MouseButton::Left
++                        && bounds.contains(&ev.position)
++                        && phase.bubble()
++                    {
+                         state.set_active(true);
++                        window.refresh();
++                    }
++                }
++            });
++
++            window.on_mouse_event({
++                let state = state.clone();
++                move |event: &MouseMoveEvent, phase, window, cx| {
++                    if phase.capture()
++                        && event.pressed_button != Some(MouseButton::Left)
++                        && state.is_active()
++                    {
++                        state.set_active(false);
++                        cx.stop_active_drag(window);
++                        window.refresh();
++                    }
++                }
++            });
++            window.on_mouse_event({
++                let state = state.clone();
++                move |_: &MouseExitEvent, phase, window, cx| {
++                    if phase.capture() && state.is_active() {
++                        state.set_active(false);
++                        cx.stop_active_drag(window);
+                         window.refresh();
+                     }
+                 }
+diff --git a/crates/component/src/window_border.rs b/crates/component/src/window_border.rs
+--- a/crates/component/src/window_border.rs
++++ b/crates/component/src/window_border.rs
+@@ -185,7 +185,7 @@
+                     .when(!tiling.bottom, |div| div.pb(visual_shadow))
+                     .when(!tiling.left, |div| div.pl(visual_shadow))
+                     .when(!tiling.right, |div| div.pr(visual_shadow))
+-                    .on_mouse_down(MouseButton::Left, move |_, window, _| {
++                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                         let Decorations::Client { tiling } = window.window_decorations() else {
+                             return;
+                         };
+@@ -197,7 +197,12 @@
+                         let insets = client_frame_insets(platform_inset, &tiling);
+ 
+                         match resize_edge(pos, size, insets, &tiling, resize_hit_size) {
+-                            Some(edge) => window.start_window_resize(edge),
++                            Some(edge) => {
++                                gpui_base::TextSelection::end(window, cx);
++                                cx.stop_active_drag(window);
++                                cx.stop_propagation();
++                                window.start_window_resize(edge);
++                            }
+                             None => {}
+                         };
+                     }),

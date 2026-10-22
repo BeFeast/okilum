@@ -1,0 +1,79 @@
+diff --git a/crates/component/src/title_bar.rs b/crates/component/src/title_bar.rs
+--- a/crates/component/src/title_bar.rs
++++ b/crates/component/src/title_bar.rs
+@@ -205,8 +205,10 @@
+             _ => None,
+         };
+ 
++        let selector = format!("window-control-{}", self.id());
+         div()
+             .id(self.id())
++            .debug_selector(move || selector.clone())
+             .flex()
+             .w(TITLE_BAR_HEIGHT)
+             .h_full()
+@@ -244,6 +246,13 @@
+     }
+ }
+ 
++/// Use the negotiated mode, not a desktop/session-name heuristic. The
++/// compositor's own controls must be the only ones when it grants SSD.
++#[cfg(any(target_os = "linux", test))]
++fn draw_client_window_controls(decorations: Decorations) -> bool {
++    matches!(decorations, Decorations::Client { .. })
++}
++
+ #[derive(IntoElement)]
+ struct WindowControls {
+     on_close_window: Option<Rc<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>>,
+@@ -265,7 +274,7 @@
+         // decorated, mirroring the `is_client_decorated` gating of the
+         // title bar's window-menu overlay.
+         #[cfg(target_os = "linux")]
+-        if !matches!(window.window_decorations(), Decorations::Client { .. }) {
++        if !draw_client_window_controls(window.window_decorations()) {
+             return div().id("window-controls");
+         }
+ 
+@@ -328,6 +337,7 @@
+         div().flex_shrink_0().child(
+             div()
+                 .id("title-bar")
++                .debug_selector(|| "window-title-bar".into())
+                 .flex()
+                 .flex_row()
+                 .items_center()
+@@ -362,9 +372,15 @@
+                         state.should_move = false;
+                     }),
+                 )
+-                .on_mouse_move(window.listener_for(&state, |state, _, window, _| {
++                .on_mouse_move(window.listener_for(&state, |state, event, window, cx| {
++                    if event.pressed_button != Some(MouseButton::Left) {
++                        state.should_move = false;
++                        return;
++                    }
+                     if state.should_move {
+                         state.should_move = false;
++                        gpui_base::TextSelection::end(window, cx);
++                        cx.stop_active_drag(window);
+                         window.start_window_move();
+                     }
+                 }))
+@@ -432,3 +448,16 @@
+         );
+     }
+ }
++
++#[cfg(test)]
++mod decoration_tests {
++    use super::*;
++
++    #[test]
++    fn negotiated_decorations_choose_exactly_one_set_of_controls() {
++        assert!(!draw_client_window_controls(Decorations::Server));
++        assert!(draw_client_window_controls(Decorations::Client {
++            tiling: gpui::Tiling::default(),
++        }));
++    }
++}
