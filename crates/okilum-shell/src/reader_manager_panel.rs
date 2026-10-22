@@ -10,6 +10,9 @@ pub(super) struct ManagerPanel {
     previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
     error: Option<String>,
+    transport: Option<String>,
+    origin_edited: bool,
+    _origin_events: Subscription,
     loading: bool,
     generation: u64,
     #[cfg(target_os = "macos")]
@@ -25,27 +28,36 @@ impl ManagerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let origin = cx.new(|cx| InputState::new(window, cx).placeholder("T3 server (https://…)"));
-        let alias = project.environment.clone();
+        let origin = cx
+            .new(|cx| InputState::new(window, cx).placeholder("t3.oklabs.uk or 10.10.0.23:23110"));
+        let origin_events =
+            cx.subscribe_in(&origin, window, |this, _, event, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.connect(window, cx),
+                InputEvent::Change => {
+                    this.origin_edited = true;
+                    this.error = None;
+                    cx.notify();
+                }
+                _ => {}
+            });
+        let alias = project
+            .environment
+            .clone()
+            .unwrap_or_else(|| "project".into());
+        let area = project.folder.clone();
         let saved_state = state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let saved = cx
                 .background_executor()
-                .spawn(async move {
-                    let Some(state) = state else {
-                        return Ok(None);
-                    };
-                    let bytes = match std::fs::read(state.join("t3-connections.json")) {
-                        Ok(bytes) => bytes,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                        Err(e) => return Err(anyhow::Error::from(e)),
-                    };
-                    let saved: std::collections::BTreeMap<String, String> =
-                        serde_json::from_slice(&bytes)?;
-                    Ok(alias.and_then(|alias| saved.get(&alias).cloned()))
-                })
+                .spawn(
+                    async move { project::prefill_browser_origin(&area, &alias, state.as_deref()) },
+                )
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                // A delayed disk read must never replace typing or a manual connection.
+                if this.origin_edited || this.generation != 0 {
+                    return;
+                }
                 match saved {
                     Ok(Some(origin)) => {
                         this.origin
@@ -67,6 +79,9 @@ impl ManagerPanel {
             previous_gpui_focus: None,
             origin,
             error: None,
+            transport: None,
+            origin_edited: false,
+            _origin_events: origin_events,
             loading: false,
             generation: 0,
             #[cfg(target_os = "macos")]
@@ -138,20 +153,26 @@ impl ManagerPanel {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
         let Manager::Thread(thread) = self.project.manager.clone() else {
             return;
         };
-        let env = match okilum_t3::Environment::new(
+        let env = match okilum_t3::Environment::from_input(
             self.project.environment.as_deref().unwrap_or("project"),
             &self.origin.read(cx).value(),
         ) {
             Ok(env) => env,
             Err(e) => {
-                self.error = Some(e.to_string());
+                self.error = Some(format!("{e:#}"));
                 cx.notify();
                 return;
             }
         };
+        self.origin
+            .update(cx, |input, cx| input.set_value(env.origin(), window, cx));
+        self.transport = Some(format!("{} · {}", env.origin(), env.transport_rule()));
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.loading = true;
@@ -162,10 +183,11 @@ impl ManagerPanel {
                 .background_executor()
                 .spawn(async move {
                     let identity = okilum_t3::projects::browser_identity(&env)?;
+                    let url = okilum_t3::projects::manager_url(&env, &identity, &thread)?;
                     if let Some(state) = &state {
                         project::save_browser_environment(state, &env)?;
                     }
-                    okilum_t3::projects::manager_url(&env, &identity, &thread)
+                    Ok::<_, anyhow::Error>(url)
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -273,7 +295,15 @@ impl ManagerPanel {
                 }
             })
             .with_navigation_handler(|url| {
-                url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
+                url::Url::parse(&url).is_ok_and(|url| {
+                    url.username().is_empty()
+                        && url.password().is_none()
+                        && okilum_t3::Environment::new(
+                            "navigation",
+                            &url.origin().ascii_serialization(),
+                        )
+                        .is_ok()
+                })
             })
             .build_as_child(&handle)?;
         let routing =
@@ -303,11 +333,23 @@ impl Render for ManagerPanel {
                 .child(
                     Button::new("manager-browser-connect")
                         .ghost()
-                        .label("Connect")
+                        .small()
+                        .h(px(28.))
+                        .rounded(px(brand::CONTROL_RADIUS))
+                        .icon(IconName::ArrowRight)
+                        .tooltip("Connect to T3 (Enter)")
                         .disabled(self.loading)
                         .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
                 ),
         );
+        if let Some(transport) = &self.transport {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(transport.clone()),
+            );
+        }
         if self.loading {
             body = body.child("Connecting to T3…");
         }
@@ -438,5 +480,65 @@ mod native_focus_tests {
                 "old routing instance cannot blur a successor's GPUI target"
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn enter_submits_origin_validation_and_editing_clears_the_error(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let area = temp.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("ops/project.yaml"), "t3: {environment: test}").unwrap();
+        let project = Project {
+            folder: area,
+            name: "Test".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("test".into()),
+            manager_project: Some("brain".into()),
+            manager: Manager::Thread("mcp:test".into()),
+        };
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let panel = cx
+                .new(|cx| ManagerPanel::new(project, Some(temp.path().join("state")), window, cx));
+            Root::new(panel, window, cx)
+        });
+        visual.run_until_parked();
+        let panel = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ManagerPanel>().unwrap()
+        });
+        panel.update_in(visual, |panel, window, cx| {
+            panel.origin.update(cx, |input, cx| {
+                input.set_value("not a host", window, cx);
+                input.focus_handle(cx).focus(window, cx);
+            });
+        });
+        visual.run_until_parked();
+        assert!(panel.read_with(visual, |panel, _| panel.error.is_none()));
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        panel.read_with(visual, |panel, _| {
+            assert!(panel
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Enter a T3 address"));
+            assert!(
+                !panel.loading,
+                "invalid input never starts a network request"
+            );
+            assert_eq!(panel.generation, 0);
+        });
+        panel.update_in(visual, |panel, window, cx| {
+            panel
+                .origin
+                .update(cx, |input, cx| input.set_value("t3.oklabs.uk", window, cx));
+        });
+        visual.run_until_parked();
+        assert!(panel.read_with(visual, |panel, _| panel.error.is_none()));
     }
 }

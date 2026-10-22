@@ -77,3 +77,19 @@ The bridge uses public AppKit APIs and lives outside GPUI core and the vendored
 webview. Hosted selector tests cover native edit command mapping. Oleg's Mac beta
 acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
 T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
+### Manager connection input (#1507)
+
+The address field submits with Enter or the Reader-style connect glyph. Names
+without a scheme use HTTPS; IP:port (and localhost:port) use HTTP. Browser paths,
+query strings and fragments are reduced to the origin, which is shown in the field
+and alongside the transport rule. Credentials in addresses are rejected.
+
+HTTP is allowed only for localhost/loopback, RFC1918 IPv4 and the 100.64/10 tailnet
+range. Public names and public IPs require HTTPS. This is a deliberate private
+network transport exception; Okilum does not resolve arbitrary public names to
+classify them as private.
+
+Prefill uses optional `t3.origin` in the project manifest, then the manifest's
+`t3.environment` alias in the device connection registry, then the last successfully
+validated Manager origin in app state. A delayed prefill cannot replace typing.
+No project list layout or category changes are part of this fix.

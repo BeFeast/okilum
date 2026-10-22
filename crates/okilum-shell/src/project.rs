@@ -18,7 +18,16 @@ pub(super) fn save_browser_environment(
     state: &Path,
     environment: &Environment,
 ) -> anyhow::Result<()> {
-    connections::save(state, environment)
+    connections::save(state, environment)?;
+    connections::save_last_origin(state, environment)
+}
+
+pub(super) fn prefill_browser_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    connections::prefill_origin(area, alias, state)
 }
 
 pub(crate) struct ProjectView {
