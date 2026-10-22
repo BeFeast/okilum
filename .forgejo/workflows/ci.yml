@@ -85,9 +85,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Sprint reporting and cache/vendor regressions (isolated)
-        run: python3 scripts/dev/test-sprint-report.py
-
       - name: Install system libraries (README "Building")
         run: |
           sudo apt-get update -qq

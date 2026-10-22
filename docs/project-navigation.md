@@ -78,61 +78,26 @@ webview. Hosted selector tests cover native edit command mapping. Oleg's Mac bet
 acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
 T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
 
-### Native paste follow-up (#1510 reopened)
+### Native editing follow-up (#1510, #1551)
 
-Edit commands resolve an explicit responder within the focused WKWebView subtree,
-never the surrounding GPUI window. The native Edit menu uses the same browser
-router. A failed action delivery no longer consumes the shortcut unconditionally;
-the fallback invokes the public WKWebView key-equivalent implementation, bypassing
-Wry's child override without patching its class.
+The focused Manager webview owns Cmd+C/V/X/A/Z and Cmd+Shift+Z. Commands resolve
+an explicit WebKit responder, then use the guarded page helper only if native
+handling produced no edit. Non-Latin keyboard layouts use physical editing-key
+positions while Latin mappings and modifier guards remain intact. Each return
+from GPUI refreshes page context; navigation, focus changes and intervening input
+cancel queued edits. Copy/cut excludes password and CSS-masked secure fields.
 
-The manual native fixture creates a real NSApp, NSWindow and WKWebView with Wry's
-child key-equivalent behavior. It pastes a fixture clipboard string into local HTML
-through the production callback and native menu, asserts no host paste, and checks
-that the host receives paste after teardown. It does not use T3 or production
-browser storage. Oleg's sprint check of the actual pairing field is required before
-merge; native clipboard, IME and full focus acceptance are not claimed by a selector
-unit test or by merely compiling this fixture.
+The page helper uses document/target identities and revision guards. Clipboard
+content and key events are not logged. `page_keys.js` is canonical; regenerate its
+Objective-C string with `python3 scripts/dev/generate-manager-page-keys.py`.
+Required macOS CI runs pure page-guard and native dispatch unit regressions.
+The real-NSApp fixture remains ignored/manual-only (`OKILUM_NATIVE_GUI=1`) because
+hosted runners cannot establish an active/key application.
 
-Hosted macOS could not establish the fixture's active/key application (positive
-control failed before paste), so the real-NSApp fixture is excluded from required
-CI by explicit manager disposition. It remains an ignored Rust test and requires
-`OKILUM_NATIVE_GUI=1` in an active local GUI session. Run from the checkout:
-`OKILUM_NATIVE_GUI=1 bash scripts/ci/check-manager-webview-paste.sh`.
-Dispatch selector unit tests remain in required native CI. Oleg's actual-app
-sprint verification is the premerge acceptance for the reopened paste bug.
+Native WebKit geometry comes from the actual Wry element. GPUI overlay bounds
+are frame-scoped; the webview shrinks to uncovered space and restores when clear.
+No GPUI core patch is used.
 
-### Sprint Cmd-key diagnostics and page fallback (#1510 stop-loss)
-
-Sprint enables `OKILUM_SPRINT_KEYS=1` in its launcher by default. Diagnostics append
-to `~/Library/Logs/okilum-sprint-keys.log`: application sendEvent, public native
-key-equivalent implementations and their return values, menu candidates/actions/
-targets, actual first-responder classes, WebKit keyDown and sendAction results.
-Clipboard text, selected text and pairing tokens are never logged. Other builds
-create no diagnostic log unless the environment flag is explicitly enabled.
-
-The app-owned router observes the native dispatch attempt before deciding whether
-to use a page fallback. A page probe records trusted edit events and editing state;
-copy additionally checks the native pasteboard change counter. Observed native
-handling logs `path=NATIVE` and does not invoke the fallback. Otherwise, while the
-same page input remains focused, text paste uses `execCommand('insertText')`, image
-paste sends a ClipboardEvent containing a DataTransfer PNG file, copy/cut transfers
-the page selection to NSPasteboard (cut then deletes), and select-all/undo/redo use
-execCommand. The native attempt runs synchronously on the original event path. Delayed page
-fallback requires an unchanged document, target, selection and input revision;
-subsequent input cancels it rather than reordering a late paste. Copy/cut excludes
-password and CSS-masked secure fields. Logs identify
-`path=PAGE_FALLBACK` and its outcome without recording content.
-
-This expanded scope is explicitly requested by the manager after Oleg's failed
-sprint. It is not validated by hosted GUI fixtures: Oleg must send the log from a
-real Sprint run and verify Cmd+V/C/X/A/Z in pairing and chat before merge.
-
-The page helper has a per-document generation, reports only context IDs/counters
-to the native router, and fails closed if that state is absent after navigation or
-script failure. Required macOS CI runs pure JavaScript guard regressions, including
-secure copy/cut with an unchanged-clipboard control, navigation/focus changes,
-subsequent typing and trusted native paste observation. These are unit tests,
-not another hosted GUI fixture or evidence of Oleg's native paste acceptance.
-`page_keys.js` is canonical; regenerate its Objective-C string with
-`python3 scripts/dev/generate-manager-page-keys.py`. The unit test checks equality.
+Oleg approved T3 visibility and Cmd+C/V in Sprint cfceebcc. This acceptance does
+not establish image paste, IME, undo/redo, or all overlay scenarios. Sprint runner,
+signing, reporting and self-check tooling are separate from this product change.

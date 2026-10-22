@@ -142,23 +142,10 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         .timeout(Duration::from_secs(45))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let mut meta = serde_json::to_value(&report.meta)?;
-    if super::sprint::enabled() {
-        let context = super::sprint::context();
-        for key in ["branch", "durations", "duration_seconds"] {
-            if let Some(value) = context.get(key) {
-                meta[key] = value.clone();
-            }
-        }
-        meta["stage"] = "manual".into();
-    }
     let mut form = Form::new()
         .text("text", report.text.clone())
         .text("kind", report.kind.wire())
-        .text("meta", serde_json::to_string(&meta)?);
-    if super::sprint::enabled() {
-        form = form.text("title", super::sprint::title());
-    }
+        .text("meta", serde_json::to_string(&report.meta)?);
     if let Some(bytes) = &report.screenshot {
         form = form.part(
             "screenshot",

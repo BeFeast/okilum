@@ -7298,8 +7298,6 @@ fn main() {
     });
     app.on_reopen(reader_startup::reopen);
     app.run(move |cx| {
-        #[cfg(target_os = "macos")]
-        reader_manager_focus::install_diagnostics();
         diagnostics.event("app_run_callback", serde_json::json!({}));
         reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));

@@ -17,8 +17,26 @@ const char *okilum_manager_edit_action(const char *key, bool command, bool shift
     return NULL;
 }
 
+// Cocoa reports Cyrillic charactersIgnoringModifiers for Cmd on a Russian
+// layout (the tester log has Cmd+V as "м"). Preserve Latin layout semantics,
+// then resolve non-Latin shortcuts by the physical ANSI editing-key positions.
+const char *okilum_manager_edit_action_for_keycode(const char *key, unsigned short keycode,
+    bool command, bool shift, bool control, bool option) {
+    const char *action = okilum_manager_edit_action(key, command, shift, control, option);
+    if (action || !key || (unsigned char)key[0] < 0x80) return action;
+    const char *latin = NULL;
+    switch (keycode) {
+        case 0: latin = "a"; break;
+        case 6: latin = "z"; break;
+        case 7: latin = "x"; break;
+        case 8: latin = "c"; break;
+        case 9: latin = "v"; break;
+        default: return NULL;
+    }
+    return okilum_manager_edit_action(latin, command, shift, control, option);
+}
+
 typedef void (*OkilumFocusChanged)(void *, int);
-static void KeyLog(NSString *format, ...) NS_FORMAT_FUNCTION(1,2);
 static void KeyInstallRouter(id router);
 static void KeyRemoveRouter(id router);
 static void KeyCancelCommands(id router);
@@ -102,13 +120,11 @@ bool okilum_manager_focus_cycle_regression(void) {
         self.focusCycle = cycle;
         KeyCancelCommands(self);
         self.nativeRouting = NO;
-        KeyLog(@"focus-cycle epoch=%lu armed=%d firstResponder=%@", cycle.epoch, cycle.armed, NSStringFromClass(self.webview.window.firstResponder.class));
         if (focused) {
             // Native app focus can return without a DOM focusin (the same field
             // stays active). Publish a fresh snapshot on EVERY ownership entry.
             [self.webview evaluateJavaScript:@"window.__okilumKeysV2?.reportContext()" completionHandler:^(id value, NSError *error) {
                 (void)value;
-                KeyLog(@"focus-cycle snapshot epoch=%lu errorCode=%ld", cycle.epoch, (long)error.code);
             }];
         }
     }
@@ -156,7 +172,6 @@ bool okilum_manager_focus_cycle_regression(void) {
         if (!inside) break;
         if ([target respondsToSelector:action]) {
             BOOL delivered = [NSApp sendAction:action to:target from:sender];
-            KeyLog(@"native edit action=%@ target=%@ delivered=%d", NSStringFromSelector(action), NSStringFromClass(target.class), delivered);
             if (delivered) return YES;
         }
         if (target == view) break;
@@ -164,7 +179,6 @@ bool okilum_manager_focus_cycle_regression(void) {
     return NO;
 }
 - (void)editCommand:(NSMenuItem *)item {
-    KeyLog(@"menu hit title=%@ action=%@ target=%@", item.title, item.representedObject, NSStringFromClass(self.class));
     if (self.nativeRouting) {
         [self dispatchEditAction:NSSelectorFromString(item.representedObject) sender:item];
         return;
@@ -211,11 +225,10 @@ bool okilum_manager_focus_cycle_regression(void) {
     NSResponder *responder = window.firstResponder;
     if (event.type == NSEventTypeKeyDown) {
         NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-        const char *action = okilum_manager_edit_action(event.charactersIgnoringModifiers.lowercaseString.UTF8String,
+        const char *action = okilum_manager_edit_action_for_keycode(event.charactersIgnoringModifiers.lowercaseString.UTF8String, event.keyCode,
             (flags & NSEventModifierFlagCommand) != 0, (flags & NSEventModifierFlagShift) != 0,
             (flags & NSEventModifierFlagControl) != 0, (flags & NSEventModifierFlagOption) != 0);
         if (action) {
-            KeyLog(@"local event monitor action=%s nativeRouting=%d firstResponder=%@", action, self.nativeRouting, NSStringFromClass(window.firstResponder.class));
             if (self.nativeRouting) return event;
             if ([self handleCommandEvent:event]) return nil;
             return event;
@@ -288,4 +301,14 @@ void okilum_manager_focus_refresh(void *handle) {
 void okilum_manager_focus_detach(void *handle) {
     OkilumManagerFocus *router = (__bridge_transfer OkilumManagerFocus *)handle;
     [router detach];
+}
+
+void okilum_manager_focus_document_loaded(void *handle) {
+    OkilumManagerFocus *router = (__bridge OkilumManagerFocus *)handle;
+    // The initial URL can begin loading before attach adds its WKUserScript.
+    // Reinstall idempotently in the finished document, never just about:blank.
+    NSString *script = [KeyPageScript stringByAppendingString:@";window.__okilumKeysV2?.reportContext();"];
+    [router.webview evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+        (void)value;
+    }];
 }

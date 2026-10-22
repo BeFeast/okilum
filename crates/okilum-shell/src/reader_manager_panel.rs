@@ -224,6 +224,14 @@ impl ManagerPanel {
                         if this.generation != generation {
                             return;
                         }
+                        if event.starts_with("page-load:") {
+                            if event == "page-load:finished" {
+                                if let Some(routing) = &this.focus_routing {
+                                    routing.document_loaded();
+                                }
+                            }
+                            return;
+                        }
                         let owns_native_focus =
                             this.focus_routing.as_ref().is_some_and(|routing| {
                                 routing.refresh();
@@ -250,6 +258,7 @@ impl ManagerPanel {
             }
         })
         .detach();
+        let page_events = send.clone();
         let browser = wry::WebViewBuilder::new()
             .with_data_store_identifier(*b"OkilumManagerWeb")
             .with_url(url.as_str())
@@ -271,6 +280,13 @@ impl ManagerPanel {
                 if matches!(request.body().as_str(), "focus" | "blur" | "escape") {
                     let _ = send.try_send(request.body().clone());
                 }
+            })
+            .with_on_page_load_handler(move |event, _url| {
+                let event = match event {
+                    wry::PageLoadEvent::Started => "page-load:started",
+                    wry::PageLoadEvent::Finished => "page-load:finished",
+                };
+                let _ = page_events.try_send(event.into());
             })
             .with_navigation_handler(|url| {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
@@ -327,20 +343,24 @@ impl Render for ManagerPanel {
                     .child(view.clone())
                     .child(
                         gpui::canvas(
-                            |bounds, window, _| bounds.intersect(&window.content_mask().bounds),
-                            move |_, full, window, cx| {
+                            |_, _, _| (),
+                            move |_, (), window, cx| {
                                 if !view_state.read(cx).visible() {
                                     return;
                                 }
+                                // Wry's element has already laid out the actual native
+                                // child. A sibling absolute canvas can have a different
+                                // static position: never use it to move/hide WebKit.
+                                let full = view_state.read(cx).bounds();
+                                let overlays = gpui_base::GlobalState::native_overlays(window, cx);
                                 let clear = crate::reader_manager_occlusion::uncovered_bounds(
-                                    full,
-                                    gpui_base::GlobalState::native_overlays(window, cx),
+                                    full, overlays,
                                 );
                                 // All ordinary AND deferred overlays have completed
                                 // prepaint before this paint callback. Never use the
                                 // previous frame's popup geometry.
                                 let obscured = clear != Some(full);
-                                let _ = panel.update(cx, |panel, _| {
+                                let _ = panel.update(cx, |panel, cx| {
                                     if obscured
                                         && panel.focus_routing.as_ref().is_some_and(|r| r.focused())
                                     {
@@ -375,7 +395,7 @@ impl Render for ManagerPanel {
                             },
                         )
                         .absolute()
-                        .size_full(),
+                        .inset_0(),
                     ),
             );
         }

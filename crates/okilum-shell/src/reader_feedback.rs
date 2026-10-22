@@ -6,13 +6,9 @@ use gpui_component::{
     input::{Paste, Textarea, TextareaState},
 };
 mod model;
-pub(crate) mod sprint;
 use model::{Kind, Metadata, Receipt, Report};
 
-gpui::actions!(
-    okilum_feedback,
-    [SendFeedback, CloseFeedback, SendSprintReport]
-);
+gpui::actions!(okilum_feedback, [SendFeedback, CloseFeedback]);
 #[derive(Default)]
 struct Drafts(std::collections::HashMap<WindowId, Draft>);
 struct Draft {
@@ -28,17 +24,6 @@ pub(crate) fn install(cx: &mut App) {
         KeyBinding::new("secondary-w", CloseFeedback, Some("OkilumFeedbackWindow")),
         KeyBinding::new("escape", CloseFeedback, Some("OkilumFeedbackWindow")),
     ]);
-    cx.on_action(|_: &SendSprintReport, cx| {
-        if !sprint::enabled() {
-            return;
-        }
-        let Some(handle) = cx.active_window() else {
-            return;
-        };
-        cx.defer(move |cx| {
-            let _ = handle.update(cx, |_, window, cx| show_mode(window, cx, true));
-        });
-    });
     cx.on_action(|_: &SendFeedback, cx| {
         let Some(handle) = cx.active_window() else {
             return;
@@ -115,9 +100,6 @@ fn native_backing_scale(window: &Window) -> Option<f32> {
 }
 
 fn show(window: &mut Window, cx: &mut App) {
-    show_mode(window, cx, false);
-}
-fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
     cx.default_global::<Drafts>();
     let id = window.window_handle().window_id();
     // Help -> Send feedback in the Feedback window reuses its originating draft.
@@ -130,10 +112,10 @@ fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
     let meta = metadata(window);
     // Menu/button dispatch may still borrow the caller's window. Opening or
     // activating another window happens only after that borrow is released.
-    cx.defer(move |cx| show_for(owner, meta, send_immediately, cx));
+    cx.defer(move |cx| show_for(owner, meta, cx));
 }
 
-fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut App) {
+fn show_for(owner: WindowId, meta: Metadata, cx: &mut App) {
     if let Some(handle) = cx
         .global::<Drafts>()
         .0
@@ -144,10 +126,6 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
             .update(cx, |_, window, _| window.activate_window())
             .is_ok()
         {
-            if send_immediately {
-                let view = cx.global::<Drafts>().0[&owner].view.clone();
-                view.update(cx, |view, cx| view.send(cx));
-            }
             return;
         }
     }
@@ -197,17 +175,13 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
     });
     match result {
         Ok(window) => {
-            let view = opened.unwrap();
             cx.global_mut::<Drafts>().0.insert(
                 owner,
                 Draft {
-                    view: view.clone(),
+                    view: opened.unwrap(),
                     window,
                 },
             );
-            if send_immediately {
-                view.update(cx, |view, cx| view.send(cx));
-            }
         }
         Err(error) => eprintln!("Could not open Feedback: {error}"),
     }
@@ -290,13 +264,6 @@ impl FeedbackView {
                 }
             },
         );
-        let log_path = reader_diagnostics::feedback_log_path(cx).ok();
-        let sprint_log = log_path.clone();
-        if sprint::enabled() {
-            text.update(cx, |text, cx| {
-                text.set_value("Sprint test report", window, cx)
-            });
-        }
         Self {
             text,
             meta,
@@ -306,12 +273,10 @@ impl FeedbackView {
             image_error: None,
             attaching: false,
             image_generation: 0,
-            include_log: sprint::enabled(),
-            log_path,
+            include_log: false,
+            log_path: reader_diagnostics::feedback_log_path(cx).ok(),
             state: SendState::Compose,
-            sender: Arc::new(move |report| {
-                model::send(sprint::enrich(report, sprint_log.as_deref())?)
-            }),
+            sender: Arc::new(model::send),
             _send: None,
             _image: None,
             _text: subscription,
@@ -351,9 +316,7 @@ impl FeedbackView {
     }
     fn report(&self, cx: &App) -> anyhow::Result<Report> {
         let mut report = self.report_without_log(cx);
-        if self.include_log && sprint::enabled() {
-            report.log = Some(String::new());
-        } else if self.include_log {
+        if self.include_log {
             let path = self.log_path.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Diagnostic log unavailable. Uncheck the log attachment to send without it."
@@ -640,11 +603,7 @@ impl Render for FeedbackView {
             .child(
                 Checkbox::new("feedback-log")
                     .debug_selector(|| "feedback-log".into())
-                    .label(if sprint::enabled() {
-                        "Attach Sprint and app diagnostic logs"
-                    } else {
-                        "Attach last 250 log lines"
-                    })
+                    .label("Attach last 250 log lines")
                     .checked(self.include_log)
                     .disabled(busy)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
