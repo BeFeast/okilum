@@ -175,3 +175,16 @@ same bytes in the existing Linux path with immutable `builds/<n>/` assets and
 `beta/Okilum-x86_64.AppImage`; later self-update must verify existing GPG trust,
 respect beta/stable selection and replace a writable AppImage atomically without
 root. Until implemented, this unsigned CI artifact is for explicit QA only.
+
+### Slice 2: exact-main reuse and beta signing
+
+The same `forgejo-linux.yml` now also runs on public mirror `main` pushes, so
+merge source has its own AppImage rather than a relabelled PR artifact. The
+hosted AppImage job additionally verifies disposable-key signing/install/tamper
+rejection on the actual payload. No live signing credentials reach GitHub.
+The existing Linux bridge resolves completed exact-source acceptance and transfers
+one original archive plus evidence; it never rebuilds or dispatches a replacement.
+Missing/expired/ambiguous evidence fails closed. The existing protected Linux
+publisher signs and publishes beta using the same key/R2/lock. See
+[AppImage beta publication](linux-releases.md#appimage-beta-publication-1470-slice-2)
+for numbering, paths, retry semantics and remaining live verification gates.

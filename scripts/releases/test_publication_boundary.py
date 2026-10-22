@@ -55,8 +55,9 @@ class PublicationBoundary(unittest.TestCase):
         for final_head, expected in [('source', True), ('newer', True)]:
             api = Mock()
             api.call.side_effect = [run, {'commit': {'id': 'source'}},
-                [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}],
-                data.getvalue(), {'commit': {'id': final_head}}]
+                [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
+                 for i, name in enumerate(publication.ARTIFACTS['linux'])],
+                data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
             with patch.object(publication.subprocess, 'run') as launch, patch.object(publication, 'R2') as store:
                 store.return_value.call.return_value = None
                 publication.publish(api, 'linux', 12)
@@ -153,8 +154,9 @@ class ExplicitSourcePublication(unittest.TestCase):
                'status': 'success', 'commit_sha': 'c' * 40, 'index_in_repo': 42}
         api = Mock()
         api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
-                                [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}],
-                                data.getvalue(), {'commit': {'id': final_head}}]
+                                [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
+             for i, name in enumerate(publication.ARTIFACTS['linux'])],
+                                data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
         launches = []
 
         def run_command(args, **kwargs):
@@ -172,13 +174,13 @@ class ExplicitSourcePublication(unittest.TestCase):
     def test_scheduled_tick_that_built_main_tip_publishes_to_beta(self):
         # The tick's own commit is its old snapshot; it built main's newer tip instead.
         launches = self.publish('d' * 40, event='schedule', feed=1)
-        self.assertEqual(len(launches), 1)
+        self.assertEqual(len(launches), 2)
         self.assertNotIn('--archive-only', launches[0])
         self.assertIn('d' * 40, launches[0])
 
     def test_an_older_recorded_source_is_published_to_the_archive(self):
         launches = self.publish('d' * 40)
-        self.assertEqual(len(launches), 1)
+        self.assertEqual(len(launches), 2)
         command = launches[0]
         self.assertIn('--archive-only', command)
         self.assertEqual(command[command.index('--source') + 1], 'd' * 40)
@@ -186,7 +188,7 @@ class ExplicitSourcePublication(unittest.TestCase):
     def test_main_moving_on_during_transfer_does_not_stop_an_archive_publication(self):
         # The point of an explicit source is that main has moved past it.
         launches = self.publish('d' * 40, final_head='e' * 40)
-        self.assertEqual(len(launches), 1)
+        self.assertEqual(len(launches), 2)
         self.assertIn('--archive-only', launches[0])
 
     def test_the_run_own_commit_is_an_ordinary_snapshot(self):

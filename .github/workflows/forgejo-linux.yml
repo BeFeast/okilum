@@ -2,7 +2,7 @@
 name: forgejo-linux
 on:
   push:
-    branches: ['forgejo-linux-pr/**']
+    branches: [main, 'forgejo-linux-pr/**']
 permissions:
   contents: read
 concurrency:
@@ -95,6 +95,10 @@ jobs:
               "$image" bash /source/scripts/appimage/smoke.sh \
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
           done
+      - name: Verify signed AppImage installation with disposable CI key
+        run: |
+          python3 scripts/releases/appimage_ci.py dist/appimage \
+            2>&1 | tee dist/appimage/evidence/signature-install.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

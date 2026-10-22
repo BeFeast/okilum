@@ -116,8 +116,36 @@ jobs:
           path: dist/arch/*.pkg.tar.zst
           retention-days: 7
 
-      - name: Dispatch protected publication
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+  appimage-reuse:
+    needs: select
+    if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: bridge
+    timeout-minutes: 10
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve accepted exact-source AppImage without compiling
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          SOURCE: ${{ needs.select.outputs.source }}
+        run: python3 scripts/releases/appimage_artifact.py --source "$SOURCE" --directory dist/appimage-publication
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: appimage-publication
+          path: dist/appimage-publication/
+          retention-days: 7
+
+  publication:
+    needs: [select, release, appimage-reuse]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: bridge
+    timeout-minutes: 3
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dispatch protected publication after both artifacts are complete
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
