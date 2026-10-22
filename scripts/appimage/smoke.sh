@@ -10,7 +10,7 @@ case "$(. /etc/os-release; echo "$ID:$VERSION_ID")" in
             xvfb xauth xdotool x11-utils dbus-x11 ;;
     fedora:*)
         dnf install -y python3 file vulkan-loader mesa-vulkan-drivers fontconfig freetype \
-            libxcb libxkbcommon libxkbcommon-x11 wayland-libs glib2 dbus-libs \
+            libxcb libxkbcommon libxkbcommon-x11 libwayland-client glib2 dbus-libs \
             dejavu-sans-fonts xorg-x11-server-Xvfb xorg-x11-xauth xdotool xmessage dbus-x11 ;;
     *) echo 'Unexpected smoke runtime'; exit 1 ;;
 esac
