@@ -333,13 +333,13 @@ impl Render for ManagerPanel {
                                     return;
                                 }
                                 let clear = crate::reader_manager_occlusion::uncovered_bounds(
-                                    *full,
+                                    full,
                                     gpui_base::GlobalState::native_overlays(window, cx),
                                 );
                                 // All ordinary AND deferred overlays have completed
                                 // prepaint before this paint callback. Never use the
                                 // previous frame's popup geometry.
-                                let obscured = clear != Some(*full);
+                                let obscured = clear != Some(full);
                                 let _ = panel.update(cx, |panel, _| {
                                     if obscured
                                         && panel.focus_routing.as_ref().is_some_and(|r| r.focused())
