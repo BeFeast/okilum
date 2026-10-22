@@ -361,7 +361,7 @@ impl ManagerPanel {
 }
 
 impl Render for ManagerPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let mut body = v_flex()
             .size_full()
             .min_h_0()
