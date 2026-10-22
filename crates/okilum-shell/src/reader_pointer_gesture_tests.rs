@@ -66,6 +66,14 @@ fn reader_press_and_drag(
         Modifiers::default(),
     );
     visual.run_until_parked();
+    // Establish the window-owned selection at an App update boundary before
+    // capturing the painted baseline used by the cancellation assertions.
+    visual.update(|window, cx| {
+        assert!(
+            gpui_base::TextSelection::has_selection(window, cx),
+            "positive control: the window registered a real text hit"
+        );
+    });
     let selection = reader.read_with(visual, |reader, cx| {
         let content = reader.content.read(cx);
         assert!(
