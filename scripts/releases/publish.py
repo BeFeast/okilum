@@ -15,6 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import catalog
+import release_notes
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS / 'updater'))
@@ -256,7 +257,7 @@ def preflight_linux_macos(store, release):
         raise ValueError('Selected macOS build is absent from appcast')
 
 
-def complete_windows(store, github, build):
+def complete_windows(store, github, build, forgejo=None):
     """Put the re-signed Windows build of the current stable commit on stable (#1104).
 
     Stable already carries `build` with an unsigned Windows build; after the owner's
@@ -283,6 +284,9 @@ def complete_windows(store, github, build):
     published = github.call('GET', f'/releases/tags/{tag}')
     if published is None:
         raise ValueError(f'GitHub release {tag} is missing')
+    stable_notes = release_notes.prepare_stable(store, forgejo, 'windows',
+                        release['platforms']['windows']['build'], release['source'])
+    release_notes.record(store, stable_notes)
     windows.promote(release['platforms']['windows']['build'], store)
     github_release(github, tag, release, files, published.get('body') or '', True)
     store.put(f'{catalog.PREFIX}/promoting.json', catalog.encode(release), 'application/json', 'no-cache')
@@ -349,14 +353,25 @@ def execute(store, github, forgejo, build=None, supersede_pending=False, skip_wi
             Path(str(path) + '.sig').write_bytes(files[name + '.sig'])
             signing.verify(path)
             arch.validate_package(path, release['platforms']['linux']['build'])
+            # All existing promotion/signature checks above run before notes or
+            # feeds change. Capture each platform's actual Stable predecessor.
+            promoted = ['macos', 'linux'] + ([] if skip_windows else ['windows'])
+            stable_notes = {platform: release_notes.prepare_stable(
+                                store, forgejo, platform,
+                                release['platforms'][platform]['build'], release['source'])
+                            for platform in promoted}
             store.put(pending_key, catalog.encode(release), 'application/json', 'no-cache')
+            # Pin ranges before changing feeds; retries must retain predecessors.
+            for payload in stable_notes.values():
+                release_notes.record(store, payload)
             # Mirror/tag first: an unavailable GitHub cannot leave promoted feeds.
             tag = mirror_tag(release, True)
             arch.execute(SimpleNamespace(command='promote', build=release['platforms']['linux']['build']),
                          store, signing, directory)
             if not skip_windows:
                 windows.promote(release['platforms']['windows']['build'], store)
-            promote_macos(SimpleNamespace(app='okilum', build=release['build']))
+            promote_macos(SimpleNamespace(app='okilum', build=release['build'],
+                                          release_notes=stable_notes['macos']))
         store.put('okilum/macos/latest.zip', files['Okilum-macos.zip'], 'application/zip', 'no-cache')
         # Builds before #993 have no DMG; the stable DMG then keeps its previous build.
         for item in release['platforms']['macos']['assets'][1:]:
@@ -385,7 +400,7 @@ if __name__ == '__main__':
     if args.windows_only:
         if args.build is None:
             parser.error('--windows-only requires --build')
-        complete_windows(R2(), GitHub(), args.build)
+        complete_windows(R2(), GitHub(), args.build, Forgejo())
         raise SystemExit(0)
     if args.supersede_pending and args.build is None:
         parser.error('--supersede-pending requires --build')
