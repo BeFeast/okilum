@@ -231,7 +231,7 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
         feedback = feedback_context(reader);
         visual = &mut feedback;
         assert_eq!(
-            get_draft(&mut visual).entity_id(),
+            get_draft(visual).entity_id(),
             view.entity_id(),
             "same failed draft"
         );
