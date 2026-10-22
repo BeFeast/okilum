@@ -122,6 +122,24 @@ The key expires in three years; renew/export it before expiry and update both
 secret stores and the published public key. Key rotation requires communicating
 and verifying the new fingerprint before changing the configured signer.
 
+## Unsigned AppImage CI artifact (#1470)
+
+The required hosted Linux lane builds the portable QA AppImage on Ubuntu 22.04
+with GNU bfd. The retained artifact from PR #1471 at `ee7702bb` had a concrete
+ELF corruption after linuxdeploy rewrote the mold 1.0.3 executable: its 13 program
+headers ended at file offset `0x318`, overlapping `.rela.dyn` at `0x308`.
+The last `PT_NOTE` overwrote the first relocation's offset and type, changing
+`R_X86_64_RELATIVE` to `R_X86_64_PLT32` while `DT_RELACOUNT` still declared
+176680 relative relocations. `ldd` passed, but actual startup failed in ld.so.
+
+AppImage builds therefore use bfd independently of other Linux lanes and check
+the relocation prefix and program-header overlap before and after deployment.
+The unchanged packaged artifact must still pass actual help/window/exit smoke
+on clean Ubuntu and Fedora without an external library-path override. Structural
+checks do not replace that native gate. Build diagnostics and failed smoke logs
+are retained as CI evidence. This path remains unsigned QA, without publication
+or self-update.
+
 ## Owner acceptance
 
 On Omarchy, with the beta stanza from «Beta channel», install beta N as above (`omarchy update`, then `sudo pacman -S okilum`)
