@@ -78,7 +78,20 @@ impl ManagerPanel {
 
     // Called for the AppKit mouse-down notification, not merely DOM focus.
     #[cfg(any(target_os = "macos", test))]
-    fn native_focus_entered(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn native_focus_entered(
+        &mut self,
+        generation: u64,
+        owns_native_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.generation {
+            return;
+        }
+        if !owns_native_focus {
+            self.focused = false;
+            return;
+        }
         if let Some(focus) = window.focused(cx) {
             self.previous_gpui_focus = Some(focus);
         }
@@ -163,7 +176,7 @@ impl ManagerPanel {
                 match result {
                     Ok(url) => {
                         #[cfg(target_os = "macos")]
-                        match Self::browser(&url, window, cx) {
+                        match Self::browser(&url, generation, window, cx) {
                             Ok((view, routing)) => {
                                 this.focus_routing = Some(routing);
                                 this.webview = Some(view);
@@ -189,6 +202,7 @@ impl ManagerPanel {
     #[cfg(target_os = "macos")]
     fn browser(
         url: &url::Url,
+        generation: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<(
@@ -206,20 +220,25 @@ impl ManagerPanel {
             while let Ok(event) = receive.recv().await {
                 if this
                     .update_in(cx, |this, window, cx| {
-                        if let Some(routing) = &this.focus_routing {
-                            routing.refresh();
+                        // An old browser's queued callbacks must not affect its successor.
+                        if this.generation != generation {
+                            return;
                         }
+                        let owns_native_focus =
+                            this.focus_routing.as_ref().is_some_and(|routing| {
+                                routing.refresh();
+                                routing.focused()
+                            });
                         if event == "native-focus" {
-                            this.native_focus_entered(window, cx);
+                            this.native_focus_entered(generation, owns_native_focus, window, cx);
                         } else {
-                            this.focused = event == "focus";
+                            this.focused = owns_native_focus;
                         }
-                        if event == "escape" {
+                        // Escape already returned native focus. Do not overwrite a newer
+                        // outside input or a subsequent re-entry into the webview.
+                        if event == "escape" && !owns_native_focus && window.focused(cx).is_none() {
                             if let Some(focus) = this.previous_gpui_focus.take() {
                                 focus.focus(window, cx);
-                            }
-                            if let Some(view) = &this.webview {
-                                let _ = view.read(cx).raw().focus_parent();
                             }
                         }
                         cx.notify();
@@ -381,7 +400,7 @@ mod native_focus_tests {
             );
             // Same handler called by the native mouse-down callback. A real
             // WKWebView first-responder check remains Oleg's Mac acceptance.
-            panel.native_focus_entered(window, cx);
+            panel.native_focus_entered(panel.generation, true, window, cx);
             assert!(
                 window.focused(cx).is_none(),
                 "webview entry must release every GPUI input"
@@ -394,6 +413,28 @@ mod native_focus_tests {
             assert_eq!(
                 panel.origin.read(cx).value().as_str(),
                 "https://t3.oklabs.uk"
+            );
+            // Entry was queued, but an outside click acquired another input
+            // before delivery. The live native-focus check must preserve it.
+            let queued_generation = panel.generation;
+            let outside = cx.new(|cx| InputState::new(window, cx));
+            let outside_focus = outside.read(cx).focus_handle(cx);
+            outside_focus.focus(window, cx);
+            panel.native_focus_entered(queued_generation, false, window, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(outside_focus.clone()),
+                "late entry must not clear the outside-click target"
+            );
+            assert!(!panel.focused);
+            // A replaced browser's entry remains stale even if its successor
+            // now owns native focus.
+            panel.generation += 1;
+            panel.native_focus_entered(queued_generation, true, window, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(outside_focus),
+                "old routing instance cannot blur a successor's GPUI target"
             );
         });
     }
