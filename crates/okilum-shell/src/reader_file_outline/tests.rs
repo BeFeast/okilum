@@ -31,10 +31,12 @@ fn yaml_keys_keep_source_lines_nesting_and_scalar_boundaries() {
         Some("flags")
     );
     assert_eq!(parent_label(&outline, find(&outline, "name")), Some("[0]"));
-    assert!(!outline
-        .entries
-        .iter()
-        .any(|entry| entry.label == "not_a_key"));
+    assert!(
+        !outline
+            .entries
+            .iter()
+            .any(|entry| entry.label == "not_a_key")
+    );
 }
 
 #[test]
@@ -111,10 +113,12 @@ fn rust_symbols_group_impls_and_traits_without_scanning_strings_or_comments() {
         Some("trait Stop")
     );
     assert_eq!(find(&outline, "fn main").line, 7);
-    assert!(!outline
-        .entries
-        .iter()
-        .any(|entry| entry.label.contains("not_a_symbol")));
+    assert!(
+        !outline
+            .entries
+            .iter()
+            .any(|entry| entry.label.contains("not_a_symbol"))
+    );
 }
 
 #[test]
@@ -127,18 +131,22 @@ fn python_symbols_include_decorated_classes_methods_and_async_functions() {
         Some("class Service")
     );
     assert_eq!(find(&outline, "def main").line, 10);
-    assert!(!outline
-        .entries
-        .iter()
-        .any(|entry| entry.label.contains("not_a_symbol")));
+    assert!(
+        !outline
+            .entries
+            .iter()
+            .any(|entry| entry.label.contains("not_a_symbol"))
+    );
 }
 
 #[test]
 fn malformed_yaml_is_partial_or_empty_and_never_an_error() {
     // Positive control: the same parser finds actual YAML keys.
-    assert!(!parse::parse("yaml", "valid:\n  child: true\n")
-        .entries
-        .is_empty());
+    assert!(
+        !parse::parse("yaml", "valid:\n  child: true\n")
+            .entries
+            .is_empty()
+    );
     let source = include_str!("fixtures/malformed.yaml");
     let outline = parse::parse("yaml", source);
     for entry in &outline.entries {
@@ -221,12 +229,22 @@ impl Render for Surface {
                     .h_full()
                     .child(Editor::new(&self.input).readonly(true).size_full()),
             )
-            .child(div().w(px(280.)).h_full().child(self.outline.clone()))
+            .child(
+                div()
+                    .w(px(280.))
+                    .h_full()
+                    .relative()
+                    .child(self.outline.clone())
+                    .child(View::track_viewport({
+                        let outline = self.outline.downgrade();
+                        move |_| outline.upgrade()
+                    })),
+            )
     }
 }
 
 #[gpui::test]
-fn expanding_and_clicking_use_the_real_editor_lines(cx: &mut TestAppContext) {
+fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let source = format!(
         "first:\n  child: true\n{}second:\n  value: true\n{}",
@@ -274,14 +292,51 @@ fn expanding_and_clicking_use_the_real_editor_lines(cx: &mut TestAppContext) {
         .expect("a real row click target");
     visual.simulate_click(second.center(), Modifiers::default());
     visual.run_until_parked();
-    visual.update(|window, cx| window.draw(cx).clear(cx));
-    visual.run_until_parked();
+    // As in the cached Markdown panel regression, the test platform needs an
+    // explicit display frame. Paint publishes the viewport; observers then run.
+    let frame = |visual: &mut VisualTestContext| {
+        // Deliver the finite post-layout callbacks as a real platform would.
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+        }
+        visual.run_until_parked();
+    };
+    frame(visual);
     input.read_with(visual, |input, _| {
         assert_eq!(input.top_visible_line(), Some(102))
     });
+    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(2)));
+    // A real wheel scroll is independent of the outline's jump API and caret.
+    let editor = visual.debug_bounds("outline-editor-viewport").unwrap();
+    visual.simulate_event(ScrollWheelEvent {
+        position: editor.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    frame(visual);
+    input.read_with(visual, |input, _| {
+        assert!((2..102).contains(&input.top_visible_line().unwrap()))
+    });
+    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(1)));
     input.read_with(visual, |input, _| {
         assert_eq!(input.cursor_position(), Position::default())
     });
+    // Frame demand must drain once the viewport settles. Deliver callbacks
+    // without forcing extra paints (as the platform's idle frame loop does).
+    for _ in 0..2 {
+        assert_eq!(
+            visual.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "no outline frame callbacks at idle"
+        );
+        visual.run_until_parked();
+    }
+    outline.read_with(visual, |view, _| assert!(!view.sample_pending));
 }
 
 #[gpui::test]
@@ -339,7 +394,8 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
     );
     assert!(visual.debug_bounds("file-linked-from-heading").is_some());
     outline.read_with(visual, |view, _| {
-        assert!(view.data.entries.iter().any(|entry| entry.line > 0))
+        assert!(view.data.entries.iter().any(|entry| entry.line > 0));
+        assert_eq!(view.current, None, "Pretty starts above the first key");
     });
     let raw = visual
         .debug_bounds("json-raw")
@@ -354,6 +410,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
             view.data.entries.iter().all(|entry| entry.line == 0),
             "outline follows the displayed raw text"
         );
+        assert_eq!(view.current, Some(2), "Raw uses its single displayed line");
     });
     reader.update_in(visual, |reader, window, cx| {
         reader.open_note("plain.txt", None, window, cx)
@@ -366,5 +423,170 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         "positive control: file panel remains rendered"
     );
     assert!(visual.debug_bounds("file-contents-heading").is_none());
-    outline.read_with(visual, |view, _| assert!(!view.has_entries()));
+    outline.read_with(visual, |view, _| {
+        assert!(!view.has_entries());
+        assert_eq!(
+            view.current, None,
+            "navigation clears the prior current entry"
+        );
+    });
+}
+
+#[test]
+fn current_child_maps_to_the_visible_ancestor() {
+    let now = std::time::Instant::now();
+    let outline = parse::parse_with_clock("yaml", "first:\n  child: true\nsecond: true\n", || now);
+    let mut expanded = BTreeSet::new();
+    assert_eq!(outline.current(1, &outline.visible(&expanded)), Some(0));
+    expanded.insert(0);
+    assert_eq!(outline.current(1, &outline.visible(&expanded)), Some(1));
+    assert_eq!(outline.current(2, &outline.visible(&expanded)), Some(2));
+    assert_eq!(outline.current(0, &[]), None);
+}
+
+/// Exercise the production sampling wrapper outside a cached right panel,
+/// including replacing the read-only preview with the writable Source editor.
+#[gpui::test]
+fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut TestAppContext) {
+    let _cache = reader_side_panel::tests::CachedPanels::on();
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        bind_keys(cx);
+    });
+    let root = tempfile::tempdir().unwrap();
+    let source = format!(
+        "first:\n  child: true\n{}second:\n  value: true\n{}",
+        "# padding\n".repeat(100),
+        "# tail\n".repeat(100)
+    );
+    std::fs::write(root.path().join("config.yaml"), &source).unwrap();
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut reader = Reader::new(
+                Opts {
+                    vault: Some(root.path().to_path_buf()),
+                    note: Some("config.yaml".into()),
+                    index_dir: Some(root.path().join(".index")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            reader.panels.open(reader_layout::Panel::Backlinks);
+            reader
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    visual.simulate_resize(size(px(1400.), px(650.)));
+    let settle = |visual: &mut VisualTestContext| {
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(130));
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+        }
+    };
+    settle(visual);
+    let outline = reader.read_with(visual, |reader, cx| {
+        reader.side_panels[1]
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .file_outline
+            .clone()
+            .unwrap()
+    });
+    for editable in [false, true] {
+        if editable {
+            reader.update_in(visual, |reader, window, cx| {
+                reader.toggle_source(window, cx)
+            });
+            settle(visual);
+        }
+        let input = outline.read_with(visual, |view, _| view.input.clone().unwrap());
+        reader.read_with(visual, |reader, cx| {
+            if editable {
+                assert_eq!(
+                    Some(input.clone()),
+                    reader.source_input(),
+                    "Source owns the outline"
+                );
+            } else {
+                assert_eq!(
+                    input,
+                    reader
+                        .file_preview
+                        .as_ref()
+                        .unwrap()
+                        .code
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .input()
+                        .unwrap()
+                );
+            }
+        });
+        input.update(visual, |input, cx| input.set_selected_range(0..5, cx));
+        settle(visual);
+        let before = input.read_with(visual, |input, _| {
+            (
+                input.selected_range(),
+                input.cursor_position(),
+                input.text().clone(),
+            )
+        });
+        // The strict surface regression above clicks the real row. A cached
+        // subtree intentionally has no debug bounds on reused frames; invoke
+        // its same jump action here without invalidating the cache for a probe.
+        outline.update_in(visual, |view, window, cx| view.jump(2, window, cx));
+        settle(visual);
+        assert_eq!(
+            input.read_with(visual, |input, _| input.top_visible_line()),
+            Some(102)
+        );
+        outline.read_with(visual, |view, _| assert_eq!(view.current, Some(2)));
+        let viewport = visual.debug_bounds("reader-document").unwrap();
+        visual.simulate_event(ScrollWheelEvent {
+            position: viewport.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
+            ..Default::default()
+        });
+        settle(visual);
+        input.read_with(visual, |input, _| {
+            assert!(
+                (2..102).contains(&input.top_visible_line().unwrap()),
+                "real wheel moved the viewport"
+            );
+            assert_eq!(
+                (
+                    input.selected_range(),
+                    input.cursor_position(),
+                    input.text().clone()
+                ),
+                before
+            );
+        });
+        outline.read_with(visual, |view, _| {
+            assert_eq!(view.current, Some(0), "collapsed child maps to parent");
+            assert!(!view.sample_pending);
+        });
+        outline.update(visual, |view, cx| view.toggle(0, cx));
+        settle(visual);
+        outline.read_with(visual, |view, _| assert_eq!(view.current, Some(1)));
+        outline.update(visual, |view, cx| view.toggle(0, cx));
+        settle(visual);
+        outline.read_with(visual, |view, _| assert_eq!(view.current, Some(0)));
+    }
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("config.yaml")).unwrap(),
+        source
+    );
 }
