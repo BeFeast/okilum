@@ -156,6 +156,15 @@
          if !self.search_geometry_pending || self.search_reveal_pending {
              return;
          }
+@@ -776,7 +833,7 @@
+     /// `remeasure_items` re-arms the latch and marks the items unmeasured
+     /// while keeping their old sizes as hints, so the scrollbar does not
+     /// collapse in the frame before the next layout measures the real heights.
+-    fn invalidate_measured_heights(&self) {
++    pub(super) fn invalidate_measured_heights(&self) {
+         let count = self.list_state.item_count();
+         if count > 0 {
+             self.list_state.remeasure_items(0..count);
 --- a/crates/base/src/text/text_view.rs
 +++ b/crates/base/src/text/text_view.rs
 @@ -653,6 +653,7 @@
