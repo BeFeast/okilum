@@ -149,10 +149,11 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Shell GUI/native tests remain in macOS and the non-blocking Linux lane.
+      # Keep shared shell logic in the gate; native platform adapter tests remain
+      # in macOS and the full non-blocking Linux lane.
       - name: Test shared crates and contracts
         run: |
-          cargo test --workspace --exclude okilum-shell --locked
+          cargo test --workspace --locked -- --skip platform::
           cargo test -p okilum-core --no-default-features --test portable_reader --locked
           python3 -m unittest discover -s scripts/ci -p 'test_*.py'
           python3 -m unittest discover -s scripts/releases -p 'test_*.py'
