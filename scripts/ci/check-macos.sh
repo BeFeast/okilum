@@ -102,3 +102,8 @@ run_tests okilum-shell --bins reader_thumbnail::native_tests
 run_tests okilum-shell --bins updater::macos::tests::channel_defaults_to_stable_and_keeps_an_explicit_choice --exact
 
 release_cache_stats
+
+# #1502: real own NSWindow + Metal layer, not GPUI test render_to_image.
+# Unsupported on a denied/removed API is explicit attach-only evidence.
+cargo test --locked -p okilum-shell --lib own_window_capture -- --nocapture
+cargo run --locked -p okilum-shell --example own_window_capture --features own-window-capture-probe

@@ -103,6 +103,46 @@ fn main() {
             "-o",
         ])
         .arg(&quicklook));
+    println!("cargo:rerun-if-changed=src/own_window_capture/bridge.m");
+    let capture = out.join("own_window_capture.o");
+    run(Command::new("xcrun")
+        .args([
+            "clang",
+            "-fobjc-arc",
+            "-Wall",
+            "-Werror",
+            "-arch",
+            architecture,
+            "-mmacosx-version-min=11.0",
+            "-c",
+            "-fblocks",
+            "src/own_window_capture/bridge.m",
+            "-o",
+        ])
+        .arg(&capture));
+    println!("cargo:rustc-link-lib=framework=ImageIO");
+    println!("cargo:rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit");
+    println!("cargo:rustc-link-lib=framework=CoreGraphics");
+    let mut probe_object = None;
+    if env::var_os("CARGO_FEATURE_OWN_WINDOW_CAPTURE_PROBE").is_some() {
+        println!("cargo:rerun-if-changed=src/own_window_capture/probe.m");
+        let probe = out.join("own_window_capture_probe.o");
+        run(Command::new("xcrun")
+            .args([
+                "clang",
+                "-fobjc-arc",
+                "-arch",
+                architecture,
+                "-mmacosx-version-min=11.0",
+                "-c",
+                "src/own_window_capture/probe.m",
+                "-o",
+            ])
+            .arg(&probe));
+        probe_object = Some(probe);
+        println!("cargo:rustc-link-lib=framework=Metal");
+        println!("cargo:rustc-link-lib=framework=QuartzCore");
+    }
     let object = out.join("updater.o");
     run(Command::new("xcrun")
         .args([
@@ -117,12 +157,18 @@ fn main() {
         .arg(&framework)
         .args(["-c", "src/updater/bridge.m", "-o"])
         .arg(&object));
-    run(Command::new("xcrun")
+    let mut archive = Command::new("xcrun");
+    archive
         .args(["ar", "crs"])
         .arg(out.join("libokilum_updater.a"))
         .arg(object)
         .arg(thumbnail)
-        .arg(quicklook));
+        .arg(quicklook)
+        .arg(capture);
+    if let Some(probe) = probe_object {
+        archive.arg(probe);
+    }
+    run(&mut archive);
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=okilum_updater");
     println!("cargo:rustc-link-search=framework={}", framework.display());

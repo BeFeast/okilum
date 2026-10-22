@@ -9,7 +9,13 @@ publish = false
 name = "okilum"
 path = "src/main.rs"
 
+[[example]]
+name = "own_window_capture"
+required-features = ["own-window-capture-probe"]
+
 [features]
+# Hosted native positive control, never enabled for release artifacts.
+own-window-capture-probe = []
 default = ["brain"]
 brain = ["okilum-core/brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.
@@ -39,7 +45,7 @@ notify = "7"
 url = "2"
 regex = "1"
 resvg = "=0.45.1"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Inline PDF pages (#477). Exact pin: 0.x breaks often; an upgrade is a reviewed change.
 hayro = "=0.8.0"
 # Already in the graph through core/T3; public release notes use a bounded HTTPS client.
@@ -78,6 +84,7 @@ signal-hook-registry = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 okilum-sync-controller = { path = "../okilum-sync-controller" }
+x11rb = { version = "0.13.2", features = ["res"] }
 wayland-client = "=0.31.15"
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 rustix = { version = "=1.1.4", features = ["event", "net", "pipe", "fs", "process"] }
@@ -98,7 +105,7 @@ rustix = { version = "=1.1.4", features = ["fs", "process"] }
 [target.'cfg(windows)'.dependencies]
 dirs = "6"
 velopack = "=1.2.161"
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading"] }
 
 [build-dependencies]
 embed-resource = "=3.0.11"
