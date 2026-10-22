@@ -153,6 +153,7 @@ jobs:
       # in macOS and the full non-blocking Linux lane.
       - name: Test shared crates and contracts
         run: |
+          set -euo pipefail
           # The native container has tail as PID 1. Reap orphaned fixture
           # children while Cargo runs, so dead group members cannot linger as
           # zombies and prevent the unchanged Stopped certification (#1541).
