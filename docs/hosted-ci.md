@@ -142,3 +142,36 @@ Rollback before provisioning/build: revert #1445; no keychain, secret, service,
 runner or feed rollback is needed. Do not flip the lane or dispatch the legacy
 local path during workday as a rollback. A failed/ambiguous hosted run is a stop,
 not permission for rerun, fallback, a second compilation or a new version claim.
+
+## Portable Linux AppImage (issue #1470, slice 1)
+
+The required hosted Linux workflow builds one unsigned x86_64 AppImage on
+Ubuntu 22.04, independently of the existing Arch package. Its final `linux`
+job requires both the unchanged full Linux checks and AppImage compatibility
+checks. QA must reuse this artifact rather than dispatch `linux-binary` or
+compile another release. No release/publish/signing workflow is changed.
+
+The GitHub run retains `linux-appimage-<full-source-sha>` for three days:
+`Okilum-x86_64.AppImage`, `SHA256SUMS`, `provenance.json` and the bundled-library
+inventory. Upload happens before smoke testing; an available artifact is not a
+claim that smoke passed. Verify the download's checksum and provenance source
+before running it. The same artifact is extracted without FUSE and checked for
+ELF dependency resolution, a real visible X11 Reader window, and clean Ctrl+Q
+exit in fresh Ubuntu 24.04 and Fedora 44 containers. Evidence logs are uploaded
+as `linux-appimage-evidence-<full-source-sha>`, including on smoke failure.
+
+The build uses pinned/checksummed linuxdeploy, appimagetool and Type-2 runtime.
+linuxdeploy bundles its non-system dependency closure and the existing desktop
+entry/icon; glibc and the host GPU driver remain system libraries. Mesa software
+Vulkan in CI proves packaged startup, not hardware rendering or Wayland support.
+The container dependencies are runtime libraries/fonts/display tooling, without
+the product source's build dependencies. The visible-window probe has a visible
+X11 positive control; the missing-library detector also checks its failure path.
+
+This slice does not install desktop integration, publish beta or Stable assets,
+add signatures, or enable in-app self-update. Those need separate changes and
+native install/update acceptance before merge. Later publishing should reuse the
+same bytes in the existing Linux path with immutable `builds/<n>/` assets and
+`beta/Okilum-x86_64.AppImage`; later self-update must verify existing GPG trust,
+respect beta/stable selection and replace a writable AppImage atomically without
+root. Until implemented, this unsigned CI artifact is for explicit QA only.
