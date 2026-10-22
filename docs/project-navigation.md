@@ -77,3 +77,19 @@ The bridge uses public AppKit APIs and lives outside GPUI core and the vendored
 webview. Hosted selector tests cover native edit command mapping. Oleg's Mac beta
 acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
 T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
+
+### Native paste follow-up (#1510 reopened)
+
+Edit commands resolve an explicit responder within the focused WKWebView subtree,
+never the surrounding GPUI window. The native Edit menu uses the same browser
+router. A failed action delivery no longer consumes the shortcut unconditionally;
+the fallback invokes the public WKWebView key-equivalent implementation, bypassing
+Wry's child override without patching its class.
+
+The hosted native fixture creates a real NSApp, NSWindow and WKWebView with Wry's
+child key-equivalent behavior. It pastes a fixture clipboard string into local HTML
+through the production callback and native menu, asserts no host paste, and checks
+that the host receives paste after teardown. It does not use T3 or production
+browser storage. Oleg's sprint check of the actual pairing field is required before
+merge; native clipboard, IME and full focus acceptance are not claimed by a selector
+unit test or by merely compiling this fixture.

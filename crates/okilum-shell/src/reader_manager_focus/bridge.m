@@ -3,6 +3,7 @@
 #import <WebKit/WebKit.h>
 #include <stdbool.h>
 #include <string.h>
+#import <objc/runtime.h>
 
 // Shared by the event monitor and hosted selector regression tests.
 const char *okilum_manager_edit_action(const char *key, bool command, bool shift, bool control, bool option) {
@@ -32,6 +33,8 @@ typedef void (*OkilumFocusChanged)(void *, int);
 - (BOOL)focused;
 - (void)refresh;
 - (void)detach;
+- (BOOL)dispatchEditAction:(SEL)action sender:(id)sender;
+- (void)editCommand:(NSMenuItem *)item;
 @end
 
 @implementation OkilumManagerFocus
@@ -79,14 +82,39 @@ typedef void (*OkilumFocusChanged)(void *, int);
             action:NSSelectorFromString(actions[i]) keyEquivalent:keys[i]];
         item.keyEquivalentModifierMask = NSEventModifierFlagCommand
             | (i == 1 ? NSEventModifierFlagShift : 0);
-        // nil targets AppKit's actual first responder (including image paste).
-        item.target = nil;
+        // Route menus through the same bounded WebKit responder lookup as keys.
+        // A nil target can resolve to the surrounding GPUI window/menu delegate.
+        item.representedObject = actions[i];
+        item.action = @selector(editCommand:);
+        item.target = self;
         [native addItem:item];
         if (i == 1) [native addItem:NSMenuItem.separatorItem];
     }
     edit.submenu = native;
     self.editItem = edit;
     self.installedMenu = menu;
+}
+- (BOOL)dispatchEditAction:(SEL)action sender:(id)sender {
+    if (![self focused]) return NO;
+    WKWebView *view = self.webview;
+    // The focused WKContentView may implement editing even when WKWebView does
+    // not. Never let lookup escape to the GPUI parent or its application actions.
+    for (NSResponder *target = view.window.firstResponder; target; target = target.nextResponder) {
+        BOOL inside = target == view || ([target isKindOfClass:NSView.class]
+            && [(NSView *)target isDescendantOf:view]);
+        if (!inside) break;
+        if ([target respondsToSelector:action]
+            && [NSApp sendAction:action to:target from:sender]) return YES;
+        if (target == view) break;
+    }
+    return NO;
+}
+- (void)editCommand:(NSMenuItem *)item {
+    [self dispatchEditAction:NSSelectorFromString(item.representedObject) sender:item];
+}
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    (void)item;
+    return [self focused];
 }
 - (void)returnToParent {
     if ([self focused]) [self.webview.window makeFirstResponder:self.parent];
@@ -122,8 +150,16 @@ typedef void (*OkilumFocusChanged)(void *, int);
             (flags & NSEventModifierFlagCommand) != 0, (flags & NSEventModifierFlagShift) != 0,
             (flags & NSEventModifierFlagControl) != 0, (flags & NSEventModifierFlagOption) != 0);
         if (action) {
-            [NSApp sendAction:NSSelectorFromString([NSString stringWithUTF8String:action]) to:nil from:self];
-            return nil;
+            SEL selector = NSSelectorFromString([NSString stringWithUTF8String:action]);
+            if ([self dispatchEditAction:selector sender:self]) return nil;
+            // Wry's child subclass overrides performKeyEquivalent: to return NO.
+            // Call the public WKWebView implementation without changing either
+            // Wry or GPUI classes. WebKit then gets its native command/IME path.
+            IMP implementation = class_getMethodImplementation(WKWebView.class, @selector(performKeyEquivalent:));
+            BOOL (*perform)(id, SEL, NSEvent *) = (BOOL (*)(id, SEL, NSEvent *))implementation;
+            if (perform(view, @selector(performKeyEquivalent:), event)) return nil;
+            // A failed dispatch must not silently consume the shortcut.
+            return event;
         }
         // Bypass the child Wry performKeyEquivalent override and GPUI dispatch.
         // WKContentView interprets native input/IME, never a synthetic JS event.
