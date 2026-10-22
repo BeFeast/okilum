@@ -2069,6 +2069,7 @@ impl Reader {
         self.file_preview = None;
         self.file_menu = None;
         if opts.vault.as_ref() != Some(&self.vault_root) || opts.open_path.is_some() {
+            self.reset_vault_projects(window, cx);
             self.shared_session = None;
             self.shared_version = 0;
         }
