@@ -40,7 +40,7 @@ jobs:
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"
+        run: if [ "$PLATFORM" = appimage ]; then python scripts/releases/appimage_handoff.py publish --run "$SOURCE_RUN"; else python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"; fi
       - name: Refresh GitHub rolling Beta after platform publication
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

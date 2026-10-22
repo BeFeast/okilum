@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Independent beta AppImage handoff; no Arch artifact, aggregate or feed authority."""
+import argparse
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import zipfile
+
+import appimage_artifact as artifact
+import appimage_publish as publisher
+import publication
+
+
+def accepted(run, jobs, source):
+    if (not re.fullmatch('[0-9a-f]{40}', source)
+            or run.get('repository', {}).get('full_name') != artifact.REPOSITORY
+            or run.get('path') != artifact.WORKFLOW or run.get('head_sha') != source
+            or run.get('head_branch') != 'main' or run.get('event') != 'push'
+            or run.get('status') != 'completed' or run.get('run_attempt') != 1
+            or type(run.get('run_number')) is not int or run['run_number'] <= 0):
+        raise ValueError('Expected original main AppImage producer')
+    matches = [job for job in jobs if job.get('name') == 'appimage']
+    if len(matches) != 1:
+        raise ValueError('Missing or ambiguous AppImage job')
+    job = matches[0]
+    if (job.get('run_id') != run['id'] or job.get('head_sha') != source
+            or job.get('status') != 'completed' or job.get('conclusion') != 'success'
+            or len([step for step in job.get('steps', [])
+                    if step.get('name') == artifact.SMOKE
+                    and step.get('conclusion') == 'success']) != 1):
+        raise ValueError('AppImage Ubuntu/Fedora smoke was not accepted')
+
+
+def unpack(directory, destination):
+    receipt = json.loads((directory / 'acceptance.json').read_bytes())
+    source = receipt['run']['head_sha']
+    accepted(receipt['run'], receipt['jobs'], source)
+    artifact.artifact_identity(receipt['artifact'], receipt['run'], source)
+    data = (directory / 'artifact.zip').read_bytes()
+    if 'sha256:' + hashlib.sha256(data).hexdigest() != receipt['artifact']['digest']:
+        raise ValueError('Transferred archive differs from original GitHub receipt')
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        names = archive.namelist()
+        if len(names) != 4 or set(names) != {artifact.IMAGE, 'provenance.json', 'SHA256SUMS', 'bundled-libraries.txt'}:
+            raise ValueError('Unexpected AppImage archive members')
+    publication.extract(data, destination)
+    publisher.validate(destination, source, receipt)
+    return source, receipt
+
+
+def stage(api, source, directory, fetch):
+    if not re.fullmatch('[0-9a-f]{40}', source):
+        raise ValueError('Expected full source SHA')
+    runs = api.request(f'actions/workflows/forgejo-linux.yml/runs?head_sha={source}&event=push&per_page=100')
+    matches = [run for run in runs['workflow_runs'] if run.get('head_sha') == source
+               and run.get('path') == artifact.WORKFLOW and run.get('head_branch') == 'main']
+    if len(matches) != 1:
+        raise ValueError('Missing or ambiguous original main producer')
+    run = api.request(f"actions/runs/{matches[0]['id']}")
+    jobs = api.request(f"actions/runs/{run['id']}/attempts/1/jobs?per_page=100")
+    items = api.request(f"actions/runs/{run['id']}/artifacts?per_page=100")
+    for response, key in [(jobs, 'jobs'), (items, 'artifacts')]:
+        if response.get('total_count', len(response[key])) != len(response[key]):
+            raise ValueError('Incomplete GitHub evidence')
+    accepted(run, jobs['jobs'], source)
+    matches = [item for item in items['artifacts'] if item.get('name') == f'linux-appimage-{source}']
+    if len(matches) != 1:
+        raise ValueError('Missing or ambiguous AppImage artifact')
+    item = matches[0]
+    artifact.artifact_identity(item, run, source)
+    data = fetch(item['id'])
+    if 'sha256:' + hashlib.sha256(data).hexdigest() != item['digest']:
+        raise ValueError('Original GitHub artifact digest mismatch')
+    if api.request(f"actions/runs/{run['id']}") != run:
+        raise ValueError('Producer changed during transfer')
+    directory.mkdir(parents=True, exist_ok=False)
+    (directory / 'artifact.zip').write_bytes(data)
+    (directory / 'acceptance.json').write_text(json.dumps({'run': run, 'jobs': jobs['jobs'], 'artifact': item}, sort_keys=True))
+    with tempfile.TemporaryDirectory() as temporary:
+        unpack(directory, Path(temporary) / 'payload')
+
+
+def trusted(run, run_id):
+    if (run.get('id') != run_id or run.get('workflow_id') != 'linux-release.yml'
+            or run.get('prettyref') != 'main' or run.get('is_fork_pull_request') is not False
+            or run.get('trigger_event') not in ('push', 'schedule', 'workflow_dispatch')
+            or not re.fullmatch('[0-9a-f]{40}', run.get('commit_sha', ''))
+            or type(run.get('index_in_repo')) is not int or run['index_in_repo'] <= 0):
+        raise ValueError('Expected trusted main linux-release origin')
+
+
+def publish(client, run_id):
+    run = client.call('GET', f'/actions/runs/{run_id}')
+    trusted(run, run_id)
+    # The independent dispatch job may still be completing, or Arch may have failed.
+    # The unique uploaded handoff and original accepted producer authorize these bytes.
+    items = client.call('GET', f'/actions/runs/{run_id}/artifacts')
+    matches = [item for item in items if item.get('name') == 'appimage-publication'
+               and item.get('expired') is False and item.get('run_id') == run_id]
+    if len(matches) != 1:
+        raise ValueError('Missing or ambiguous appimage-publication artifact')
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        data = client.call('GET', f'/actions/artifacts/{matches[0]["id"]}/zip', raw=True)
+        publication.extract(data, root / 'handoff')
+        source, receipt = unpack(root / 'handoff', root / 'payload')
+        subprocess.run(['git', 'merge-base', '--is-ancestor', source, 'origin/main'],
+                       check=True, capture_output=True, timeout=30)
+        if client.call('GET', f'/actions/runs/{run_id}') != run:
+            # Completion/status changes are normal; origin identity must remain fixed.
+            current = client.call('GET', f'/actions/runs/{run_id}')
+            trusted(current, run_id)
+            for field in ('commit_sha', 'index_in_repo', 'trigger_event'):
+                if current[field] != run[field]:
+                    raise ValueError('Publication origin changed during transfer')
+        with publisher.arch.SigningKey() as key:
+            publisher.publish(publisher.arch.R2(), key, root, root / 'payload', source,
+                              receipt, 5000 + run['index_in_repo'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['stage', 'dispatch', 'publish'])
+    parser.add_argument('--source')
+    parser.add_argument('--directory', type=Path)
+    parser.add_argument('--run', type=int)
+    args = parser.parse_args()
+    if args.command == 'stage':
+        if not args.source or args.directory is None:
+            parser.error('stage requires --source and --directory')
+        token = os.environ['MIRROR_TOKEN']
+        stage(artifact.transport.GitHub(token), args.source, args.directory,
+              lambda aid: artifact.download(token, aid))
+    elif args.command == 'dispatch':
+        if os.environ.get('GITHUB_REF') != 'refs/heads/main':
+            raise ValueError('Dispatch requires main')
+        publication.Forgejo().call('POST', '/actions/workflows/release-publish.yml/dispatches',
+            {'ref': 'main', 'inputs': {'platform': 'appimage', 'run_id': os.environ['GITHUB_RUN_ID']}})
+    else:
+        if args.run is None or args.run <= 0:
+            parser.error('publish requires a positive --run')
+        publish(publication.Forgejo(), args.run)
+
+
+if __name__ == '__main__':
+    main()

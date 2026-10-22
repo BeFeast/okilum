@@ -265,3 +265,30 @@ Missing/wrong signer, changed archive/receipt/source, payload/descriptor tamper,
 immutable readback corruption, interrupted immutable and moving-pair writes,
 signature reuse and conflicts are exercised there with real GPG signatures.
 No live-key premerge run is required; live publication remains unverified.
+
+### Independent AppImage beta handoff (#1470)
+
+Dispatch `linux-release.yml` on `main` with `appimage_only=true` and a full
+`source` SHA from main history. This selects the source without consulting an
+Arch descriptor and skips the Arch compiler job. The bridge reuses the original
+GitHub AppImage archive and receipt; it never compiles, relabels or changes its
+embedded build version. The independently dispatched `appimage-publication` job
+depends only on successful AppImage reuse, so an Arch failure cannot block it.
+
+The protected `release-publish.yml` routes `platform=appimage` directly to
+`scripts/releases/appimage_handoff.py publish --run <linux-release-run-id>`.
+That helper checks trusted main `linux-release.yml` origin, exactly one unexpired
+`appimage-publication` artifact, the original GitHub repository/workflow/main
+source/first attempt, executed Ubuntu/Fedora smoke, archive digest and original
+payload provenance, and source ancestry on main before importing the existing
+Linux signing key. Neither the Forgejo aggregate nor the GitHub Linux aggregate,
+Arch artifacts or Arch feeds authorize this lane. Publication retains the shared
+non-cancellable lock, pinned signer, immutable storage and monotonic beta guard.
+Explicit AppImage sources can advance beta; the legacy archive-only Arch path
+and all Stable behavior remain unchanged.
+
+The approved reuse candidate is source
+`6fc5ade06541c00fa5282b1e737198b00733e036`, original GitHub artifact
+`12419293429`, embedded build `6478`. These identifiers document the candidate;
+the helper still resolves and validates the original hosted evidence. The parent
+owns the post-merge dispatch; no live publication is claimed by this change.
