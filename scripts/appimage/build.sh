@@ -12,6 +12,10 @@ scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
 python3 scripts/brand-assets.py verify
 cargo build --release --locked -p okilum-shell
+mkdir -p dist/appimage/evidence
+python3 scripts/appimage/check-elf.py target/release/okilum \
+    2>&1 | tee dist/appimage/evidence/elf-before-deploy.log
+target/release/okilum --help
 mkdir -p dist/appimage/tools
 cd dist/appimage
 # URLs may move, but a changed tool/runtime fails closed against these byte pins.
@@ -29,6 +33,8 @@ export APPIMAGE_EXTRACT_AND_RUN=1
     --desktop-file ../../scripts/arch/okilum.desktop \
     --icon-file ../../crates/okilum-shell/assets/brand/app-icon-light.svg \
     --icon-filename okilum
+python3 ../../scripts/appimage/check-elf.py AppDir/usr/bin/okilum \
+    2>&1 | tee evidence/elf-after-deploy.log
 install -Dm644 ../../LICENSE AppDir/usr/share/licenses/okilum/LICENSE
 install -Dm644 ../../THIRD_PARTY_NOTICES.md AppDir/usr/share/licenses/okilum/THIRD_PARTY_NOTICES.md
 printf '%s\n' "$GITHUB_SHA" > AppDir/SOURCE_SHA

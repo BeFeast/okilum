@@ -58,7 +58,9 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
-      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+      # linuxdeploy's ELF rewriting overlaps mold 1.0.3's early relocation table.
+      # Use GNU bfd for this portable artifact; other Linux lanes keep their linker.
+      RUSTFLAGS: '-C link-arg=-fuse-ld=bfd'
     steps:
       - uses: actions/checkout@v4
         with:
