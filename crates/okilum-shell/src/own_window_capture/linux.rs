@@ -8,11 +8,16 @@ use x11rb::{
     rust_connection::RustConnection,
 };
 
+fn wayland_session(display_present: bool, session_type: Option<&str>) -> bool {
+    display_present || session_type.is_some_and(|s| s.eq_ignore_ascii_case("wayland"))
+}
+
 pub(super) fn capture() -> Result<PngBytes, Unsupported> {
     // XWayland is deliberately excluded, even when DISPLAY is also set.
-    if std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s.eq_ignore_ascii_case("wayland"))
-    {
+    if wayland_session(
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+    ) {
         return Err(Unsupported::Backend);
     }
     let (conn, _) = RustConnection::connect(None).map_err(|_| Unsupported::Backend)?;
@@ -157,6 +162,13 @@ mod tests {
     use x11rb::protocol::xproto::{
         CreateGCAux, CreateWindowAux, InputFocus, Rectangle, WindowClass,
     };
+    #[test]
+    fn wayland_and_xwayland_are_attach_only() {
+        assert!(wayland_session(true, Some("x11")));
+        assert!(wayland_session(false, Some("wayland")));
+        assert!(!wayland_session(false, Some("x11")));
+        assert!(!wayland_session(false, None));
+    }
     /// Run on an isolated Xvfb server, never on an operator's desktop.
     #[test]
     #[ignore = "requires an isolated X11 server with XRes 1.2"]
