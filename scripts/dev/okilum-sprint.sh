@@ -266,6 +266,19 @@ if ! command -v cargo >/dev/null; then
     exit 1
 fi
 repo=https://git.oklabs.uk/BeFeast/okilum.git
+noninteractive=${OKILUM_SPRINT_NONINTERACTIVE:-0}
+requested_sha=${OKILUM_SPRINT_SOURCE_SHA:-}
+if [[ $noninteractive != 0 && $noninteractive != 1 ]]; then
+    echo 'OKILUM_SPRINT_NONINTERACTIVE must be 0 or 1.' >&2; exit 2
+fi
+if [[ $noninteractive == 1 ]]; then
+    [[ $requested_sha =~ ^[0-9a-f]{40}$ ]] || {
+        echo 'Noninteractive Sprint requires a full lowercase OKILUM_SPRINT_SOURCE_SHA.' >&2; exit 2;
+    }
+    export GIT_TERMINAL_PROMPT=0
+    sha=$requested_sha
+    short_sha=${sha:0:8}
+fi
 git check-ref-format --branch "$branch" >/dev/null
 root="${OKILUM_SPRINT_HOME:-$HOME/Developer/personal/okilum-sprint}"
 root=${root%/}
@@ -302,9 +315,16 @@ cd "$root/src"
 if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
     echo "Sprint checkout has local changes; preserve them before rebuilding: $root/src" >&2; exit 1
 fi
-git fetch origin "refs/heads/$branch"
+if [[ $noninteractive == 1 ]]; then
+    git fetch origin "$requested_sha"
+else
+    git fetch origin "refs/heads/$branch"
+fi
 git checkout -B sprint FETCH_HEAD
 sha=$(git rev-parse HEAD)
+if [[ $noninteractive == 1 && $sha != "$requested_sha" ]]; then
+    echo 'Fetched Sprint commit differs from OKILUM_SPRINT_SOURCE_SHA; refusing build.' >&2; exit 1
+fi
 short_sha=$(git rev-parse --short HEAD)
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
