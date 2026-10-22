@@ -50,6 +50,7 @@ mod reader_editor;
 mod reader_embeds;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
+mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
@@ -3516,6 +3517,7 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
+                    .child(reader_feedback::button(cx))
                     .child(reader_more_menu(
                         self.vault_root.clone(),
                         self.selected_file().to_owned(),
