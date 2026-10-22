@@ -73,10 +73,7 @@ def add(tree, a):
     notes_path = os.environ.get('OKILUM_RELEASE_NOTES')
     if notes_path:
         notes = json.loads(Path(notes_path).read_text())
-        if (notes['build'] != a.build or notes['source'] != a.source
-                or notes['platform'] != 'macos' or notes['channel'] != a.channel):
-            raise ValueError('Release notes do not belong to this appcast item')
-        ET.SubElement(item, 'description').text = release_notes.description(notes)
+        set_description(item, notes, a.build, a.source, a.channel)
     ET.SubElement(item, 'enclosure', {
         'url': a.url,
         'length': str(a.length),
@@ -88,10 +85,22 @@ def add(tree, a):
     channel.insert(list(channel).index(channel.find('title')) + 1, item)
 
 
+def set_description(item, notes, build, source, channel):
+    if (notes['build'] != build or notes['source'] != source
+            or notes['platform'] != 'macos' or notes['channel'] != channel):
+        raise ValueError('Release notes do not belong to this appcast item')
+    description = item.find('description')
+    if description is None:
+        description = ET.SubElement(item, 'description')
+    description.text = release_notes.description(notes)
+
+
 def promote(tree, a):
     item = find(tree, a.build)
     if item is None:
         sys.exit(f'Build {a.build} is not in the appcast')
+    if getattr(a, 'notes_json', None):
+        set_description(item, json.loads(a.notes_json), a.build, item.findtext(t('source')), 'stable')
     item.find(s('channel')).text = 'stable'
 
 
@@ -111,6 +120,7 @@ def main(argv=None):
     a.add_argument('--tree', required=True)
     a = sub.add_parser('promote')
     a.add_argument('--build', type=int, required=True)
+    a.add_argument('--notes-json', help='Validated Stable range from the protected promotion')
     args = p.parse_args(argv)
     tree = load(args.appcast)
     {'add': add, 'promote': promote}[args.command](tree, args)
