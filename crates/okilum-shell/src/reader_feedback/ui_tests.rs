@@ -44,6 +44,10 @@ fn open_from_button(visual: &mut VisualTestContext) -> Entity<FeedbackView> {
     visual.run_until_parked();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     assert!(visual.debug_bounds("feedback-dialog").is_some());
+    assert!(
+        visual.debug_bounds("feedback-public-notice").is_some(),
+        "public visibility is disclosed in the actual submission dialog"
+    );
     let view = get_draft(visual);
     visual.update(|window, cx| {
         assert!(
@@ -227,5 +231,70 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].copy_text(), calls[1].copy_text());
         assert!(calls[0].log.is_none());
+    });
+}
+
+#[gpui::test]
+fn copy_report_keeps_text_and_metadata_when_the_opted_in_log_is_unavailable(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = dir.path().join("valid.log");
+    let invalid = dir.path().join("invalid.log");
+    std::fs::write(&valid, "LOG-POSITIVE-CONTROL\n").unwrap();
+    std::fs::write(&invalid, [0xff]).unwrap();
+    with_reader(cx, |visual| {
+        let view = open_from_button(visual);
+        view.update_in(visual, |view, window, cx| {
+            view.text.update(cx, |text, cx| {
+                text.set_value("Keep this feedback draft", window, cx)
+            });
+            view.include_log = true;
+            view.log_path = Some(valid.clone());
+            view.sender = Arc::new(|_| panic!("Copy report must not send feedback"));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let copy = visual.debug_bounds("feedback-copy").unwrap();
+        visual.simulate_click(copy.center(), Modifiers::default());
+        visual.update(|_, cx| {
+            assert!(cx
+                .read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("LOG-POSITIVE-CONTROL"));
+        });
+        for path in [
+            None,
+            Some(dir.path().join("missing.log")),
+            Some(invalid.clone()),
+        ] {
+            view.update(visual, |view, cx| {
+                view.log_path = path.clone();
+                cx.notify();
+            });
+            visual.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("COPY-CANARY".into()))
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let copy = visual.debug_bounds("feedback-copy").unwrap();
+            visual.simulate_click(copy.center(), Modifiers::default());
+            visual.update(|_, cx| {
+                let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+                assert!(copied.contains("Keep this feedback draft"));
+                assert!(copied.contains(&view.read(cx).meta.summary()));
+                assert!(copied.contains("Diagnostic log could not be included"));
+                assert!(!copied.contains("LOG-POSITIVE-CONTROL"));
+            });
+            view.read_with(visual, |view, cx| {
+                assert_eq!(view.text.read(cx).value(), "Keep this feedback draft");
+                assert!(view.include_log, "Copy must retain the attachment choice for Retry");
+                assert_eq!(view.log_path, path);
+                assert!(matches!(&view.state, SendState::Failed(message) if message.contains("Copied report without the diagnostic log")));
+            });
+        }
     });
 }

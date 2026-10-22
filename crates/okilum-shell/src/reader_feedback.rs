@@ -191,18 +191,26 @@ impl FeedbackView {
     fn busy(&self) -> bool {
         matches!(self.state, SendState::Sending | SendState::Sent(_))
     }
-    fn report(&self, cx: &App) -> anyhow::Result<Report> {
-        Ok(Report {
+    fn report_without_log(&self, cx: &App) -> Report {
+        Report {
             text: self.text.read(cx).value().to_string(),
             kind: self.kind,
             meta: self.meta.clone(),
             screenshot: self.image.as_ref().map(|image| image.png.clone()),
-            log: if self.include_log {
-                Some(model::log_tail(self.log_path.as_deref().ok_or_else(|| anyhow::anyhow!("Diagnostic log unavailable. Uncheck the log attachment to send without it."))?)?)
-            } else {
-                None
-            },
-        })
+            log: None,
+        }
+    }
+    fn report(&self, cx: &App) -> anyhow::Result<Report> {
+        let mut report = self.report_without_log(cx);
+        if self.include_log {
+            let path = self.log_path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Diagnostic log unavailable. Uncheck the log attachment to send without it."
+                )
+            })?;
+            report.log = Some(model::log_tail(path)?);
+        }
+        Ok(report)
     }
     fn send(&mut self, cx: &mut Context<Self>) {
         if self.busy() || self.attaching {
@@ -237,7 +245,13 @@ impl FeedbackView {
         match self.report(cx) {
             Ok(report) => cx.write_to_clipboard(ClipboardItem::new_string(report.copy_text())),
             Err(error) => {
-                self.state = SendState::Failed(error.to_string());
+                let mut text = self.report_without_log(cx).copy_text();
+                text.push_str(&format!(
+                    "\n\nDiagnostic log could not be included: {error}"
+                ));
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.state =
+                    SendState::Failed(format!("Copied report without the diagnostic log. {error}"));
                 cx.notify();
             }
         }
@@ -389,6 +403,12 @@ impl Render for FeedbackView {
                 .into_any_element();
         }
         body = body
+            .child(
+                div()
+                    .debug_selector(|| "feedback-public-notice".into())
+                    .text_sm()
+                    .child("Sending creates a public issue. Your message, system details and chosen attachments will be visible to everyone."),
+            )
             .child(h_flex().gap_1().children(
                 [(Kind::Bug, "Problem"), (Kind::Feature, "Idea")].map(|(kind, label)| {
                     Button::new(label)
