@@ -4964,7 +4964,7 @@ impl Reader {
                                             );
                                             let sticky = reader_tree::sticky_ancestors(
                                                 &sticky_source,
-                                                this.tree_scroll.logical_scroll_top_index(),
+                                                ((-offset / 28.).floor().max(0.)) as usize,
                                             );
                                             if this
                                                 .tree_sticky

@@ -181,6 +181,7 @@ use sha2::Digest;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, Project) {
         let temp = tempfile::tempdir().unwrap();
