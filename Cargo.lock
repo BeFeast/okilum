@@ -5450,6 +5450,7 @@ dependencies = [
  "okilum-t3",
  "okilum-sync-controller",
  "regex",
+ "reqwest",
  "resvg 0.45.1",
  "rust-embed",
  "rustix",

@@ -109,6 +109,12 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                 .on_click(move |_, _, cx| cx.open_url(&url)),
         );
     }
+    links = links.child(
+        Button::new("about-whats-new")
+            .ghost()
+            .label("What's new in this build")
+            .on_click(|_, window, cx| updater::whats_new::show_current(window, cx)),
+    );
     v_flex()
         .debug_selector(|| "desktop-about".into())
         .gap_3()
