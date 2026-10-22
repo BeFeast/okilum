@@ -115,6 +115,29 @@ class StableRetry(unittest.TestCase):
         item = promotion.appcast.find(ET.ElementTree(ET.fromstring(store.data['okilum/appcast.xml'])), 700)
         self.assertIn('Changes since Stable', item.findtext('description'))
 
+    def test_new_build_cannot_replace_unfinished_pinned_range(self):
+        payload = {'build': 700, 'source': SOURCE, 'platform': 'macos', 'channel': 'stable',
+                   'previous_build': 600, 'previous_source': OLD, 'items': ITEMS}
+        for actual_build, actual_source in [(600, OLD), (705, SOURCE)]:
+            with self.subTest(actual_build=actual_build):
+                store = Store()
+                store.data[notes.key(SOURCE, 'macos', 'stable')] = json.dumps(payload).encode()
+                store.data['okilum/appcast.xml'] = feed((actual_build, actual_source, 'stable'))
+                before = dict(store.data)
+                with patch.object(notes, 'merged_items') as select, self.assertRaisesRegex(ValueError, 'pinned Stable'):
+                    notes.prepare_stable(store, Mock(), 'macos', 705, SOURCE)
+                select.assert_not_called()
+                self.assertEqual((store.data, store.writes), (before, []))
+        # Positive control: the previous pinned build has reached Stable, so a
+        # later re-signed/rebuilt version is a new promotion, with that baseline.
+        store = Store()
+        store.data[notes.key(SOURCE, 'macos', 'stable')] = json.dumps(payload).encode()
+        store.data['okilum/appcast.xml'] = feed((700, SOURCE, 'stable'))
+        with patch.object(notes, 'merged_items', return_value=[]):
+            result = notes.prepare_stable(store, Mock(), 'macos', 705, SOURCE)
+        self.assertEqual((result['previous_build'], result['previous_source']), (700, SOURCE))
+        self.assertEqual(result['items'], [])
+
     def test_identity_conflict_fails_before_stable_notes_write(self):
         store = Store()
         store.data[notes.key(SOURCE, 'macos', 'stable')] = json.dumps({

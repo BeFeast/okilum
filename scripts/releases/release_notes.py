@@ -129,6 +129,12 @@ def prepare_stable(store, client, platform, build, source):
             return existing
         if existing['build'] > build:
             raise ValueError('Refusing stable notes rollback')
+        # A higher build of the same source is a NEW promotion only after the
+        # prior pinned build actually reached this channel. Otherwise it could
+        # replace an interrupted attempt's range using a partially moved feed.
+        previous = predecessor(store, platform, 'stable')
+        if previous != {'build': existing['build'], 'source': source}:
+            raise ValueError('Finish the pinned Stable notes build before selecting another build')
     return prepare(store, client, platform, build, source, 'stable')
 
 
