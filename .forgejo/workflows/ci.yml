@@ -85,11 +85,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Sprint reporting and cache/vendor regressions (isolated)
+        run: python3 scripts/dev/test-sprint-report.py
+
       - name: Install system libraries (README "Building")
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            build-essential cmake pkg-config curl git mold zstd \
+            build-essential cmake pkg-config curl git mold zstd tini \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
 
@@ -145,19 +148,12 @@ jobs:
             ~/.cargo/git/
           key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
 
-      - name: Check formatting and shared-code lint
+      - name: Check every shared suite and summarize failures
         run: |
-          cargo fmt --check
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Keep shared shell logic in the gate; native platform adapter tests remain
-      # in macOS and the full non-blocking Linux lane.
-      - name: Test shared crates and contracts
-        run: |
-          cargo test --workspace --locked -- --skip platform::
-          cargo test -p okilum-core --no-default-features --test portable_reader --locked
-          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
-          python3 -m unittest discover -s scripts/releases -p 'test_*.py'
-          python3 -m unittest discover -s scripts/updater -p 'test_*.py'
+          set -euo pipefail
+          # The native container has tail as PID 1. Reap orphaned fixtures
+          # throughout the suites without changing Stopped certification (#1541).
+          tini -s -- bash scripts/ci/check-shared.sh
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
