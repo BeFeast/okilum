@@ -61,6 +61,9 @@ tracked separately in #1473.
 ### Native Manager input on macOS (#1510)
 
 A panel-owned AppKit event monitor makes the clicked WKWebView first responder.
+Its mouse-down notification clears GPUI logical focus and pending chords, so the
+previously focused origin input cannot receive paste. Escape restores that prior
+GPUI focus; outside clicks choose their own target.
 While that view (or a descendant) is the key window's first responder, editing
 shortcuts use native responder actions and all other keyboard events go directly
 to WebKit. Paste keeps the original system pasteboard, including images; no

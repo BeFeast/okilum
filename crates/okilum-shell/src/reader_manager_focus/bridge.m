@@ -7,6 +7,7 @@
 // Shared by the event monitor and hosted selector regression tests.
 const char *okilum_manager_edit_action(const char *key, bool command, bool shift, bool control, bool option) {
     if (!command || control || option || !key) return NULL;
+    if (shift && strcmp(key, "z") != 0) return NULL;
     if (strcmp(key, "v") == 0) return "paste:";
     if (strcmp(key, "c") == 0) return "copy:";
     if (strcmp(key, "x") == 0) return "cut:";
@@ -15,9 +16,13 @@ const char *okilum_manager_edit_action(const char *key, bool command, bool shift
     return NULL;
 }
 
+typedef void (*OkilumFocusChanged)(void *, int);
+
 @interface OkilumManagerFocus : NSObject
 @property(nonatomic, weak) WKWebView *webview;
 @property(nonatomic, weak) NSView *parent;
+@property(nonatomic) OkilumFocusChanged focusChanged;
+@property(nonatomic) void *context;
 @property(nonatomic, strong) id monitor;
 @property(nonatomic, strong) NSArray *observers;
 @property(nonatomic, strong) NSMenu *installedMenu;
@@ -96,15 +101,18 @@ const char *okilum_manager_edit_action(const char *key, bool command, bool shift
         NSView *hit = [content hitTest:[content.superview convertPoint:event.locationInWindow fromView:nil]];
         if (hit && [hit isDescendantOf:view]) {
             if (![self focused]) [window makeFirstResponder:view];
+            if (self.focusChanged) self.focusChanged(self.context, 1);
             [self refresh];
         } else {
             [self returnToParent];
+            if (self.focusChanged) self.focusChanged(self.context, 0);
         }
         return event; // WebKit receives the original click, selection and drag.
     }
     if (![self focused]) { [self refresh]; return event; }
     if (event.type == NSEventTypeKeyDown && event.keyCode == 53) {
         [self returnToParent];
+        if (self.focusChanged) self.focusChanged(self.context, 2);
         return nil; // Explicit escape hatch; do not also dismiss Reader UI.
     }
     NSResponder *responder = window.firstResponder;
@@ -135,16 +143,20 @@ const char *okilum_manager_edit_action(const char *key, bool command, bool shift
     for (id observer in self.observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
     self.monitor = nil;
     self.observers = nil;
+    self.focusChanged = NULL;
+    self.context = NULL;
     self.webview = nil;
     self.parent = nil;
 }
 @end
 
-void *okilum_manager_focus_attach(void *webview, void *parent) {
+void *okilum_manager_focus_attach(void *webview, void *parent, void (*focusChanged)(void *, int), void *context) {
     NSCAssert(NSThread.isMainThread, @"Manager focus must attach on the main thread");
     OkilumManagerFocus *router = [OkilumManagerFocus new];
     router.webview = (__bridge WKWebView *)webview;
     router.parent = (__bridge NSView *)parent;
+    router.focusChanged = focusChanged;
+    router.context = context;
     __weak OkilumManagerFocus *weakRouter = router;
     router.monitor = [NSEvent addLocalMonitorForEventsMatchingMask:
         NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskKeyDown

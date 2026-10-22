@@ -2,7 +2,12 @@
 use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 extern "C" {
-    fn okilum_manager_focus_attach(webview: *mut c_void, parent: *mut c_void) -> *mut c_void;
+    fn okilum_manager_focus_attach(
+        webview: *mut c_void,
+        parent: *mut c_void,
+        focus_changed: extern "C" fn(*mut c_void, i32),
+        context: *mut c_void,
+    ) -> *mut c_void;
     fn okilum_manager_focus_is_focused(handle: *mut c_void) -> bool;
     fn okilum_manager_focus_refresh(handle: *mut c_void);
     fn okilum_manager_focus_detach(handle: *mut c_void);
@@ -11,28 +16,37 @@ extern "C" {
 pub(super) struct FocusRouting {
     handle: NonNull<c_void>,
     _main_thread: PhantomData<Rc<()>>,
+    _events: Box<async_channel::Sender<String>>,
 }
 impl FocusRouting {
     /// Both views belong to the current GPUI window and remain owned by it/Wry.
     /// The Objective-C bridge keeps weak references and removes its monitors on drop.
-    pub(super) fn new(view: &wry::WebView, window: &gpui::Window) -> anyhow::Result<Self> {
+    pub(super) fn new(
+        view: &wry::WebView,
+        window: &gpui::Window,
+        events: async_channel::Sender<String>,
+    ) -> anyhow::Result<Self> {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         use wry::WebViewExtMacOS;
         let RawWindowHandle::AppKit(parent) = window.window_handle()?.as_raw() else {
             anyhow::bail!("Manager requires a native AppKit window");
         };
         let webview = view.webview();
+        let mut events = Box::new(events);
         // SAFETY: this constructor runs on the UI thread with live native views.
         let handle = unsafe {
             okilum_manager_focus_attach(
                 objc2::rc::Retained::as_ptr(&webview).cast_mut().cast(),
                 parent.ns_view.as_ptr(),
+                focus_changed,
+                (&mut *events as *mut async_channel::Sender<String>).cast(),
             )
         };
         Ok(Self {
             handle: NonNull::new(handle)
                 .ok_or_else(|| anyhow::anyhow!("Cannot attach Manager input"))?,
             _main_thread: PhantomData,
+            _events: events,
         })
     }
     pub(super) fn focused(&self) -> bool {
@@ -44,6 +58,17 @@ impl FocusRouting {
         unsafe { okilum_manager_focus_refresh(self.handle.as_ptr()) }
     }
 }
+extern "C" fn focus_changed(context: *mut c_void, kind: i32) {
+    // SAFETY: the boxed sender outlives the native monitor; Drop detaches first.
+    let events = unsafe { &*context.cast::<async_channel::Sender<String>>() };
+    let event = match kind {
+        1 => "native-focus",
+        2 => "escape",
+        _ => "blur",
+    };
+    let _ = events.try_send(event.into());
+}
+
 impl Drop for FocusRouting {
     fn drop(&mut self) {
         // SAFETY: detach removes callbacks and releases exactly one retained handle.
@@ -100,6 +125,11 @@ mod tests {
                 Some(expected)
             );
         }
+        assert_eq!(
+            action("v", true, true, false, false),
+            None,
+            "Cmd+Shift+V reaches WebKit unchanged"
+        );
         assert_eq!(
             action("v", false, false, false, false),
             None,

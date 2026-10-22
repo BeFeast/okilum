@@ -6,6 +6,8 @@ pub(super) struct ManagerPanel {
     project: Project,
     state: Option<PathBuf>,
     pub(super) focused: bool,
+    #[cfg(any(target_os = "macos", test))]
+    previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
     error: Option<String>,
     loading: bool,
@@ -61,6 +63,8 @@ impl ManagerPanel {
             project,
             state: saved_state,
             focused: false,
+            #[cfg(any(target_os = "macos", test))]
+            previous_gpui_focus: None,
             origin,
             error: None,
             loading: false,
@@ -70,6 +74,19 @@ impl ManagerPanel {
             #[cfg(target_os = "macos")]
             webview: None,
         }
+    }
+
+    // Called for the AppKit mouse-down notification, not merely DOM focus.
+    #[cfg(any(target_os = "macos", test))]
+    fn native_focus_entered(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(focus) = window.focused(cx) {
+            self.previous_gpui_focus = Some(focus);
+        }
+        // Window::blur clears GPUI's logical input and pending chords without
+        // changing AppKit's first responder, which is already the WKWebView.
+        window.blur(cx);
+        self.focused = true;
+        cx.notify();
     }
 
     pub(super) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -184,15 +201,23 @@ impl ManagerPanel {
         // Stable application-specific WKWebsiteDataStore. Cookies never enter
         // Okilum settings or the MCP keychain; login happens in this view.
         let (send, receive) = async_channel::unbounded::<String>();
+        let native_events = send.clone();
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = receive.recv().await {
                 if this
-                    .update_in(cx, |this, _window, cx| {
+                    .update_in(cx, |this, window, cx| {
                         if let Some(routing) = &this.focus_routing {
                             routing.refresh();
                         }
-                        this.focused = event == "focus";
+                        if event == "native-focus" {
+                            this.native_focus_entered(window, cx);
+                        } else {
+                            this.focused = event == "focus";
+                        }
                         if event == "escape" {
+                            if let Some(focus) = this.previous_gpui_focus.take() {
+                                focus.focus(window, cx);
+                            }
                             if let Some(view) = &this.webview {
                                 let _ = view.read(cx).raw().focus_parent();
                             }
@@ -232,7 +257,8 @@ impl ManagerPanel {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
             })
             .build_as_child(&handle)?;
-        let routing = crate::reader_manager_focus::FocusRouting::new(&browser, window)?;
+        let routing =
+            crate::reader_manager_focus::FocusRouting::new(&browser, window, native_events)?;
         Ok((
             cx.new(|cx| gpui_wry::WebView::new(browser, window, cx)),
             routing,
@@ -313,5 +339,62 @@ impl Reader {
         }
         let _ = cx;
         div().p_4().child("Loading manager…").into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod native_focus_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn webview_mouse_down_notification_clears_focused_gpui_origin_input(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let project = Project {
+            folder: temp.path().into(),
+            name: "Test".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("test".into()),
+            manager_project: Some("brain".into()),
+            manager: Manager::Thread("mcp:test".into()),
+        };
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let panel = cx.new(|cx| ManagerPanel::new(project, None, window, cx));
+            Root::new(panel, window, cx)
+        });
+        visual.run_until_parked();
+        let panel = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ManagerPanel>().unwrap()
+        });
+        panel.update_in(visual, |panel, window, cx| {
+            panel.origin.update(cx, |input, cx| {
+                input.set_value("https://t3.oklabs.uk", window, cx);
+                input.focus_handle(cx).focus(window, cx);
+            });
+        });
+        visual.run_until_parked();
+        panel.update_in(visual, |panel, window, cx| {
+            assert_eq!(
+                window.focused(cx),
+                Some(panel.origin.read(cx).focus_handle(cx)),
+                "positive control: origin owns GPUI input"
+            );
+            // Same handler called by the native mouse-down callback. A real
+            // WKWebView first-responder check remains Oleg's Mac acceptance.
+            panel.native_focus_entered(window, cx);
+            assert!(
+                window.focused(cx).is_none(),
+                "webview entry must release every GPUI input"
+            );
+            assert!(panel.focused);
+            assert!(
+                panel.previous_gpui_focus.is_some(),
+                "Escape can restore the prior GPUI focus"
+            );
+            assert_eq!(
+                panel.origin.read(cx).value().as_str(),
+                "https://t3.oklabs.uk"
+            );
+        });
     }
 }
