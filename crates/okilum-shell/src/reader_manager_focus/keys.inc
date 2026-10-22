@@ -1,5 +1,7 @@
 // App-owned instrumentation of public AppKit entry points. No GPUI/Wry source
 // patch, private WebKit selector or clipboard JavaScript permission bypass.
+#include "page_keys.inc"
+
 static NSHashTable<OkilumManagerFocus *> *KeyRouters;
 static NSMutableSet<NSString *> *KeyHooks;
 static void (^KeyOriginalSendEvent)(NSEvent *);
@@ -100,11 +102,48 @@ static void KeyHookChain(Class cls, SEL selector, BOOL returnsBool, BOOL interce
         KeyHookEvent(current, selector, returnsBool, intercept);
     }
 }
+@interface OkilumKeyMessages : NSObject <WKScriptMessageHandler>
+@property(nonatomic, weak) OkilumManagerFocus *router;
+@end
+@implementation OkilumKeyMessages
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    (void)controller;
+    OkilumManagerFocus *router = self.router;
+    if (!router || message.webView != router.webview || !message.frameInfo.mainFrame || ![message.body isKindOfClass:NSDictionary.class]) return;
+    NSDictionary *context = message.body;
+    if ([context[@"kind"] isEqual:@"invalid"]) {
+        router.pageContext = nil;
+        router.keyDocumentGeneration++;
+        KeyLog(@"document invalidated; pending page fallback cancelled");
+        return;
+    }
+    if (![context[@"doc"] isKindOfClass:NSString.class] || ![context[@"origin"] isKindOfClass:NSString.class]) return;
+    if (![router.pageContext[@"doc"] isEqual:context[@"doc"]]) router.keyDocumentGeneration++;
+    router.pageContext = context;
+}
+@end
+static void KeyInstallDocumentTracker(OkilumManagerFocus *router) {
+    WKUserContentController *controller = router.webview.configuration.userContentController;
+    OkilumKeyMessages *messages = [OkilumKeyMessages new];
+    messages.router = router;
+    router.keyMessages = messages;
+    [controller addScriptMessageHandler:messages name:@"okilumNativeKeysV2"];
+    WKUserScript *script = [[WKUserScript alloc] initWithSource:KeyPageScript injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
+    [controller addUserScript:script];
+    [router.webview evaluateJavaScript:KeyPageScript completionHandler:^(id value, NSError *error) {
+        (void)value;
+        KeyLog(@"page context tracker installed errorCode=%ld", (long)error.code);
+    }];
+}
+static BOOL KeyCurrent(OkilumManagerFocus *router, NSUInteger serial, NSUInteger generation) {
+    return router && router.focused && router.keySerial == serial && router.keyDocumentGeneration == generation;
+}
 static void KeyInstallRouter(id object) {
     OkilumManagerFocus *router = object;
     if (!KeyRouters) KeyRouters = [NSHashTable weakObjectsHashTable];
     if (!KeyHooks) KeyHooks = [NSMutableSet new];
     [KeyRouters addObject:router];
+    KeyInstallDocumentTracker(router);
     Class appClass = NSApp.class;
     SEL sendEvent = @selector(sendEvent:);
     if (KeyReserveHook(appClass, sendEvent)) {
@@ -152,87 +191,58 @@ static void KeyInstallRouter(id object) {
         KeyLog(@"router attached bundle=%@ webview=%@ parent=%@ window=%@ log=~/Library/Logs/okilum-sprint-keys.log", NSBundle.mainBundle.bundleIdentifier, NSStringFromClass(router.webview.class), NSStringFromClass(router.parent.class), NSStringFromClass(router.webview.window.class));
     }
 }
-static void KeyRemoveRouter(id router) { [KeyRouters removeObject:router]; }
+static void KeyRemoveRouter(id object) {
+    OkilumManagerFocus *router = object;
+    [router.webview.configuration.userContentController removeScriptMessageHandlerForName:@"okilumNativeKeysV2"];
+    router.keyMessages = nil;
+    [KeyRouters removeObject:router];
+}
 
 @implementation OkilumManagerFocus (Keys)
 - (BOOL)handleCommandEvent:(NSEvent *)event {
     NSString *action = KeyAction(event);
-    if (!action || self.nativeRouting || !self.focused) return NO;
-    KeyLog(@"browser command queued action=%@ responder=%@", action, NSStringFromClass(self.webview.window.firstResponder.class));
-    if (!self.keyQueue) self.keyQueue = [NSMutableArray new];
-    [self.keyQueue addObject:@{@"action":action, @"event":event}];
-    if (!self.keyBusy) [self processKeyQueue];
+    if (!action || self.nativeRouting || !self.focused || (event.window && event.window != self.webview.window)) return NO;
+    NSUInteger serial = ++self.keySerial;
+    NSUInteger generation = self.keyDocumentGeneration;
+    NSDictionary *before = self.pageContext;
+    NSInteger clipboardBefore = NSPasteboard.generalPasteboard.changeCount;
+    KeyLog(@"command action=%@ serial=%lu responder=%@ contextReady=%d", action, (unsigned long)serial, NSStringFromClass(self.webview.window.firstResponder.class), before != nil);
+    // Native delivery is synchronous on the original event path. Never replay
+    // a cut/paste later, after the user has moved to another field or typed.
+    self.nativeRouting = YES;
+    @try {
+        if (KeyOriginalSendEvent) {
+            KeyLog(@"native synchronous NSApp original sendEvent action=%@", action);
+            KeyOriginalSendEvent(event);
+        } else {
+            [self dispatchEditAction:NSSelectorFromString(action) sender:self];
+        }
+    } @finally { self.nativeRouting = NO; }
+    if (!before) { KeyLog(@"fallback cancelled action=%@ reason=context-not-ready", action); return YES; }
+    __weak OkilumManagerFocus *weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        OkilumManagerFocus *router = weak;
+        if (!KeyCurrent(router, serial, generation)) { KeyLog(@"fallback cancelled action=%@ reason=new-command-document-or-native-focus", action); return; }
+        NSString *observe = [NSString stringWithFormat:@"window.__okilumKeysV2?.observe(%@,%@) ?? {cancel:true,reason:'missing-document-state'}", KeyJSON(before), KeyJSON(action)];
+        [router.webview evaluateJavaScript:observe completionHandler:^(id result, NSError *error) {
+            OkilumManagerFocus *current = weak;
+            if (!KeyCurrent(current, serial, generation)) return;
+            if (error || ![result isKindOfClass:NSDictionary.class]) { KeyLog(@"fallback cancelled action=%@ reason=observation-error code=%ld", action, (long)error.code); return; }
+            if ([result[@"cancel"] boolValue]) { KeyLog(@"fallback cancelled action=%@ reason=%@", action, result[@"reason"]); return; }
+            BOOL native = [result[@"native"] boolValue];
+            if ([action isEqualToString:@"copy:"] && NSPasteboard.generalPasteboard.changeCount != clipboardBefore) native = YES;
+            if (native) { KeyLog(@"path=NATIVE action=%@ fallback=NOT_USED", action); return; }
+            NSDictionary *context = result[@"context"];
+            if (![context isKindOfClass:NSDictionary.class]) { KeyLog(@"fallback cancelled reason=missing-matching-context"); return; }
+            [current pageCommand:action context:context serial:serial generation:generation];
+        }];
+    });
     return YES;
 }
-- (void)finishKeyCommand {
-    if (self.keyToken) {
-        NSString *cleanup = [NSString stringWithFormat:@"(()=>{const t=%@;const s=window.__okilumNativeKeys_v1?.[t];if(s){s.types.forEach(x=>document.removeEventListener(x,s.h,true));delete window.__okilumNativeKeys_v1[t]}})()", KeyJSON(self.keyToken)];
-        [self.webview evaluateJavaScript:cleanup completionHandler:nil];
-        self.keyToken = nil;
-    }
-    self.keyBusy = NO;
-    if (self.keyQueue.count) [self processKeyQueue];
-}
-- (void)processKeyQueue {
-    if (!self.keyQueue.count) return;
-    if (!self.focused) { [self.keyQueue removeAllObjects]; return; }
-    self.keyBusy = YES;
-    NSDictionary *command = self.keyQueue.firstObject;
-    [self.keyQueue removeObjectAtIndex:0];
-    NSString *action = command[@"action"];
-    NSString *token = NSUUID.UUID.UUIDString;
-    self.keyToken = token;
-    NSString *prepare = [NSString stringWithFormat:
-        @"(()=>{const t=%@;let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;"
-        "const snap=()=>JSON.stringify([a&&('value'in a?a.value:a.innerHTML),a&&a.selectionStart,a&&a.selectionEnd,String(window.getSelection())]);"
-        "const s={a,before:snap(),snap,events:[]};s.h=e=>{if(e.isTrusted)s.events.push(e.type)};"
-        "s.types=['paste','copy','cut','beforeinput','input'];s.types.forEach(x=>document.addEventListener(x,s.h,true));"
-        "(window.__okilumNativeKeys_v1??={})[t]=s;return {tag:a&&a.tagName,editable:!!(a&&a.isContentEditable)}})()", KeyJSON(token)];
-    __weak OkilumManagerFocus *weak = self;
-    [self.webview evaluateJavaScript:prepare completionHandler:^(id info, NSError *error) {
-        OkilumManagerFocus *router = weak;
-        if (!router || !router.focused) { [router finishKeyCommand]; return; }
-        KeyLog(@"page probe action=%@ prepared=%d tag=%@", action, error == nil, [info isKindOfClass:NSDictionary.class] ? info[@"tag"] : nil);
-        NSInteger clipboardBefore = NSPasteboard.generalPasteboard.changeCount;
-        router.nativeRouting = YES;
-        if (KeyOriginalSendEvent) {
-            KeyLog(@"native attempt NSApp original sendEvent action=%@", action);
-            KeyOriginalSendEvent(command[@"event"]);
-        } else {
-            [router dispatchEditAction:NSSelectorFromString(action) sender:router];
-        }
-        router.nativeRouting = NO;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-            OkilumManagerFocus *current = weak;
-            if (!current || !current.focused) { [current finishKeyCommand]; return; }
-            NSString *check = [NSString stringWithFormat:
-                @"(()=>{const s=window.__okilumNativeKeys_v1?.[%@];if(!s)return {delivered:false};"
-                "s.types.forEach(x=>document.removeEventListener(x,s.h,true));"
-                "return {delivered:s.events.length>0||s.before!==s.snap(),events:s.events.length,sameTarget:s.a===document.activeElement}})()", KeyJSON(token)];
-            [current.webview evaluateJavaScript:check completionHandler:^(id result, NSError *failure) {
-                OkilumManagerFocus *last = weak;
-                if (!last || !last.focused) { [last finishKeyCommand]; return; }
-                BOOL delivered = !failure && [result isKindOfClass:NSDictionary.class] && [result[@"delivered"] boolValue];
-                if ([action isEqualToString:@"copy:"] && NSPasteboard.generalPasteboard.changeCount != clipboardBefore) delivered = YES;
-                KeyLog(@"native observation action=%@ delivered=%d trustedEvents=%@ errorCode=%ld", action, delivered, [result isKindOfClass:NSDictionary.class] ? result[@"events"] : nil, (long)failure.code);
-                if (delivered) {
-                    [last.webview evaluateJavaScript:[NSString stringWithFormat:@"delete window.__okilumNativeKeys_v1?.[%@]", KeyJSON(token)] completionHandler:nil];
-                    KeyLog(@"path=NATIVE action=%@ fallback=NOT_USED", action);
-                    [last finishKeyCommand];
-                } else {
-                    [last pageCommand:action token:token];
-                }
-            }];
-        });
-    }];
-}
-- (void)pageCommand:(NSString *)action token:(NSString *)token {
-    if (!self.focused) { [self finishKeyCommand]; return; }
+- (void)pageCommand:(NSString *)action context:(NSDictionary *)context serial:(NSUInteger)serial generation:(NSUInteger)generation {
+    if (!KeyCurrent(self, serial, generation)) return;
     KeyLog(@"path=PAGE_FALLBACK action=%@", action);
-    NSString *guard = [NSString stringWithFormat:
-        @"let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;"
-        "const s=window.__okilumNativeKeys_v1?.[%@];if(s&&s.a!==a)return {ok:false,reason:'focus-changed'};", KeyJSON(token)];
-    NSString *operation;
+    NSDictionary *payload = nil;
     if ([action isEqualToString:@"paste:"]) {
         NSPasteboard *clipboard = NSPasteboard.generalPasteboard;
         NSData *image = [clipboard dataForType:NSPasteboardTypePNG];
@@ -242,45 +252,34 @@ static void KeyRemoveRouter(id router) { [KeyRouters removeObject:router]; }
             image = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
         }
         if (image) {
-            NSString *encoded = [image base64EncodedStringWithOptions:0];
+            payload = @{@"kind":@"image", @"data":[image base64EncodedStringWithOptions:0]};
             KeyLog(@"page paste kind=image bytes=%lu", (unsigned long)image.length);
-            operation = [NSString stringWithFormat:@"const bytes=Uint8Array.from(atob(%@),c=>c.charCodeAt(0));const dt=new DataTransfer();dt.items.add(new File([bytes],'clipboard.png',{type:'image/png'}));const e=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});a.dispatchEvent(e);return {ok:true,kind:'image'};", KeyJSON(encoded)];
         } else {
             NSString *text = [clipboard stringForType:NSPasteboardTypeString];
-            if (!text) { KeyLog(@"page paste skipped: no supported clipboard text/image"); [self finishKeyCommand]; return; }
-            KeyLog(@"page paste kind=text available=%d length=%lu", text != nil, (unsigned long)text.length);
-            operation = [NSString stringWithFormat:@"return {ok:document.execCommand('insertText',false,%@),kind:'text'};", KeyJSON(text ?: @"")];
+            if (!text) { KeyLog(@"page paste skipped no-supported-clipboard-data"); return; }
+            payload = @{@"kind":@"text", @"data":text};
+            KeyLog(@"page paste kind=text length=%lu", (unsigned long)text.length);
         }
-    } else if ([action isEqualToString:@"copy:"] || [action isEqualToString:@"cut:"]) {
-        NSString *selection = [NSString stringWithFormat:@"(()=>{%@return {text:typeof a?.selectionStart==='number'?a.value.slice(a.selectionStart,a.selectionEnd):String(window.getSelection())}})()", guard];
-        __weak OkilumManagerFocus *weak = self;
-        [self.webview evaluateJavaScript:selection completionHandler:^(id result, NSError *error) {
-            OkilumManagerFocus *router = weak;
-            if (!router || !router.focused) { [router finishKeyCommand]; return; }
-            NSString *text = [result isKindOfClass:NSDictionary.class] ? result[@"text"] : nil;
-            if (!error && text.length) {
-                [NSPasteboard.generalPasteboard clearContents];
-                BOOL written = [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
-                KeyLog(@"page copy clipboardWritten=%d length=%lu", written, (unsigned long)text.length);
-                if (written && [action isEqualToString:@"cut:"]) {
-                    [router.webview evaluateJavaScript:[NSString stringWithFormat:@"(()=>{%@return {ok:document.execCommand('delete')}})()", guard] completionHandler:^(id ignored, NSError *failure) {
-                        (void)ignored; KeyLog(@"page cut completed errorCode=%ld", (long)failure.code); [weak finishKeyCommand];
-                    }];
-                    return;
-                }
-            } else { KeyLog(@"page copy skipped emptySelection=%d errorCode=%ld", text != nil && text.length == 0, (long)error.code); }
-            [router finishKeyCommand];
-        }];
-        return;
-    } else {
-        NSString *name = [action isEqualToString:@"selectAll:"] ? @"selectAll" : ([action isEqualToString:@"redo:"] ? @"redo" : @"undo");
-        operation = [NSString stringWithFormat:@"return {ok:document.execCommand(%@)};", KeyJSON(name)];
     }
-    NSString *script = [NSString stringWithFormat:@"(()=>{%@%@})()", guard, operation];
+    NSString *script = [NSString stringWithFormat:@"window.__okilumKeysV2?.run(%@,%@,%@) ?? {ok:false,reason:'missing-document-state'}", KeyJSON(action), KeyJSON(payload ?: NSNull.null), KeyJSON(context)];
     __weak OkilumManagerFocus *weak = self;
     [self.webview evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
-        KeyLog(@"page fallback completed action=%@ ok=%@ errorCode=%ld", action, [result isKindOfClass:NSDictionary.class] ? result[@"ok"] : nil, (long)error.code);
-        [weak finishKeyCommand];
+        OkilumManagerFocus *router = weak;
+        if (!KeyCurrent(router, serial, generation)) return;
+        BOOL valid = !error && [result isKindOfClass:NSDictionary.class] && [result[@"ok"] boolValue];
+        KeyLog(@"page fallback completed action=%@ ok=%d reason=%@ errorCode=%ld", action, valid, [result isKindOfClass:NSDictionary.class] ? result[@"reason"] : nil, (long)error.code);
+        if (!valid || !([action isEqualToString:@"copy:"] || [action isEqualToString:@"cut:"])) return;
+        NSString *text = result[@"text"];
+        if (![text isKindOfClass:NSString.class] || text.length == 0) return;
+        [NSPasteboard.generalPasteboard clearContents];
+        BOOL written = [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
+        KeyLog(@"page copy clipboardWritten=%d length=%lu", written, (unsigned long)text.length);
+        if (written && [action isEqualToString:@"cut:"]) {
+            NSString *deletion = [NSString stringWithFormat:@"window.__okilumKeysV2?.run('delete:',null,%@) ?? {ok:false,reason:'missing-document-state'}", KeyJSON(context)];
+            [router.webview evaluateJavaScript:deletion completionHandler:^(id value, NSError *failure) {
+                KeyLog(@"page cut completed ok=%@ reason=%@ errorCode=%ld", [value isKindOfClass:NSDictionary.class] ? value[@"ok"] : nil, [value isKindOfClass:NSDictionary.class] ? value[@"reason"] : nil, (long)failure.code);
+            }];
+        }
     }];
 }
 @end

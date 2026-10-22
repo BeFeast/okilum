@@ -34,9 +34,10 @@ static void KeyRemoveRouter(id router);
 @property(nonatomic, strong) NSMenu *previousSubmenu;
 @property(nonatomic) BOOL addedItem;
 @property(nonatomic) BOOL nativeRouting;
-@property(nonatomic) BOOL keyBusy;
-@property(nonatomic, copy) NSString *keyToken;
-@property(nonatomic, strong) NSMutableArray *keyQueue;
+@property(nonatomic) NSUInteger keySerial;
+@property(nonatomic) NSUInteger keyDocumentGeneration;
+@property(nonatomic, strong) NSDictionary *pageContext;
+@property(nonatomic, strong) id keyMessages;
 - (BOOL)focused;
 - (void)refresh;
 - (void)detach;
@@ -47,9 +48,7 @@ static void KeyRemoveRouter(id router);
 
 @interface OkilumManagerFocus (Keys)
 - (BOOL)handleCommandEvent:(NSEvent *)event;
-- (void)processKeyQueue;
-- (void)finishKeyCommand;
-- (void)pageCommand:(NSString *)action token:(NSString *)token;
+- (void)pageCommand:(NSString *)action context:(NSDictionary *)context serial:(NSUInteger)serial generation:(NSUInteger)generation;
 @end
 
 @implementation OkilumManagerFocus
@@ -196,7 +195,8 @@ static void KeyRemoveRouter(id router);
 }
 - (void)detach {
     KeyRemoveRouter(self);
-    [self.keyQueue removeAllObjects];
+    self.keySerial++;
+    self.pageContext = nil;
     [self returnToParent];
     if (self.monitor) [NSEvent removeMonitor:self.monitor];
     for (id observer in self.observers) [NSNotificationCenter.defaultCenter removeObserver:observer];

@@ -118,9 +118,21 @@ handling logs `path=NATIVE` and does not invoke the fallback. Otherwise, while t
 same page input remains focused, text paste uses `execCommand('insertText')`, image
 paste sends a ClipboardEvent containing a DataTransfer PNG file, copy/cut transfers
 the page selection to NSPasteboard (cut then deletes), and select-all/undo/redo use
-execCommand. Commands are serialized and cancelled on focus loss. Logs identify
+execCommand. The native attempt runs synchronously on the original event path. Delayed page
+fallback requires an unchanged document, target, selection and input revision;
+subsequent input cancels it rather than reordering a late paste. Copy/cut excludes
+password and CSS-masked secure fields. Logs identify
 `path=PAGE_FALLBACK` and its outcome without recording content.
 
 This expanded scope is explicitly requested by the manager after Oleg's failed
 sprint. It is not validated by hosted GUI fixtures: Oleg must send the log from a
 real Sprint run and verify Cmd+V/C/X/A/Z in pairing and chat before merge.
+
+The page helper has a per-document generation, reports only context IDs/counters
+to the native router, and fails closed if that state is absent after navigation or
+script failure. Required macOS CI runs pure JavaScript guard regressions, including
+secure copy/cut with an unchanged-clipboard control, navigation/focus changes,
+subsequent typing and trusted native paste observation. These are unit tests,
+not another hosted GUI fixture or evidence of Oleg's native paste acceptance.
+`page_keys.js` is canonical; regenerate its Objective-C string with
+`python3 scripts/dev/generate-manager-page-keys.py`. The unit test checks equality.
