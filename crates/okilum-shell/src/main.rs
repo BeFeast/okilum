@@ -9293,7 +9293,7 @@ mod document_link_landing_tests {
     fn sidebar_explicit_sections_survive_save_close_launch_with_scrolled_tree(
         cx: &mut gpui::TestAppContext,
     ) {
-        use reader_sidebar::{Section, LEFT_SECTIONS};
+        use reader_sidebar::LEFT_SECTIONS;
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
