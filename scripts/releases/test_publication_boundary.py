@@ -63,8 +63,24 @@ class PublicationBoundary(unittest.TestCase):
                 publication.publish(api, 'linux', 12)
                 self.assertEqual(launch.called, expected)
                 if expected:
-                    self.assertIn('5042', launch.call_args.args[0])
-                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
+                    self.assertEqual(launch.call_count, 2)
+                    appimage, arch = launch.call_args_list
+                    image_command, arch_command = appimage.args[0], arch.args[0]
+                    self.assertEqual(image_command[:2], [publication.sys.executable,
+                                     str(publication.SCRIPTS / 'releases/appimage_publish.py')])
+                    self.assertEqual(image_command[2:], ['--directory',
+                                     str(Path(image_command[3]).parent / 'appimage'),
+                                     '--source', 'source', '--publication-build', '5042'])
+                    self.assertEqual(arch_command[:2], [publication.sys.executable,
+                                     str(publication.SCRIPTS / 'arch/publish.py')])
+                    self.assertEqual(arch_command[2:7], ['publish', '--build', '5042', '--source', 'source'])
+                    self.assertEqual(arch_command[7], '--package')
+                    self.assertEqual(Path(arch_command[8]).name, 'okilum.pkg.tar.zst')
+                    self.assertEqual(Path(arch_command[8]).parent.name, 'arch')
+                    for call in [appimage, arch]:
+                        self.assertTrue(call.kwargs['check'])
+                        self.assertEqual(call.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
+                        self.assertEqual(call.kwargs['env']['GITHUB_SHA'], 'source')
 
     def test_linux_finishes_after_new_merge_but_rejects_newer_published_beta(self):
         import publication
