@@ -28,7 +28,8 @@ impl FocusRouting {
     ) -> anyhow::Result<Self> {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         use wry::WebViewExtMacOS;
-        let RawWindowHandle::AppKit(parent) = window.window_handle()?.as_raw() else {
+        let RawWindowHandle::AppKit(parent) = HasWindowHandle::window_handle(window)?.as_raw()
+        else {
             anyhow::bail!("Manager requires a native AppKit window");
         };
         let webview = view.webview();
