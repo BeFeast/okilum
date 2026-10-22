@@ -90,6 +90,11 @@ impl T3Settings {
             _input: input,
         }
     }
+    #[cfg(test)]
+    pub(super) fn origin_value(&self, cx: &App) -> String {
+        self.origin.read(cx).value().to_string()
+    }
+
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -108,24 +113,41 @@ impl T3Settings {
         self.busy = true;
         self.error = None;
         let state = self.state.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move {
-                okilum_t3::projects::browser_identity(&env)?;
-                let state = state.ok_or_else(|| anyhow::anyhow!("Application state is unavailable; connection was not saved"))?;
-                project::save_browser_environment(&state, &env)?;
-                Ok::<_, anyhow::Error>(env.origin())
-            }).await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.busy = false;
+        let job = cx.background_executor().spawn(async move {
+            okilum_t3::projects::browser_identity(&env)?;
+            let state = state.ok_or_else(|| {
+                anyhow::anyhow!("Application state is unavailable; connection was not saved")
+            })?;
+            project::save_browser_environment(&state, &env)?;
+            Ok::<_, anyhow::Error>(env.origin())
+        });
+        publish_when_ready(job, cx.weak_entity(), cx);
+    }
+}
+// The app owns publication even if the initiating Settings form/window closes.
+fn publish_when_ready(
+    job: Task<anyhow::Result<String>>,
+    form: WeakEntity<T3Settings>,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        let result = job.await;
+        cx.update(|cx| {
+            if let Ok(origin) = &result {
+                cx.set_global(Connection { origin: Some(origin.clone()) });
+            }
+            let _ = form.update(cx, |form, cx| {
+                form.busy = false;
                 match result {
-                    Ok(origin) => { this.status = Some(format!("Connected to {origin}. Pair or sign in inside the Manager view.")); cx.set_global(Connection { origin: Some(origin) }); }
-                    Err(e) => this.error = Some(format!("Could not connect to T3: {e:#}. Enter a T3 address such as https://t3.oklabs.uk or http://10.10.0.23:23110.")),
+                    Ok(origin) => form.status = Some(format!("Connected to {origin}. Pair or sign in inside the Manager view.")),
+                    Err(e) => form.error = Some(format!("Could not connect to T3: {e:#}. Enter a T3 address such as https://t3.oklabs.uk or http://10.10.0.23:23110.")),
                 }
                 cx.notify();
             });
-        }).detach();
-    }
+        });
+    }).detach();
 }
+
 impl Render for T3Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
@@ -161,6 +183,53 @@ impl Render for T3Settings {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn completed_connection_is_published_after_form_is_dropped(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let form = cx.new(|cx| T3Settings::new(None, window, cx));
+            Root::new(form, window, cx)
+        });
+        let (send, receive) = async_channel::bounded(1);
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let changes = notifications.clone();
+        let observer = visual.update(|_, cx| {
+            cx.observe_global::<Connection>(move |cx| {
+                if cx.global::<Connection>().origin.as_deref() == Some("https://t3.oklabs.uk") {
+                    changes.set(changes.get() + 1);
+                }
+            })
+        });
+        let weak = visual.update(|window, cx| {
+            let form = cx.new(|cx| T3Settings::new(None, window, cx));
+            let weak = form.downgrade();
+            let job = cx
+                .background_executor()
+                .spawn(async move { receive.recv().await.map_err(anyhow::Error::from) });
+            publish_when_ready(job, weak.clone(), cx);
+            weak
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.update(|_, _| weak.upgrade().is_none()),
+            "initiating form is gone before success"
+        );
+        send.try_send("https://t3.oklabs.uk".to_string()).unwrap();
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.global::<Connection>().origin.as_deref(),
+                Some("https://t3.oklabs.uk")
+            )
+        });
+        assert_eq!(
+            notifications.get(),
+            1,
+            "existing app observers receive the connection refresh"
+        );
+        drop(observer);
+    }
 
     #[gpui::test]
     fn enter_validates_settings_input_and_editing_recovers(cx: &mut TestAppContext) {

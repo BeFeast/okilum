@@ -1307,6 +1307,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn manager_settings_entry_keeps_active_project_prefill(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("ops")).unwrap();
+        std::fs::write(
+            directory.path().join("ops/project.yaml"),
+            "t3: {environment: test, origin: 'https://project.example'}",
+        )
+        .unwrap();
+        let project = okilum_t3::projects::Project {
+            folder: directory.path().into(),
+            name: "Project".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("test".into()),
+            manager_project: Some("brain".into()),
+            manager: okilum_t3::projects::Manager::NotStarted,
+        };
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                let mut reader = Reader::new(Opts::default(), window, cx);
+                reader.project_navigation.active = Some(project);
+                reader
+            });
+            window.activate_window();
+            Root::new(reader, window, cx)
+        });
+        // This is exactly the Manager button entry, including automatic active
+        // Reader resolution in show_section before Settings becomes active.
+        visual.update(|_, cx| show_t3(cx));
+        visual.run_until_parked();
+        let handle = visual.update(|_, cx| cx.global::<SettingsWindow>().0.unwrap());
+        handle
+            .update(visual, |root, _, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                let settings = settings.read(cx);
+                assert!(settings
+                    .reader
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .is_some());
+                let t3 = settings
+                    .t3
+                    .as_ref()
+                    .expect("Projects / T3 pane initialized");
+                assert_eq!(t3.read(cx).origin_value(cx), "https://project.example");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn about_routes_reuse_settings_without_a_reader_modal(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let (_, visual) = cx.add_window_view(|window, cx| {
