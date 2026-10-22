@@ -62,33 +62,22 @@ class PublicationBoundary(unittest.TestCase):
                'status': 'success', 'commit_sha': 'source', 'index_in_repo': 42}
         for final_head, expected in [('source', True), ('newer', True)]:
             api = Mock()
-            api.call.side_effect = [run, {'commit': {'id': 'source'}},
+            api.call.side_effect = [run, {'commit': {'id': 'source'}}, [{'name': 'release', 'status': 'success'}],
                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                  for i, name in enumerate(publication.ARTIFACTS['linux'])],
-                data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
+                data.getvalue(), {'commit': {'id': final_head}}]
             with patch.object(publication.subprocess, 'run') as launch, patch.object(publication, 'R2') as store:
                 store.return_value.call.return_value = None
                 publication.publish(api, 'linux', 12)
                 self.assertEqual(launch.called, expected)
                 if expected:
-                    self.assertEqual(launch.call_count, 2)
-                    appimage, arch = launch.call_args_list
-                    image_command, arch_command = appimage.args[0], arch.args[0]
-                    self.assertEqual(image_command[:2], [publication.sys.executable,
-                                     str(publication.SCRIPTS / 'releases/appimage_publish.py')])
-                    self.assertEqual(image_command[2:], ['--directory',
-                                     str(Path(image_command[3]).parent / 'appimage'),
-                                     '--source', 'source', '--publication-build', '5042'])
-                    self.assertEqual(arch_command[:2], [publication.sys.executable,
+                    launch.assert_called_once()
+                    command = launch.call_args.args[0]
+                    self.assertEqual(command[:2], [publication.sys.executable,
                                      str(publication.SCRIPTS / 'arch/publish.py')])
-                    self.assertEqual(arch_command[2:7], ['publish', '--build', '5042', '--source', 'source'])
-                    self.assertEqual(arch_command[7], '--package')
-                    self.assertEqual(Path(arch_command[8]).name, 'okilum.pkg.tar.zst')
-                    self.assertEqual(Path(arch_command[8]).parent.name, 'arch')
-                    for call in [appimage, arch]:
-                        self.assertTrue(call.kwargs['check'])
-                        self.assertEqual(call.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
-                        self.assertEqual(call.kwargs['env']['GITHUB_SHA'], 'source')
+                    self.assertEqual(command[2:7], ['publish', '--build', '5042', '--source', 'source'])
+                    self.assertEqual(Path(command[8]).name, 'okilum.pkg.tar.zst')
+                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
 
     def test_linux_finishes_after_new_merge_but_rejects_newer_published_beta(self):
         import publication
@@ -96,7 +85,7 @@ class PublicationBoundary(unittest.TestCase):
         run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'push',
                'status': 'success', 'commit_sha': 'previous-main', 'index_in_repo': 42}
-        self.assertTrue(publication.eligible(run, 'linux', 'new-main'))
+        self.assertTrue(publication.eligible(run, 'linux', 'new-main', [{'name': 'release', 'status': 'success'}]))
         for changes in [{'prettyref': 'feature'}, {'is_fork_pull_request': True},
                         {'trigger_event': 'pull_request'}, {'workflow_id': 'ci.yml'}]:
             with self.assertRaises(ValueError):
@@ -104,12 +93,13 @@ class PublicationBoundary(unittest.TestCase):
         for status in ['failure', 'cancelled', 'running']:
             self.assertFalse(publication.eligible({**run, 'status': status}, 'linux', 'new-main'))
         api = Mock()
-        api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
+        api.call.side_effect = [run, {'commit': {'id': 'new-main'}},
+                                [{'name': 'release', 'status': 'success'}]]
         with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
             store.return_value.call.return_value = json.dumps({'build': 5043}).encode()
             publication.publish(api, 'linux', 12)
             launch.assert_not_called()
-            self.assertEqual(api.call.call_count, 2)
+            self.assertEqual(api.call.call_count, 3 if run.get('workflow_id') == 'linux-release.yml' else 2)
 
     def test_hourly_and_manual_snapshots_publish_after_main_advances(self):
         import publication
@@ -152,12 +142,15 @@ class PublicationBoundary(unittest.TestCase):
                    'status': 'success', 'commit_sha': 'old-main', 'index_in_repo': 42}
             api = Mock()
             api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
+            if run['workflow_id'] == 'linux-release.yml':
+                api.call.side_effect = [run, {'commit': {'id': 'new-main'}},
+                                        [{'name': 'release', 'status': 'success'}]]
             with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
                 store.return_value.call.return_value = feed
                 self.assertEqual(publication.published_build(store(), platform), 5043)
                 publication.publish(api, platform, 12)
                 launch.assert_not_called()
-                self.assertEqual(api.call.call_count, 2)
+                self.assertEqual(api.call.call_count, 3 if run.get('workflow_id') == 'linux-release.yml' else 2)
 
 
 class ExplicitSourcePublication(unittest.TestCase):
@@ -183,10 +176,10 @@ class ExplicitSourcePublication(unittest.TestCase):
                'is_fork_pull_request': False, 'trigger_event': event,
                'status': 'success', 'commit_sha': 'c' * 40, 'index_in_repo': 42}
         api = Mock()
-        api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
+        api.call.side_effect = [run, {'commit': {'id': 'c' * 40}}, [{'name': 'release', 'status': 'success'}],
                                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                                  for i, name in enumerate(publication.ARTIFACTS['linux'])],
-                                data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
+                                data.getvalue(), {'commit': {'id': final_head}}]
         launches = []
 
         def run_command(args, **kwargs):
@@ -204,13 +197,13 @@ class ExplicitSourcePublication(unittest.TestCase):
     def test_scheduled_tick_that_built_main_tip_publishes_to_beta(self):
         # The tick's own commit is its old snapshot; it built main's newer tip instead.
         launches = self.publish('d' * 40, event='schedule', feed=1)
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 1)
         self.assertNotIn('--archive-only', launches[0])
         self.assertIn('d' * 40, launches[0])
 
     def test_an_older_recorded_source_is_published_to_the_archive(self):
         launches = self.publish('d' * 40)
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 1)
         command = launches[0]
         self.assertIn('--archive-only', command)
         self.assertEqual(command[command.index('--source') + 1], 'd' * 40)
@@ -218,7 +211,7 @@ class ExplicitSourcePublication(unittest.TestCase):
     def test_main_moving_on_during_transfer_does_not_stop_an_archive_publication(self):
         # The point of an explicit source is that main has moved past it.
         launches = self.publish('d' * 40, final_head='e' * 40)
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 1)
         self.assertIn('--archive-only', launches[0])
 
     def test_the_run_own_commit_is_an_ordinary_snapshot(self):

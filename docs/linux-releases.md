@@ -157,22 +157,25 @@ PR checks. There is one AppImage compilation per source. The existing public
 `ci.yml` and Arch package build remain independent. A merge commit is a new
 source: a successful PR-head artifact cannot be relabelled as that merge.
 
-The existing Linux release workflow's bridge job resolves exactly one hosted run
-for the selected full source SHA. Repository, workflow path, push ref, first
-attempt, completed success, executed AppImage compatibility step and Linux
-aggregate must match. It downloads exactly one non-expired artifact by ID,
-checks GitHub's SHA256 archive digest, and records its original run/job/artifact
-evidence. Uploaded-before-smoke artifacts alone never qualify. Missing evidence,
-a running/failed/rerun/ambiguous run or expired bytes fails closed, without a
-fallback build or automatic dispatch. A later Linux release attempt can reuse
-the same completed producer within its three-day retention. Older main commits
-without this producer cannot be backfilled by relabelling another source.
+The Linux release bridge resolves the selected full source SHA against the original
+main AppImage producer. First-attempt identity, executed successful Ubuntu/Fedora
+smoke, archive digest and payload provenance authorize AppImage reuse independently
+of the GitHub Linux aggregate. Missing producer, running producer, unaccepted smoke,
+and absent/expired payload are typed `APPIMAGE_REUSE_SKIP` outcomes with source and
+reason: reuse succeeds with `accepted=false` and produces no handoff. Malformed,
+ambiguous or mismatched evidence and transport/authentication errors remain failures.
+There is no fallback build, relabelling or duplicate producer dispatch.
 
-Both `arch-publication` and `appimage-publication` must complete before the
-existing protected `release-publish.yml` is dispatched. Only its existing
-`publish` runner imports `ARCH_GPG_PRIVATE_KEY` and uses R2 credentials, under
-the unchanged cross-platform publication/promotion lock. The mirror credential
-stays on the bridge. No new keys, secrets, runners or hosts are introduced.
+Arch and AppImage publication are independent in both directions. Arch dispatch
+requires only the successful `release` job; its protected publisher verifies trusted
+main origin and exactly one successful `release` job through the jobs API, then
+consumes only `arch-publication`. AppImage dispatch requires successful reuse with
+`accepted=true` and consumes only `appimage-publication`. An aggregate failure in
+the other lane cannot block accepted bytes. Reuse runs on every main tick even
+when the Arch descriptor already exists, so later accepted AppImage evidence
+can publish on the next tick without compiling another source. Cancellation still blocks publication.
+Only the existing protected `publish` runner imports the Linux key and R2 credentials,
+under the unchanged cross-platform publication/promotion lock.
 
 AppImage build **N** is its original embedded `5000 + GitHub run_number`;
 Forgejo's `5000 + run number` is separate `publication_build` metadata. The
@@ -287,8 +290,7 @@ non-cancellable lock, pinned signer, immutable storage and monotonic beta guard.
 Explicit AppImage sources can advance beta; the legacy archive-only Arch path
 and all Stable behavior remain unchanged.
 
-The approved reuse candidate is source
-`6fc5ade06541c00fa5282b1e737198b00733e036`, original GitHub artifact
-`12419293429`, embedded build `6478`. These identifiers document the candidate;
-the helper still resolves and validates the original hosted evidence. The parent
-owns the post-merge dispatch; no live publication is claimed by this change.
+The next public candidate must be signed source `86f078a5` or a later main
+source containing Dima's #1497 fix, with accepted original producer evidence.
+The earlier embedded build 6478 is not the current candidate. The parent owns
+post-merge dispatch and public verification; this change performs no live publish.

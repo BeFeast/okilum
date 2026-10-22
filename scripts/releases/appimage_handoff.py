@@ -16,24 +16,45 @@ import appimage_publish as publisher
 import publication
 
 
+class ReuseUnavailable(ValueError):
+    """Expected lack of accepted bytes; never covers identity or transport errors."""
+
+
+def stage_result(api, source, directory, fetch):
+    try:
+        stage(api, source, directory, fetch)
+    except ReuseUnavailable as error:
+        print(f'APPIMAGE_REUSE_SKIP source={source} reason={error}')
+        return False
+    return True
+
+
 def accepted(run, jobs, source):
     if (not re.fullmatch('[0-9a-f]{40}', source)
             or run.get('repository', {}).get('full_name') != artifact.REPOSITORY
             or run.get('path') != artifact.WORKFLOW or run.get('head_sha') != source
             or run.get('head_branch') != 'main' or run.get('event') != 'push'
-            or run.get('status') != 'completed' or run.get('run_attempt') != 1
+            or run.get('run_attempt') != 1
             or type(run.get('run_number')) is not int or run['run_number'] <= 0):
         raise ValueError('Expected original main AppImage producer')
+    if run.get('status') in ('queued', 'in_progress', 'waiting', 'pending'):
+        raise ReuseUnavailable('producer-not-completed')
+    if run.get('status') != 'completed':
+        raise ValueError('Malformed producer status')
     matches = [job for job in jobs if job.get('name') == 'appimage']
+    if not matches:
+        raise ReuseUnavailable('appimage-job-absent')
     if len(matches) != 1:
-        raise ValueError('Missing or ambiguous AppImage job')
+        raise ValueError('Ambiguous AppImage job')
     job = matches[0]
-    if (job.get('run_id') != run['id'] or job.get('head_sha') != source
-            or job.get('status') != 'completed' or job.get('conclusion') != 'success'
-            or len([step for step in job.get('steps', [])
-                    if step.get('name') == artifact.SMOKE
-                    and step.get('conclusion') == 'success']) != 1):
-        raise ValueError('AppImage Ubuntu/Fedora smoke was not accepted')
+    if job.get('run_id') != run['id'] or job.get('head_sha') != source:
+        raise ValueError('AppImage job identity mismatch')
+    smoke = [step for step in job.get('steps', []) if step.get('name') == artifact.SMOKE]
+    if len(smoke) > 1:
+        raise ValueError('Ambiguous AppImage smoke')
+    if (job.get('status') != 'completed' or job.get('conclusion') != 'success'
+            or not smoke or smoke[0].get('conclusion') != 'success'):
+        raise ReuseUnavailable('appimage-smoke-not-accepted')
 
 
 def unpack(directory, destination):
@@ -57,10 +78,14 @@ def stage(api, source, directory, fetch):
     if not re.fullmatch('[0-9a-f]{40}', source):
         raise ValueError('Expected full source SHA')
     runs = api.request(f'actions/workflows/forgejo-linux.yml/runs?head_sha={source}&event=push&per_page=100')
+    if runs.get('total_count', len(runs['workflow_runs'])) != len(runs['workflow_runs']):
+        raise ValueError('Incomplete producer listing')
     matches = [run for run in runs['workflow_runs'] if run.get('head_sha') == source
                and run.get('path') == artifact.WORKFLOW and run.get('head_branch') == 'main']
+    if not matches:
+        raise ReuseUnavailable('no-exact-main-producer')
     if len(matches) != 1:
-        raise ValueError('Missing or ambiguous original main producer')
+        raise ValueError('Ambiguous original main producer')
     run = api.request(f"actions/runs/{matches[0]['id']}")
     jobs = api.request(f"actions/runs/{run['id']}/attempts/1/jobs?per_page=100")
     items = api.request(f"actions/runs/{run['id']}/artifacts?per_page=100")
@@ -69,9 +94,14 @@ def stage(api, source, directory, fetch):
             raise ValueError('Incomplete GitHub evidence')
     accepted(run, jobs['jobs'], source)
     matches = [item for item in items['artifacts'] if item.get('name') == f'linux-appimage-{source}']
+    if not matches:
+        raise ReuseUnavailable('payload-absent')
     if len(matches) != 1:
-        raise ValueError('Missing or ambiguous AppImage artifact')
+        raise ValueError('Ambiguous AppImage artifact')
     item = matches[0]
+    artifact.artifact_identity({**item, 'expired': False}, run, source)
+    if item.get('expired') is True:
+        raise ReuseUnavailable('payload-expired')
     artifact.artifact_identity(item, run, source)
     data = fetch(item['id'])
     if 'sha256:' + hashlib.sha256(data).hexdigest() != item['digest']:
@@ -86,7 +116,7 @@ def stage(api, source, directory, fetch):
 
 
 def trusted(run, run_id):
-    if (run.get('id') != run_id or run.get('workflow_id') != 'linux-release.yml'
+    if (run.get('status') == 'cancelled' or run.get('id') != run_id or run.get('workflow_id') != 'linux-release.yml'
             or run.get('prettyref') != 'main' or run.get('is_fork_pull_request') is not False
             or run.get('trigger_event') not in ('push', 'schedule', 'workflow_dispatch')
             or not re.fullmatch('[0-9a-f]{40}', run.get('commit_sha', ''))
@@ -134,8 +164,10 @@ def main():
         if not args.source or args.directory is None:
             parser.error('stage requires --source and --directory')
         token = os.environ['MIRROR_TOKEN']
-        stage(artifact.transport.GitHub(token), args.source, args.directory,
-              lambda aid: artifact.download(token, aid))
+        accepted_bytes = stage_result(artifact.transport.GitHub(token), args.source, args.directory,
+                                      lambda aid: artifact.download(token, aid))
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write(f'accepted={str(accepted_bytes).lower()}\n')
     elif args.command == 'dispatch':
         if os.environ.get('GITHUB_REF') != 'refs/heads/main':
             raise ValueError('Dispatch requires main')

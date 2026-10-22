@@ -1,5 +1,9 @@
 """Independent handoff regressions; run by the hosted Linux gate."""
 import copy
+import io
+import tempfile
+from pathlib import Path
+from contextlib import redirect_stdout
 import unittest
 from unittest.mock import Mock, patch
 
@@ -39,3 +43,95 @@ class IndependentAcceptance(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     handoff.publish(client, 7)
             key.assert_not_called()
+
+
+class ReuseOutcomes(unittest.TestCase):
+    def stage(self, change=None, error=None):
+        receipt, data, _, _ = evidence()
+        responses = {'runs': {'workflow_runs': [receipt['run']]},
+                     'jobs': {'jobs': receipt['jobs']},
+                     'artifacts': {'artifacts': [receipt['artifact']]}}
+        if change:
+            change(receipt, responses)
+        def request(path):
+            if error:
+                raise error
+            if '/runs?' in path:
+                return responses['runs']
+            if '/jobs?' in path:
+                return responses['jobs']
+            if '/artifacts?' in path:
+                return responses['artifacts']
+            return receipt['run']
+        api = Mock(); api.request.side_effect = request
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / 'handoff'
+            log = io.StringIO()
+            with redirect_stdout(log):
+                result = handoff.stage_result(api, SOURCE, directory, lambda aid: data)
+            self.assertEqual(directory.exists(), result)
+            if not result:
+                self.assertIn('APPIMAGE_REUSE_SKIP source=' + SOURCE, log.getvalue())
+            return result
+
+    def test_accepted_payload_is_positive_control_despite_other_lane_failure(self):
+        self.assertTrue(self.stage(lambda r, responses: r['run'].update(conclusion='failure')))
+
+    def test_expected_absence_has_no_handoff(self):
+        changes = [lambda r, x: x['runs'].update(workflow_runs=[]),
+                   lambda r, x: r['run'].update(status='in_progress'),
+                   lambda r, x: r['jobs'][0].update(conclusion='failure'),
+                   lambda r, x: x['artifacts'].update(artifacts=[]),
+                   lambda r, x: r['artifact'].update(expired=True)]
+        for change in changes:
+            with self.subTest(change=change):
+                self.assertFalse(self.stage(change))
+
+    def test_identity_ambiguity_digest_and_transport_remain_errors(self):
+        changes = [lambda r, x: x['runs']['workflow_runs'].append(r['run']),
+                   lambda r, x: r['run'].update(run_attempt=2),
+                   lambda r, x: r['jobs'][0].update(head_sha='b' * 40),
+                   lambda r, x: r['artifact'].update(digest='sha256:' + '0' * 64),
+                   lambda r, x: x['artifacts']['artifacts'].append(r['artifact'])]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.stage(change)
+        for error in [PermissionError('401'), ConnectionError('network')]:
+            with self.subTest(error=error), self.assertRaises(type(error)):
+                self.stage(error=error)
+
+
+class ArchIndependence(unittest.TestCase):
+    def test_unique_successful_release_authorizes_failed_or_running_aggregate(self):
+        import publication
+        run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
+               'is_fork_pull_request': False, 'trigger_event': 'schedule',
+               'status': 'failure', 'commit_sha': SOURCE}
+        job = {'name': 'release', 'status': 'success'}
+        for status in ['failure', 'running', 'success']:
+            self.assertTrue(publication.eligible({**run, 'status': status}, 'linux', SOURCE, [job]))
+        for jobs in [[], [job, job], [{**job, 'status': 'failure'}],
+                     [{**job, 'status': 'running'}]]:
+            self.assertFalse(publication.eligible(run, 'linux', SOURCE, jobs))
+        self.assertFalse(publication.eligible({**run, 'status': 'cancelled'}, 'linux', SOURCE, [job]))
+        self.assertEqual(publication.ARTIFACTS['linux'], {'arch-publication': 'arch'})
+
+
+class WorkflowIndependence(unittest.TestCase):
+    def test_dag_preserves_each_lanes_own_acceptance(self):
+        workflow = (Path(__file__).resolve().parents[2] /
+                    '.forgejo/workflows/linux-release.yml').read_text()
+        def job(name):
+            section = workflow.split('\n  ' + name + ':\n', 1)[1]
+            import re
+            return re.split(r'\n  [a-z][a-z-]*:\n', section, maxsplit=1)[0]
+        arch = job('publication')
+        self.assertIn('needs: [select, release]', arch)
+        self.assertIn("needs.release.result == 'success'", arch)
+        self.assertIn('if: always()', arch)
+        appimage = job('appimage-publication')
+        self.assertIn('needs: [select, appimage-reuse]', appimage)
+        self.assertIn("needs.appimage-reuse.outputs.accepted == 'true'", appimage)
+        reuse = job('appimage-reuse')
+        self.assertNotIn('outputs.build', reuse)
+        self.assertIn("if: steps.reuse.outputs.accepted == 'true'", reuse)

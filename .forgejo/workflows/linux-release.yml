@@ -136,8 +136,11 @@ jobs:
           retention-days: 7
 
   appimage-reuse:
+    outputs:
+      accepted: ${{ steps.reuse.outputs.accepted }}
     needs: select
-    if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # Arch coalescing must not suppress later accepted AppImage bytes on the next tick.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 10
     steps:
@@ -145,11 +148,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Resolve accepted exact-source AppImage without compiling
+        id: reuse
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           SOURCE: ${{ needs.select.outputs.source }}
         run: python3 scripts/releases/appimage_handoff.py stage --source "$SOURCE" --directory dist/appimage-publication
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: steps.reuse.outputs.accepted == 'true'
         with:
           name: appimage-publication
           path: dist/appimage-publication/
@@ -157,7 +162,7 @@ jobs:
 
   appimage-publication:
     needs: [select, appimage-reuse]
-    if: needs.appimage-reuse.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: always() && needs.select.result == 'success' && needs.appimage-reuse.outputs.accepted == 'true' && needs.appimage-reuse.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 3
     steps:
@@ -171,15 +176,15 @@ jobs:
         run: python3 scripts/releases/appimage_handoff.py dispatch
 
   publication:
-    needs: [select, release, appimage-reuse]
-    if: inputs.appimage_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [select, release]
+    if: always() && needs.select.result == 'success' && needs.release.result == 'success' && inputs.appimage_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 3
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Dispatch protected publication after both artifacts are complete
+      - name: Dispatch protected Arch publication after accepted Arch release
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}

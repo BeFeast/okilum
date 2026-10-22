@@ -221,6 +221,8 @@ class PublicationSidecar(unittest.TestCase):
                 def api(method, path, **kwargs):
                     if path == '/actions/runs/12':
                         return run
+                    if path == '/actions/runs/12/jobs':
+                        return [{'name': 'release', 'status': 'success'}]
                     if path == '/branches/main':
                         return {'commit': {'id': SOURCE}}
                     if path.endswith('/artifacts'):
@@ -265,5 +267,5 @@ class PublicationSidecar(unittest.TestCase):
                 self.assertEqual(result['items'], expected_items)
                 self.assertEqual(store.data[f'okilum/releases/{SOURCE}/{platform}.json'], b'unchanged descriptor bytes')
                 self.assertEqual(store.writes, [notes.key(SOURCE, platform, 'beta')])
-                self.assertEqual(len(commands), 2 if platform == 'linux' else 1)
+                self.assertEqual(len(commands), 1)
                 self.assertNotIn('--archive-only', commands[-1])
