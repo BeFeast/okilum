@@ -249,14 +249,27 @@ mod tests {
             });
         });
         visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        settings.update_in(visual, |settings, window, cx| {
+            assert_eq!(
+                window.focused(cx),
+                Some(settings.origin.read(cx).focus_handle(cx)),
+                "positive control: Settings origin owns the key-dispatch path"
+            );
+            assert_eq!(settings.origin.read(cx).value().as_str(), "not a host");
+        });
         assert!(settings.read_with(visual, |settings, _| settings.error.is_none()));
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         settings.read_with(visual, |settings, _| {
-            assert!(settings
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("T3")));
+            assert!(
+                settings
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("T3")),
+                "Enter must submit validation, actual error: {:?}",
+                settings.error
+            );
             assert!(
                 !settings.busy,
                 "invalid input must not start a network request"
