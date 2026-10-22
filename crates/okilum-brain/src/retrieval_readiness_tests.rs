@@ -191,7 +191,10 @@ impl Fixture {
         let events = provider.events.clone();
         thread::spawn(move || {
             events
-                .send(ProviderEvent::Refreshed(index.refresh(false)))
+                .send(ProviderEvent::Refreshed(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| index.refresh(false)))
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("refresh thread panicked"))),
+                ))
                 .unwrap();
         })
     }
@@ -418,7 +421,7 @@ fn source_settings_and_rebuild_invalidation_stop_obsolete_embedding_tail() {
         }
         refresh.join().unwrap();
         // rebuild/source queue forced work; settings invalidation queues ordinary work.
-        assert_eq!(fixture._triggers.recv().unwrap(), change != "settings");
+        assert_eq!(fixture._triggers.try_recv().unwrap(), change != "settings");
         let refresh = fixture.observed_refresh(&provider);
         let new_call = provider.blocked();
         // The next provider call belongs to a new complete phase1, not the old tail.
@@ -453,7 +456,7 @@ fn source_settings_and_rebuild_invalidation_stop_obsolete_embedding_tail() {
             }
         }
         refresh.join().unwrap();
-        assert!(!fixture._triggers.recv().unwrap());
+        assert!(!fixture._triggers.try_recv().unwrap());
         fixture.index.refresh(false).unwrap();
         fixture.usable("unconfigured");
     }
