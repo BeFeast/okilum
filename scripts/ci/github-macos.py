@@ -32,13 +32,21 @@ class GitHub:
         self.token = token
 
     def request(self, path, method="GET", data=None):
+        request_path = path
+        headers = {"Authorization": f"Bearer {self.token}",
+                   "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28"}
+        if method == "GET" and path.startswith("actions/"):
+            # Actions projections can disagree after completion. Repeating one
+            # cacheable URL three times in 20s can replay the same 60s response.
+            separator = "&" if "?" in path else "?"
+            request_path += f"{separator}_bridge_read={uuid.uuid4().hex}"
+            headers["Cache-Control"] = "no-cache"
         request = urllib.request.Request(
-            f"https://api.github.com/repos/{REPOSITORY}/{path}",
+            f"https://api.github.com/repos/{REPOSITORY}/{request_path}",
             data=json.dumps(data).encode() if data is not None else None,
             method=method,
-            headers={"Authorization": f"Bearer {self.token}",
-                     "Accept": "application/vnd.github+json",
-                     "X-GitHub-Api-Version": "2022-11-28"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
