@@ -40,8 +40,7 @@ impl T3Settings {
                 .placeholder("t3.oklabs.uk or 10.10.0.23:23110")
                 .default_value(current.clone().unwrap_or_default())
         });
-        let input = cx.subscribe_in(&origin, window, |this, _, event, window, cx| match event {
-            InputEvent::PressEnter { .. } => this.connect(window, cx),
+        let input = cx.subscribe_in(&origin, window, |this, _, event, _, cx| match event {
             InputEvent::Change => {
                 this.edited = true;
                 this.error = None;
@@ -151,6 +150,16 @@ fn publish_when_ready(
 impl Render for T3Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .id("t3-connector-form")
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "enter"
+                    && event.keystroke.modifiers == Modifiers::default()
+                    && this.origin.read(cx).focus_handle(cx).is_focused(window)
+                {
+                    this.connect(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .gap_3()
             .child("Projects / T3")
             .child("One connection for this app. A project manifest may override the server.")
