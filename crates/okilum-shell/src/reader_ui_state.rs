@@ -124,6 +124,7 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    settings_section: String,
     /// JSON files show their raw text instead of a pretty-printed view (#1131).
     json_raw: bool,
     /// Where log source locations open (#1165): vscode, cursor, zed,
@@ -172,6 +173,7 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            settings_section: String::new(),
             json_raw: false,
             log_editor: "vscode".into(),
             log_editor_command: String::new(),
@@ -205,6 +207,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    settings_section_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -298,6 +301,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        settings_section_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
         source_maps_changed: Default::default(),
@@ -521,6 +525,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    settings_section_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -598,6 +603,9 @@ impl WriteJob {
         }
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
+        }
+        if self.settings_section_changed {
+            latest.settings_section = self.saved.settings_section.clone();
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
@@ -718,6 +726,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.find_changed
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
+            && !state.settings_section_changed
             && !state.code_soft_wrap_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
@@ -750,6 +759,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        settings_section_changed: state.settings_section_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
         source_maps_changed: state.source_maps_changed.clone(),
@@ -1643,6 +1653,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.settings_section_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
         state.source_maps_changed.clear();
@@ -2030,6 +2041,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                settings_section_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
                 source_maps_changed: Default::default(),
@@ -2576,4 +2588,20 @@ pub(crate) fn typed_views(cx: &App) -> okilum_core::typed_view::Preferences {
     cx.try_global::<Store>()
         .map(|store| store.saved.typed_views.clone())
         .unwrap_or_default()
+}
+
+/// Last explicitly visited Settings pane, shared by every window in this profile.
+pub(crate) fn settings_section(cx: &App) -> Option<&str> {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.settings_section.as_str())
+}
+
+pub(crate) fn set_settings_section(value: &str, cx: &mut App) {
+    if !installed(cx) || settings_section(cx) == Some(value) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.settings_section = value.into();
+    state.settings_section_changed = true;
+    schedule(cx);
 }

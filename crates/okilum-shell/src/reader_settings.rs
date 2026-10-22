@@ -22,6 +22,11 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn show_updates(cx: &mut App) {
+    show_section(None, Some(Section::Updates), cx);
+}
+
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }
@@ -51,8 +56,7 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                                 settings.set_reader(Some(reader), cx);
                             }
                             if let Some(section) = section {
-                                settings.section = section;
-                                cx.notify();
+                                settings.select_section(section, cx);
                             }
                         });
                     }
@@ -76,7 +80,7 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(reader, cx);
                 if let Some(section) = section {
-                    settings.section = section;
+                    settings.select_section(section, cx);
                 }
                 settings
             });
@@ -197,6 +201,31 @@ enum Section {
     Sync,
 }
 impl Section {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Appearance => "appearance",
+            Self::Vault => "vault",
+            Self::Logs => "logs",
+            Self::Updates => "updates",
+            Self::About => "about",
+            Self::Inbox => "inbox",
+            #[cfg(target_os = "linux")]
+            Self::Sync => "sync",
+        }
+    }
+    fn remembered(cx: &App) -> Self {
+        match reader_ui_state::settings_section(cx) {
+            Some("appearance") => Self::Appearance,
+            Some("vault") => Self::Vault,
+            Some("logs") => Self::Logs,
+            Some("updates") => Self::Updates,
+            Some("inbox") => Self::Inbox,
+            #[cfg(target_os = "linux")]
+            Some("sync") => Self::Sync,
+            _ => Self::About,
+        }
+    }
+
     fn icon(self) -> Icon {
         match self {
             Self::Appearance => Icon::new(IconName::Palette),
@@ -252,13 +281,19 @@ struct Settings {
     map_from: Option<Entity<InputState>>,
 }
 impl Settings {
+    fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section = section;
+        reader_ui_state::set_settings_section(section.key(), cx);
+        cx.notify();
+    }
+
     fn new(reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) -> Self {
         let observer = reader
             .as_ref()
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
-            section: Section::Appearance,
+            section: Section::remembered(cx),
             #[cfg(target_os = "linux")]
             sync: None,
             theme_picker: cx.new(|cx| theme_picker::ThemePicker::new(None, cx)),
@@ -1091,6 +1126,10 @@ impl Settings {
 }
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "linux")]
+        if self.section == Section::Sync && self.sync.is_none() {
+            self.sync = Some(reader_settings_sync::shared(window, cx));
+        }
         #[cfg(any(unix, windows))]
         self.refresh_template_folder(cx);
         if self.editor_command.is_none() {
@@ -1171,8 +1210,7 @@ impl Render for Settings {
                                             }
                                             #[cfg(not(target_os = "linux"))]
                                             let _ = window;
-                                            this.section = section;
-                                            cx.notify();
+                                            this.select_section(section, cx);
                                         })),
                                 )
                         }),
@@ -1250,6 +1288,67 @@ pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn first_open_defaults_to_about_and_last_pane_survives_restart(cx: &mut TestAppContext) {
+        let directory =
+            std::env::temp_dir().join(format!("okilum-settings-pane-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(&directory, cx);
+        });
+        let owner = cx.add_window(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            assert!(settings.read(cx).section == Section::About);
+            Root::new(settings, window, cx)
+        });
+        cx.update(|cx| show(None, cx));
+        cx.run_until_parked();
+        let handle = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
+        handle
+            .update(cx, |root, _, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                assert!(settings.read(cx).section == Section::About);
+                settings.update(cx, |settings, cx| {
+                    settings.select_section(Section::Logs, cx)
+                });
+            })
+            .unwrap();
+        cx.update(reader_ui_state::flush);
+        // Read a fresh store from disk, rather than keeping an in-memory preference.
+        cx.update(|cx| reader_ui_state::install(&directory, cx));
+        owner
+            .update(cx, |_, _, cx| {
+                let settings = cx.new(|cx| Settings::new(None, cx));
+                assert!(settings.read(cx).section == Section::Logs);
+            })
+            .unwrap();
+        // Explicit application entries reuse the window but override the preference.
+        for (entry, expected) in [
+            (show_about as fn(&mut App), Section::About),
+            (show_updates, Section::Updates),
+        ] {
+            cx.update(entry);
+            cx.run_until_parked();
+            handle
+                .update(cx, |root, _, cx| {
+                    let settings = root.view().clone().downcast::<Settings>().unwrap();
+                    assert!(settings.read(cx).section == expected);
+                })
+                .unwrap();
+            cx.update(reader_ui_state::flush);
+            cx.update(|cx| reader_ui_state::install(&directory, cx));
+            assert!(cx.read(Section::remembered) == expected);
+        }
+        // A pane unavailable on this platform/newer build never breaks Settings.
+        cx.update(|cx| {
+            reader_ui_state::set_settings_section("future-pane", cx);
+            assert!(Section::remembered(cx) == Section::About);
+            reader_ui_state::flush(cx);
+        });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     #[gpui::test]

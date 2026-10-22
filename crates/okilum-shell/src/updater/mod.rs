@@ -109,9 +109,9 @@ pub(crate) fn install(_cx: &mut App) {
     {
         macos::start();
         _cx.on_action(|_: &AboutOkilum, cx| crate::about::show_from_menu(cx));
-        // The result is inline, so the menu opens About to show it (#995).
+        // Explicit update entry overrides the remembered Settings pane (#1496).
         _cx.on_action(|_: &CheckForUpdates, cx| {
-            crate::about::show_from_menu(cx);
+            crate::reader_settings::show_updates(cx);
             macos::check();
         });
         _cx.on_action(|_: &ToggleBetaBuilds, cx| {
