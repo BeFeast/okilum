@@ -12,7 +12,7 @@ WORKFLOW = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml').r
 def gate(job, **overrides):
     block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:|\Z)', WORKFLOW, re.M | re.S)[1]
     script = textwrap.dedent(block.split('        run: |\n', 1)[1])
-    env = dict(os.environ, EVENT='pull_request', LINUX_RESULT='success',
+    env = dict(os.environ, EVENT='pull_request', SHARED_RESULT='success', LINUX_RESULT='success',
                SCOPE_RESULT='success', MACOS_REQUIRED='true', MACOS_LANE='local',
                HOSTED_JOB='skipped', HOSTED_RESULT='', LOCAL_RESULT='success',
                MACOS_RESULT='success', WINDOWS_RESULT='success', PERF_RESULT='success')
@@ -50,12 +50,18 @@ class NativeGates(unittest.TestCase):
         self.assertFalse(gate('macos', HOSTED_JOB='failure'))
         self.assertFalse(gate('macos', HOSTED_JOB='cancelled'))
 
-    def test_linux_or_scope_failure_never_passes(self):
-        for key in ('LINUX_RESULT', 'SCOPE_RESULT'):
-            for status in ('failure', 'cancelled', 'skipped', ''):
-                for scope in ('true', 'false'):
-                    with self.subTest(key=key, status=status, scope=scope):
-                        self.assertFalse(gate('macos', **{key: status, 'MACOS_REQUIRED': scope}))
+    def test_scope_failure_never_passes(self):
+        for status in ('failure', 'cancelled', 'skipped', ''):
+            for scope in ('true', 'false'):
+                self.assertFalse(gate('macos', SCOPE_RESULT=status, MACOS_REQUIRED=scope))
+
+    def test_linux_windows_and_perf_never_block_mac_or_check(self):
+        for status in ('failure', 'cancelled', 'skipped', ''):
+            for scope in ('true', 'false'):
+                values = dict(LINUX_RESULT=status, WINDOWS_RESULT=status,
+                              PERF_RESULT=status, MACOS_REQUIRED=scope)
+                self.assertTrue(gate('macos', **values))
+                self.assertTrue(gate('check', **values))
 
     def test_selected_native_failure_and_fork_skip_fail(self):
         for status in ('failure', 'cancelled', 'skipped', ''):
@@ -67,23 +73,35 @@ class NativeGates(unittest.TestCase):
         self.assertTrue(gate('macos', MACOS_REQUIRED='false', LOCAL_RESULT='skipped'))
         self.assertFalse(gate('macos', MACOS_REQUIRED=''))
 
-    def test_check_still_requires_native_for_code(self):
+    def test_check_requires_shared_and_mac_for_every_pr(self):
         self.assertTrue(gate('check'))
         for status in ('failure', 'cancelled', 'skipped', ''):
             self.assertFalse(gate('check', MACOS_RESULT=status))
-            # #1110: the Windows first-run lane is required wherever macOS is.
-            self.assertFalse(gate('check', WINDOWS_RESULT=status))
-            # #1290: so is the scroll frame-cost guard.
-            self.assertFalse(gate('check', PERF_RESULT=status))
-        self.assertFalse(gate('check', MACOS_REQUIRED=''))
+            self.assertFalse(gate('check', SHARED_RESULT=status))
+            # Even docs-only PRs must have a successful scope/native aggregate.
+            self.assertFalse(gate('check', MACOS_REQUIRED='false', MACOS_RESULT=status))
 
-    def test_main_and_docs_keep_linux_gate(self):
-        for case in ({'EVENT': 'push', 'MACOS_REQUIRED': '', 'MACOS_RESULT': 'skipped',
-                      'WINDOWS_RESULT': 'skipped', 'PERF_RESULT': 'skipped'},
-                     {'MACOS_REQUIRED': 'false', 'MACOS_RESULT': 'success',
-                      'WINDOWS_RESULT': 'skipped', 'PERF_RESULT': 'skipped'}):
-            self.assertTrue(gate('check', **case))
-            self.assertFalse(gate('check', **case, LINUX_RESULT='failure'))
+    def test_main_requires_shared_without_pr_native_scope(self):
+        self.assertTrue(gate('check', EVENT='push', MACOS_RESULT='skipped'))
+        self.assertFalse(gate('check', EVENT='push', SHARED_RESULT='failure'))
+
+    def test_blocking_dependency_graph_is_independent_of_platform_lanes(self):
+        def needs(job):
+            block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:|\Z)', WORKFLOW, re.M | re.S)[1]
+            value = re.search(r'^    needs: (.*)$', block, re.M)
+            return set(value[1].strip('[]').split(', ')) if value else set()
+        self.assertEqual(needs('check'), {'shared', 'macos'})
+        self.assertEqual(needs('macos'), {'native-scope', 'macos-github', 'macos-local'})
+        self.assertEqual(needs('shared'), set())
+        for job in ('macos-github', 'macos-local'):
+            self.assertEqual(needs(job), {'native-scope'})
+        shared = re.search(r'^  shared:\n(.*?)(?=^  [\w-]+:)', WORKFLOW, re.M | re.S)[1]
+        for command in ('cargo fmt --check', 'cargo clippy --workspace --all-targets --locked -- -D warnings',
+                        'cargo test --workspace --exclude okilum-shell --locked',
+                        'scripts/vendor-setup.sh --verify'):
+            self.assertIn(command, shared)
+        self.assertNotIn('check-linux.sh', shared)
+
 
 
 if __name__ == '__main__':
