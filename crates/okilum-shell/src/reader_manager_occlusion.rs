@@ -108,40 +108,77 @@ mod tests {
 #[cfg(test)]
 mod frame_tests {
     use super::*;
-    use gpui::{Context, IntoElement, Render, TestAppContext, Window};
-    struct Harness;
+    use gpui::{Context, IntoElement, Render, Styled, TestAppContext, Window};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    struct Harness {
+        record: Rc<Cell<bool>>,
+        painted: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+        paints: Rc<Cell<usize>>,
+    }
     impl Render for Harness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            gpui::div()
+            let record = self.record.clone();
+            let painted = self.painted.clone();
+            let paints = self.paints.clone();
+            gpui::canvas(
+                move |_, window, cx| {
+                    gpui_base::GlobalState::begin_native_overlays(window, cx);
+                    if record.get() {
+                        let region = Bounds::new(point(px(1.), px(1.)), size(px(10.), px(10.)));
+                        gpui_base::GlobalState::record_native_overlay(region, window, cx);
+                    }
+                },
+                move |_, (), window, cx| {
+                    *painted.borrow_mut() =
+                        gpui_base::GlobalState::native_overlays(window, cx).to_vec();
+                    paints.set(paints.get() + 1);
+                },
+            )
+            .size_full()
         }
     }
     #[gpui::test]
     fn overlay_frames_are_replaced_and_isolated_per_window(cx: &mut TestAppContext) {
-        let a = cx.add_window(|_, _| Harness);
-        let b = cx.add_window(|_, _| Harness);
+        let record = Rc::new(Cell::new(true));
+        let painted_a = Rc::new(RefCell::new(Vec::new()));
+        let painted_b = Rc::new(RefCell::new(Vec::new()));
+        let paints_a = Rc::new(Cell::new(0));
+        let paints_b = Rc::new(Cell::new(0));
+        let a = cx.add_window(|_, _| Harness {
+            record: record.clone(),
+            painted: painted_a.clone(),
+            paints: paints_a.clone(),
+        });
+        let b = cx.add_window(|_, _| Harness {
+            record: Rc::new(Cell::new(false)),
+            painted: painted_b.clone(),
+            paints: paints_b.clone(),
+        });
+        cx.run_until_parked();
         let region = Bounds::new(point(px(1.), px(1.)), size(px(10.), px(10.)));
-        a.update(cx, |_, window, cx| {
-            gpui_base::GlobalState::begin_native_overlays(window, cx);
-            gpui_base::GlobalState::record_native_overlay(region, window, cx);
-            assert_eq!(
-                gpui_base::GlobalState::native_overlays(window, cx),
-                &[region]
-            );
-        })
-        .unwrap();
-        b.update(cx, |_, window, cx| {
-            gpui_base::GlobalState::begin_native_overlays(window, cx);
-            assert!(gpui_base::GlobalState::native_overlays(window, cx).is_empty());
-        })
-        .unwrap();
-        a.update(cx, |_, window, cx| {
-            assert_eq!(
-                gpui_base::GlobalState::native_overlays(window, cx),
-                &[region]
-            );
-            gpui_base::GlobalState::begin_native_overlays(window, cx);
-            assert!(gpui_base::GlobalState::native_overlays(window, cx).is_empty());
-        })
-        .unwrap();
+        assert!(
+            paints_a.get() > 0 && paints_b.get() > 0,
+            "positive control: both windows painted"
+        );
+        assert_eq!(&*painted_a.borrow(), &[region]);
+        assert!(painted_b.borrow().is_empty());
+        // A's recorded frame remains intact when B begins its own frame.
+        b.update(cx, |_, window, _| window.refresh()).unwrap();
+        cx.run_until_parked();
+        assert_eq!(&*painted_a.borrow(), &[region]);
+        assert!(painted_b.borrow().is_empty());
+        let previous_paints = paints_a.get();
+        record.set(false);
+        a.update(cx, |_, window, _| window.refresh()).unwrap();
+        cx.run_until_parked();
+        assert!(
+            paints_a.get() > previous_paints,
+            "positive control: cleared frame painted"
+        );
+        assert!(painted_a.borrow().is_empty());
     }
 }
