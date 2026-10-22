@@ -212,6 +212,19 @@ class MacBetaWindowTests(unittest.TestCase):
         self.assertIn('head_sha=' + 'c' * 40, api.call_args_list[-2].args[1])
 
     @patch.object(module, 'macos_api')
+    @patch.object(module, 'descriptor', return_value=None)
+    def test_oldest_queued_dispatch_builds_and_duplicate_backs_off(self, descriptor, api):
+        api.return_value = {'total_count': 2,
+                            'workflow_runs': [self.attempt(rid=101), self.attempt(rid=100)]}
+        # Build-group serialization makes 100 select first; pending 101 cannot
+        # suppress it. When 101 selects, prior 100 suppresses the duplicate.
+        first = module.select_macos('workflow_dispatch', self.SHA, self.env('frequent'), self.now())
+        self.assertTrue(first[0])
+        second_env = dict(self.env('frequent'), GITHUB_RUN_ID='101')
+        second = module.select_macos('workflow_dispatch', self.SHA, second_env, self.now())
+        self.assertFalse(second[0]); self.assertIn('backoff', second[3])
+
+    @patch.object(module, 'macos_api')
     def test_failed_selector_backs_off_but_idle_ticks_do_not(self, api):
         run = dict(self.attempt(), trigger_event='schedule')
         api.return_value = {'total_count': 1, 'workflow_runs': [run]}

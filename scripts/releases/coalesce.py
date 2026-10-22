@@ -80,7 +80,7 @@ def macos_api(method, path, body=None):
     return json.loads(payload) if payload else None
 
 
-def macos_attempted(source, current_run):
+def macos_attempted(source, current_run, before_current=False):
     # One automatic attempt per main SHA: any prior main dispatch (including a
     # failed build or a successful build awaiting publication) backs off until
     # the next SHA. Never repeat notarization while publication is still pending.
@@ -96,6 +96,12 @@ def macos_attempted(source, current_run):
                 or run['prettyref'] != 'main' or run['is_fork_pull_request']
                 or run['trigger_event'] not in ('workflow_dispatch', 'schedule')):
             raise ValueError('Unexpected Mac attempt identity')
+        if type(run['id']) is not int or run['id'] < 1 or not current_run.isdigit():
+            raise ValueError('Invalid Mac run identity')
+        # The oldest dispatched run owns this SHA. A newer queued duplicate must
+        # not make the first run back off too (otherwise neither would build).
+        if before_current and run['id'] >= int(current_run):
+            continue
         if (str(run['id']) != current_run
                 and (run['trigger_event'] == 'workflow_dispatch' or run['status'] == 'failure')):
             return True
@@ -116,7 +122,7 @@ def select_macos(event, source, env, now):
     source = scheduled_source(event, source, 'macos')
     if not needed('schedule', descriptor(source, 'macos'), source, 'macos'):
         return False, source, False, 'Mac main tip already published'
-    if macos_attempted(source, env['GITHUB_RUN_ID']):
+    if macos_attempted(source, env['GITHUB_RUN_ID'], before_current=event == 'workflow_dispatch'):
         return False, source, False, 'Mac beta backoff: prior attempt for this SHA; waiting for new main'
     if event == 'schedule':
         macos_api('POST', '/actions/workflows/macos-release.yml/dispatches',
