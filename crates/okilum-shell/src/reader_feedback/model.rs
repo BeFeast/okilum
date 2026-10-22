@@ -264,7 +264,7 @@ pub(super) fn image_bytes(
         .thumbnail(image.width().min(640), image.height().min(280))
         .into_rgba8();
     // RenderImage uses BGRA; the transmitted PNG retains its original colors.
-    for pixel in preview.chunks_exact_mut(4) {
+    for pixel in preview.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok((Arc::new(png.into_inner()), preview))
