@@ -149,4 +149,16 @@ mod tests {
             "T3 search goes to native keyDown"
         );
     }
+    #[test]
+    #[ignore = "requires an active macOS GUI session and OKILUM_NATIVE_GUI=1"]
+    fn real_nsapp_webview_paste_manual() {
+        assert_eq!(std::env::var("OKILUM_NATIVE_GUI").as_deref(), Ok("1"));
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let status = std::process::Command::new("bash")
+            .arg("scripts/ci/check-manager-webview-paste.sh")
+            .current_dir(root)
+            .status()
+            .expect("cannot start native GUI fixture");
+        assert!(status.success(), "native GUI fixture failed");
+    }
 }

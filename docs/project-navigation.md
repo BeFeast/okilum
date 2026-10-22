@@ -86,10 +86,18 @@ router. A failed action delivery no longer consumes the shortcut unconditionally
 the fallback invokes the public WKWebView key-equivalent implementation, bypassing
 Wry's child override without patching its class.
 
-The hosted native fixture creates a real NSApp, NSWindow and WKWebView with Wry's
+The manual native fixture creates a real NSApp, NSWindow and WKWebView with Wry's
 child key-equivalent behavior. It pastes a fixture clipboard string into local HTML
 through the production callback and native menu, asserts no host paste, and checks
 that the host receives paste after teardown. It does not use T3 or production
 browser storage. Oleg's sprint check of the actual pairing field is required before
 merge; native clipboard, IME and full focus acceptance are not claimed by a selector
 unit test or by merely compiling this fixture.
+
+Hosted macOS could not establish the fixture's active/key application (positive
+control failed before paste), so the real-NSApp fixture is excluded from required
+CI by explicit manager disposition. It remains an ignored Rust test and requires
+`OKILUM_NATIVE_GUI=1` in an active local GUI session. Run from the checkout:
+`OKILUM_NATIVE_GUI=1 bash scripts/ci/check-manager-webview-paste.sh`.
+Dispatch selector unit tests remain in required native CI. Oleg's actual-app
+sprint verification is the premerge acceptance for the reopened paste bug.

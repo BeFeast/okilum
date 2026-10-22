@@ -4,8 +4,6 @@ set -Eeuo pipefail
 [[ $(uname -s) = Darwin && $(uname -m) = arm64 ]]
 # Exercise optional signing arrays with macOS /bin/bash 3.2 before any Cargo work.
 python3 scripts/ci/test_supervisor_bundle.py
-# #1510: native editing must reach WebKit through a real NSApp responder chain.
-bash scripts/ci/check-manager-webview-paste.sh
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
@@ -68,6 +66,9 @@ run_tests okilum-core --lib syncthing_ignore::
 run_tests okilum-shell --bins reader_stignore::
 run_tests okilum-shell --bins reader_settings::tests::settings_files_shows_the_syncthing_ignore_state_and_its_button --exact
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
+# #1510: dispatch unit tests run on hosted macOS; the real-NSApp fixture is
+# ignored because hosted runners cannot establish an active/key application.
+run_tests okilum-shell --bins reader_manager_focus::tests
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 # #1462: use the platform NewNote shortcut after an external folder deletion.
