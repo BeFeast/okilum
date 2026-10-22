@@ -72,10 +72,11 @@ class LinuxBridgeTests(unittest.TestCase):
                         local == 'skipped' and hosted == 'success' and result == 'success')
                     self.assertEqual(code == 0, expected, (local, hosted, result))
 
-    def test_hosted_workflow_has_no_secrets_or_cache_writes_or_main_trigger(self):
+    def test_hosted_workflow_has_no_secrets_or_cache_writes(self):
         workflow = (ROOT / '.github/workflows/forgejo-linux.yml').read_text()
-        for forbidden in ['secrets.', 'actions/cache/save', 'actions/cache@', 'SCCACHE_', 'branches: [main']:
+        for forbidden in ['secrets.', 'actions/cache/save', 'actions/cache@', 'SCCACHE_']:
             self.assertNotIn(forbidden, workflow)
+        self.assertIn("branches: [main, 'forgejo-linux-pr/**']", workflow)
         self.assertIn('actions/cache/restore@v4', workflow)
         self.assertIn('persist-credentials: false', workflow)
         self.assertIn('bash scripts/ci/check-linux.sh', workflow)

@@ -1,8 +1,8 @@
-# Permanent Forgejo PR lane. No secrets, publication or signing.
+# Permanent Forgejo PR/main lane. Disposable signing only; no live publication.
 name: forgejo-linux
 on:
   push:
-    branches: ['forgejo-linux-pr/**']
+    branches: [main, 'forgejo-linux-pr/**']
 permissions:
   contents: read
 concurrency:
@@ -53,6 +53,9 @@ jobs:
 
   # One source-pinned product build; both distributions consume its exact bytes.
   appimage:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
@@ -76,6 +79,7 @@ jobs:
         run: bash scripts/appimage/build.sh
       # Deliver bytes before compatibility testing; failed smoke is visible evidence.
       - uses: actions/upload-artifact@v4
+        id: producer
         with:
           name: linux-appimage-${{ github.sha }}
           path: |
@@ -95,6 +99,14 @@ jobs:
               "$image" bash /source/scripts/appimage/smoke.sh \
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
           done
+      - name: Verify signed AppImage installation with disposable CI key
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPIMAGE_ARTIFACT_ID: ${{ steps.producer.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/releases/appimage_ci.py dist/appimage \
+            2>&1 | tee dist/appimage/evidence/signature-install.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -147,3 +147,121 @@ and confirm `pacman -Q okilum`, application launch, and opening your vault. Afte
 the next merge publishes N+1, run `omarchy update`, confirm the higher version,
 relaunch and reopen the vault. CI package installation
 and signature tests do not replace this desktop acceptance step.
+
+## AppImage beta publication (#1470, slice 2)
+
+This route reuses the unsigned portable AppImage without recompiling or changing
+its bytes. After this integration lands, the public mirror's `main` push runs
+`.github/workflows/forgejo-linux.yml`, the same producer used by required hosted
+PR checks. There is one AppImage compilation per source. The existing public
+`ci.yml` and Arch package build remain independent. A merge commit is a new
+source: a successful PR-head artifact cannot be relabelled as that merge.
+
+The existing Linux release workflow's bridge job resolves exactly one hosted run
+for the selected full source SHA. Repository, workflow path, push ref, first
+attempt, completed success, executed AppImage compatibility step and Linux
+aggregate must match. It downloads exactly one non-expired artifact by ID,
+checks GitHub's SHA256 archive digest, and records its original run/job/artifact
+evidence. Uploaded-before-smoke artifacts alone never qualify. Missing evidence,
+a running/failed/rerun/ambiguous run or expired bytes fails closed, without a
+fallback build or automatic dispatch. A later Linux release attempt can reuse
+the same completed producer within its three-day retention. Older main commits
+without this producer cannot be backfilled by relabelling another source.
+
+Both `arch-publication` and `appimage-publication` must complete before the
+existing protected `release-publish.yml` is dispatched. Only its existing
+`publish` runner imports `ARCH_GPG_PRIVATE_KEY` and uses R2 credentials, under
+the unchanged cross-platform publication/promotion lock. The mirror credential
+stays on the bridge. No new keys, secrets, runners or hosts are introduced.
+
+AppImage build **N** is its original embedded `5000 + GitHub run_number`;
+Forgejo's `5000 + run number` is separate `publication_build` metadata. The
+publisher verifies source, version, original checksum and producer identity.
+It does not patch an executable or rewrite the original `signed:false` build
+provenance. The existing Linux key fingerprint is pinned:
+`7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882`.
+
+Immutable assets are:
+
+```text
+okilum/linux/builds/N/Okilum-x86_64.AppImage
+okilum/linux/builds/N/Okilum-x86_64.AppImage.sig
+okilum/linux/builds/N/provenance.json
+okilum/linux/builds/N/release.json
+okilum/linux/builds/N/release.json.sig
+```
+
+`release.json` binds source/build, artifact checksum/size, original provenance
+checksum, hosted run/attempt/artifact/digest and signer. Retries verify and reuse
+existing signatures; conflicting immutable bytes or identities stop before any
+writes. Partial immutable uploads can resume. Every immutable object is read
+back before moving `okilum/linux/beta/Okilum-x86_64.AppImage`, its `.sig`, then
+`latest.json.sig` and finally `latest.json`. All moving objects use `no-cache`.
+The signed latest descriptor references immutable assets. Clients crossing a
+moving detached-signature update must fail closed and retry. An older AppImage
+build is archived only and cannot move beta backwards. Explicit historical-source
+publication also remains archive-only.
+
+This descriptor is separate from `okilum/releases/<source>/linux.json`, which
+retains its strict two-asset Arch contract. Stable, unified promotion and the
+Arch update/install path are unchanged. AppImage self-update is slice 3.
+
+For an explicitly selected beta installation, download the AppImage and detached
+signature from `https://updates.befeast.com/okilum/linux/beta/`, import the public
+key shown above, verify its full fingerprint, then verify before executing:
+
+```sh
+gpg --verify Okilum-x86_64.AppImage.sig Okilum-x86_64.AppImage
+chmod +x Okilum-x86_64.AppImage
+./Okilum-x86_64.AppImage
+```
+
+For the normal launch, install `fuse3` (Ubuntu: `sudo apt install fuse3`;
+Fedora: `sudo dnf install fuse3`), which provides `fusermount3`, and ensure
+`/dev/fuse` is available. The pinned runtime is statically linked: neither
+`libfuse2` nor Ubuntu's `libfuse2t64` is required. Its
+[source](https://github.com/AppImage/type2-runtime/blob/fedfad51acc2860b2916a1eef32ba4a500ff31ef/src/runtime/runtime.c#L417)
+searches PATH for a root-owned setuid `fusermount` helper (including
+`fusermount3`) that successfully reports its version.
+
+If FUSE is unavailable or mounting fails, run the same verified download
+without FUSE; no repository checkout or helper script is needed:
+
+```sh
+./Okilum-x86_64.AppImage --appimage-extract-and-run
+```
+
+This temporarily extracts the payload, runs it, and cleans up after exit;
+the temporary directory needs enough space and must permit execution.
+Hosted Ubuntu/Fedora smoke exercises this exact option for help, visible-window
+launch and Ctrl+Q exit, with the environment-variable fallback unset. The build
+also checks that the checksum-pinned runtime has no ELF interpreter or dynamic
+library requirements, with a dynamic system executable as a positive control.
+Direct FUSE mounting is not verified by these container checks: they have no
+`/dev/fuse`.
+There is no desktop-integration install or in-app update in this slice.
+
+Premerge evidence comes from hosted tests: trust-boundary rejection, immutable
+conflict/interrupted-upload/retry/rollback prevention, plus signing the actual
+built AppImage with a disposable CI key, downloading/verifying/installing those
+same bytes, help launch and tamper rejection. Ubuntu 24.04/Fedora 44 visible
+window and Ctrl+Q tests still consume the unchanged producer bytes. Disposable
+CI signing is not evidence of live-key beta publication. Live publication must
+wait for parent review of this concrete path; no branch can invoke protected
+signing. After merge, the accepted main producer and trusted main release run
+are still needed before claiming a public signed beta exists.
+
+The hosted signing composition test downloads the actual uploaded four-member
+GitHub archive and checks its API artifact ID/digest and actual source/run/first
+attempt before production unpack and original-provenance validation. Since the
+workflow is still running, completion statuses and job gates in its temporary
+acceptance receipt are explicit test fixtures; they never authorize publication
+and are not retained as production acceptance evidence. Only this job receives
+read-only Actions access using its ephemeral GitHub token. The disposable key
+substitution remains inside the harness; production signer pinning is unchanged.
+The installation verifier imports only the exported public key into a separate
+GNUPGHOME and verifies the downloaded descriptor and referenced immutable payload.
+Missing/wrong signer, changed archive/receipt/source, payload/descriptor tamper,
+immutable readback corruption, interrupted immutable and moving-pair writes,
+signature reuse and conflicts are exercised there with real GPG signatures.
+No live-key premerge run is required; live publication remains unverified.
