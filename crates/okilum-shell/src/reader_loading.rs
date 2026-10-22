@@ -2170,7 +2170,6 @@ impl Reader {
         self.incremental_state = None;
         self.tasks_index = None;
         self.projects = Arc::default();
-        self.projects_done_expanded = false;
         self.incremental_initializing = false;
         self.incremental_active = false;
         #[cfg(any(unix, windows))]
