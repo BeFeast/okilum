@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Select periodic release work without occupying a compiler runner while idle."""
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import urllib.request
 
 
 def needed(event, published, source, platform):
@@ -42,9 +44,87 @@ def scheduled_source(event, source, platform):
     tick reaches its runner, so skipping an outdated snapshot starved beta for hours;
     the tick builds the current main tip instead (unless that is already published).
     """
-    if event != 'schedule' or platform not in ('windows', 'linux'):
+    if event != 'schedule' or platform not in ('windows', 'linux', 'macos'):
         return source
     return main_tip()
+
+
+# Temporary owner-approved M4 beta window (#1476); no operational revert needed.
+MACOS_BETA_UNTIL = datetime(2026, 10, 26, 3, tzinfo=timezone.utc)
+
+
+def macos_slot(now, cron=''):
+    if now < MACOS_BETA_UNTIL:
+        return 'frequent'
+    # Forgejo versions without event.schedule expose only the tick time. Accept
+    # the original daily slot, including the overlapping ten-minute tick.
+    if cron == '30 10 * * *' or (not cron and now.hour == 10 and 30 <= now.minute < 40):
+        return 'daily'
+    return None
+
+
+def macos_api(method, path, body=None):
+    # Same existing workflow GITHUB_TOKEN and dispatch API as publication.py.
+    # No retries, new credentials, runner state or host probes.
+    base = os.environ.get('FORGEJO_URL', 'https://git.oklabs.uk').rstrip('/')
+    repo = os.environ['GITHUB_REPOSITORY']
+    if repo != 'BeFeast/okilum':
+        raise ValueError('Automatic Mac beta requires the product repository')
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(base + '/api/v1/repos/' + repo + path,
+                data=data, method=method, headers={
+                    'Authorization': 'token ' + os.environ['FORGEJO_TOKEN'],
+                    'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = response.read()
+    return json.loads(payload) if payload else None
+
+
+def macos_attempted(source, current_run):
+    # One automatic attempt per main SHA: any prior main dispatch (including a
+    # failed build or a successful build awaiting publication) backs off until
+    # the next SHA. Never repeat notarization while publication is still pending.
+    data = macos_api('GET', '/actions/runs?workflow_id=macos-release.yml'
+                     '&ref=refs/heads/main&head_sha=' + source +
+                     '&limit=50&page=1')
+    runs = data['workflow_runs']
+    if (not isinstance(runs, list) or type(data['total_count']) is not int
+            or data['total_count'] != len(runs) or len(runs) > 50):
+        raise ValueError('Incomplete Mac attempt inventory')
+    for run in runs:
+        if (run['workflow_id'] != 'macos-release.yml' or run['commit_sha'] != source
+                or run['prettyref'] != 'main' or run['is_fork_pull_request']
+                or run['trigger_event'] not in ('workflow_dispatch', 'schedule')):
+            raise ValueError('Unexpected Mac attempt identity')
+        if (str(run['id']) != current_run
+                and (run['trigger_event'] == 'workflow_dispatch' or run['status'] == 'failure')):
+            return True
+    return False
+
+
+def select_macos(event, source, env, now):
+    tick = env.get('MACOS_BETA_TICK', '')
+    if event != 'schedule' and not tick:
+        return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
+    if env.get('GITHUB_REF') != 'refs/heads/main':
+        raise ValueError('Automatic Mac beta requires main')
+    if tick and (event != 'workflow_dispatch' or tick not in ('frequent', 'daily')):
+        raise ValueError('Invalid automatic Mac tick')
+    slot = macos_slot(now, env.get('RELEASE_SCHEDULE', '')) if event == 'schedule' else tick
+    if slot is None or (slot == 'frequent' and now >= MACOS_BETA_UNTIL):
+        return False, source, False, 'Mac beta window expired; waiting for daily 10:30 UTC slot'
+    source = scheduled_source(event, source, 'macos')
+    if not needed('schedule', descriptor(source, 'macos'), source, 'macos'):
+        return False, source, False, 'Mac main tip already published'
+    if macos_attempted(source, env['GITHUB_RUN_ID']):
+        return False, source, False, 'Mac beta backoff: prior attempt for this SHA; waiting for new main'
+    if event == 'schedule':
+        macos_api('POST', '/actions/workflows/macos-release.yml/dispatches',
+                  {'ref': 'main', 'inputs': {'beta_tick': slot}})
+        return False, source, False, 'Dispatched unpublished Mac main tip; tick does not use macos runner'
+    # Dispatch captures main in run.commit_sha; do NOT check out a newer SHA.
+    # Publication keeps its strict artifact SOURCE_SHA == run.commit_sha check.
+    return True, source, now < MACOS_BETA_UNTIL, 'Build source-pinned automatic Mac beta'
 
 
 def descriptor(source, platform):
@@ -102,7 +182,21 @@ if __name__ == '__main__':
     requested = explicit_source(os.environ.get('OKILUM_SOURCE'), args.platform,
                                 os.environ.get('GITHUB_REF', ''), event)
     resign = (os.environ.get('OKILUM_RESIGN_BUILD') or '').strip()
-    if resign:
+    local = False
+    if args.platform == 'macos':
+        try:
+            build, source, local, reason = select_macos(event, source, dict(os.environ),
+                                                        datetime.now(timezone.utc))
+        except Exception as error:
+            if os.environ.get('GITHUB_STEP_SUMMARY'):
+                with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+                    summary.write('Mac beta selection failed: ' + type(error).__name__ + '; no build dispatched.\n')
+            raise
+        print(reason)
+        if os.environ.get('GITHUB_STEP_SUMMARY'):
+            with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+                summary.write(reason + '\n')
+    elif resign:
         check_resign(resign, requested, args.platform)
         build, source = True, requested
         print(f'Re-sign Windows build {resign} of {requested}')
@@ -123,3 +217,5 @@ if __name__ == '__main__':
         output.write(f'build={str(build).lower()}\n')
         output.write(f'source={source}\n')
         output.write(f'resign={resign}\n')
+        if args.platform == 'macos':
+            output.write(f'local={str(local).lower()}\n')
