@@ -15,6 +15,14 @@ spec.loader.exec_module(macos)
 
 
 class PublicationBoundary(unittest.TestCase):
+    def setUp(self):
+        # These boundary fixtures exercise artifact identity/commands, not git/API
+        # note extraction (covered with real histories in test_release_notes.py).
+        patcher = patch('publication.release_notes.prepare', side_effect=lambda store, client, platform, build, source:
+                        dict(build=build, source='f' * 40, platform=platform, channel='beta',
+                             previous_build=None, previous_source=None, items=[]))
+        patcher.start(); self.addCleanup(patcher.stop)
+
     def test_only_successful_current_main_build_is_eligible(self):
         import publication
         run = {'workflow_id': 'windows-diagnostic.yml', 'prettyref': 'main',
@@ -153,6 +161,12 @@ class PublicationBoundary(unittest.TestCase):
 
 
 class ExplicitSourcePublication(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('publication.release_notes.prepare', side_effect=lambda store, client, platform, build, source:
+                        dict(build=build, source=source, platform=platform, channel='beta',
+                             previous_build=None, previous_source=None, items=[]))
+        patcher.start(); self.addCleanup(patcher.stop)
+
     """#1040: a manual run that built an older main commit publishes to the archive only."""
 
     def publish(self, marker, final_head='c' * 40, event='workflow_dispatch', feed=9999):
