@@ -42,7 +42,7 @@
 +    }
 +
 +    /// Record the resolved, clipped bounds of an actual overlay surface.
-+    pub fn record_native_overlay(bounds: Bounds<Pixels>, window: &Window, cx: &mut App) {
++    pub fn record_native_overlay(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
 +        Self::init(cx);
 +        let bounds = bounds.intersect(&window.content_mask().bounds);
 +        if bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.) {
