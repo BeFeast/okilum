@@ -34,6 +34,95 @@ class LinuxBridgeTests(unittest.TestCase):
     def test_exact_executed_linux_gate_passes(self):
         self.assertEqual(self.wait(), 'success')
 
+    def test_completed_success_repolls_gate_evidence_past_execution_deadline(self):
+        # #1499: workflow success was rejected at the jobs/steps evidence check.
+        # Exercise stale projections and a real failure as a negative control.
+        for final, expected in [('success', 'success'), ('failure', 'failure')]:
+            with self.subTest(final=final):
+                now = [0]
+                calls = []
+                snapshots = iter([
+                    [],
+                    [dict(name='linux', conclusion=None, steps=[])],
+                    [dict(name='linux', conclusion=final, steps=[
+                        dict(name=linux.BUILD_STEP, conclusion=final)])],
+                ])
+                def sleep(seconds):
+                    now[0] += seconds
+                class API:
+                    def request(self, path, method='GET'):
+                        calls.append((path, method))
+                        if method != 'GET':
+                            raise AssertionError('Completed run must not be cancelled')
+                        if '/jobs?' in path:
+                            return {'jobs': next(snapshots)}
+                        # First observation starts the execution clock. The next
+                        # poll sees completion after the one-second deadline.
+                        completed = now[0] > 0
+                        return {'workflow_runs': [dict(
+                            id=1, head_sha=SHA, head_branch=BRANCH, event='push',
+                            path=linux.WORKFLOW, html_url='https://github.com/run/1',
+                            status='completed' if completed else 'in_progress',
+                            conclusion='success' if completed else None)]}
+                result, _ = linux.transport.wait_for_run(
+                    API(), BRANCH, SHA, workflow=linux.WORKFLOW, job_name='linux',
+                    build_step=linux.BUILD_STEP, queue_timeout=0, run_timeout=1,
+                    clock=lambda: now[0], sleep=sleep, log=lambda *a, **k: None)
+                self.assertEqual(result, expected)
+                self.assertEqual(sum('/jobs?' in path for path, _ in calls), 3)
+                self.assertEqual(now[0], 40)
+
+    def test_paginated_jobs_select_exactly_one_gate(self):
+        calls = []
+        filler = [dict(name=f'other-{n}', conclusion='success', steps=[])
+                  for n in range(100)]
+        gate = dict(id=42, name='linux', status='completed', conclusion='success',
+                    steps=[dict(name=linux.BUILD_STEP, status='completed', conclusion='success')])
+        class API:
+            def request(self, path, method='GET'):
+                calls.append((path, method))
+                if '/jobs?' in path:
+                    return {'jobs': [gate] if '&page=2' in path else filler}
+                return {'workflow_runs': [dict(id=1, head_sha=SHA, head_branch=BRANCH,
+                    event='push', path=linux.WORKFLOW, status='completed',
+                    conclusion='success', html_url='https://github.com/run/1')]}
+        result, _ = linux.transport.wait_for_run(API(), BRANCH, SHA,
+            workflow=linux.WORKFLOW, job_name='linux', build_step=linux.BUILD_STEP,
+            queue_timeout=0, sleep=lambda _: None)
+        self.assertEqual(result, 'success')
+        self.assertIn(('actions/runs/1/jobs?per_page=100&page=2', 'GET'), calls)
+
+    def test_persistent_invalid_gate_fails_with_actual_fields(self):
+        good = dict(id=42, name='linux', status='completed', conclusion='success',
+                    steps=[dict(name=linux.BUILD_STEP, status='completed', conclusion='success')])
+        cases = [[], [dict(good, name='wrong')], [good, good],
+                 [dict(good, steps=[])], [dict(good, steps=good['steps'] * 2)]]
+        for conclusion in ['skipped', 'failure', None]:
+            cases.append([dict(good, conclusion=conclusion)])
+            cases.append([dict(good, steps=[dict(good['steps'][0], conclusion=conclusion)])])
+        for jobs in cases:
+            with self.subTest(jobs=jobs):
+                lines, calls = [], []
+                class API:
+                    def request(self, path, method='GET'):
+                        calls.append((path, method))
+                        if '/jobs?' in path:
+                            return {'jobs': jobs}
+                        return {'workflow_runs': [dict(id=1, head_sha=SHA, head_branch=BRANCH,
+                            event='push', path=linux.WORKFLOW, status='completed',
+                            conclusion='success', html_url='https://github.com/run/1')]}
+                result, _ = linux.transport.wait_for_run(API(), BRANCH, SHA,
+                    workflow=linux.WORKFLOW, job_name='linux', build_step=linux.BUILD_STEP,
+                    queue_timeout=0, sleep=lambda _: None,
+                    log=lambda line, **_: lines.append(line))
+                self.assertEqual(result, 'failure')
+                self.assertEqual(sum('/jobs?' in path for path, _ in calls), 3)
+                self.assertTrue(all(method == 'GET' for _, method in calls))
+                self.assertEqual(len(lines), 3)
+                self.assertIn('run_id=1 status=completed conclusion=success', lines[-1])
+                self.assertIn(repr(jobs), lines[-1])
+                self.assertIn(repr(linux.BUILD_STEP), lines[-1])
+
     def test_old_sha_other_workflow_or_mirror_lag_never_passes(self):
         for field, value in [('head_sha', 'b' * 40), ('head_branch', 'main'),
                              ('path', '.github/workflows/forgejo-macos.yml'), ('event', 'workflow_dispatch')]:

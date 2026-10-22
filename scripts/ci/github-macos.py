@@ -144,15 +144,38 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     raise Unavailable(f"GitHub runner could not start: {url}")
                 if run["conclusion"] != "success":
                     return "failure", f"GitHub native gate: {run['conclusion']} — {url}"
-                jobs = hosted_request(api, f"actions/runs/{run['id']}/jobs?per_page=100", sleep=sleep)["jobs"]
-                # A green workflow with a skipped/removed native job is not evidence.
-                native = [job for job in jobs if job["name"] == job_name]
-                if len(native) != 1 or native[0]["conclusion"] != "success" or not any(
-                    step["name"] == build_step and step["conclusion"] == "success"
-                    for step in native[0]["steps"]
-                ):
-                    return "failure", f"GitHub did not execute the native gate: {url}"
-                return "success", f"GitHub native gate passed: {url}"
+                # The completed run and its jobs/steps are separate API projections.
+                # Re-read this exact run's evidence before rejecting a green result;
+                # do not send it through the execution deadline/cancellation path.
+                for attempt in range(3):
+                    jobs = []
+                    for page in range(1, 11):
+                        path = f"actions/runs/{run['id']}/jobs?per_page=100"
+                        if page > 1:
+                            path += f"&page={page}"
+                        batch = hosted_request(api, path, sleep=sleep)["jobs"]
+                        jobs.extend(batch)
+                        if len(batch) < 100:
+                            break
+                    else:
+                        raise Unavailable(f"GitHub jobs pagination exceeded 10 pages: {url}")
+                    native = [job for job in jobs if job["name"] == job_name]
+                    steps = [step for job in native for step in job.get("steps", [])
+                             if step.get("name") == build_step]
+                    if (len(native) == 1 and native[0].get("conclusion") == "success"
+                            and len(steps) == 1 and steps[0].get("conclusion") == "success"):
+                        return "success", f"GitHub native gate passed: {url}"
+                    evidence = [{key: job.get(key) for key in
+                                 ("id", "name", "status", "conclusion", "steps")}
+                                for job in jobs]
+                    log(f"GitHub gate evidence {attempt + 1}/3: run_id={run['id']} "
+                        f"status={run['status']} conclusion={run['conclusion']} "
+                        f"expected_job={job_name!r} expected_step={build_step!r} "
+                        f"jobs={evidence!r} — {url}", flush=True)
+                    if attempt < 2:
+                        sleep(10)
+                # A persistently missing, skipped or failed gate must still fail.
+                return "failure", f"GitHub did not execute the native gate: {url}"
             if run["status"] == "in_progress":
                 never_started = False
                 if running_until is None:
