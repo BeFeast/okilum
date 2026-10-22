@@ -46,6 +46,7 @@ int main(void) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         NSMenu *original = [[NSMenu alloc] initWithTitle:@"Fixture"];
         NSApp.mainMenu = original;
+        [NSApp finishLaunching];
         NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 400)
             styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
         window.releasedWhenClosed = NO;
@@ -59,10 +60,19 @@ int main(void) {
         [NSApp activateIgnoringOtherApps:YES];
         [view loadHTMLString:@"<html><body><input id='token' aria-label='Pairing token'></body></html>" baseURL:nil];
         waitFor(view, @"!!document.getElementById('token')");
-        [window makeFirstResponder:view];
+        REQUIRE([window makeFirstResponder:view], @"WKWebView must accept first responder");
         javascript(view, @"document.getElementById('token').focus(); true");
         void *handle = okilum_manager_focus_attach((__bridge void *)view, (__bridge void *)host, NULL, NULL);
         OkilumManagerFocus *router = (__bridge OkilumManagerFocus *)handle;
+        // Activation is asynchronous for a command-line AppKit process. Pump
+        // the native loop before treating absence of focus as product evidence.
+        NSDate *focusDeadline = [NSDate dateWithTimeIntervalSinceNow:5];
+        while (!router.focused && focusDeadline.timeIntervalSinceNow > 0) {
+            [window makeKeyWindow];
+            [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+        NSLog(@"Focus control: active=%d keyWindow=%@ fixture=%@ firstResponder=%@ viewWindow=%@ hidden=%d",
+            NSApp.active, NSApp.keyWindow, window, window.firstResponder, view.window, view.hidden);
         REQUIRE(router.focused, @"real WKWebView must own the key window's native responder");
         NSLog(@"Native responder: %@; paste target: %@", window.firstResponder,
             [NSApp targetForAction:@selector(paste:) to:nil from:router]);
