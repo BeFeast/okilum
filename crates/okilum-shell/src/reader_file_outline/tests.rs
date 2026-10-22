@@ -237,7 +237,13 @@ impl Render for Surface {
 
 #[gpui::test]
 fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Scrollbar fade/width animations use wall time and independently ask
+        // for frames. This viewport/idle regression uses the real reduced-motion
+        // setting so those decorative animations cannot decide its result.
+        cx.set_reduce_motion(true);
+    });
     let source = format!(
         "first:\n  child: true\n{}second:\n  value: true\n{}",
         "# padding\n".repeat(100),
@@ -320,6 +326,17 @@ fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppCo
     });
     // Frame demand must drain once the viewport settles. Deliver callbacks
     // without forcing extra paints (as the platform's idle frame loop does).
+    let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+    visual.update(|window, cx| {
+        let fired = fired.clone();
+        window.on_next_frame(move |_, _| fired.set(true));
+        assert_eq!(
+            window.simulate_next_frame(cx),
+            1,
+            "callback probe positive control"
+        );
+    });
+    assert!(fired.get());
     for _ in 0..2 {
         assert_eq!(
             visual.update(|window, cx| window.simulate_next_frame(cx)),
@@ -446,6 +463,7 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
         bind_keys(cx);
     });
     let root = tempfile::tempdir().unwrap();
+    let session = tempfile::tempdir().unwrap();
     let source = format!(
         "first:\n  child: true\n{}second:\n  value: true\n{}",
         "# padding\n".repeat(100),
@@ -459,6 +477,7 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
                 Opts {
                     vault: Some(root.path().to_path_buf()),
                     note: Some("config.yaml".into()),
+                    session_directory: Some(session.path().to_path_buf()),
                     index_dir: Some(root.path().join(".index")),
                     ..Default::default()
                 },
