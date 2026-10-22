@@ -7,12 +7,11 @@ in memory, never a filename. It does not send feedback, touch the clipboard,
 write files, or register permission grants. Feedback integration follows #1505;
 preview/removal and explicit Send remain the caller's responsibility.
 
-- macOS 15+: ScreenCaptureKit selects only the current NSApp key NSWindow ID,
-  rechecks its owning process in SCWindow metadata, and uses a desktop-independent
-  window filter. **Screen Recording authorization is required.** Without an
-  existing grant, capture returns Unsupported immediately. The module never
-  requests that permission and never opens the system content picker. Content
-  enumeration plus capture has a combined two-second wait limit.
+- macOS 15+: Unsupported (attach-only). The supported ScreenCaptureKit
+  replacement requires **Screen Recording authorization**. Per this slice's
+  least-permission boundary, the module never requests or uses that capability,
+  enumerates other applications, or synchronously waits for async callbacks on
+  the UI thread. It returns immediately, including when a grant already exists.
 - macOS 11–14: optionally resolves the legacy CoreGraphics own-window API,
   which does not require Screen Recording for windows of this process. It
   captures only the current NSApp key window, including GPU surfaces. This API

@@ -121,7 +121,6 @@ fn main() {
         ])
         .arg(&capture));
     println!("cargo:rustc-link-lib=framework=ImageIO");
-    println!("cargo:rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit");
     println!("cargo:rustc-link-lib=framework=CoreGraphics");
     let mut probe_object = None;
     if env::var_os("CARGO_FEATURE_OWN_WINDOW_CAPTURE_PROBE").is_some() {
