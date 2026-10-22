@@ -59,7 +59,7 @@ fi
 expected_index="$(mktemp)"
 rm "$expected_index"
 trap 'rm -f "$expected_index"' EXIT
-GIT_INDEX_FILE="$expected_index" git -C "$VENDOR" read-tree HEAD
+GIT_INDEX_FILE="$expected_index" git -C "$VENDOR" read-tree "$REPO_REV"
 for patch in "$PATCHES"/*.diff; do
     [ -e "$patch" ] || continue
     GIT_INDEX_FILE="$expected_index" git -C "$VENDOR" apply --cached "$patch"
@@ -73,31 +73,19 @@ if [ "$verify_only" = 1 ]; then
     exit 1
 fi
 
-# Apply each patch unless it already reverse-applies cleanly, which is the only
-# honest test for "already applied".
-missing=0
+# Branches can carry different cumulative stacks. Never patch a previously
+# patched tree: return this dedicated, generated clone to its pinned baseline.
+echo "vendor-setup: cumulative stack changed; resetting $VENDOR to $REPO_REV"
+git -C "$VENDOR" checkout -- .
+git -C "$VENDOR" clean -fd
+git -C "$VENDOR" checkout --quiet "$REPO_REV"
 for patch in "$PATCHES"/*.diff; do
     [ -e "$patch" ] || continue
-    name="$(basename "$patch")"
-    if git -C "$VENDOR" apply --reverse --check "$patch" 2>/dev/null; then
-        echo "already applied: $name"
-        continue
-    fi
-    if [ "$verify_only" = 1 ]; then
-        echo "vendor-setup --verify: NOT applied: $name" >&2
-        missing=1
-        continue
-    fi
     git -C "$VENDOR" apply "$patch"
-    echo "applied: $name"
+    echo "applied: $(basename "$patch")"
 done
-
-if [ "$verify_only" = 1 ]; then
-    [ "$missing" = 0 ] || exit 1
-    echo "vendor-setup --verify: vendor is at $REPO_REV with every patch applied"
-    exit 0
+if ! GIT_INDEX_FILE="$expected_index" git -C "$VENDOR" diff --quiet; then
+    echo 'vendor-setup: cumulative verification failed after reset/application' >&2
+    exit 1
 fi
-
-echo
-echo "vendor ready: $VENDOR @ $REPO_REV"
-echo "verify at any time with: scripts/vendor-setup.sh --verify"
+echo "vendor ready: $VENDOR @ $REPO_REV with the complete patch stack verified"

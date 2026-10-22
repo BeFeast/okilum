@@ -16,12 +16,22 @@ pub(crate) fn copy(cx: &mut App) {
 }
 
 pub(crate) fn help_menu() -> Menu {
+    let mut items = vec![
+        MenuItem::action("Send feedback…", crate::reader_feedback::SendFeedback),
+        MenuItem::action("Copy Version Info", CopyVersionInfo),
+    ];
+    if crate::reader_feedback::sprint::enabled() {
+        items.insert(
+            0,
+            MenuItem::action(
+                "Send sprint report",
+                crate::reader_feedback::SendSprintReport,
+            ),
+        );
+    }
     Menu {
         name: "Help".into(),
-        items: vec![
-            MenuItem::action("Send feedback…", crate::reader_feedback::SendFeedback),
-            MenuItem::action("Copy Version Info", CopyVersionInfo),
-        ],
+        items,
         disabled: false,
     }
 }
