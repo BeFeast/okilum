@@ -89,7 +89,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            build-essential cmake pkg-config curl git mold zstd \
+            build-essential cmake pkg-config curl git mold zstd tini \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
 
@@ -153,7 +153,10 @@ jobs:
       # in macOS and the full non-blocking Linux lane.
       - name: Test shared crates and contracts
         run: |
-          cargo test --workspace --locked -- --skip platform::
+          # The native container has tail as PID 1. Reap orphaned fixture
+          # children while Cargo runs, so dead group members cannot linger as
+          # zombies and prevent the unchanged Stopped certification (#1541).
+          tini -s -- cargo test --workspace --locked -- --skip platform::
           cargo test -p okilum-core --no-default-features --test portable_reader --locked
           python3 -m unittest discover -s scripts/ci -p 'test_*.py'
           python3 -m unittest discover -s scripts/releases -p 'test_*.py'
