@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import Forgejo, R2
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prepare
+import release_notes
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
@@ -154,6 +155,13 @@ def publish(client, platform, run_id):
             return
         env = {**os.environ, 'GITHUB_SHA': run['commit_sha'],
                'GITHUB_RUN_NUMBER': str(run['index_in_repo'])}
+        # Capture the same-platform beta predecessor before ANY publisher writes.
+        # Sidecars never alter descriptor, artifact, signing or promotion contracts.
+        notes = release_notes.prepare(R2(), client, platform, build, source)
+        if platform == 'macos':
+            notes_file = root / 'notes.json'
+            notes_file.write_text(json.dumps(notes))
+            env['OKILUM_RELEASE_NOTES'] = str(notes_file)
         extra = ['--archive-only'] if archive_only else []
         if platform == 'macos':
             command = [str(SCRIPTS / 'releases/macos-artifact.py'), 'publish', str(root / 'macos')]
@@ -171,6 +179,7 @@ def publish(client, platform, run_id):
                             '--directory', str(root / 'appimage'), '--source', source,
                             '--publication-build', str(build), *extra], env=env, check=True)
         subprocess.run([sys.executable, *command], env=env, check=True)
+        release_notes.record(R2(), notes)
         print(f'Published {platform} build {build} from completed run {run_id}, source {source}'
               + (' (archive only)' if archive_only else ''))
     # The last missing build of a requested promotion (#1040) starts it.

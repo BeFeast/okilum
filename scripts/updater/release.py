@@ -187,7 +187,10 @@ def publish(a):
 
 def promote(a):
     forgejo = Forgejo()
-    update_appcast(a.app, R2(), forgejo, ['promote', '--build', str(a.build)])
+    arguments = ['promote', '--build', str(a.build)]
+    if getattr(a, 'release_notes', None) is not None:
+        arguments += ['--notes-json', json.dumps(a.release_notes)]
+    update_appcast(a.app, R2(), forgejo, arguments)
     release = forgejo.release(f'macos-stable-{a.build}')
     if release is not None:
         forgejo.call('PATCH', f'/releases/{release["id"]}', {'prerelease': False})

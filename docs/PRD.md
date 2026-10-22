@@ -44,6 +44,12 @@ to the existing Reader window through `ManagerGateway`. Managers remain in T3;
 credentials use OS storage and sends retain durable request identities. Executor
 controls, scheduled-task model following and live-server acceptance remain separate.
 
+**Project navigation extension (2026-10-22, #1472 / #1474):**
+[Vault projects and application navigation](project-navigation.md) moves app
+sections into the app menu, limits the sidebar to vault navigation, and defines
+vault-wide project discovery, reversible scoping and the macOS manager webview.
+Explicit manager creation retains launch intent and revision-aware registry writes.
+
 A local-first desktop knowledge environment that replaces Obsidian without taking
 ownership of the files.
 

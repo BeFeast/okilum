@@ -3,8 +3,7 @@
 set -euo pipefail
 case "$(. /etc/os-release; echo "$ID:$VERSION_ID")" in
     ubuntu:24.04)
-        apt-get update -qq
-        apt-get install -y -qq --no-install-recommends python3 file libvulkan1 mesa-vulkan-drivers \
+        bash /source/scripts/ci/ubuntu-smoke-apt.sh python3 file libvulkan1 mesa-vulkan-drivers \
             libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 libxkbcommon-x11-0 \
             libwayland-client0 libglib2.0-0t64 libdbus-1-3 fonts-dejavu-core \
             xvfb xauth xdotool x11-utils dbus-x11 ;;

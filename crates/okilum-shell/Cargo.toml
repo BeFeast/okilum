@@ -39,9 +39,11 @@ notify = "7"
 url = "2"
 regex = "1"
 resvg = "=0.45.1"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 # Inline PDF pages (#477). Exact pin: 0.x breaks often; an upgrade is a reviewed change.
 hayro = "=0.8.0"
+# Public release notes and explicit feedback use bounded HTTPS clients.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart"] }
 serde_json = "1"
 serde_yaml = "0.9"
 # Mermaid fences highlight as code (S7e, option C): rendered diagrams failed
@@ -85,6 +87,9 @@ zbus = { version = "5.19", default-features = false, features = ["async-io"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
+wry = { package = "lb-wry", version = "=0.53.3" }
+raw-window-handle = { version = "0.6", features = ["std"] }
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo"] }

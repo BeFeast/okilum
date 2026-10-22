@@ -145,7 +145,11 @@ pub(super) fn vertical<V: 'static>(
                 .child(pane),
         )
         .on_drag_move(
-            cx.listener(move |this, event: &DragMoveEvent<SplitDrag>, _, cx| {
+            cx.listener(move |this, event: &DragMoveEvent<SplitDrag>, window, cx| {
+                if event.event.pressed_button != Some(MouseButton::Left) {
+                    cx.stop_active_drag(window);
+                    return;
+                }
                 if event.drag(cx).0 != key {
                     return;
                 }
@@ -189,3 +193,7 @@ mod tests {
         assert!(!split.collapsed);
     }
 }
+
+#[cfg(test)]
+#[path = "reader_pointer_gesture_tests.rs"]
+mod pointer_gesture_tests;

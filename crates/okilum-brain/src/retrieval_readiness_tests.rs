@@ -8,9 +8,15 @@ use std::{
     time::Instant,
 };
 
+enum ProviderEvent {
+    Embedding(Value),
+    Refreshed(Result<()>),
+}
+
 struct Provider {
     settings: EmbeddingSettings,
-    entered: mpsc::Receiver<Value>,
+    entered: mpsc::Receiver<ProviderEvent>,
+    events: mpsc::Sender<ProviderEvent>,
     release: mpsc::Sender<bool>,
     stopped: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -27,6 +33,7 @@ impl Provider {
         };
         let model = settings.clone();
         let (entered, received) = mpsc::channel();
+        let events = entered.clone();
         let (release, wait) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = stopped.clone();
@@ -46,10 +53,10 @@ impl Provider {
                 } else {
                     assert!(header.starts_with("POST /api/embed "));
                     let count = request["input"].as_array().unwrap().len();
-                    if entered.send(request).is_err() {
+                    if entered.send(ProviderEvent::Embedding(request)).is_err() {
                         break;
                     }
-                    let success = wait.recv_timeout(Duration::from_secs(10)).unwrap_or(false);
+                    let success = wait.recv().unwrap_or(false);
                     json!({"embeddings":if success { vec![vec![1.0,0.0]; count] } else { vec![] }})
                 };
                 let body = response.to_string();
@@ -59,13 +66,19 @@ impl Provider {
         Self {
             settings,
             entered: received,
+            events,
             release,
             stopped,
             worker: Some(worker),
         }
     }
     fn blocked(&self) -> Value {
-        self.entered.recv_timeout(Duration::from_secs(8)).unwrap()
+        match self.entered.recv().unwrap() {
+            ProviderEvent::Embedding(request) => request,
+            ProviderEvent::Refreshed(result) => {
+                panic!("refresh completed before embedding: {result:?}")
+            }
+        }
     }
 }
 impl Drop for Provider {
@@ -172,6 +185,18 @@ impl Fixture {
     fn refresh(&self) -> thread::JoinHandle<Result<()>> {
         let index = self.index.clone();
         thread::spawn(move || index.refresh(false))
+    }
+    fn observed_refresh(&self, provider: &Provider) -> thread::JoinHandle<()> {
+        let index = self.index.clone();
+        let events = provider.events.clone();
+        thread::spawn(move || {
+            events
+                .send(ProviderEvent::Refreshed(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| index.refresh(false)))
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("refresh thread panicked"))),
+                ))
+                .unwrap();
+        })
     }
     fn incoming(&self) -> IncomingRequest {
         IncomingRequest {
@@ -343,8 +368,10 @@ fn failed_enrichment_retains_partial_vectors_and_restart_reuses_only_complete_ve
 fn source_settings_and_rebuild_invalidation_stop_obsolete_embedding_tail() {
     for change in ["source", "settings", "rebuild"] {
         let provider = Provider::start();
-        let mut fixture = Fixture::new(&provider, 10);
-        fixture.start_worker();
+        let fixture = Fixture::new(&provider, 10);
+        // Drive refresh/invalidation directly: this contract is independent of
+        // filesystem notification latency and the background worker's debounce.
+        let refresh = fixture.observed_refresh(&provider);
         let first_call = provider.blocked();
         assert_eq!(first_call["input"].as_array().unwrap().len(), 8);
         fixture.usable("indexing");
@@ -358,7 +385,8 @@ fn source_settings_and_rebuild_invalidation_stop_obsolete_embedding_tail() {
                     "# Changed\ncurrent shipping [[target]]\n",
                 )
                 .unwrap();
-                until(|| fixture.index.view.read().unwrap().epoch > epoch);
+                // Model the watcher's invalidation before releasing the provider.
+                fixture.index.rebuild().unwrap();
             }
             "settings" => {
                 let mut settings = provider.settings.clone();
@@ -379,6 +407,22 @@ fn source_settings_and_rebuild_invalidation_stop_obsolete_embedding_tail() {
             pointer
         );
         provider.release.send(true).unwrap();
+        match provider.entered.recv().unwrap() {
+            ProviderEvent::Refreshed(result) => {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("superseded") || error.contains("settings changed"),
+                    "{error}"
+                );
+            }
+            ProviderEvent::Embedding(_) => {
+                panic!("obsolete refresh started another embedding batch")
+            }
+        }
+        refresh.join().unwrap();
+        // rebuild/source queue forced work; settings invalidation queues ordinary work.
+        assert_eq!(fixture._triggers.try_recv().unwrap(), change != "settings");
+        let refresh = fixture.observed_refresh(&provider);
         let new_call = provider.blocked();
         // The next provider call belongs to a new complete phase1, not the old tail.
         assert_ne!(
@@ -403,10 +447,17 @@ fn source_settings_and_rebuild_invalidation_stop_obsolete_embedding_tail() {
         }
         fs::remove_file(fixture.index.operational.join("retrieval-settings.json")).unwrap();
         provider.release.send(true).unwrap();
-        until(|| {
-            fixture.index.status().status == "ready"
-                && fixture.index.status().semantic_status == "unconfigured"
-        });
+        match provider.entered.recv().unwrap() {
+            ProviderEvent::Refreshed(result) => {
+                assert!(result.unwrap_err().to_string().contains("settings changed"));
+            }
+            ProviderEvent::Embedding(_) => {
+                panic!("removed settings allowed an obsolete embedding tail")
+            }
+        }
+        refresh.join().unwrap();
+        assert!(!fixture._triggers.try_recv().unwrap());
+        fixture.index.refresh(false).unwrap();
         fixture.usable("unconfigured");
     }
 }

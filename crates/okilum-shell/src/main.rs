@@ -50,6 +50,7 @@ mod reader_editor;
 mod reader_embeds;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
+mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
@@ -59,6 +60,10 @@ mod reader_instance;
 mod reader_layout;
 mod reader_loading;
 mod reader_log;
+#[cfg(target_os = "macos")]
+mod reader_manager_focus;
+mod reader_manager_panel;
+mod reader_manager_start;
 mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;
@@ -69,6 +74,7 @@ mod reader_open;
 mod reader_open_windows;
 mod reader_pdf;
 mod reader_plain_text;
+mod reader_project_navigation;
 mod reader_properties;
 mod reader_reading_controls;
 #[cfg(any(unix, windows))]
@@ -299,6 +305,7 @@ actions!(
         ScrollBottom,
         ToggleNotes,
         ToggleBacklinks,
+        ToggleProject,
         ToggleHiddenFiles,
         ToggleSoftWrap,
         NewFromTemplate,
@@ -348,6 +355,7 @@ fn bind_keys(cx: &mut App) {
     reader_log::bind_keys(cx);
     reader_delimited::bind_keys(cx);
     cx.bind_keys([
+        KeyBinding::new("secondary-alt-p", ToggleProject, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         // Quick Look is a macOS service; elsewhere Space would only report that.
@@ -1349,8 +1357,10 @@ struct Reader {
     hover_preview: reader_hover::HoverPreview,
     file_preview: Option<reader_files::FilePreview>,
     tree_preview: reader_tree_preview::Session,
+    tree_sticky: Vec<reader_tree::Row>,
     project: Option<Entity<project::ProjectView>>,
     project_open: bool,
+    project_navigation: reader_project_navigation::State,
     project_request: u64,
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
@@ -1520,7 +1530,6 @@ struct Reader {
     sidebar_path: Option<PathBuf>,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
-    projects_done_expanded: bool,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
     sidebar_save_sequence: Arc<std::sync::atomic::AtomicU64>,
@@ -1794,8 +1803,10 @@ impl Reader {
             hover_preview: Default::default(),
             file_preview: None,
             tree_preview: Default::default(),
+            tree_sticky: Vec::new(),
             project: None,
             project_open: false,
+            project_navigation: Default::default(),
             project_request: 0,
             project_views: Default::default(),
             file_menu: None,
@@ -1808,7 +1819,6 @@ impl Reader {
             sidebar_path: None,
             inbox: Vec::new(),
             projects: Arc::default(),
-            projects_done_expanded: false,
             inbox_source: None,
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),
@@ -2032,7 +2042,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_project(window, cx);
+        if self.project_navigation.active.is_none() {
+            self.close_project(window, cx);
+        }
+        self.project_navigation.section = reader_project_navigation::Section::Reader;
         self.tree_preview.close();
         if rel.is_empty() {
             self.show_empty_vault(window, cx);
@@ -2707,7 +2720,6 @@ impl Reader {
         self.sidebar = state;
         self.sidebar_path = path;
         self.inbox.clear();
-        self.projects_done_expanded = false;
         self.inbox_source = None;
         self.recent_expanded = false;
         self.tree_revealed.clear();
@@ -2925,7 +2937,7 @@ impl Reader {
     }
 
     /// `vault` is what the vault is called in Inbox locations (#1327).
-    fn sidebar_items_named(&self, vault: &str) -> Vec<SideItem> {
+    fn sidebar_items_named(&self, _vault: &str) -> Vec<SideItem> {
         use reader_sidebar::Section;
         if self.single_file {
             let mut items = vec![SideItem::Header(
@@ -2942,9 +2954,6 @@ impl Reader {
         }
         let now = reader_sidebar::now();
         let open = |section| {
-            if section == Section::Projects {
-                return !self.sidebar.projects_collapsed;
-            }
             !self
                 .scroll_sections
                 .closed(section, &self.sidebar.collapsed)
@@ -2958,7 +2967,6 @@ impl Reader {
             .filter(|(path, _)| shown(path))
             .collect();
         let pinned: Vec<_> = self.sidebar.pinned.iter().filter(|p| shown(p)).collect();
-        let inbox: Vec<_> = self.inbox.iter().filter(|i| shown(&i.path)).collect();
         // One short line per empty section, all in the same words (#1350). A
         // vault without notes shows none: the page says how to start, and
         // there is nothing to open, pin or file yet.
@@ -3008,62 +3016,6 @@ impl Reader {
                     location: None,
                     folder: !path.ends_with(".md"),
                 });
-            }
-        }
-        items.push(SideItem::Header(
-            Section::Inbox,
-            reader_sidebar::section_count(inbox.len()),
-        ));
-        if open(Section::Inbox) {
-            if hints && inbox.is_empty() {
-                items.push(SideItem::Empty("New unfiled notes appear here."));
-            }
-            for item in inbox {
-                let folder = self
-                    .vault_root
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Vault");
-                items.push(SideItem::Entry {
-                    section: Section::Inbox,
-                    path: item.path.clone(),
-                    label: quick_open::folder_note_title(folder, &item.path)
-                        .unwrap_or_else(|| self.note_label(&item.path)),
-                    meta: Some(reader_sidebar::age_label(item.created, now)),
-                    // A note at the vault's top level says why it is here (#1354).
-                    location: Some(if item.path.contains('/') {
-                        quick_open::result_location(vault, &item.path)
-                    } else {
-                        "Not in a folder yet".into()
-                    }),
-                    folder: false,
-                });
-            }
-        }
-        items.push(SideItem::Header(Section::Projects, None));
-        if open(Section::Projects) {
-            use okilum_core::projects::Status;
-            let rows = self.projects.rows();
-            if hints && rows.is_empty() {
-                items.push(SideItem::Empty("Notes with type: project appear here."));
-            }
-            items.extend(
-                rows.iter()
-                    .filter(|p| p.status != Status::Done)
-                    .cloned()
-                    .map(SideItem::Project),
-            );
-            let done = rows.iter().filter(|p| p.status == Status::Done).count();
-            if done > 0 {
-                items.push(SideItem::ProjectsDone(done, self.projects_done_expanded));
-                if self.projects_done_expanded {
-                    items.extend(
-                        rows.iter()
-                            .filter(|p| p.status == Status::Done)
-                            .cloned()
-                            .map(SideItem::Project),
-                    );
-                }
             }
         }
         items.push(SideItem::Header(Section::Folders, None));
@@ -3146,6 +3098,7 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
+            self.tree_sticky.clear();
             #[cfg(any(unix, windows))]
             if !self.single_file {
                 let folder = self
@@ -3290,13 +3243,10 @@ impl Reader {
                 SectionAction::FoldersOnly | SectionAction::ToggleFoldersOnly
             )
         {
-            self.sidebar.folders_only_restore = Some(reader_sidebar::LEFT_SECTIONS.map(|s| {
-                if s == reader_sidebar::Section::Projects {
-                    self.sidebar.projects_collapsed
-                } else {
-                    self.scroll_sections.closed(s, &self.sidebar.collapsed)
-                }
-            }));
+            self.sidebar.folders_only_restore = Some(
+                reader_sidebar::LEFT_SECTIONS
+                    .map(|s| self.scroll_sections.closed(s, &self.sidebar.collapsed)),
+            );
             // Toggle must enter Folders-only rather than consume the new snapshot.
             self.sidebar.folders_only(false);
         } else {
@@ -3323,13 +3273,9 @@ impl Reader {
                 .scroll_sections
                 .closed(Section::Folders, &self.sidebar.collapsed);
         }
-        reader_sidebar::LEFT_SECTIONS.into_iter().all(|s| {
-            if s == reader_sidebar::Section::Projects {
-                self.sidebar.projects_collapsed
-            } else {
-                self.scroll_sections.closed(s, &self.sidebar.collapsed)
-            }
-        })
+        reader_sidebar::LEFT_SECTIONS
+            .into_iter()
+            .all(|s| self.scroll_sections.closed(s, &self.sidebar.collapsed))
     }
 
     /// Folders header «Collapse all» (#410).
@@ -3540,13 +3486,13 @@ impl Reader {
                     ),
             )
             .child(div().flex_1().min_w_0())
-            .when(!self.single_file, |row| {
+            .when_some(self.project_navigation.active.as_ref(), |row, project| {
                 row.child(
-                    reader_icon_button("reader-project", IconName::Folder, "Project", cx)
-                        .debug_selector(|| "reader-project".into())
-                        .selected(self.project_open)
+                    Button::new("leave-vault-project")
+                        .ghost()
+                        .label(format!("{} · Leave project", project.name))
                         .on_click(
-                            cx.listener(|this, _, window, cx| this.toggle_project(window, cx)),
+                            cx.listener(|this, _, window, cx| this.leave_vault_project(window, cx)),
                         ),
                 )
             })
@@ -3573,6 +3519,7 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
+                    .child(reader_feedback::button(cx))
                     .child(reader_more_menu(
                         self.vault_root.clone(),
                         self.selected_file().to_owned(),
@@ -3777,6 +3724,8 @@ impl Reader {
         let left = panel == reader_layout::Panel::Notes;
         let title = if left {
             vault_name::shown(&self.vault_root, cx)
+        } else if self.project_navigation.active.is_some() {
+            "Manager".into()
         } else if self.active_timeline().is_some() {
             "Note history".into()
         } else {
@@ -4090,22 +4039,13 @@ impl Reader {
         let items = self.sidebar_items_named(&vault_name::shown(&self.vault_root, cx));
         let pinned: Rc<std::collections::BTreeSet<String>> =
             Rc::new(self.sidebar.pinned.iter().cloned().collect());
-        let collapsed: std::collections::BTreeSet<_> = [
-            Section::Recent,
-            Section::Pinned,
-            Section::Inbox,
-            Section::Projects,
-            Section::Folders,
-        ]
-        .into_iter()
-        .filter(|section| {
-            if *section == Section::Projects {
-                return self.sidebar.projects_collapsed;
-            }
-            self.scroll_sections
-                .closed(*section, &self.sidebar.collapsed)
-        })
-        .collect();
+        let collapsed: std::collections::BTreeSet<_> = reader_sidebar::LEFT_SECTIONS
+            .into_iter()
+            .filter(|section| {
+                self.scroll_sections
+                    .closed(*section, &self.sidebar.collapsed)
+            })
+            .collect();
         let folder_actions_overflow = self.panel_widths.notes
             < toolbar_text_width("Folders", FontWeight::SEMIBOLD, window)
                 + 44.
@@ -4564,87 +4504,6 @@ impl Reader {
                     })
                     .into_any_element()
                 }
-                SideItem::ProjectsDone(count, expanded) => row_base("projects-done".into())
-                    .pl(px(30.))
-                    .text_size(px(12.))
-                    .text_color(tokens.text_faint)
-                    .cursor_pointer()
-                    .hover(move |d| d.bg(tokens.hover))
-                    .debug_selector(|| "projects-done".into())
-                    .child(if expanded {
-                        "Hide done".into()
-                    } else {
-                        format!("Show {count} done")
-                    })
-                    .on_click(move |_, window, cx| {
-                        act(&entity, window, cx, &|this, _, cx| {
-                            this.projects_done_expanded = !this.projects_done_expanded;
-                            cx.notify();
-                        })
-                    })
-                    .into_any_element(),
-                SideItem::Project(project) => {
-                    use okilum_core::projects::Status;
-                    let path = project.path.clone();
-                    let selector = format!("side-project-{path}");
-                    let is_current = path == current;
-                    let icon = match project.status {
-                        Status::Active => Icon::default().path("icons/project-active.svg"),
-                        Status::Planned => Icon::default().path("icons/project-planned.svg"),
-                        Status::Done => Icon::new(IconName::CircleCheck),
-                        Status::Other => Icon::default().path(brand::READER_CLOCK_ICON),
-                    };
-                    let location = path
-                        .strip_suffix("/_index.md")
-                        .unwrap_or(&path)
-                        .replace('/', " › ");
-                    let status = format!("{} · {}", project.status_label, location);
-                    row_base(selector.clone().into())
-                        .pl(px(10.))
-                        .debug_selector(move || selector.clone())
-                        .cursor_pointer()
-                        .hover(move |d| d.bg(tokens.hover))
-                        .when(is_current, |d| {
-                            d.bg(p.selected).font_weight(FontWeight::MEDIUM)
-                        })
-                        .child(icon.small().text_color(p.text_muted))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(project.title),
-                        )
-                        .when_some(project.domain, |d, domain| {
-                            d.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(tokens.text_faint)
-                                    .max_w(px(72.))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(domain),
-                            )
-                        })
-                        .when(project.open_tasks > 0, |d| {
-                            d.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(tokens.text_faint)
-                                    .child(project.open_tasks.to_string()),
-                            )
-                        })
-                        .tooltip(move |window, cx| {
-                            gpui_component::tooltip::Tooltip::new(status.clone()).build(window, cx)
-                        })
-                        .on_click(move |_, window, cx| {
-                            act(&entity, window, cx, &|this, window, cx| {
-                                this.activate_side_entry(&path, false, window, cx);
-                            })
-                        })
-                        .into_any_element()
-                }
                 SideItem::More(more) => row_base(SharedString::from("side-recent-more"))
                     .pl(px(30.))
                     .text_xs()
@@ -5028,6 +4887,13 @@ impl Reader {
                 28.
             };
             let hint = hint_only(&rows);
+            let sticky_source: Vec<_> = rows
+                .iter()
+                .map(|item| match item {
+                    SideItem::Tree(row) => Some(row.clone()),
+                    _ => None,
+                })
+                .collect();
             let render = render_row.clone();
             let list = uniform_list(
                 SharedString::from(format!("sidebar-body-{}", section.label())),
@@ -5045,6 +4911,7 @@ impl Reader {
                 section_views.push(
                     div()
                         .id("reader-tree")
+                        .relative()
                         .debug_selector(|| "sidebar-tree-body".into())
                         .key_context("ReaderTree")
                         .track_focus(&self.tree_focus)
@@ -5066,11 +4933,29 @@ impl Reader {
                         }))
                         .child(list.track_scroll(&self.tree_scroll).size_full())
                         .child(
+                            v_flex()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .w_full()
+                                .bg(brand::palette(cx).sidebar)
+                                .occlude()
+                                .debug_selector(|| "tree-sticky-ancestors".into())
+                                .children(
+                                    self.tree_sticky
+                                        .iter()
+                                        .cloned()
+                                        .enumerate()
+                                        .map(|(index, row)| render_row(SideItem::Tree(row), index)),
+                                ),
+                        )
+                        .child(
                             canvas(
                                 |_, _, _| (),
                                 move |_, _, _, cx| {
                                     let observer = observer.clone();
                                     let observed_root = observed_root.clone();
+                                    let sticky_source = sticky_source.clone();
                                     cx.defer(move |cx| {
                                         let _ = observer.update(cx, |this, cx| {
                                             if this.vault_root != observed_root
@@ -5081,6 +4966,19 @@ impl Reader {
                                             let offset = f32::from(
                                                 this.tree_scroll.0.borrow().base_handle.offset().y,
                                             );
+                                            let sticky = reader_tree::sticky_ancestors(
+                                                &sticky_source,
+                                                ((-offset / 28.).floor().max(0.)) as usize,
+                                            );
+                                            if this
+                                                .tree_sticky
+                                                .iter()
+                                                .map(|r| &r.path)
+                                                .ne(sticky.iter().map(|r| &r.path))
+                                            {
+                                                this.tree_sticky = sticky;
+                                                cx.notify();
+                                            }
                                             if this.scroll_sections.observe(offset) {
                                                 this.save_sidebar(cx);
                                                 cx.notify();
@@ -6348,8 +6246,6 @@ enum SideItem {
         location: Option<String>,
         folder: bool,
     },
-    Project(okilum_core::projects::Project),
-    ProjectsDone(usize, bool),
     More(usize),
     Empty(&'static str),
     Tree(reader_tree::Row),
@@ -6513,7 +6409,31 @@ fn reader_more_menu(
             let wrap_reader = reader.clone();
             let reader = reader.clone();
             // `.action` only shows the bound key; the click handler still runs.
-            menu.item(
+            let app_section = |label, section| {
+                let reader = reader.clone();
+                PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                    let _ =
+                        reader.update(cx, |this, cx| this.show_app_section(section, window, cx));
+                })
+            };
+            menu.item(app_section(
+                "Reader",
+                reader_project_navigation::Section::Reader,
+            ))
+            .item(app_section(
+                "Inbox",
+                reader_project_navigation::Section::Inbox,
+            ))
+            .item(app_section(
+                "Projects",
+                reader_project_navigation::Section::Projects,
+            ))
+            .item(app_section(
+                "Logs",
+                reader_project_navigation::Section::Logs,
+            ))
+            .separator()
+            .item(
                 PopupMenuItem::new("Settings…")
                     .action(Box::new(reader_settings::OpenSettings))
                     .on_click(move |_, _, cx| {
@@ -6602,6 +6522,7 @@ impl Render for Reader {
         }
         self.sync_notice_toast(window, cx);
         // Root owns overlay state, but the window content renders these layers.
+        let sheet_layer = Root::render_sheet_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let sync_started = std::time::Instant::now();
@@ -6635,6 +6556,13 @@ impl Render for Reader {
         self.panels
             .viewport_changed(f32::from(self.body_bounds.size.width), available);
         let panel_widths = self.panels.widths(&self.panel_widths, available);
+        if let Some(panel) = &self.project_navigation.manager_panel {
+            let visible = self.project_navigation.active.is_some()
+                && self
+                    .panels
+                    .visible(reader_layout::Panel::Backlinks, available);
+            panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
+        }
         let bounds_view = cx.entity().downgrade();
         let main = v_flex()
             .id("reader-document")
@@ -6659,9 +6587,15 @@ impl Render for Reader {
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)));
         let mut panel_bodies =
             [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
-                self.panels
-                    .visible(panel, available)
-                    .then(|| self.side_panel(panel == reader_layout::Panel::Notes))
+                self.panels.visible(panel, available).then(|| {
+                    if panel == reader_layout::Panel::Backlinks
+                        && self.project_navigation.active.is_some()
+                    {
+                        self.render_manager_panel(cx)
+                    } else {
+                        self.side_panel(panel == reader_layout::Panel::Notes)
+                    }
+                })
             });
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
@@ -6762,18 +6696,18 @@ impl Render for Reader {
             .min_w_0()
             .min_h_0()
             .relative()
-            .key_context(
-                if self
-                    .active_timeline()
-                    .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
-                    && !self.quick_open.open
-                    && !self.shortcut_sheet.open
-                {
-                    "Reader ReaderHistory"
-                } else {
-                    READER_CONTEXT
-                },
-            )
+            .key_context(if self.manager_browser_focused(cx) {
+                "ManagerWeb"
+            } else if self
+                .active_timeline()
+                .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
+                && !self.quick_open.open
+                && !self.shortcut_sheet.open
+            {
+                "Reader ReaderHistory"
+            } else {
+                READER_CONTEXT
+            })
             .track_focus(&self.focus_handle)
             .on_action(
                 cx.listener(|this, _: &reader_reminder::CopyLinkToLine, window, cx| {
@@ -6932,6 +6866,13 @@ impl Render for Reader {
             .on_action(cx.listener(|_, _: &reader_settings::OpenSettings, _, cx| {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
                 cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleProject, window, cx| {
+                if this.project_navigation.active.is_some() {
+                    this.leave_vault_project(window, cx);
+                } else {
+                    this.show_app_section(reader_project_navigation::Section::Projects, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &ToggleNotes, window, cx| {
                 this.toggle_panel(reader_layout::Panel::Notes, window, cx)
@@ -7188,6 +7129,7 @@ impl Render for Reader {
                 let view = view.children(self.render_move_picker());
                 view
             })
+            .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)
             .children(
@@ -7458,8 +7400,6 @@ fn main() {
                 app_id: Some("okilum".into()),
                 #[cfg(target_os = "linux")]
                 window_background: WindowBackgroundAppearance::Opaque,
-                #[cfg(target_os = "linux")]
-                window_decorations: Some(WindowDecorations::Client),
                 ..TitleBar::window_options()
             };
             let (options, frame_key) = window_state::prepare(options, "managed", cx);
@@ -8961,8 +8901,6 @@ mod document_link_landing_tests {
                 [
                     (Section::Recent, None),
                     (Section::Pinned, None),
-                    (Section::Inbox, None),
-                    (Section::Projects, None),
                     (Section::Folders, None),
                 ]
             );
@@ -8980,8 +8918,6 @@ mod document_link_landing_tests {
                 [
                     (Section::Recent, Some(1)),
                     (Section::Pinned, Some(1)),
-                    (Section::Inbox, Some(1)),
-                    (Section::Projects, None),
                     (Section::Folders, None),
                 ]
             );
@@ -9023,13 +8959,8 @@ mod document_link_landing_tests {
             v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
             let shown = hints(v);
             assert_eq!(
-                &shown[..4],
-                [
-                    "Notes you open appear here.",
-                    "Notes you pin appear here.",
-                    "New unfiled notes appear here.",
-                    "Notes with type: project appear here.",
-                ]
+                &shown[..2],
+                ["Notes you open appear here.", "Notes you pin appear here.",]
             );
             assert!(
                 shown.iter().all(|hint| hint.ends_with("appear here.")),
@@ -9174,7 +9105,7 @@ mod document_link_landing_tests {
                 .collect();
             // Positive control: with Show hidden files on, every section lists
             // the hidden notes, so their absence below is the filter's doing.
-            for section in [Section::Recent, Section::Pinned, Section::Inbox] {
+            for section in [Section::Recent, Section::Pinned] {
                 let paths = section_paths(v, section);
                 assert!(
                     paths.iter().any(|p| p == ".Dot note.md")
@@ -9190,7 +9121,7 @@ mod document_link_landing_tests {
                 .rows
                 .iter()
                 .any(|row| row.path.starts_with(['.', '_'])));
-            for section in [Section::Recent, Section::Pinned, Section::Inbox] {
+            for section in [Section::Recent, Section::Pinned] {
                 assert_eq!(
                     section_paths(v, section),
                     ["Visible.md"],
@@ -9200,7 +9131,7 @@ mod document_link_landing_tests {
             }
             // And back on without a rescan or recomputation.
             v.toggle_hidden_files(cx);
-            assert_eq!(section_paths(v, Section::Inbox).len(), notes.len());
+            assert!(section_paths(v, Section::Inbox).is_empty());
             assert_eq!(header_count(v, Section::Pinned), Some(notes.len() + 1));
             // Hidden-only collections are empty on screen: their headers stay
             // present, but #687 must not show either zero or the raw hidden count.
@@ -9208,7 +9139,7 @@ mod document_link_landing_tests {
             v.sidebar.pinned.retain(|path| path != "Visible.md");
             v.inbox.retain(|item| item.path != "Visible.md");
             v.toggle_hidden_files(cx);
-            for section in [Section::Recent, Section::Pinned, Section::Inbox] {
+            for section in [Section::Recent, Section::Pinned] {
                 assert!(section_paths(v, section).is_empty());
                 assert!(
                     v.sidebar_items()
@@ -9299,8 +9230,7 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
-    fn sidebar_headers_stay_visible_and_restore_sections(cx: &mut gpui::TestAppContext) {
-        use reader_sidebar::Section;
+    fn sidebar_scroll_preserves_height_and_section_bodies(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9323,177 +9253,51 @@ mod document_link_landing_tests {
             v.sync_tree();
             v.sidebar.pinned = (0..200).map(|i| format!("Note {i}.md")).collect();
             v.sidebar.record_open("Note 0.md", 1);
-            v.sidebar.collapsed.insert(Section::Inbox);
             cx.notify();
         });
         visual.run_until_parked();
-        let headers_visible = |visual: &mut gpui::VisualTestContext| {
-            let panel = visual.debug_bounds("reader-notes-panel").unwrap();
-            for section in [
-                "sidebar-header-Recent",
-                "sidebar-header-Pinned",
-                "sidebar-header-Inbox",
-                "sidebar-header-Folders",
-            ] {
-                let b = visual.debug_bounds(section).unwrap();
-                assert!(
-                    b.origin.y >= panel.origin.y && b.bottom() <= panel.bottom(),
-                    "{section}: {b:?} outside {panel:?}"
-                );
-                assert_eq!(b.size.height, px(28.));
-            }
+        let geometry = |visual: &mut gpui::VisualTestContext| {
+            [
+                "reader-notes-panel",
+                "sidebar-body-Pinned",
+                "sidebar-body-Recent",
+                "sidebar-tree-body",
+            ]
+            .map(|selector| visual.debug_bounds(selector).expect(selector))
         };
-        headers_visible(visual);
+        let before = geometry(visual);
         assert!(
-            visual
-                .debug_bounds("sidebar-body-Pinned")
-                .unwrap()
-                .size
-                .height
-                > px(28.)
+            before[1].size.height > px(28.),
+            "Pinned body positive control"
         );
+        assert!(visual.debug_bounds("sidebar-header-Inbox").is_none());
+        assert!(visual.debug_bounds("sidebar-header-Projects").is_none());
         view.update(visual, |v, cx| {
             v.tree_scroll
                 .scroll_to_item_strict(150, ScrollStrategy::Top);
             cx.notify();
         });
         visual.run_until_parked();
-        headers_visible(visual);
         view.read_with(visual, |v, _| {
             assert!(
-                v.scroll_sections.compact,
-                "positive control: real rendered scroll folds sections"
-            );
-            assert!(v
-                .scroll_sections
-                .closed(Section::Pinned, &v.sidebar.collapsed));
-            assert!(!v.sidebar.collapsed.contains(&Section::Pinned));
+                v.tree_scroll.0.borrow().base_handle.offset().y < px(-100.),
+                "real scroll positive control"
+            )
         });
-        let header = visual.debug_bounds("sidebar-header-Pinned").unwrap();
-        visual.simulate_click(header.center(), Modifiers::default());
-        visual.run_until_parked();
-        headers_visible(visual);
-        view.read_with(visual, |v, _| {
-            assert!(!v
-                .scroll_sections
-                .closed(Section::Pinned, &v.sidebar.collapsed));
-            assert!(v.tree_scroll.0.borrow().base_handle.offset().y < px(-100.));
-        });
+        assert_eq!(geometry(visual), before);
         view.update(visual, |v, cx| {
             v.tree_scroll.scroll_to_item_strict(0, ScrollStrategy::Top);
             cx.notify();
         });
         visual.run_until_parked();
-        headers_visible(visual);
-        view.read_with(visual, |v, _| {
-            assert!(!v.scroll_sections.compact);
-            assert!(!v
-                .scroll_sections
-                .closed(Section::Recent, &v.sidebar.collapsed));
-            assert!(!v
-                .scroll_sections
-                .closed(Section::Pinned, &v.sidebar.collapsed));
-            assert!(v
-                .scroll_sections
-                .closed(Section::Inbox, &v.sidebar.collapsed));
-        });
-        // A short tree fits only after the upper sections fold. Its clamped
-        // zero offset must not oscillate, and an upward wheel must restore it.
-        view.update(visual, |v, cx| {
-            v.vault = Arc::new(Vault::from_note_paths(
-                (0..15).map(|i| format!("Note {i}.md")),
-            ));
-            v.sync_tree();
-            cx.notify();
-        });
-        visual.run_until_parked();
-        let tree = visual.debug_bounds("sidebar-tree-body").unwrap();
-        visual.simulate_event(ScrollWheelEvent {
-            position: tree.center(),
-            delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
-            ..Default::default()
-        });
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            assert!(
-                v.scroll_sections.compact,
-                "short-tree wheel positive control"
-            );
-            assert_eq!(v.tree_scroll.0.borrow().base_handle.offset().y, px(0.));
-        });
-        let tree = visual.debug_bounds("sidebar-tree-body").unwrap();
-        visual.simulate_event(ScrollWheelEvent {
-            position: tree.center(),
-            delta: ScrollDelta::Pixels(point(px(0.), px(100.))),
-            ..Default::default()
-        });
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| assert!(!v.scroll_sections.compact));
-        // Inbox has its own virtual list: both lines must fit without clipping
-        // a neighbouring row or shrinking the persistent section headers.
-        view.update(visual, |v, cx| {
-            v.sidebar.collapsed.remove(&Section::Inbox);
-            v.sidebar.pinned.clear();
-            v.inbox = ["Work/Projects/Idea.md", "Work/Resources/README.md"]
-                .into_iter()
-                .map(|path| reader_sidebar::InboxItem {
-                    path: path.into(),
-                    created: 1,
-                    reason: reader_sidebar::InboxReason::NoIncomingLinks,
-                    domain: None,
-                })
-                .collect();
-            let entries: Vec<_> = v
-                .sidebar_items()
-                .into_iter()
-                .filter_map(|item| match item {
-                    SideItem::Entry {
-                        section: Section::Inbox,
-                        label,
-                        location,
-                        ..
-                    } => Some((label, location)),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                entries,
-                vec![
-                    ("Idea".into(), Some("Work / Projects".into())),
-                    ("Resources".into(), Some("Work".into())),
-                ]
-            );
-            cx.notify();
-        });
-        visual.run_until_parked();
-        headers_visible(visual);
-        let body = visual.debug_bounds("sidebar-body-Inbox").unwrap();
-        assert_eq!(body.size.height, px(88.));
-        let mut previous_bottom = body.origin.y;
-        for (row_selector, location_selector) in [
-            (
-                "side-Inbox-Work/Projects/Idea.md",
-                "side-Inbox-Work/Projects/Idea.md-location",
-            ),
-            (
-                "side-Inbox-Work/Resources/README.md",
-                "side-Inbox-Work/Resources/README.md-location",
-            ),
-        ] {
-            let row = visual.debug_bounds(row_selector).unwrap();
-            let location = visual.debug_bounds(location_selector).unwrap();
-            assert_eq!(row.size.height, px(44.));
-            assert!(row.origin.y >= previous_bottom && row.bottom() <= body.bottom());
-            assert!(location.origin.y >= row.origin.y && location.bottom() <= row.bottom());
-            previous_bottom = row.bottom();
-        }
+        assert_eq!(geometry(visual), before);
     }
 
     #[gpui::test]
     fn sidebar_explicit_sections_survive_save_close_launch_with_scrolled_tree(
         cx: &mut gpui::TestAppContext,
     ) {
-        use reader_sidebar::{Section, LEFT_SECTIONS};
+        use reader_sidebar::LEFT_SECTIONS;
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9552,11 +9356,7 @@ mod document_link_landing_tests {
                     "scrolled positive control on launch {launch}"
                 );
                 for section in LEFT_SECTIONS {
-                    let closed = if section == Section::Projects {
-                        v.sidebar.projects_collapsed
-                    } else {
-                        v.scroll_sections.closed(section, &v.sidebar.collapsed)
-                    };
+                    let closed = v.scroll_sections.closed(section, &v.sidebar.collapsed);
                     assert!(!closed, "{section:?} closed on launch {launch}");
                 }
             });
@@ -9608,13 +9408,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         let before = view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
-            LEFT_SECTIONS.map(|s| {
-                if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }
-            })
+            LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed))
         });
         // The vault menu retains the Folders-only toggle; its old toolbar slot
         // is now reserved for Collapse all folders (#767).
@@ -9625,12 +9419,8 @@ mod document_link_landing_tests {
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
             assert_eq!(
-                LEFT_SECTIONS.map(|s| if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }),
-                [true, true, true, true, false]
+                LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)),
+                [true, true, false]
             )
         });
         view.update(visual, |v, cx| {
@@ -9640,11 +9430,7 @@ mod document_link_landing_tests {
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
             assert_eq!(
-                LEFT_SECTIONS.map(|s| if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }),
+                LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)),
                 before
             )
         });
@@ -9662,11 +9448,7 @@ mod document_link_landing_tests {
             v.scroll_sections.observe(-120.);
             assert!(LEFT_SECTIONS
                 .into_iter()
-                .all(|s| if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }))
+                .all(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)))
         });
         let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
         visual.simulate_click(
@@ -9681,11 +9463,7 @@ mod document_link_landing_tests {
             v.scroll_sections.observe(-120.);
             assert!(LEFT_SECTIONS
                 .into_iter()
-                .all(|s| !if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }))
+                .all(|s| !v.scroll_sections.closed(s, &v.sidebar.collapsed)))
         });
         view.update_in(visual, |v, window, cx| {
             v.content.read(cx).focus_handle().clone().focus(window, cx);
@@ -9695,12 +9473,8 @@ mod document_link_landing_tests {
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
             assert_eq!(
-                LEFT_SECTIONS.map(|s| if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }),
-                [true, true, true, true, false]
+                LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)),
+                [true, true, false]
             )
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
@@ -9713,11 +9487,7 @@ mod document_link_landing_tests {
             v.scroll_sections.observe(-120.);
             assert!(LEFT_SECTIONS
                 .into_iter()
-                .all(|s| !if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }))
+                .all(|s| !v.scroll_sections.closed(s, &v.sidebar.collapsed)))
         });
         let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
         visual.simulate_click(collapse.center(), Modifiers::default());
@@ -9730,28 +9500,21 @@ mod document_link_landing_tests {
             assert!(v.tree.rows.iter().any(|row| row.path == "Folder"));
         });
         // The vault header toggles every top-level section, Folders included (#983).
-        let closed = |v: &Reader| {
-            LEFT_SECTIONS.map(|s| {
-                if s == Section::Projects {
-                    v.sidebar.projects_collapsed
-                } else {
-                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
-                }
-            })
-        };
+        let closed =
+            |v: &Reader| LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed));
         let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
         visual.simulate_click(header.center(), Modifiers::default());
         visual.run_until_parked();
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
-            assert_eq!(closed(v), [true; 5]);
+            assert_eq!(closed(v), [true; 3]);
         });
         let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
         visual.simulate_click(header.center(), Modifiers::default());
         visual.run_until_parked();
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
-            assert_eq!(closed(v), [false; 5]);
+            assert_eq!(closed(v), [false; 3]);
         });
         assert_eq!(
             std::fs::read_to_string(root.join("Folder/Note.md")).unwrap(),
@@ -9760,7 +9523,7 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
-    fn projects_sidebar_refreshes_and_opens_canonical_note(cx: &mut gpui::TestAppContext) {
+    fn typed_projects_do_not_reappear_as_sidebar_sections(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9799,85 +9562,33 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             v.panels.open(reader_layout::Panel::Notes);
-            v.sidebar.projects_collapsed = false;
-            v.projects_done_expanded = false;
             v.sync_tree();
             cx.notify();
             let _ = window;
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            use reader_sidebar::Section;
             let headers: Vec<_> = v
                 .sidebar_items()
                 .into_iter()
-                .filter_map(|i| {
-                    if let SideItem::Header(s, _) = i {
-                        Some(s)
-                    } else {
-                        None
-                    }
+                .filter_map(|item| match item {
+                    SideItem::Header(section, _) => Some(section),
+                    _ => None,
                 })
                 .collect();
+            assert_eq!(headers, reader_sidebar::LEFT_SECTIONS);
             assert_eq!(
-                headers,
-                [
-                    Section::Recent,
-                    Section::Pinned,
-                    Section::Inbox,
-                    Section::Projects,
-                    Section::Folders
-                ]
+                v.projects.rows().len(),
+                2,
+                "typed project inventory positive control"
             );
-            assert_eq!(v.projects.rows().len(), 2);
-            assert!(v
-                .sidebar_items()
-                .iter()
-                .any(|i| matches!(i, SideItem::ProjectsDone(1, false))));
-            assert_eq!(
-                v.sidebar_items()
-                    .iter()
-                    .filter(|i| matches!(i, SideItem::Project(_)))
-                    .count(),
-                1
-            );
-        });
-        assert!(
-            visual
-                .debug_bounds("side-project-Work/Projects/One/_index.md")
-                .is_some(),
-            "positive control: active row rendered"
-        );
-        let button = visual.debug_bounds("projects-done").unwrap();
-        visual.simulate_click(button.center(), Modifiers::default());
-        visual.run_until_parked();
-        let row = visual
-            .debug_bounds("side-project-Home/Projects/Done/_index.md")
-            .unwrap();
-        visual.simulate_click(row.center(), Modifiers::default());
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| assert_eq!(v.current_rel, done));
-        assert_eq!(std::fs::read_to_string(root.join(first)).unwrap(), source);
-        std::fs::write(
-            root.join(first),
-            source.replace("active", "planned").replace("[ ]", "[x]"),
-        )
-        .unwrap();
-        view.update_in(visual, |v, window, cx| {
-            v.start_incremental(
-                okilum_core::Changes {
-                    changed: [first.into()].into_iter().collect(),
-                    ..Default::default()
-                },
-                window,
-                cx,
-            )
-        });
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            let p = v.projects.rows().iter().find(|p| p.path == first).unwrap();
-            assert_eq!(p.status, okilum_core::projects::Status::Planned);
-            assert_eq!(p.open_tasks, 0);
+            assert!(v.sidebar_items().iter().all(|item| !matches!(
+                item,
+                SideItem::Header(
+                    reader_sidebar::Section::Projects | reader_sidebar::Section::Inbox,
+                    _
+                )
+            )));
         });
     }
 

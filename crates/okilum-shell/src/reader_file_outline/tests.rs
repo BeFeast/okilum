@@ -162,23 +162,48 @@ fn malformed_yaml_is_partial_or_empty_and_never_an_error() {
 
 #[test]
 fn parsing_and_tree_expansion_are_capped() {
-    assert!(parse::parse("json", &" ".repeat(parse::MAX_BYTES + 1))
-        .entries
-        .is_empty());
-    let many = format!(
+    let now = std::time::Instant::now();
+    assert!(
+        parse::parse_with_clock("json", &" ".repeat(parse::MAX_BYTES + 1), || now)
+            .entries
+            .is_empty()
+    );
+    // A deadline cannot decide a test of the independent entry cap.
+    let capped = parse::parse_with_clock("json", &many_json_keys(), || now);
+    assert_eq!(capped.entries.len(), 1000);
+    assert_eq!(capped.entries.first().unwrap().label, "key0");
+    assert_eq!(capped.entries.last().unwrap().label, "key999");
+    let outline = parse::parse_with_clock("yaml", "first:\n  child: true\nsecond: true\n", || now);
+    let mut expanded = BTreeSet::new();
+    assert_eq!(outline.visible(&expanded), vec![0, 2]);
+    expanded.insert(0);
+    assert_eq!(outline.visible(&expanded), vec![0, 1, 2]);
+}
+
+fn many_json_keys() -> String {
+    format!(
         "{{{}}}",
         (0..3000)
             .map(|ix| format!("\"key{ix}\":{ix}"))
             .collect::<Vec<_>>()
             .join(",")
-    );
-    let capped = parse::parse("json", &many);
-    assert_eq!(capped.entries.len(), 1000);
-    let outline = parse::parse("yaml", "first:\n  child: true\nsecond: true\n");
-    let mut expanded = BTreeSet::new();
-    assert_eq!(outline.visible(&expanded), vec![0, 2]);
-    expanded.insert(0);
-    assert_eq!(outline.visible(&expanded), vec![0, 1, 2]);
+    )
+}
+
+#[test]
+fn parsing_deadline_stops_at_the_budget_boundary() {
+    let source = many_json_keys();
+    let started = std::time::Instant::now();
+    for (elapsed_ms, expected_entries) in [(99, 1000), (100, 0), (101, 0)] {
+        let mut clock_calls = 0;
+        let outline = parse::parse_with_clock("json", &source, || {
+            let elapsed = if clock_calls == 0 { 0 } else { elapsed_ms };
+            clock_calls += 1;
+            started + Duration::from_millis(elapsed)
+        });
+        assert!(clock_calls > 1, "the deadline check must actually run");
+        assert_eq!(outline.entries.len(), expected_entries, "{elapsed_ms} ms");
+    }
 }
 
 struct Surface {

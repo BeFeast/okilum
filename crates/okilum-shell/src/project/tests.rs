@@ -294,20 +294,23 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn project_tab_opens_inside_the_reader_and_returns_to_the_same_note(cx: &mut TestAppContext) {
+fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         bind_keys(cx);
     });
     let fixture = tempfile::tempdir().unwrap();
     let vault = fixture.path().join("vault");
-    std::fs::create_dir(&vault).unwrap();
-    std::fs::write(
-        vault.join("note.md"),
-        "# Retained note\n\nReader content.\n",
-    )
-    .unwrap();
-    std::fs::write(vault.join("other.md"), "# Another note\n").unwrap();
+    for folder in ["Dev/Areas/App", "Music/Areas/Studio"] {
+        std::fs::create_dir_all(vault.join(folder).join("ops")).unwrap();
+        std::fs::write(
+            vault.join(folder).join("ops/project.yaml"),
+            "kind: knowledge\n",
+        )
+        .unwrap();
+        std::fs::write(vault.join(folder).join("note.md"), "# Project note\n").unwrap();
+    }
+    std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();
     let mut reader = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -327,63 +330,65 @@ fn project_tab_opens_inside_the_reader_and_returns_to_the_same_note(cx: &mut Tes
         Root::new(view, window, cx)
     });
     let reader = reader.unwrap();
-    visual.simulate_resize(size(px(1200.), px(800.)));
+    visual.simulate_resize(size(px(1400.), px(900.)));
     visual.run_until_parked();
-    let retained = reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "note.md");
-        view.content.clone()
+    let before = reader.update(visual, |view, cx| {
+        view.sync_tree();
+        view.tree.set_subtree("Dev", true);
+        view.tree.cursor = Some("note.md".into());
+        cx.notify();
+        (
+            view.tree
+                .rows
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>(),
+            view.panels.clone(),
+            view.content.clone(),
+        )
     });
-    let tab = visual
-        .debug_bounds("reader-project")
-        .expect("Reader Project control positive control");
-    visual.simulate_click(tab.center(), Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("project-tab").is_some());
-    let project = reader.read_with(visual, |view, _| {
-        assert!(view.project_open);
-        view.project.clone().unwrap()
-    });
-    visual.update(|window, cx| {
-        project.update(cx, |view, cx| {
-            view.compose.update(cx, |input, cx| {
-                input.set_value("Retain this draft", window, cx)
-            })
-        })
-    });
-    let tab = visual.debug_bounds("reader-project").unwrap();
-    visual.simulate_click(tab.center(), Modifiers::default());
+    for folder in ["Dev/Areas/App", "Music/Areas/Studio"] {
+        let project = okilum_t3::projects::Project::read(&vault.join(folder)).unwrap();
+        visual.update(|window, cx| {
+            reader.update(cx, |view, cx| view.enter_vault_project(project, window, cx))
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert_eq!(
+                view.project_navigation.active.as_ref().unwrap().folder,
+                vault.join(folder)
+            );
+            assert!(!view.tree.rows.is_empty(), "scoped tree positive control");
+            assert!(view
+                .tree
+                .rows
+                .iter()
+                .all(|r| r.path.starts_with(&format!("{folder}/"))));
+            assert_eq!(view.current_rel, "note.md");
+            assert!(view.content == before.2);
+        });
+    }
+    visual.update(|window, cx| reader.update(cx, |view, cx| view.leave_vault_project(window, cx)));
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
+        assert!(view.project_navigation.active.is_none());
         assert!(!view.project_open);
-        assert_eq!(view.current_rel, "note.md");
-        assert!(view.content == retained);
+        assert_eq!(
+            view.tree
+                .rows
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>(),
+            before.0
+        );
+        assert_eq!(view.tree.cursor.as_deref(), Some("note.md"));
+        assert_eq!(view.panels, before.1);
+        assert!(view.content == before.2);
     });
-    assert!(visual.debug_bounds("project-tab").is_none());
-    let tab = visual.debug_bounds("reader-project").unwrap();
-    visual.simulate_click(tab.center(), Modifiers::default());
-    visual.run_until_parked();
-    reader.read_with(visual, |view, _| {
-        assert!(view.project.as_ref().unwrap() == &project)
-    });
-    project.read_with(visual, |view, cx| {
-        assert_eq!(view.compose.read(cx).value().as_ref(), "Retain this draft")
-    });
-    visual.update(|window, cx| {
-        reader.update(cx, |view, cx| view.open_note("other.md", None, window, cx))
-    });
-    visual.run_until_parked();
-    reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "other.md", "navigation positive control")
-    });
-    let tab = visual.debug_bounds("reader-project").unwrap();
-    visual.simulate_click(tab.center(), Modifiers::default());
-    visual.run_until_parked();
-    reader.read_with(visual, |view, _| {
-        assert!(view.project.as_ref().unwrap() == &project)
-    });
-    project.read_with(visual, |view, cx| {
-        assert_eq!(view.compose.read(cx).value().as_ref(), "Retain this draft")
-    });
+    assert!(
+        visual.debug_bounds("reader-project").is_none(),
+        "old top-right toggle is removed"
+    );
 }
 
 #[cfg(unix)]
@@ -498,7 +503,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
         rotated.manager.thread_id = Some("mcp:rotated-manager".into());
         std::fs::write(
             vault.join("ops/project.yaml"),
-            serde_yaml::to_string(&serde_json::json!({"t3": binding})).unwrap(),
+            serde_yaml::to_string(&serde_json::json!({"kind": "code", "t3": binding})).unwrap(),
         )
         .unwrap();
         old.update(cx, |view, cx| {
@@ -558,7 +563,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
     );
     std::fs::write(
         vault.join("ops/project.yaml"),
-        serde_yaml::to_string(&serde_json::json!({"t3": rotated})).unwrap(),
+        serde_yaml::to_string(&serde_json::json!({"kind": "code", "t3": rotated})).unwrap(),
     )
     .unwrap();
     visual.update(|window, cx| reader.update(cx, |r, cx| r.toggle_project(window, cx)));
@@ -590,7 +595,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
     visual.update(|window, cx| reader.update(cx, |r, cx| r.close_project(window, cx)));
     std::fs::write(
         vault.join("ops/project.yaml"),
-        serde_yaml::to_string(&serde_json::json!({"t3": binding})).unwrap(),
+        serde_yaml::to_string(&serde_json::json!({"kind": "code", "t3": binding})).unwrap(),
     )
     .unwrap();
     visual.update(|window, cx| reader.update(cx, |r, cx| r.toggle_project(window, cx)));
