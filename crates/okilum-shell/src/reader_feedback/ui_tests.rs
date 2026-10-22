@@ -377,14 +377,8 @@ fn feedback_keeps_the_main_window_interactive_and_metadata_belongs_to_its_source
         reader.run_until_parked();
         reader.update(|window, cx| {
             assert!(!window.has_active_dialog(cx));
-            let root = window.window_handle().downcast::<Root>().unwrap();
-            let entity = root
-                .read(cx)
-                .unwrap()
-                .view()
-                .clone()
-                .downcast::<Reader>()
-                .unwrap();
+            let root = window.root::<Root>().flatten().unwrap();
+            let entity = root.read(cx).view().clone().downcast::<Reader>().unwrap();
             assert!(
                 entity.read(cx).find_open,
                 "main-window Find received its shortcut"
