@@ -19,7 +19,7 @@ preview/removal and explicit Send remain the caller's responsibility.
   is never invoked on macOS 15+. No NSView bitmap-cache fallback is used.
 - Windows: the foreground HWND must belong to the current process and calling
   UI thread. PrintWindow reads its client area with PW_RENDERFULLCONTENT.
-  A failed or black GPU readback returns Unsupported; no desktop-DC fallback.
+  A failed or unpainted readback returns Unsupported; no desktop-DC fallback.
 - Linux X11: XRes 1.2 supplies the focused window's real client PID. The module
   walks owned parents only and uses XGetImage on that window. XRes absence,
   foreign focus, unmapped windows and X errors fail to Unsupported. A short

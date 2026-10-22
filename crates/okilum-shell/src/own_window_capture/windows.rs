@@ -56,6 +56,15 @@ unsafe fn capture_window(hwnd: HWND) -> Result<PngBytes, Unsupported> {
         ReleaseDC(hwnd, dc);
         return Err(Unsupported::CaptureFailed);
     }
+    // Distinguish an unpainted buffer from legitimate black content. The alpha
+    // byte is deliberately nonstandard too; normal GDI writes replace RGB.
+    const UNPAINTED: [u8; 4] = [0xa5, 0x5a, 0xc3, 0x7e];
+    for pixel in std::slice::from_raw_parts_mut(data.cast::<u8>(), len)
+        .as_chunks_mut::<4>()
+        .0
+    {
+        *pixel = UNPAINTED;
+    }
     let old = SelectObject(memory, bitmap);
     // PW_CLIENTONLY | PW_RENDERFULLCONTENT: never reads the desktop DC.
     let mut before = 0;
@@ -73,14 +82,13 @@ unsafe fn capture_window(hwnd: HWND) -> Result<PngBytes, Unsupported> {
     if !ok {
         return Err(Unsupported::CaptureFailed);
     }
+    if pixels.as_chunks::<4>().0.iter().any(|p| *p == UNPAINTED) {
+        return Err(Unsupported::CaptureFailed);
+    }
     let mut rgba = pixels;
     for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         pixel[3] = 255;
-    }
-    // GPU windows may report success without supplying pixels. Fail closed.
-    if rgba.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0]) {
-        return Err(Unsupported::CaptureFailed);
     }
     encode(w, h, &rgba)
 }
@@ -92,7 +100,11 @@ mod tests {
         if message == WM_PRINTCLIENT {
             let mut rect: RECT = std::mem::zeroed();
             GetClientRect(hwnd, &mut rect);
-            let brush = CreateSolidBrush(0x00563412);
+            let mode = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if mode == 2 {
+                return 0;
+            }
+            let brush = CreateSolidBrush(if mode == 1 { 0 } else { 0x00563412 });
             FillRect(w as _, &rect, brush);
             DeleteObject(brush);
             return 0;
@@ -125,6 +137,19 @@ mod tests {
             );
             assert!(!hwnd.is_null());
             let result = capture_window(hwnd);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
+            let black = capture_window(hwnd).expect("legitimate black content must be accepted");
+            assert!(image::load_from_memory(&black)
+                .unwrap()
+                .to_rgb8()
+                .pixels()
+                .all(|p| p.0 == [0, 0, 0]));
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 2);
+            assert_eq!(
+                capture_window(hwnd),
+                Err(Unsupported::CaptureFailed),
+                "successful PrintWindow without drawing is not a capture"
+            );
             DestroyWindow(hwnd);
             UnregisterClassW(name.as_ptr(), std::ptr::null_mut());
             let decoded =
