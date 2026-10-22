@@ -143,6 +143,8 @@ class PreviewTests(unittest.TestCase):
         block = ci.split('  macos-preview:\n', 1)[1].split('  macos:\n', 1)[0]
         self.assertIn('needs: [native-scope, macos]', block)
         self.assertNotIn('needs.linux', block)
+        self.assertIn('ref: main', block)
+        self.assertIn('actions: write', block)
         self.assertIn('github.event.pull_request.draft == false', block)
         self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', block)
         workflow = (ROOT / '.forgejo/workflows/macos-release.yml').read_text()

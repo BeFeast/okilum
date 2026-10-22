@@ -366,12 +366,17 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: publish
+    permissions:
+      contents: read
+      actions: write
     timeout-minutes: 3
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          # The protected main selector must be deployed before PR previews start.
+          # A PR cannot replace the coordinator on the publication runner.
+          ref: main
       - name: Select the newest green Mac PR head
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,5 @@
 # Signed Mac beta ticks until 2026-10-26 03:00 UTC, then only daily 10:30 UTC.
-# A lightweight tick dispatches main so artifact and workflow provenance stay equal.
+# A lightweight tick dispatches main; green PRs dispatch their verified branch.
 # See docs/macos-auto-update.md.
 name: macos-release
 
