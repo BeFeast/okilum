@@ -82,7 +82,7 @@ unsafe fn capture_window(hwnd: HWND) -> Result<PngBytes, Unsupported> {
     if !ok {
         return Err(Unsupported::CaptureFailed);
     }
-    if pixels.as_chunks::<4>().0.iter().any(|p| *p == UNPAINTED) {
+    if pixels.as_chunks::<4>().0.contains(&UNPAINTED) {
         return Err(Unsupported::CaptureFailed);
     }
     let mut rgba = pixels;
