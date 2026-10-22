@@ -7,6 +7,7 @@ use gpui::{App, ClipboardItem, Menu, MenuItem};
 gpui::actions!(okilum, [CopyVersionInfo]);
 
 pub(crate) fn install(cx: &mut App) {
+    crate::reader_feedback::install(cx);
     cx.on_action(|_: &CopyVersionInfo, cx| copy(cx));
 }
 
@@ -17,7 +18,10 @@ pub(crate) fn copy(cx: &mut App) {
 pub(crate) fn help_menu() -> Menu {
     Menu {
         name: "Help".into(),
-        items: vec![MenuItem::action("Copy Version Info", CopyVersionInfo)],
+        items: vec![
+            MenuItem::action("Send feedback…", crate::reader_feedback::SendFeedback),
+            MenuItem::action("Copy Version Info", CopyVersionInfo),
+        ],
         disabled: false,
     }
 }
@@ -118,7 +122,7 @@ fn source(commit: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn os() -> String {
+pub(crate) fn os() -> String {
     std::fs::read_to_string("/etc/os-release")
         .ok()
         .and_then(|text| os_release_name(&text))
@@ -145,7 +149,7 @@ fn os_release_name(text: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn os() -> String {
+pub(crate) fn os() -> String {
     let version = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
     if version.patchVersion > 0 {
         format!(
@@ -158,7 +162,7 @@ fn os() -> String {
 }
 
 #[cfg(windows)]
-fn os() -> String {
+pub(crate) fn os() -> String {
     let build = windows_value("CurrentBuildNumber");
     let release = windows_value("DisplayVersion");
     windows_name(build.as_deref(), release.as_deref())
