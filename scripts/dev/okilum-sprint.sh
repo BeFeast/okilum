@@ -11,6 +11,7 @@ started=$SECONDS
 stage=preflight
 stage_started=$SECONDS
 lock_owned=0
+context_ready=0
 restore_on_failure=0
 bootstrap=$(mktemp -d "${TMPDIR:-/tmp}/okilum-sprint.XXXXXX")
 reporter="$bootstrap/sprint-report.py"
@@ -244,7 +245,13 @@ sprint_exit() {
     trap - EXIT INT TERM
     if (( result != 0 )); then
         write_context || true
-        python3 "$reporter" --context "$context" --stage "$stage" || true
+        if [[ ${OKILUM_SPRINT_NONINTERACTIVE:-0} == 1 ]]; then
+            # The runner owns the single success/failure upload and GUI receipt.
+            if (( context_ready )); then cp "$context" "$root/sprint-context.json" || true; fi
+            echo 'Noninteractive Sprint report delegated to runner wrapper.'
+        else
+            python3 "$reporter" --context "$context" --stage "$stage" || true
+        fi
         # Collect the rejected bundle FIRST; only then restore the working app.
         restore_sprint_app || true
     fi
@@ -303,6 +310,7 @@ if ! mkdir "$root/build.lock" 2>/dev/null; then
     echo "Sprint build is already running (lock: $root/build.lock)." >&2; exit 1
 fi
 lock_owned=1
+context_ready=1
 log="$root/build.log"
 cp "$run_log" "$root/stages.log"
 run_log="$root/stages.log"
@@ -417,13 +425,43 @@ codesign --force --deep --sign - "$bundle_stage"
 codesign --verify --deep --strict "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then
-    osascript -e 'if application id "com.befeast.okilum.sprint" is running then tell application id "com.befeast.okilum.sprint" to quit'
-    for ((attempt=0; attempt<15; attempt++)); do
-        running=$(osascript -e 'application id "com.befeast.okilum.sprint" is running')
-        [[ $running == false ]] && break
-        sleep 1
-    done
-    [[ $running == false ]] || { echo 'Quit Okilum Sprint, then rerun; app was not replaced.' >&2; exit 1; }
+    if [[ $noninteractive == 1 ]]; then
+        # No AppleEvents/TCC prompt in an unattended Aqua runner. Resolve each
+        # PID's executable with libproc, and signal ONLY this exact Sprint path.
+        python3 - "$app" <<'STOP_SPRINT'
+import ctypes, os, pathlib, plistlib, signal, subprocess, sys, time
+app = pathlib.Path(sys.argv[1]).resolve()
+info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+if info.get('CFBundleIdentifier') != 'com.befeast.okilum.sprint':
+    raise SystemExit('Refusing to stop a non-Sprint bundle')
+expected = (app / 'Contents/MacOS/okilum').resolve()
+libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
+libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+libproc.proc_pidpath.restype = ctypes.c_int
+def is_sprint(pid):
+    buffer = ctypes.create_string_buffer(4096)
+    return libproc.proc_pidpath(pid, buffer, len(buffer)) > 0 and pathlib.Path(os.fsdecode(buffer.value)).resolve() == expected
+pids = [int(pid) for pid in subprocess.check_output(['ps', '-axo', 'pid='], text=True).split()]
+owned = [pid for pid in pids if is_sprint(pid)]
+for pid in owned:
+    if is_sprint(pid):
+        try: os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+end = time.monotonic() + 10
+while time.monotonic() < end and any(is_sprint(pid) for pid in owned):
+    time.sleep(0.1)
+if any(is_sprint(pid) for pid in owned):
+    raise SystemExit('Sprint process did not exit; app was not replaced')
+STOP_SPRINT
+    else
+        osascript -e 'if application id "com.befeast.okilum.sprint" is running then tell application id "com.befeast.okilum.sprint" to quit'
+        for ((attempt=0; attempt<15; attempt++)); do
+            running=$(osascript -e 'application id "com.befeast.okilum.sprint" is running')
+            [[ $running == false ]] && break
+            sleep 1
+        done
+        [[ $running == false ]] || { echo 'Quit Okilum Sprint, then rerun; app was not replaced.' >&2; exit 1; }
+    fi
 fi
 # Only these dedicated Sprint paths can be replaced; keep the previous app on failure.
 backup="$root/previous-Okilum-Sprint.app"
