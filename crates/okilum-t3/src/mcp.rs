@@ -295,6 +295,30 @@ impl McpGateway {
 }
 
 impl ManagerGateway for McpGateway {
+    fn start_manager(&self, project_id: &str, title: &str, message: &str) -> GatewayResult<String> {
+        let result = self.call_value(
+            "t3_thread_launch",
+            json!({
+                "projectId": project_id, "title": title, "message": message,
+                "workspaceStrategy": {"type": "root"}
+            }),
+        )?;
+        if result.get("projectId").and_then(Value::as_str) != Some(project_id) {
+            return Err(GatewayError::Protocol(
+                "Created manager project is unconfirmed; do not start another".into(),
+            ));
+        }
+        result
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                GatewayError::Protocol(
+                    "Manager launch receipt has no thread id; do not retry".into(),
+                )
+            })
+    }
+
     fn server_identity(&self) -> GatewayResult<crate::ServerIdentity> {
         self.call("t3_environment_read", json!({}))
     }

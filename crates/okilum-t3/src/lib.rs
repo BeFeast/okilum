@@ -19,6 +19,7 @@ pub mod manifest;
 mod mcp;
 pub mod models;
 pub mod oauth;
+pub mod projects;
 mod token;
 mod types;
 
