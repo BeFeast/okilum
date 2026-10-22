@@ -1,5 +1,6 @@
 use super::*;
 use ::core::prelude::v1::test;
+use gpui_component::WindowExt;
 
 fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContext)) {
     cx.update(|cx| {
@@ -34,28 +35,49 @@ fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContex
     check(visual);
 }
 fn get_draft(visual: &mut VisualTestContext) -> Entity<FeedbackView> {
-    visual.update(|window, cx| cx.global::<Drafts>().0[&window.window_handle().window_id()].clone())
+    visual.update(|window, cx| {
+        let id = window.window_handle().window_id();
+        cx.global::<Drafts>()
+            .0
+            .iter()
+            .find_map(|(owner, draft)| {
+                (*owner == id || draft.window.window_id() == id).then(|| draft.view.clone())
+            })
+            .expect("Feedback draft")
+    })
 }
-fn open_from_button(visual: &mut VisualTestContext) -> Entity<FeedbackView> {
-    let button = visual
+fn feedback_context(reader: &mut VisualTestContext) -> VisualTestContext {
+    let handle = reader
+        .update(|window, cx| cx.global::<Drafts>().0[&window.window_handle().window_id()].window);
+    VisualTestContext::from_window(handle.into(), &reader.cx)
+}
+fn open_from_button(reader: &mut VisualTestContext) -> (Entity<FeedbackView>, VisualTestContext) {
+    let button = reader
         .debug_bounds("reader-feedback")
         .expect("always-visible header button");
-    visual.simulate_click(button.center(), Modifiers::default());
-    visual.run_until_parked();
+    reader.simulate_click(button.center(), Modifiers::default());
+    reader.run_until_parked();
+    reader.update(|window, cx| {
+        assert!(
+            !window.has_active_dialog(cx),
+            "Feedback never opens a modal in the main window"
+        )
+    });
+    let mut visual = feedback_context(reader);
     visual.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(visual.debug_bounds("feedback-dialog").is_some());
+    assert!(visual.debug_bounds("feedback-form").is_some());
     assert!(
         visual.debug_bounds("feedback-public-notice").is_some(),
-        "public visibility is disclosed in the actual submission dialog"
+        "public visibility is disclosed in the actual form"
     );
-    let view = get_draft(visual);
+    let view = get_draft(&mut visual);
     visual.update(|window, cx| {
         assert!(
             Focusable::focus_handle(view.read(cx).text.read(cx), cx).is_focused(window),
             "opening feedback focuses its text field for immediate paste"
-        )
+        );
     });
-    view
+    (view, visual)
 }
 fn png() -> Vec<u8> {
     let mut bytes = std::io::Cursor::new(Vec::new());
@@ -70,7 +92,7 @@ fn png() -> Vec<u8> {
 }
 
 #[gpui::test]
-fn header_dialog_pastes_text_and_image_and_remove_omits_the_attachment(cx: &mut TestAppContext) {
+fn feedback_window_pastes_text_and_image_and_remove_omits_the_attachment(cx: &mut TestAppContext) {
     with_reader(cx, |visual| {
         visual.simulate_resize(size(px(600.), px(900.)));
         visual.run_until_parked();
@@ -79,7 +101,9 @@ fn header_dialog_pastes_text_and_image_and_remove_omits_the_attachment(cx: &mut 
             button.left() >= px(0.) && button.right() <= px(600.),
             "feedback stays visible in a narrow window"
         );
-        let view = open_from_button(visual);
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let visual = &mut feedback;
         visual
             .update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("Report text".into())));
         visual.simulate_keystrokes("secondary-v");
@@ -127,7 +151,9 @@ fn picker_and_native_file_drop_attach_images_and_invalid_replacement_keeps_the_p
     let path = dir.path().join("screenshot.png");
     std::fs::write(&path, png()).unwrap();
     with_reader(cx, |visual| {
-        let view = open_from_button(visual);
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let visual = &mut feedback;
         let attach = visual.debug_bounds("feedback-attach").unwrap();
         visual.simulate_click(attach.center(), Modifiers::default());
         visual.run_until_parked();
@@ -142,7 +168,7 @@ fn picker_and_native_file_drop_attach_images_and_invalid_replacement_keeps_the_p
         );
         view.update(visual, |view, cx| view.remove_image(cx));
         visual.run_until_parked();
-        let center = visual.debug_bounds("feedback-dialog").unwrap().center();
+        let center = visual.debug_bounds("feedback-form").unwrap().center();
         visual.simulate_event(FileDropEvent::Entered {
             position: center,
             paths: ExternalPaths([path.clone()].into_iter().collect()),
@@ -170,7 +196,9 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
     cx: &mut TestAppContext,
 ) {
     with_reader(cx, |visual| {
-        let view = open_from_button(visual);
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let mut visual = &mut feedback;
         let sent = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
         let calls = sent.clone();
         view.update_in(visual, |view, window, cx| {
@@ -194,11 +222,14 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
         view.read_with(visual, |view, _| {
             assert!(
                 !view.visible,
-                "Escape closes the dialog without dropping the failed draft"
+                "Escape closes the window without dropping the failed draft"
             )
         });
-        visual.dispatch_action(SendFeedback);
-        visual.run_until_parked();
+        reader.update(|window, _| window.activate_window());
+        reader.dispatch_action(SendFeedback);
+        reader.run_until_parked();
+        feedback = feedback_context(reader);
+        visual = &mut feedback;
         assert_eq!(
             get_draft(visual).entity_id(),
             view.entity_id(),
@@ -244,7 +275,9 @@ fn copy_report_keeps_text_and_metadata_when_the_opted_in_log_is_unavailable(
     std::fs::write(&valid, "LOG-POSITIVE-CONTROL\n").unwrap();
     std::fs::write(&invalid, [0xff]).unwrap();
     with_reader(cx, |visual| {
-        let view = open_from_button(visual);
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let visual = &mut feedback;
         view.update_in(visual, |view, window, cx| {
             view.text.update(cx, |text, cx| {
                 text.set_value("Keep this feedback draft", window, cx)
@@ -296,5 +329,105 @@ fn copy_report_keeps_text_and_metadata_when_the_opted_in_log_is_unavailable(
                 assert!(matches!(&view.state, SendState::Failed(message) if message.contains("Copied report without the diagnostic log")));
             });
         }
+    });
+}
+
+#[test]
+fn backing_scale_uses_the_actual_window_without_assuming_every_mac_is_retina() {
+    assert_eq!(backing_scale(Some(2.), 1.), 2.);
+    assert_eq!(backing_scale(Some(1.), 2.), 1.);
+    for invalid in [
+        None,
+        Some(0.),
+        Some(-1.),
+        Some(f32::NAN),
+        Some(f32::INFINITY),
+    ] {
+        assert_eq!(backing_scale(invalid, 1.5), 1.5);
+    }
+}
+
+#[gpui::test]
+fn feedback_keeps_the_main_window_interactive_and_metadata_belongs_to_its_source(
+    cx: &mut TestAppContext,
+) {
+    with_reader(cx, |reader| {
+        reader.update(|window, _| window.set_scale_factor(2.));
+        let (view, mut feedback) = open_from_button(reader);
+        let owner = reader.update(|window, _| window.window_handle().window_id());
+        let feedback_id = feedback.update(|window, _| window.window_handle().window_id());
+        assert_ne!(
+            owner, feedback_id,
+            "Feedback is an independent native window"
+        );
+        view.read_with(reader, |view, _| {
+            assert_eq!(
+                view.meta.scale, 2.,
+                "originating window scale, not the Feedback window"
+            );
+            assert_eq!(
+                (view.meta.window_width, view.meta.window_height),
+                (1200., 900.)
+            );
+        });
+        feedback.simulate_input("Draft: ");
+        // Real main-window keyboard actions and text copying while Feedback stays open.
+        reader.update(|window, _| window.activate_window());
+        reader.simulate_keystrokes("secondary-f");
+        reader.run_until_parked();
+        reader.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            let root = window.root::<Root>().flatten().unwrap();
+            let entity = root.read(cx).view().clone().downcast::<Reader>().unwrap();
+            assert!(
+                entity.read(cx).find_open,
+                "main-window Find received its shortcut"
+            );
+        });
+        reader.simulate_input("COPY-FROM-MAIN");
+        reader.simulate_keystrokes("secondary-a secondary-c");
+        reader.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("COPY-FROM-MAIN")
+            )
+        });
+        feedback.update(|window, cx| {
+            window.activate_window();
+            Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
+        });
+        feedback.simulate_keystrokes("secondary-v");
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "Draft: COPY-FROM-MAIN")
+        });
+        // Help in Feedback must raise this window, not create another draft/window.
+        let count = feedback.update(|_, cx| cx.windows().len());
+        feedback.dispatch_action(SendFeedback);
+        feedback.run_until_parked();
+        feedback.update(|window, cx| {
+            assert_eq!(cx.windows().len(), count);
+            assert_eq!(window.window_handle().window_id(), feedback_id);
+        });
+        feedback.simulate_keystrokes("secondary-w");
+        reader.run_until_parked();
+        reader.update(|_, cx| {
+            assert!(!cx
+                .windows()
+                .iter()
+                .any(|window| window.window_id() == feedback_id))
+        });
+        reader.update(|window, _| window.activate_window());
+        reader.dispatch_action(SendFeedback);
+        reader.run_until_parked();
+        feedback = feedback_context(reader);
+        assert_eq!(get_draft(&mut feedback).entity_id(), view.entity_id());
+        // The remounted field has working keyboard/focus subscriptions in its new window.
+        feedback.simulate_keystrokes("secondary-v");
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(
+                view.text.read(cx).value(),
+                "Draft: COPY-FROM-MAINCOPY-FROM-MAIN"
+            )
+        });
     });
 }
