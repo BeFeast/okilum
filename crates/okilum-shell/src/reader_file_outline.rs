@@ -17,6 +17,8 @@ pub(crate) struct View {
     expanded: BTreeSet<usize>,
     visible: Vec<usize>,
     current: Option<usize>,
+    window: Option<gpui::AnyWindowHandle>,
+    frame_pending: bool,
     list: ListState,
 }
 
@@ -34,6 +36,8 @@ impl View {
             expanded: BTreeSet::new(),
             visible: Vec::new(),
             current: None,
+            window: None,
+            frame_pending: false,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
         }
     }
@@ -82,11 +86,10 @@ impl View {
         self.input_observers.clear();
         self.input = input.clone();
         if let Some(input) = input {
-            // The editor publishes its laid-out viewport on notify, including
-            // scrolls that do not rerender the Reader. Only a changed section
-            // notifies this view and its cached parent panel.
+            // Event-time notifications can precede paint, which publishes the
+            // viewport. Coalesce them into a finite post-layout sample.
             self.input_observers
-                .push(cx.observe(&input, |this, _, cx| this.sync_current(cx)));
+                .push(cx.observe(&input, |this, _, cx| this.queue_current(cx)));
             self.input_observers
                 .push(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
@@ -160,6 +163,31 @@ impl View {
         cx.notify();
     }
 
+    fn queue_current(&mut self, cx: &mut Context<Self>) {
+        if self.frame_pending {
+            return;
+        }
+        let Some(window) = self.window else {
+            return;
+        };
+        self.frame_pending = true;
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, _| {
+                // The first callback may precede the pending editor paint;
+                // the second samples the viewport published by that paint.
+                window.on_next_frame(move |window, _| {
+                    window.on_next_frame(move |_, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.frame_pending = false;
+                            this.sync_current(cx);
+                        });
+                    });
+                });
+            });
+        });
+    }
+
     fn sync_current(&mut self, cx: &mut Context<Self>) {
         let current = self.section(cx);
         if self.current != current {
@@ -200,7 +228,8 @@ impl View {
 }
 
 impl Render for View {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.window = Some(window.window_handle());
         v_flex()
             .id("file-outline")
             .debug_selector(|| "file-outline-list".into())

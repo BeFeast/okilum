@@ -179,7 +179,13 @@ impl Render for Surface {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .size_full()
-            .child(Editor::new(&self.input).readonly(true).w(px(500.)).h_full())
+            .child(
+                div()
+                    .debug_selector(|| "outline-editor-viewport".into())
+                    .w(px(500.))
+                    .h_full()
+                    .child(Editor::new(&self.input).readonly(true).size_full()),
+            )
             .child(div().w(px(280.)).h_full().child(self.outline.clone()))
     }
 }
@@ -233,17 +239,47 @@ fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppCo
         .expect("a real row click target");
     visual.simulate_click(second.center(), Modifiers::default());
     visual.run_until_parked();
+    // As in the cached Markdown panel regression, the test platform needs an
+    // explicit display frame. Paint publishes the viewport; observers then run.
+    let frame = |visual: &mut VisualTestContext| {
+        // Deliver the finite post-layout callbacks as a real platform would.
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+        }
+        visual.run_until_parked();
+    };
+    frame(visual);
     input.read_with(visual, |input, _| {
         assert_eq!(input.top_visible_line(), Some(102))
     });
     outline.read_with(visual, |view, _| assert_eq!(view.current, Some(2)));
-    // Scroll independently of the outline click/caret, through the actual viewport API.
-    input.update(visual, |input, cx| input.scroll_line_to_top(1, cx));
+    // A real wheel scroll is independent of the outline's jump API and caret.
+    let editor = visual.debug_bounds("outline-editor-viewport").unwrap();
+    visual.simulate_event(ScrollWheelEvent {
+        position: editor.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
+        ..Default::default()
+    });
     visual.run_until_parked();
+    frame(visual);
+    input.read_with(visual, |input, _| {
+        assert!((2..102).contains(&input.top_visible_line().unwrap()))
+    });
     outline.read_with(visual, |view, _| assert_eq!(view.current, Some(1)));
     input.read_with(visual, |input, _| {
         assert_eq!(input.cursor_position(), Position::default())
     });
+    // Frame demand must drain once the viewport settles. Deliver callbacks
+    // without forcing extra paints (as the platform's idle frame loop does).
+    for _ in 0..2 {
+        visual.update(|window, cx| window.simulate_next_frame(cx));
+        visual.run_until_parked();
+    }
+    outline.read_with(visual, |view, _| assert!(!view.frame_pending));
 }
 
 #[gpui::test]
