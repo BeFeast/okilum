@@ -18,6 +18,22 @@ pub struct Row {
     pub hidden: bool,
 }
 
+/// Ancestors already scrolled out above the first visible row. Paths retain
+/// vault identity; a similarly named sibling can never become a sticky parent.
+pub(crate) fn sticky_ancestors(rows: &[Option<Row>], first: usize) -> Vec<Row> {
+    let Some(current) = rows.iter().skip(first).find_map(Option::as_ref) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .take(first)
+        .filter_map(Option::as_ref)
+        .filter(|row| {
+            row.kind == EntryKind::Directory && current.path.starts_with(&format!("{}/", row.path))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Ordinary `_`/`.` paths are hidden in the browser until Show hidden files
 /// or navigation reveals them. They remain in inventory for links and search;
 /// service directories are excluded by the scanner.
@@ -31,9 +47,10 @@ pub fn archived(path: &str) -> bool {
     okilum_core::projects::archived(path)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Tree {
     root: PathBuf,
+    scope: String,
     children: BTreeMap<String, Vec<VaultEntry>>,
     kinds: BTreeMap<String, EntryKind>,
     expanded: BTreeSet<String>,
@@ -181,9 +198,14 @@ impl Tree {
         self.flatten();
     }
 
+    pub(crate) fn scope_to(&mut self, path: &str) {
+        self.scope = path.to_owned();
+        self.flatten();
+    }
+
     fn flatten(&mut self) {
         let mut rows = Vec::new();
-        let mut stack = vec![("".to_string(), 0)];
+        let mut stack = vec![(self.scope.clone(), 0)];
         // Each path is visited once even if an inventory ever lists it twice.
         let mut visited = BTreeSet::new();
         // Stack items identify a directory to visit, or a row. Iterative traversal
@@ -192,7 +214,7 @@ impl Tree {
             if !visited.insert(path.clone()) {
                 continue;
             }
-            if !path.is_empty() {
+            if path != self.scope {
                 let kind = self.kinds[&path];
                 rows.push(Row {
                     hidden: hidden(&path) && !self.template_branch(&path),
@@ -478,6 +500,53 @@ mod tests {
             kind,
         }
     }
+    #[test]
+    fn scoped_tree_keeps_vault_paths_and_sticky_ancestors_exclude_siblings() {
+        use EntryKind::{Directory, Markdown};
+        let entries = [
+            entry("Music", Directory),
+            entry("Music/Areas", Directory),
+            entry("Music/Areas/Studio", Directory),
+            entry("Music/Areas/Studio/note.md", Markdown),
+            entry("Music/Areas/Studio2", Directory),
+            entry("Music/Areas/Studio2/other.md", Markdown),
+        ];
+        let mut tree = Tree::default();
+        tree.refresh(Path::new("/vault"), &entries);
+        tree.set_subtree("Music", true);
+        let original = tree.rows.iter().map(|r| r.path.clone()).collect::<Vec<_>>();
+        let rows: Vec<_> = tree.rows.iter().cloned().map(Some).collect();
+        let first = tree
+            .rows
+            .iter()
+            .position(|r| r.path == "Music/Areas/Studio2/other.md")
+            .unwrap();
+        assert_eq!(
+            sticky_ancestors(&rows, first)
+                .iter()
+                .map(|r| r.path.as_str())
+                .collect::<Vec<_>>(),
+            ["Music", "Music/Areas", "Music/Areas/Studio2"]
+        );
+        assert!(sticky_ancestors(&rows, 0).is_empty());
+        let saved = tree.clone();
+        tree.scope_to("Music/Areas/Studio");
+        assert_eq!(tree.rows.len(), 1);
+        assert_eq!(tree.rows[0].path, "Music/Areas/Studio/note.md");
+        assert_eq!(tree.rows[0].depth, 0);
+        tree.refresh(Path::new("/vault"), &entries);
+        assert_eq!(
+            tree.rows.len(),
+            1,
+            "inventory refresh preserves the selected scope"
+        );
+        tree = saved;
+        assert_eq!(
+            tree.rows.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            original
+        );
+    }
+
     #[test]
     fn folder_index_is_a_direct_child_in_any_case_and_never_guessed() {
         use EntryKind::{Directory, Markdown};

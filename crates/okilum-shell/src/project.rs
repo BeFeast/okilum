@@ -14,9 +14,17 @@ mod executors;
 mod launch;
 mod models;
 
+pub(super) fn save_browser_environment(
+    state: &Path,
+    environment: &Environment,
+) -> anyhow::Result<()> {
+    connections::save(state, environment)
+}
+
 pub(crate) struct ProjectView {
     binding: Option<AreaBinding>,
     area: Option<PathBuf>,
+    context_path: String,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     gateway: Option<Arc<dyn ManagerGateway>>,
@@ -42,6 +50,9 @@ pub(crate) struct ProjectView {
     generation: u64,
     _input: Subscription,
 }
+
+pub(super) struct ManagerStarted;
+impl EventEmitter<ManagerStarted> for ProjectView {}
 
 impl ProjectView {
     pub(crate) fn new(
@@ -136,6 +147,7 @@ impl ProjectView {
         Self {
             binding: None,
             area: None,
+            context_path: String::new(),
             state,
             environment: None,
             gateway: None,
@@ -272,6 +284,61 @@ impl ProjectView {
             };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn start_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let (Some(area), Some(state), Some(gateway), Some(environment), Some(project_id)) = (
+            self.area.clone(),
+            self.state.clone(),
+            self.gateway.clone(),
+            self.environment.clone(),
+            self.binding
+                .as_ref()
+                .and_then(|b| b.manager.project_id.clone()),
+        ) else {
+            self.error =
+                Some("Connect to the configured T3 project before starting a manager.".into());
+            cx.notify();
+            return;
+        };
+        let context = self.context_path.clone();
+        self.busy = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::reader_manager_start::start(
+                        &area,
+                        &context,
+                        &state,
+                        gateway.as_ref(),
+                        &environment,
+                        &project_id,
+                    )
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(thread) => {
+                        if let Some(binding) = &mut this.binding {
+                            binding.manager.thread_id = Some(thread.clone());
+                        }
+                        this.chat = Some(Conversation::new(thread));
+                        this.reason = None;
+                        this.start_polling(window, cx);
+                        cx.emit(ManagerStarted);
+                    }
+                    Err(e) => this.error = Some(format!("{e:#}")),
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -616,29 +683,43 @@ impl Render for ProjectView {
                                         cx.notify();
                                     })),
                             )
-                            .child(
-                                Button::new("project-executors")
-                                    .ghost()
-                                    .label("Executors")
-                                    .debug_selector(|| "project-executors".into())
-                                    .selected(self.executors_open)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.executors_open = true;
-                                        this.start_polling(window, cx);
-                                        cx.notify();
-                                    })),
+                            .when(
+                                self.binding
+                                    .as_ref()
+                                    .is_some_and(|b| !b.executor.project_id.is_empty()),
+                                |group| {
+                                    group.child(
+                                        Button::new("project-executors")
+                                            .ghost()
+                                            .label("Executors")
+                                            .debug_selector(|| "project-executors".into())
+                                            .selected(self.executors_open)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.executors_open = true;
+                                                this.start_polling(window, cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                },
                             ),
                     )
                     .child(div().flex_1())
-                    .child(
-                        Button::new("project-launch")
-                            .debug_selector(|| "project-launch".into())
-                            .ghost()
-                            .label("Request executor")
-                            .disabled(self.busy || self.model_busy || !enabled)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_launch(window, cx)),
-                            ),
+                    .when(
+                        self.binding
+                            .as_ref()
+                            .is_some_and(|b| !b.executor.project_id.is_empty()),
+                        |row| {
+                            row.child(
+                                Button::new("project-launch")
+                                    .debug_selector(|| "project-launch".into())
+                                    .ghost()
+                                    .label("Request executor")
+                                    .disabled(self.busy || self.model_busy || !enabled)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_launch(window, cx)
+                                    })),
+                            )
+                        },
                     )
                     .when_some(self.manager_model_target(), |row, target| {
                         row.child(
@@ -669,6 +750,21 @@ impl Render for ProjectView {
                         )
                     }),
             )
+            .when(
+                self.binding
+                    .as_ref()
+                    .is_some_and(|b| b.manager.thread_id.is_none()),
+                |view| {
+                    view.child(div().child("Manager не запущен")).child(
+                        Button::new("start-manager")
+                            .label("Start manager")
+                            .disabled(self.busy)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.start_manager(window, cx)),
+                            ),
+                    )
+                },
+            )
             .when_some(self.reason.clone(), |view, reason| {
                 view.child(
                     div()
@@ -684,28 +780,23 @@ impl Render for ProjectView {
                         .child(note),
                 )
             })
-            .when(
-                self.binding
-                    .as_ref()
-                    .is_some_and(|b| b.manager.thread_id.is_some()),
-                |view| {
-                    view.child(
-                        h_flex()
-                            .gap_2()
-                            .child(Input::new(&self.origin).flex_1())
-                            .child(
-                                Button::new("project-connect")
-                                    .ghost()
-                                    .icon(IconName::RotateCw)
-                                    .tooltip("Connect or reconnect to T3")
-                                    .disabled(self.busy || self.model_busy)
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| this.connect(window, cx)),
-                                    ),
-                            ),
-                    )
-                },
-            )
+            .when(self.binding.as_ref().is_some(), |view| {
+                view.child(
+                    h_flex()
+                        .gap_2()
+                        .child(Input::new(&self.origin).flex_1())
+                        .child(
+                            Button::new("project-connect")
+                                .ghost()
+                                .icon(IconName::RotateCw)
+                                .tooltip("Connect or reconnect to T3")
+                                .disabled(self.busy || self.model_busy)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.connect(window, cx)),
+                                ),
+                        ),
+                )
+            })
             .when_some(self.error.clone(), |view, error| {
                 view.child(
                     div()
@@ -758,26 +849,52 @@ impl Reader {
         self.project_open = false;
     }
 
+    #[cfg(test)]
     pub(super) fn toggle_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.project_open {
             self.close_project(window, cx);
             cx.notify();
             return;
         }
+        let note = self.vault_root.join(&self.current_rel);
+        let area = connections::area_for(&self.vault_root, &note)
+            .unwrap_or_else(|_| self.vault_root.clone());
+        self.open_project_area(area, window, cx);
+    }
+
+    pub(super) fn open_project_area(
+        &mut self,
+        area: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = &self.project {
+            previous.update(cx, |view, cx| view.set_active(false, window, cx));
+        }
         self.project_open = true;
         self.project = None;
         self.project_request = self.project_request.wrapping_add(1);
         let request = self.project_request;
-        let vault = self.vault_root.clone();
-        let note = vault.join(&self.current_rel);
+        let unavailable_manager = self
+            .project_navigation
+            .statuses
+            .get(&area)
+            .filter(|status| status.restartable())
+            .and_then(|_| self.project_navigation.status_managers.get(&area))
+            .cloned();
         cx.spawn_in(window, async move |this, cx| {
             // Re-read the explicit pointer on every activation. A rotation gets
             // its own view; returning to an existing binding retains its draft.
             let binding = cx
                 .background_executor()
                 .spawn(async move {
-                    let area = connections::area_for(&vault, &note)?;
-                    let binding = AreaBinding::read(&area)?;
+                    let project = okilum_t3::projects::Project::read(&area)?;
+                    let mut binding = project.native_binding()?;
+                    if unavailable_manager.as_ref() == Some(&project.manager) {
+                        if let Some(binding) = &mut binding {
+                            binding.manager.thread_id = None;
+                        }
+                    }
                     let key = (area, serde_json::to_string(&binding)?);
                     Ok::<_, anyhow::Error>((key, binding))
                 })
@@ -795,8 +912,26 @@ impl Reader {
                         None => {
                             let state = this.session_directory.clone();
                             let project = cx.new(|cx| {
-                                ProjectView::new(binding, state, key.0.clone(), window, cx)
+                                let mut view =
+                                    ProjectView::new(binding, state, key.0.clone(), window, cx);
+                                view.context_path = key
+                                    .0
+                                    .strip_prefix(&this.vault_root)
+                                    .unwrap_or(&key.0)
+                                    .to_string_lossy()
+                                    .replace('\\', "/");
+                                view
                             });
+                            cx.subscribe_in(
+                                &project,
+                                window,
+                                |this, _, _: &ManagerStarted, window, cx| {
+                                    if let Some(active) = this.project_navigation.active.clone() {
+                                        this.enter_vault_project(active, window, cx);
+                                    }
+                                },
+                            )
+                            .detach();
                             this.project_views.insert(key, project.clone());
                             project
                         }

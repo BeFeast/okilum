@@ -107,6 +107,7 @@ fn catalog() -> Vec<Entry> {
         entry::<CollapseSidebarSections>("Folders only", View),
         entry::<ExpandSidebarSections>("Expand all sections", View),
         entry::<ToggleNotes>("Notes panel", View),
+        entry::<ToggleProject>("Projects", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
         entry::<ToggleSoftWrap>("Soft wrap in code files", View),

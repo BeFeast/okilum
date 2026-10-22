@@ -87,6 +87,9 @@ zbus = { version = "5.19", default-features = false, features = ["async-io"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
+wry = { package = "lb-wry", version = "=0.53.3" }
+raw-window-handle = { version = "0.6", features = ["std"] }
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo"] }
