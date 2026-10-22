@@ -229,3 +229,18 @@ CI signing is not evidence of live-key beta publication. Live publication must
 wait for parent review of this concrete path; no branch can invoke protected
 signing. After merge, the accepted main producer and trusted main release run
 are still needed before claiming a public signed beta exists.
+
+The hosted signing composition test downloads the actual uploaded four-member
+GitHub archive and checks its API artifact ID/digest and actual source/run/first
+attempt before production unpack and original-provenance validation. Since the
+workflow is still running, completion statuses and job gates in its temporary
+acceptance receipt are explicit test fixtures; they never authorize publication
+and are not retained as production acceptance evidence. Only this job receives
+read-only Actions access using its ephemeral GitHub token. The disposable key
+substitution remains inside the harness; production signer pinning is unchanged.
+The installation verifier imports only the exported public key into a separate
+GNUPGHOME and verifies the downloaded descriptor and referenced immutable payload.
+Missing/wrong signer, changed archive/receipt/source, payload/descriptor tamper,
+immutable readback corruption, interrupted immutable and moving-pair writes,
+signature reuse and conflicts are exercised there with real GPG signatures.
+No live-key premerge run is required; live publication remains unverified.
