@@ -13,6 +13,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-w", CloseSettings, Some("OkilumSettings")),
+        KeyBinding::new("escape", CloseSettings, Some("OkilumSettings")),
     ]);
     cx.on_action(|_: &OpenSettings, cx| show(None, cx));
 }
@@ -68,7 +69,7 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                 cx,
             ))),
             window_min_size: Some(size(px(700.), px(440.))),
-            ..Default::default()
+            ..TitleBar::window_options()
         };
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Okilum Settings");
@@ -1119,18 +1120,11 @@ impl Render for Settings {
         }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
-        h_flex()
-            .size_full()
+        let content = h_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .items_start()
-            .bg(p.surface)
-            .text_color(p.text)
-            .key_context("OkilumSettings")
-            .track_focus(&self.focus)
-            .on_action(cx.listener(|_, _: &CloseSettings, window, _| window.remove_window()))
-            .on_action(cx.listener(|_, _: &OpenSettings, window, cx| {
-                window.activate_window();
-                cx.stop_propagation();
-            }))
             .child(
                 v_flex()
                     .w(px(176.))
@@ -1194,7 +1188,22 @@ impl Render for Settings {
                     .overflow_y_scroll()
                     .p_6()
                     .child(body),
-            )
+            );
+        v_flex()
+            .size_full()
+            .bg(p.surface)
+            .text_color(p.text)
+            .key_context("OkilumSettings")
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|_, _: &CloseSettings, window, _| window.remove_window()))
+            .on_action(cx.listener(|_, _: &OpenSettings, window, cx| {
+                window.activate_window();
+                cx.stop_propagation();
+            }))
+            // GPUI negotiates SSD through xdg-decoration and reports CSD when
+            // unavailable (GNOME). TitleBar hides its controls under SSD.
+            .child(TitleBar::new().child("Settings"))
+            .child(content)
             // Confirmations (Uninstall Okilum…) open as dialogs on this window;
             // without the dialog layer they exist but are never drawn (#1085).
             .children(Root::render_sheet_layer(window, cx))
@@ -1970,6 +1979,53 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
         assert!(visual.debug_bounds("settings-stignore").is_none());
+    }
+
+    #[gpui::test]
+    fn window_chrome_settings_about_closes_with_escape_shortcut_and_action(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+        });
+        let owner = cx.add_window(|_, cx| Settings::new(None, cx));
+        for path in 0..3 {
+            cx.update(show_about);
+            cx.run_until_parked();
+            let handle = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
+            assert!(cx.read(|cx| cx.windows().contains(&handle.into())));
+            let mut visual = VisualTestContext::from_window(handle.into(), cx);
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("window-title-bar").is_some(),
+                "About must render a real move region, not only its contents"
+            );
+            match path {
+                0 => visual.simulate_keystrokes("escape"),
+                1 => visual.simulate_keystrokes("secondary-w"),
+                _ => visual.dispatch_action(CloseSettings),
+            }
+            visual.run_until_parked();
+            assert!(
+                !cx.read(|cx| cx.windows().contains(&handle.into())),
+                "close path {path} must remove the Settings window"
+            );
+            assert!(
+                cx.read(|cx| cx.windows().contains(&owner.into())),
+                "closing Settings must leave its owner open"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn window_chrome_reader_prefers_compositor_decorations(cx: &mut TestAppContext) {
+        // None is GPUI's SSD preference. Its Wayland backend falls back to CSD
+        // when xdg-decoration is absent and honors the compositor's configure.
+        cx.update(|cx| {
+            assert!(reader_open::window_options(cx).window_decorations.is_none());
+            assert!(TitleBar::window_options().window_decorations.is_none());
+        });
     }
 
     #[gpui::test]
