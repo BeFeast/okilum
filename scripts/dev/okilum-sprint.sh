@@ -28,7 +28,7 @@ for path in "$root" "$root/src" "$root/target" "$app" "$HOME/Applications"; do
 done
 legacy="$HOME/okilum-sprint"
 if [[ ! -e $root && -e $legacy && $root != "$legacy" ]]; then
-    if [[ -L $legacy || ! -d $legacy || -e $legacy/build.lock ]]; then
+    if [[ -L $legacy || -L $legacy/src || -L $legacy/target || ! -d $legacy || -e $legacy/build.lock ]]; then
         echo "Cannot migrate $legacy: expected an idle, real Sprint directory." >&2; exit 1
     fi
     mkdir -p "$(dirname "$root")"
