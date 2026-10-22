@@ -123,6 +123,22 @@ class PreviewPublication(unittest.TestCase):
         self.assertEqual(self.store.put.call_args.args[0], f'okilum/releases/{SHA}/macos/beta/notes.json')
         self.assertEqual(self.pr_reads, 2)
 
+    def test_waiting_for_source_completion_does_not_repeat_pr_api_queries(self):
+        reads = []
+        def call(method, path, *args, **kwargs):
+            if path == '/actions/runs/12':
+                reads.append(path)
+                if len(reads) == 1:
+                    return dict(self.run, status='running')
+            return self.call(method, path, *args, **kwargs)
+        self.client.call.side_effect = call
+        with patch.object(p, 'R2', return_value=self.store), patch.object(p.subprocess, 'run'), \
+             patch.object(p.prepare, 'complete'), patch.object(p.time, 'sleep') as sleep:
+            p.publish(self.client, 'macos', 12)
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(self.pr_reads, 2, 'Validate only at success and after download')
+        sleep.assert_called_once_with(5)
+
     def test_superseded_during_download_never_publishes(self):
         self.change_after_download = True
         with patch.object(p, 'R2', return_value=self.store), patch.object(p.subprocess, 'run') as execute:

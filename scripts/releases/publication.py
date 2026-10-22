@@ -159,8 +159,13 @@ def publish(client, platform, run_id):
                 or (not snapshot_run(run, platform) and run['commit_sha'] != head)):
             print('Cancelled, failed or superseded build: nothing published')
             return
-        preview = (validate_preview(client, platform, run)
-                   if preview_inputs(run).get('preview_pr') else None)
+        is_preview = bool(preview_inputs(run).get('preview_pr'))
+        if is_preview and run['status'] != 'success':
+            # Publication is dispatched just before the source run finishes.
+            # PR/head checks are needed at publication, not on every wait tick.
+            time.sleep(5)
+            continue
+        preview = validate_preview(client, platform, run) if is_preview else None
         if eligible(run, platform, head, preview):
             break
         time.sleep(5)
