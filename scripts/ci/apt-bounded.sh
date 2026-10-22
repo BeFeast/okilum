@@ -2,7 +2,9 @@
 # CI only: bound locks, stalled downloads and the entire apt invocation.
 # Run as root (sudo on the hosted runner, already root in smoke containers).
 set -euo pipefail
-exec timeout --signal=TERM --kill-after=15s 4m apt-get \
+# Overrides let hosted regression tests exercise deadlines without waiting minutes.
+exec timeout --signal=TERM --kill-after="${OKILUM_APT_KILL_AFTER:-15s}" \
+    "${OKILUM_APT_TIMEOUT:-4m}" apt-get \
     -o Acquire::Retries=2 \
     -o Acquire::http::Timeout=30 \
     -o Acquire::https::Timeout=30 \

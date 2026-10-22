@@ -10,10 +10,14 @@ python3 -m unittest discover -s scripts/arch -p 'test_*.py'
 python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 python3 -m unittest discover -s scripts/releases -p 'test_*.py'
 python3 -m unittest discover -s scripts/uninstall -p 'test_*.py'
-bash -n scripts/releases/mirror.sh scripts/ci/apt-bounded.sh scripts/appimage/smoke.sh
+for script in scripts/releases/mirror.sh scripts/ci/apt-bounded.sh scripts/appimage/smoke.sh; do
+    bash -n "$script"
+done
 python3 scripts/brand-assets.py verify
 python3 scripts/test-third-party-notices.py
-bash -n scripts/build-macos-ci.sh scripts/updater/sign-bundle.sh scripts/ci/check-macos.sh scripts/ci/supervisor-bundle.sh scripts/ci/check-supervisor-bundle.sh
+for script in scripts/build-macos-ci.sh scripts/updater/sign-bundle.sh scripts/ci/check-macos.sh scripts/ci/supervisor-bundle.sh scripts/ci/check-supervisor-bundle.sh; do
+    bash -n "$script"
+done
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 python3 -m unittest discover -s scripts/perf -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
