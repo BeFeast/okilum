@@ -78,6 +78,7 @@ impl Drop for FocusRouting {
 
 #[cfg(test)]
 mod tests {
+    use ::core::prelude::v1::test;
     use std::ffi::{c_char, CStr, CString};
     extern "C" {
         fn okilum_manager_edit_action(

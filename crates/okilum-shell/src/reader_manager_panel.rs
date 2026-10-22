@@ -364,6 +364,7 @@ impl Reader {
 #[cfg(test)]
 mod native_focus_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn webview_mouse_down_notification_clears_focused_gpui_origin_input(cx: &mut TestAppContext) {
