@@ -191,6 +191,19 @@ fn label(
 }
 
 impl Outline {
+    pub fn current(&self, top_line: usize, visible: &[usize]) -> Option<usize> {
+        let mut ix = self
+            .entries
+            .partition_point(|entry| entry.line <= top_line)
+            .checked_sub(1)?;
+        loop {
+            if visible.binary_search(&ix).is_ok() {
+                return Some(ix);
+            }
+            ix = self.entries[ix].parent?;
+        }
+    }
+
     pub fn visible(&self, expanded: &std::collections::BTreeSet<usize>) -> Vec<usize> {
         let mut visible = vec![false; self.entries.len()];
         self.entries
