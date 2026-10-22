@@ -1,6 +1,7 @@
 """Fail closed on missing ELF dependencies and mismatched AppImage provenance."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -26,8 +27,10 @@ def verify(artifact, extracted):
         pass
     else:
         raise ValueError('Missing-library detector failed its positive control')
+    # Only the dependency audit gets this path; native launch must establish its own.
+    loader_env = dict(os.environ, LD_LIBRARY_PATH=str(extracted / 'usr/lib'))
     result = subprocess.run(['ldd', str(extracted / 'usr/bin/okilum')],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, env=loader_env)
     print(result.stdout + result.stderr)
     require_loaded(result.stdout + result.stderr, result.returncode)
     for path in ('okilum.desktop', 'okilum.svg', 'AppRun'):

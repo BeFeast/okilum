@@ -2,7 +2,9 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -40,8 +42,12 @@ class AppImageTests(unittest.TestCase):
                 (extracted / name).touch()
             with patch.object(verify.subprocess, 'run', return_value=SimpleNamespace(
                     stdout='libc.so.6 => /lib/libc.so.6', stderr='', returncode=0)) as loader:
+                parent_environment = dict(os.environ)
                 verify.verify(artifact, extracted)
                 loader.assert_called_once()
+                self.assertEqual(loader.call_args.kwargs['env']['LD_LIBRARY_PATH'],
+                                 str(extracted / 'usr/lib'))
+                self.assertEqual(dict(os.environ), parent_environment)
                 loader.reset_mock()
                 source.write_text('b' * 40)
                 with self.assertRaisesRegex(ValueError, 'source identity'):
@@ -52,6 +58,31 @@ class AppImageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'checksum'):
                     verify.verify(artifact, extracted)
                 loader.assert_not_called()
+
+    def test_shipped_launch_clears_library_override_and_preserves_arguments_and_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / 'fake shipped artifact'
+            image.write_text('#!/bin/sh\n'
+                             'test "${LD_LIBRARY_PATH+set}" != set || exit 91\n'
+                             'test "$APPIMAGE_EXTRACT_AND_RUN" = 1 || exit 92\n'
+                             'printf "%s\\n" "$@"\n'
+                             'exit 23\n')
+            image.chmod(0o755)
+            environment = dict(os.environ, LD_LIBRARY_PATH='/smoke-only/library/path')
+            result = subprocess.run(['bash', str(ROOT / 'scripts/appimage/launch.sh'),
+                                     str(image), '--vault', 'vault with spaces'],
+                                    env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 23)
+            self.assertEqual(result.stdout, '--vault\nvault with spaces\n')
+            self.assertEqual(environment['LD_LIBRARY_PATH'], '/smoke-only/library/path')
+
+    def test_smoke_help_and_window_use_the_same_shipped_launch(self):
+        smoke = (ROOT / 'scripts/appimage/smoke.sh').read_text()
+        launch = '/source/scripts/appimage/launch.sh /artifact/Okilum-x86_64.AppImage'
+        self.assertIn(launch + ' --help', smoke)
+        self.assertIn(launch + ' "$@"', smoke)
+        self.assertNotIn('LD_LIBRARY_PATH', smoke)
+        self.assertNotIn('/work/squashfs-root/AppRun', smoke)
 
     def test_required_workflow_retains_artifact_before_testing_and_aggregates_both_gates(self):
         workflow = (ROOT / '.github/workflows/forgejo-linux.yml').read_text()

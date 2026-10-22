@@ -18,11 +18,10 @@ mkdir -p /work
 cd /work
 (cd /artifact && sha256sum -c SHA256SUMS)
 /artifact/Okilum-x86_64.AppImage --appimage-extract
-export LD_LIBRARY_PATH=/work/squashfs-root/usr/lib
 python3 /source/scripts/appimage/verify.py /artifact /work/squashfs-root
-/work/squashfs-root/AppRun --help
+bash /source/scripts/appimage/launch.sh /artifact/Okilum-x86_64.AppImage --help
 mkdir /work/bin
-printf '#!/bin/sh\nexec /work/squashfs-root/AppRun "$@"\n' > /work/bin/okilum
+printf '#!/bin/sh\nexec bash /source/scripts/appimage/launch.sh /artifact/Okilum-x86_64.AppImage "$@"\n' > /work/bin/okilum
 chmod +x /work/bin/okilum
 export PATH="/work/bin:$PATH"
 # Positive control: prove this X server and xdotool can detect a visible window.
