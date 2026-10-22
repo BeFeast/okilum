@@ -7,9 +7,10 @@ use gpui_component::{
     WindowExt,
 };
 mod model;
+pub(crate) mod sprint;
 use model::{Kind, Metadata, Receipt, Report};
 
-gpui::actions!(okilum_feedback, [SendFeedback]);
+gpui::actions!(okilum_feedback, [SendFeedback, SendSprintReport]);
 #[derive(Default)]
 struct Drafts(std::collections::HashMap<WindowId, Entity<FeedbackView>>);
 impl Global for Drafts {}
@@ -21,6 +22,17 @@ pub(crate) fn install(cx: &mut App) {
         Paste,
         Some("OkilumFeedback"),
     )]);
+    cx.on_action(|_: &SendSprintReport, cx| {
+        if !sprint::enabled() {
+            return;
+        }
+        let Some(handle) = cx.active_window() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| show_mode(window, cx, true));
+        });
+    });
     cx.on_action(|_: &SendFeedback, cx| {
         let Some(handle) = cx.active_window() else {
             return;
@@ -67,6 +79,9 @@ fn metadata(window: &Window) -> Metadata {
     }
 }
 fn show(window: &mut Window, cx: &mut App) {
+    show_mode(window, cx, false);
+}
+fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
     cx.default_global::<Drafts>();
     let alive = cx
         .windows()
@@ -89,10 +104,14 @@ fn show(window: &mut Window, cx: &mut App) {
         view
     });
     if view.read(cx).visible && window.has_active_dialog(cx) {
+        if send_immediately {
+            view.update(cx, |view, cx| view.send(cx));
+        }
         return;
     }
     view.update(cx, |view, _| view.visible = true);
     let focus = Focusable::focus_handle(view.read(cx).text.read(cx), cx);
+    let send_view = view.clone();
     window.open_dialog(cx, move |dialog, window, _| {
         let close = view.clone();
         let cancel = view.clone();
@@ -112,6 +131,9 @@ fn show(window: &mut Window, cx: &mut App) {
     // open_dialog first focuses its own container. Move focus to the field
     // immediately afterwards so the first Paste belongs to this report.
     focus.focus(window, cx);
+    if send_immediately {
+        send_view.update(cx, |view, cx| view.send(cx));
+    }
 }
 fn screenshot_hint() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -170,6 +192,13 @@ impl FeedbackView {
                 }
             },
         );
+        let log_path = reader_diagnostics::feedback_log_path(cx).ok();
+        let sprint_log = log_path.clone();
+        if sprint::enabled() {
+            text.update(cx, |text, cx| {
+                text.set_value("Sprint test report", window, cx)
+            });
+        }
         Self {
             text,
             meta,
@@ -179,10 +208,12 @@ impl FeedbackView {
             image_error: None,
             attaching: false,
             image_generation: 0,
-            include_log: false,
-            log_path: reader_diagnostics::feedback_log_path(cx).ok(),
+            include_log: sprint::enabled(),
+            log_path,
             state: SendState::Compose,
-            sender: Arc::new(model::send),
+            sender: Arc::new(move |report| {
+                model::send(sprint::enrich(report, sprint_log.as_deref())?)
+            }),
             _send: None,
             _image: None,
             _text: subscription,
@@ -202,7 +233,9 @@ impl FeedbackView {
     }
     fn report(&self, cx: &App) -> anyhow::Result<Report> {
         let mut report = self.report_without_log(cx);
-        if self.include_log {
+        if self.include_log && sprint::enabled() {
+            report.log = Some(String::new());
+        } else if self.include_log {
             let path = self.log_path.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Diagnostic log unavailable. Uncheck the log attachment to send without it."
@@ -489,7 +522,11 @@ impl Render for FeedbackView {
             .child(
                 Checkbox::new("feedback-log")
                     .debug_selector(|| "feedback-log".into())
-                    .label("Attach last 250 log lines")
+                    .label(if sprint::enabled() {
+                        "Attach Sprint and app diagnostic logs"
+                    } else {
+                        "Attach last 250 log lines"
+                    })
                     .checked(self.include_log)
                     .disabled(busy)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
