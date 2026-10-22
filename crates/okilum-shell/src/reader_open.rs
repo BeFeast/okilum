@@ -3984,7 +3984,7 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
 }
 
 /// Reopen the actual current document, not the process's original CLI target.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsString>> {
     let readers: Vec<_> = cx
         .try_global::<Readers>()

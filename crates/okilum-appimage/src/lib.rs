@@ -1,7 +1,8 @@
+#![cfg(target_os = "linux")]
 //! Linux AppImage updater. Production trust and endpoint cannot be overridden.
 use anyhow::{ensure, Context, Result};
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -18,7 +19,7 @@ const IMAGE: &str = "Okilum-x86_64.AppImage";
 const MAX_IMAGE: u64 = 2 * 1024 * 1024 * 1024;
 const KEY: &str = include_str!("../../../scripts/arch/okilum-signing-key.asc");
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Release {
     pub schema: u64,
     pub platform: String,
@@ -106,10 +107,8 @@ impl Target {
             m.permissions().mode() & 0o111 != 0 && m.permissions().mode() & 0o222 != 0,
             "AppImage is not writable/executable"
         );
-        OpenOptions::new()
-            .write(true)
-            .open(path)
-            .context("AppImage is not writable")?;
+        // Linux forbids write-opening a running executable (ETXTBSY), while
+        // replacing its directory entry is supported. Never write-open it.
         // An actual create in the parent is necessary: access bits alone do not
         // establish whether rename is permitted (read-only mounts, ACLs).
         let probe = tempfile::NamedTempFile::new_in(path.parent().context("Missing parent")?)?;
@@ -326,6 +325,7 @@ impl Staged {
     /// Must only be called after editors and window state have been protected.
     /// A bounded external helper waits for normal application shutdown before
     /// replacing the file. No user command/path is interpolated into shell code.
+    #[allow(clippy::zombie_processes)] // Helper deliberately outlives the quitting GUI.
     pub fn arm(self, args: &[std::ffi::OsString]) -> Result<PathBuf> {
         self.target.unchanged()?;
         let dir = self.directory.path();
@@ -334,6 +334,11 @@ impl Staged {
             "Staged payload changed"
         );
         fs::hard_link(&self.target.path, dir.join("previous.AppImage"))?;
+        fs::write(
+            dir.join("expected.json"),
+            serde_json::to_vec(&self.release)?,
+        )?;
+        File::open(dir.join("expected.json"))?.sync_all()?;
         File::open(dir)?.sync_all()?;
         File::open(self.target.path.parent().unwrap())?.sync_all()?;
         let log = OpenOptions::new()
@@ -363,7 +368,7 @@ impl Staged {
         let lock_fd = self._lock.as_raw_fd();
         unsafe {
             command.pre_exec(move || {
-                if libc::fcntl(lock_fd, libc::F_SETFD, 0) == -1 {
+                if libc::dup2(lock_fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -390,16 +395,31 @@ printf '%s  %s\n' "$digest" "$stage/new.AppImage" | sha256sum -c - || exit 1
 mv -f -- "$stage/new.AppImage" "$target"
 sync -f "$target"
 echo 'Applied; previous.AppImage is the manual rollback copy'
-# The AppImage runtime establishes its own library environment.
 unset APPIMAGE APPDIR LD_LIBRARY_PATH APPIMAGE_EXTRACT_AND_RUN
-if ! "$target" --appimage-extract-and-run "$@"; then
-    echo 'Updated application failed; restoring previous AppImage'
-    # Do not clobber another install/update made while the child was running.
-    actual=$(sha256sum "$target"); actual=${actual%% *}
-    test "$actual" = "$digest" || exit 1
-    mv -f -- "$stage/previous.AppImage" "$target"
-    sync -f "$target"
+# The application never inherits the transaction lock. A startup confirmation
+# commits this transaction; a later session exit must never trigger rollback.
+OKILUM_APPIMAGE_UPDATE_RECEIPT="$stage" "$target" --appimage-extract-and-run "$@" 9>&- &
+child=$!
+n=0
+while test ! -f "$stage/started" && kill -0 "$child" 2>/dev/null; do
+    n=$((n+1)); test "$n" -le 60 || {
+        echo 'Startup confirmation timed out; application remains open, previous copy retained for manual recovery'
+        exit 1
+    }
+    sleep 1
+done
+if test -f "$stage/started"; then
+    echo 'Startup confirmed; transaction committed and update lock released'
+    exit 0
 fi
+wait "$child" && child_status=0 || child_status=$?
+echo "Updated application exited before startup confirmation ($child_status); restoring previous AppImage"
+# Do not clobber another install/update made while the child was starting.
+actual=$(sha256sum "$target"); actual=${actual%% *}
+test "$actual" = "$digest" || exit 1
+mv -f -- "$stage/previous.AppImage" "$target"
+sync -f "$target"
+
 "#;
 
 #[cfg(test)]
@@ -510,7 +530,7 @@ mod tests {
     }
     #[test]
     fn apply_preserves_original_on_tamper_and_external_change_and_rolls_back_launch_failure() {
-        let good = b"#!/bin/sh\ntest \"$1\" = --appimage-extract-and-run && test \"$2\" = --vault && test \"$3\" = 'path with spaces'\n";
+        let good = b"#!/bin/sh\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\ntest \"$1\" = --appimage-extract-and-run && test \"$2\" = --vault && test \"$3\" = 'path with spaces'\n";
         let (result, log) = transaction(good, false, false);
         assert_eq!(result, good);
         assert!(log.contains("Applied")); // positive control: helper actually applied
@@ -520,6 +540,103 @@ mod tests {
         assert_eq!(result, b"original");
         assert!(log.contains("restoring previous AppImage"));
     }
+    #[test]
+    fn running_executable_is_replaceable_even_though_write_open_is_etxtbsy() {
+        let path = std::env::current_exe().unwrap();
+        let error = OpenOptions::new().write(true).open(&path).unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::ETXTBSY),
+            "positive kernel control"
+        );
+        Target::open(&path).unwrap().unchanged().unwrap();
+    }
+
+    #[test]
+    fn confirmed_long_lived_child_does_not_retain_transaction_lock_or_trigger_late_rollback() {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let dir = tempfile::tempdir().unwrap();
+        let stage = dir.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        let target = dir.path().join("original.AppImage");
+        executable(&target, b"original");
+        fs::hard_link(&target, stage.join("previous.AppImage")).unwrap();
+        let payload = b"#!/bin/sh\necho $$ > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/child-pid\"\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\nexec sleep 30\n";
+        executable(&stage.join("new.AppImage"), payload);
+        let lockpath = dir.path().join("lock");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&lockpath)
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let fd = lock.as_raw_fd();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", APPLY, "test", "2147483647"])
+            .arg(&target)
+            .arg(&stage)
+            .arg(sha(&stage.join("new.AppImage")).unwrap())
+            .arg(sha(&target).unwrap())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut helper = command.spawn().unwrap();
+        drop(lock);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = helper.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "helper waited for entire GUI session"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid: i32 = fs::read_to_string(stage.join("child-pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "new application is still open"
+        );
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lockpath)
+            .unwrap();
+        let reacquired = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        assert_eq!(
+            reacquired, 0,
+            "another update can stage while the new app is open"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            payload,
+            "later session failure cannot roll back a committed update"
+        );
+    }
+
     #[test]
     fn production_verifier_rejects_disposable_key_and_tampering() {
         let dir = tempfile::tempdir().unwrap();
@@ -581,6 +698,46 @@ mod tests {
     }
 }
 
+/// Acknowledge a replacement only after the new GUI has a window. This receipt
+/// never supplies trust/feeds; it can only confirm this executable's identity.
+pub fn confirm_startup(build: &str, source: &str) -> Result<bool> {
+    let Some(directory) = std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT") else {
+        return Ok(false);
+    };
+    let directory = PathBuf::from(directory);
+    let target = Target::detect()?;
+    let metadata = fs::symlink_metadata(&directory)?;
+    ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o777 == 0o700,
+        "Unsafe update receipt directory"
+    );
+    ensure!(
+        directory.parent() == target.path.parent()
+            && directory
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".okilum-update-")),
+        "Update receipt is not beside the AppImage"
+    );
+    let expected: Release = serde_json::from_slice(&fs::read(directory.join("expected.json"))?)?;
+    ensure!(
+        expected.build.to_string() == build
+            && expected.source == source
+            && expected.sha256 == sha(&target.path)?,
+        "Restarted AppImage identity mismatch"
+    );
+    let mut receipt = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(directory.join("started"))?;
+    use std::io::Write;
+    receipt.write_all(b"startup confirmed\n")?;
+    receipt.sync_all()?;
+    Ok(true)
+}
+
 /// Non-shipping, explicit native QA entry. The only alternate trust call sites
 /// are compiled behind this feature; production check/prepare pin KEY/FINGERPRINT.
 /// No flags, environment variables or fixture files alter normal updater trust.
@@ -607,6 +764,7 @@ pub fn acceptance_entry(build: &str, source: &str) -> Option<Result<()>> {
             );
             let receipt = serde_json::json!({"build":build,"source":source,"sha256":sha(&target.path)?,"path":target.path});
             fs::write(&args[2], serde_json::to_vec(&receipt)?)?;
+            confirm_startup(build, source)?;
             println!("APPIMAGE_NATIVE_RESTART_IDENTITY_PASS {receipt}");
             return Ok(());
         }

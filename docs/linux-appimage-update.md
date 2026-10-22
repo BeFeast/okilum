@@ -30,8 +30,13 @@ helper and quits through GPUI. The helper inherits the lock, waits up to 120 sec
 for the original process to stop, rechecks the original inode/hash and staged hash,
 then atomically renames the payload over the original pathname and flushes storage.
 It relaunches the AppImage through its extraction fallback and forwards arguments
-without shell interpolation. A nonzero relaunch exit restores the old executable
-only if the installed bytes still match the replacement. The recovery directory
+without shell interpolation. The child closes the inherited transaction descriptor.
+A compiled build/source/hash confirmation after GPUI has an active window commits
+the transaction and releases the helper lock. The confirmation is bounded to 60
+seconds; if the application remains open without confirming, the helper leaves it
+open and retains the previous copy for explicit recovery. Exit before confirmation
+restores the old executable only if installed bytes still match the replacement.
+A later session exit never rolls back a committed update. The recovery directory
 is printed in the diagnostic log; it contains `previous.AppImage` and `apply.log`.
 A successful replacement retains the previous file for manual recovery. Restore
 that file to the original path while Okilum is closed. A crash before arming leaves
@@ -64,3 +69,31 @@ receipt and original-path hash, and include tamper/failure controls. No version
 relabeling, rebuilt source artifact, production private key or moving feed change
 is part of this test. This document describes the gate; it does not claim a run.
 Production signed beta verification remains separately reported evidence.
+
+## Review 3788 follow-up
+
+Initial head `028474c0` is not a working native baseline: review identified Linux
+restart definitions gated to Windows/tests and a live-executable write-open that
+fails with ETXTBSY. The fixed source expands the Linux definitions and proves the
+kernel ETXTBSY control without write-opening the target during detection. A
+long-lived-child regression verifies that the helper commits and another update
+can acquire the lock while that child remains running. A real-editor GPUI test
+uses the production restart preparation function, refuses a failed recovery-journal
+write, retains the latest editor text and succeeds after recovery storage repairs.
+These new regressions must execute in hosted CI; local compile checks are not PASS
+execution evidence.
+
+The native driver is `scripts/appimage/update-acceptance.py`. It consumes existing
+older/newer artifact directories, checks actual executable build facts, signs the
+fixture with an ephemeral key, tests descriptor/payload tamper retention and actual
+next-executable failure rollback, then verifies the real N-to-N+1 restart receipt.
+Run it unprivileged in the hosted Ubuntu/Fedora runtime with loaded GUI libraries.
+No compilation or downloads occur in the driver.
+
+The first accepted artifact after these fixes becomes working N. Preserve it before
+pushing a meaningful final native-UI/review commit for N+1. Native Settings channel
+selection, an unsaved editor/recovery refusal, successful protected Restart and
+window/document restoration must additionally be driven through the actual GUI;
+the early CLI pair driver does not exercise those paths. Those native GUI controls
+and the two-artifact execution remain open acceptance work, requiring independent
+review; neither this document nor hosted unit tests substitute for them.

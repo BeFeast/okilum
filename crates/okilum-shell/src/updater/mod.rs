@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-mod appimage;
+pub(crate) mod appimage;
 // macOS updates through stock Sparkle 2: its standard UI downloads, installs
 // and relaunches. A manual check only probes and reports inline (#995). The
 // app adds menu items and the beta channel preference.
@@ -73,6 +73,11 @@ pub(crate) fn install(_cx: &mut App) {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(300))
                     .await;
+                cx.update(|cx| {
+                    if cx.active_window().is_some() {
+                        appimage::confirm_startup();
+                    }
+                });
                 if status::generation() != checked {
                     checked = status::generation();
                     cx.update(|cx| cx.refresh_windows());

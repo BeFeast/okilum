@@ -2664,6 +2664,94 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn appimage_restart_refuses_unprotected_editor_then_preserves_latest_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("first draft", window, cx);
+        });
+        visual.run_until_parked();
+        let journal = std::fs::read_dir(state.join("editor-drafts"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        // A directory at the journal destination causes a real write failure
+        // on either platform without relying on test-user permission privileges.
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("latest draft", window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.link_notice.as_ref().unwrap().to_string(),
+                DRAFT_WRITE_NOTICE
+            );
+        });
+        visual.update(|_, cx| assert!(crate::updater::appimage::prepare_restart(cx).is_err()));
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.link_notice.as_ref().unwrap().to_string(),
+                DRAFT_WRITE_NOTICE
+            );
+            assert_eq!(
+                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                "latest draft"
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "original"
+        );
+        std::fs::remove_dir(&journal).unwrap();
+        visual.update(|_, cx| assert!(crate::updater::appimage::prepare_restart(cx).is_ok()));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "latest draft"
+        );
+    }
+
     #[gpui::test]
     fn quit_flushes_every_editor_even_after_conflicts_and_save_errors(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();

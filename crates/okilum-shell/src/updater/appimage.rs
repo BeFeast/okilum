@@ -73,7 +73,7 @@ pub(super) fn ready() -> bool {
     PENDING.lock().unwrap().is_some()
 }
 pub(super) fn start() {
-    if packaged() {
+    if packaged() && std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none() {
         check();
     }
 }
@@ -126,12 +126,7 @@ pub(super) fn restart(cx: &mut gpui::App) {
         return;
     }
     let result = (|| -> anyhow::Result<()> {
-        let args = crate::reader_open::update_restart_args(cx)?;
-        anyhow::ensure!(
-            crate::reader_editor::protect_all_for_quit(cx),
-            "Your latest edits could not be protected. Okilum will stay open."
-        );
-        crate::reader_ui_state::prepare_for_restart(cx)?;
+        let args = prepare_restart(cx)?;
         let staged = PENDING
             .lock()
             .unwrap()
@@ -148,4 +143,33 @@ pub(super) fn restart(cx: &mut gpui::App) {
         )));
     }
     BUSY.store(false, Ordering::SeqCst);
+}
+
+/// Called after GPUI has an active window, outside rendering/network I/O.
+pub(super) fn confirm_startup() {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none()
+        || STARTED.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    std::thread::spawn(|| {
+        if let Err(error) = okilum_appimage::confirm_startup(
+            env!("OKILUM_BUILD_VERSION"),
+            env!("OKILUM_SOURCE_COMMIT"),
+        ) {
+            status::set(CheckStatus::Failed(format!("Update startup confirmation failed: {error}. Previous AppImage retained beside this file.")));
+        }
+    });
+}
+
+/// Shared by the production Restart action and real-editor regression tests.
+pub(crate) fn prepare_restart(cx: &mut gpui::App) -> anyhow::Result<Vec<std::ffi::OsString>> {
+    let args = crate::reader_open::update_restart_args(cx)?;
+    anyhow::ensure!(
+        crate::reader_editor::protect_all_for_quit(cx),
+        "Your latest edits could not be protected. Okilum will stay open."
+    );
+    crate::reader_ui_state::prepare_for_restart(cx)?;
+    Ok(args)
 }
