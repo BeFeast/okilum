@@ -76,10 +76,9 @@ pub(crate) fn document<E: ParentElement + InteractiveElement>(
                         {
                             return;
                         }
-                        let delta = f32::from(event.delta.pixel_delta(px(20.)).y) / 200.;
-                        if !delta.is_finite() || delta == 0. {
+                        let Some(delta) = wheel_delta(event.delta) else {
                             return;
-                        }
+                        };
                         let _ = weak.update(cx, |this, cx| {
                             let zoom = reader_ui_state::text_zoom(cx) + delta;
                             change(this, zoom, Some(event.position), window, cx);
