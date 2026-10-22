@@ -19,16 +19,22 @@
         if (!ids.has(a)) ids.set(a, nextId++);
         return ids.get(a);
     };
+    const selectionStamp = () => {
+        const a = active(), selection = window.getSelection();
+        return JSON.stringify(typeof a?.selectionStart === 'number'
+            ? [id(a), a.selectionStart, a.selectionEnd]
+            : [id(selection?.anchorNode), selection?.anchorOffset, id(selection?.focusNode), selection?.focusOffset]);
+    };
     const context = () => ({
         doc: state.doc, origin: state.origin, target: id(active()),
-        focus: state.focus, edit: state.edit, selection: state.selection,
+        focus: state.focus, edit: state.edit, selection: selectionStamp(),
         activity: state.activity, seq: state.seq,
     });
     const sameDocumentTarget = c => state.live && c && c.doc === state.doc
         && c.origin === location.origin && c.origin === state.origin
         && c.target === id(active()) && c.focus === state.focus;
     const matches = c => sameDocumentTarget(c) && c.edit === state.edit
-        && c.selection === state.selection && c.activity === state.activity && c.seq === state.seq;
+        && c.selection === selectionStamp() && c.activity === state.activity && c.seq === state.seq;
     const secure = a => a?.type?.toLowerCase() === 'password'
         || (a && typeof getComputedStyle === 'function'
             && !['', 'none'].includes(getComputedStyle(a).webkitTextSecurity || ''));
@@ -55,14 +61,14 @@
         const native = state.events.some(e => e.seq > before.seq && e.target === before.target
             && (e.type === expected || ((e.type === 'input' || e.type === 'beforeinput')
                 && e.inputType === (action === 'redo:' ? 'historyRedo' : action === 'undo:' ? 'historyUndo' : '__none'))))
-            || (action === 'selectAll:' && state.selection !== before.selection && state.activity === before.activity);
-        if (native) return {native: true};
+            || (action === 'selectAll:' && selectionStamp() !== before.selection && state.activity === before.activity);
+        if (native) return {native: true, context: context()};
         // Later typing, selection or mouse input cancels a delayed fallback;
         // it must never insert a deferred paste after subsequent user input.
         if (!matches(before)) return {cancel: true, reason: 'subsequent-input-or-selection'};
         return {native: false, context: context()};
     };
-    const run = (action, payload, expected) => {
+    const edit = (action, payload, expected) => {
         if (!matches(expected)) return {ok: false, reason: 'stale-document-focus-or-input'};
         const a = active();
         if ((action === 'copy:' || action === 'cut:' || action === 'delete:') && secure(a)) {
@@ -87,6 +93,13 @@
         const command = {'selectAll:': 'selectAll', 'undo:': 'undo', 'redo:': 'redo', 'delete:': 'delete'}[action];
         return {ok: !!command && document.execCommand(command)};
     };
-    window.__okilumKeysV2 = {document, context, observe, run};
+    const run = (...args) => ({...edit(...args), context: context()});
+    const rebase = (original, completed) => {
+        if (!sameDocumentTarget(original) || original.activity !== state.activity || !matches(completed)) {
+            return {cancel: true, reason: 'queued-command-context-changed'};
+        }
+        return {context: context()};
+    };
+    window.__okilumKeysV2 = {document, context, observe, run, rebase, reportContext: () => report('context')};
     report('context');
 })();

@@ -6,13 +6,27 @@ const file = 'crates/okilum-shell/src/reader_manager_focus/page_keys.js';
 const source = fs.readFileSync(file, 'utf8');
 const generated = fs.readFileSync(file.replace('.js', '.inc'), 'utf8');
 assert.equal(JSON.parse(generated.slice(generated.indexOf('@"') + 1).trim().replace(/;$/, '')), source, 'shipped Objective-C script must equal reviewed JavaScript');
-function page(doc = 'document-1') {
+function page(doc = 'document-1', engine = false) {
     const listeners = new Map();
     const field = {type: 'text', value: 'fixture-selection', selectionStart: 0, selectionEnd: 7};
     const calls = [];
+    const history = [];
     const document = {activeElement: field,
         addEventListener(name, fn) { listeners.set(name, fn); },
-        execCommand(...args) { calls.push(args); return true; }};
+        execCommand(...args) {
+            calls.push(args);
+            if (engine && args[0] === 'insertText') {
+                history.push({value: field.value, start: field.selectionStart, end: field.selectionEnd});
+                field.value = field.value.slice(0, field.selectionStart) + args[2] + field.value.slice(field.selectionEnd);
+                field.selectionStart += args[2].length; field.selectionEnd = field.selectionStart;
+                listeners.get('input')?.({type: 'input', isTrusted: true, inputType: 'insertText'});
+            } else if (engine && args[0] === 'undo') {
+                const prior = history.pop();
+                field.value = prior.value; field.selectionStart = prior.start; field.selectionEnd = prior.end;
+                listeners.get('input')?.({type: 'input', isTrusted: true, inputType: 'historyUndo'});
+            }
+            return true;
+        }};
     const window = {addEventListener(name, fn) { listeners.set(name, fn); }, getSelection() { return 'page-selection'; }};
     const location = {origin: 'https://t3.example'};
     vm.runInNewContext(source, {window, document, location, crypto: {randomUUID: () => doc},
@@ -71,3 +85,18 @@ function page(doc = 'document-1') {
     assert.equal(q.state.run('paste:', {kind: 'text', data: 'fixture'}, context).ok, false);
 }
 console.log('PASS: secure clipboard, document/focus/revision guards, input ordering and native-observation controls');
+
+for (const undo of [false, true]) {
+    const p = page('queued-document', true);
+    p.field.value = ''; p.field.selectionStart = p.field.selectionEnd = 0;
+    const acceptedFirst = p.state.context();
+    const acceptedSecond = p.state.context(); // accepted before first fallback completes
+    const first = p.state.run('paste:', {kind: 'text', data: 'A'}, acceptedFirst);
+    const next = p.state.rebase(acceptedSecond, first.context);
+    assert.equal(next.cancel, undefined, 'only prior app edits may rebase a queued command');
+    const second = p.state.run(undo ? 'undo:' : 'paste:', {kind: 'text', data: 'B'}, next.context);
+    assert.equal(second.ok, true);
+    assert.equal(p.field.value, undo ? '' : 'AB', 'rapid paste/paste and paste/undo preserve accepted order');
+    p.emit('keydown', {metaKey: false, ctrlKey: false});
+    assert.equal(p.state.rebase(acceptedSecond, second.context).cancel, true, 'foreign typing cannot be rebased');
+}

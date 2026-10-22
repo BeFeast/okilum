@@ -2,6 +2,7 @@
 use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 extern "C" {
+    fn okilum_manager_keys_startup();
     fn okilum_manager_focus_attach(
         webview: *mut c_void,
         parent: *mut c_void,
@@ -11,6 +12,12 @@ extern "C" {
     fn okilum_manager_focus_is_focused(handle: *mut c_void) -> bool;
     fn okilum_manager_focus_refresh(handle: *mut c_void);
     fn okilum_manager_focus_detach(handle: *mut c_void);
+}
+
+/// Called on the UI thread before any Manager panel exists.
+pub(super) fn install_diagnostics() {
+    // SAFETY: startup only appends metadata to the diagnostic log using Foundation.
+    unsafe { okilum_manager_keys_startup() }
 }
 
 pub(super) struct FocusRouting {
@@ -90,6 +97,14 @@ mod tests {
             option: bool,
         ) -> *const c_char;
     }
+    #[test]
+    fn webview_editor_webview_rearms_each_entry() {
+        extern "C" {
+            fn okilum_manager_focus_cycle_regression() -> bool;
+        }
+        // SAFETY: pure native state-machine regression; no app or GUI required.
+        assert!(unsafe { okilum_manager_focus_cycle_regression() });
+    }
     fn action(
         key: &str,
         command: bool,
@@ -149,6 +164,20 @@ mod tests {
             "T3 search goes to native keyDown"
         );
     }
+    extern "C" {
+        fn okilum_manager_command_queue_regression(undo: bool) -> bool;
+    }
+    #[test]
+    fn rapid_paste_paste_keeps_both_commands_in_fifo_order() {
+        // SAFETY: the regression runs the production Foundation-only scheduler;
+        // it creates no window, browser, clipboard or GUI session.
+        assert!(unsafe { okilum_manager_command_queue_regression(false) });
+    }
+    #[test]
+    fn rapid_paste_undo_keeps_order_and_rejects_obsolete_completion() {
+        assert!(unsafe { okilum_manager_command_queue_regression(true) });
+    }
+
     #[test]
     #[ignore = "requires an active macOS GUI session and OKILUM_NATIVE_GUI=1"]
     fn real_nsapp_webview_paste_manual() {

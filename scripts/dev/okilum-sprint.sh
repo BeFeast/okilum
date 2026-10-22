@@ -109,6 +109,8 @@ for key in list(info):
 # Do not register the working app's document associations or URL protocol.
 info.pop('CFBundleDocumentTypes', None)
 info.pop('CFBundleURLTypes', None)
+info['LSEnvironment'] = {**info.get('LSEnvironment', {}), 'OKILUM_SPRINT_KEYS': '1'}
+info['OkilumSourceCommit'] = sha
 info.update(CFBundleExecutable='sprint-launch', CFBundleName='Okilum Sprint',
             CFBundleDisplayName='Okilum Sprint', SUEnableAutomaticChecks=False,
             NSHumanReadableCopyright=f'Sprint source {sha}')

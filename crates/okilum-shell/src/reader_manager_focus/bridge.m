@@ -1,4 +1,4 @@
-// Public AppKit responder APIs only; no GPUI/Wry subclass patches or JS paste.
+// App-owned public AppKit routing and guarded page editing fallback.
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #include <stdbool.h>
@@ -21,6 +21,23 @@ typedef void (*OkilumFocusChanged)(void *, int);
 static void KeyLog(NSString *format, ...) NS_FORMAT_FUNCTION(1,2);
 static void KeyInstallRouter(id router);
 static void KeyRemoveRouter(id router);
+static void KeyCancelCommands(id router);
+static void KeyNoteUserInput(id router, NSEvent *event);
+typedef struct { bool armed; unsigned long epoch; } OkilumFocusCycle;
+static bool FocusCycleSet(OkilumFocusCycle *cycle, bool focused) {
+    if (cycle->armed == focused) return false;
+    cycle->armed = focused;
+    cycle->epoch++;
+    return true;
+}
+bool okilum_manager_focus_cycle_regression(void) {
+    OkilumFocusCycle cycle = {0};
+    if (!FocusCycleSet(&cycle, true) || !cycle.armed || cycle.epoch != 1) return false;
+    if (FocusCycleSet(&cycle, true)) return false;
+    if (!FocusCycleSet(&cycle, false) || cycle.armed || cycle.epoch != 2) return false;
+    return FocusCycleSet(&cycle, true) && cycle.armed && cycle.epoch == 3;
+}
+@class OkilumCommandQueue;
 
 @interface OkilumManagerFocus : NSObject
 @property(nonatomic, weak) WKWebView *webview;
@@ -34,7 +51,10 @@ static void KeyRemoveRouter(id router);
 @property(nonatomic, strong) NSMenu *previousSubmenu;
 @property(nonatomic) BOOL addedItem;
 @property(nonatomic) BOOL nativeRouting;
-@property(nonatomic) NSUInteger keySerial;
+@property(nonatomic) OkilumFocusCycle focusCycle;
+@property(nonatomic, strong) OkilumCommandQueue *commandQueue;
+@property(nonatomic, strong) NSDictionary *completedContext;
+@property(nonatomic) NSUInteger keyUserActivity;
 @property(nonatomic) NSUInteger keyDocumentGeneration;
 @property(nonatomic, strong) NSDictionary *pageContext;
 @property(nonatomic, strong) id keyMessages;
@@ -48,7 +68,8 @@ static void KeyRemoveRouter(id router);
 
 @interface OkilumManagerFocus (Keys)
 - (BOOL)handleCommandEvent:(NSEvent *)event;
-- (void)pageCommand:(NSString *)action context:(NSDictionary *)context serial:(NSUInteger)serial generation:(NSUInteger)generation;
+- (void)performNativeCommand:(NSEvent *)event before:(NSDictionary *)before serial:(NSUInteger)serial generation:(NSUInteger)generation activity:(NSUInteger)activity;
+- (void)pageCommand:(NSString *)action context:(NSDictionary *)context serial:(NSUInteger)serial generation:(NSUInteger)generation activity:(NSUInteger)activity;
 @end
 
 @implementation OkilumManagerFocus
@@ -75,7 +96,23 @@ static void KeyRemoveRouter(id router);
     self.addedItem = NO;
 }
 - (void)refresh {
-    if (![self focused]) { [self restoreMenu]; return; }
+    BOOL focused = self.focused;
+    OkilumFocusCycle cycle = self.focusCycle;
+    if (FocusCycleSet(&cycle, focused)) {
+        self.focusCycle = cycle;
+        KeyCancelCommands(self);
+        self.nativeRouting = NO;
+        KeyLog(@"focus-cycle epoch=%lu armed=%d firstResponder=%@", cycle.epoch, cycle.armed, NSStringFromClass(self.webview.window.firstResponder.class));
+        if (focused) {
+            // Native app focus can return without a DOM focusin (the same field
+            // stays active). Publish a fresh snapshot on EVERY ownership entry.
+            [self.webview evaluateJavaScript:@"window.__okilumKeysV2?.reportContext()" completionHandler:^(id value, NSError *error) {
+                (void)value;
+                KeyLog(@"focus-cycle snapshot epoch=%lu errorCode=%ld", cycle.epoch, (long)error.code);
+            }];
+        }
+    }
+    if (!focused) { [self restoreMenu]; return; }
     NSMenu *menu = NSApp.mainMenu;
     if (!menu) return;
     if (self.editItem && self.installedMenu == menu) return;
@@ -144,13 +181,14 @@ static void KeyRemoveRouter(id router);
 }
 - (void)returnToParent {
     if ([self focused]) [self.webview.window makeFirstResponder:self.parent];
-    [self restoreMenu];
+    [self refresh];
 }
 - (NSEvent *)event:(NSEvent *)event {
     WKWebView *view = self.webview;
     NSWindow *window = view.window;
     if (!view || view.hidden || !window || event.window != window) return event;
     if (event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeRightMouseDown) {
+        KeyNoteUserInput(self, event);
         NSView *content = window.contentView;
         NSView *hit = [content hitTest:[content.superview convertPoint:event.locationInWindow fromView:nil]];
         if (hit && [hit isDescendantOf:view]) {
@@ -165,6 +203,7 @@ static void KeyRemoveRouter(id router);
     }
     if (![self focused]) { [self refresh]; return event; }
     if (event.type == NSEventTypeKeyDown && event.keyCode == 53) {
+        KeyNoteUserInput(self, event);
         [self returnToParent];
         if (self.focusChanged) self.focusChanged(self.context, 2);
         return nil; // Explicit escape hatch; do not also dismiss Reader UI.
@@ -181,6 +220,7 @@ static void KeyRemoveRouter(id router);
             if ([self handleCommandEvent:event]) return nil;
             return event;
         }
+        KeyNoteUserInput(self, event);
         // Bypass the child Wry performKeyEquivalent override and GPUI dispatch.
         // WKContentView interprets native input/IME, never a synthetic JS event.
         [responder keyDown:event];
@@ -195,7 +235,7 @@ static void KeyRemoveRouter(id router);
 }
 - (void)detach {
     KeyRemoveRouter(self);
-    self.keySerial++;
+    KeyCancelCommands(self);
     self.pageContext = nil;
     [self returnToParent];
     if (self.monitor) [NSEvent removeMonitor:self.monitor];
