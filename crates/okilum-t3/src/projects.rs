@@ -471,7 +471,7 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("project.yaml"), source).unwrap();
         };
-        write("Music/Areas/Studio", "name: Studio\nkind: knowledge\nt3:\n  environment: maestro\n  manager: {project_id: brain, thread_id: null}\n");
+        write("Music/Areas/Studio", "name: Studio\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: maestro\n  manager: {project_id: brain, thread_id: null, workspace_mode: local}\n");
         write(
             "Dev/Areas/App",
             "name: App\nrepo: {name: app}\nt3:\n  manager: {thread_id: 'mcp:stale'}\n",
@@ -495,6 +495,10 @@ mod tests {
         assert_eq!(studio.kind, Kind::Knowledge);
         assert_eq!(studio.manager, Manager::NotStarted);
         assert_eq!(studio.manager_project.as_deref(), Some("brain"));
+        let binding = studio.native_binding().unwrap().unwrap();
+        assert!(binding.executor.project_id.is_empty());
+        assert_eq!(binding.manager.project_id.as_deref(), Some("brain"));
+        assert!(binding.manager.thread_id.is_none());
         // An authoritative explicit empty row overrides the old manifest id.
         std::fs::write(
             vault.join("Dev/Areas/App/ops/thread-ids.md"),
