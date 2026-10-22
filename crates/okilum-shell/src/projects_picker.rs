@@ -154,8 +154,21 @@ impl ProjectsPicker {
         observations: BTreeMap<PathBuf, ManagerObservation>,
         cx: &mut Context<Self>,
     ) {
-        self.model.set_observations(observations);
-        self.rebuild(cx);
+        if !self.model.set_observations(observations) {
+            return;
+        }
+        let mut changed = false;
+        for item in &mut self.items {
+            if let Item::Project(row) = item {
+                if let Some(indicator) = self.model.manager_indicator(&row.project.folder) {
+                    changed |= row.manager != indicator;
+                    row.manager = indicator;
+                }
+            }
+        }
+        if changed {
+            cx.notify();
+        }
     }
     pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
         self.loading = loading;
@@ -274,14 +287,15 @@ impl ProjectsPicker {
             .child(group.label.clone())
             .child(div().flex_1())
             .when(matches!(key, GroupKey::Domain(_)), |header| {
-                header.child(group.count.to_string())
+                header.child(group.count.to_string()).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        if let GroupKey::Domain(domain) = &key {
+                            this.model.toggle_domain(domain);
+                            this.rebuild(cx);
+                        }
+                    },
+                ))
             })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let GroupKey::Domain(domain) = &key {
-                    this.model.toggle_domain(domain);
-                    this.rebuild(cx);
-                }
-            }))
     }
     fn render_row(&self, row: &Row, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let key = row.key.clone();

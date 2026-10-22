@@ -140,3 +140,67 @@ fn embedded_palette_updates_filter_and_discovery_without_stale_selection(cx: &mu
         );
     });
 }
+
+#[gpui::test]
+fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestAppContext) {
+    use okilum_t3::projects::Status;
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+    });
+    let root = PathBuf::from("vault");
+    let projects = (0..80)
+        .map(|i| Project {
+            folder: root.join(format!("Dev/Areas/Project{i:02}")),
+            name: format!("Project{i:02}"),
+            kind: Kind::Code,
+            environment: None,
+            manager_project: None,
+            manager: Manager::Thread(format!("mcp:manager-{i}")),
+        })
+        .collect();
+    let model = PickerModel::new(
+        root.clone(),
+        Discovery {
+            projects,
+            errors: Vec::new(),
+        },
+        Vec::new(),
+    );
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| ProjectsPicker::new(model, Presentation::Embedded, window, cx));
+        entity = Some(picker.clone());
+        Root::new(picker, window, cx)
+    });
+    let picker = entity.unwrap();
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    picker.update_in(visual, |p, _, _| {
+        p.scroll.set_offset(point(px(0.), px(-200.)))
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let before = picker.read_with(visual, |p, _| (p.scroll.offset(), p.selected.clone()));
+    assert!(
+        before.0.y < px(0.),
+        "positive control: a scrollable project list moved away from the first row"
+    );
+    picker.update_in(visual, |p, _, cx| {
+        p.update_statuses(
+            BTreeMap::from([(
+                root.join("Dev/Areas/Project00"),
+                ManagerObservation {
+                    manager: Manager::Thread("mcp:manager-0".into()),
+                    status: Status::Running("running".into()),
+                },
+            )]),
+            cx,
+        )
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    picker.read_with(visual,|p,_| {
+        assert_eq!(p.scroll.offset(),before.0);
+        assert_eq!(p.selected,before.1);
+        assert!(p.items.iter().any(|i| matches!(i,Item::Project(row) if row.project.name=="Project00" && row.manager==ManagerIndicator::Running)));
+    });
+}

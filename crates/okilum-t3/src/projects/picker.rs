@@ -64,7 +64,7 @@ impl ManagerIndicator {
     }
 }
 /// A status is valid only for the manager pointer used by that live listing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagerObservation {
     pub manager: Manager,
     pub status: Status,
@@ -163,8 +163,20 @@ impl PickerModel {
     pub fn recent(&self) -> &[PathBuf] {
         &self.recent
     }
-    pub fn set_observations(&mut self, observations: BTreeMap<PathBuf, ManagerObservation>) {
+    /// Unchanged observations need no UI work. A changed status can update
+    /// dots without disturbing grouped results, selection or scroll position.
+    pub fn set_observations(
+        &mut self,
+        observations: BTreeMap<PathBuf, ManagerObservation>,
+    ) -> bool {
+        if self.observations == observations {
+            return false;
+        }
         self.observations = observations;
+        true
+    }
+    pub fn manager_indicator(&self, folder: &Path) -> Option<ManagerIndicator> {
+        self.project(folder).map(|project| self.indicator(project))
     }
     pub fn toggle_domain(&mut self, domain: &str) {
         // Searching reveals matching rows; clearing restores the user's collapse state.
