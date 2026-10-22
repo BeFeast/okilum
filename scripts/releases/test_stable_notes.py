@@ -115,6 +115,26 @@ class StableRetry(unittest.TestCase):
         item = promotion.appcast.find(ET.ElementTree(ET.fromstring(store.data['okilum/appcast.xml'])), 700)
         self.assertIn('Changes since Stable', item.findtext('description'))
 
+    def test_later_platform_notes_failure_keeps_existing_pending_and_feeds_unchanged(self):
+        store = Store(); release = fixture(store)
+        store.data['okilum/releases/promoting.json'] = json.dumps(release).encode()
+        store.data[notes.key(SOURCE, 'linux', 'stable')] = json.dumps({
+            'build': 702, 'source': OLD, 'platform': 'linux', 'channel': 'stable'}).encode()
+        before = dict(store.data)
+        with patch.object(promotion, 'notes', return_value='Original body'), \
+                patch.object(promotion, 'preflight_stable'), \
+                patch.object(promotion.arch, 'SigningKey'), \
+                patch.object(promotion.arch, 'validate_package'), \
+                patch.object(notes, 'merged_items', return_value=ITEMS) as select, \
+                patch.object(promotion, 'mirror_tag') as mirror, \
+                patch.object(promotion, 'promote_macos') as promote:
+            with self.assertRaisesRegex(ValueError, 'identity mismatch'):
+                promotion.execute(store, None, Mock(), 700)
+        self.assertEqual(select.call_count, 1, 'Mac preparation succeeded before Linux validation failed')
+        self.assertEqual((store.data, store.writes), (before, []))
+        mirror.assert_not_called(); promote.assert_not_called()
+        self.assertNotIn(notes.key(SOURCE, 'macos', 'stable'), store.data)
+
     def test_new_build_cannot_replace_unfinished_pinned_range(self):
         payload = {'build': 700, 'source': SOURCE, 'platform': 'macos', 'channel': 'stable',
                    'previous_build': 600, 'previous_source': OLD, 'items': ITEMS}
