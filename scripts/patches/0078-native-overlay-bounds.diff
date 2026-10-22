@@ -54,7 +54,7 @@
 +        }
 +    }
 +
-+    pub fn native_overlays(window: &Window, cx: &App) -> &[Bounds<Pixels>] {
++    pub fn native_overlays<'a>(window: &Window, cx: &'a App) -> &'a [Bounds<Pixels>] {
 +        cx.try_global::<Self>()
 +            .and_then(|state| {
 +                state
