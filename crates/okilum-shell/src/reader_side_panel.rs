@@ -117,11 +117,24 @@ impl Reader {
             return div().into_any_element();
         };
         let view = AnyView::from(panel.clone());
-        if cache_panels() {
+        let weak_panel = panel.downgrade();
+        let panel = if cache_panels() {
             view.cached(StyleRefinement::default().size_full())
                 .into_any_element()
         } else {
             view.into_any_element()
+        };
+        if !left {
+            div()
+                .size_full()
+                .relative()
+                .child(panel)
+                .child(reader_right_panel::file_outline::View::track_viewport(
+                    move |cx| weak_panel.upgrade()?.read(cx).file_outline.clone(),
+                ))
+                .into_any_element()
+        } else {
+            panel
         }
     }
 
@@ -157,7 +170,7 @@ impl Reader {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
@@ -166,9 +179,9 @@ mod tests {
     }
 
     /// Panels drawn through the cache, as in the app, for one test.
-    pub(super) struct CachedPanels;
+    pub(crate) struct CachedPanels;
     impl CachedPanels {
-        pub(super) fn on() -> Self {
+        pub(crate) fn on() -> Self {
             CACHE_IN_TESTS.with(|cache| cache.set(true));
             Self
         }

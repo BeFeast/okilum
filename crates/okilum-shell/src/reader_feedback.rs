@@ -1,27 +1,33 @@
 //! Explicit feedback drafts. Attachments are chosen by the user; nothing is
-//! captured or transmitted until Send. Failed reports survive dialog dismissal.
+//! captured or transmitted until Send. Failed reports survive closing the independent Feedback window.
 use super::*;
 use gpui_component::{
     checkbox::Checkbox,
     input::{Paste, Textarea, TextareaState},
-    WindowExt,
 };
 mod model;
 pub(crate) mod sprint;
 use model::{Kind, Metadata, Receipt, Report};
 
-gpui::actions!(okilum_feedback, [SendFeedback, SendSprintReport]);
+gpui::actions!(
+    okilum_feedback,
+    [SendFeedback, CloseFeedback, SendSprintReport]
+);
 #[derive(Default)]
-struct Drafts(std::collections::HashMap<WindowId, Entity<FeedbackView>>);
+struct Drafts(std::collections::HashMap<WindowId, Draft>);
+struct Draft {
+    view: Entity<FeedbackView>,
+    window: WindowHandle<Root>,
+}
 impl Global for Drafts {}
 
 pub(crate) fn install(cx: &mut App) {
     cx.set_global(Drafts::default());
-    cx.bind_keys([KeyBinding::new(
-        "secondary-v",
-        Paste,
-        Some("OkilumFeedback"),
-    )]);
+    cx.bind_keys([
+        KeyBinding::new("secondary-v", Paste, Some("OkilumFeedback")),
+        KeyBinding::new("secondary-w", CloseFeedback, Some("OkilumFeedbackWindow")),
+        KeyBinding::new("escape", CloseFeedback, Some("OkilumFeedbackWindow")),
+    ]);
     cx.on_action(|_: &SendSprintReport, cx| {
         if !sprint::enabled() {
             return;
@@ -68,7 +74,7 @@ fn metadata(window: &Window) -> Metadata {
             .then(|| std::env::var("XDG_CURRENT_DESKTOP").ok())
             .flatten(),
         arch: std::env::consts::ARCH.into(),
-        scale: window.scale_factor(),
+        scale: backing_scale(native_backing_scale(window), window.scale_factor()),
         window_width: window.bounds().size.width.into(),
         window_height: window.bounds().size.height.into(),
         decorations: match window.window_decorations() {
@@ -78,61 +84,153 @@ fn metadata(window: &Window) -> Metadata {
         .into(),
     }
 }
+// Prefer the backing scale of this actual AppKit window, not the main screen
+// or the scale cached at GPUI window creation. External displays can be 1x.
+fn backing_scale(native: Option<f32>, rendered: f32) -> f32 {
+    native
+        .filter(|scale| scale.is_finite() && *scale > 0.)
+        .unwrap_or(rendered)
+}
+#[cfg(not(target_os = "macos"))]
+fn native_backing_scale(_: &Window) -> Option<f32> {
+    None
+}
+#[cfg(target_os = "macos")]
+fn native_backing_scale(window: &Window) -> Option<f32> {
+    use objc2::{msg_send, runtime::AnyObject};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
+    else {
+        return None;
+    };
+    // SAFETY: called synchronously on the GPUI UI thread. The borrowed live
+    // AppKit handle owns this NSView and its NSWindow for the duration of the call.
+    unsafe {
+        let view = &*handle.ns_view.as_ptr().cast::<AnyObject>();
+        let native: *mut AnyObject = msg_send![view, window];
+        let native = native.as_ref()?;
+        let scale: f64 = msg_send![native, backingScaleFactor];
+        Some(scale as f32)
+    }
+}
+
 fn show(window: &mut Window, cx: &mut App) {
     show_mode(window, cx, false);
 }
 fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
     cx.default_global::<Drafts>();
+    let id = window.window_handle().window_id();
+    // Help -> Send feedback in the Feedback window reuses its originating draft.
+    let owner = cx
+        .global::<Drafts>()
+        .0
+        .iter()
+        .find_map(|(owner, draft)| (draft.window.window_id() == id).then_some(*owner))
+        .unwrap_or(id);
+    let meta = metadata(window);
+    // Menu/button dispatch may still borrow the caller's window. Opening or
+    // activating another window happens only after that borrow is released.
+    cx.defer(move |cx| show_for(owner, meta, send_immediately, cx));
+}
+
+fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut App) {
+    if let Some(handle) = cx
+        .global::<Drafts>()
+        .0
+        .get(&owner)
+        .map(|draft| draft.window)
+    {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            if send_immediately {
+                let view = cx.global::<Drafts>().0[&owner].view.clone();
+                view.update(cx, |view, cx| view.send(cx));
+            }
+            return;
+        }
+    }
     let alive = cx
         .windows()
         .into_iter()
-        .map(|h| h.window_id())
+        .map(|window| window.window_id())
         .collect::<std::collections::HashSet<_>>();
-    cx.global_mut::<Drafts>()
-        .0
-        .retain(|id, _| alive.contains(id));
-    let id = window.window_handle().window_id();
+    cx.global_mut::<Drafts>().0.retain(|id, draft| {
+        *id == owner || alive.contains(id) || alive.contains(&draft.window.window_id())
+    });
     let previous = cx
         .global::<Drafts>()
         .0
-        .get(&id)
-        .cloned()
+        .get(&owner)
+        .map(|draft| draft.view.clone())
         .filter(|view| !matches!(view.read(cx).state, SendState::Sent(_)));
-    let view = previous.unwrap_or_else(|| {
-        let view = cx.new(|cx| FeedbackView::new(metadata(window), window, cx));
-        cx.global_mut::<Drafts>().0.insert(id, view.clone());
-        view
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
+            size(px(560.), px(700.)),
+            cx,
+        ))),
+        window_min_size: Some(size(px(400.), px(360.))),
+        ..TitleBar::window_options()
+    };
+    let mut opened = None;
+    let result = cx.open_window(options, |window, cx| {
+        window.set_window_title("Send feedback — Okilum");
+        let view = if let Some(view) = previous {
+            // Input focus subscriptions belong to the window that created them.
+            // Rebuild the field on reopen, keeping text and all draft attachments.
+            view.update(cx, |view, cx| view.remount(window, cx));
+            view
+        } else {
+            cx.new(|cx| FeedbackView::new(meta, window, cx))
+        };
+        view.update(cx, |view, _| view.visible = true);
+        let weak = view.downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = weak.update(cx, |view, _| view.visible = false);
+            true
+        });
+        Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
+        opened = Some(view.clone());
+        let content = cx.new(|_| FeedbackWindow { view });
+        cx.new(|cx| Root::new(content, window, cx))
     });
-    if view.read(cx).visible && window.has_active_dialog(cx) {
-        if send_immediately {
-            view.update(cx, |view, cx| view.send(cx));
+    match result {
+        Ok(window) => {
+            let view = opened.unwrap();
+            cx.global_mut::<Drafts>().0.insert(
+                owner,
+                Draft {
+                    view: view.clone(),
+                    window,
+                },
+            );
+            if send_immediately {
+                view.update(cx, |view, cx| view.send(cx));
+            }
         }
-        return;
+        Err(error) => eprintln!("Could not open Feedback: {error}"),
     }
-    view.update(cx, |view, _| view.visible = true);
-    let focus = Focusable::focus_handle(view.read(cx).text.read(cx), cx);
-    let send_view = view.clone();
-    window.open_dialog(cx, move |dialog, window, _| {
-        let close = view.clone();
-        let cancel = view.clone();
-        dialog
-            .title("Send feedback")
-            .width(px(560.).min((window.viewport_size().width - px(48.)).max(px(280.))))
-            .max_h((window.viewport_size().height - px(48.)).max(px(240.)))
-            .overlay_closable(false)
-            .on_ok(|_, _, _| false)
-            .on_cancel(move |_, _, cx| {
-                cancel.update(cx, |view, _| view.visible = false);
-                true
+}
+
+struct FeedbackWindow {
+    view: Entity<FeedbackView>,
+}
+impl Render for FeedbackWindow {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = self.view.clone();
+        let p = brand::palette(cx);
+        v_flex()
+            .size_full()
+            .bg(p.surface)
+            .text_color(p.text)
+            .key_context("OkilumFeedbackWindow")
+            .on_action(move |_: &CloseFeedback, window, cx| {
+                view.update(cx, |view, _| view.visible = false);
+                window.remove_window();
             })
-            .on_close(move |_, _, cx| close.update(cx, |view, _| view.visible = false))
-            .child(view.clone())
-    });
-    // open_dialog first focuses its own container. Move focus to the field
-    // immediately afterwards so the first Paste belongs to this report.
-    focus.focus(window, cx);
-    if send_immediately {
-        send_view.update(cx, |view, cx| view.send(cx));
+            .child(TitleBar::new().child("Send feedback"))
+            .child(div().flex_1().min_h_0().p_5().child(self.view.clone()))
     }
 }
 fn screenshot_hint() -> &'static str {
@@ -218,6 +316,26 @@ impl FeedbackView {
             _image: None,
             _text: subscription,
         }
+    }
+    fn remount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.text.read(cx).value();
+        let selection = self.text.read(cx).selected_range();
+        self.text = cx.new(|cx| {
+            let mut text = TextareaState::new(window, cx)
+                .rows(4)
+                .placeholder("What happened, or what would you like to see?");
+            text.set_value(value, window, cx);
+            text.set_selected_range(selection, cx);
+            text
+        });
+        self._text = cx.subscribe(
+            &self.text,
+            |_, _, event: &gpui_component::input::InputEvent, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        );
     }
     fn busy(&self) -> bool {
         matches!(self.state, SendState::Sending | SendState::Sent(_))
@@ -392,12 +510,12 @@ impl Render for FeedbackView {
         let busy = self.busy();
         let p = brand::palette(cx);
         let mut body = v_flex()
-            .id("feedback-dialog")
-            .debug_selector(|| "feedback-dialog".into())
+            .id("feedback-form")
+            .debug_selector(|| "feedback-form".into())
             .key_context("OkilumFeedback")
             .gap_3()
             .w_full()
-            .max_h((window.viewport_size().height - px(160.)).max(px(160.)))
+            .max_h((window.viewport_size().height - px(88.)).max(px(160.)))
             .overflow_y_scroll()
             .capture_action(cx.listener(|this, _: &Paste, _, cx| {
                 if !this.paste_image(cx) {
