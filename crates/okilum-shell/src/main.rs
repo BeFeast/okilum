@@ -117,6 +117,7 @@ mod reader_task_actions;
 mod reader_tasks;
 #[cfg(any(unix, windows))]
 mod reader_templates;
+mod reader_text_zoom;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod reader_thumbnail;
 #[cfg(any(unix, windows))]
@@ -350,6 +351,7 @@ const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
 const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
+    reader_text_zoom::bind_keys(cx);
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
@@ -6566,6 +6568,7 @@ impl Render for Reader {
         let bounds_view = cx.entity().downgrade();
         let main = v_flex()
             .id("reader-document")
+            .map(|view| reader_text_zoom::document(view, cx))
             .debug_selector(|| "reader-document".into())
             .ml(px(if overlay { 0. } else { panel_widths.notes }))
             .mr(px(if overlay { 0. } else { panel_widths.backlinks }))
@@ -6709,6 +6712,7 @@ impl Render for Reader {
                 READER_CONTEXT
             })
             .track_focus(&self.focus_handle)
+            .map(|view| reader_text_zoom::reader(view, cx))
             .on_action(
                 cx.listener(|this, _: &reader_reminder::CopyLinkToLine, window, cx| {
                     this.copy_link_to_line(window, cx)
