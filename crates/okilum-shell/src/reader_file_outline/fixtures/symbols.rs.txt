@@ -1,0 +1,10 @@
+pub struct Service;
+impl Service {
+    pub fn run(&self) {}
+}
+pub trait Stop {
+    fn stop(&self);
+}
+pub fn main() {}
+// fn comment_is_not_a_symbol() {}
+const TEXT: &str = "fn string_is_not_a_symbol() {}";

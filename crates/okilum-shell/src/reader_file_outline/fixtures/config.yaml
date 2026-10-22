@@ -1,0 +1,13 @@
+# Keys and arrays, including Unicode and flow-style mappings.
+provenance: local
+management_home:
+  kind: directory
+  path: notes
+"שלום":
+  nested: true
+execution:
+  - name: alpha
+    flags: {debug: true, trace: false}
+  - name: beta
+multiline: |
+  not_a_key: inside a scalar

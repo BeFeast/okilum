@@ -3,6 +3,62 @@
 //! Counts appear only when they are above zero. An empty section keeps its
 //! header and shows one muted line, never «0 notes · 0 places».
 
+use super::*;
+#[path = "reader_file_outline.rs"]
+pub(super) mod file_outline;
+
+/// Attachment previews share the note outline's typography and independent
+/// scroll areas, while unstructured files keep only their backlinks section.
+pub(super) fn render_file(
+    reader: &Reader,
+    outline: Entity<file_outline::View>,
+    cx: &mut Context<Reader>,
+) -> AnyElement {
+    file_outline::View::bind(&outline, reader, cx);
+    let p = brand::palette(cx);
+    let faint = brand::reader_palette(cx).text_faint;
+    let section = |icon: &'static str, label: String| {
+        h_flex()
+            .flex_none()
+            .gap_1p5()
+            .px_4()
+            .pt_3()
+            .pb_1p5()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(faint)
+            .child(Icon::default().path(icon).xsmall().text_color(faint))
+            .child(label)
+    };
+    v_flex()
+        .w_full()
+        .h_full()
+        .flex_none()
+        .text_size(px(brand::READER_CHROME_FONT_SIZE))
+        .when(outline.read(cx).has_entries(), |panel| {
+            panel
+                .child(
+                    section("icons/list.svg", "Contents".into())
+                        .debug_selector(|| "file-contents-heading".into()),
+                )
+                .child(outline)
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(1.))
+                        .mx_4()
+                        .my_1()
+                        .bg(p.border_subtle),
+                )
+        })
+        .child(
+            section("icons/link.svg", reader.linked_from_title())
+                .debug_selector(|| "file-linked-from-heading".into()),
+        )
+        .child(reader.render_backlinks(cx))
+        .into_any_element()
+}
+
 /// Distinct linking notes and link places. `paths` arrive grouped by source
 /// note, as `Vault::backlinks` returns them.
 pub(super) fn link_counts<'a>(paths: impl IntoIterator<Item = &'a str>) -> (usize, usize) {
@@ -59,6 +115,7 @@ pub(super) fn contents_empty(_file_preview: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn counts_group_runs_of_one_source() {
