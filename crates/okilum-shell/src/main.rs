@@ -64,6 +64,8 @@ mod reader_log;
 mod reader_manager_focus;
 mod reader_manager_panel;
 mod reader_manager_start;
+#[cfg(any(target_os = "macos", test))]
+mod reader_manager_store;
 mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;

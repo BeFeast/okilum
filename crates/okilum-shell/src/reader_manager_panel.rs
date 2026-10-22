@@ -250,8 +250,10 @@ impl ManagerPanel {
             }
         })
         .detach();
+        let store = crate::reader_manager_store::application_identifier();
         let browser = wry::WebViewBuilder::new()
-            .with_data_store_identifier(*b"OkilumManagerWeb")
+            .with_incognito(false)
+            .with_data_store_identifier(store)
             .with_url(url.as_str())
             .with_focused(false)
             .with_initialization_script(
@@ -276,6 +278,7 @@ impl ManagerPanel {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
             })
             .build_as_child(&handle)?;
+        crate::reader_manager_store::verify(&browser, &store)?;
         let routing =
             crate::reader_manager_focus::FocusRouting::new(&browser, window, native_events)?;
         Ok((
