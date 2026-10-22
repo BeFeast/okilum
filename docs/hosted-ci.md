@@ -94,6 +94,34 @@ smoke and signed installation remain required. Offline fake-apt tests cover
 primary success, download timeout fallback and fail-closed exhaustion in the
 normal hosted Linux gate; no local tests or artifact execution were performed.
 
+Run `39801660311`, `linux-checks` job `119903695926`, then failed before
+any tests in **Install system libraries** (exit 124 at 15:19 UTC). Index update
+fetched 12.5 MB in one second, but package downloads from HTTP
+`azure.archive.ubuntu.com` progressed around 80 KB/s: 19.4 MB / 29 packages,
+including 11.2 MB of CMake. The four-minute bound correctly stopped this run.
+The earlier HTTPS mitigation covered only the clean smoke container.
+
+Both hosted build runners (Ubuntu 24.04 checks and Ubuntu 22.04 AppImage build)
+now use `scripts/ci/hosted-ubuntu-apt.sh`. It makes disposable copies of the
+existing `.list` and deb822 `.sources` configuration and local `mirror+file:`
+lists, changing only official Ubuntu archive URLs to verified HTTPS: Azure
+first, then one explicit fallback to archive. Original runner source and mirror
+files remain byte-for-byte unchanged. Suites, components, architecture,
+Signed-By settings, third-party sources and mirror-list selection metadata are
+retained. Apt signature/hash checks and TLS CA/hostname validation remain on.
+Each route gets 60 seconds for update and 150 seconds for verified download;
+the final install uses `--no-download` under the existing four-minute bound.
+A shared temporary package cache retains completed downloads between candidates;
+it is removed after provisioning, with no cross-run cache restore. A nine-minute
+outer deadline plus 15-second kill grace stays within the unchanged ten-minute
+workflow step. No compiler, test, infrastructure timeout or acceptance gate changes.
+
+The normal hosted gate also runs offline fake-apt regression cases covering
+primary success, download-timeout fallback with cache reuse, exhaustion without
+installation, GitHub local mirror lists, deb822 and legacy sources, untouched
+third-party configuration and unchanged originals. Local validation is limited
+to syntax and diff inspection; these regression cases run only on hosted CI.
+
 Separate read-only infrastructure evidence: baldr's
 `forgejo-runner-bridge.service` accepted Forgejo task `22335` (job `34758`, API
 run `15757`, web run `10092`). Its actual ExecStart config is
