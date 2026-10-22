@@ -199,4 +199,7 @@ def main(directory):
 
 
 if __name__ == '__main__':
-    main(Path(sys.argv[1]).resolve())
+    # Explicit disposable-key harness only. Production CLI rejects QA artifacts.
+    production_validate = publisher.validate
+    with patch.object(publisher, 'validate', lambda *args: production_validate(*args, allow_acceptance_harness=True)):
+        main(Path(sys.argv[1]).resolve())

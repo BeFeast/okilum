@@ -5341,6 +5341,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-appimage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "okilum-brain"
 version = "0.1.0"
 dependencies = [
@@ -5446,9 +5460,10 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "okilum-appimage",
  "okilum-core",
- "okilum-t3",
  "okilum-sync-controller",
+ "okilum-t3",
  "regex",
  "resvg 0.45.1",
  "rust-embed",

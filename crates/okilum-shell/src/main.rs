@@ -7220,6 +7220,19 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+    if let Some(result) = okilum_appimage::acceptance_entry(
+        env!("OKILUM_BUILD_VERSION"),
+        env!("OKILUM_SOURCE_COMMIT"),
+    ) {
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("AppImage acceptance: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     // The clipboard reader must not initialize the updater, application state,
     // background services or a second GUI instance.
     #[cfg(windows)]

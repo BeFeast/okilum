@@ -1,6 +1,8 @@
-//! macOS updates through stock Sparkle 2: its standard UI downloads, installs
-//! and relaunches. A manual check only probes and reports inline (#995). The
-//! app adds menu items and the beta channel preference.
+#[cfg(target_os = "linux")]
+mod appimage;
+// macOS updates through stock Sparkle 2: its standard UI downloads, installs
+// and relaunches. A manual check only probes and reports inline (#995). The
+// app adds menu items and the beta channel preference.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) mod linux_repo;
 #[cfg(target_os = "macos")]
@@ -62,6 +64,23 @@ const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
+    #[cfg(target_os = "linux")]
+    if appimage::packaged() {
+        appimage::start();
+        _cx.spawn(async move |cx| {
+            let mut checked = status::generation();
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+                if status::generation() != checked {
+                    checked = status::generation();
+                    cx.update(|cx| cx.refresh_windows());
+                }
+            }
+        })
+        .detach();
+    }
     #[cfg(windows)]
     {
         windows::start();
@@ -124,7 +143,9 @@ pub(crate) fn available() -> bool {
     return macos::available();
     #[cfg(windows)]
     return windows::available();
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    return appimage::packaged();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     false
 }
 
@@ -136,6 +157,8 @@ pub(crate) fn apply_pending_at_start() -> bool {
 }
 
 pub(crate) fn check() {
+    #[cfg(target_os = "linux")]
+    appimage::check();
     #[cfg(target_os = "macos")]
     macos::check();
     #[cfg(windows)]
@@ -159,6 +182,10 @@ pub(crate) fn channel() -> &'static str {
     } else {
         "Stable"
     };
+    #[cfg(target_os = "linux")]
+    if appimage::packaged() {
+        return if appimage::beta() { "Beta" } else { "Stable" };
+    }
     #[cfg(target_os = "linux")]
     return if env!("OKILUM_BUILD_VERSION") == "development" {
         "Development"
@@ -195,12 +222,23 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
         windows::set_beta(enabled);
         cx.refresh_windows();
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        if appimage::packaged() {
+            appimage::set_beta(enabled);
+            cx.refresh_windows();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (enabled, cx);
 }
 
 /// The same explicit action is exposed in About, Settings and the ready toast.
 pub(crate) fn action_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    if appimage::ready() {
+        return "Restart to update";
+    }
     #[cfg(windows)]
     if windows::ready() {
         return "Restart to update";
@@ -208,6 +246,11 @@ pub(crate) fn action_label() -> &'static str {
     "Check for Updates…"
 }
 pub(crate) fn activate(cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    if appimage::ready() {
+        appimage::restart(cx);
+        return;
+    }
     #[cfg(windows)]
     if windows::ready() {
         windows::restart(None, cx);
@@ -230,6 +273,10 @@ pub(crate) fn status_line() -> Option<String> {
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    if window.is_window_active() && appimage::take_announcement() {
+        show_ready_notice(window, cx, appimage::restart);
+    }
     #[cfg(windows)]
     if window.is_window_active() {
         if let Some(id) = windows::take_announcement() {
@@ -252,11 +299,7 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
 /// «Update ready» with Restart (#683). It stays until the user closes it or
 /// restarts: a downloaded update must not pass unnoticed. Closed, it does not
 /// return for the same package until the next launch.
-#[cfg(any(
-    windows,
-    test,
-    all(target_os = "linux", feature = "updater-ui-harness")
-))]
+#[cfg(any(windows, test, target_os = "linux"))]
 fn show_ready_notice(
     window: &mut gpui::Window,
     cx: &mut App,

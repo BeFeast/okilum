@@ -1,0 +1,19 @@
+[package]
+name = "okilum-appimage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# Explicit, non-shipping native QA entry; no environment-based trust injection.
+acceptance-harness = []
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"

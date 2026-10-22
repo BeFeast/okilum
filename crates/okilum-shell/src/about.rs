@@ -35,6 +35,9 @@ fn about_channel() -> String {
 /// Where Linux updates come from (#1036): the pacman repository by name.
 #[cfg(target_os = "linux")]
 fn linux_update_source() -> &'static str {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return "This AppImage updates itself on the selected channel.";
+    }
     use updater::linux_repo::{current, Source};
     match current() {
         Source::Beta => "Updates come from the okilum-beta pacman repository.",
