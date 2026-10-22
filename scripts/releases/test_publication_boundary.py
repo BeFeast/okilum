@@ -155,7 +155,7 @@ class ExplicitSourcePublication(unittest.TestCase):
         api = Mock()
         api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
                                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
-             for i, name in enumerate(publication.ARTIFACTS['linux'])],
+                                 for i, name in enumerate(publication.ARTIFACTS['linux'])],
                                 data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
         launches = []
 

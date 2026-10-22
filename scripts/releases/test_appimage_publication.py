@@ -159,6 +159,28 @@ class Publication(unittest.TestCase):
         self.publish()
         self.assertFalse(any('/beta/' in key for key, _ in self.store.writes))
 
+    def test_immutable_readback_failure_cannot_expose_beta(self):
+        original_call = self.store.call
+        def damaged_readback(method, key):
+            value = original_call(method, key)
+            if key.endswith('/provenance.json') and value is not None:
+                return b'transfer corruption'
+            return value
+        with patch.object(self.store, 'call', side_effect=damaged_readback):
+            with self.assertRaisesRegex(ValueError, 'readback'):
+                self.publish()
+        self.assertFalse(any('/beta/' in key for key in self.store.objects))
+
+    def test_moving_failure_keeps_old_descriptor_and_retry_completes(self):
+        self.store.objects['okilum/linux/beta/latest.json'] = b'{"build":5022}'
+        self.store.fail = 'okilum/linux/beta/latest.json'
+        with self.assertRaises(RuntimeError):
+            self.publish()
+        self.assertEqual(self.store.objects['okilum/linux/beta/latest.json'], b'{"build":5022}')
+        self.store.fail = None
+        self.publish()
+        self.assertEqual(json.loads(self.store.objects['okilum/linux/beta/latest.json'])['build'], 5023)
+
     def test_wrong_source_version_or_bytes_and_signer_fail_before_mutation(self):
         for field, value in [('source_sha', 'b' * 40), ('build_version', '9999'),
                              ('release_version', '0.1.9999'), ('signed', True), ('workflow_run', '18'),
