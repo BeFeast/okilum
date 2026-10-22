@@ -11,6 +11,8 @@ pub(super) struct ManagerPanel {
     loading: bool,
     generation: u64,
     #[cfg(target_os = "macos")]
+    focus_routing: Option<crate::reader_manager_focus::FocusRouting>,
+    #[cfg(target_os = "macos")]
     webview: Option<Entity<gpui_wry::WebView>>,
 }
 
@@ -64,6 +66,8 @@ impl ManagerPanel {
             loading: false,
             generation: 0,
             #[cfg(target_os = "macos")]
+            focus_routing: None,
+            #[cfg(target_os = "macos")]
             webview: None,
         }
     }
@@ -81,6 +85,10 @@ impl ManagerPanel {
                 }
             });
         }
+        #[cfg(target_os = "macos")]
+        if let Some(routing) = &self.focus_routing {
+            routing.refresh();
+        }
         if !visible && self.focused {
             self.focused = false;
             cx.notify();
@@ -90,6 +98,8 @@ impl ManagerPanel {
     pub(super) fn hide(&mut self, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
         self.focused = false;
+        #[cfg(target_os = "macos")]
+        self.focus_routing.take();
         #[cfg(target_os = "macos")]
         if let Some(view) = self.webview.take() {
             view.update(cx, |view, _| view.hide());
@@ -137,7 +147,10 @@ impl ManagerPanel {
                     Ok(url) => {
                         #[cfg(target_os = "macos")]
                         match Self::browser(&url, window, cx) {
-                            Ok(view) => this.webview = Some(view),
+                            Ok((view, routing)) => {
+                                this.focus_routing = Some(routing);
+                                this.webview = Some(view);
+                            }
                             Err(e) => {
                                 this.error = Some(format!("Manager could not be opened: {e:#}"))
                             }
@@ -161,7 +174,10 @@ impl ManagerPanel {
         url: &url::Url,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> anyhow::Result<Entity<gpui_wry::WebView>> {
+    ) -> anyhow::Result<(
+        Entity<gpui_wry::WebView>,
+        crate::reader_manager_focus::FocusRouting,
+    )> {
         use raw_window_handle::HasWindowHandle;
         use wry::WebViewBuilderExtDarwin;
         let handle = HasWindowHandle::window_handle(window)?;
@@ -172,6 +188,9 @@ impl ManagerPanel {
             while let Ok(event) = receive.recv().await {
                 if this
                     .update_in(cx, |this, _window, cx| {
+                        if let Some(routing) = &this.focus_routing {
+                            routing.refresh();
+                        }
                         this.focused = event == "focus";
                         if event == "escape" {
                             if let Some(view) = &this.webview {
@@ -213,7 +232,11 @@ impl ManagerPanel {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
             })
             .build_as_child(&handle)?;
-        Ok(cx.new(|cx| gpui_wry::WebView::new(browser, window, cx)))
+        let routing = crate::reader_manager_focus::FocusRouting::new(&browser, window)?;
+        Ok((
+            cx.new(|cx| gpui_wry::WebView::new(browser, window, cx)),
+            routing,
+        ))
     }
 }
 
@@ -259,7 +282,14 @@ impl Reader {
         self.project_navigation
             .manager_panel
             .as_ref()
-            .is_some_and(|panel| panel.read(cx).focused)
+            .is_some_and(|panel| {
+                let panel = panel.read(cx);
+                #[cfg(target_os = "macos")]
+                if let Some(routing) = &panel.focus_routing {
+                    return routing.focused();
+                }
+                panel.focused
+            })
     }
 
     pub(super) fn render_manager_panel(&self, cx: &mut Context<Self>) -> AnyElement {

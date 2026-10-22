@@ -59,6 +59,8 @@ mod reader_instance;
 mod reader_layout;
 mod reader_loading;
 mod reader_log;
+#[cfg(target_os = "macos")]
+mod reader_manager_focus;
 mod reader_manager_panel;
 mod reader_manager_start;
 mod reader_mermaid;
