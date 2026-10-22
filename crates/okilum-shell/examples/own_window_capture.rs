@@ -6,10 +6,7 @@ fn main() {
         fn okilum_capture_probe_open() -> i32;
         fn okilum_capture_probe_close();
     }
-    assert_eq!(
-        capture_own_window(),
-        Err(Unsupported::PermissionOrUnavailable)
-    );
+    assert_eq!(capture_own_window(), Err(Unsupported::NoOwnWindow));
     unsafe {
         assert_eq!(
             okilum_capture_probe_open(),

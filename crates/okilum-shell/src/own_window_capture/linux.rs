@@ -120,6 +120,18 @@ fn read_owned_window(
     if after.map_state != MapState::VIEWABLE || after.visual != attrs.visual {
         return Err(Unsupported::NoOwnWindow);
     }
+    let after_geometry = conn
+        .get_geometry(window)
+        .map_err(fail)?
+        .reply()
+        .map_err(fail)?;
+    if after_geometry.width != geom.width
+        || after_geometry.height != geom.height
+        || after_geometry.depth != geom.depth
+        || after_geometry.root != geom.root
+    {
+        return Err(Unsupported::CaptureFailed);
+    }
     let setup = conn.setup();
     let format = setup
         .pixmap_formats
@@ -178,7 +190,7 @@ fn read_owned_window(
 mod tests {
     use super::*;
     use x11rb::protocol::xproto::{
-        CreateGCAux, CreateWindowAux, InputFocus, Rectangle, WindowClass,
+        ConfigureWindowAux, CreateGCAux, CreateWindowAux, InputFocus, Rectangle, WindowClass,
     };
     #[test]
     fn wayland_and_xwayland_are_attach_only() {
@@ -239,6 +251,31 @@ mod tests {
         let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!(decoded.dimensions(), (80, 60));
         assert_eq!(decoded.get_pixel(40, 30).0, [0x12, 0x34, 0x56, 255]);
+        conn.configure_window(window, &ConfigureWindowAux::new().width(100).height(70))
+            .unwrap()
+            .check()
+            .unwrap();
+        conn.poly_fill_rectangle(
+            window,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 70,
+            }],
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+        let resized = capture().expect("resized native window must use its current dimensions");
+        assert_eq!(
+            image::load_from_memory(&resized)
+                .unwrap()
+                .to_rgba8()
+                .dimensions(),
+            (100, 70)
+        );
         // Root belongs to the server, not this client. It can never be captured.
         assert!(!own(&conn, root).unwrap());
         conn.set_input_focus(InputFocus::POINTER_ROOT, root, x11rb::CURRENT_TIME)

@@ -20,13 +20,14 @@ static NSData *encode_image(CGImageRef image) {
     return data;
 }
 
-unsigned char *okilum_capture_own_window(size_t *length) {
+unsigned char *okilum_capture_own_window(size_t *length, int *status) {
     *length = 0;
-    if (![NSThread isMainThread]) return NULL;
+    *status = 0; // Permission/API unavailable.
+    if (![NSThread isMainThread]) { *status = 1; return NULL; }
     @autoreleasepool {
         NSWindow *window = NSApp.keyWindow;
         if (!window || !window.visible || window.miniaturized || !NSApp.active ||
-            ![NSApp.windows containsObject:window] || window.windowNumber <= 0) return NULL;
+            ![NSApp.windows containsObject:window] || window.windowNumber <= 0) { *status = 2; return NULL; }
         CGWindowID windowID = (CGWindowID)window.windowNumber;
         NSData *data = nil;
         if (@available(macOS 15.0, *)) {

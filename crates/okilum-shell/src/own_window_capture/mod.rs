@@ -13,6 +13,7 @@ const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unsupported {
+    WrongThread,
     Backend,
     NoOwnWindow,
     CaptureFailed,
@@ -23,6 +24,7 @@ pub enum Unsupported {
 impl std::fmt::Display for Unsupported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::WrongThread => "Window capture must be called on the application UI thread.",
             Self::Backend => "Window capture is unavailable on this backend; attach an image instead.",
             Self::NoOwnWindow => "No foreground window belonging to this application is available.",
             Self::CaptureFailed => "The application window could not be captured; attach an image instead.",
