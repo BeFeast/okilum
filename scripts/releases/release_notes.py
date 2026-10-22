@@ -1,4 +1,4 @@
-"""Per-platform beta notes; sidecar only, never part of an artifact descriptor."""
+"""Per-platform beta and stable notes; sidecar only, never part of an artifact descriptor."""
 import html
 import json
 import re
@@ -15,15 +15,15 @@ OKILUM = '{https://git.oklabs.uk/BeFeast/okilum/update-metadata}'
 
 def key(source, platform, channel):
     if (not re.fullmatch('[0-9a-f]{40}', source) or platform not in ('macos', 'linux', 'windows')
-            or channel != 'beta'):
-        raise ValueError('Notes require a full source SHA, known platform and beta channel')
+            or channel not in ('beta', 'stable')):
+        raise ValueError('Notes require a full source SHA, known platform and channel')
     return f'{PREFIX}/{source}/{platform}/{channel}/notes.json'
 
 
 def predecessor(store, platform, channel='beta'):
     """Read the actual published channel head BEFORE publication changes it."""
-    if channel != 'beta':
-        raise ValueError('Stable notes are outside this publication slice')
+    if channel not in ('beta', 'stable'):
+        raise ValueError('Unknown notes channel')
     if platform == 'macos':
         raw = store.call('GET', 'okilum/appcast.xml')
         if raw is None:
@@ -36,21 +36,21 @@ def predecessor(store, platform, channel='beta'):
         result = {'build': int(item.findtext(SPARKLE + 'version')),
                   'source': item.findtext(OKILUM + 'source')}
     elif platform == 'linux':
-        raw = store.call('GET', 'okilum/arch/beta/x86_64/latest.json')
+        raw = store.call('GET', f'okilum/arch/{channel}/x86_64/latest.json')
         if raw is None:
             return None
         result = json.loads(raw)
     elif platform == 'windows':
-        raw = store.call('GET', 'okilum/windows/beta/releases.beta.json')
+        raw = store.call('GET', f'okilum/windows/{channel}/releases.{channel}.json')
         if raw is None:
             return None
         versions = [a['Version'] for a in json.loads(raw)['Assets']]
         if not versions or any(not re.fullmatch(r'0\.1\.[0-9]+', v) for v in versions):
-            raise ValueError('Invalid previous Windows beta version')
+            raise ValueError('Invalid previous Windows channel version')
         build = max(int(v.split('.')[2]) for v in versions)
         raw = store.call('GET', f'okilum/windows/builds/{build}/release.json')
         if raw is None:
-            raise ValueError('Missing previous Windows beta source')
+            raise ValueError('Missing previous Windows channel source')
         result = json.loads(raw)
         if result['build'] != build:
             raise ValueError('Previous Windows build identity mismatch')
@@ -114,6 +114,22 @@ def prepare(store, client, platform, build, source, channel='beta'):
             'previous_build': previous['build'] if previous else None,
             'previous_source': previous['source'] if previous else None,
             'items': merged_items(client, previous['source'] if previous else None, source)}
+
+
+def prepare_stable(store, client, platform, build, source):
+    # A failed promotion may have already moved a channel. Reuse the persisted
+    # original range on retry, never recapture the now-promoted build as its own
+    # predecessor. JSON remains the same public contract as beta notes.
+    raw = store.call('GET', key(source, platform, 'stable'))
+    if raw is not None:
+        existing = json.loads(raw)
+        if (existing['source'], existing['platform'], existing['channel']) != (source, platform, 'stable'):
+            raise ValueError('Stable notes identity mismatch')
+        if existing['build'] == build:
+            return existing
+        if existing['build'] > build:
+            raise ValueError('Refusing stable notes rollback')
+    return prepare(store, client, platform, build, source, 'stable')
 
 
 def record(store, notes):

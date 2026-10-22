@@ -49,6 +49,10 @@ def fixture(store, dmg=True):
 
 
 class CatalogTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(p.release_notes, 'merged_items', return_value=[])
+        patcher.start(); self.addCleanup(patcher.stop)
+
     def test_same_source_different_platform_numbers(self):
         store = Store()
         release = fixture(store)
@@ -296,6 +300,10 @@ def stable_patches():
 
 
 class SplitPromotionTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(p.release_notes, 'merged_items', return_value=[])
+        patcher.start(); self.addCleanup(patcher.stop)
+
     """#1378: Mac and Linux first, the signed Windows build later; the full call is unchanged."""
 
     def previous_stable(self, store):
@@ -314,12 +322,14 @@ class SplitPromotionTests(unittest.TestCase):
              patch.object(p, 'preflight_windows') as preflight, \
              patch.object(p.windows, 'promote') as windows, \
              patch.object(p, 'github_release') as github:
-            for item in stable_patches():
+            patches = stable_patches()
+            for item in patches:
                 item.start()
             try:
                 p.execute(store, None, None, 700, **kwargs)
             finally:
-                patch.stopall()
+                for item in reversed(patches):
+                    item.stop()
         return early, preflight, windows, github
 
     def test_full_promotion_still_moves_windows(self):
@@ -350,6 +360,9 @@ class SplitPromotionTests(unittest.TestCase):
         self.assertEqual(github.call_args.args[3]['Setup.exe'], b'signed-setup')
         self.assertNotIn('Okilum-windows-portable.zip', github.call_args.args[3])
         self.assertFalse(any(key.startswith('okilum/windows/') for key in store.writes))
+        self.assertNotIn(p.release_notes.key(SOURCE, 'windows', 'stable'), store.data)
+        for platform in ['macos', 'linux']:
+            self.assertIn(p.release_notes.key(SOURCE, platform, 'stable'), store.data)
         store.writes.clear()
         self.run_execute(store, skip_windows=True)  # retry is a no-op
         self.assertEqual(store.writes, [])
