@@ -100,3 +100,22 @@ for (const undo of [false, true]) {
     p.emit('keydown', {metaKey: false, ctrlKey: false});
     assert.equal(p.state.rebase(acceptedSecond, second.context).cancel, true, 'foreign typing cannot be rebased');
 }
+
+for (const foreign of ['selection', 'input']) {
+    const p = page();
+    const before = p.state.context();
+    p.emit('paste');
+    p.field.selectionStart = p.field.selectionEnd = 4;
+    p.emit('input', {inputType: 'insertFromPaste'});
+    const native = p.state.observe(before, 'paste:');
+    assert.equal(native.native, true, 'positive control: terminal native edit snapshot is accepted');
+    if (foreign === 'selection') {
+        p.field.selectionStart = p.field.selectionEnd = 9;
+        p.emit('selectionchange');
+    } else {
+        p.field.value += 'foreign edit';
+        p.emit('input', {isTrusted: false, inputType: 'insertText'});
+    }
+    assert.equal(p.state.observe(before, 'paste:').cancel, true, 'delayed native probe must not bless foreign page changes');
+    assert.equal(p.state.rebase(before, native.context).cancel, true, 'queued command must not move to foreign selection/edit');
+}

@@ -5,6 +5,7 @@
 //! bindings `bind_keys` installed. Tooltips use [`hint`] for the same reason,
 //! so a rebound key changes the sheet, the tooltip and the menu together.
 use super::*;
+use gpui_base::ElementExt as _;
 use platform::labels::Os;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -353,6 +354,7 @@ impl Reader {
             .absolute()
             .inset_0()
             .occlude()
+            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
             .flex()
             .justify_center()
             .pt(px(56.))
@@ -366,6 +368,7 @@ impl Reader {
                     .debug_selector(|| "shortcut-sheet".into())
                     .key_context("ShortcutSheet")
                     .occlude()
+                    .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .w(px(520.))
                     .max_w_full()

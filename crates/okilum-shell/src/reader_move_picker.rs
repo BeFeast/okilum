@@ -1,5 +1,6 @@
 //! Folder destinations from the loaded inventory; writes use the shared move pipeline.
 use super::*;
+use gpui_base::ElementExt as _;
 use gpui_component::WindowExt;
 use okilum_core::vault::EntryKind;
 
@@ -344,6 +345,7 @@ impl Render for FolderPicker {
             .id("move-folder-popover")
             .debug_selector(|| "move-folder-popover".into())
             .occlude()
+            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
             .w(px(360.))
             .p_2()
             .rounded_lg()

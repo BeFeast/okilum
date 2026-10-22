@@ -47,7 +47,8 @@
         if (e.type === 'input' || e.type === 'beforeinput') state.edit++;
         if (e.type === 'keydown' && !(e.metaKey || e.ctrlKey)) state.activity++;
         if (e.isTrusted && ['paste', 'copy', 'cut', 'input', 'beforeinput'].includes(e.type)) {
-            state.events.push({seq: ++state.seq, type: e.type, inputType: e.inputType || '', target: id(active())});
+            state.events.push({seq: ++state.seq, type: e.type, inputType: e.inputType || '', target: id(active()), after: null});
+            state.events.at(-1).after = context();
             if (state.events.length > 32) state.events.shift();
         }
         report('context');
@@ -58,11 +59,21 @@
     const observe = (before, action) => {
         if (!sameDocumentTarget(before)) return {cancel: true, reason: 'document-or-focus-changed'};
         const expected = {'paste:': 'paste', 'copy:': 'copy', 'cut:': 'cut'}[action];
-        const native = state.events.some(e => e.seq > before.seq && e.target === before.target
-            && (e.type === expected || ((e.type === 'input' || e.type === 'beforeinput')
-                && e.inputType === (action === 'redo:' ? 'historyRedo' : action === 'undo:' ? 'historyUndo' : '__none'))))
-            || (action === 'selectAll:' && selectionStamp() !== before.selection && state.activity === before.activity);
-        if (native) return {native: true, context: context()};
+        const inputType = {'paste:': 'insertFromPaste', 'cut:': 'deleteByCut',
+            'undo:': 'historyUndo', 'redo:': 'historyRedo'}[action];
+        const events = state.events.filter(e => e.seq > before.seq && e.target === before.target);
+        const terminal = events.filter(e => e.type === expected
+            || (e.type === 'input' && e.inputType === inputType)).at(-1);
+        if (terminal) {
+            // Capture at the terminal native event, not at this delayed probe.
+            // Never bless a later programmatic selection/edit as our prefix.
+            if (!matches(terminal.after) || events.some(e => e.type === 'input' && e.inputType !== inputType)) {
+                return {cancel: true, reason: 'foreign-change-after-native-command'};
+            }
+            return {native: true, context: terminal.after};
+        }
+        // Native select-all has no edit event; an unmodified context can only
+        // prove no change. Let the guarded page command perform select-all.
         // Later typing, selection or mouse input cancels a delayed fallback;
         // it must never insert a deferred paste after subsequent user input.
         if (!matches(before)) return {cancel: true, reason: 'subsequent-input-or-selection'};

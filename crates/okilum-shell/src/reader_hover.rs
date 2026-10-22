@@ -1,5 +1,6 @@
 //! A transient, target-bound preview. Hover never changes reading history or focus.
 use super::*;
+use gpui_base::ElementExt as _;
 use okilum_core::document_links::{self, prepared::LinkStatus};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -568,6 +569,7 @@ impl Reader {
                         .id("note-hover-preview")
                         .debug_selector(|| "note-hover-preview".into())
                         .occlude()
+                        .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                         .relative()
                         .child(
                             canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| {})

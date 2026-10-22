@@ -316,7 +316,68 @@ impl Render for ManagerPanel {
         }
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.webview {
-            body = body.child(div().flex_1().min_h_0().child(view.clone()));
+            let native = view.read(cx).handle();
+            let view_state = view.clone();
+            let panel = cx.weak_entity();
+            body = body.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(view.clone())
+                    .child(
+                        gpui::canvas(
+                            |bounds, window, _| bounds.intersect(&window.content_mask().bounds),
+                            move |_, full, window, cx| {
+                                if !view_state.read(cx).visible() {
+                                    return;
+                                }
+                                let clear = crate::reader_manager_occlusion::uncovered_bounds(
+                                    *full,
+                                    gpui_base::GlobalState::native_overlays(window, cx),
+                                );
+                                // All ordinary AND deferred overlays have completed
+                                // prepaint before this paint callback. Never use the
+                                // previous frame's popup geometry.
+                                let obscured = clear != Some(*full);
+                                let _ = panel.update(cx, |panel, _| {
+                                    if obscured
+                                        && panel.focus_routing.as_ref().is_some_and(|r| r.focused())
+                                    {
+                                        let _ = native.raw().focus_parent();
+                                        panel.focused = false;
+                                    }
+                                });
+                                if let Some(bounds) = clear {
+                                    let result = native.raw().set_bounds(wry::Rect {
+                                        position: wry::dpi::LogicalPosition::new(
+                                            f64::from(bounds.origin.x),
+                                            f64::from(bounds.origin.y),
+                                        )
+                                        .into(),
+                                        size: wry::dpi::LogicalSize::new(
+                                            f64::from(bounds.size.width),
+                                            f64::from(bounds.size.height),
+                                        )
+                                        .into(),
+                                    });
+                                    let _ = native.raw().set_visible(result.is_ok());
+                                } else {
+                                    // A full-window modal backdrop leaves no free
+                                    // rectangle. Do not let its native child cover it.
+                                    let _ = native.raw().set_visible(false);
+                                }
+                                let _ = panel.update(cx, |panel, _| {
+                                    if let Some(routing) = &panel.focus_routing {
+                                        routing.refresh();
+                                    }
+                                });
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
+            );
         }
         body.into_any_element()
     }
