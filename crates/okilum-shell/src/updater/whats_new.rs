@@ -86,22 +86,14 @@ pub(crate) fn show_current(window: &mut Window, cx: &mut App) {
 }
 fn show(current: Build, since: Option<u64>, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| {
-        let build = current.clone();
-        let task = cx.spawn(async move |this: WeakEntity<NotesView>, cx| {
-            let notes = cx
-                .background_executor()
-                .spawn(async move { model::load(&build, since) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.notes = Some(notes);
-                cx.notify();
-            });
-        });
-        NotesView {
+        let mut view = NotesView {
             current,
+            since,
             notes: None,
-            _task: Some(task),
-        }
+            _task: None,
+        };
+        view.reload(cx);
+        view
     });
     open(view, window, cx);
 }
@@ -116,9 +108,29 @@ fn open(view: Entity<NotesView>, window: &mut Window, cx: &mut App) {
 }
 struct NotesView {
     current: Build,
+    since: Option<u64>,
     notes: Option<Range>,
     _task: Option<Task<()>>,
 }
+impl NotesView {
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        let build = self.current.clone();
+        let since = self.since;
+        self.notes = None;
+        self._task = Some(cx.spawn(async move |this: WeakEntity<NotesView>, cx| {
+            let notes = cx
+                .background_executor()
+                .spawn(async move { model::load(&build, since) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.notes = Some(notes);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+}
+
 impl Render for NotesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = brand::palette(cx);
@@ -156,15 +168,30 @@ impl Render for NotesView {
                     );
                 }
             }
-            if notes.incomplete || notes.builds.is_empty() {
+            if let Some(reason) = notes.unavailable {
+                let partial = !notes.builds.is_empty();
+                let message = match (reason, partial) {
+                    (model::Unavailable::NotPublished, false) => {
+                        "Release notes for this build haven't been published yet."
+                    }
+                    (model::Unavailable::NotPublished, true) => {
+                        "Some release notes for earlier builds haven't been published yet."
+                    }
+                    (model::Unavailable::FetchFailed, false) => "Release notes couldn't be loaded.",
+                    (model::Unavailable::FetchFailed, true) => {
+                        "Some release notes couldn't be loaded."
+                    }
+                };
                 body = body.child(
                     div()
-                        .debug_selector(|| "whats-new-offline".into())
+                        .debug_selector(move || match reason {
+                            model::Unavailable::NotPublished => "whats-new-unpublished".into(),
+                            model::Unavailable::FetchFailed => "whats-new-offline".into(),
+                        })
                         .text_sm()
                         .text_color(palette.text_muted)
-                        .child("Some release notes are unavailable."),
+                        .child(message),
                 );
-                let source = self.current.source.clone();
                 let url = self.current.link();
                 body = body
                     .child(div().text_sm().child(format!(
@@ -174,13 +201,33 @@ impl Render for NotesView {
                         } else {
                             self.current.build.to_string()
                         },
-                        source.chars().take(12).collect::<String>()
+                        self.current.source.chars().take(12).collect::<String>()
                     )))
                     .child(
-                        Button::new("whats-new-source")
-                            .ghost()
-                            .label("View source")
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                        h_flex()
+                            .w_full()
+                            .gap_4()
+                            .flex_wrap()
+                            .child(
+                                div()
+                                    .id("whats-new-source")
+                                    .debug_selector(|| "whats-new-source".into())
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .hover(|row| row.underline())
+                                    .child("Changes merged in this build ↗")
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            )
+                            .when(reason == model::Unavailable::FetchFailed, |row| {
+                                row.child(
+                                    Button::new("whats-new-retry")
+                                        .debug_selector(|| "whats-new-retry".into())
+                                        .small()
+                                        .ghost()
+                                        .label("Retry")
+                                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                                )
+                            }),
                     );
             }
         } else {
@@ -192,11 +239,16 @@ impl Render for NotesView {
             );
         }
         body.child(
-            Button::new("whats-new-releases")
-                .debug_selector(|| "whats-new-releases".into())
-                .ghost()
-                .label("Release notes ↗")
-                .on_click(|_, _, cx| cx.open_url(model::RELEASES)),
+            h_flex().w_full().child(
+                div()
+                    .id("whats-new-releases")
+                    .debug_selector(|| "whats-new-releases".into())
+                    .cursor_pointer()
+                    .text_sm()
+                    .hover(|row| row.underline())
+                    .child("Release notes ↗")
+                    .on_click(|_, _, cx| cx.open_url(model::RELEASES)),
+            ),
         )
     }
 }

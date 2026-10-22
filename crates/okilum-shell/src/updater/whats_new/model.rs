@@ -120,10 +120,15 @@ pub(super) struct Notes {
     pub previous_source: Option<String>,
     pub items: Vec<Item>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Unavailable {
+    NotPublished,
+    FetchFailed,
+}
 #[derive(Clone, Debug, Default)]
 pub(super) struct Range {
     pub builds: Vec<Notes>,
-    pub incomplete: bool,
+    pub unavailable: Option<Unavailable>,
 }
 
 fn read_bounded(reader: impl Read, maximum: u64) -> Result<Vec<u8>> {
@@ -137,13 +142,14 @@ fn read_bounded(reader: impl Read, maximum: u64) -> Result<Vec<u8>> {
 }
 
 /// Follow previous_source only at the fixed public origin, newest first.
-/// Failure keeps any already-fetched builds and exposes an offline fallback.
+/// Failure keeps already-fetched builds. `Ok(None)` means HTTP 404 (not
+/// published); transport, HTTP and validation failures remain retryable.
 /// `since=None` requests this build only (About); Some requests the update gap.
 pub(super) fn collect(
     current: &Build,
     since: Option<u64>,
     track: Track,
-    mut fetch: impl FnMut(&str) -> Result<Vec<u8>>,
+    mut fetch: impl FnMut(&str) -> Result<Option<Vec<u8>>>,
 ) -> Range {
     let mut result = Range::default();
     let mut next = current.clone();
@@ -153,8 +159,18 @@ pub(super) fn collect(
         if !valid_source(&next.source) || !visited.insert(next.source.clone()) {
             break;
         }
+        let bytes = match fetch(&next.source) {
+            Ok(Some(bytes)) => bytes,
+            outcome => {
+                result.unavailable = Some(if matches!(outcome, Ok(None)) {
+                    Unavailable::NotPublished
+                } else {
+                    Unavailable::FetchFailed
+                });
+                return result;
+            }
+        };
         let parsed = (|| -> Result<Notes> {
-            let bytes = fetch(&next.source)?;
             total += bytes.len();
             ensure!(
                 bytes.len() <= MAX_BYTES as usize && total <= MAX_TOTAL_BYTES,
@@ -184,7 +200,7 @@ pub(super) fn collect(
         result.builds.push(notes);
         let Some(since) = since else { return result };
         if malformed_previous {
-            result.incomplete = true;
+            result.unavailable = Some(Unavailable::FetchFailed);
             return result;
         }
         let Some((build, source)) = previous else {
@@ -199,14 +215,14 @@ pub(super) fn collect(
         }
         next = Build { build, source };
     }
-    result.incomplete = true;
+    result.unavailable = Some(Unavailable::FetchFailed);
     result
 }
 
 pub(super) fn load(current: &Build, since: Option<u64>) -> Range {
     let Some(track) = Track::current() else {
         return Range {
-            incomplete: true,
+            unavailable: Some(Unavailable::FetchFailed),
             ..Range::default()
         };
     };
@@ -217,7 +233,7 @@ pub(super) fn load(current: &Build, since: Option<u64>) -> Range {
         .build()
     else {
         return Range {
-            incomplete: true,
+            unavailable: Some(Unavailable::FetchFailed),
             ..Range::default()
         };
     };
@@ -225,16 +241,24 @@ pub(super) fn load(current: &Build, since: Option<u64>) -> Range {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .context("Notes deadline")?;
-        let response = client
-            .get(format!(
-                "{NOTES_ROOT}/{source}/{}/{}/notes.json",
-                track.platform, track.channel
-            ))
-            .timeout(remaining.min(Duration::from_secs(3)))
-            .send()?
-            .error_for_status()?;
-        read_bounded(response, MAX_BYTES)
+        let url = format!(
+            "{NOTES_ROOT}/{source}/{}/{}/notes.json",
+            track.platform, track.channel
+        );
+        fetch_notes(&client, &url, remaining.min(Duration::from_secs(3)))
     })
+}
+
+fn fetch_notes(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<Option<Vec<u8>>> {
+    let response = client.get(url).timeout(timeout).send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    read_bounded(response.error_for_status()?, MAX_BYTES).map(Some)
 }
 
 #[cfg(test)]
