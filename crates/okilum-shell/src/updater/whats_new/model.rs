@@ -179,9 +179,14 @@ pub(super) fn collect(
             Ok(notes)
         })();
         let Ok(notes) = parsed else { break };
+        let malformed_previous = notes.previous_build.is_some() != notes.previous_source.is_some();
         let previous = notes.previous_build.zip(notes.previous_source.clone());
         result.builds.push(notes);
         let Some(since) = since else { return result };
+        if malformed_previous {
+            result.incomplete = true;
+            return result;
+        }
         let Some((build, source)) = previous else {
             // Reached the start of this platform/channel's published history.
             return result;

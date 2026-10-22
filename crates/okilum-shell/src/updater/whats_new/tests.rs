@@ -161,3 +161,23 @@ fn notes_from_another_platform_or_channel_are_not_presented() {
         assert!(range.builds.is_empty());
     }
 }
+
+#[test]
+fn half_a_predecessor_pair_keeps_current_notes_but_marks_history_incomplete() {
+    let current = build(15053, 'a');
+    for missing in ["previous_source", "previous_build"] {
+        let mut notes: serde_json::Value =
+            serde_json::from_slice(&fixture(&current.source).unwrap()).unwrap();
+        notes[missing] = serde_json::Value::Null;
+        let range = collect(&current, Some(15001), TRACK, |_| {
+            Ok(serde_json::to_vec(&notes).unwrap())
+        });
+        assert!(range.incomplete);
+        assert_eq!(range.builds.len(), 1);
+        assert_eq!(range.builds[0].items[0].pr, 1482);
+    }
+    // Positive end-of-history control: both absent is a legitimate first release.
+    let earliest = collect(&build(15001, 'c'), Some(1), TRACK, fixture);
+    assert!(!earliest.incomplete);
+    assert_eq!(earliest.builds.len(), 1);
+}
