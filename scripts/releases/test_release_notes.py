@@ -148,6 +148,21 @@ class MergedRange(unittest.TestCase):
         self.assertIn('Maintenance and stability fixes', notes.description({'items': []}))
         self.assertEqual([x['pr'] for x in self.select(None, self.source)], [2, 1])
 
+    def test_archive_only_older_source_keeps_real_beta_predecessor_and_empty_range(self):
+        # Historical archive builds do not move beta. Their source is already
+        # contained in the newer published beta, so they introduce no new PRs.
+        store = Store({'okilum/arch/beta/x86_64/latest.json':
+                       json.dumps({'build': 9999, 'source': self.future}).encode()})
+        execute = subprocess.run
+        with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
+            payload = notes.prepare(store, self.client, 'linux', 5042, self.source)
+        self.assertEqual(payload['previous_source'], self.future)
+        self.assertEqual(payload['previous_build'], 9999)
+        self.assertEqual(payload['items'], [])
+        self.assertIn(notes.MAINTENANCE, notes.description(payload))
+        self.client.call.assert_not_called()
+        self.assertEqual(store.writes, [])
+
     @patch.object(notes.subprocess, 'run')
     def test_paginated_pr_inventory_is_complete_and_deduplicated(self, run):
         run.return_value.stdout = self.source + '\n'
@@ -192,6 +207,15 @@ class PublicationSidecar(unittest.TestCase):
                         return archive.getvalue()
                     raise AssertionError('Unexpected API call: ' + path)
                 client.call.side_effect = api
+                # Missing range/API evidence fails visibly BEFORE the unchanged
+                # publishers or any sidecar write, for all three platforms.
+                with patch.object(publication, 'R2', return_value=store), \
+                        patch.object(publication.subprocess, 'run') as launch, \
+                        patch.object(notes, 'merged_items', side_effect=RuntimeError('incomplete notes evidence')):
+                    with self.assertRaisesRegex(RuntimeError, 'incomplete notes evidence'):
+                        publication.publish(client, platform, 12)
+                    launch.assert_not_called()
+                    self.assertEqual(store.writes, [])
                 commands = []
                 def publish(command, **kwargs):
                     env = kwargs['env']
