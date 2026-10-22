@@ -149,6 +149,7 @@ fn change(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     use gpui::{InputEvent as _, ScrollDelta, TestAppContext, TouchPhase};
 
     #[gpui::test]
