@@ -22,6 +22,10 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+pub(crate) fn show_t3(cx: &mut App) {
+    show_section(None, Some(Section::T3), cx);
+}
+
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }
@@ -185,6 +189,7 @@ const INBOX_HELP: &str =
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    T3,
     Appearance,
     /// The vault's name, colour and files (#1355: was «Files»).
     Vault,
@@ -199,6 +204,7 @@ enum Section {
 impl Section {
     fn icon(self) -> Icon {
         match self {
+            Self::T3 => Icon::new(IconName::SquareTerminal),
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Vault => Icon::new(IconName::Folder),
             Self::Logs => Icon::new(IconName::SquareTerminal),
@@ -211,6 +217,7 @@ impl Section {
     }
     fn label(self) -> &'static str {
         match self {
+            Self::T3 => "Projects / T3",
             Self::Appearance => "Appearance",
             Self::Vault => "Vault",
             Self::Logs => "Logs",
@@ -223,6 +230,7 @@ impl Section {
     }
 }
 struct Settings {
+    t3: Option<Entity<reader_t3_settings::T3Settings>>,
     #[cfg(target_os = "linux")]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
@@ -258,6 +266,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
+            t3: None,
             section: Section::Appearance,
             #[cfg(target_os = "linux")]
             sync: None,
@@ -328,6 +337,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         self.reader = reader;
+        self.t3 = None;
         cx.notify();
     }
     fn vault(&self, cx: &App) -> Option<Entity<Reader>> {
@@ -1079,6 +1089,7 @@ impl Settings {
             }
             #[cfg(target_os = "linux")]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
+            Section::T3 => content.children(self.t3.clone()).into_any_element(),
             Section::About => content.child(about::content(cx)).into_any_element(),
             // Nothing to do here yet, and it says so (#1356): connecting an
             // Inbox server is not offered in the Reader.
@@ -1118,6 +1129,12 @@ impl Render for Settings {
                     InputState::new(window, cx).placeholder("Build path, e.g. /src/ordgw")
                 }));
         }
+        if self.section == Section::T3 && self.t3.is_none() {
+            self.t3 =
+                Some(cx.new(|cx| {
+                    reader_t3_settings::T3Settings::new(self.reader.clone(), window, cx)
+                }));
+        }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
@@ -1136,6 +1153,7 @@ impl Render for Settings {
                         [
                             Section::Appearance,
                             Section::Vault,
+                            Section::T3,
                             Section::Updates,
                             Section::Inbox,
                             #[cfg(target_os = "linux")]

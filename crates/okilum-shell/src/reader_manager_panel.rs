@@ -4,11 +4,12 @@ use okilum_t3::projects::{Manager, Project};
 
 pub(super) struct ManagerPanel {
     project: Project,
-    state: Option<PathBuf>,
     pub(super) focused: bool,
     #[cfg(any(target_os = "macos", test))]
     previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
+    project_override: bool,
+    _connection: Subscription,
     error: Option<String>,
     transport: Option<String>,
     origin_edited: bool,
@@ -40,18 +41,46 @@ impl ManagerPanel {
                 }
                 _ => {}
             });
+        let weak = cx.weak_entity();
+        let connection =
+            window.observe_global::<reader_t3_settings::Connection>(cx, move |window, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    if this.project_override {
+                        return;
+                    }
+                    if let Some(origin) = cx
+                        .try_global::<reader_t3_settings::Connection>()
+                        .and_then(|c| c.origin.clone())
+                    {
+                        this.hide(cx);
+                        this.loading = false;
+                        this.origin
+                            .update(cx, |input, cx| input.set_value(origin, window, cx));
+                        this.connect(window, cx);
+                    }
+                });
+            });
+        let app_origin = cx
+            .try_global::<reader_t3_settings::Connection>()
+            .and_then(|c| c.origin.clone());
         let alias = project
             .environment
             .clone()
             .unwrap_or_else(|| "project".into());
         let area = project.folder.clone();
-        let saved_state = state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let saved = cx
                 .background_executor()
-                .spawn(
-                    async move { project::prefill_browser_origin(&area, &alias, state.as_deref()) },
-                )
+                .spawn(async move {
+                    let override_origin =
+                        project::project_browser_origin(&area, &alias, state.as_deref())?;
+                    let is_override = override_origin.is_some();
+                    let origin = match override_origin.or(app_origin) {
+                        Some(origin) => Some(origin),
+                        None => project::prefill_app_browser_origin(state.as_deref())?,
+                    };
+                    Ok::<_, anyhow::Error>((origin, is_override))
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 // A delayed disk read must never replace typing or a manual connection.
@@ -59,12 +88,30 @@ impl ManagerPanel {
                     return;
                 }
                 match saved {
-                    Ok(Some(origin)) => {
+                    Ok((Some(origin), project_override)) => {
+                        this.project_override = project_override;
+                        let origin = if project_override {
+                            origin
+                        } else {
+                            cx.try_global::<reader_t3_settings::Connection>()
+                                .and_then(|c| c.origin.clone())
+                                .unwrap_or(origin)
+                        };
                         this.origin
                             .update(cx, |input, cx| input.set_value(origin, window, cx));
                         this.connect(window, cx);
                     }
-                    Ok(None) => {}
+                    Ok((None, project_override)) => {
+                        this.project_override = project_override;
+                        if let Some(origin) = cx
+                            .try_global::<reader_t3_settings::Connection>()
+                            .and_then(|c| c.origin.clone())
+                        {
+                            this.origin
+                                .update(cx, |input, cx| input.set_value(origin, window, cx));
+                            this.connect(window, cx);
+                        }
+                    }
                     Err(e) => this.error = Some(format!("{e:#}")),
                 }
                 cx.notify();
@@ -73,11 +120,13 @@ impl ManagerPanel {
         .detach();
         Self {
             project,
-            state: saved_state,
             focused: false,
             #[cfg(any(target_os = "macos", test))]
             previous_gpui_focus: None,
             origin,
+            // Ignore global changes until manifest/registry precedence is known.
+            project_override: true,
+            _connection: connection,
             error: None,
             transport: None,
             origin_edited: false,
@@ -177,16 +226,12 @@ impl ManagerPanel {
         let generation = self.generation;
         self.loading = true;
         self.error = None;
-        let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let identity = okilum_t3::projects::browser_identity(&env)?;
                     let url = okilum_t3::projects::manager_url(&env, &identity, &thread)?;
-                    if let Some(state) = &state {
-                        project::save_browser_environment(state, &env)?;
-                    }
                     Ok::<_, anyhow::Error>(url)
                 })
                 .await;
@@ -326,35 +371,25 @@ impl Render for ManagerPanel {
         if self.project.manager == Manager::NotStarted {
             return body.child("Manager не запущен").into_any_element();
         }
-        body = body.child(
-            h_flex()
-                .gap_2()
-                .child(Input::new(&self.origin).flex_1())
-                .child(
-                    Button::new("manager-browser-connect")
+        if self.loading {
+            body = body.child("Connecting to T3…");
+        }
+        if !self.loading {
+            #[cfg(target_os = "macos")]
+            let connected = self.webview.is_some();
+            #[cfg(not(target_os = "macos"))]
+            let connected = false;
+            if !connected {
+                body = body.child("T3 is not connected or paired.").child(
+                    Button::new("manager-open-t3-settings")
                         .ghost()
                         .small()
                         .h(px(28.))
                         .rounded(px(brand::CONTROL_RADIUS))
-                        .icon(IconName::ArrowRight)
-                        .tooltip("Connect to T3 (Enter)")
-                        .disabled(self.loading)
-                        .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
-                ),
-        );
-        if let Some(transport) = &self.transport {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(transport.clone()),
-            );
-        }
-        if self.loading {
-            body = body.child("Connecting to T3…");
-        }
-        if let Some(error) = &self.error {
-            body = body.child(div().text_color(cx.theme().danger).child(error.clone()));
+                        .label("Open T3 settings")
+                        .on_click(|_, _, cx| reader_settings::show_t3(cx)),
+                );
+            }
         }
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.webview {
@@ -480,66 +515,5 @@ mod native_focus_tests {
                 "old routing instance cannot blur a successor's GPUI target"
             );
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ::core::prelude::v1::test;
-
-    #[gpui::test]
-    fn enter_submits_origin_validation_and_editing_clears_the_error(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let temp = tempfile::tempdir().unwrap();
-        let area = temp.path().join("area");
-        std::fs::create_dir_all(area.join("ops")).unwrap();
-        std::fs::write(area.join("ops/project.yaml"), "t3: {environment: test}").unwrap();
-        let project = Project {
-            folder: area,
-            name: "Test".into(),
-            kind: okilum_t3::projects::Kind::Knowledge,
-            environment: Some("test".into()),
-            manager_project: Some("brain".into()),
-            manager: Manager::Thread("mcp:test".into()),
-        };
-        let (root, visual) = cx.add_window_view(|window, cx| {
-            let panel = cx
-                .new(|cx| ManagerPanel::new(project, Some(temp.path().join("state")), window, cx));
-            Root::new(panel, window, cx)
-        });
-        visual.run_until_parked();
-        let panel = root.read_with(visual, |root, _| {
-            root.view().clone().downcast::<ManagerPanel>().unwrap()
-        });
-        panel.update_in(visual, |panel, window, cx| {
-            panel.origin.update(cx, |input, cx| {
-                input.set_value("not a host", window, cx);
-                input.focus_handle(cx).focus(window, cx);
-            });
-        });
-        visual.run_until_parked();
-        assert!(panel.read_with(visual, |panel, _| panel.error.is_none()));
-        visual.simulate_keystrokes("enter");
-        visual.run_until_parked();
-        panel.read_with(visual, |panel, _| {
-            assert!(panel
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("Enter a T3 address"));
-            assert!(
-                !panel.loading,
-                "invalid input never starts a network request"
-            );
-            assert_eq!(panel.generation, 0);
-        });
-        panel.update_in(visual, |panel, window, cx| {
-            panel
-                .origin
-                .update(cx, |input, cx| input.set_value("t3.oklabs.uk", window, cx));
-        });
-        visual.run_until_parked();
-        assert!(panel.read_with(visual, |panel, _| panel.error.is_none()));
     }
 }

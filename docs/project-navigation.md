@@ -77,9 +77,12 @@ The bridge uses public AppKit APIs and lives outside GPUI core and the vendored
 webview. Hosted selector tests cover native edit command mapping. Oleg's Mac beta
 acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
 T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
-### Manager connection input (#1507)
+### App-wide T3 connection in Settings (#1507)
 
-The address field submits with Enter or the Reader-style connect glyph. Names
+Settings → Projects / T3 owns the address field and app-wide connection. The
+Manager panel contains only its title and webview; when disconnected it shows a
+plain explanation and Open T3 settings button. Pairing stays inside T3.
+The Settings address field submits with Enter or the app-styled Connect button. Names
 without a scheme use HTTPS; IP:port (and localhost:port) use HTTP. Browser paths,
 query strings and fragments are reduced to the origin, which is shown in the field
 and alongside the transport rule. Credentials in addresses are rejected.
@@ -91,5 +94,7 @@ classify them as private.
 
 Prefill uses optional `t3.origin` in the project manifest, then the manifest's
 `t3.environment` alias in the device connection registry, then the last successfully
-validated Manager origin in app state. A delayed prefill cannot replace typing.
+validated app-wide origin in app state. Explicit project manifest / registry
+bindings override the shared origin without replacing the app-wide last success.
+A successful Settings connection refreshes existing Manager panels across windows. A delayed prefill cannot replace typing.
 No project list layout or category changes are part of this fix.

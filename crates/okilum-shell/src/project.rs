@@ -22,6 +22,18 @@ pub(super) fn save_browser_environment(
     connections::save_last_origin(state, environment)
 }
 
+pub(super) fn prefill_app_browser_origin(state: Option<&Path>) -> anyhow::Result<Option<String>> {
+    connections::last_origin(state)
+}
+
+pub(super) fn project_browser_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    connections::project_origin(area, alias, state)
+}
+
 pub(super) fn prefill_browser_origin(
     area: &Path,
     alias: &str,

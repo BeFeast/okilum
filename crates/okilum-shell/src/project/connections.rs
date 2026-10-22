@@ -82,6 +82,17 @@ pub(super) fn prefill_origin(
     alias: &str,
     state: Option<&Path>,
 ) -> Result<Option<String>> {
+    match project_origin(area, alias, state)? {
+        Some(origin) => Ok(Some(origin)),
+        None => last_origin(state),
+    }
+}
+
+pub(super) fn project_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> Result<Option<String>> {
     let source = std::fs::read_to_string(area.join("ops/project.yaml"))?;
     let manifest: serde_yaml::Value = serde_yaml::from_str(&source)?;
     if let Some(origin) = manifest["t3"]["origin"].as_str() {
@@ -98,6 +109,14 @@ pub(super) fn prefill_origin(
     if let Some(origin) = saved.get(alias) {
         return Ok(Some(Environment::from_input(alias, origin)?.origin()));
     }
+    Ok(None)
+}
+
+pub(super) fn last_origin(state: Option<&Path>) -> Result<Option<String>> {
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let alias = "app";
     match std::fs::read(state.join("t3-last-origin.json")) {
         Ok(bytes) => {
             let origin: String = serde_json::from_slice(&bytes)?;
@@ -120,6 +139,37 @@ pub(super) fn save_last_origin(state: &Path, env: &Environment) -> Result<()> {
 mod origin_tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn shared_settings_do_not_create_a_project_override() {
+        let base = tempfile::tempdir().unwrap();
+        let area = base.path().join("area");
+        let state = base.path().join("state");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("ops/project.yaml"), "t3: {environment: maestro}").unwrap();
+        let app = Environment::from_input("app", "t3.oklabs.uk").unwrap();
+        save(&state, &app).unwrap();
+        save_last_origin(&state, &app).unwrap();
+        assert_eq!(
+            project_origin(&area, "maestro", Some(&state)).unwrap(),
+            None
+        );
+        assert_eq!(
+            prefill_origin(&area, "maestro", Some(&state)).unwrap(),
+            Some(app.origin())
+        );
+        let other = Environment::from_input("maestro", "10.10.0.23:23110").unwrap();
+        save(&state, &other).unwrap();
+        assert_eq!(
+            project_origin(&area, "maestro", Some(&state)).unwrap(),
+            Some(other.origin())
+        );
+        assert_eq!(
+            last_origin(Some(&state)).unwrap(),
+            Some(app.origin()),
+            "project override must not replace the app default"
+        );
+    }
 
     #[test]
     fn prefill_prefers_manifest_then_registry_then_last_success() {
