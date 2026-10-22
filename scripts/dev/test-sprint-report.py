@@ -107,6 +107,23 @@ esac
             self.assertIn('https://git.oklabs.uk/BeFeast/okilum/issues/42', result.stdout)
             self.assertFalse((root / 'build.lock').exists())
 
+    def test_rejected_installation_restores_previous_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / 'Sprint.app'
+            backup = root / 'previous.app'
+            app.mkdir()
+            backup.mkdir()
+            (app / 'invalid').write_text('rejected')
+            (backup / 'working').write_text('previous')
+            restore = SCRIPT.read_text().split('restore_sprint_app() {', 1)[1].split('\nsprint_exit() {', 1)[0]
+            source = 'restore_sprint_app() {' + restore
+            command = source + '\napp=$1; backup=$2; restore_on_failure=1; restore_sprint_app\n'
+            subprocess.run(['bash', '-c', command, 'test', str(app), str(backup)], check=True, capture_output=True)
+            self.assertFalse((app / 'invalid').exists())
+            self.assertEqual((app / 'working').read_text(), 'previous')
+            self.assertFalse(backup.exists())
+
     def test_vendor_patch_set_switch_resets_only_temp_clone(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -11,6 +11,7 @@ started=$SECONDS
 stage=preflight
 stage_started=$SECONDS
 lock_owned=0
+restore_on_failure=0
 bootstrap=$(mktemp -d "${TMPDIR:-/tmp}/okilum-sprint.XXXXXX")
 reporter="$bootstrap/sprint-report.py"
 context="$bootstrap/sprint-context.json"
@@ -230,12 +231,22 @@ set_stage() {
     write_context
     printf '\nSprint stage: %s\n' "$stage"
 }
+restore_sprint_app() {
+    if (( restore_on_failure )); then
+        rm -rf "$app"
+        if [[ -e $backup ]]; then mv "$backup" "$app"; fi
+        restore_on_failure=0
+        echo 'Rejected Sprint installation removed; previous app restored when available.'
+    fi
+}
 sprint_exit() {
     result=$?
     trap - EXIT INT TERM
     if (( result != 0 )); then
         write_context || true
         python3 "$reporter" --context "$context" --stage "$stage" || true
+        # Collect the rejected bundle FIRST; only then restore the working app.
+        restore_sprint_app || true
     fi
     if (( lock_owned )); then rmdir "$root/build.lock" || true; fi
     rm -rf "$bootstrap"
@@ -398,16 +409,14 @@ fi
 backup="$root/previous-Okilum-Sprint.app"
 rm -rf "$backup"
 if [[ -e $app ]]; then mv "$app" "$backup"; fi
-if ! ditto "$bundle_stage" "$app"; then
-    rm -rf "$app"
-    if [[ -e $backup ]]; then mv "$backup" "$app"; fi
-    exit 1
-fi
-set_stage launch
+restore_on_failure=1
+ditto "$bundle_stage" "$app"
 printf 'Launching installed Sprint app: %s (source %s)\n' "$app" "$sha"
 plutil -lint "$app/Contents/Info.plist"
 codesign --verify --deep --strict -v "$app"
+set_stage launch
 open "$app"
+restore_on_failure=0
 write_context
 cp "$context" "$root/sprint-context.json"
 printf 'Sprint ready: %s %s · %ss · %s\n' "$branch" "$short_sha" "$((SECONDS - started))" "$app"
