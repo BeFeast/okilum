@@ -119,6 +119,7 @@ pub(super) fn save_last_origin(state: &Path, env: &Environment) -> Result<()> {
 #[cfg(test)]
 mod origin_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn prefill_prefers_manifest_then_registry_then_last_success() {

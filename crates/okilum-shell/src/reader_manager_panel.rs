@@ -486,6 +486,7 @@ mod native_focus_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn enter_submits_origin_validation_and_editing_clears_the_error(cx: &mut TestAppContext) {
