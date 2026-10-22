@@ -294,14 +294,17 @@ impl ProjectView {
         if self.busy {
             return;
         }
-        let Some((area, state, gateway)) = self
-            .area
-            .clone()
-            .zip(self.state.clone())
-            .zip(self.gateway.clone())
-            .map(|((a, s), g)| (a, s, g))
-        else {
-            self.error = Some("Connect to T3 before starting a manager.".into());
+        let (Some(area), Some(state), Some(gateway), Some(environment), Some(project_id)) = (
+            self.area.clone(),
+            self.state.clone(),
+            self.gateway.clone(),
+            self.environment.clone(),
+            self.binding
+                .as_ref()
+                .and_then(|b| b.manager.project_id.clone()),
+        ) else {
+            self.error =
+                Some("Connect to the configured T3 project before starting a manager.".into());
             cx.notify();
             return;
         };
@@ -311,7 +314,14 @@ impl ProjectView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::reader_manager_start::start(&area, &context, &state, gateway.as_ref())
+                    crate::reader_manager_start::start(
+                        &area,
+                        &context,
+                        &state,
+                        gateway.as_ref(),
+                        &environment,
+                        &project_id,
+                    )
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
