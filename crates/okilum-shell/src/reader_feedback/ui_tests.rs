@@ -457,7 +457,7 @@ fn one_click_sprint_send_reuses_the_non_modal_feedback_draft(cx: &mut TestAppCon
         assert_eq!(sent.lock().unwrap().len(), 1);
         assert_eq!(sent.lock().unwrap()[0].text, "Sprint result");
         assert_eq!(feedback_context(reader).window_handle(), original_window);
-        view.read_with(&mut feedback, |view, _| {
+        view.read_with(&feedback, |view, _| {
             assert!(matches!(view.state, SendState::Sent(_)))
         });
         reader.update(|window, cx| assert!(!window.has_active_dialog(cx)));
