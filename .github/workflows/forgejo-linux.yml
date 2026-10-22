@@ -97,6 +97,7 @@ jobs:
           mkdir -p dist/appimage/evidence
           for image in ubuntu:24.04 fedora:44; do
             docker run --rm --network bridge \
+              -v /etc/ssl/certs/ca-certificates.crt:/ci-ca-certificates.crt:ro \
               -v "$PWD/dist/appimage:/artifact:ro" -v "$PWD:/source:ro" \
               "$image" bash /source/scripts/appimage/smoke.sh \
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"

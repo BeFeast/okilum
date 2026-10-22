@@ -65,7 +65,34 @@ cancelled at 12:05:34 UTC, with no apt output between those events. Its old
 Run `39772117886` had already reached **Run full Linux gate**; its live job log
 returned `404 BlobNotFound`, so an apt cause for that run is not established.
 The bounded helper prevents another hour-long apt stall and provides diagnostic
-output; it does not claim a demonstrated mirror fault or change mirrors.
+output; it does not establish a mirror/network root cause.
+
+Run `39781817542` subsequently passed the full Linux gate and built the AppImage
+on Ubuntu 22.04. In the clean Ubuntu 24.04 container, update fetched 33.6 MB in
+19 seconds, but installation requested 87.7 MB / 104 packages and HTTP archive
+downloads progressed around 80 KB/s before the four-minute bound returned 124.
+Runtime execution, Fedora and signed installation were not reached.
+
+The smoke container now uses `scripts/ci/ubuntu-smoke-apt.sh`: official
+`https://archive.ubuntu.com/ubuntu`, then one explicit fallback to
+`https://security.ubuntu.com/ubuntu`. Both serve Noble, Noble updates and Noble
+security; read-only metadata checks confirmed the base and security InRelease
+paths. This is availability evidence, not hosted throughput evidence. The normal
+hosted run tests these routes with a bounded signed index update (60 seconds)
+and verified package download (150 seconds) per candidate, logging the selected
+host and failures. There are at most two candidates; final installation retains
+the shared four-minute bound and uses `--no-download`. A 12-minute total deadline
+plus 15-second kill grace bounds the whole provisioning stage, including retries.
+The runner's one-hour ceiling stays unchanged.
+
+The clean image receives only the hosted runner's CA bundle as a read-only file
+for HTTPS bootstrap; no TLS or apt signature/hash verification is disabled.
+Sources explicitly retain the Ubuntu archive keyring and Noble amd64 suites.
+Completed deb downloads can be reused within this fresh container on fallback;
+there is no cross-run cache or restored installed runtime. Ubuntu/Fedora native
+smoke and signed installation remain required. Offline fake-apt tests cover
+primary success, download timeout fallback and fail-closed exhaustion in the
+normal hosted Linux gate; no local tests or artifact execution were performed.
 
 Separate read-only infrastructure evidence: baldr's
 `forgejo-runner-bridge.service` accepted Forgejo task `22335` (job `34758`, API
@@ -76,11 +103,8 @@ run `15757`, web run `10092`). Its actual ExecStart config is
 Forgejo 16.0.5 in loki CT102 has no explicit timeout override in `[actions]`
 of `/etc/forgejo/app.ini`. No live configuration was changed.
 
-If approved by the manager, the minimal runner repair is to back up the primary
-config preserving ownership/mode, change its two `1h` values to `130m` (matching
-the extra runner), and restart **only after that service drains**. Rollback is
-restoring that backup and restarting after drain. This is separate from the
-apt fix: workflow timeout110 cannot override the runner's lower one-hour cap.
+The primary bridge's one-hour ceiling remains unchanged; this CI-only fix does
+not authorize a live runner change.
 An existing bridge rerun still creates a new GitHub ref/build; this patch does
 not add receipt replay or permit older-source evidence for a new head.
 

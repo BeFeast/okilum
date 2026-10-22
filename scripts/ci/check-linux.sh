@@ -10,7 +10,7 @@ python3 -m unittest discover -s scripts/arch -p 'test_*.py'
 python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 python3 -m unittest discover -s scripts/releases -p 'test_*.py'
 python3 -m unittest discover -s scripts/uninstall -p 'test_*.py'
-for script in scripts/releases/mirror.sh scripts/ci/apt-bounded.sh scripts/appimage/smoke.sh; do
+for script in scripts/releases/mirror.sh scripts/ci/apt-bounded.sh scripts/ci/ubuntu-smoke-apt.sh scripts/appimage/smoke.sh; do
     bash -n "$script"
 done
 python3 scripts/brand-assets.py verify
