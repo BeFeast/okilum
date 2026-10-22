@@ -16,12 +16,25 @@ fi
 branch=$1
 repo=https://git.oklabs.uk/BeFeast/okilum.git
 git check-ref-format --branch "$branch" >/dev/null
-root="$HOME/okilum-sprint"
+root="${OKILUM_SPRINT_HOME:-$HOME/Developer/personal/okilum-sprint}"
+root=${root%/}
+if [[ $root != /* || $root == / || $root == "$HOME" ]]; then
+    echo 'OKILUM_SPRINT_HOME must be an absolute, dedicated directory.' >&2; exit 1
+fi
 app="$HOME/Applications/Okilum Sprint.app"
 # Refuse symlinked workspaces/destinations rather than affecting another checkout.
 for path in "$root" "$root/src" "$root/target" "$app" "$HOME/Applications"; do
     if [[ -L $path ]]; then echo "Refusing symlink: $path" >&2; exit 1; fi
 done
+legacy="$HOME/okilum-sprint"
+if [[ ! -e $root && -e $legacy && $root != "$legacy" ]]; then
+    if [[ -L $legacy || ! -d $legacy || -e $legacy/build.lock ]]; then
+        echo "Cannot migrate $legacy: expected an idle, real Sprint directory." >&2; exit 1
+    fi
+    mkdir -p "$(dirname "$root")"
+    mv "$legacy" "$root"
+    printf 'Moved Sprint checkout and warm cache: %s → %s\n' "$legacy" "$root"
+fi
 mkdir -p "$root" "$HOME/Applications"
 if ! mkdir "$root/build.lock" 2>/dev/null; then
     echo "Sprint build is already running (lock: $root/build.lock)." >&2; exit 1
