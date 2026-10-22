@@ -104,6 +104,7 @@ fn main() {
         ])
         .arg(&quicklook));
     println!("cargo:rerun-if-changed=src/reader_manager_focus/bridge.m");
+    println!("cargo:rerun-if-changed=src/reader_manager_focus/keys.inc");
     let manager_focus = out.join("manager_focus.o");
     run(Command::new("xcrun")
         .args([

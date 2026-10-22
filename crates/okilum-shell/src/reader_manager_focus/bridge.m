@@ -18,6 +18,9 @@ const char *okilum_manager_edit_action(const char *key, bool command, bool shift
 }
 
 typedef void (*OkilumFocusChanged)(void *, int);
+static void KeyLog(NSString *format, ...) NS_FORMAT_FUNCTION(1,2);
+static void KeyInstallRouter(id router);
+static void KeyRemoveRouter(id router);
 
 @interface OkilumManagerFocus : NSObject
 @property(nonatomic, weak) WKWebView *webview;
@@ -30,11 +33,23 @@ typedef void (*OkilumFocusChanged)(void *, int);
 @property(nonatomic, strong) NSMenuItem *editItem;
 @property(nonatomic, strong) NSMenu *previousSubmenu;
 @property(nonatomic) BOOL addedItem;
+@property(nonatomic) BOOL nativeRouting;
+@property(nonatomic) BOOL keyBusy;
+@property(nonatomic, copy) NSString *keyToken;
+@property(nonatomic, strong) NSMutableArray *keyQueue;
 - (BOOL)focused;
 - (void)refresh;
 - (void)detach;
 - (BOOL)dispatchEditAction:(SEL)action sender:(id)sender;
 - (void)editCommand:(NSMenuItem *)item;
+
+@end
+
+@interface OkilumManagerFocus (Keys)
+- (BOOL)handleCommandEvent:(NSEvent *)event;
+- (void)processKeyQueue;
+- (void)finishKeyCommand;
+- (void)pageCommand:(NSString *)action token:(NSString *)token;
 @end
 
 @implementation OkilumManagerFocus
@@ -103,14 +118,26 @@ typedef void (*OkilumFocusChanged)(void *, int);
         BOOL inside = target == view || ([target isKindOfClass:NSView.class]
             && [(NSView *)target isDescendantOf:view]);
         if (!inside) break;
-        if ([target respondsToSelector:action]
-            && [NSApp sendAction:action to:target from:sender]) return YES;
+        if ([target respondsToSelector:action]) {
+            BOOL delivered = [NSApp sendAction:action to:target from:sender];
+            KeyLog(@"native edit action=%@ target=%@ delivered=%d", NSStringFromSelector(action), NSStringFromClass(target.class), delivered);
+            if (delivered) return YES;
+        }
         if (target == view) break;
     }
     return NO;
 }
 - (void)editCommand:(NSMenuItem *)item {
-    [self dispatchEditAction:NSSelectorFromString(item.representedObject) sender:item];
+    KeyLog(@"menu hit title=%@ action=%@ target=%@", item.title, item.representedObject, NSStringFromClass(self.class));
+    if (self.nativeRouting) {
+        [self dispatchEditAction:NSSelectorFromString(item.representedObject) sender:item];
+        return;
+    }
+    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:item.keyEquivalentModifierMask timestamp:NSProcessInfo.processInfo.systemUptime
+        windowNumber:self.webview.window.windowNumber context:nil characters:item.keyEquivalent
+        charactersIgnoringModifiers:item.keyEquivalent isARepeat:NO keyCode:0];
+    [self handleCommandEvent:event];
 }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     (void)item;
@@ -150,15 +177,9 @@ typedef void (*OkilumFocusChanged)(void *, int);
             (flags & NSEventModifierFlagCommand) != 0, (flags & NSEventModifierFlagShift) != 0,
             (flags & NSEventModifierFlagControl) != 0, (flags & NSEventModifierFlagOption) != 0);
         if (action) {
-            SEL selector = NSSelectorFromString([NSString stringWithUTF8String:action]);
-            if ([self dispatchEditAction:selector sender:self]) return nil;
-            // Wry's child subclass overrides performKeyEquivalent: to return NO.
-            // Call the public WKWebView implementation without changing either
-            // Wry or GPUI classes. WebKit then gets its native command/IME path.
-            IMP implementation = class_getMethodImplementation(WKWebView.class, @selector(performKeyEquivalent:));
-            BOOL (*perform)(id, SEL, NSEvent *) = (BOOL (*)(id, SEL, NSEvent *))implementation;
-            if (perform(view, @selector(performKeyEquivalent:), event)) return nil;
-            // A failed dispatch must not silently consume the shortcut.
+            KeyLog(@"local event monitor action=%s nativeRouting=%d firstResponder=%@", action, self.nativeRouting, NSStringFromClass(window.firstResponder.class));
+            if (self.nativeRouting) return event;
+            if ([self handleCommandEvent:event]) return nil;
             return event;
         }
         // Bypass the child Wry performKeyEquivalent override and GPUI dispatch.
@@ -174,6 +195,8 @@ typedef void (*OkilumFocusChanged)(void *, int);
     return nil;
 }
 - (void)detach {
+    KeyRemoveRouter(self);
+    [self.keyQueue removeAllObjects];
     [self returnToParent];
     if (self.monitor) [NSEvent removeMonitor:self.monitor];
     for (id observer in self.observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
@@ -186,6 +209,8 @@ typedef void (*OkilumFocusChanged)(void *, int);
 }
 @end
 
+#import "keys.inc"
+
 void *okilum_manager_focus_attach(void *webview, void *parent, void (*focusChanged)(void *, int), void *context) {
     NSCAssert(NSThread.isMainThread, @"Manager focus must attach on the main thread");
     OkilumManagerFocus *router = [OkilumManagerFocus new];
@@ -193,6 +218,7 @@ void *okilum_manager_focus_attach(void *webview, void *parent, void (*focusChang
     router.parent = (__bridge NSView *)parent;
     router.focusChanged = focusChanged;
     router.context = context;
+    KeyInstallRouter(router);
     __weak OkilumManagerFocus *weakRouter = router;
     router.monitor = [NSEvent addLocalMonitorForEventsMatchingMask:
         NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskKeyDown

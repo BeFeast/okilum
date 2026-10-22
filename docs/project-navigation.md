@@ -101,3 +101,26 @@ CI by explicit manager disposition. It remains an ignored Rust test and requires
 `OKILUM_NATIVE_GUI=1 bash scripts/ci/check-manager-webview-paste.sh`.
 Dispatch selector unit tests remain in required native CI. Oleg's actual-app
 sprint verification is the premerge acceptance for the reopened paste bug.
+
+### Sprint Cmd-key diagnostics and page fallback (#1510 stop-loss)
+
+Sprint enables `OKILUM_SPRINT_KEYS=1` in its launcher by default. Diagnostics append
+to `~/Library/Logs/okilum-sprint-keys.log`: application sendEvent, public native
+key-equivalent implementations and their return values, menu candidates/actions/
+targets, actual first-responder classes, WebKit keyDown and sendAction results.
+Clipboard text, selected text and pairing tokens are never logged. Other builds
+create no diagnostic log unless the environment flag is explicitly enabled.
+
+The app-owned router observes the native dispatch attempt before deciding whether
+to use a page fallback. A page probe records trusted edit events and editing state;
+copy additionally checks the native pasteboard change counter. Observed native
+handling logs `path=NATIVE` and does not invoke the fallback. Otherwise, while the
+same page input remains focused, text paste uses `execCommand('insertText')`, image
+paste sends a ClipboardEvent containing a DataTransfer PNG file, copy/cut transfers
+the page selection to NSPasteboard (cut then deletes), and select-all/undo/redo use
+execCommand. Commands are serialized and cancelled on focus loss. Logs identify
+`path=PAGE_FALLBACK` and its outcome without recording content.
+
+This expanded scope is explicitly requested by the manager after Oleg's failed
+sprint. It is not validated by hosted GUI fixtures: Oleg must send the log from a
+real Sprint run and verify Cmd+V/C/X/A/Z in pairing and chat before merge.

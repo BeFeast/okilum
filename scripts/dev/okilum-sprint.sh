@@ -81,6 +81,7 @@ python3 scripts/third-party-notices.py --stage "$stage/Contents/Resources/Licens
 cat > "$stage/Contents/MacOS/sprint-launch" <<'LAUNCH'
 #!/bin/bash
 set -euo pipefail
+export OKILUM_SPRINT_KEYS="${OKILUM_SPRINT_KEYS:-1}"
 export OKILUM_STATE_DIR="$HOME/Library/Application Support/com.befeast.okilum.sprint"
 export XDG_CONFIG_HOME="$OKILUM_STATE_DIR/config"
 export XDG_CACHE_HOME="$OKILUM_STATE_DIR/cache"
@@ -91,6 +92,7 @@ cd "$(dirname "$0")"
 exec ./okilum "$@"
 LAUNCH
 chmod +x "$stage/Contents/MacOS/sprint-launch"
+printf 'Cmd-key diagnostics (enabled in Sprint): %s/Library/Logs/okilum-sprint-keys.log\n' "$HOME"
 # Reuse the canonical bundle/Info.plist template from build-macos-ci.sh.
 python3 - "$stage" "$sha" <<'PY'
 import pathlib, plistlib, sys
