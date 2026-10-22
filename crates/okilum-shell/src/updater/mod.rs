@@ -8,6 +8,7 @@ mod macos;
 #[cfg(any(windows, test))]
 mod ready;
 pub(crate) mod status;
+pub(crate) mod whats_new;
 #[cfg(windows)]
 mod windows;
 #[cfg(any(windows, test))]
@@ -62,6 +63,7 @@ const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
+    whats_new::install(_cx);
     #[cfg(windows)]
     {
         windows::start();
@@ -230,6 +232,7 @@ pub(crate) fn status_line() -> Option<String> {
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
+    whats_new::notice(window, cx);
     #[cfg(windows)]
     if window.is_window_active() {
         if let Some(id) = windows::take_announcement() {

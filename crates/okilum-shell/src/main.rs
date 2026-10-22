@@ -6602,6 +6602,7 @@ impl Render for Reader {
         }
         self.sync_notice_toast(window, cx);
         // Root owns overlay state, but the window content renders these layers.
+        let sheet_layer = Root::render_sheet_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let sync_started = std::time::Instant::now();
@@ -7188,6 +7189,7 @@ impl Render for Reader {
                 let view = view.children(self.render_move_picker());
                 view
             })
+            .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)
             .children(
