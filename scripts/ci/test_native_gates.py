@@ -96,10 +96,8 @@ class NativeGates(unittest.TestCase):
         for job in ('macos-github', 'macos-local'):
             self.assertEqual(needs(job), {'native-scope'})
         shared = re.search(r'^  shared:\n(.*?)(?=^  [\w-]+:)', WORKFLOW, re.M | re.S)[1]
-        for command in ('cargo fmt --check', 'cargo clippy --workspace --all-targets --locked -- -D warnings',
-                        'cargo test --workspace --locked -- --skip platform::',
-                        'scripts/vendor-setup.sh --verify'):
-            self.assertIn(command, shared)
+        self.assertIn('tini -s -- bash scripts/ci/check-shared.sh', shared)
+        self.assertIn('scripts/vendor-setup.sh --verify', shared)
         self.assertNotIn('check-linux.sh', shared)
 
 
