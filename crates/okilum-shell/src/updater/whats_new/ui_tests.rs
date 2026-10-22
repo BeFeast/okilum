@@ -10,8 +10,9 @@ fn current() -> Build {
 fn offline_view(cx: &mut App) -> Entity<NotesView> {
     cx.new(|_| NotesView {
         current: current(),
+        since: Some(15001),
         notes: Some(Range {
-            incomplete: true,
+            unavailable: Some(model::Unavailable::FetchFailed),
             ..Range::default()
         }),
         _task: None,
@@ -139,4 +140,68 @@ fn actual_reader_and_about_render_the_sheet_and_offline_fallback(cx: &mut TestAp
         settings.debug_bounds("whats-new-releases").is_some(),
         "offline release link retained"
     );
+}
+
+#[gpui::test]
+fn unpublished_and_failed_ranges_show_changes_link_and_only_failures_offer_retry(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let mut view = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let notes = offline_view(cx);
+        view = Some(notes.clone());
+        Root::new(notes, window, cx)
+    });
+    let view = view.unwrap();
+    for reason in [
+        model::Unavailable::NotPublished,
+        model::Unavailable::FetchFailed,
+    ] {
+        for partial in [false, true] {
+            view.update(visual, |view, cx| {
+                view.notes = Some(Range {
+                    unavailable: Some(reason),
+                    builds: if partial {
+                        vec![serde_json::from_slice(include_bytes!("fixtures/15053.json")).unwrap()]
+                    } else {
+                        vec![]
+                    },
+                });
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual.debug_bounds("whats-new-source").is_some(),
+                "useful merged-changes fallback"
+            );
+            assert_eq!(
+                visual.debug_bounds("whats-new-retry").is_some(),
+                reason == model::Unavailable::FetchFailed
+            );
+            assert_eq!(
+                visual.debug_bounds("whats-new-unpublished").is_some(),
+                reason == model::Unavailable::NotPublished
+            );
+            assert_eq!(
+                visual.debug_bounds("whats-new-offline").is_some(),
+                reason == model::Unavailable::FetchFailed
+            );
+            let changes = visual.debug_bounds("whats-new-source").unwrap();
+            let releases = visual.debug_bounds("whats-new-releases").unwrap();
+            assert_eq!(
+                changes.left(),
+                releases.left(),
+                "both link rows stay left aligned"
+            );
+            view.read_with(visual, |view, _| {
+                let notes = view.notes.as_ref().unwrap();
+                assert_eq!(notes.builds.len(), usize::from(partial));
+                if partial {
+                    assert_eq!(notes.builds[0].items[0].pr, 1482);
+                }
+            });
+        }
+    }
 }
