@@ -76,12 +76,13 @@ class AppImageTests(unittest.TestCase):
             self.assertEqual(result.stdout, '--vault\nvault with spaces\n')
             self.assertEqual(environment['LD_LIBRARY_PATH'], '/smoke-only/library/path')
 
-    def test_smoke_help_and_window_use_the_same_shipped_launch(self):
+    def test_smoke_help_and_window_use_the_documented_runtime_option(self):
         smoke = (ROOT / 'scripts/appimage/smoke.sh').read_text()
-        launch = '/source/scripts/appimage/launch.sh /artifact/Okilum-x86_64.AppImage'
+        launch = '/artifact/Okilum-x86_64.AppImage --appimage-extract-and-run'
         self.assertIn(launch + ' --help', smoke)
         self.assertIn(launch + ' "$@"', smoke)
-        self.assertNotIn('LD_LIBRARY_PATH', smoke)
+        self.assertIn('unset APPIMAGE_EXTRACT_AND_RUN LD_LIBRARY_PATH', smoke)
+        self.assertNotIn('/source/scripts/appimage/launch.sh', smoke)
         self.assertNotIn('/work/squashfs-root/AppRun', smoke)
 
     def test_required_workflow_retains_artifact_before_testing_and_aggregates_both_gates(self):

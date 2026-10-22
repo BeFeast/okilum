@@ -216,8 +216,29 @@ chmod +x Okilum-x86_64.AppImage
 ./Okilum-x86_64.AppImage
 ```
 
-On Ubuntu 24.04 the FUSE launch may require `libfuse2t64`; the retained
-`scripts/appimage/launch.sh` supports explicit FUSE-free QA extraction.
+For the normal launch, install `fuse3` (Ubuntu: `sudo apt install fuse3`;
+Fedora: `sudo dnf install fuse3`), which provides `fusermount3`, and ensure
+`/dev/fuse` is available. The pinned runtime is statically linked: neither
+`libfuse2` nor Ubuntu's `libfuse2t64` is required. Its
+[source](https://github.com/AppImage/type2-runtime/blob/fedfad51acc2860b2916a1eef32ba4a500ff31ef/src/runtime/runtime.c#L417)
+searches PATH for a root-owned setuid `fusermount` helper (including
+`fusermount3`) that successfully reports its version.
+
+If FUSE is unavailable or mounting fails, run the same verified download
+without FUSE; no repository checkout or helper script is needed:
+
+```sh
+./Okilum-x86_64.AppImage --appimage-extract-and-run
+```
+
+This temporarily extracts the payload, runs it, and cleans up after exit;
+the temporary directory needs enough space and must permit execution.
+Hosted Ubuntu/Fedora smoke exercises this exact option for help, visible-window
+launch and Ctrl+Q exit, with the environment-variable fallback unset. The build
+also checks that the checksum-pinned runtime has no ELF interpreter or dynamic
+library requirements, with a dynamic system executable as a positive control.
+Direct FUSE mounting is not verified by these container checks: they have no
+`/dev/fuse`.
 There is no desktop-integration install or in-app update in this slice.
 
 Premerge evidence comes from hosted tests: trust-boundary rejection, immutable

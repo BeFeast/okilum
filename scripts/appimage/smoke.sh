@@ -19,9 +19,12 @@ cd /work
 (cd /artifact && sha256sum -c SHA256SUMS)
 /artifact/Okilum-x86_64.AppImage --appimage-extract
 python3 /source/scripts/appimage/verify.py /artifact /work/squashfs-root
-bash /source/scripts/appimage/launch.sh /artifact/Okilum-x86_64.AppImage --help
+# Exercise the user-documented option, without the environment-variable fallback
+# or an external library path masking a broken packaged launcher.
+unset APPIMAGE_EXTRACT_AND_RUN LD_LIBRARY_PATH
+/artifact/Okilum-x86_64.AppImage --appimage-extract-and-run --help
 mkdir /work/bin
-printf '#!/bin/sh\nexec bash /source/scripts/appimage/launch.sh /artifact/Okilum-x86_64.AppImage "$@"\n' > /work/bin/okilum
+printf '#!/bin/sh\nexec /artifact/Okilum-x86_64.AppImage --appimage-extract-and-run "$@"\n' > /work/bin/okilum
 chmod +x /work/bin/okilum
 export PATH="/work/bin:$PATH"
 # Positive control: prove this X server and xdotool can detect a visible window.
