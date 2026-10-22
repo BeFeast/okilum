@@ -50,6 +50,40 @@ fall back to cold builds. Capacity incidents are reported, not retried in a loop
 
 ## Logs of failed jobs
 
+Hosted Linux dependency setup uses `scripts/ci/apt-bounded.sh` on both build
+runners and in the Ubuntu AppImage smoke container. Each apt invocation has a
+four-minute deadline plus a 15-second kill grace, 30-second HTTP/HTTPS inactivity
+timeouts, two download retries and a 60-second dpkg lock wait. Failed index
+downloads fail the step rather than silently using stale indexes. Output remains
+visible for diagnosis; the two build dependency steps also have a ten-minute
+workflow deadline. No compiler or acceptance command is retried or skipped.
+
+Incident evidence (2026-10-22): GitHub run `39767622990`, `linux-checks` job
+`119786892717`, entered **Install system libraries** at 11:02:51 UTC and was
+cancelled at 12:05:34 UTC, with no apt output between those events. Its old
+`-qq` commands do not distinguish update/install, mirror/network or lock stalls.
+Run `39772117886` had already reached **Run full Linux gate**; its live job log
+returned `404 BlobNotFound`, so an apt cause for that run is not established.
+The bounded helper prevents another hour-long apt stall and provides diagnostic
+output; it does not claim a demonstrated mirror fault or change mirrors.
+
+Separate read-only infrastructure evidence: baldr's
+`forgejo-runner-bridge.service` accepted Forgejo task `22335` (job `34758`, API
+run `15757`, web run `10092`). Its actual ExecStart config is
+`/var/lib/forgejo-runner-bridge/config.yaml`, with `runner.timeout: 1h` and
+`runner.shutdown_timeout: 1h`. The extra service's separate
+`/var/lib/forgejo-runner-bridge-extra/config.yaml` has both values `130m`.
+Forgejo 16.0.5 in loki CT102 has no explicit timeout override in `[actions]`
+of `/etc/forgejo/app.ini`. No live configuration was changed.
+
+If approved by the manager, the minimal runner repair is to back up the primary
+config preserving ownership/mode, change its two `1h` values to `130m` (matching
+the extra runner), and restart **only after that service drains**. Rollback is
+restoring that backup and restarting after drain. This is separate from the
+apt fix: workflow timeout110 cannot override the runner's lower one-hour cap.
+An existing bridge rerun still creates a new GitHub ref/build; this patch does
+not add receipt replay or permit older-source evidence for a new head.
+
 Logs of this repository's jobs are public; no token is needed. The usual trap is
 the run number: the number in a run's web URL (`/actions/runs/6123`) is not the
 API run id, so `GET /actions/runs/6123/jobs` reads another run or nothing.
