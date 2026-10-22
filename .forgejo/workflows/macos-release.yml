@@ -1,4 +1,5 @@
-# The latest main becomes a signed, notarized Sparkle beta daily at 10:30 UTC. A manual run on another branch builds and signs but publishes nothing.
+# Signed Mac beta ticks until 2026-10-26 03:00 UTC, then only daily 10:30 UTC.
+# A lightweight tick dispatches main so artifact and workflow provenance stay equal.
 # See docs/macos-auto-update.md.
 name: macos-release
 
@@ -6,8 +7,13 @@ on:
   # Daily window outside corporate VPN hours; the runner is free between ticks. Manual build now bypasses it.
   schedule:
     - cron: "30 10 * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
+      beta_tick:
+        description: 'Internal automatic selector: frequent or daily; empty keeps manual behavior'
+        required: false
+        default: ''
       source:
         description: 'Exact main ancestor for a manual hosted shipping artifact; empty selects workflow SHA'
         required: false
@@ -15,7 +21,7 @@ on:
 
 # Finish the selected daily/manual snapshot even when main advances.
 concurrency:
-  group: okilum-macos-build-${{ github.ref }}
+  group: ${{ github.event_name == 'schedule' && 'okilum-macos-select' || 'okilum-macos-build' }}
   cancel-in-progress: false
 
 jobs:
@@ -31,15 +37,23 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Select unpublished main or dispatch a source-pinned run
+        id: select
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          MACOS_BETA_TICK: ${{ inputs.beta_tick }}
+          RELEASE_SCHEDULE: ${{ github.event.schedule }}
+        run: python3 scripts/releases/coalesce.py macos
       - name: Select delivery route without a local fallback
         id: route
+        if: steps.select.outputs.build == 'true'
         env:
-          MACOS_LANE: ${{ vars.OKILUM_MACOS_LANE }}
+          # The temporary approved M4 window must not follow the workday hosted lane.
+          # After expiry the original daily/manual routing is unchanged.
+          MACOS_LANE: ${{ steps.select.outputs.local == 'true' && 'local' || vars.OKILUM_MACOS_LANE }}
           PRODUCT_SOURCE: ${{ inputs.source }}
         run: python3 scripts/releases/macos-hosted.py route
-      - name: Select hourly or manual build
-        id: select
-        run: python3 scripts/releases/coalesce.py macos
 
   release:
     needs: select
