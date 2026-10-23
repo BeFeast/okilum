@@ -102,3 +102,7 @@ run_tests okilum-shell --bins reader_thumbnail::native_tests
 run_tests okilum-shell --bins updater::macos::tests::channel_defaults_to_stable_and_keeps_an_explicit_choice --exact
 
 release_cache_stats
+
+# #1583: Settings progress/ready/restart controls and the shared update state machine.
+run_tests okilum-shell --bins updater::status::
+run_tests okilum-shell --bins updater::progress_ui_tests::

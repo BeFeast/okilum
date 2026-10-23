@@ -7,6 +7,8 @@ extern "C" {
     fn okilum_updater_available() -> bool;
     fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
+    fn okilum_updater_restart() -> bool;
+    fn okilum_updater_ready() -> bool;
     fn okilum_updater_beta() -> bool;
     fn okilum_updater_set_beta(enabled: bool);
     #[cfg(test)]
@@ -22,9 +24,22 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
             .to_string_lossy()
             .into_owned()
     };
+    if kind == 6 {
+        status::begin_restart();
+        return;
+    }
+    if kind == 8 {
+        status::relaunched();
+        return;
+    }
     status::set(match kind {
         0 => CheckStatus::UpToDate(std::time::SystemTime::now()),
         1 => CheckStatus::Available(text),
+        3 => CheckStatus::Downloading(text.parse::<u8>().ok().map(|p| p.min(100))),
+        4 => CheckStatus::Preparing,
+        5 => CheckStatus::Ready,
+        6 => CheckStatus::Restarting,
+        7 => CheckStatus::Idle,
         _ => CheckStatus::Failed(text),
     });
 }
@@ -39,11 +54,9 @@ pub(super) fn available() -> bool {
     unsafe { okilum_updater_available() }
 }
 pub(super) fn check() {
-    status::set(CheckStatus::Checking);
-    if !unsafe { okilum_updater_check() } {
-        status::set(CheckStatus::Note(
-            "An update check or download is already in progress.".into(),
-        ));
+    // A repeated check must not replace download progress or a ready action.
+    if unsafe { okilum_updater_check() } {
+        status::set(CheckStatus::Checking);
     }
 }
 pub(super) fn install() {
@@ -73,5 +86,37 @@ mod tests {
         assert!(!beta(), "an explicit Stable choice stays");
         unsafe { okilum_updater_forget_beta() };
         assert!(!beta());
+    }
+}
+
+pub(super) fn ready() -> bool {
+    unsafe { okilum_updater_ready() }
+}
+pub(super) fn restart(cx: &mut gpui::App) {
+    if !ready() {
+        return;
+    }
+    let result = (|| -> anyhow::Result<()> {
+        anyhow::ensure!(
+            crate::reader_editor::protect_all_for_quit(cx),
+            "Your latest edits could not be protected. Okilum will stay open."
+        );
+        crate::reader_ui_state::prepare_for_restart(cx)?;
+        anyhow::ensure!(
+            unsafe { okilum_updater_restart() },
+            "The update is no longer ready. Check for updates again."
+        );
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, cx| {
+                crate::reader_toast::error(
+                    format!("Could not restart to update: {error}"),
+                    window,
+                    cx,
+                )
+            });
+        }
     }
 }

@@ -798,7 +798,7 @@ fn schedule(cx: &mut App) {
     });
     cx.global_mut::<Store>().pending = Some(task);
 }
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(crate) fn prepare_for_restart(cx: &mut App) -> anyhow::Result<()> {
     let Some(store) = cx.try_global::<Store>() else {
         return Ok(());
