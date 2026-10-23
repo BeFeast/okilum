@@ -169,14 +169,13 @@ malformed evidence fails reuse. A cancelled original GitHub producer is explicit
 rejected even when its AppImage job and smoke succeeded.
 There is no fallback build, relabelling or duplicate producer dispatch.
 
-Arch and AppImage publication are independent in both directions. Arch dispatch
-requires only the successful `release` job; its protected publisher verifies trusted
-main origin and exactly one successful `release` job through the jobs API, then
-consumes only `arch-publication`. AppImage dispatch requires successful reuse with
-`accepted=true` and consumes only `appimage-publication`. An aggregate failure in
-the other lane cannot block accepted bytes. Reuse runs on every main tick even
-when the Arch descriptor already exists, so later accepted AppImage evidence
-can publish on the next tick without compiling another source. Cancellation still blocks publication.
+AppImage publication is independent of Arch acceptance: dispatch requires successful
+reuse with `accepted=true` and consumes only `appimage-publication`. An Arch failure
+cannot block accepted AppImage bytes. Arch dispatch still requires its successful
+`release` job, and its protected publisher retains the successful aggregate gate;
+it consumes only `arch-publication`. Reuse runs on every main tick even when the
+Arch descriptor already exists, so later accepted AppImage evidence can publish
+on the next tick without compiling another source. Cancellation still blocks publication.
 Only the existing protected `publish` runner imports the Linux key and R2 credentials,
 under the unchanged cross-platform publication/promotion lock.
 
@@ -293,7 +292,23 @@ non-cancellable lock, pinned signer, immutable storage and monotonic beta guard.
 Explicit AppImage sources can advance beta; the legacy archive-only Arch path
 and all Stable behavior remain unchanged.
 
-The next public candidate must be signed source `86f078a5` or a later main
-source containing Dima's #1497 fix, with accepted original producer evidence.
-The earlier embedded build 6478 is not the current candidate. The parent owns
-post-merge dispatch and public verification; this change performs no live publish.
+### AppImage-only Linux transition (approved 2026-10-23, #1564)
+
+The approved destination is AppImage-only Linux delivery, with Linux Stable using
+the signed AppImage. This handoff change does not activate that transition:
+current pacman beta/Stable delivery remains available until #1564. The repository
+will be frozen, not deleted, after a final pacman release communicates the switch.
+
+Delivery order is #1488 (independent AppImage publication), #1470 slice 3
+(self-update, blocking the switch), then #1564 (first-launch desktop integration,
+muninn launch/vault/update acceptance, final pacman switch message, AppImage Stable
+promotion and one Linux download page), followed by #1559 and #1557.
+Self-update must pass N-to-N+1 acceptance on Arch and Ubuntu. The first-launch
+integration must create a user-local desktop entry and icon, support removal, and
+require no AppImageLauncher. These remain pending product work, not capabilities
+implemented by this publication PR.
+
+Signed AppImage build 6606 from source `0c58` has already been delivered to Dima;
+no additional publication is needed for this revision. The parent owns subsequent
+publication and Stable GO after the required acceptance. This change performs no
+live publish and grants no new Stable GO.

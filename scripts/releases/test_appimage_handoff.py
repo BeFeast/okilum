@@ -152,24 +152,21 @@ class ReuseOutcomes(unittest.TestCase):
                 self.stage(error=error)
 
 
-class ArchIndependence(unittest.TestCase):
-    def test_unique_successful_release_authorizes_failed_or_running_aggregate(self):
+class ArchCompatibility(unittest.TestCase):
+    def test_arch_retains_successful_aggregate_gate_and_own_artifact(self):
         import publication
         run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'schedule',
-               'status': 'failure', 'commit_sha': SOURCE}
-        job = {'name': 'release', 'status': 'success'}
-        for status in ['failure', 'running', 'success']:
-            self.assertTrue(publication.eligible({**run, 'status': status}, 'linux', SOURCE, [job]))
-        for jobs in [[], [job, job], [{**job, 'status': 'failure'}],
-                     [{**job, 'status': 'running'}]]:
-            self.assertFalse(publication.eligible(run, 'linux', SOURCE, jobs))
-        self.assertFalse(publication.eligible({**run, 'status': 'cancelled'}, 'linux', SOURCE, [job]))
+               'status': 'success', 'commit_sha': SOURCE}
+        self.assertTrue(publication.eligible(run, 'linux', SOURCE))
+        for status in ['failure', 'running', 'cancelled', 'skipped']:
+            with self.subTest(status=status):
+                self.assertFalse(publication.eligible({**run, 'status': status}, 'linux', SOURCE))
         self.assertEqual(publication.ARTIFACTS['linux'], {'arch-publication': 'arch'})
 
 
 class WorkflowIndependence(unittest.TestCase):
-    def test_dag_preserves_each_lanes_own_acceptance(self):
+    def test_dag_decouples_appimage_without_weakening_arch(self):
         workflow = (Path(__file__).resolve().parents[2] /
                     '.forgejo/workflows/linux-release.yml').read_text()
         def job(name):
@@ -179,7 +176,7 @@ class WorkflowIndependence(unittest.TestCase):
         arch = job('publication')
         self.assertIn('needs: [select, release]', arch)
         self.assertIn("needs.release.result == 'success'", arch)
-        self.assertIn('if: always()', arch)
+        self.assertNotIn('if: always()', arch)
         appimage = job('appimage-publication')
         self.assertIn('needs: [select, appimage-reuse]', appimage)
         self.assertIn("needs.appimage-reuse.outputs.accepted == 'true'", appimage)

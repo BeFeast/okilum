@@ -62,7 +62,7 @@ class PublicationBoundary(unittest.TestCase):
                'status': 'success', 'commit_sha': 'source', 'index_in_repo': 42}
         for final_head, expected in [('source', True), ('newer', True)]:
             api = Mock()
-            api.call.side_effect = [run, {'commit': {'id': 'source'}}, [{'name': 'release', 'status': 'success'}],
+            api.call.side_effect = [run, {'commit': {'id': 'source'}},
                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                  for i, name in enumerate(publication.ARTIFACTS['linux'])],
                 data.getvalue(), {'commit': {'id': final_head}}]
@@ -85,7 +85,7 @@ class PublicationBoundary(unittest.TestCase):
         run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'push',
                'status': 'success', 'commit_sha': 'previous-main', 'index_in_repo': 42}
-        self.assertTrue(publication.eligible(run, 'linux', 'new-main', [{'name': 'release', 'status': 'success'}]))
+        self.assertTrue(publication.eligible(run, 'linux', 'new-main'))
         for changes in [{'prettyref': 'feature'}, {'is_fork_pull_request': True},
                         {'trigger_event': 'pull_request'}, {'workflow_id': 'ci.yml'}]:
             with self.assertRaises(ValueError):
@@ -93,13 +93,12 @@ class PublicationBoundary(unittest.TestCase):
         for status in ['failure', 'cancelled', 'running']:
             self.assertFalse(publication.eligible({**run, 'status': status}, 'linux', 'new-main'))
         api = Mock()
-        api.call.side_effect = [run, {'commit': {'id': 'new-main'}},
-                                [{'name': 'release', 'status': 'success'}]]
+        api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
         with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
             store.return_value.call.return_value = json.dumps({'build': 5043}).encode()
             publication.publish(api, 'linux', 12)
             launch.assert_not_called()
-            self.assertEqual(api.call.call_count, 3 if run.get('workflow_id') == 'linux-release.yml' else 2)
+            self.assertEqual(api.call.call_count, 2)
 
     def test_hourly_and_manual_snapshots_publish_after_main_advances(self):
         import publication
@@ -142,15 +141,12 @@ class PublicationBoundary(unittest.TestCase):
                    'status': 'success', 'commit_sha': 'old-main', 'index_in_repo': 42}
             api = Mock()
             api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
-            if run['workflow_id'] == 'linux-release.yml':
-                api.call.side_effect = [run, {'commit': {'id': 'new-main'}},
-                                        [{'name': 'release', 'status': 'success'}]]
             with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
                 store.return_value.call.return_value = feed
                 self.assertEqual(publication.published_build(store(), platform), 5043)
                 publication.publish(api, platform, 12)
                 launch.assert_not_called()
-                self.assertEqual(api.call.call_count, 3 if run.get('workflow_id') == 'linux-release.yml' else 2)
+                self.assertEqual(api.call.call_count, 2)
 
 
 class ExplicitSourcePublication(unittest.TestCase):
@@ -176,7 +172,7 @@ class ExplicitSourcePublication(unittest.TestCase):
                'is_fork_pull_request': False, 'trigger_event': event,
                'status': 'success', 'commit_sha': 'c' * 40, 'index_in_repo': 42}
         api = Mock()
-        api.call.side_effect = [run, {'commit': {'id': 'c' * 40}}, [{'name': 'release', 'status': 'success'}],
+        api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
                                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                                  for i, name in enumerate(publication.ARTIFACTS['linux'])],
                                 data.getvalue(), {'commit': {'id': final_head}}]

@@ -27,15 +27,10 @@ ARTIFACTS = {'macos': {'macos-publication': 'macos'},
              'windows': {'okilum-windows-velopack': 'windows', 'windows-portable': 'portable'}}
 
 
-def eligible(run, platform, head, jobs=None):
+def eligible(run, platform, head):
     if (run['workflow_id'] != WORKFLOWS[platform] or run['prettyref'] != 'main'
             or run['is_fork_pull_request'] or run['trigger_event'] not in ['push', 'workflow_dispatch', 'schedule']):
         raise ValueError('Publication requires a trusted main release build')
-    if platform == 'linux':
-        if run['status'] == 'cancelled':
-            return False
-        releases = [job for job in (jobs or []) if job.get('name') == 'release']
-        return len(releases) == 1 and releases[0].get('status') == 'success'
     return run['status'] == 'success' and (snapshot_run(run, platform) or run['commit_sha'] == head)
 
 
@@ -114,20 +109,17 @@ def one(root, pattern):
 
 
 def publish(client, platform, run_id):
-    # Arch acceptance belongs to its release job, independently of AppImage reuse.
-    # Other platforms retain aggregate acceptance; cancellation never authorizes writes.
+    # Dispatch is the build's final step. Wait only for its final success record;
+    # a newer push cancelling it must never authorize publication.
     for _ in range(120):
         run = client.call('GET', f'/actions/runs/{run_id}')
         head = client.call('GET', '/branches/main')['commit']['id']
-        if ((run['status'] == 'cancelled' or (platform != 'linux' and run['status'] in ['failure', 'skipped']))
+        if (run['status'] in ['failure', 'cancelled', 'skipped']
                 or (not snapshot_run(run, platform) and run['commit_sha'] != head)):
             print('Cancelled, failed or superseded build: nothing published')
             return
-        jobs = client.call('GET', f'/actions/runs/{run_id}/jobs') if platform == 'linux' else None
-        if eligible(run, platform, head, jobs):
+        if eligible(run, platform, head):
             break
-        if platform == 'linux' and run['status'] in ('failure', 'success', 'skipped'):
-            raise ValueError('Source run has no unique successful Arch release job')
         time.sleep(5)
     else:
         raise ValueError('Source build did not finish successfully')

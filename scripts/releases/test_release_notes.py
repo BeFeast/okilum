@@ -221,8 +221,6 @@ class PublicationSidecar(unittest.TestCase):
                 def api(method, path, **kwargs):
                     if path == '/actions/runs/12':
                         return run
-                    if path == '/actions/runs/12/jobs':
-                        return [{'name': 'release', 'status': 'success'}]
                     if path == '/branches/main':
                         return {'commit': {'id': SOURCE}}
                     if path.endswith('/artifacts'):

@@ -177,7 +177,7 @@ jobs:
 
   publication:
     needs: [select, release]
-    if: always() && needs.select.result == 'success' && needs.release.result == 'success' && inputs.appimage_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: needs.select.result == 'success' && needs.release.result == 'success' && inputs.appimage_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 3
     steps:
