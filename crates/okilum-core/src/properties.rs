@@ -78,19 +78,102 @@ pub fn parse(yaml: &str) -> Result<Vec<Property>, String> {
         .into_iter()
         .map(|(key, value)| {
             let key = scalar_text(&key);
-            let value = match value {
-                Value::Number(n) => PropertyValue::Number(
-                    written
-                        .get(key.as_str())
-                        .filter(|raw| !raw.is_empty() && !raw.starts_with('#'))
-                        .map(|raw| (*raw).to_owned())
-                        .unwrap_or_else(|| n.to_string()),
-                ),
-                other => convert(other),
+            let value = if alias_key(&key) {
+                alias_property(value)
+            } else {
+                match value {
+                    Value::Number(n) => PropertyValue::Number(
+                        written
+                            .get(key.as_str())
+                            .filter(|raw| !raw.is_empty() && !raw.starts_with('#'))
+                            .map(|raw| (*raw).to_owned())
+                            .unwrap_or_else(|| n.to_string()),
+                    ),
+                    other => convert(other),
+                }
             };
             Property { key, value }
         })
         .collect())
+}
+
+/// Reserved metadata: alias declarations name this note, never another note.
+pub fn alias_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("aliases")
+}
+
+fn alias_text(text: &str) -> String {
+    let text = text.trim();
+    text.strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .filter(|s| !s.contains(['[', ']']))
+        .unwrap_or(text)
+        .trim()
+        .to_owned()
+}
+
+fn alias_property(value: Value) -> PropertyValue {
+    match value {
+        Value::String(s) => PropertyValue::Text(alias_text(&s)),
+        Value::Sequence(items) => {
+            if let Some(PropertyValue::Link { target, label }) = unquoted_link(&items) {
+                // A declaration has no link target or click handler.
+                return PropertyValue::Text(if target == label {
+                    target
+                } else {
+                    format!("{target}|{label}")
+                });
+            }
+            PropertyValue::List(items.into_iter().map(alias_property).collect())
+        }
+        Value::Tagged(tagged) => alias_property(tagged.value),
+        Value::Null => PropertyValue::Empty,
+        other => PropertyValue::Text(scalar_text(&other)),
+    }
+}
+
+/// Valid scalar/list declarations, including legacy quoted [[name]] strings.
+/// Invalid YAML/types do not invent identities. Values are not comma-split.
+pub fn aliases(source: &str) -> Vec<String> {
+    fn collect(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::String(text) => {
+                let name = alias_text(text);
+                if !name.is_empty() && !name.contains(['[', ']', '|', '#', '^', '\n', '\r']) {
+                    out.push(name);
+                }
+            }
+            Value::Sequence(items) => {
+                if let Some(PropertyValue::Link { target, label }) = unquoted_link(items) {
+                    if target == label {
+                        collect(&Value::String(target), out);
+                    }
+                } else {
+                    for item in items {
+                        if matches!(item, Value::String(_) | Value::Tagged(_)) {
+                            collect(item, out);
+                        }
+                    }
+                }
+            }
+            Value::Tagged(tagged) => collect(&tagged.value, out),
+            _ => {}
+        }
+    }
+    let Some(Value::Mapping(map)) =
+        frontmatter_block(source).and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in map {
+        if key.as_str().is_some_and(alias_key) {
+            collect(&value, &mut out);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|name| seen.insert(name.to_lowercase()));
+    out
 }
 
 fn scalar_text(value: &Value) -> String {
@@ -209,7 +292,9 @@ pub fn links(properties: &[Property]) -> Vec<(String, String)> {
     }
     let mut out = Vec::new();
     for property in properties {
-        walk(&property.key, &property.value, &mut out);
+        if !alias_key(&property.key) {
+            walk(&property.key, &property.value, &mut out);
+        }
     }
     out
 }

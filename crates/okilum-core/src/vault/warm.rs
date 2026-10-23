@@ -8,8 +8,8 @@ use std::io::{Read, Write};
 #[cfg(any(not(windows), test))]
 use std::time::UNIX_EPOCH;
 
-// v2 excludes service sidecars and invalid UTF-8 sources from derived data.
-const SCHEMA: u32 = 2;
+// v3 adds alias identities and removes alias declarations from relationship edges.
+const SCHEMA: u32 = 3;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,6 +135,7 @@ pub struct Snapshot {
     pub id: String,
     entries: Vec<VaultEntry>,
     links: HashMap<String, Vec<Backlink>>,
+    aliases: BTreeMap<String, Vec<String>>,
     sources: BTreeMap<String, Source>,
     #[serde(default)]
     unreadable: Vec<CachedUnreadable>,
@@ -172,6 +173,7 @@ pub struct StartupSnapshot {
     // Sorted so an unchanged manifest serialises to identical bytes.
     #[serde(serialize_with = "sorted_links")]
     links: HashMap<String, Vec<Backlink>>,
+    aliases: BTreeMap<String, Vec<String>>,
     unreadable: Vec<CachedUnreadable>,
     primary: Option<(String, Source)>,
     #[serde(default)]
@@ -268,10 +270,24 @@ fn latest_primary(base: &Path, root: &Path) -> Option<(String, Source)> {
     Some(snapshot.primary)
 }
 
+fn validate_aliases(entries: &[VaultEntry], aliases: &BTreeMap<String, Vec<String>>) -> Result<()> {
+    let notes: std::collections::HashSet<_> = entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Markdown)
+        .map(|entry| &entry.path)
+        .collect();
+    ensure!(
+        aliases.keys().all(|path| notes.contains(path)),
+        "Invalid cached alias identity"
+    );
+    Ok(())
+}
+
 fn cached_vault(
     root: &Path,
     entries: &[VaultEntry],
     links: &HashMap<String, Vec<Backlink>>,
+    aliases: &BTreeMap<String, Vec<String>>,
     unreadable: &[CachedUnreadable],
 ) -> Vault {
     let mut vault = Vault::from_note_paths(
@@ -283,6 +299,8 @@ fn cached_vault(
     vault.root = root.to_path_buf();
     vault.entries = entries.to_vec();
     vault.backlink_map = links.clone();
+    vault.aliases = aliases.clone();
+    vault.rebuild_alias_map();
     vault.unreadable = unreadable
         .iter()
         .map(|item| UnreadableEntry {
@@ -375,6 +393,7 @@ impl StartupSnapshot {
                 root: snapshot.root.clone(),
                 entries: snapshot.entries.clone(),
                 links: snapshot.links.clone(),
+                aliases: snapshot.aliases.clone(),
                 unreadable: snapshot.unreadable.clone(),
                 primary: None,
                 source_id: Some(snapshot.id.clone()),
@@ -413,6 +432,7 @@ impl StartupSnapshot {
             snapshot.search_generation.as_deref(),
         )
         .context("Invalid Reader startup inventory")?;
+        validate_aliases(&snapshot.entries, &snapshot.aliases)?;
         if let Some((path, source)) = &snapshot.primary {
             ensure!(
                 relative(path)
@@ -432,7 +452,13 @@ impl StartupSnapshot {
     }
 
     pub fn vault(&self) -> Vault {
-        cached_vault(&self.root, &self.entries, &self.links, &self.unreadable)
+        cached_vault(
+            &self.root,
+            &self.entries,
+            &self.links,
+            &self.aliases,
+            &self.unreadable,
+        )
     }
 
     pub fn source(&self, path: &str) -> Option<String> {
@@ -601,6 +627,7 @@ impl Snapshot {
             snapshot.search_generation.as_deref(),
         )
         .context("Invalid Reader source inventory")?;
+        validate_aliases(&snapshot.entries, &snapshot.aliases)?;
         let notes: std::collections::HashSet<_> = snapshot
             .entries
             .iter()
@@ -630,7 +657,13 @@ impl Snapshot {
     }
 
     pub fn vault(&self) -> Vault {
-        cached_vault(&self.root, &self.entries, &self.links, &self.unreadable)
+        cached_vault(
+            &self.root,
+            &self.entries,
+            &self.links,
+            &self.aliases,
+            &self.unreadable,
+        )
     }
 
     pub fn invalidate_paths(&mut self, paths: &[String]) {
@@ -1016,6 +1049,28 @@ fn finish_reconcile(
             .collect()
     });
     let content_unchanged = affected.is_empty();
+    if let Some(old) = previous {
+        vault.aliases = old.aliases.clone();
+        let mut names = std::collections::BTreeSet::new();
+        for path in &affected {
+            let before = vault.aliases.get(path).cloned().unwrap_or_default();
+            let raw = sources
+                .get(path)
+                .and_then(|s| STANDARD.decode(&s.bytes).ok())
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            if vault.update_aliases(path, raw.as_deref()) {
+                names.extend(before);
+                names.extend(vault.aliases.get(path).into_iter().flatten().cloned());
+            }
+        }
+        vault.rebuild_alias_map();
+        if !names.is_empty() {
+            let candidates = crate::link_candidates::CandidateIndex::from_snapshot(old);
+            for name in names {
+                affected.extend(candidates.referrers_for(&name));
+            }
+        }
+    }
     let bounded = !force_read
         && previous.is_some()
         && affected.len() + topology.len() < crate::watch::BULK_THRESHOLD;
@@ -1074,6 +1129,7 @@ fn finish_reconcile(
         id: unchanged.map_or_else(|| uuid::Uuid::new_v4().to_string(), |old| old.id.clone()),
         entries: vault.entries.clone(),
         links: vault.backlink_map.clone(),
+        aliases: vault.aliases.clone(),
         sources,
         unreadable,
         search_generation: if stats.graph_reused {
@@ -1113,6 +1169,7 @@ pub fn save_provisional(
         root: snapshot.root.clone(),
         entries: snapshot.entries.clone(),
         links: snapshot.links.clone(),
+        aliases: snapshot.aliases.clone(),
         unreadable: snapshot.unreadable.clone(),
         primary: primary.and_then(|path| {
             snapshot

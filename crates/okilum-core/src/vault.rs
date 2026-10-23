@@ -471,6 +471,8 @@ pub struct Vault {
     suffix_map: HashMap<String, Vec<String>>,
     /// lowercase full rel path without .md -> rel path
     path_map: HashMap<String, String>,
+    pub(crate) aliases: std::collections::BTreeMap<String, Vec<String>>,
+    alias_map: HashMap<String, Vec<String>>,
     /// lowercase asset filename -> absolute path
     asset_map: HashMap<String, PathBuf>,
     /// target rel path -> backlinks
@@ -722,6 +724,8 @@ impl Vault {
             entries,
             suffix_map,
             path_map,
+            aliases: Default::default(),
+            alias_map: Default::default(),
             asset_map,
             backlink_map: HashMap::new(),
             occupied_paths,
@@ -796,6 +800,7 @@ impl Vault {
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
             self.notes.sort_by(|a, b| a.path.cmp(&b.path));
         }
+        self.rebuild_alias_map();
     }
 
     fn refresh_backlinks_from(
@@ -834,6 +839,8 @@ impl Vault {
             entries: Vec::new(),
             suffix_map: HashMap::new(),
             path_map: HashMap::new(),
+            aliases: Default::default(),
+            alias_map: Default::default(),
             asset_map: HashMap::new(),
             backlink_map: HashMap::new(),
             occupied_paths: HashSet::new(),
@@ -989,11 +996,52 @@ impl Vault {
         if let Some(path) = self.path_map.get(key) {
             return ResolutionRef::Resolved(path);
         }
-        match self.suffix_map.get(key) {
+        match self.alias_map.get(key).or_else(|| self.suffix_map.get(key)) {
             None => ResolutionRef::Unresolved,
             Some(c) if c.len() == 1 => ResolutionRef::Resolved(&c[0]),
             Some(c) => ResolutionRef::Ambiguous(c),
         }
+    }
+
+    /// Authored aliases, keyed by canonical path. No filesystem I/O.
+    pub fn aliases(&self) -> &std::collections::BTreeMap<String, Vec<String>> {
+        &self.aliases
+    }
+
+    fn rebuild_alias_map(&mut self) {
+        self.alias_map.clear();
+        if self.aliases.is_empty() {
+            return;
+        }
+        let identities: HashSet<_> = self.notes.iter().map(|note| &note.path).collect();
+        for (path, names) in &self.aliases {
+            if !identities.contains(path) {
+                continue;
+            }
+            for name in names {
+                let lower = name.to_lowercase();
+                let key = lower.trim_end_matches(".md").trim_matches('/');
+                let candidates = self
+                    .alias_map
+                    .entry(key.into())
+                    .or_insert_with(|| self.suffix_map.get(key).cloned().unwrap_or_default());
+                candidates.push(path.clone());
+            }
+        }
+        for candidates in self.alias_map.values_mut() {
+            candidates.sort();
+            candidates.dedup();
+        }
+    }
+
+    fn update_aliases(&mut self, path: &str, source: Option<&str>) -> bool {
+        let aliases = source.map(crate::properties::aliases).unwrap_or_default();
+        let previous = self.aliases.remove(path).unwrap_or_default();
+        let changed = previous != aliases;
+        if !aliases.is_empty() {
+            self.aliases.insert(path.into(), aliases);
+        }
+        changed
     }
 
     /// Ordinary Markdown is relative-first; existing but unreadable/invalid
@@ -1262,6 +1310,7 @@ impl Vault {
             &self.entries,
             &self.unreadable,
             self.inventory_complete,
+            &self.aliases,
             sorted(&self.occupied_paths),
             sorted(&self.non_directory_paths),
             sorted(&self.symlink_paths),
@@ -1297,7 +1346,36 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
         mut source: impl FnMut(&str) -> Option<String>,
     ) -> Result<()> {
-        self.build_backlinks_selected(None, checkpoint, &mut source)
+        // Wiki resolution needs every declaration first. Retain only outgoing
+        // link facts, not a second full-vault source bank; read each note once.
+        let resolver = self.backlink_resolver()?;
+        let mut links = HashMap::new();
+        self.aliases.clear();
+        for (count, path) in self
+            .notes
+            .iter()
+            .map(|n| n.path.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+        {
+            checkpoint("Preparing aliases", count)?;
+            if let Some(text) = source(&path) {
+                self.update_aliases(&path, Some(&text));
+                links.insert(path.clone(), graph_links(&text, &resolver, &path));
+            }
+        }
+        self.rebuild_alias_map();
+        self.build_backlinks_parsed(None, checkpoint, &resolver, |path| links.remove(path))
+    }
+
+    fn backlink_resolver(&self) -> Result<Self> {
+        // Resolve graph identities against one metadata inventory and canonical
+        // root. Full UI/file actions retain their explicit filesystem checks.
+        let mut resolver = self.clone();
+        resolver.graph_root = Some(canonical_root(&self.root)?);
+        resolver.graph_os_paths = Default::default();
+        Ok(resolver)
     }
 
     fn build_backlinks_selected(
@@ -1306,12 +1384,19 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
         mut source: impl FnMut(&str) -> Option<String>,
     ) -> Result<()> {
-        // Resolve graph identities against one metadata inventory and canonical
-        // root. Full UI/file actions retain their explicit filesystem checks.
-        let mut resolver = self.clone();
-        resolver.graph_root = Some(canonical_root(&self.root)?);
-        resolver.graph_os_paths = Default::default();
-        let link_re = wikilink_re();
+        let resolver = self.backlink_resolver()?;
+        self.build_backlinks_parsed(selected, checkpoint, &resolver, |path| {
+            source(path).map(|text| graph_links(&text, &resolver, path))
+        })
+    }
+
+    fn build_backlinks_parsed(
+        &mut self,
+        selected: Option<&std::collections::BTreeSet<String>>,
+        checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+        resolver: &Self,
+        mut source: impl FnMut(&str) -> Option<Vec<GraphLink>>,
+    ) -> Result<()> {
         let mut map: HashMap<String, Vec<Backlink>> = HashMap::new();
         for (count, note) in self
             .notes
@@ -1320,33 +1405,16 @@ impl Vault {
             .enumerate()
         {
             checkpoint("Preparing backlinks", count)?;
-            let Some(text) = source(&note.path) else {
+            let Some(links) = source(&note.path) else {
                 continue;
             };
-            let frontmatter_len = text.len() - crate::render::without_frontmatter(&text).len();
-            let mut occurrences = Vec::new();
-            for span in prose_spans(&text) {
-                for cap in link_re.captures_iter(&text[span.clone()]) {
-                    occurrences.push((
-                        span.start + cap.get(0).unwrap().start(),
-                        cap[1].trim().to_owned(),
-                        true,
-                    ));
-                }
-            }
-            // Inline destinations or reference definitions are necessary for
-            // local Markdown links. Wiki-only notes keep the cheap graph path.
-            if text.contains("](") || text.contains("]:") {
-                occurrences.extend(
-                    crate::document_links::parse_in_vault(&text, &resolver, &note.path)
-                        .into_iter()
-                        .filter(|link| !link.wiki)
-                        .map(|link| (link.range.start, link.target, false)),
-                );
-            }
-            occurrences.sort_by_key(|(at, _, _)| *at);
-            for (at, target, wiki) in occurrences {
-                let line = line_around(&text, at);
+            for GraphLink {
+                target,
+                wiki,
+                context,
+                property,
+            } in links
+            {
                 // An ambiguous link is recorded against EVERY candidate,
                 // marked. The alternatives are both dishonest: giving it to
                 // one candidate is the "duplicate stems steal backlinks"
@@ -1355,7 +1423,7 @@ impl Vault {
                     self.resolve_from(&target, &note.path)
                 } else {
                     let resolved =
-                        crate::document_links::resolve(&target, false, &resolver, &note.path);
+                        crate::document_links::resolve(&target, false, resolver, &note.path);
                     match resolved.status {
                         "resolved" => Resolution::Resolved {
                             path: resolved.candidates[0].clone(),
@@ -1377,7 +1445,6 @@ impl Vault {
                         continue;
                     }
                     let entry = map.entry(resolved).or_default();
-                    let ctx: String = line.trim().chars().take(240).collect();
                     // Entries for one source note are contiguous at the
                     // tail (notes are walked in order), so the duplicate
                     // check only has to look at that tail. Scanning the
@@ -1387,7 +1454,7 @@ impl Vault {
                         .iter()
                         .rev()
                         .take_while(|b| b.path == note.path)
-                        .position(|b| b.context == ctx)
+                        .position(|b| b.context == context)
                         .map(|k| entry.len() - 1 - k);
                     match existing {
                         // One backlink per (source note, line). If the same
@@ -1404,12 +1471,10 @@ impl Vault {
                         None => entry.push(Backlink {
                             path: note.path.clone(),
                             title: note.title.clone(),
-                            context: ctx,
+                            context: context.clone(),
                             link: target.to_string(),
                             ambiguous,
-                            property: (at < frontmatter_len)
-                                .then(|| property_key(&text[..at]))
-                                .flatten(),
+                            property: property.clone(),
                         }),
                     }
                 }
@@ -1425,6 +1490,79 @@ impl Vault {
         self.backlink_map = map;
         Ok(())
     }
+}
+
+/// Source-independent facts retained until all alias declarations are known.
+struct GraphLink {
+    target: String,
+    wiki: bool,
+    context: String,
+    property: Option<String>,
+}
+
+fn graph_links(text: &str, resolver: &Vault, from: &str) -> Vec<GraphLink> {
+    let frontmatter_len = text.len() - crate::render::without_frontmatter(text).len();
+    // YAML-aware ranges exclude alias declarations even in flow mappings and
+    // quoted keys. Body syntax keeps the existing cheap wiki graph path.
+    let yaml_properties = crate::properties::frontmatter_block(text)
+        .and_then(|yaml| crate::properties::parse(yaml).ok())
+        .is_some_and(|properties| {
+            properties
+                .iter()
+                .any(|p| crate::properties::alias_key(&p.key))
+        });
+    let mut occurrences = Vec::new();
+    if yaml_properties {
+        occurrences.extend(
+            crate::link_candidates::syntax::property_targets(text)
+                .into_iter()
+                .filter_map(|link| {
+                    let target = crate::document_links::wiki_parts(&link.text).0;
+                    // The graph identifies notes; heading/block intent remains
+                    // with the document-link navigation parser.
+                    let target = target.split(['#', '^']).next()?.trim();
+                    (!target.is_empty()).then(|| (link.range.start, target.to_owned(), true))
+                }),
+        );
+    }
+    for span in prose_spans(text) {
+        for cap in wikilink_re().captures_iter(&text[span.clone()]) {
+            let at = span.start + cap.get(0).unwrap().start();
+            if yaml_properties && at < frontmatter_len {
+                continue;
+            }
+            occurrences.push((at, cap[1].trim().to_owned(), true));
+        }
+    }
+    if text.contains("](") || text.contains("]:") {
+        occurrences.extend(
+            crate::document_links::parse_in_vault(text, resolver, from)
+                .into_iter()
+                .filter(|link| !link.wiki)
+                .map(|link| (link.range.start, link.target, false)),
+        );
+    }
+    occurrences.sort_by_key(|(at, _, _)| *at);
+    occurrences
+        .into_iter()
+        .filter_map(|(at, target, wiki)| {
+            let property = (at < frontmatter_len)
+                .then(|| property_key(&text[..at]))
+                .flatten();
+            if property
+                .as_deref()
+                .is_some_and(crate::properties::alias_key)
+            {
+                return None;
+            }
+            Some(GraphLink {
+                target,
+                wiki,
+                context: line_around(text, at).trim().chars().take(240).collect(),
+                property,
+            })
+        })
+        .collect()
 }
 
 /// The wikilink shape the link graph and the index scan for: target, optional
@@ -1946,3 +2084,7 @@ mod preimage_visibility_tests {
         assert!(!palette.iter().any(|n| n.path.ends_with(&filename)));
     }
 }
+
+#[cfg(test)]
+#[path = "vault/alias_tests.rs"]
+mod alias_tests;

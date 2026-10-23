@@ -30,6 +30,7 @@ impl State {
             source_id: snapshot.id.clone(),
             entries: BTreeMap::new(),
             sources: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             links: BTreeMap::new(),
             graph_sources: BTreeSet::new(),
             unreadable: snapshot.unreadable.clone(),
@@ -323,6 +324,7 @@ impl State {
             "Case-only rename requires reconciliation"
         );
         let touched: BTreeSet<_> = changes.changed.union(&changes.removed).cloned().collect();
+        let old_aliases = self.vault.aliases.clone();
         let mut affected = touched.clone();
         for path in directories.keys() {
             affected.extend(self.candidates.referrers_for(path));
@@ -464,6 +466,33 @@ impl State {
                 removed.insert(path);
             }
         }
+        // Alias edits change the destinations of otherwise unchanged referrers.
+        // Reparse those sources from the source bank; never reread the vault.
+        for path in &touched {
+            let before = old_aliases.get(path).cloned().unwrap_or_default();
+            let raw = self.snapshot.source(path);
+            if self.vault.update_aliases(path, raw.as_deref()) {
+                for name in before
+                    .iter()
+                    .chain(self.vault.aliases.get(path).into_iter().flatten())
+                {
+                    affected.extend(self.candidates.referrers_for(name));
+                }
+            }
+            self.delta
+                .aliases
+                .insert(path.clone(), self.vault.aliases.get(path).cloned());
+        }
+        self.vault.rebuild_alias_map();
+        self.snapshot.aliases = self.vault.aliases.clone();
+        // Expanded alias referrers may previously have pointed at another note.
+        targets.extend(
+            self.vault
+                .backlink_map
+                .iter()
+                .filter(|(_, incoming)| incoming.iter().any(|link| affected.contains(&link.path)))
+                .map(|(target, _)| target.clone()),
+        );
         let snapshot = &self.snapshot;
         self.vault
             .refresh_backlinks_from(&affected, checkpoint, |path| snapshot.source(path))?;
@@ -565,6 +594,7 @@ pub(super) struct Delta {
     source_id: String,
     entries: BTreeMap<String, Option<VaultEntry>>,
     sources: BTreeMap<String, Option<Source>>,
+    aliases: BTreeMap<String, Option<Vec<String>>>,
     links: BTreeMap<String, Option<Vec<Backlink>>>,
     graph_sources: BTreeSet<String>,
     unreadable: Vec<CachedUnreadable>,
@@ -611,6 +641,10 @@ impl Delta {
             }
         }
         ensure!(
+            delta.aliases.keys().all(|path| relative(path)),
+            "Invalid incremental alias identity"
+        );
+        ensure!(
             delta.search_generation.as_ref().is_none_or(
                 |name| name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
             ),
@@ -655,6 +689,15 @@ impl Delta {
         *unreadable = self.unreadable.clone();
     }
 
+    fn apply_aliases(&self, aliases: &mut BTreeMap<String, Vec<String>>) {
+        for (path, names) in &self.aliases {
+            aliases.remove(path);
+            if let Some(names) = names {
+                aliases.insert(path.clone(), names.clone());
+            }
+        }
+    }
+
     pub(super) fn apply_snapshot(&self, snapshot: &mut Snapshot) {
         self.apply_inventory(
             &mut snapshot.entries,
@@ -667,6 +710,7 @@ impl Delta {
                 snapshot.sources.insert(path.clone(), source.clone());
             }
         }
+        self.apply_aliases(&mut snapshot.aliases);
         snapshot.search_generation = self.search_generation.clone();
     }
 
@@ -683,6 +727,7 @@ impl Delta {
                 }
             }
         }
+        self.apply_aliases(&mut snapshot.aliases);
         snapshot.search_generation = self.search_generation.clone();
     }
 }

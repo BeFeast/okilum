@@ -36,6 +36,10 @@ whole selected window through a fresh PIT per cycle and confirms coverage only a
 all pages finish; bounds stop explicitly as incomplete. Corporate/native live acceptance
 and the visibility target remain unproven and cannot be silently substituted.
 
+**Note aliases (2026-10-23, #1562):** [reserved frontmatter aliases](note-aliases.md)
+adds vault-wide wiki resolution and Quick Open matching; declarations are plain
+property chips, with existing canonical-path precedence and explicit ambiguity.
+
 ## 1. What Okilum is
 
 **Project manager extension (2026-10-21, #1418 / #1415):**
