@@ -2919,7 +2919,10 @@ impl Reader {
             return title;
         }
         if path.ends_with(".md") {
-            self.vault.note_title(path)
+            self.backlink_titles
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| self.vault.note_title(path))
         } else {
             path.rsplit('/').next().unwrap_or(path).to_owned()
         }
@@ -3117,11 +3120,14 @@ impl Reader {
                 self.tree_revealed.clear();
             }
             // Titles belong to this inventory and root.
-            Arc::make_mut(&mut self.backlink_titles).clear();
+            if !same_root {
+                Arc::make_mut(&mut self.backlink_titles).clear();
+            }
             self.backlinks_expanded.clear();
             // Collapsed cards are shorter: the list measures them again.
             self.backlinks_list.remeasure();
         }
+        self.tree.set_titles(self.backlink_titles.clone());
         let selected = self.selected_file().to_owned();
         #[cfg(any(unix, windows))]
         let selected = self
@@ -4544,6 +4550,13 @@ impl Reader {
                     let open_act = act.clone();
                     row_base(group.clone())
                         .when(location.is_some(), |row| row.h(px(44.)))
+                        .tooltip({
+                            let path = path.clone();
+                            move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(path.clone())
+                                    .build(window, cx)
+                            }
+                        })
                         .debug_selector({
                             let group = group.clone();
                             move || group.to_string()
@@ -4609,14 +4622,7 @@ impl Reader {
                     let directory = row.kind == EntryKind::Directory;
                     let is_current = row.path == current;
                     let is_cursor = cursor.as_ref() == Some(&row.path);
-                    let label = match row.kind {
-                        EntryKind::Markdown => row
-                            .label
-                            .strip_suffix(".md")
-                            .unwrap_or(&row.label)
-                            .to_string(),
-                        _ => row.label.clone(),
-                    };
+                    let label = row.label.clone();
                     let icon = match row.kind {
                         EntryKind::Directory if row.depth == 0 => None,
                         EntryKind::Directory if row.expanded => Some(IconName::FolderOpen),
@@ -4663,6 +4669,13 @@ impl Reader {
                         })
                         .group(group.clone())
                         .pl(px(4. + row.depth as f32 * 14.))
+                        .tooltip({
+                            let path = row.path.clone();
+                            move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(path.clone())
+                                    .build(window, cx)
+                            }
+                        })
                         .cursor_pointer()
                         .when(is_current, |d| {
                             d.bg(p.selected).font_weight(FontWeight::MEDIUM)
@@ -6231,7 +6244,9 @@ fn display_title(path: &Path) -> Option<String> {
 }
 
 fn display_title_source(source: &str) -> Option<String> {
-    display_title_bytes(&source.as_bytes()[..source.len().min(16 * 1024)])
+    // Reconciliation already owns these bytes; do not miss an H1 after a long
+    // introduction or perform another filesystem read for sidebar labels.
+    display_title_bytes(source.as_bytes())
 }
 
 fn display_title_bytes(head: &[u8]) -> Option<String> {

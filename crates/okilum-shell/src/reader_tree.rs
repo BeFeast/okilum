@@ -1,8 +1,10 @@
 //! Derived, per-Reader folder browsing. No filesystem I/O or document bodies.
 use okilum_core::vault::{EntryKind, VaultEntry};
+use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct Row {
@@ -62,6 +64,7 @@ pub struct Tree {
     /// reveal moves elsewhere.
     revealed_hidden: Option<String>,
     templates_folder: String,
+    titles: Arc<HashMap<String, String>>,
 }
 
 impl Tree {
@@ -180,12 +183,7 @@ impl Tree {
                     kind: EntryKind::Directory,
                 });
         }
-        for children in self.children.values_mut() {
-            children.sort_by(|a, b| {
-                (a.kind != EntryKind::Directory, &a.path)
-                    .cmp(&(b.kind != EntryKind::Directory, &b.path))
-            });
-        }
+        self.sort_children();
         self.expanded
             .retain(|p| self.kinds.get(p) == Some(&EntryKind::Directory));
         if self
@@ -196,6 +194,42 @@ impl Tree {
             self.cursor = None;
         }
         self.flatten();
+    }
+
+    /// Titles are an existing source projection; never read files while browsing.
+    pub(crate) fn set_titles(&mut self, titles: Arc<HashMap<String, String>>) {
+        if Arc::ptr_eq(&self.titles, &titles) {
+            return;
+        }
+        self.titles = titles;
+        self.sort_children();
+        self.flatten();
+    }
+
+    fn sort_children(&mut self) {
+        let titles = &self.titles;
+        for children in self.children.values_mut() {
+            children.sort_by_cached_key(|entry| {
+                let label = if entry.kind == EntryKind::Markdown {
+                    titles
+                        .get(&entry.path)
+                        .cloned()
+                        .unwrap_or_else(|| okilum_core::Vault::title_of(&entry.path))
+                } else {
+                    entry
+                        .path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&entry.path)
+                        .to_owned()
+                };
+                (
+                    entry.kind != EntryKind::Directory,
+                    label,
+                    entry.path.clone(),
+                )
+            });
+        }
     }
 
     pub(crate) fn scope_to(&mut self, path: &str) {
@@ -218,7 +252,14 @@ impl Tree {
                 let kind = self.kinds[&path];
                 rows.push(Row {
                     hidden: hidden(&path) && !self.template_branch(&path),
-                    label: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                    label: if kind == EntryKind::Markdown {
+                        self.titles
+                            .get(&path)
+                            .cloned()
+                            .unwrap_or_else(|| okilum_core::Vault::title_of(&path))
+                    } else {
+                        path.rsplit('/').next().unwrap_or(&path).to_string()
+                    },
                     expanded: self.expanded.contains(&path),
                     kind,
                     archived: archived(&path),
@@ -494,6 +535,152 @@ fn parent(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn sidebar_titles_follow_reconciled_sources_and_keep_note_identity(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::*;
+        use reader_sidebar::Section;
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for (name, text) in [
+            ("24q4.md", "---\ntitle: Old title\n---\n# Quarterly plans\n"),
+            ("legacy.md", "---\ntitle: Legacy title\n---\nBody\n"),
+            ("plain.md", "No heading or metadata.\n"),
+            ("duplicate.md", "# Quarterly plans\n"),
+        ] {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("24q4.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1200.), px(800.)));
+        visual.run_until_parked();
+        reader.update(visual, |reader, cx| {
+            reader.panels.open(reader_layout::Panel::Notes);
+            assert_eq!(reader.backlink_titles.get("24q4.md").map(String::as_str), Some("Quarterly plans"), "reconciled title positive control");
+            reader.sidebar.pinned = vec!["24q4.md".into()];
+            reader.sidebar.recent = vec![("legacy.md".into(), reader_sidebar::now())];
+            let rows = reader.sidebar_items();
+            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Pinned, path, label, ..} if path == "24q4.md" && label == "Quarterly plans")));
+            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Recent, path, label, ..} if path == "legacy.md" && label == "Legacy title")));
+            assert_eq!(reader.tree.rows.iter().map(|r| (r.path.as_str(), r.label.as_str())).collect::<Vec<_>>(), [
+                ("legacy.md", "Legacy title"), ("24q4.md", "Quarterly plans"),
+                ("duplicate.md", "Quarterly plans"), ("plain.md", "plain"),
+            ]);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.simulate_next_frame(cx));
+        let row = visual
+            .debug_bounds("tree-row-duplicate.md")
+            .expect("rendered title row positive control");
+        visual.simulate_click(row.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(reader.current_rel, "duplicate.md")
+        });
+
+        // Updating metadata and adding a sibling exercises the topology refresh
+        // that must retain titles belonging to the same root.
+        std::fs::write(
+            root.join("legacy.md"),
+            "---\ntitle: A revised title\n---\nBody\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("added.md"), "# Added title\n").unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.apply_vault_changes(
+                okilum_core::Changes {
+                    changed: BTreeSet::from(["legacy.md".into(), "added.md".into()]),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(reader.note_label("legacy.md"), "A revised title");
+            assert_eq!(reader.note_label("24q4.md"), "Quarterly plans");
+            assert_eq!(reader.tree.rows[0].label, "A revised title");
+            assert_eq!(reader.current_rel, "duplicate.md");
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("24q4.md")).unwrap(),
+            "---\ntitle: Old title\n---\n# Quarterly plans\n"
+        );
+    }
+
+    #[test]
+    fn cached_titles_sort_by_display_name_keep_paths_and_refresh_without_io() {
+        let mut tree = Tree::default();
+        let entries = vec![
+            entry("z.md", EntryKind::Markdown),
+            entry("a.md", EntryKind::Markdown),
+            entry("b.md", EntryKind::Markdown),
+            entry("plain.md", EntryKind::Markdown),
+            entry("Folder", EntryKind::Directory),
+            entry("photo.png", EntryKind::Attachment),
+        ];
+        // A nonexistent root is a positive control against filesystem reads.
+        tree.refresh(Path::new("/nonexistent-title-fixture"), &entries);
+        let titles = Arc::new(HashMap::from([
+            ("z.md".into(), "Alpha".into()),
+            ("a.md".into(), "Same.md".into()),
+            ("b.md".into(), "Same.md".into()),
+        ]));
+        tree.set_titles(titles.clone());
+        assert_eq!(
+            tree.rows
+                .iter()
+                .map(|r| (r.path.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Folder", "Folder"),
+                ("z.md", "Alpha"),
+                ("a.md", "Same.md"),
+                ("b.md", "Same.md"),
+                ("photo.png", "photo.png"),
+                ("plain.md", "plain"),
+            ]
+        );
+        tree.cursor = Some("b.md".into());
+        let rows = tree.rows.clone();
+        tree.set_titles(titles);
+        assert!(
+            Rc::ptr_eq(&rows, &tree.rows),
+            "unchanged titles do not rebuild rows"
+        );
+        tree.set_titles(Arc::new(HashMap::from([("b.md".into(), "AAA".into())])));
+        assert_eq!(tree.rows[1].path, "b.md");
+        assert_eq!(tree.cursor.as_deref(), Some("b.md"));
+        tree.refresh(Path::new("/another-vault"), &entries);
+        assert_eq!(
+            tree.rows[1].label, "a",
+            "titles cannot leak to another vault"
+        );
+    }
     fn entry(path: &str, kind: EntryKind) -> VaultEntry {
         VaultEntry {
             path: path.into(),
@@ -642,7 +829,7 @@ mod tests {
             tree.children["Dev/Projects/okilum-qa/win-qa-folder"][0].path,
             "Dev/Projects/okilum-qa/win-qa-folder/win-qa-b.md"
         );
-        assert_eq!(tree.rows.last().unwrap().label, "win-qa-b.md");
+        assert_eq!(tree.rows.last().unwrap().label, "win-qa-b");
     }
     #[test]
     fn templates_are_visible_without_revealing_other_hidden_branches() {
