@@ -24,17 +24,19 @@ jobs:
     steps:
       - name: Install publication tools
         run: pacman -Syu --noconfirm --needed nodejs git python ca-certificates
-      - name: Check out the exact source from git.oklabs.uk
+      - name: Check out the exact source from the runner server
         shell: bash
         env:
           CHECKOUT_SHA: ${{ github.sha }}
           CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
           [ -d .git ] || git init -q .
           git remote remove origin 2>/dev/null || true
-          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
           # Keep origin/main and complete ancestry for source/provenance checks.
           shallow=()
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi

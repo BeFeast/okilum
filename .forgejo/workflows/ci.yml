@@ -42,17 +42,19 @@ jobs:
       # two jobs reading it minutes apart could both skip (PR #1214).
       macos_lane: ${{ steps.native-scope.outputs.macos_lane }}
     steps:
-      - name: Check out the exact source from git.oklabs.uk
+      - name: Check out the exact source from the runner server
         shell: bash
         env:
           CHECKOUT_SHA: ${{ github.sha }}
           CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
           [ -d .git ] || git init -q .
           git remote remove origin 2>/dev/null || true
-          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
           git fetch -q --no-tags --depth 1 origin "$CHECKOUT_SHA"
           git checkout -q -f --detach "$CHECKOUT_SHA"
           git clean -q -ffdx
@@ -62,11 +64,13 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FORGEJO_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
           MACOS_LANE: ${{ vars.OKILUM_MACOS_LANE }}
         run: |
           set -euo pipefail
           # In the M4 window a PR uses the M4 only while it is idle, otherwise hosted (2026-10-11).
-          echo "macos_lane=$(FORGEJO_URL='${{ github.server_url }}' REPOSITORY='${{ github.repository }}' python3 scripts/ci/macos-lane.py)" >> "$GITHUB_OUTPUT"
+          echo "macos_lane=$(python3 scripts/ci/macos-lane.py)" >> "$GITHUB_OUTPUT"
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
@@ -395,17 +399,19 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
-      - name: Check out the exact source from git.oklabs.uk
+      - name: Check out the exact source from the runner server
         shell: bash
         env:
           CHECKOUT_SHA: ${{ github.event.pull_request.head.sha }}
           CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
           [ -d .git ] || git init -q .
           git remote remove origin 2>/dev/null || true
-          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
           git fetch -q --no-tags --depth 1 origin "$CHECKOUT_SHA"
           git checkout -q -f --detach "$CHECKOUT_SHA"
           git clean -q -ffdx
@@ -413,12 +419,31 @@ jobs:
       - name: Compile Reader and run quick native regressions
         shell: bash
         run: bash scripts/ci/check-macos.sh
+      - name: Prepare the pinned upload action from the runner server
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          ACTION_SERVER_URL: ${{ github.server_url }}
+          ACTION_SHA: ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+        run: |
+          set -euo pipefail
+          : "${ACTION_SERVER_URL:?}"
+          # Fixed local uses is supported; dynamic expressions in uses are not needed.
+          [ ! -L .forgejo-local-actions ]
+          action_dir=.forgejo-local-actions/upload-artifact
+          rm -rf "$action_dir"
+          mkdir -p "$action_dir"
+          git init -q "$action_dir"
+          git -C "$action_dir" fetch -q --no-tags --depth 1 "${ACTION_SERVER_URL%/}/BeFeast/actions-upload-artifact.git" "$ACTION_SHA"
+          git -C "$action_dir" checkout -q -f --detach "$ACTION_SHA"
+          test "$(git -C "$action_dir" rev-parse HEAD)" = "$ACTION_SHA"
       - name: Save native thumbnail evidence
         id: thumbnail-evidence
         # Diagnostic PNG transport must not mask the native compile/test result.
         continue-on-error: true
         if: always()
-        uses: https://git.oklabs.uk/BeFeast/actions-upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # upstream v3 (MIT)
+        uses: ./.forgejo-local-actions/upload-artifact # verified upstream v3 (MIT)
         with:
           name: native-thumbnail-evidence
           path: ${{ runner.temp }}/thumbnail-evidence/
