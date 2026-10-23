@@ -15,7 +15,7 @@ fn paste_failure_text(error: &ClipboardReadError, image: bool) -> Option<&'stati
     use ClipboardReadError as E;
     Some(match error {
         E::Unavailable if image => "Images can’t be pasted into a note yet, only text.",
-        E::Unavailable => "Nothing to paste: the clipboard has no text.",
+        E::Unavailable => "Nothing to paste: the clipboard has no text or image.",
         E::Busy => return None,
         E::Cancelled => "Paste was cancelled. Click in the note and paste again.",
         E::Timeout => "The clipboard didn’t answer in time. Paste again.",
@@ -465,9 +465,15 @@ impl Reader {
         // Cancel a pending navigation before exposing an editable snapshot.
         self.navigation.preparation_generation =
             self.navigation.preparation_generation.wrapping_add(1);
-        let clipboard = cx
-            .try_global::<platform::ManagedClipboard>()
-            .map(|p| p.0.clone());
+        // A note takes images as attachments and embeds; a plain file takes
+        // text only (#1602).
+        let paste_notice = crate::note_paste::PasteNotice::default();
+        let clipboard = crate::note_paste::provider_for_note(
+            cx,
+            self.vault_root.clone(),
+            (!plain_file).then(|| self.selected_file().to_owned()),
+            paste_notice.clone(),
+        );
         // Code files keep their grammar, line numbers and wrap preference (#998).
         let code = plain_file
             .then(|| crate::reader_code_file::language(self.selected_file()))
@@ -702,12 +708,18 @@ impl Reader {
         let pasted = cx.subscribe_in(
             &input,
             window,
-            |_, _, event: &ClipboardPasteEvent, window, cx| match event {
+            move |_, _, event: &ClipboardPasteEvent, window, cx| match event {
                 ClipboardPasteEvent::Applied { bytes, .. } => {
                     eprintln!("Paste: inserted {bytes} bytes");
                 }
                 ClipboardPasteEvent::Failed(error) => {
                     eprintln!("Paste: nothing inserted ({error:?})");
+                    // An image that couldn't be saved says why itself.
+                    let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
+                    if let Some(text) = notice {
+                        reader_toast::error(text, window, cx);
+                        return;
+                    }
                     let image = matches!(error, ClipboardReadError::Unavailable)
                         && cx.read_from_clipboard().is_some_and(|item| {
                             item.entries()
@@ -4430,7 +4442,7 @@ mod edit_error_tests {
             .starts_with("Images can’t be pasted"));
         assert_eq!(
             paste_failure_text(&E::Unavailable, false),
-            Some("Nothing to paste: the clipboard has no text.")
+            Some("Nothing to paste: the clipboard has no text or image.")
         );
     }
 }
