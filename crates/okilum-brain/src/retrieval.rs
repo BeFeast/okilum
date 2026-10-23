@@ -399,6 +399,35 @@ impl BrainIndex {
         index.trigger.send(false)?;
         Ok(index)
     }
+    /// Service tests need a completed generation, not watcher/debounce timing.
+    #[cfg(test)]
+    pub(crate) fn ready_for_service_test(
+        brain_id: String,
+        root: PathBuf,
+        operational: PathBuf,
+    ) -> Result<Arc<Self>> {
+        let cache_root = operational.join("derived/brain-index-v1");
+        fs::create_dir_all(&cache_root)?;
+        let source = SourceStore::open_read_only(&brain_id, &root, &operational.join("source"))?;
+        let (trigger, _requests) = mpsc::channel();
+        let index = Arc::new(Self {
+            brain_id,
+            root,
+            records_dir: "records".into(),
+            operational,
+            cache_root,
+            source,
+            view: RwLock::new(View {
+                epoch: 0,
+                status: IndexStatus::default(),
+                generation: None,
+            }),
+            trigger,
+            _watcher: Mutex::new(None),
+        });
+        index.refresh(false)?;
+        Ok(index)
+    }
     fn relevant_event(&self, event: &notify::Event) -> bool {
         if matches!(event.kind, EventKind::Access(_)) {
             return false;

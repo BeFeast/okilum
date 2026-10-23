@@ -262,7 +262,8 @@ fn stalled_semantic_query_keeps_backend_responsive_and_provider_failure_is_expli
                 embeddings += 1;
                 if embeddings == 2 {
                     entered.send(()).unwrap();
-                    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                    // Stay held until the ownership assertion explicitly releases us.
+                    wait.recv().unwrap();
                     respond(&mut stream, "application/json", "{\"embeddings\":[]}");
                     break;
                 }
@@ -277,28 +278,19 @@ fn stalled_semantic_query_keeps_backend_responsive_and_provider_failure_is_expli
     });
     let index = {
         let b = shared.lock().unwrap();
-        crate::retrieval::BrainIndex::start(
+        crate::retrieval::BrainIndex::ready_for_service_test(
             b.runner.workspace_identity()["brain_id"]
                 .as_str()
                 .unwrap()
                 .into(),
             b.runner.root().into(),
-            "records".into(),
             b.runner.operational_root().into(),
-            true,
         )
         .unwrap()
     };
     shared.lock().unwrap().index = Some(index.clone());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while index.status().status != "ready" || index.status().semantic_status != "ready" {
-        assert!(
-            Instant::now() < deadline,
-            "index did not become ready: {:?}",
-            index.status()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert_eq!(index.status().status, "ready");
+    assert_eq!(index.status().semantic_status, "ready");
     let other = shared.clone();
     let query_goal = goal.clone();
     let search = std::thread::spawn(move || {
@@ -320,7 +312,7 @@ fn stalled_semantic_query_keeps_backend_responsive_and_provider_failure_is_expli
             None,
         )
     });
-    received.recv_timeout(Duration::from_secs(3)).unwrap();
+    received.recv().unwrap();
     assert_responsive(&shared, &goal);
     release.send(()).unwrap();
     provider.join().unwrap();
@@ -510,26 +502,16 @@ fn incoming_reference_wire_workspace_goal_capability_and_read_only_dispatch() {
         .unwrap();
         let workspace = backend.runner.workspace_identity();
         let revision = backend.runner.read_source("target.md").unwrap().revision;
-        let index = crate::retrieval::BrainIndex::start(
+        let index = crate::retrieval::BrainIndex::ready_for_service_test(
             workspace["brain_id"].as_str().unwrap().into(),
             backend.runner.root().into(),
-            "records".into(),
             backend.runner.operational_root().into(),
-            true,
         )
         .unwrap();
         (workspace, revision, index)
     };
     shared.lock().unwrap().index = Some(index.clone());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while index.status().status != "ready" {
-        assert!(
-            Instant::now() < deadline,
-            "index did not become ready: {:?}",
-            index.status()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert_eq!(index.status().status, "ready");
     let wire = json!({"schema":"ai-brain/workspace-v1","id":"incoming-1","expected_workspace":workspace,"op":"source_backlinks","path":"target.md","expected_revision":revision,"scope":{"goal_id":goal,"mode":"project"},"limit":10,"cursor":null});
     for key in ["expected_workspace", "id"] {
         let mut bad = wire.clone();
