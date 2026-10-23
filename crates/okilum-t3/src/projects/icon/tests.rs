@@ -330,6 +330,69 @@ fn the_t3_counterpart_is_the_executor_project_or_the_same_vault_folder() {
     );
     let escaping = t3("homelab", "/v/HomeLab", Some("../secret.svg"));
     assert_eq!(t3_logo(&folder, "HomeLab", &escaping), None);
+    // T3 also writes favicons as absolute paths under the workspace root.
+    let absolute = t3(
+        "homelab",
+        "/v/HomeLab",
+        Some("/v/HomeLab/Resources/Images/homelab.svg"),
+    );
+    assert_eq!(
+        t3_logo(&folder, "HomeLab", &absolute),
+        Some(folder.join("Resources/Images/homelab.svg"))
+    );
+    let elsewhere = t3(
+        "homelab",
+        "/v/HomeLab",
+        Some("/v/HomeLabX/Resources/Images/homelab.svg"),
+    );
+    assert_eq!(t3_logo(&folder, "HomeLab", &elsewhere), None);
+    std::fs::remove_dir_all(vault).unwrap();
+}
+
+#[test]
+fn a_repo_project_finds_its_t3_project_by_its_checkout() {
+    let vault = std::env::temp_dir().join(format!("okilum-icon-{}", uuid::Uuid::new_v4()));
+    let folder = vault.join("Dev/Areas/figori");
+    std::fs::create_dir_all(folder.join("ops")).unwrap();
+    std::fs::write(
+        folder.join("ops/project.yaml"),
+        "slug: figori\nrepo: {full_name: BeFeast/figori}\nexecution:\n  source_checkout: /srv/src/figori\nt3:\n  schema_version: 1\n  environment: maestro\n  manager: {project_id: brain, thread_id: null, workspace_mode: local}\n",
+    )
+    .unwrap();
+    let project = super::super::Project::read(&folder).unwrap();
+    assert_eq!(
+        project.appearance.source_checkout.as_deref(),
+        Some("/srv/src/figori")
+    );
+    let listing = vec![
+        crate::Project {
+            id: "brain".into(),
+            workspace_root: "/srv/vault".into(),
+            ..Default::default()
+        },
+        crate::Project {
+            id: "figori".into(),
+            workspace_root: "/srv/src/figori/".into(),
+            project_icon: Some(ProjectIcon::Lucide {
+                name: "calculator".into(),
+                color: IconColor::Green,
+            }),
+            ..Default::default()
+        },
+    ];
+    let found = t3_counterpart(&project, "Dev/Areas/figori", &listing).unwrap();
+    assert_eq!(found.id, "figori");
+    // `t3.executor_project_id` is the executor binding's other spelling.
+    std::fs::write(
+        folder.join("ops/project.yaml"),
+        "slug: figori\nt3:\n  environment: maestro\n  executor_project_id: \"mcp:exec\"\n",
+    )
+    .unwrap();
+    let project = super::super::Project::read(&folder).unwrap();
+    assert_eq!(
+        project.appearance.executor_project.as_deref(),
+        Some("mcp:exec")
+    );
     std::fs::remove_dir_all(vault).unwrap();
 }
 

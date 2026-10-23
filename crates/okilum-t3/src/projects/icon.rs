@@ -312,19 +312,31 @@ pub fn same_folder(workspace_root: &str, vault_relative: &str) -> bool {
     root.ends_with(&format!("/{relative}"))
 }
 
-/// The T3 project that is this vault project: its executor project, or a
-/// T3 project rooted at the same vault folder. The manager's project is
+/// Two workspace roots name the same directory, trailing slashes aside.
+fn same_root(a: &str, b: &str) -> bool {
+    let trim = |s: &str| s.trim().trim_end_matches(['/', '\\']).to_owned();
+    let (a, b) = (trim(a), trim(b));
+    !a.is_empty() && a == b
+}
+
+/// The T3 project that is this vault project: its executor project, the
+/// T3 project of its repository checkout (`execution.source_checkout`), or
+/// a T3 project rooted at the same vault folder. The manager's project is
 /// often shared (Brain) and never counts on its own.
 pub fn t3_counterpart<'a>(
     project: &super::Project,
     vault_relative: &str,
     t3: &'a [crate::Project],
 ) -> Option<&'a crate::Project> {
-    project
-        .appearance
+    let appearance = &project.appearance;
+    appearance
         .executor_project
         .as_deref()
         .and_then(|id| t3.iter().find(|p| p.id == id))
+        .or_else(|| {
+            let checkout = appearance.source_checkout.as_deref()?;
+            t3.iter().find(|p| same_root(&p.workspace_root, checkout))
+        })
         .or_else(|| {
             t3.iter()
                 .find(|p| same_folder(&p.workspace_root, vault_relative))
@@ -342,6 +354,12 @@ pub fn t3_logo(
     if !same_folder(&t3_project.workspace_root, vault_relative) {
         return None;
     }
+    // T3 writes some favicons as absolute paths under the workspace root.
+    let favicon = favicon
+        .strip_prefix(t3_project.workspace_root.trim_end_matches(['/', '\\']))
+        .filter(|rest| rest.starts_with(['/', '\\']) && Path::new(favicon).has_root())
+        .map(|rest| rest.trim_start_matches(['/', '\\']))
+        .unwrap_or(favicon);
     let relative = Path::new(favicon);
     let inside = relative
         .components()

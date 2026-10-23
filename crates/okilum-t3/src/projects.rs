@@ -40,8 +40,12 @@ pub struct Appearance {
     pub icon: Option<icon::ProjectIcon>,
     /// A logo or app icon in the project's own folder.
     pub logo: Option<PathBuf>,
-    /// `t3.executor.project_id`: the T3 project that is this project.
+    /// `t3.executor.project_id` (or `t3.executor_project_id`): the T3
+    /// project that is this project.
     pub executor_project: Option<String>,
+    /// `execution.source_checkout`: the repository checkout on the T3 host,
+    /// which is the workspace root of the repo's T3 project.
+    pub source_checkout: Option<String>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -264,7 +268,10 @@ impl Project {
                 icon: doc.get("icon").and_then(icon::ProjectIcon::from_yaml),
                 logo: icon::find_logo(folder),
                 executor_project: text(&doc["t3"]["executor"]["project_id"])
+                    .or_else(|| text(&doc["t3"]["executor_project_id"]))
                     .filter(|id| !id.is_empty()),
+                source_checkout: text(&doc["execution"]["source_checkout"])
+                    .filter(|root| !root.trim().is_empty()),
             },
         })
     }
