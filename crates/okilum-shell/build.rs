@@ -154,7 +154,13 @@ fn main() {
     // the new shared component library. Preserve its native links explicitly,
     // including the binary's libtest harness, without changing main.rs.
     println!("cargo:rustc-link-arg-bin=okilum=-lokilum_updater");
-    for name in ["Sparkle", "AppKit", "Quartz", "QuickLookThumbnailing"] {
+    for name in [
+        "Sparkle",
+        "AppKit",
+        "WebKit",
+        "Quartz",
+        "QuickLookThumbnailing",
+    ] {
         println!("cargo:rustc-link-arg-bin=okilum=-Wl,-framework,{name}");
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
