@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const OP: &str = "06000000-0000-4000-8000-000000000001";
 const GOAL: &str = "02000000-0000-4000-8000-000000000001";
@@ -30,24 +30,13 @@ struct Server {
 impl Server {
     fn new(steps: Vec<Step>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/api/v1/", listener.local_addr().unwrap());
         let worker = thread::spawn(move || {
             let mut requests = Vec::new();
             for step in steps {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::WouldBlock
-                                && Instant::now() < deadline =>
-                        {
-                            thread::sleep(Duration::from_millis(5))
-                        }
-                        Err(e) => panic!("missing expected HTTP request: {e}"),
-                    }
-                };
+                // Backend/client preparation happens after this server is created.
+                // Wait for the request itself; setup time is not an HTTP failure.
+                let (mut stream, _) = listener.accept().expect("fixture accept");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

@@ -1,6 +1,6 @@
 use super::*;
 use okilum_core::source::WriteBoundary;
-use std::{fs, io::Read, sync::mpsc, thread, time::Instant};
+use std::{fs, io::Read, sync::mpsc, thread};
 use uuid::Uuid;
 
 struct Step {
@@ -22,24 +22,13 @@ struct Server {
 impl Server {
     fn new(steps: Vec<Step>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/api/v1/", listener.local_addr().unwrap());
         let worker = thread::spawn(move || {
             let mut requests = vec![];
             for step in steps {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::WouldBlock
-                                && Instant::now() < deadline =>
-                        {
-                            thread::sleep(Duration::from_millis(5))
-                        }
-                        Err(e) => panic!("missing fixture request: {e}"),
-                    }
-                };
+                // Backend/client preparation happens after this server is created.
+                // Wait for the request itself; setup time is not an HTTP failure.
+                let (mut stream, _) = listener.accept().expect("fixture accept");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();

@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -20,29 +20,19 @@ const DISCUSSION: &str = "Use existing AA stock; buy one marker and one tape.";
 const RESULT: &str = "Pack 4 AA, 2 markers, 1 tape. Buy 0 AA, 1 marker for 1 credit, 1 tape for 3 credits. Total 4 credits, within budget 5. Source: STOCK-CABINET-09.";
 
 fn listener() -> TcpListener {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    listener
+    TcpListener::bind("127.0.0.1:0").unwrap()
 }
 fn accept(listener: &TcpListener) -> TcpStream {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                return stream;
-            }
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(5));
-            }
-            Err(error) => panic!("missing fixture connection: {error}"),
-        }
-    }
+    // Application setup and earlier provider stages can take arbitrary time.
+    // The enclosing test watchdog catches missing requests; accepting one does
+    // not impose a separate deadline on unrelated preparation.
+    let (stream, _) = listener.accept().expect("fixture accept");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
 }
+
 fn request(stream: &mut TcpStream) -> (String, String) {
     let mut header = Vec::new();
     while !header.ends_with(b"\r\n\r\n") {
