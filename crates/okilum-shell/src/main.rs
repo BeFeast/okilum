@@ -2918,7 +2918,11 @@ impl Reader {
         if let Some(title) = quick_open::drawing_title(path) {
             return title;
         }
-        if path.ends_with(".md") {
+        if !self.tree.is_directory(path)
+            && Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
             self.backlink_titles
                 .get(path)
                 .cloned()
@@ -3021,7 +3025,7 @@ impl Reader {
                     label: self.note_label(path),
                     meta: None,
                     location: None,
-                    folder: !path.ends_with(".md"),
+                    folder: self.tree.is_directory(path),
                 });
             }
         }
