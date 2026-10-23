@@ -1669,11 +1669,15 @@ fn is_tracking_pixel(node: &Handle) -> bool {
         return true;
     }
     if let Some(style) = attr(node, "style") {
-        let style = style.to_ascii_lowercase().replace(' ', "");
-        let tiny = |p: &str| {
-            style.contains(&format!("{p}:1px"))
-                || style.contains(&format!("{p}:0px"))
-                || style.contains(&format!("{p}:0;"))
+        // Exact `width`/`height` declarations of at most 1px, with or without
+        // a trailing ';' (not `max-width`).
+        let tiny = |property: &str| {
+            style.split(';').any(|declaration| {
+                declaration.split_once(':').is_some_and(|(name, value)| {
+                    name.trim().eq_ignore_ascii_case(property)
+                        && num(Some(value.to_ascii_lowercase())).is_some_and(|v| v <= 1.0)
+                })
+            })
         };
         if tiny("width") && tiny("height") {
             return true;
@@ -2314,4 +2318,37 @@ fn strip_code_chrome(mut blocks: Vec<Block>) -> Vec<Block> {
 
 fn is_known_label(l: &str) -> bool {
     crate::text::KNOWN_LANGUAGES.contains(&l)
+}
+
+#[cfg(test)]
+mod tracking_pixel_tests {
+    use super::*;
+
+    fn first_img(html: &str) -> Handle {
+        let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+        let mut found = None;
+        for_each_element(&dom.document, |node| {
+            if found.is_none() && tag(node) == Some("img") {
+                found = Some(node.clone());
+            }
+            found.is_none()
+        });
+        found.expect("an img")
+    }
+
+    #[test]
+    fn style_declarations_with_or_without_semicolon() {
+        for style in [
+            "width:0;height:0",
+            "width: 1px; height: 1px;",
+            "height:0px;width:0",
+        ] {
+            let html = format!("<p><img src=\"https://t.example/p.gif\" style=\"{style}\"></p>");
+            assert!(is_tracking_pixel(&first_img(&html)), "{style}");
+        }
+        for style in ["max-width:1px;max-height:1px", "width:100px;height:0"] {
+            let html = format!("<p><img src=\"https://t.example/p.gif\" style=\"{style}\"></p>");
+            assert!(!is_tracking_pixel(&first_img(&html)), "{style}");
+        }
+    }
 }
