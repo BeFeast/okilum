@@ -48,33 +48,89 @@ static void TSSend(int kind, NSString *text) {
 }
 @end
 
-static SPUStandardUpdaterController *TSController;
+// Extend the stock driver only to mirror progress and retain Sparkle's public
+// install-and-relaunch continuation. All prompts/errors remain Sparkle-owned.
+@interface TSUserDriver : SPUStandardUserDriver
+@property(nonatomic) uint64_t expected;
+@property(nonatomic) uint64_t received;
+@property(nonatomic, copy) void (^restartReply)(SPUUserUpdateChoice);
+@end
+@implementation TSUserDriver
+- (void)showDownloadInitiatedWithCancellation:(void (^)(void))cancellation {
+    self.expected = 0; self.received = 0;
+    TSSend(3, @"");
+    [super showDownloadInitiatedWithCancellation:cancellation];
+}
+- (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)length {
+    self.expected = length;
+    [super showDownloadDidReceiveExpectedContentLength:length];
+}
+- (void)showDownloadDidReceiveDataOfLength:(uint64_t)length {
+    self.received += length;
+    if (self.expected) TSSend(3, [NSString stringWithFormat:@"%u", (unsigned)MIN(100.0, 100.0 * self.received / self.expected)]);
+    [super showDownloadDidReceiveDataOfLength:length];
+}
+- (void)showDownloadDidStartExtractingUpdate {
+    TSSend(4, nil);
+    [super showDownloadDidStartExtractingUpdate];
+}
+- (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
+    // Do not fire this continuation until the user explicitly chooses Restart
+    // and Rust protects editors/persists UI state. Either UI invokes the same
+    // retained continuation once, never merely quits the application.
+    self.restartReply = reply;
+    TSSend(5, nil);
+    __weak TSUserDriver *weakSelf = self;
+    [super showReadyToInstallAndRelaunch:^(SPUUserUpdateChoice choice) {
+        TSUserDriver *driver = weakSelf;
+        if (!driver.restartReply) return;
+        // Stock Sparkle's own dialog still uses its normal termination guards.
+        void (^continuation)(SPUUserUpdateChoice) = driver.restartReply;
+        driver.restartReply = nil;
+        TSSend(choice == SPUUserUpdateChoiceInstall ? 6 : 7, nil);
+        continuation(choice);
+    }];
+}
+- (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
+    if (relaunched) TSSend(8, nil);
+    [super showUpdateInstalledAndRelaunched:relaunched acknowledgement:acknowledgement];
+}
+- (void)dismissUpdateInstallation {
+    self.restartReply = nil;
+    [super dismissUpdateInstallation];
+}
+@end
+static SPUUpdater *TSUpdater;
+static TSUserDriver *TSDriver;
 static TSUpdaterDelegate *TSDelegate;
 
 void okilum_updater_start(void) {
     TSRegisterChannelDefault();
     // A bare `cargo run` binary has no bundle feed; Sparkle would only report errors.
-    if (TSController || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;
+    if (TSUpdater || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;
     TSDelegate = [TSUpdaterDelegate new];
-    TSController = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
-                                                                 updaterDelegate:TSDelegate
-                                                              userDriverDelegate:nil];
+    TSDriver = [[TSUserDriver alloc] initWithHostBundle:NSBundle.mainBundle delegate:nil];
+    TSUpdater = [[SPUUpdater alloc] initWithHostBundle:NSBundle.mainBundle
+                                 applicationBundle:NSBundle.mainBundle
+                                        userDriver:TSDriver delegate:TSDelegate];
+    NSError *error = nil;
+    if (![TSUpdater startUpdater:&error]) TSSend(2, error.localizedDescription);
 }
 
-bool okilum_updater_available(void) { return TSController != nil; }
+bool okilum_updater_available(void) { return TSUpdater != nil; }
 
 void okilum_updater_set_report(TSReport report) { TSReporter = report; }
 
 // False while a check or download session is already running: Sparkle would
 // ignore the probe and never call the delegate.
 bool okilum_updater_check(void) {
-    if (TSController.updater.sessionInProgress) return false;
-    [TSController.updater checkForUpdateInformation];
+    if (TSUpdater.sessionInProgress) return false;
+    [TSUpdater checkForUpdateInformation];
     return true;
 }
 
 // Sparkle's standard UI downloads, installs and relaunches.
-void okilum_updater_install(void) { [TSController checkForUpdates:nil]; }
+void okilum_updater_install(void) { [TSUpdater checkForUpdates]; }
 
 bool okilum_updater_beta(void) {
     TSRegisterChannelDefault();
@@ -89,3 +145,14 @@ void okilum_updater_set_beta(bool enabled) {
 void okilum_updater_forget_beta(void) {
     [NSUserDefaults.standardUserDefaults removeObjectForKey:TSBetaKey];
 }
+
+// Called on main only after the Rust save/recovery guards succeed.
+bool okilum_updater_restart(void) {
+    if (!TSDriver.restartReply) return false;
+    void (^continuation)(SPUUserUpdateChoice) = TSDriver.restartReply;
+    TSDriver.restartReply = nil;
+    TSSend(6, nil);
+    continuation(SPUUserUpdateChoiceInstall);
+    return true;
+}
+bool okilum_updater_ready(void) { return TSDriver.restartReply != nil; }

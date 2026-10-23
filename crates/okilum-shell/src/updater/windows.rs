@@ -73,13 +73,21 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                     true,
                     std::mem::take(&mut restart_args),
                 )?,
-                RestartStep::Quit => cx.quit(),
+                RestartStep::Quit => {
+                    super::status::begin_restart();
+                    cx.quit();
+                }
             }
             Ok(())
         })
     })();
     if let Err(error) = result {
         state().lock().unwrap().restart_failed();
+        super::status::set(if ready() {
+            super::status::CheckStatus::Ready
+        } else {
+            super::status::CheckStatus::Failed(error.to_string())
+        });
         let message = format!("Could not restart to update: {error}");
         cx.defer(move |cx| {
             if let Some(window) = cx.active_window() {
@@ -250,47 +258,34 @@ pub(super) fn set_beta(value: bool) {
     }
 }
 
-pub(super) fn check(manual: bool) {
+pub(super) fn check(_manual: bool) {
     if !available() {
         return;
     }
     use super::status::{self, CheckStatus};
     if BUSY.swap(true, Ordering::AcqRel) {
-        if manual {
-            status::set(CheckStatus::Note(IN_PROGRESS.into()));
-        }
         return;
     }
-    if manual {
-        status::set(CheckStatus::Checking);
-    }
+    status::set(CheckStatus::Checking);
     // HTTP and package IO never block the GPUI/UI thread or vault preparation.
     // A manual check reports inline, never in a message box (#995).
     std::thread::spawn(move || {
         let result = check_and_download();
+        // Download/preparation failures stay visible even for background checks.
+        status::set(match result {
+            Ok(_) if ready() => CheckStatus::Ready,
+            Ok(UP_TO_DATE) => CheckStatus::UpToDate(std::time::SystemTime::now()),
+            Ok(note) => CheckStatus::Note(note.into()),
+            Err(error) => CheckStatus::Failed(format!(
+                "{}. Your current version is unchanged.",
+                error.to_string().trim_end_matches('.')
+            )),
+        });
         BUSY.store(false, Ordering::Release);
-        // A manual click during a background check is answered by its result.
-        let waiting = matches!(status::get(), CheckStatus::Note(ref note) if note == IN_PROGRESS);
-        // A background download also shows in About and Settings (#683).
-        if !manual && !waiting && result.is_ok() && ready() {
-            status::set(CheckStatus::Ready);
-        }
-        if manual || waiting {
-            status::set(match result {
-                Ok(_) if ready() => CheckStatus::Ready,
-                Ok(UP_TO_DATE) => CheckStatus::UpToDate(std::time::SystemTime::now()),
-                Ok(note) => CheckStatus::Note(note.into()),
-                Err(error) => CheckStatus::Failed(format!(
-                    "{}. Your current version is unchanged.",
-                    error.to_string().trim_end_matches('.')
-                )),
-            });
-        }
     });
 }
 
 const UP_TO_DATE: &str = "You are up to date on the selected channel.";
-const IN_PROGRESS: &str = "An update check or download is already in progress.";
 
 fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
@@ -315,7 +310,21 @@ fn check_and_download() -> anyhow::Result<&'static str> {
     }
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
-            manager.download_updates(&update, None)?;
+            use super::status::{self, CheckStatus};
+            status::set(CheckStatus::Downloading(Some(0)));
+            let (send, receive) = std::sync::mpsc::channel::<i16>();
+            // Join before Ready/Failed so a late progress event cannot replace it.
+            std::thread::scope(|scope| {
+                let progress = scope.spawn(move || {
+                    for percent in receive {
+                        status::set(CheckStatus::Downloading(Some(percent.clamp(0, 100) as u8)));
+                    }
+                });
+                let result = manager.download_updates(&update, Some(send));
+                let _ = progress.join();
+                result
+            })?;
+            status::set(CheckStatus::Preparing);
             let pending = manager.get_update_pending_restart();
             if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
                 record_verified(&sha256);
