@@ -72,18 +72,37 @@ class SprintTests(unittest.TestCase):
             self.assertEqual((root / 'target/.okilum-sprint-root').read_text().strip(), str(root))
 
     def test_fetch_failure_trap_uploads_once_without_checkout_helper(self):
+        self.fetch_failure_trap()
+
+    def test_fetch_failure_trap_with_missing_bootstrap_stage_log(self):
+        self.fetch_failure_trap(missing_stage_log=True)
+
+    def fetch_failure_trap(self, missing_stage_log=False):
         with tempfile.TemporaryDirectory() as directory, endpoint() as (url, requests):
             home = Path(directory)
             root = home / 'sprint'
             (root / 'src').mkdir(parents=True)
             commands = home / 'bin'
             commands.mkdir()
+            temporary = home / 'tmp'
+            temporary.mkdir()
+            ready = home / 'tee-ready'
+            if missing_stage_log:
+                os.mkfifo(ready)
             mocks = {
                 'uname': '#!/bin/bash\nif [[ $1 == -s ]]; then echo Darwin; else echo arm64; fi\n',
                 'cargo': '#!/bin/bash\nexit 0\n',
                 'git': f'''#!/bin/bash
 case "$1 $2" in
- 'check-ref-format --branch') exit 0;;
+ 'check-ref-format --branch')
+   if [[ $SPRINT_TEST_MISSING_LOG == 1 ]]; then
+     read -r signal < "$SPRINT_TEST_TEE_READY"
+     [[ $signal == ready ]] || exit 90
+     for log in "$TMPDIR"/okilum-sprint.*/stages.log; do
+       [[ ! -e $log ]] || exit 91
+     done
+   fi
+   exit 0;;
  'rev-parse --show-toplevel') echo '{root}/src';;
  'remote get-url') echo https://git.oklabs.uk/BeFeast/okilum.git;;
  'status --porcelain') exit 0;;
@@ -92,13 +111,22 @@ case "$1 $2" in
 esac
 ''',
             }
+            if missing_stage_log:
+                # Deliberately omit tee's output file. The FIFO proves the first
+                # tee is running before the script reaches the log handoff.
+                mocks['tee'] = '''#!/bin/bash
+case "$2" in
+ "$TMPDIR"/okilum-sprint.*/stages.log) printf 'ready\n' > "$SPRINT_TEST_TEE_READY";;
+esac
+exec cat
+'''
             for name, text in mocks.items():
                 path = commands / name
                 path.write_text(text)
                 path.chmod(0o700)
             script = home / 'sprint.sh'
             script.write_text(SCRIPT.read_text().replace(MODULE['ENDPOINT'], url))
-            env = dict(os.environ, HOME=str(home), OKILUM_SPRINT_HOME=str(root), PATH=str(commands) + os.pathsep + os.environ['PATH'])
+            env = dict(os.environ, HOME=str(home), TMPDIR=str(temporary), SPRINT_TEST_MISSING_LOG=str(int(missing_stage_log)), SPRINT_TEST_TEE_READY=str(ready), OKILUM_SPRINT_HOME=str(root), PATH=str(commands) + os.pathsep + os.environ['PATH'])
             result = subprocess.run(['bash', str(script), 'fix/test'], env=env, capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
             self.assertEqual(len(requests), 1)
