@@ -775,6 +775,7 @@ fn project_statuses_share_a_live_listing_and_distinguish_missing_settled_and_idl
             environment: Some("test".into()),
             manager_project: Some("brain".into()),
             manager: Manager::Thread(format!("mcp:{name}")),
+            appearance: Default::default(),
         })
         .collect();
     let statuses =
@@ -794,4 +795,101 @@ fn project_statuses_share_a_live_listing_and_distinguish_missing_settled_and_idl
     assert!(disconnected
         .values()
         .all(|state| matches!(state, Status::Unreachable(_))));
+}
+
+fn t3_project(icon: Value) -> Value {
+    json!({
+        "id": "okilum", "title": "Okilum", "workspaceRoot": "/home/god/src/okilum",
+        "repositoryIdentity": null,
+        "faviconPath": "crates/okilum-shell/assets/brand/app-icon-light.svg",
+        "projectIcon": icon, "defaultModelSelection": null, "defaultThreadEnvMode": null,
+        "autoPull": false, "scripts": [], "createdAt": "2026-10-03T10:08:44.917Z",
+        "updatedAt": "2026-10-18T17:46:52.181Z", "deletedAt": null
+    })
+}
+
+#[test]
+fn project_icon_is_written_through_t3s_project_update_and_read_back() {
+    use crate::projects::icon::{IconColor, ProjectIcon};
+    let stored = Arc::new(std::sync::Mutex::new(Value::Null));
+    let server = {
+        let stored = stored.clone();
+        fake_t3(move |name, arguments| match name {
+            "t3_project_update" => {
+                assert_eq!(arguments["projectId"], "okilum");
+                *stored.lock().unwrap() = arguments["projectIcon"].clone();
+                structured(json!({ "sequence": 3 }))
+            }
+            "t3_project_read" => {
+                assert_eq!(arguments["projectId"], "okilum");
+                structured(t3_project(stored.lock().unwrap().clone()))
+            }
+            other => panic!("unexpected tool {other}"),
+        })
+    };
+    let gateway = gateway(&server, Some(token("good")));
+    let project = gateway.read_project("okilum").unwrap();
+    assert_eq!(project.project_icon, None);
+    assert_eq!(
+        project.favicon_path.as_deref(),
+        Some("crates/okilum-shell/assets/brand/app-icon-light.svg")
+    );
+    let icon = ProjectIcon::Lucide {
+        name: "rocket".into(),
+        color: IconColor::Violet,
+    };
+    let saved = gateway.set_project_icon("okilum", Some(&icon)).unwrap();
+    assert_eq!(saved.project_icon, Some(icon));
+    let cleared = gateway.set_project_icon("okilum", None).unwrap();
+    assert_eq!(cleared.project_icon, None);
+    let updates: Vec<_> = tool_calls(&server.requests())
+        .into_iter()
+        .filter(|call| call["name"] == "t3_project_update")
+        .map(|call| call["arguments"].clone())
+        .collect();
+    assert_eq!(
+        updates,
+        [
+            json!({"projectId": "okilum", "projectIcon": {"kind": "lucide", "name": "rocket", "color": "violet"}}),
+            // Reset sends an explicit null: omitted fields are preserved by T3.
+            json!({"projectId": "okilum", "projectIcon": null}),
+        ]
+    );
+}
+
+#[test]
+fn an_icon_t3_did_not_keep_is_not_reported_as_saved() {
+    use crate::projects::icon::ProjectIcon;
+    let server = fake_t3(|name, _| match name {
+        "t3_project_update" => structured(json!({ "sequence": 3 })),
+        "t3_project_read" => structured(t3_project(Value::Null)),
+        other => panic!("unexpected tool {other}"),
+    });
+    let icon = ProjectIcon::Emoji {
+        emoji: "🚀".into()
+    };
+    let error = gateway(&server, Some(token("good")))
+        .set_project_icon("okilum", Some(&icon))
+        .unwrap_err();
+    assert!(matches!(error, GatewayError::Protocol(_)), "{error:?}");
+}
+
+#[test]
+fn the_project_list_carries_icons_and_favicons() {
+    let server = fake_t3(|name, _| match name {
+        "t3_project_list" => structured(json!({
+            "projects": [t3_project(json!({"kind": "emoji", "emoji": "🧠"})), t3_project(json!({"kind": "future"}))],
+            "nextCursor": null
+        })),
+        other => panic!("unexpected tool {other}"),
+    });
+    let projects = gateway(&server, Some(token("good")))
+        .list_projects()
+        .unwrap();
+    assert_eq!(projects.len(), 2, "an unknown icon kind keeps the project");
+    assert!(matches!(
+        &projects[0].project_icon,
+        Some(crate::projects::icon::ProjectIcon::Emoji { emoji }) if emoji == "🧠"
+    ));
+    assert_eq!(projects[1].project_icon, None);
 }

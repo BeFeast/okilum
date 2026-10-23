@@ -75,6 +75,28 @@ pub trait ManagerGateway: Send + Sync {
 
     fn list_projects(&self) -> GatewayResult<Vec<Project>>;
 
+    /// One project, its `projectIcon` and `faviconPath` included.
+    fn read_project(&self, project_id: &str) -> GatewayResult<Project> {
+        let _ = project_id;
+        Err(GatewayError::Protocol(
+            "This T3 connection cannot read projects".into(),
+        ))
+    }
+
+    /// Sets T3's `projectIcon`, or clears it with `None`, through T3's
+    /// project service (the update T3's own icon dialog makes). Returns the
+    /// project read back, which is what the UI shows.
+    fn set_project_icon(
+        &self,
+        project_id: &str,
+        icon: Option<&crate::projects::icon::ProjectIcon>,
+    ) -> GatewayResult<Project> {
+        let _ = (project_id, icon);
+        Err(GatewayError::Protocol(
+            "This T3 connection cannot change project icons".into(),
+        ))
+    }
+
     /// All threads of a project, subagents included.
     fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>>;
 

@@ -9409,6 +9409,7 @@ mod document_link_landing_tests {
                 environment: None,
                 manager_project: None,
                 manager: okilum_t3::projects::Manager::NotStarted,
+                appearance: Default::default(),
             });
             cx.notify();
         });

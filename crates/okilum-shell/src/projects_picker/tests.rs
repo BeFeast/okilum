@@ -26,6 +26,7 @@ fn catalog() -> PickerModel {
         environment: None,
         manager_project: None,
         manager: Manager::NotStarted,
+        appearance: Default::default(),
     })
     .to_vec();
     PickerModel::new(
@@ -159,6 +160,7 @@ fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestA
             environment: Some("maestro".into()),
             manager_project: Some(format!("project-{i}")),
             manager: Manager::Thread(format!("mcp:manager-{i}")),
+            appearance: Default::default(),
         })
         .collect();
     let model = PickerModel::new(

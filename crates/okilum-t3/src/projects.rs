@@ -1,5 +1,6 @@
 //! Vault-wide project discovery. Manifests and role registries remain canonical;
 //! discovery never creates a thread or writes to the vault.
+pub mod icon;
 pub mod picker;
 
 use anyhow::{ensure, Context, Result};
@@ -28,6 +29,19 @@ pub struct Project {
     pub environment: Option<String>,
     pub manager_project: Option<String>,
     pub manager: Manager,
+    pub appearance: Appearance,
+}
+
+/// What the project's icon is made of (#1627), read with the manifest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Appearance {
+    /// `icon:` in project.yaml: the manual icon of a project without a T3
+    /// counterpart.
+    pub icon: Option<icon::ProjectIcon>,
+    /// A logo or app icon in the project's own folder.
+    pub logo: Option<PathBuf>,
+    /// `t3.executor.project_id`: the T3 project that is this project.
+    pub executor_project: Option<String>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -246,6 +260,12 @@ impl Project {
             environment: text(&doc["t3"]["environment"]),
             manager_project: text(&manifest_manager["project_id"]),
             manager,
+            appearance: Appearance {
+                icon: doc.get("icon").and_then(icon::ProjectIcon::from_yaml),
+                logo: icon::find_logo(folder),
+                executor_project: text(&doc["t3"]["executor"]["project_id"])
+                    .filter(|id| !id.is_empty()),
+            },
         })
     }
 }

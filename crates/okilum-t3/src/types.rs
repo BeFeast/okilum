@@ -24,13 +24,20 @@ impl ServerIdentity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub title: String,
     pub workspace_root: String,
     pub default_model_selection: Option<ModelSelection>,
+    /// The logo T3 found in the workspace, relative to `workspace_root`.
+    #[serde(default)]
+    pub favicon_path: Option<String>,
+    /// The manual icon set in T3 or in Okilum (#1627). An unknown kind
+    /// reads as none.
+    #[serde(default, deserialize_with = "crate::projects::icon::lenient")]
+    pub project_icon: Option<crate::projects::icon::ProjectIcon>,
 }
 
 /// T3's canonical model selection: a provider instance, a model of that

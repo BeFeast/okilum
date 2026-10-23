@@ -417,6 +417,7 @@ mod native_focus_tests {
             environment: Some("test".into()),
             manager_project: Some("brain".into()),
             manager: Manager::Thread("mcp:test".into()),
+            appearance: Default::default(),
         };
         let (root, visual) = cx.add_window_view(|window, cx| {
             let panel = cx.new(|cx| ManagerPanel::new(project, None, window, cx));
