@@ -5,6 +5,23 @@
 `Discovery`/`Project`/`Kind` types; there is no second manifest parser or scanner.
 The component does not depend on Reader, main.rs, or manager/right-panel code.
 
+## Projects section (wired)
+
+The Projects app section (`reader_project_navigation.rs`) renders this picker
+with `Presentation::Page`: own search and kind filter, left-aligned (max 760 px),
+filling the section. `Selected` goes through `enter_vault_project`; a successful
+entry records the folder in the per-vault sidebar state (`recent_projects`,
+vault-relative) and calls `record_opened`, so recents survive relaunch. Live
+statuses from `projects::statuses` are fed through `update_statuses`; the dot
+tooltip carries the live reason (for example "not connected to T3").
+
+Manifest problems never print raw red text: a folder whose `ops/project.yaml`
+cannot be read is a muted row with a small warning sign inside its domain, the
+reason in a tooltip (hidden under a kind filter, since its kind is unknown). A
+manifest whose `kind` is not a project kind (`operating-area` in Dev intake) is
+skipped quietly by discovery. Manager ids are any path-safe T3 thread id: both
+`mcp:<id>` and the plain UUIDs created in the T3 UI.
+
 For the #1519 title-bar switcher:
 
 1. Reuse `projects::discover(vault)` on the existing background executor. Construct
@@ -40,7 +57,7 @@ component of the discovered manifest's project folder: Music/Areas and
 Music/Projects both belong to Music. A vault-root manifest uses Vault. Search
 matches name, vault-relative location and kind across all groups; empty groups
 vanish. Search reveals matches inside collapsed groups and clearing it restores
-collapse choices. Errors remain visible separately from healthy projects.
+collapse choices. Problem rows stay in their domain, apart from healthy rows.
 
 Unit tests exercise real discovery/manifest defaults, domains, recency/order,
 search/filter, collapse and stale-manager protection. GPUI component tests cover

@@ -2792,6 +2792,102 @@ mod tests {
         drop(readers);
     }
 
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn update_install_post_verification_protects_latest_edits_and_refuses_failure(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("note.md"), "before check").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_recovery::install(&state, None, cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        // An earlier menu-Quit save cannot stand in for this final guard.
+        visual.update(|_, cx| assert!(save_all(cx)));
+        reader.update_in(visual, |r, window, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("after verification", window, cx);
+        });
+        let committed = std::cell::Cell::new(false);
+        let refused = std::cell::Cell::new(false);
+        visual.update(|_, cx| {
+            crate::updater::protect_verified_install(
+                cx,
+                || {
+                    assert_eq!(
+                        std::fs::read_to_string(root.join("note.md")).unwrap(),
+                        "after verification"
+                    );
+                    committed.set(true);
+                    Ok(())
+                },
+                || refused.set(true),
+            )
+            .unwrap();
+        });
+        assert!(committed.get());
+        assert!(!refused.get());
+        let drafts = state.join("editor-drafts");
+        let backup = state.join("drafts-backup");
+        std::fs::rename(&drafts, &backup).unwrap();
+        std::fs::write(&drafts, "not a directory").unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("unprotected newer edit", window, cx);
+        });
+        committed.set(false);
+        visual.update(|_, cx| {
+            assert!(crate::updater::protect_verified_install(
+                cx,
+                || {
+                    committed.set(true);
+                    Ok(())
+                },
+                || refused.set(true),
+            )
+            .is_err());
+        });
+        assert!(!committed.get());
+        assert!(refused.get());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "after verification"
+        );
+        std::fs::remove_file(&drafts).unwrap();
+        std::fs::rename(backup, drafts).unwrap();
+    }
+
     #[gpui::test]
     fn quit_retains_marker_when_latest_draft_cannot_be_protected(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();

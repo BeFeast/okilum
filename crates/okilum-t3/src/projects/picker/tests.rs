@@ -186,7 +186,8 @@ fn status_needs_a_live_observation_of_the_current_manager_pointer() {
 #[test]
 fn broken_manifests_stay_visible_and_external_paths_never_become_rows() {
     let vault = Vault::new();
-    vault.manifest("Dev/Areas/Broken", "kind: nonsense\n");
+    vault.manifest("Dev/Areas/Broken", "kind: [code]\n");
+    vault.manifest("Dev/Areas/intake", "kind: operating-area\n");
     let mut discovery = super::super::discover(&vault.0);
     discovery.projects.push(Project {
         folder: vault.0.join("../foreign"),
@@ -196,7 +197,30 @@ fn broken_manifests_stay_visible_and_external_paths_never_become_rows() {
         manager_project: None,
         manager: Manager::NotStarted,
     });
-    let model = PickerModel::new(vault.0.clone(), discovery, Vec::new());
-    assert!(model.groups().is_empty());
+    let mut model = PickerModel::new(vault.0.clone(), discovery, Vec::new());
     assert_eq!(model.errors().len(), 2);
+    let groups = model.groups();
+    assert!(groups.iter().all(|g| g.rows.is_empty()), "no project rows");
+    // Each problem is a muted row inside its own domain, never a footer;
+    // the non-project intake area is skipped without a problem row.
+    let problems: Vec<_> = groups
+        .iter()
+        .flat_map(|g| {
+            g.problems
+                .iter()
+                .map(move |p| (g.label.as_str(), p.name.as_str()))
+        })
+        .collect();
+    assert_eq!(problems, [("Dev", "Broken"), ("Vault", "foreign")]);
+    assert!(groups[0].problems[0]
+        .detail
+        .contains("invalid project kind"));
+    model.set_query("broken");
+    assert_eq!(model.groups().len(), 1);
+    model.set_query("");
+    model.set_filter(KindFilter::Code);
+    assert!(
+        model.groups().is_empty(),
+        "unknown kind hides under a kind filter"
+    );
 }

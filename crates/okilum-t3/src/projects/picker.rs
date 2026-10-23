@@ -88,6 +88,17 @@ pub struct Row {
     /// Human breadcrumbs distinguish identical names without exposing absolute paths.
     pub location: String,
     pub manager: ManagerIndicator,
+    /// Live reason behind a non-green dot (for the dot's tooltip), if any.
+    pub manager_detail: Option<String>,
+}
+/// A folder with a manifest that cannot be read. It is shown as a muted row
+/// in its own domain; the full reason lives in the row's tooltip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub folder: PathBuf,
+    pub name: String,
+    pub location: String,
+    pub detail: String,
 }
 #[derive(Clone, Debug)]
 pub struct Group {
@@ -97,6 +108,7 @@ pub struct Group {
     pub count: usize,
     pub collapsed: bool,
     pub rows: Vec<Row>,
+    pub problems: Vec<Problem>,
 }
 
 pub struct PickerModel {
@@ -178,6 +190,17 @@ impl PickerModel {
     pub fn manager_indicator(&self, folder: &Path) -> Option<ManagerIndicator> {
         self.project(folder).map(|project| self.indicator(project))
     }
+    pub fn manager_detail(&self, folder: &Path) -> Option<String> {
+        let project = self.project(folder)?;
+        let observation = self
+            .observations
+            .get(folder)
+            .filter(|o| o.manager == project.manager)?;
+        match &observation.status {
+            Status::Unreachable(reason) | Status::NotRunning(reason) => Some(reason.clone()),
+            _ => None,
+        }
+    }
     pub fn toggle_domain(&mut self, domain: &str) {
         // Searching reveals matching rows; clearing restores the user's collapse state.
         if self.query.trim().is_empty() && !self.collapsed.remove(domain) {
@@ -234,12 +257,10 @@ impl PickerModel {
             .split_whitespace()
             .all(|word| haystack.contains(&word.to_lowercase()))
     }
-    fn row(&self, project: &Project, group: GroupKey) -> Row {
-        let relative = project
-            .folder
+    fn location(&self, folder: &Path) -> String {
+        folder
             .strip_prefix(&self.vault)
-            .expect("validated project");
-        let location = relative
+            .unwrap_or(Path::new(""))
             .parent()
             .unwrap_or(Path::new(""))
             .components()
@@ -251,7 +272,45 @@ impl PickerModel {
                 }
             })
             .collect::<Vec<_>>()
-            .join(" › ");
+            .join(" › ")
+    }
+    /// Problems are listed under their domain (external paths under "Vault")
+    /// for the unfiltered kind view; their kind is unknown.
+    fn problems(&self) -> BTreeMap<String, Vec<Problem>> {
+        let mut result = BTreeMap::<String, Vec<Problem>>::new();
+        if self.filter != KindFilter::All {
+            return result;
+        }
+        for (folder, detail) in &self.errors {
+            let name = folder
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let location = self.location(folder);
+            let relative = folder.strip_prefix(&self.vault).unwrap_or(folder);
+            let haystack = format!("{name} {}", relative.display()).to_lowercase();
+            if !self
+                .query
+                .split_whitespace()
+                .all(|word| haystack.contains(&word.to_lowercase()))
+            {
+                continue;
+            }
+            result
+                .entry(domain(&self.vault, folder).unwrap_or_else(|| "Vault".into()))
+                .or_default()
+                .push(Problem {
+                    folder: folder.clone(),
+                    name,
+                    location,
+                    detail: detail.clone(),
+                });
+        }
+        result
+    }
+    fn row(&self, project: &Project, group: GroupKey) -> Row {
+        let location = self.location(&project.folder);
         Row {
             key: RowKey {
                 group,
@@ -261,6 +320,7 @@ impl PickerModel {
             domain: domain(&self.vault, &project.folder).expect("validated project"),
             location,
             manager: self.indicator(project),
+            manager_detail: self.manager_detail(&project.folder),
         }
     }
     pub fn groups(&self) -> Vec<Group> {
@@ -282,6 +342,7 @@ impl PickerModel {
                 count: recent.len(),
                 collapsed: false,
                 rows: recent,
+                problems: Vec::new(),
             });
         }
         let mut domains = BTreeMap::<String, Vec<&Project>>::new();
@@ -291,14 +352,20 @@ impl PickerModel {
                 .or_default()
                 .push(project);
         }
+        let mut problems = self.problems();
+        for label in problems.keys() {
+            domains.entry(label.clone()).or_default();
+        }
         let mut domains: Vec<_> = domains.into_iter().collect();
         domains.sort_by(|(a, _), (b, _)| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
         for (label, projects) in domains {
             let key = GroupKey::Domain(label.clone());
             let collapsed = self.query.trim().is_empty() && self.collapsed.contains(&label);
+            let problems = problems.remove(&label).unwrap_or_default();
             groups.push(Group {
                 key: key.clone(),
-                count: projects.len(),
+                count: projects.len() + problems.len(),
+                problems: if collapsed { Vec::new() } else { problems },
                 collapsed,
                 rows: if collapsed {
                     Vec::new()
