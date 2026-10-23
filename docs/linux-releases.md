@@ -256,36 +256,19 @@ wait for parent review of this concrete path; no branch can invoke protected
 signing. After merge, the accepted main producer and trusted main release run
 are still needed before claiming a public signed beta exists.
 
-The hosted disposable-key signing composition test reuses the four producer files
-already held and smoke-tested in the AppImage job. It verifies the API artifact
-identity, exact source/run/current attempt, original provenance and AppImage digest
-against both provenance and `SHA256SUMS` before importing a disposable key. It does
-not download the same bytes again, fabricate hosted archive acceptance, or emit a
-publication receipt. Actual hosted ZIP digest/member/unpack verification remains
-mandatory in production `appimage_artifact` / `appimage_handoff`; their attempt-one
-acceptance rules are unchanged. The installation verifier imports only the public
-key into a separate GNUPGHOME and checks the descriptor and immutable payload.
-Tamper, missing/wrong signer, immutable readback corruption, interrupted writes,
-signature reuse and conflicts remain real GPG checks in the hosted harness.
-
-CI attempts 2 and 3 are admitted only by `--verify-attempt`, before producing or
-replacing artifacts, and verified again before signing. Every earlier attempt must
-have identical repository/workflow/run/number/SHA/branch/event, completed failed
-status, successful Linux checks and AppImage build/smoke, and exactly one failing
-AppImage step: signing/install. Its job log must contain the single legacy
-pre-key-import `handoff` artifact-download traceback ending in HTTP 503 account
-egress failure. Missing logs, ambiguous/incomplete jobs, another failed/skipped
-step, compile/smoke/signature/provenance failures or another origin stop recovery.
-This is a CI recovery exception, never permission to publish a rerun. The new
-producer retains the actual current attempt in its provenance; it is never
-relabeled attempt one. Verified retries may replace only this run's artifact
-names, invalidating any stale ID/digest rather than accepting old bytes.
-
-Production artifact GETs retry HTTP 429/502/503/504 three times total with 1s/2s
-backoff. Exhaustion reports `APPIMAGE_INFRA_UNAVAILABLE` and fails the gate;
-authentication, archive integrity and acceptance failures are never waived.
-Only the AppImage job receives ephemeral read-only Actions access. Production
-signer pinning and the original-attempt publication boundary remain unchanged.
+The hosted signing composition test downloads the actual uploaded four-member
+GitHub archive and checks its API artifact ID/digest and actual source/run/first
+attempt before production unpack and original-provenance validation. Since the
+workflow is still running, completion statuses and job gates in its temporary
+acceptance receipt are explicit test fixtures; they never authorize publication
+and are not retained as production acceptance evidence. Only this job receives
+read-only Actions access using its ephemeral GitHub token. The disposable key
+substitution remains inside the harness; production signer pinning is unchanged.
+The installation verifier imports only the exported public key into a separate
+GNUPGHOME and verifies the downloaded descriptor and referenced immutable payload.
+Missing/wrong signer, changed archive/receipt/source, payload/descriptor tamper,
+immutable readback corruption, interrupted immutable and moving-pair writes,
+signature reuse and conflicts are exercised there with real GPG signatures.
 No live-key premerge run is required; live publication remains unverified.
 
 ### Independent AppImage beta handoff (#1470)
@@ -329,3 +312,27 @@ Signed AppImage build 6606 from source `0c58` has already been delivered to Dima
 no additional publication is needed for this revision. The parent owns subsequent
 publication and Stable GO after the required acceptance. This change performs no
 live publish and grants no new Stable GO.
+
+### Artifact transport failures and recovery limits (#1571)
+
+Artifact GETs retry HTTP 429/502/503/504 three times total with 1s/2s backoff.
+Exhaustion raises `APPIMAGE_INFRA_UNAVAILABLE` and fails acceptance. Other HTTP,
+identity, digest, provenance and signing failures remain failures.
+
+The disposable-key CI harness still downloads, hashes and unpacks the actual
+hosted archive, compares all four members with the same-job producer files, then
+reuses those verified extracted bytes for signing/install checks. It performs one
+archive GET per harness invocation; there is no redundant download to remove.
+Local files, checksums and provenance alone cannot replace hosted archive identity.
+No further egress reduction is claimed without an already verified archive.
+
+Attempts above 1 remain unsupported in both CI and publication. Producer-controlled
+logs, including fabricated transport tracebacks, cannot authorize recovery.
+Platform step/job conclusions authenticate outcomes, but do not independently
+identify an HTTP transport failure or its pre-signing request. A safe same-SHA
+recovery exception needs an independently trusted consumer to record typed transport
+failure evidence bound to repository/workflow/run/attempt/SHA/artifact/request and
+pre-key-import phase, with complete attempt histories. This workflow has no such
+boundary. A newly edited workflow also cannot retrofit it into an older SHA's run.
+Bounded in-attempt retry is supported; cross-attempt recovery is explicitly blocked
+rather than inferred from logs. No gate waiver or attempt relabeling is permitted.
