@@ -1,5 +1,5 @@
 # Signed Mac beta ticks until 2026-10-26 03:00 UTC, then only daily 10:30 UTC.
-# A lightweight tick dispatches main so artifact and workflow provenance stay equal.
+# A lightweight tick dispatches main; green PRs dispatch their verified branch.
 # See docs/macos-auto-update.md.
 name: macos-release
 
@@ -12,6 +12,14 @@ on:
     inputs:
       beta_tick:
         description: 'Internal automatic selector: frequent or daily; empty keeps manual behavior'
+        required: false
+        default: ''
+      preview_pr:
+        description: 'Internal PR preview: trusted open PR number'
+        required: false
+        default: ''
+      preview_head:
+        description: 'Internal PR preview: exact green head requested by CI'
         required: false
         default: ''
       source:
@@ -30,6 +38,7 @@ jobs:
     timeout-minutes: 3
     outputs:
       build: ${{ steps.select.outputs.build }}
+      preview: ${{ steps.select.outputs.preview }}
       lane: ${{ steps.route.outputs.lane }}
       source: ${{ steps.route.outputs.source }}
     steps:
@@ -43,6 +52,8 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
           MACOS_BETA_TICK: ${{ inputs.beta_tick }}
+          MACOS_PREVIEW_PR: ${{ inputs.preview_pr }}
+          MACOS_PREVIEW_HEAD: ${{ inputs.preview_head }}
           RELEASE_SCHEDULE: ${{ github.event.schedule }}
         run: python3 scripts/releases/coalesce.py macos
       - name: Select delivery route without a local fallback
@@ -88,6 +99,8 @@ jobs:
 
       - name: Check the macOS pasteboard adapter on an isolated named pasteboard
         shell: bash
+        env:
+          MACOS_PR_PREVIEW: ${{ needs.select.outputs.preview }}
         run: |
           if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
           export CC=/usr/bin/clang CXX=/usr/bin/clang++
@@ -115,14 +128,14 @@ jobs:
           # Manual branch validation stress-repeats the real FSEvents test (#459).
           # Main releases retain a single run; failures are never retried away.
           replay_runs=1
-          if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then replay_runs=20; fi
+          if [ "${GITHUB_REF:-}" != "refs/heads/main" ] && [ "${MACOS_PR_PREVIEW:-false}" != true ]; then replay_runs=20; fi
           for ((attempt = 1; attempt <= replay_runs; attempt++)); do
             echo "FSEvents replay stress $attempt/$replay_runs"
             env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell reader_replay::native::tests -- --test-threads=1 || exit "$?"
           done
 
       - name: Stage signed update for publication
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || needs.select.outputs.preview == 'true'
         shell: bash
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
@@ -135,14 +148,14 @@ jobs:
           export SIGNATURE
           python3 scripts/releases/macos-artifact.py stage "$RUNNER_TEMP/publish"
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || needs.select.outputs.preview == 'true'
         with:
           name: macos-publication
           path: ${{ runner.temp }}/publish/*
           retention-days: 7
 
       - name: Dispatch protected publication
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: (github.ref == 'refs/heads/main' || needs.select.outputs.preview == 'true') && github.event_name != 'pull_request'
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}

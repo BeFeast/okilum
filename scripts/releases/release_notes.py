@@ -62,7 +62,7 @@ def predecessor(store, platform, channel='beta'):
     return {'build': result['build'], 'source': result['source']}
 
 
-def pr_item(pr):
+def pr_item(pr, include_hidden=False):
     # Template instructions/examples inside comments are not authored summaries.
     body = re.sub(r'<!--.*?-->', '', pr.get('body') or '', flags=re.S)
     lines = re.findall(r'^User-visible:[ \t]*(.*?)[ \t]*$', body, flags=re.M | re.I)
@@ -73,7 +73,7 @@ def pr_item(pr):
     labels = {str(label['name'] if isinstance(label, dict) else label).lower()
               for label in pr.get('labels', [])}
     labels |= {re.split(r'[:/]', label)[-1].strip() for label in list(labels)}
-    if not explicit and (prefix in HIDDEN or labels & HIDDEN):
+    if not include_hidden and not explicit and (prefix in HIDDEN or labels & HIDDEN):
         return None
     kind = 'feature' if prefix == 'feat' or (prefix != 'fix' and labels & {'feature', 'enhancement'}) else 'fix'
     return {'pr': pr['number'], 'kind': kind, 'text': explicit or text}
@@ -114,6 +114,20 @@ def prepare(store, client, platform, build, source, channel='beta'):
             'previous_build': previous['build'] if previous else None,
             'previous_source': previous['source'] if previous else None,
             'items': merged_items(client, previous['source'] if previous else None, source)}
+
+
+def prepare_preview(store, pr, build, source):
+    key(source, 'macos', 'beta')
+    if (pr['head']['sha'] != source or type(pr['number']) is not int or pr['number'] < 1):
+        raise ValueError('Preview notes must identify the exact PR head')
+    previous = predecessor(store, 'macos', 'beta')
+    # A preview always names its PR, including maintenance changes. Its kind
+    # comes from the title prefix; labels cannot change this explicit contract.
+    item = pr_item(dict(pr, labels=[]), include_hidden=True)
+    return {'build': build, 'source': source, 'platform': 'macos', 'channel': 'beta',
+            'previous_build': previous['build'] if previous else None,
+            'previous_source': previous['source'] if previous else None,
+            'items': [item], 'preview': {'pr': pr['number']}}
 
 
 def prepare_stable(store, client, platform, build, source):
