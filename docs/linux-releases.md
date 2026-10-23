@@ -157,22 +157,27 @@ PR checks. There is one AppImage compilation per source. The existing public
 `ci.yml` and Arch package build remain independent. A merge commit is a new
 source: a successful PR-head artifact cannot be relabelled as that merge.
 
-The existing Linux release workflow's bridge job resolves exactly one hosted run
-for the selected full source SHA. Repository, workflow path, push ref, first
-attempt, completed success, executed AppImage compatibility step and Linux
-aggregate must match. It downloads exactly one non-expired artifact by ID,
-checks GitHub's SHA256 archive digest, and records its original run/job/artifact
-evidence. Uploaded-before-smoke artifacts alone never qualify. Missing evidence,
-a running/failed/rerun/ambiguous run or expired bytes fails closed, without a
-fallback build or automatic dispatch. A later Linux release attempt can reuse
-the same completed producer within its three-day retention. Older main commits
-without this producer cannot be backfilled by relabelling another source.
+The Linux release bridge resolves the selected full source SHA against the original
+main AppImage producer. First-attempt identity, executed successful Ubuntu/Fedora
+smoke, archive digest and payload provenance authorize AppImage reuse independently
+of the GitHub Linux aggregate. Missing producer, running producer, unaccepted smoke,
+and absent/expired payload are typed `APPIMAGE_REUSE_SKIP` outcomes with source and
+reason: reuse succeeds with `accepted=false` and produces no handoff. Malformed,
+ambiguous or mismatched evidence and transport/authentication errors remain failures.
+Producer, AppImage job and smoke status/conclusion must be recognized and coherent;
+malformed evidence fails reuse. A cancelled original GitHub producer is explicitly
+rejected even when its AppImage job and smoke succeeded.
+There is no fallback build, relabelling or duplicate producer dispatch.
 
-Both `arch-publication` and `appimage-publication` must complete before the
-existing protected `release-publish.yml` is dispatched. Only its existing
-`publish` runner imports `ARCH_GPG_PRIVATE_KEY` and uses R2 credentials, under
-the unchanged cross-platform publication/promotion lock. The mirror credential
-stays on the bridge. No new keys, secrets, runners or hosts are introduced.
+AppImage publication is independent of Arch acceptance: dispatch requires successful
+reuse with `accepted=true` and consumes only `appimage-publication`. An Arch failure
+cannot block accepted AppImage bytes. Arch dispatch still requires its successful
+`release` job, and its protected publisher retains the successful aggregate gate;
+it consumes only `arch-publication`. Reuse runs on every main tick even when the
+Arch descriptor already exists, so later accepted AppImage evidence can publish
+on the next tick without compiling another source. Cancellation still blocks publication.
+Only the existing protected `publish` runner imports the Linux key and R2 credentials,
+under the unchanged cross-platform publication/promotion lock.
 
 AppImage build **N** is its original embedded `5000 + GitHub run_number`;
 Forgejo's `5000 + run number` is separate `publication_build` metadata. The
@@ -265,3 +270,45 @@ Missing/wrong signer, changed archive/receipt/source, payload/descriptor tamper,
 immutable readback corruption, interrupted immutable and moving-pair writes,
 signature reuse and conflicts are exercised there with real GPG signatures.
 No live-key premerge run is required; live publication remains unverified.
+
+### Independent AppImage beta handoff (#1470)
+
+Dispatch `linux-release.yml` on `main` with `appimage_only=true` and a full
+`source` SHA from main history. This selects the source without consulting an
+Arch descriptor and skips the Arch compiler job. The bridge reuses the original
+GitHub AppImage archive and receipt; it never compiles, relabels or changes its
+embedded build version. The independently dispatched `appimage-publication` job
+depends only on successful AppImage reuse, so an Arch failure cannot block it.
+
+The protected `release-publish.yml` routes `platform=appimage` directly to
+`scripts/releases/appimage_handoff.py publish --run <linux-release-run-id>`.
+That helper checks trusted main `linux-release.yml` origin, exactly one unexpired
+`appimage-publication` artifact, the original GitHub repository/workflow/main
+source/first attempt, executed Ubuntu/Fedora smoke, archive digest and original
+payload provenance, and source ancestry on main before importing the existing
+Linux signing key. Neither the Forgejo aggregate nor the GitHub Linux aggregate,
+Arch artifacts or Arch feeds authorize this lane. Publication retains the shared
+non-cancellable lock, pinned signer, immutable storage and monotonic beta guard.
+Explicit AppImage sources can advance beta; the legacy archive-only Arch path
+and all Stable behavior remain unchanged.
+
+### AppImage-only Linux transition (approved 2026-10-23, #1564)
+
+The approved destination is AppImage-only Linux delivery, with Linux Stable using
+the signed AppImage. This handoff change does not activate that transition:
+current pacman beta/Stable delivery remains available until #1564. The repository
+will be frozen, not deleted, after a final pacman release communicates the switch.
+
+Delivery order is #1488 (independent AppImage publication), #1470 slice 3
+(self-update, blocking the switch), then #1564 (first-launch desktop integration,
+muninn launch/vault/update acceptance, final pacman switch message, AppImage Stable
+promotion and one Linux download page), followed by #1559 and #1557.
+Self-update must pass N-to-N+1 acceptance on Arch and Ubuntu. The first-launch
+integration must create a user-local desktop entry and icon, support removal, and
+require no AppImageLauncher. These remain pending product work, not capabilities
+implemented by this publication PR.
+
+Signed AppImage build 6606 from source `0c58` has already been delivered to Dima;
+no additional publication is needed for this revision. The parent owns subsequent
+publication and Stable GO after the required acceptance. This change performs no
+live publish and grants no new Stable GO.

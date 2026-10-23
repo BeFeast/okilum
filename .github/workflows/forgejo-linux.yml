@@ -22,9 +22,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install system libraries
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
             build-essential cmake pkg-config curl git mold zstd gnupg gpgv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
@@ -71,9 +71,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Ubuntu 22.04 build dependencies
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
             build-essential cmake pkg-config curl git mold file patchelf gpgv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1
@@ -89,7 +89,7 @@ jobs:
             dist/appimage/SHA256SUMS
             dist/appimage/provenance.json
             dist/appimage/bundled-libraries.txt
-          retention-days: 3
+          retention-days: 7
           if-no-files-found: error
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
         run: |
@@ -97,6 +97,7 @@ jobs:
           mkdir -p dist/appimage/evidence
           for image in ubuntu:24.04 fedora:44; do
             docker run --rm --network bridge \
+              -v /etc/ssl/certs/ca-certificates.crt:/ci-ca-certificates.crt:ro \
               -v "$PWD/dist/appimage:/artifact:ro" -v "$PWD:/source:ro" \
               "$image" bash /source/scripts/appimage/smoke.sh \
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
@@ -114,7 +115,7 @@ jobs:
         with:
           name: linux-appimage-evidence-${{ github.sha }}
           path: dist/appimage/evidence/
-          retention-days: 3
+          retention-days: 7
           if-no-files-found: warn
 
   linux:

@@ -14,6 +14,8 @@ pub(crate) struct SidePanel {
     reader: WeakEntity<Reader>,
     left: bool,
     _reader: Subscription,
+    pub(super) file_outline: Option<Entity<reader_right_panel::file_outline::View>>,
+    _outline: Option<Subscription>,
 }
 
 impl SidePanel {
@@ -27,10 +29,26 @@ impl SidePanel {
     }
 
     fn new(reader: &Entity<Reader>, left: bool, cx: &mut Context<Self>) -> Self {
+        let file_outline =
+            (!left).then(|| cx.new(|_| reader_right_panel::file_outline::View::new()));
+        let outline_observer = file_outline
+            .as_ref()
+            .map(|outline| cx.observe(outline, |_, _, cx| cx.notify()));
         Self {
             reader: reader.downgrade(),
             left,
-            _reader: cx.observe(reader, |_, _, cx| cx.notify()),
+            _reader: cx.observe(reader, |this, reader, cx| {
+                let clear =
+                    reader.read(cx).file_preview.is_none() || !reader.read(cx).panels.backlinks;
+                if clear {
+                    if let Some(outline) = &this.file_outline {
+                        outline.update(cx, |outline, cx| outline.clear(cx));
+                    }
+                }
+                cx.notify();
+            }),
+            file_outline,
+            _outline: outline_observer,
         }
     }
 }
@@ -44,6 +62,7 @@ thread_local! {
 impl Render for SidePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let left = self.left;
+        let file_outline = self.file_outline.clone();
         #[cfg(test)]
         RENDERS.with(|renders| {
             let mut counts = renders.get();
@@ -55,7 +74,14 @@ impl Render for SidePanel {
             .update(cx, |reader, cx| {
                 if left {
                     reader.render_sidebar(window, cx)
+                } else if let Some(outline) = file_outline
+                    .filter(|_| reader.file_preview.is_some() && reader.active_timeline().is_none())
+                {
+                    reader_right_panel::render_file(reader, outline, cx)
                 } else {
+                    if let Some(outline) = &self.file_outline {
+                        reader_right_panel::file_outline::View::bind(outline, reader, cx);
+                    }
                     reader.render_right_panel(cx)
                 }
             })
@@ -91,11 +117,24 @@ impl Reader {
             return div().into_any_element();
         };
         let view = AnyView::from(panel.clone());
-        if cache_panels() {
+        let weak_panel = panel.downgrade();
+        let panel = if cache_panels() {
             view.cached(StyleRefinement::default().size_full())
                 .into_any_element()
         } else {
             view.into_any_element()
+        };
+        if !left {
+            div()
+                .size_full()
+                .relative()
+                .child(panel)
+                .child(reader_right_panel::file_outline::View::track_viewport(
+                    move |cx| weak_panel.upgrade()?.read(cx).file_outline.clone(),
+                ))
+                .into_any_element()
+        } else {
+            panel
         }
     }
 
@@ -131,7 +170,7 @@ impl Reader {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
@@ -140,9 +179,9 @@ mod tests {
     }
 
     /// Panels drawn through the cache, as in the app, for one test.
-    pub(super) struct CachedPanels;
+    pub(crate) struct CachedPanels;
     impl CachedPanels {
-        pub(super) fn on() -> Self {
+        pub(crate) fn on() -> Self {
             CACHE_IN_TESTS.with(|cache| cache.set(true));
             Self
         }

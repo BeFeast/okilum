@@ -712,3 +712,86 @@ fn launch_context_resolves_only_the_bound_manager_and_executor_project_over_mcp(
         )));
     }
 }
+
+#[test]
+fn explicit_manager_launch_uses_the_configured_project_root_and_keeps_the_receipt() {
+    let server = fake_t3(|name, arguments| {
+        assert_eq!(name, "t3_thread_launch");
+        assert_eq!(arguments["projectId"], "brain");
+        assert_eq!(arguments["workspaceStrategy"], json!({"type": "root"}));
+        assert_eq!(arguments["message"], "knowledge context");
+        structured(json!({"threadId": "mcp:new", "projectId": "brain"}))
+    });
+    let gateway = gateway(&server, Some(token("good")));
+    assert_eq!(
+        gateway
+            .start_manager("brain", "Studio manager", "knowledge context")
+            .unwrap(),
+        "mcp:new"
+    );
+    assert_eq!(tool_calls(&server.requests()).len(), 1);
+}
+
+#[test]
+fn manager_launch_with_an_unconfirmed_project_is_not_reported_as_successful() {
+    let server = fake_t3(|_, _| structured(json!({"threadId": "mcp:new", "projectId": "wrong"})));
+    let gateway = gateway(&server, Some(token("good")));
+    assert!(gateway
+        .start_manager("brain", "Manager", "context")
+        .is_err());
+    assert_eq!(
+        tool_calls(&server.requests()).len(),
+        1,
+        "no automatic launch retry"
+    );
+}
+
+#[test]
+fn project_statuses_share_a_live_listing_and_distinguish_missing_settled_and_idle() {
+    use crate::projects::{Kind, Manager, Project as VaultProject, Status};
+    use std::collections::BTreeMap;
+    let server = fake_t3(|name, args| {
+        assert_eq!(name, "t3_thread_list");
+        assert_eq!(args["projectId"], "brain");
+        let row = |id, status, settled| {
+            json!({
+                "threadId": id, "title": id, "status": status, "settled": settled,
+                "latestRunId": null, "providerInstanceId": "codex", "model": "test",
+                "runtimeMode": "full-access", "linkedPullRequest": null, "pullRequests": null,
+                "parentThreadId": null, "updatedAt": "2026-10-22T00:00:00Z"
+            })
+        };
+        structured(
+            json!({"threads": [row("mcp:active", "running", false), row("mcp:idle", "completed", false), row("mcp:settled", "completed", true)], "nextCursor": null}),
+        )
+    });
+    let gateway: Arc<dyn ManagerGateway> = Arc::new(gateway(&server, Some(token("good"))));
+    let projects: Vec<_> = ["active", "idle", "settled", "missing"]
+        .into_iter()
+        .map(|name| VaultProject {
+            folder: name.into(),
+            name: name.into(),
+            kind: Kind::Knowledge,
+            environment: Some("test".into()),
+            manager_project: Some("brain".into()),
+            manager: Manager::Thread(format!("mcp:{name}")),
+        })
+        .collect();
+    let statuses =
+        crate::projects::statuses(&projects, &BTreeMap::from([("test".into(), gateway)]));
+    assert_eq!(
+        statuses[std::path::Path::new("active")],
+        Status::Running("running".into())
+    );
+    assert_eq!(
+        statuses[std::path::Path::new("idle")],
+        Status::NotRunning("completed".into())
+    );
+    assert_eq!(statuses[std::path::Path::new("settled")], Status::Settled);
+    assert_eq!(statuses[std::path::Path::new("missing")], Status::Missing);
+    assert_eq!(tool_calls(&server.requests()).len(), 1);
+    let disconnected = crate::projects::statuses(&projects, &BTreeMap::new());
+    assert!(disconnected
+        .values()
+        .all(|state| matches!(state, Status::Unreachable(_))));
+}

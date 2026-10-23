@@ -52,3 +52,11 @@ vello_common = { opt-level = 3 }
 [profile.windows-diagnostic]
 inherits = "release"
 debug-assertions = true
+
+# Local Mac sprint sessions: persistent incremental artifacts, no release LTO.
+[profile.sprint]
+inherits = "dev"
+opt-level = 1
+debug = 1
+incremental = true
+lto = false

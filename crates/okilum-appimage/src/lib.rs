@@ -13,6 +13,8 @@ use std::{
     time::Duration,
 };
 
+pub mod desktop;
+
 pub const FINGERPRINT: &str = "7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882";
 const ORIGIN: &str = "https://updates.befeast.com/";
 const IMAGE: &str = "Okilum-x86_64.AppImage";
@@ -306,9 +308,10 @@ impl Staged {
             "Provenance checksum mismatch"
         );
         let provenance_hash: serde_json::Value = serde_json::from_slice(&fs::read(&provenance)?)?;
+        let expected_build = release.build.to_string();
         ensure!(
             provenance_hash["source_sha"] == release.source
-                && provenance_hash["build_version"] == release.build.to_string()
+                && provenance_hash["build_version"].as_str() == Some(expected_build.as_str())
                 && provenance_hash["release_version"] == release.version
                 && provenance_hash["sha256"] == release.sha256,
             "Payload provenance identity mismatch"

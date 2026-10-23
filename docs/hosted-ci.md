@@ -50,6 +50,92 @@ fall back to cold builds. Capacity incidents are reported, not retried in a loop
 
 ## Logs of failed jobs
 
+Hosted Linux dependency setup uses `scripts/ci/apt-bounded.sh` on both build
+runners and in the Ubuntu AppImage smoke container. Each apt invocation has a
+four-minute deadline plus a 15-second kill grace, 30-second HTTP/HTTPS inactivity
+timeouts, two download retries and a 60-second dpkg lock wait. Failed index
+downloads fail the step rather than silently using stale indexes. Output remains
+visible for diagnosis; the two build dependency steps also have a ten-minute
+workflow deadline. No compiler or acceptance command is retried or skipped.
+
+Incident evidence (2026-10-22): GitHub run `39767622990`, `linux-checks` job
+`119786892717`, entered **Install system libraries** at 11:02:51 UTC and was
+cancelled at 12:05:34 UTC, with no apt output between those events. Its old
+`-qq` commands do not distinguish update/install, mirror/network or lock stalls.
+Run `39772117886` had already reached **Run full Linux gate**; its live job log
+returned `404 BlobNotFound`, so an apt cause for that run is not established.
+The bounded helper prevents another hour-long apt stall and provides diagnostic
+output; it does not establish a mirror/network root cause.
+
+Run `39781817542` subsequently passed the full Linux gate and built the AppImage
+on Ubuntu 22.04. In the clean Ubuntu 24.04 container, update fetched 33.6 MB in
+19 seconds, but installation requested 87.7 MB / 104 packages and HTTP archive
+downloads progressed around 80 KB/s before the four-minute bound returned 124.
+Runtime execution, Fedora and signed installation were not reached.
+
+The smoke container now uses `scripts/ci/ubuntu-smoke-apt.sh`: official
+`https://archive.ubuntu.com/ubuntu`, then one explicit fallback to
+`https://security.ubuntu.com/ubuntu`. Both serve Noble, Noble updates and Noble
+security; read-only metadata checks confirmed the base and security InRelease
+paths. This is availability evidence, not hosted throughput evidence. The normal
+hosted run tests these routes with a bounded signed index update (60 seconds)
+and verified package download (150 seconds) per candidate, logging the selected
+host and failures. There are at most two candidates; final installation retains
+the shared four-minute bound and uses `--no-download`. A 12-minute total deadline
+plus 15-second kill grace bounds the whole provisioning stage, including retries.
+The runner's one-hour ceiling stays unchanged.
+
+The clean image receives only the hosted runner's CA bundle as a read-only file
+for HTTPS bootstrap; no TLS or apt signature/hash verification is disabled.
+Sources explicitly retain the Ubuntu archive keyring and Noble amd64 suites.
+Completed deb downloads can be reused within this fresh container on fallback;
+there is no cross-run cache or restored installed runtime. Ubuntu/Fedora native
+smoke and signed installation remain required. Offline fake-apt tests cover
+primary success, download timeout fallback and fail-closed exhaustion in the
+normal hosted Linux gate; no local tests or artifact execution were performed.
+
+Run `39801660311`, `linux-checks` job `119903695926`, then failed before
+any tests in **Install system libraries** (exit 124 at 15:19 UTC). Index update
+fetched 12.5 MB in one second, but package downloads from HTTP
+`azure.archive.ubuntu.com` progressed around 80 KB/s: 19.4 MB / 29 packages,
+including 11.2 MB of CMake. The four-minute bound correctly stopped this run.
+The earlier HTTPS mitigation covered only the clean smoke container.
+
+Both hosted build runners (Ubuntu 24.04 checks and Ubuntu 22.04 AppImage build)
+now use `scripts/ci/hosted-ubuntu-apt.sh`. It makes disposable copies of the
+existing `.list` and deb822 `.sources` configuration and local `mirror+file:`
+lists, changing only official Ubuntu archive URLs to verified HTTPS: Azure
+first, then one explicit fallback to archive. Original runner source and mirror
+files remain byte-for-byte unchanged. Suites, components, architecture,
+Signed-By settings, third-party sources and mirror-list selection metadata are
+retained. Apt signature/hash checks and TLS CA/hostname validation remain on.
+Each route gets 60 seconds for update and 150 seconds for verified download;
+the final install uses `--no-download` under the existing four-minute bound.
+A shared temporary package cache retains completed downloads between candidates;
+it is removed after provisioning, with no cross-run cache restore. A nine-minute
+outer deadline plus 15-second kill grace stays within the unchanged ten-minute
+workflow step. No compiler, test, infrastructure timeout or acceptance gate changes.
+
+The normal hosted gate also runs offline fake-apt regression cases covering
+primary success, download-timeout fallback with cache reuse, exhaustion without
+installation, GitHub local mirror lists, deb822 and legacy sources, untouched
+third-party configuration and unchanged originals. Local validation is limited
+to syntax and diff inspection; these regression cases run only on hosted CI.
+
+Separate read-only infrastructure evidence: baldr's
+`forgejo-runner-bridge.service` accepted Forgejo task `22335` (job `34758`, API
+run `15757`, web run `10092`). Its actual ExecStart config is
+`/var/lib/forgejo-runner-bridge/config.yaml`, with `runner.timeout: 1h` and
+`runner.shutdown_timeout: 1h`. The extra service's separate
+`/var/lib/forgejo-runner-bridge-extra/config.yaml` has both values `130m`.
+Forgejo 16.0.5 in loki CT102 has no explicit timeout override in `[actions]`
+of `/etc/forgejo/app.ini`. No live configuration was changed.
+
+The primary bridge's one-hour ceiling remains unchanged; this CI-only fix does
+not authorize a live runner change.
+An existing bridge rerun still creates a new GitHub ref/build; this patch does
+not add receipt replay or permit older-source evidence for a new head.
+
 Logs of this repository's jobs are public; no token is needed. The usual trap is
 the run number: the number in a run's web URL (`/actions/runs/6123`) is not the
 API run id, so `GET /actions/runs/6123/jobs` reads another run or nothing.

@@ -1,0 +1,40 @@
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -544,3 +544,5 @@
+             || self.select_all
+-            || self.is_selecting
++            // Lifecycle cancellation updates the snapshot synchronously, but
++            // the SelectionChanged observer can run after a resize redraw.
++            || self.selection_adapter.selecting_points(cx).is_some()
+             || (!self.selection_adapter.has_selection_snapshot(cx)
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -197,2 +197,8 @@
+ impl InlineState {
++    pub(super) fn clear_selection(&mut self) {
++        self.selection = None;
++        self.fragment_selections.clear();
++        self.materialized_selection = None;
++    }
++
+     /// Save actually rendered text for selected text to use.
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -964,3 +964,3 @@
+             if let Ok(mut state) = c.state.lock() {
+-                state.selection = None;
++                state.clear_selection();
+             }
+@@ -969,3 +969,3 @@
+         if let Ok(mut state) = self.state.lock() {
+-            state.selection = None;
++            state.clear_selection();
+         }
+@@ -1420,3 +1420,3 @@
+         if let Ok(mut state) = self.state.lock() {
+-            state.selection = None;
++            state.clear_selection();
+         }

@@ -1,0 +1,10 @@
+project_id = "example"
+[management_home]
+kind = "directory"
+inline = { enabled = true, label = "example" }
+[t3.manager]
+model = "example"
+[[targets]]
+name = "alpha"
+[[targets]]
+name = "beta"

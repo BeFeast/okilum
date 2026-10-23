@@ -59,6 +59,105 @@ jobs:
           needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
 
+  # Shared Rust crates are independently required. The GUI/platform/release lanes
+  # below still run in full, but cannot hold up a Mac-first merge (#1489).
+  shared:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Shared sccache on the LAN S3 backend (private runner operations runbook,
+    # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
+    # they are absent (fork PRs) the build simply runs without the wrapper.
+    env:
+      CARGO_INCREMENTAL: "0"
+      # CI-only: retain backtrace lines; local and macOS profiles are unchanged.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Sprint reporting and cache/vendor regressions (isolated)
+        run: python3 scripts/dev/test-sprint-report.py
+
+      - name: Install system libraries (README "Building")
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold zstd tini \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+
+      - name: Install repository Rust toolchain
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+            --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/cargo" --version
+
+      - name: Vendor gpui-component (pinned revision + patches)
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+
+      - name: Enable sccache
+        run: |
+          set -euo pipefail
+          source scripts/ci/release-cache.sh
+          for name in RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR; do
+            printf '%s=%s\n' "$name" "${!name:-}" >> "$GITHUB_ENV"
+          done
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then dirname "$RUSTC_WRAPPER" >> "$GITHUB_PATH"; fi
+
+      - name: Identify compatible Cargo cache
+        id: cargo-cache-key
+        run: |
+          set -euo pipefail
+          compatibility=$({
+            rustc -vV
+            cargo -V
+            cargo clippy -V
+            uname -m
+            cat /etc/os-release
+            cc --version
+            ld --version
+            mold --version
+            dpkg-query -W -f='${Package}=${Version}\n' \
+              libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+              libfontconfig-dev libfreetype-dev libxcb1-dev
+            python3 -c 'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(("CARGO_", "RUST")) or k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")}, sort_keys=True))'
+          } | sha256sum | cut -d ' ' -f 1)
+          echo "compatibility=$compatibility" >> "$GITHUB_OUTPUT"
+
+      # Runner cache: Cargo downloads only, saved once per dependency set.
+      # Compiled output comes from sccache. Per-commit target/debug entries
+      # (~2.5 GB each) filled the runner disks within two days (2026-10-04).
+      - name: Restore Cargo downloads cache
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
+
+      - name: Check every shared suite and summarize failures
+        run: |
+          set -euo pipefail
+          # The native container has tail as PID 1. Reap orphaned fixtures
+          # throughout the suites without changing Stopped certification (#1541).
+          tini -s -- bash scripts/ci/check-shared.sh
+      - name: sccache stats
+        if: always()
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
+
   linux-local:
     if: >-
       github.event_name != 'pull_request' ||
@@ -357,7 +456,7 @@ jobs:
         run: python3 scripts/ci/github-pr.py
 
   macos:
-    needs: [linux, native-scope, macos-github, macos-local]
+    needs: [native-scope, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
     runs-on: bridge
     timeout-minutes: 2
@@ -365,7 +464,6 @@ jobs:
       - name: Require a native result
         env:
           SCOPE_RESULT: ${{ needs.native-scope.result }}
-          LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_REQUIRED: ${{ needs.native-scope.outputs.macos }}
           HOSTED_JOB: ${{ needs.macos-github.result }}
           HOSTED_RESULT: ${{ needs.macos-github.outputs.result }}
@@ -373,7 +471,6 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           set -euo pipefail
-          test "$LINUX_RESULT" = success
           test "$SCOPE_RESULT" = success
           case "$MACOS_REQUIRED" in
             false) echo "Documentation-only PR: native runner not needed" ;;
@@ -401,32 +498,22 @@ jobs:
             *) exit 1 ;;
           esac
 
-  # Keep the existing protected-branch context. Skipped/cancelled/failed native
-  # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.
+  # Keep the protected context; only shared code and applicable macOS block it.
+  # Main's Linux release health is still reported independently by main-health.
   check:
-    needs: [linux, native-scope, macos, windows-github, perf-linux]
+    needs: [shared, macos]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
     steps:
-      - name: Require Linux and applicable macOS checks
+      - name: Require shared code and applicable macOS checks
         env:
           EVENT: ${{ github.event_name }}
-          LINUX_RESULT: ${{ needs.linux.result }}
-          MACOS_REQUIRED: ${{ needs.native-scope.outputs.macos }}
+          SHARED_RESULT: ${{ needs.shared.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
-          WINDOWS_RESULT: ${{ needs.windows-github.result }}
-          PERF_RESULT: ${{ needs.perf-linux.result }}
         run: |
           set -euo pipefail
-          test "$LINUX_RESULT" = success
+          test "$SHARED_RESULT" = success
           if [ "$EVENT" = pull_request ]; then
-            case "$MACOS_REQUIRED" in
-              true)
-                test "$MACOS_RESULT" = success
-                test "$WINDOWS_RESULT" = success
-                test "$PERF_RESULT" = success ;;
-              false) echo "Documentation-only PR: native runner not needed" ;;
-              *) echo "Missing native scope result" >&2; exit 1 ;;
-            esac
+            test "$MACOS_RESULT" = success
           fi

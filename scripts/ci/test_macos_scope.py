@@ -40,18 +40,16 @@ class ScopeTests(unittest.TestCase):
     def test_required_gate_fails_closed(self):
         workflow = Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml'
         gate = workflow.read_text().split(
-            '      - name: Require Linux and applicable macOS checks', 1)[1]
+            '      - name: Require shared code and applicable macOS checks', 1)[1]
         script = '\n'.join(line[10:] for line in gate.split('        run: |\n', 1)[1].splitlines())
         for event in ['pull_request', 'push']:
-            for linux in ['success', 'failure', 'cancelled', 'skipped']:
+            for shared in ['success', 'failure', 'cancelled', 'skipped']:
                 for needed in ['true', 'false', '']:
                     for native in ['success', 'failure', 'cancelled', 'skipped']:
-                        expected = linux == 'success' and (
-                            event == 'push' or needed == 'false' or
-                            (needed == 'true' and native == 'success'))
-                        with self.subTest(event=event, linux=linux, needed=needed, native=native):
+                        expected = shared == 'success' and (event == 'push' or native == 'success')
+                        with self.subTest(event=event, shared=shared, needed=needed, native=native):
                             result = subprocess.run(['bash', '-c', script], capture_output=True,
-                                env=dict(os.environ, EVENT=event, LINUX_RESULT=linux,
+                                env=dict(os.environ, EVENT=event, SHARED_RESULT=shared,
                                          MACOS_REQUIRED=needed, MACOS_RESULT=native,
                                          WINDOWS_RESULT=native, PERF_RESULT=native))
                             self.assertEqual(result.returncode == 0, expected)

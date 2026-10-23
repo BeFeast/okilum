@@ -10,6 +10,7 @@ mod macos;
 #[cfg(any(windows, test))]
 mod ready;
 pub(crate) mod status;
+pub(crate) mod whats_new;
 #[cfg(windows)]
 mod windows;
 #[cfg(any(windows, test))]
@@ -86,6 +87,7 @@ pub(crate) fn install(_cx: &mut App) {
         })
         .detach();
     }
+    whats_new::install(_cx);
     #[cfg(windows)]
     {
         windows::start();
@@ -282,6 +284,7 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     if window.is_window_active() && appimage::take_announcement() {
         show_ready_notice(window, cx, appimage::restart);
     }
+    whats_new::notice(window, cx);
     #[cfg(windows)]
     if window.is_window_active() {
         if let Some(id) = windows::take_announcement() {

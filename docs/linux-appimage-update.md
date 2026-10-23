@@ -128,15 +128,16 @@ The runtime-only `appimage-acceptance.yml` workflow takes accepted old/current
 producer run IDs and full SHAs, validates successful source-pinned producer results,
 downloads their retained artifacts and runs the pair plus required GUI gate under
 Xvfb as an unprivileged user on Ubuntu and Fedora. It contains no compile step.
-The parent runs it only after accepting those producer results. Before the
-workflow exists on default, push the already-built exact new source to
-`forgejo-linux-acceptance-pr/**`: this starts only the runtime job, discovers its
-single existing exact-source producer and uses retained run `39764166082` as the
-intended N (requiring success). It never starts a new compile. Once the workflow is
-on default, explicit workflow-dispatch inputs support other accepted pairs. Disposable
-signer private material is removed before evidence upload; artifact copies/stages
-are retained in the hosted workspace, and uploaded diagnostic evidence excludes
-AppImage copies. No release feed or production signing authority changes.
+The parent runs it only after accepting those producer results. Before the workflow
+exists on default, push the already-built exact N+1 source to
+`forgejo-linux-acceptance-pr/<old_run>/<old_source>/<new_source>`. This starts only
+the runtime job and discovers the single existing exact-source N+1 producer. It
+never starts a new compile. Old run/source must be selected explicitly; the failed
+parked producer is not a default. Once the workflow is on default, explicit
+workflow-dispatch inputs support accepted pairs. Disposable signer private material
+is removed before evidence upload; artifact copies/stages are retained in the hosted
+workspace, and uploaded diagnostic evidence excludes AppImage copies. No release
+feed or production signing authority changes.
 
 **Concrete retained-artifact limitation:** `3c2532e3` has only the early CLI fixture
 entry, so its normal native Settings process cannot stage a disposable-key fixture
@@ -148,3 +149,64 @@ claim the CLI pair satisfies native GUI acceptance. A real GUI pair needs two
 meaningful source artifacts that actually contain the native route. This new route
 and all regression/runtime results still require hosted execution and independent
 exact-head review; source inspection is not PASS evidence.
+
+## Resume after #1488 / #1564
+
+The updated branch merges main `cb2995dcc3d3009bc43e5d886e5fe4957417cb4d`
+without changing the protected independent AppImage publication path. The pacman
+lane remains active until the separate #1564 switch, after self-update acceptance.
+No Stable promotion or pacman freeze is part of this PR.
+
+Retained producer inspection on 2026-10-23 found:
+
+- `3c2532e39b328f35d03ea962a4a0c1c14f285b59`, run `39764166082`,
+  AppImage artifact `12420221751`, evidence `12420233109`: AppImage job succeeded,
+  overall run failed; binary lacks the GUI route. Not an accepted GUI baseline.
+- `db88c49ffd7690fa2b65eaaca858ac1fc50971d9`, run `39766629494`,
+  AppImage artifact `12420827286`, evidence `12420259451`: AppImage job succeeded,
+  overall run failed at `clippy::cmp_owned` in provenance comparison. GUI-bearing,
+  but not an accepted producer under the existing validator. The comparison now
+  compares the expected build string explicitly, preserving the string schema.
+- Both payload artifacts were unexpired at inspection, expiring 2026-10-25 around
+  11:00 UTC. Retention does not convert failed aggregate results into acceptance.
+
+There is currently no accepted existing GUI pair. Do not rerun or recompile those
+identities. The final updated meaningful source is a candidate N after its single
+ordinary CI run succeeds. Preserve its artifact and producer receipts. The separate
+coordinated desktop lifecycle/UI integration is a meaningful potential N+1; compile
+that source once, then use the retained pair for mandatory update/signature/native
+acceptance. Parent coordinates source/build ownership and runtime execution; this
+child neither polls nor dispatches extra positive-control rounds. Production-signed
+beta N-to-N+1 on Arch/Ubuntu and muninn no-argument launch/vault chooser/beta-to-beta
+remain separate pending evidence, without changing trust or hosts.
+
+## Desktop integration helper contract (#1564)
+
+Decision: silent first-launch integration, with no consent dialog. CI/release owns
+`okilum_appimage::desktop::{install,remove,paths}` and its bundled approved SVG.
+The helpers accept an explicit absolute home; install additionally accepts the
+original absolute `APPIMAGE` path. They own only
+`~/.local/share/applications/okilum-appimage.desktop` and
+`~/.local/share/icons/hicolor/scalable/apps/okilum-appimage.svg`. Exec uses desktop
+entry escaping, a quoted original pathname and `%u`, with no shell invocation.
+Install atomically refreshes changed bytes, including after an AppImage move;
+unowned launchers/icons are refused. Distribution `okilum.desktop` is preserved.
+No MIME/default-handler change or system integration dependency is introduced.
+
+The UI owner must coordinate through the parent's registry before wiring the
+minimal lifecycle hook: invoke install off the GPUI thread only on ordinary
+AppImage startup (not help/build-info/QA fixture routes), silently; log an error
+without blocking launch. Invoke remove after existing uninstall refusal and
+confirmation checks, even if the AppImage has moved, include its exact paths in
+the uninstall inventory/report, and refresh the desktop database if available.
+This PR delivers the payload/helper only: neither startup nor uninstall is wired
+here, so first-launch integration is not claimed complete. That boundary leaves
+a meaningful coordinated GUI-bearing N+1 and avoids duplicate shell ownership.
+
+Local verification at resume: changed Rust formatting, Python/YAML/bash syntax and
+whitespace checks only; no local tests/builds/containers/artifact execution.
+Workspace `cargo fmt --check` is blocked by the existing vendored
+`bidi_geometry.rs`; `scripts/vendor-setup.sh --verify` reports that this local
+checkout differs from the complete patch stack. No vendor files were changed.
+The hosted lane prepares and verifies a fresh pinned vendor before its gates.
+AppImage payload/evidence retention is seven days for the accepted pair handoff.

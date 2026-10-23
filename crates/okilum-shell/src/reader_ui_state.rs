@@ -118,6 +118,7 @@ struct Saved {
     appearance: String,
     theme: String,
     font_size: f32,
+    text_zoom: f32,
     reading_width: f32,
     find_case_sensitive: bool,
     typed_views: okilum_core::typed_view::Preferences,
@@ -167,6 +168,7 @@ impl Default for Saved {
             appearance: "system".into(),
             theme: brand::ThemeId::default().key().into(),
             font_size: BODY_FONT_SIZE,
+            text_zoom: 1.,
             reading_width: READER_MAX_WIDTH,
             find_case_sensitive: false,
             typed_views: Default::default(),
@@ -200,6 +202,7 @@ struct Store {
     appearance_changed: bool,
     theme_changed: bool,
     font_changed: bool,
+    zoom_changed: bool,
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
@@ -291,6 +294,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         appearance_changed: !path.exists(),
         theme_changed: !path.exists(),
         font_changed: !path.exists(),
+        zoom_changed: !path.exists(),
         width_changed: !path.exists(),
         find_changed: false,
         // No migration input: opening a new window must not overwrite a
@@ -516,6 +520,7 @@ struct WriteJob {
     appearance_changed: bool,
     theme_changed: bool,
     font_changed: bool,
+    zoom_changed: bool,
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
@@ -576,6 +581,9 @@ impl WriteJob {
         }
         if self.theme_changed {
             latest.theme = self.saved.theme.clone();
+        }
+        if self.zoom_changed {
+            latest.text_zoom = self.saved.text_zoom;
         }
         if self.font_changed {
             latest.font_size = self.saved.font_size;
@@ -713,6 +721,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && state.frames_changed.is_empty()
             && !state.appearance_changed
             && !state.theme_changed
+            && !state.zoom_changed
             && !state.font_changed
             && !state.width_changed
             && !state.find_changed
@@ -745,6 +754,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         appearance_changed: state.appearance_changed,
         theme_changed: state.theme_changed,
         font_changed: state.font_changed,
+        zoom_changed: state.zoom_changed,
         width_changed: state.width_changed,
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
@@ -1601,10 +1611,38 @@ pub(crate) fn set_delimited_header(path: PathBuf, header: bool, cx: &mut App) {
 }
 
 pub(crate) fn font_size(cx: &App) -> f32 {
+    base_font_size(cx) * text_zoom(cx)
+}
+pub(crate) fn base_font_size(cx: &App) -> f32 {
     cx.try_global::<Store>().map_or(BODY_FONT_SIZE, |state| {
         state.saved.font_size.clamp(12., 24.)
     })
 }
+pub(crate) fn text_zoom(cx: &App) -> f32 {
+    cx.try_global::<Store>().map_or(1., |state| {
+        let zoom = state.saved.text_zoom;
+        if zoom.is_finite() {
+            zoom.clamp(0.5, 3.)
+        } else {
+            1.
+        }
+    })
+}
+pub(crate) fn set_text_zoom(zoom: f32, cx: &mut App) {
+    if !zoom.is_finite() || !installed(cx) {
+        return;
+    }
+    let zoom = zoom.clamp(0.5, 3.);
+    let state = cx.global_mut::<Store>();
+    if state.saved.text_zoom == zoom {
+        return;
+    }
+    state.saved.text_zoom = zoom;
+    state.zoom_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn reading_width(cx: &App) -> f32 {
     cx.try_global::<Store>().map_or(READER_MAX_WIDTH, |state| {
         state.saved.reading_width.clamp(560., 1200.)
@@ -1638,6 +1676,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.appearance_changed = false;
         state.theme_changed = false;
         state.font_changed = false;
+        state.zoom_changed = false;
         state.width_changed = false;
         state.find_changed = false;
         state.typed_views_changed = false;
@@ -2025,6 +2064,7 @@ mod tests {
                 appearance_changed: false,
                 theme_changed: false,
                 font_changed: true,
+                zoom_changed: false,
                 width_changed: false,
                 find_changed: false,
                 typed_views_changed: true,

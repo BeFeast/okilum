@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use okilum_t3::{manifest::AreaBinding, Environment};
 
+#[cfg(test)]
 pub(super) fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
     let mut directory = note.parent().unwrap_or(vault);
     while directory.starts_with(vault) {

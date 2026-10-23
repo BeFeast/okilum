@@ -735,8 +735,7 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn uninstall_data_refuses_while_running_or_while_sync_is_set_up() {
+    fn uninstall_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let fixture = tempfile::tempdir().unwrap();
         let state = fixture.path().join("state");
         let units = fixture.path().join("systemd/user");
@@ -747,28 +746,61 @@ mod tests {
             None,
             "positive control: idle and no sync"
         );
+        (fixture, state, units)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uninstall_data_refuses_while_running() {
+        let (_fixture, state, units) = uninstall_fixture();
         // A running Okilum holds the instance lock.
         let lock = std::fs::File::create(state.join("reader-instance.lock")).unwrap();
         lock.lock().unwrap();
-        assert!(blocked(Some(&state), Some(&units))
-            .unwrap()
-            .contains("Quit Okilum"));
+        let reason = blocked(Some(&state), Some(&units));
+        assert!(
+            reason.as_deref().unwrap().contains("Quit Okilum"),
+            "{reason:?}"
+        );
         lock.unlock().unwrap();
         assert_eq!(blocked(Some(&state), Some(&units)), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uninstall_data_refuses_while_sync_is_set_up() {
+        let (_fixture, state, units) = uninstall_fixture();
         write(&state.join("sync/setup.json"), r#"{"retired":false}"#);
-        assert!(blocked(Some(&state), Some(&units))
-            .unwrap()
-            .contains("Sync is still set up"));
+        let reason = blocked(Some(&state), Some(&units));
+        assert!(
+            reason.as_deref().unwrap().contains("Sync is still set up"),
+            "{reason:?}"
+        );
         write(&state.join("sync/setup.json"), r#"{"retired":true}"#);
         assert_eq!(
             blocked(Some(&state), Some(&units)),
             None,
             "a removed sync no longer blocks"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uninstall_data_refuses_while_sync_service_is_installed() {
+        // Use a separate state root from the instance-lock case. A concurrent
+        // fork can inherit a probe's flock until exec/exit, even with CLOEXEC,
+        // and otherwise mask this service refusal with "Quit Okilum first".
+        let (_fixture, state, units) = uninstall_fixture();
+        write(&state.join("sync/setup.json"), r#"{"retired":true}"#);
+        assert_eq!(blocked(Some(&state), Some(&units)), None);
         write(&units.join("okilum-syncthing-abc.service"), "[Unit]");
-        assert!(blocked(Some(&state), Some(&units))
-            .unwrap()
-            .contains("okilum-syncthing-abc.service"));
+        let reason = blocked(Some(&state), Some(&units));
+        assert!(
+            reason
+                .as_deref()
+                .unwrap()
+                .contains("okilum-syncthing-abc.service"),
+            "{reason:?}"
+        );
     }
 
     #[cfg(unix)]

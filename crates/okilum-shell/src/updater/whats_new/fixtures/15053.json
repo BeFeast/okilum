@@ -1,0 +1,15 @@
+{
+  "build": 15053,
+  "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "previous_build": 15032,
+  "previous_source": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "items": [
+    {
+      "pr": 1482,
+      "kind": "feature",
+      "text": "Outline for YAML, JSON, TOML and code files"
+    }
+  ],
+  "platform": "macos",
+  "channel": "beta"
+}

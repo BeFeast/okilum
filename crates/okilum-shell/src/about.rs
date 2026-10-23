@@ -34,9 +34,12 @@ fn about_channel() -> String {
 
 /// Where Linux updates come from (#1036): the pacman repository by name.
 #[cfg(target_os = "linux")]
-fn linux_update_source() -> &'static str {
-    if std::env::var_os("APPIMAGE").is_some() {
-        return "This AppImage updates itself on the selected channel.";
+fn linux_update_source() -> String {
+    if let Some(image) = std::env::var_os("APPIMAGE") {
+        return format!(
+            "This AppImage updates itself on the selected channel. Path: {:?}",
+            std::path::PathBuf::from(image)
+        );
     }
     use updater::linux_repo::{current, Source};
     match current() {
@@ -47,6 +50,7 @@ fn linux_update_source() -> &'static str {
         }
         Source::Unknown => "Updates come from your package manager.",
     }
+    .into()
 }
 
 /// The generation whose "Copied" label is showing; 0 when none (#1097).
@@ -112,6 +116,12 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                 .on_click(move |_, _, cx| cx.open_url(&url)),
         );
     }
+    links = links.child(
+        Button::new("about-whats-new")
+            .ghost()
+            .label("What's new in this build")
+            .on_click(|_, window, cx| updater::whats_new::show_current(window, cx)),
+    );
     v_flex()
         .debug_selector(|| "desktop-about".into())
         .gap_3()
@@ -204,7 +214,7 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            ""
+                            String::new()
                         }
                     }),
             )

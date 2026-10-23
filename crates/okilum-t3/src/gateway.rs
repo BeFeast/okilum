@@ -60,6 +60,15 @@ pub type GatewayResult<T> = Result<T, GatewayError>;
 /// The operations the Project tab needs from the server that runs an area's
 /// manager. Calls block; run them off the UI thread.
 pub trait ManagerGateway: Send + Sync {
+    /// Explicit user action only. This launch is NOT idempotent; callers must
+    /// persist intent before calling and retain uncertain outcomes.
+    fn start_manager(&self, project_id: &str, title: &str, message: &str) -> GatewayResult<String> {
+        let _ = (project_id, title, message);
+        Err(GatewayError::Protocol(
+            "This T3 connection cannot start managers".into(),
+        ))
+    }
+
     fn status(&self) -> GatewayStatus;
 
     fn server_identity(&self) -> GatewayResult<crate::ServerIdentity>;

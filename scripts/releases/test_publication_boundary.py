@@ -15,6 +15,14 @@ spec.loader.exec_module(macos)
 
 
 class PublicationBoundary(unittest.TestCase):
+    def setUp(self):
+        # These boundary fixtures exercise artifact identity/commands, not git/API
+        # note extraction (covered with real histories in test_release_notes.py).
+        patcher = patch('publication.release_notes.prepare', side_effect=lambda store, client, platform, build, source:
+                        dict(build=build, source='f' * 40, platform=platform, channel='beta',
+                             previous_build=None, previous_source=None, items=[]))
+        patcher.start(); self.addCleanup(patcher.stop)
+
     def test_only_successful_current_main_build_is_eligible(self):
         import publication
         run = {'workflow_id': 'windows-diagnostic.yml', 'prettyref': 'main',
@@ -57,30 +65,19 @@ class PublicationBoundary(unittest.TestCase):
             api.call.side_effect = [run, {'commit': {'id': 'source'}},
                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                  for i, name in enumerate(publication.ARTIFACTS['linux'])],
-                data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
+                data.getvalue(), {'commit': {'id': final_head}}]
             with patch.object(publication.subprocess, 'run') as launch, patch.object(publication, 'R2') as store:
                 store.return_value.call.return_value = None
                 publication.publish(api, 'linux', 12)
                 self.assertEqual(launch.called, expected)
                 if expected:
-                    self.assertEqual(launch.call_count, 2)
-                    appimage, arch = launch.call_args_list
-                    image_command, arch_command = appimage.args[0], arch.args[0]
-                    self.assertEqual(image_command[:2], [publication.sys.executable,
-                                     str(publication.SCRIPTS / 'releases/appimage_publish.py')])
-                    self.assertEqual(image_command[2:], ['--directory',
-                                     str(Path(image_command[3]).parent / 'appimage'),
-                                     '--source', 'source', '--publication-build', '5042'])
-                    self.assertEqual(arch_command[:2], [publication.sys.executable,
+                    launch.assert_called_once()
+                    command = launch.call_args.args[0]
+                    self.assertEqual(command[:2], [publication.sys.executable,
                                      str(publication.SCRIPTS / 'arch/publish.py')])
-                    self.assertEqual(arch_command[2:7], ['publish', '--build', '5042', '--source', 'source'])
-                    self.assertEqual(arch_command[7], '--package')
-                    self.assertEqual(Path(arch_command[8]).name, 'okilum.pkg.tar.zst')
-                    self.assertEqual(Path(arch_command[8]).parent.name, 'arch')
-                    for call in [appimage, arch]:
-                        self.assertTrue(call.kwargs['check'])
-                        self.assertEqual(call.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
-                        self.assertEqual(call.kwargs['env']['GITHUB_SHA'], 'source')
+                    self.assertEqual(command[2:7], ['publish', '--build', '5042', '--source', 'source'])
+                    self.assertEqual(Path(command[8]).name, 'okilum.pkg.tar.zst')
+                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
 
     def test_linux_finishes_after_new_merge_but_rejects_newer_published_beta(self):
         import publication
@@ -153,6 +150,12 @@ class PublicationBoundary(unittest.TestCase):
 
 
 class ExplicitSourcePublication(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('publication.release_notes.prepare', side_effect=lambda store, client, platform, build, source:
+                        dict(build=build, source=source, platform=platform, channel='beta',
+                             previous_build=None, previous_source=None, items=[]))
+        patcher.start(); self.addCleanup(patcher.stop)
+
     """#1040: a manual run that built an older main commit publishes to the archive only."""
 
     def publish(self, marker, final_head='c' * 40, event='workflow_dispatch', feed=9999):
@@ -172,7 +175,7 @@ class ExplicitSourcePublication(unittest.TestCase):
         api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
                                 [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                                  for i, name in enumerate(publication.ARTIFACTS['linux'])],
-                                data.getvalue(), data.getvalue(), {'commit': {'id': final_head}}]
+                                data.getvalue(), {'commit': {'id': final_head}}]
         launches = []
 
         def run_command(args, **kwargs):
@@ -190,13 +193,13 @@ class ExplicitSourcePublication(unittest.TestCase):
     def test_scheduled_tick_that_built_main_tip_publishes_to_beta(self):
         # The tick's own commit is its old snapshot; it built main's newer tip instead.
         launches = self.publish('d' * 40, event='schedule', feed=1)
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 1)
         self.assertNotIn('--archive-only', launches[0])
         self.assertIn('d' * 40, launches[0])
 
     def test_an_older_recorded_source_is_published_to_the_archive(self):
         launches = self.publish('d' * 40)
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 1)
         command = launches[0]
         self.assertIn('--archive-only', command)
         self.assertEqual(command[command.index('--source') + 1], 'd' * 40)
@@ -204,7 +207,7 @@ class ExplicitSourcePublication(unittest.TestCase):
     def test_main_moving_on_during_transfer_does_not_stop_an_archive_publication(self):
         # The point of an explicit source is that main has moved past it.
         launches = self.publish('d' * 40, final_head='e' * 40)
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 1)
         self.assertIn('--archive-only', launches[0])
 
     def test_the_run_own_commit_is_an_ordinary_snapshot(self):

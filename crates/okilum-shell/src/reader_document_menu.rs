@@ -26,7 +26,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.project_open {
+        if self.project_navigation.section != reader_project_navigation::Section::Reader {
+            return self.render_app_section(cx);
+        }
+        if self.project_open && self.project_navigation.active.is_none() {
             if let Some(project) = &self.project {
                 return div().size_full().child(project.clone()).into_any_element();
             }

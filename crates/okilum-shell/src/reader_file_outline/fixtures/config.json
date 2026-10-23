@@ -1,0 +1,12 @@
+{
+  "project_id": "example",
+  "management_home": {
+    "kind": "directory",
+    "nested": {"enabled": true}
+  },
+  "targets": [
+    {"name": "alpha"},
+    {"name": "beta"}
+  ],
+  "escaped\nkey": 1
+}

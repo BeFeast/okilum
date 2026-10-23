@@ -1,0 +1,521 @@
+//! Explicit, retained manager launch. A lost launch response is never retried.
+use super::*;
+use anyhow::{ensure, Context as _, Result};
+use okilum_t3::{
+    projects::{Manager, Project},
+    ManagerGateway,
+};
+use std::io::Write;
+
+pub(super) fn start(
+    area: &Path,
+    context: &str,
+    state: &Path,
+    gateway: &dyn ManagerGateway,
+    connected_environment: &okilum_t3::Environment,
+    connected_project: &str,
+) -> Result<String> {
+    let project = Project::read(area)?;
+    drop(manager_brief(&project, context)?);
+    ensure!(
+        project.environment.as_deref() == Some(connected_environment.alias.as_str())
+            && project.manager_project.as_deref() == Some(connected_project),
+        "Project T3 binding changed; reconnect before starting a manager"
+    );
+    let saved: std::collections::BTreeMap<String, String> = serde_json::from_slice(
+        &std::fs::read(state.join("t3-connections.json"))
+            .context("Saved T3 connection is unavailable; reconnect")?,
+    )?;
+    let origin = saved
+        .get(&connected_environment.alias)
+        .context("T3 connection changed; reconnect")?;
+    ensure!(
+        okilum_t3::Environment::new(&connected_environment.alias, origin)?
+            == *connected_environment,
+        "T3 connection origin changed; reconnect before starting a manager"
+    );
+    let project_id = project
+        .manager_project
+        .as_deref()
+        .context("This project has no T3 manager project configured")?;
+    ensure!(
+        gateway.list_projects()?.iter().any(|p| p.id == project_id),
+        "The configured T3 project is unavailable"
+    );
+    if let Manager::Thread(thread) = &project.manager {
+        let threads = gateway.list_threads(project_id)?;
+        ensure!(
+            threads
+                .iter()
+                .find(|t| &t.thread_id == thread)
+                .is_none_or(|t| t.settled),
+            "Manager is still available; refresh Projects instead of starting another"
+        );
+    }
+    start_inner(
+        area,
+        context,
+        state,
+        &project,
+        |project_id, title, message| {
+            gateway
+                .start_manager(project_id, title, message)
+                .map_err(anyhow::Error::from)
+        },
+    )
+}
+
+fn manager_brief(project: &Project, context: &str) -> Result<(String, String)> {
+    let workflow = match project.kind {
+        okilum_t3::projects::Kind::Knowledge => "Knowledge project: work in the vault root using the knowledge workflow. No repo, executor, CI or release is required.",
+        okilum_t3::projects::Kind::Code => "Code project: use the area's linked repository and existing code workflow.",
+        okilum_t3::projects::Kind::Hybrid => "Hybrid project: preserve the vault context and use its linked repository for code work.",
+    };
+    let context = context.trim_matches('/');
+    ensure!(
+        !context.contains(['`', '\n', '\r']),
+        "Project context path cannot be represented unambiguously in a manager brief"
+    );
+    let prefix = if context.is_empty() {
+        String::new()
+    } else {
+        format!("{context}/")
+    };
+    let message = format!(
+        "прочитай `{prefix}ops/manager-state.md` и `{prefix}AGENTS.md`, ты manager.\n{workflow}"
+    );
+    Ok((format!("[{}] Manager", project.name), message))
+}
+
+fn start_inner(
+    area: &Path,
+    context: &str,
+    state: &Path,
+    project: &Project,
+    launch: impl FnOnce(&str, &str, &str) -> Result<String>,
+) -> Result<String> {
+    let project_id = project
+        .manager_project
+        .as_deref()
+        .context("T3 project is not configured")?;
+    let current = Project::read(area)?;
+    ensure!(
+        current.manager == project.manager
+            && current.manager_project == project.manager_project
+            && current.environment == project.environment,
+        "Project binding changed before launch"
+    );
+    let (title, message) = manager_brief(project, context)?;
+    let registry = area.join("ops/thread-ids.md");
+    if !registry.exists() {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&registry)?;
+        file.write_all(b"# Thread registry\n\n| Role | Thread |\n|---|---|\n| Manager | ")?;
+        let pointer = match &project.manager {
+            Manager::NotStarted => "— (not started)".to_owned(),
+            Manager::Thread(id) => format!("`{id}`"),
+        };
+        file.write_all(format!("{pointer} |\n").as_bytes())?;
+        file.sync_all()?;
+    }
+    ensure!(
+        !okilum_core::file_editor::FileEditor::has_unsaved_draft(
+            &registry,
+            &state.join("manager-registry-drafts")
+        )?,
+        "An unsaved registry draft needs recovery before starting a manager"
+    );
+    // Reuse the lossless revision-aware editor; no rendered-note read or ad-hoc rename.
+    let mut editor = okilum_core::file_editor::FileEditor::open(
+        &registry,
+        &state.join("manager-registry-drafts"),
+    )?;
+    let source = editor.text().to_owned();
+    ensure!(
+        okilum_t3::projects::manager_role(&source)? == project.manager,
+        "Manager role changed"
+    );
+    let directory = state.join("manager-starts");
+    std::fs::create_dir_all(&directory)?;
+    let key = format!(
+        "{:x}",
+        sha2::Sha256::digest(
+            format!(
+                "{}\0{:?}\0{}\0{:?}",
+                area.display(),
+                project.manager,
+                project_id,
+                project.environment
+            )
+            .as_bytes()
+        )
+    );
+    let intent = directory.join(format!("{key}.json"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&intent)
+        .context(
+            "A retained manager launch already exists; reconcile it before starting another",
+        )?;
+    let mut record = serde_json::json!({ "area": area, "projectId": project_id, "outcome": "unconfirmed", "threadId": null, "expectedManager": format!("{:?}", project.manager), "environment": project.environment });
+    file.write_all(serde_json::to_string(&record)?.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    std::fs::File::open(&directory)?.sync_all()?;
+    let thread = launch(project_id, &title, &message)?;
+    record["threadId"] = thread.clone().into();
+    record["outcome"] = "created_registry_pending".into();
+    // Keep a separate immutable receipt: a crash writing it still leaves the
+    // original unconfirmed intent, which blocks another non-idempotent launch.
+    let receipt = directory.join(format!("{key}-created.json"));
+    let mut receipt_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&receipt)?;
+    receipt_file.write_all(serde_json::to_string(&record)?.as_bytes())?;
+    receipt_file.sync_all()?;
+    #[cfg(unix)]
+    std::fs::File::open(&directory)?.sync_all()?;
+    let save = (|| -> Result<()> {
+        let current = Project::read(area)?;
+        ensure!(
+            current.manager_project == project.manager_project
+                && current.environment == project.environment,
+            "Project binding changed during launch"
+        );
+        editor.set_text(okilum_t3::projects::register_manager(
+            &source,
+            &project.manager,
+            &thread,
+        )?)?;
+        ensure!(
+            editor.save()? == okilum_core::file_editor::Save::Saved,
+            "Manager registry changed concurrently"
+        );
+        Ok(())
+    })();
+    save.with_context(|| {
+        format!(
+            "Manager {thread} was created, but its registry update failed; do not start another"
+        )
+    })?;
+    Ok(thread)
+}
+
+use sha2::Digest;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, Project) {
+        let temp = tempfile::tempdir().unwrap();
+        let area = temp.path().join("vault/Music/Areas/Studio");
+        let state = temp.path().join("app-state");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("ops/project.yaml"), "name: Studio\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: test\n  manager: {project_id: brain, thread_id: null, workspace_mode: local}\n").unwrap();
+        std::fs::write(area.join("ops/thread-ids.md"), "# Registry\r\n\r\n| Role | Thread | Since |\r\n|---|---|---|\r\n| Manager | — (not started) | today |\r\n\r\nUnrelated text.\r\n").unwrap();
+        let project = Project::read(&area).unwrap();
+        (temp, area, state, project)
+    }
+
+    #[derive(Default)]
+    struct FakeGateway {
+        requests: std::sync::atomic::AtomicUsize,
+        launches: std::sync::atomic::AtomicUsize,
+        fail_launch: bool,
+        old_settled: bool,
+    }
+    impl ManagerGateway for FakeGateway {
+        fn status(&self) -> okilum_t3::GatewayStatus {
+            panic!("unused status")
+        }
+        fn server_identity(
+            &self,
+        ) -> std::result::Result<okilum_t3::ServerIdentity, okilum_t3::GatewayError> {
+            panic!("unused identity")
+        }
+        fn list_projects(
+            &self,
+        ) -> std::result::Result<Vec<okilum_t3::Project>, okilum_t3::GatewayError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![okilum_t3::Project {
+                id: "brain".into(),
+                title: "Brain".into(),
+                workspace_root: "/vault".into(),
+                default_model_selection: None,
+            }])
+        }
+        fn list_threads(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Vec<okilum_t3::ThreadSummary>, okilum_t3::GatewayError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if !self.old_settled {
+                return Ok(Vec::new());
+            }
+            Ok(vec![serde_json::from_value(serde_json::json!({"threadId":"mcp:old", "title":"Old", "status":"completed", "settled":true,
+                "latestRunId":null, "providerInstanceId":"codex", "model":"test", "runtimeMode":"full-access", "linkedPullRequest":null,
+                "pullRequests":null, "parentThreadId":null, "updatedAt":"2026-10-22T00:00:00Z"})).unwrap()])
+        }
+        fn start_manager(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> std::result::Result<String, okilum_t3::GatewayError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.launches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail_launch {
+                Err(okilum_t3::GatewayError::Unreachable("lost response".into()))
+            } else {
+                Ok("mcp:created".into())
+            }
+        }
+        fn read_thread(
+            &self,
+            _: &okilum_t3::ThreadQuery,
+        ) -> std::result::Result<okilum_t3::ThreadPage, okilum_t3::GatewayError> {
+            panic!("unused read")
+        }
+        fn send_message(
+            &self,
+            _: &okilum_t3::OutgoingMessage,
+        ) -> std::result::Result<okilum_t3::SendReceipt, okilum_t3::GatewayError> {
+            panic!("unused send")
+        }
+        fn pending_requests(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Vec<String>, okilum_t3::GatewayError> {
+            panic!("unused questions")
+        }
+        fn capabilities(
+            &self,
+        ) -> std::result::Result<okilum_t3::Capabilities, okilum_t3::GatewayError> {
+            panic!("unused catalog")
+        }
+        fn thread_configuration(
+            &self,
+            _: &str,
+        ) -> std::result::Result<okilum_t3::ThreadConfiguration, okilum_t3::GatewayError> {
+            panic!("unused configuration")
+        }
+        fn configure_model(
+            &self,
+            _: &str,
+            _: &okilum_t3::ModelSelection,
+        ) -> std::result::Result<okilum_t3::ThreadConfiguration, okilum_t3::GatewayError> {
+            panic!("unused configure")
+        }
+    }
+
+    fn save_environment(state: &Path, alias: &str, origin: &str) -> okilum_t3::Environment {
+        std::fs::create_dir_all(state).unwrap();
+        std::fs::write(
+            state.join("t3-connections.json"),
+            serde_json::to_vec(&std::collections::BTreeMap::from([(alias, origin)])).unwrap(),
+        )
+        .unwrap();
+        okilum_t3::Environment::new(alias, origin).unwrap()
+    }
+
+    #[test]
+    fn failed_manifest_only_replacement_keeps_the_old_effective_manager_pointer() {
+        for settled in [false, true] {
+            let (_temp, area, state, _) = fixture();
+            let manifest = area.join("ops/project.yaml");
+            let source = std::fs::read_to_string(&manifest)
+                .unwrap()
+                .replace("thread_id: null", "thread_id: 'mcp:old'");
+            std::fs::write(&manifest, &source).unwrap();
+            std::fs::remove_file(area.join("ops/thread-ids.md")).unwrap();
+            let env = save_environment(&state, "test", "https://example.com");
+            let gateway = FakeGateway {
+                fail_launch: true,
+                old_settled: settled,
+                ..Default::default()
+            };
+            assert!(start(&area, "Music/Areas/Studio", &state, &gateway, &env, "brain").is_err());
+            assert_eq!(
+                gateway.launches.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "replacement was actually attempted after missing/settled confirmation"
+            );
+            assert_eq!(
+                Project::read(&area).unwrap().manager,
+                Manager::Thread("mcp:old".into())
+            );
+            assert_eq!(std::fs::read_to_string(&manifest).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn changed_environment_cannot_launch_through_the_cached_gateway() {
+        let (_temp, area, state, _) = fixture();
+        let old = FakeGateway::default();
+        let new = FakeGateway::default();
+        let old_env = save_environment(&state, "test", "https://old.example.com");
+        let registry = std::fs::read(area.join("ops/thread-ids.md")).unwrap();
+        let manifest = area.join("ops/project.yaml");
+        std::fs::write(
+            &manifest,
+            std::fs::read_to_string(&manifest)
+                .unwrap()
+                .replace("environment: test", "environment: other"),
+        )
+        .unwrap();
+        let new_env = save_environment(&state, "other", "https://new.example.com");
+        let error =
+            start(&area, "Music/Areas/Studio", &state, &old, &old_env, "brain").unwrap_err();
+        assert!(format!("{error:#}").contains("binding changed"));
+        assert_eq!(old.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(old.launches.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!state.join("manager-starts").exists());
+        assert_eq!(
+            std::fs::read(area.join("ops/thread-ids.md")).unwrap(),
+            registry
+        );
+        // Positive control: explicitly reconnecting to the new target launches there.
+        assert_eq!(
+            start(&area, "Music/Areas/Studio", &state, &new, &new_env, "brain").unwrap(),
+            "mcp:created"
+        );
+        assert_eq!(new.launches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(old.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn changed_origin_under_the_same_alias_requires_reconnection() {
+        let (_temp, area, state, _) = fixture();
+        let old_env = save_environment(&state, "test", "https://old.example.com");
+        save_environment(&state, "test", "https://new.example.com");
+        let gateway = FakeGateway::default();
+        assert!(start(
+            &area,
+            "Music/Areas/Studio",
+            &state,
+            &gateway,
+            &old_env,
+            "brain"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("origin changed"));
+        assert_eq!(
+            gateway.requests.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(!state.join("manager-starts").exists());
+    }
+
+    #[test]
+    fn invalid_brief_paths_leave_no_launch_intent_and_make_no_gateway_call() {
+        for context in ["Music/Bad`Folder", "Music/Bad\nFolder"] {
+            let (_temp, area, state, project) = fixture();
+            let gateway = FakeGateway::default();
+            let env = okilum_t3::Environment::new("test", "https://example.com").unwrap();
+            let source = std::fs::read(area.join("ops/thread-ids.md")).unwrap();
+            assert!(start(&area, context, &state, &gateway, &env, "brain")
+                .unwrap_err()
+                .to_string()
+                .contains("unambiguously"));
+            assert_eq!(
+                gateway.requests.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert!(!state.join("manager-starts").exists());
+            assert_eq!(
+                std::fs::read(area.join("ops/thread-ids.md")).unwrap(),
+                source
+            );
+            // The lower-level commit path has the same deterministic validation.
+            assert!(
+                start_inner(&area, context, &state, &project, |_, _, _| panic!(
+                    "must not launch"
+                ))
+                .is_err()
+            );
+            assert!(!state.join("manager-starts").exists());
+        }
+    }
+
+    #[test]
+    fn explicit_launch_keeps_unrelated_registry_bytes_and_knowledge_context() {
+        let (_temp, area, state, project) = fixture();
+        let before = std::fs::read_to_string(area.join("ops/thread-ids.md")).unwrap();
+        let id = start_inner(
+            &area,
+            "Music/Areas/Studio",
+            &state,
+            &project,
+            |id, title, message| {
+                assert_eq!(id, "brain");
+                assert_eq!(title, "[Studio] Manager");
+                assert!(message.contains("`Music/Areas/Studio/ops/manager-state.md`"));
+                assert!(message.contains("Knowledge project: work in the vault root"));
+                Ok("mcp:created".into())
+            },
+        )
+        .unwrap();
+        assert_eq!(id, "mcp:created");
+        let after = std::fs::read_to_string(area.join("ops/thread-ids.md")).unwrap();
+        assert_eq!(after, before.replace("— (not started)", "`mcp:created`"));
+        assert!(
+            std::fs::read_dir(state.join("manager-starts"))
+                .unwrap()
+                .count()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn lost_response_blocks_a_second_launch_across_reopening() {
+        let (_temp, area, state, project) = fixture();
+        let before = std::fs::read(area.join("ops/thread-ids.md")).unwrap();
+        assert!(start_inner(
+            &area,
+            "Music/Areas/Studio",
+            &state,
+            &project,
+            |_, _, _| anyhow::bail!("lost response")
+        )
+        .is_err());
+        let second = start_inner(&area, "Music/Areas/Studio", &state, &project, |_, _, _| {
+            panic!("must not send a second launch")
+        });
+        assert!(format!("{:#}", second.unwrap_err()).contains("retained manager launch"));
+        assert_eq!(
+            std::fs::read(area.join("ops/thread-ids.md")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn registry_edit_during_launch_is_retained_and_the_created_id_remains_visible() {
+        let (_temp, area, state, project) = fixture();
+        let registry = area.join("ops/thread-ids.md");
+        let mut edited = std::fs::read_to_string(&registry).unwrap();
+        edited.push_str("An external edit.\r\n");
+        let result = start_inner(&area, "Music/Areas/Studio", &state, &project, |_, _, _| {
+            std::fs::write(&registry, &edited)?;
+            Ok("mcp:created".into())
+        });
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("mcp:created"));
+        assert_eq!(std::fs::read_to_string(&registry).unwrap(), edited);
+        assert!(std::fs::read_dir(state.join("manager-starts"))
+            .unwrap()
+            .any(|entry| std::fs::read_to_string(entry.unwrap().path())
+                .unwrap()
+                .contains("mcp:created")));
+    }
+}

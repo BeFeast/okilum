@@ -56,7 +56,7 @@ fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &m
             cx,
         ))),
         window_min_size: Some(size(px(900.), px(600.))),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
     if let Ok(handle) = cx.open_window(options, move |window, cx| {
         window.set_window_title(&format!(

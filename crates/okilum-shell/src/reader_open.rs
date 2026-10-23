@@ -1230,8 +1230,6 @@ pub(crate) fn window_options(cx: &App) -> WindowOptions {
         app_id: Some("okilum".into()),
         #[cfg(target_os = "linux")]
         window_background: WindowBackgroundAppearance::Opaque,
-        #[cfg(target_os = "linux")]
-        window_decorations: Some(WindowDecorations::Client),
         titlebar: Some(super::reader_titlebar_options()),
         ..TitleBar::window_options()
     }

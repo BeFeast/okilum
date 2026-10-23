@@ -11,10 +11,17 @@ def api(route):
 
 
 repository = os.environ['GITHUB_REPOSITORY']
-# Preserved intended N, accepted only if its producer finished successfully.
-# The pre-merge push route uses the exact new source's existing producer.
-old_run = os.environ.get('OLD_RUN') or '39764166082'
-old_source = os.environ.get('OLD_SOURCE') or '3c2532e39b328f35d03ea962a4a0c1c14f285b59'
+# Never default to the parked failed producer. Before this workflow is on main,
+# the parent selects accepted N explicitly in the runtime-only ref, while keeping
+# the exact already-compiled N+1 commit. This does not create another producer.
+old_run = os.environ.get('OLD_RUN')
+old_source = os.environ.get('OLD_SOURCE')
+if not old_run or not old_source:
+    route = re.fullmatch(r'forgejo-linux-acceptance-pr/([1-9][0-9]*)/([0-9a-f]{40})/([0-9a-f]{40})',
+                         os.environ.get('GITHUB_REF_NAME', ''))
+    assert route, 'Require explicit accepted old_run/old_source inputs or source-pinned runtime ref'
+    old_run, old_source, routed_new = route.groups()
+    assert routed_new == os.environ['NEW_SOURCE'], 'Runtime ref must name the unchanged new source'
 new_source = os.environ['NEW_SOURCE']
 new_run = os.environ.get('NEW_RUN')
 if not new_run:

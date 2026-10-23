@@ -1,0 +1,15 @@
+{
+  "build": 15032,
+  "source": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_build": 15001,
+  "previous_source": "cccccccccccccccccccccccccccccccccccccccc",
+  "items": [
+    {
+      "pr": 1463,
+      "kind": "fix",
+      "text": "Use platform shortcuts in editor tests"
+    }
+  ],
+  "platform": "macos",
+  "channel": "beta"
+}

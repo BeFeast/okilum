@@ -1,0 +1,12 @@
+# def comment_is_not_a_symbol():
+@decorator
+class Service:
+    @property
+    def name(self):
+        return "def string_is_not_a_symbol():"
+
+    async def run(self):
+        pass
+
+def main():
+    pass
