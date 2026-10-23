@@ -42,6 +42,28 @@ fn ten_thousand_nested_elements() {
     }
 }
 
+/// HTML ignores the slash of `<div/>`: it opens an element like `<div>`,
+/// so the depth guard must count it (only SVG/MathML elements self-close).
+#[test]
+fn self_closing_slash_on_html_elements_still_nests() {
+    for open in ["<div/>", "<span/>", "<blockquote/>"] {
+        let html = format!("{}deep text", open.repeat(10_000));
+        on_small_stack(move || {
+            let md = convert(&html);
+            assert!(md.contains("deep text"), "{md:.200}");
+        });
+    }
+    // Foreign self-closing elements do not nest and are not flattened.
+    let svg = format!(
+        "<p>a</p><svg>{}</svg><p>b</p>",
+        "<path d='M0 0'/>".repeat(1_000)
+    );
+    on_small_stack(move || {
+        let md = convert(&svg);
+        assert!(md.contains('a') && md.contains('b'), "{md:.200}");
+    });
+}
+
 #[test]
 fn unclosed_tags_and_mixed_nesting() {
     let mut html = String::new();

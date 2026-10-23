@@ -131,6 +131,9 @@ fn scan_tags(html: &str, mut out: Option<&mut String>) -> usize {
     let bytes = html.as_bytes();
     let n = bytes.len();
     let mut depth = 0usize;
+    // Open <svg>/<math>: only foreign elements self-close; HTML ignores the
+    // slash of `<div/>`, which opens and nests like `<div>`.
+    let mut foreign = 0usize;
     let mut max = 0usize;
     let mut copied = 0usize; // bytes of `html` already handled for `out`
     let mut i = 0usize;
@@ -184,12 +187,19 @@ fn scan_tags(html: &str, mut out: Option<&mut String>) -> usize {
             let counted = !name.is_empty()
                 && !VOID.contains(&name.as_str())
                 && !OPTIONAL.contains(&name.as_str());
+            let is_foreign = name == "svg" || name == "math";
             if closing {
                 if counted {
                     keep = depth <= PARSE_DEPTH;
                     depth = depth.saturating_sub(1);
+                    if is_foreign {
+                        foreign = foreign.saturating_sub(1);
+                    }
                 }
-            } else if counted && !self_closing {
+            } else if counted && !(self_closing && (foreign > 0 || is_foreign)) {
+                if is_foreign {
+                    foreign += 1;
+                }
                 depth += 1;
                 max = max.max(depth);
                 keep = depth <= PARSE_DEPTH;
