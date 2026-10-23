@@ -468,7 +468,9 @@ fn decode_entities(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let Some(end) = rest[..rest.len().min(12)].find(';') else {
+        // Search bytes: a 12-byte cut can split a character, ';' cannot.
+        let window = &rest.as_bytes()[..rest.len().min(12)];
+        let Some(end) = window.iter().position(|&b| b == b';') else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -600,6 +602,16 @@ mod tests {
             text(read_offer(&board)),
             "One & two\nthree x\n🧠\n  keep\n  this"
         );
+    }
+
+    #[test]
+    fn non_ascii_after_an_ampersand_is_kept() {
+        assert_eq!(
+            decode_entities("A & 日本語のテキスト"),
+            "A & 日本語のテキスト"
+        );
+        assert_eq!(decode_entities("&日本語;&amp;"), "&日本語;&");
+        assert_eq!(html_to_text("<p>Tom &Jerry — été</p>"), "Tom &Jerry — été");
     }
 
     #[test]
