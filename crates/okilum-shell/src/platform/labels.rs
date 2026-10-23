@@ -61,6 +61,16 @@ impl Os {
         }
     }
 
+    /// «Reveal vault in Finder» and the like: the file-manager item for a
+    /// named thing (#1512), worded as `reveal` words the plain item.
+    pub fn reveal_named(self, item: &str) -> String {
+        match self {
+            Os::Mac => format!("Reveal {item} in Finder"),
+            Os::Windows => format!("Show {item} in Explorer"),
+            Os::Linux => format!("Show {item} in File Manager"),
+        }
+    }
+
     pub const fn reveal(self) -> &'static str {
         match self {
             Os::Mac => "Reveal in Finder",
@@ -208,6 +218,12 @@ mod tests {
         assert_eq!(Os::Mac.reveal(), "Reveal in Finder");
         assert_eq!(Os::Windows.reveal(), "Show in Explorer");
         assert_eq!(Os::Linux.reveal(), "Show in File Manager");
+        assert_eq!(Os::Mac.reveal_named("vault"), "Reveal vault in Finder");
+        assert_eq!(Os::Windows.reveal_named("vault"), "Show vault in Explorer");
+        assert_eq!(
+            Os::Linux.reveal_named("project"),
+            "Show project in File Manager"
+        );
         #[cfg(not(target_os = "macos"))]
         assert!(!Os::CURRENT.reveal().contains("Finder"));
     }

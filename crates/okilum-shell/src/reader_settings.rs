@@ -22,6 +22,11 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+/// Settings on the Vault pane: the sidebar's vault menu (#1512).
+pub(crate) fn show_vault(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
+    show_section(reader, Some(Section::Vault), cx);
+}
+
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }

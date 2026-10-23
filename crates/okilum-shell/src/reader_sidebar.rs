@@ -15,12 +15,6 @@ pub const RECENT_SHOWN: usize = 6;
 /// project's folder (#1517), so it keeps more than one menu shows.
 pub const RECENT_KEPT: usize = 40;
 
-/// A section header's count badge (#687). An empty section shows no badge:
-/// its placeholder row already says so, and the UI never shows a zero count.
-pub fn section_count(len: usize) -> Option<usize> {
-    (len > 0).then_some(len)
-}
-
 /// Notes created within this window and not yet filed are the Inbox.
 pub const INBOX_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
 /// `first_seen` marker for notes that existed when the baseline was taken.
@@ -343,12 +337,6 @@ mod tests {
         let vault = Vault::scan(&root).unwrap();
         let _ = std::fs::remove_dir_all(root);
         vault
-    }
-
-    #[test]
-    fn empty_sections_carry_no_count() {
-        assert_eq!(section_count(0), None);
-        assert_eq!(section_count(3), Some(3));
     }
 
     #[test]
