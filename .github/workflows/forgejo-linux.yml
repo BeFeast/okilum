@@ -68,6 +68,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Verify CI attempt before producing artifacts
+        id: recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/releases/appimage_ci.py --verify-attempt
       - name: Install Ubuntu 22.04 build dependencies
         timeout-minutes: 10
         run: |
@@ -88,6 +93,8 @@ jobs:
             dist/appimage/provenance.json
             dist/appimage/bundled-libraries.txt
           retention-days: 3
+          # Recovery was verified before any producer work; keep current attempt bytes.
+          overwrite: ${{ github.run_attempt > 1 }}
           if-no-files-found: error
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
         run: |
@@ -109,10 +116,11 @@ jobs:
           python3 scripts/releases/appimage_ci.py dist/appimage \
             2>&1 | tee dist/appimage/evidence/signature-install.log
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.recovery.outcome == 'success'
         with:
           name: linux-appimage-evidence-${{ github.sha }}
           path: dist/appimage/evidence/
+          overwrite: ${{ github.run_attempt > 1 }}
           retention-days: 3
           if-no-files-found: warn
 
