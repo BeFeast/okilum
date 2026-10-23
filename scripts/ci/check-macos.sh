@@ -20,6 +20,11 @@ archive="${RUNNER_TEMP:?}/Sparkle-2.10.0.tar.xz"
 python3 scripts/updater/sparkle.py fetch "$archive"
 python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
 export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
+# #1603: only the hosted lane runs the isolated signed update/relaunch fixture.
+# Local/corporate runners must not execute it.
+if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
+    python3 scripts/ci/sparkle-freshness/run.py "$archive"
+fi
 cargo_args=(test --release --locked --target aarch64-apple-darwin)
 # Compile the production binary too: cargo test alone only builds the shell
 # with cfg(test), because this crate has no integration-test targets.
@@ -107,3 +112,8 @@ release_cache_stats
 # #1583: Settings progress/ready/restart controls and the shared update state machine.
 run_tests okilum-shell --bins updater::status::
 run_tests okilum-shell --bins updater::progress_ui_tests::
+
+# Real GPUI editor protection at the same final boundary used by both Quit and Restart.
+if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
+    run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
+fi

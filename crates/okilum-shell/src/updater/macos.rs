@@ -1,3 +1,5 @@
+#[path = "install_guard.rs"]
+mod install_guard;
 use super::status::{self, CheckStatus};
 use std::ffi::{c_char, c_int, CStr};
 
@@ -8,7 +10,10 @@ extern "C" {
     fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
     fn okilum_updater_restart() -> bool;
+    fn okilum_updater_finish_restart() -> bool;
     fn okilum_updater_ready() -> bool;
+    fn okilum_updater_guard_requested() -> bool;
+    fn okilum_updater_refuse_restart();
     fn okilum_updater_beta() -> bool;
     fn okilum_updater_set_beta(enabled: bool);
     #[cfg(test)]
@@ -92,22 +97,30 @@ mod tests {
 pub(super) fn ready() -> bool {
     unsafe { okilum_updater_ready() }
 }
-pub(super) fn restart(cx: &mut gpui::App) {
+pub(super) fn restart(_cx: &mut gpui::App) {
     if !ready() {
         return;
     }
-    let result = (|| -> anyhow::Result<()> {
-        anyhow::ensure!(
-            crate::reader_editor::protect_all_for_quit(cx),
-            "Your latest edits could not be protected. Okilum will stay open."
-        );
-        crate::reader_ui_state::prepare_for_restart(cx)?;
-        anyhow::ensure!(
-            unsafe { okilum_updater_restart() },
-            "The update is no longer ready. Check for updates again."
-        );
-        Ok(())
-    })();
+    // Freshness is asynchronous. The final save guards run after it completes,
+    // through finish_requested_restart, even for Sparkle's own Restart button.
+    unsafe { okilum_updater_restart() };
+}
+
+pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
+    if !unsafe { okilum_updater_guard_requested() } {
+        return;
+    }
+    let result = protect_verified_install(
+        cx,
+        || {
+            anyhow::ensure!(
+                unsafe { okilum_updater_finish_restart() },
+                "The update is no longer ready. Check for updates again."
+            );
+            Ok(())
+        },
+        || unsafe { okilum_updater_refuse_restart() },
+    );
     if let Err(error) = result {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, cx| {
@@ -119,4 +132,27 @@ pub(super) fn restart(cx: &mut gpui::App) {
             });
         }
     }
+}
+
+/// Both AppKit Quit and Restart reach this boundary only after freshness. The
+/// callbacks isolate the irreversible continuation; editor protection is real
+/// and always reads the current GPUI editor state before committing either path.
+pub(crate) fn protect_verified_install(
+    cx: &mut gpui::App,
+    commit: impl FnOnce() -> anyhow::Result<()>,
+    refuse: impl FnOnce(),
+) -> anyhow::Result<()> {
+    install_guard::finish(
+        cx,
+        |cx| {
+            anyhow::ensure!(
+                crate::reader_editor::protect_all_for_quit(cx),
+                "Your latest edits could not be protected. Okilum will stay open."
+            );
+            Ok(())
+        },
+        crate::reader_ui_state::prepare_for_restart,
+        |_| commit(),
+        |_| refuse(),
+    )
 }
