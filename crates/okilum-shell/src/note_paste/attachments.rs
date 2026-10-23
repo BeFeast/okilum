@@ -25,6 +25,8 @@ pub enum SaveError {
     Folder(io::Error),
     Write(io::Error),
     NoFreeName,
+    /// A copied file couldn't be copied into the vault.
+    CopyFile(String, io::Error),
 }
 
 impl SaveError {
@@ -43,6 +45,9 @@ impl SaveError {
             }
             Self::NoFreeName => {
                 "Couldn’t find a free name for the pasted image, so nothing was inserted.".into()
+            }
+            Self::CopyFile(name, error) => {
+                format!("Couldn’t copy “{name}” into the vault, so nothing was inserted: {error}")
             }
         }
     }
@@ -177,6 +182,222 @@ pub fn save_pasted_image(
         }
     }
     Err(SaveError::NoFreeName)
+}
+
+/// Files larger than this are linked where they are instead of copied.
+pub const MAX_COPY_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Extensions embedded with `![[…]]`; anything else is linked with `[[…]]`.
+pub const IMAGE_EXTENSIONS: [&str; 13] = [
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp", "svg", "avif", "ico",
+];
+
+pub fn is_image_extension(extension: &str) -> bool {
+    IMAGE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+}
+
+/// The image kind of a file's first bytes, for a cached file without an
+/// extension.
+pub fn sniff_image(head: &[u8]) -> Option<ImageKind> {
+    Some(if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ImageKind::Png
+    } else if head.starts_with(&[0xff, 0xd8, 0xff]) {
+        ImageKind::Jpeg
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        ImageKind::Gif
+    } else if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        ImageKind::Webp
+    } else if head.starts_with(b"II*\0") || head.starts_with(b"MM\0*") {
+        ImageKind::Tiff
+    } else if head.starts_with(b"BM") {
+        ImageKind::Bmp
+    } else if head.len() >= 12
+        && &head[4..8] == b"ftyp"
+        && matches!(
+            &head[8..12],
+            b"heic" | b"heix" | b"mif1" | b"msf1" | b"heif"
+        )
+    {
+        ImageKind::Heic
+    } else {
+        return None;
+    })
+}
+
+/// Whether a copied file lives in a clipboard manager's cache or a temporary
+/// folder (its name means nothing; it gets a `Pasted image …` name).
+pub fn is_clipboard_cache(path: &Path) -> bool {
+    let text = path.to_string_lossy().replace('\\', "/");
+    text.contains("/com.raycast.macos/")
+        || text.contains("/TemporaryItems/")
+        || text.starts_with("/var/folders/")
+        || text.starts_with("/private/var/folders/")
+        || text.starts_with("/tmp/")
+        || text.starts_with("/private/tmp/")
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedFiles {
+    /// Inserted at the caret, one link per line.
+    pub text: String,
+    pub copied: usize,
+    pub copied_bytes: u64,
+    pub in_vault: usize,
+    /// Too large to copy: linked at their original place.
+    pub linked_outside: Vec<String>,
+}
+
+/// Copy pasted files into the note's attachment folder (never replacing a
+/// file) and return their links: `![[name]]` for images, `[[name]]` for other
+/// files, a vault-relative link for a file already in the vault, a `file://`
+/// link for a file over [`MAX_COPY_BYTES`]. Every linked file exists when
+/// this returns.
+pub fn save_pasted_files(
+    vault_root: &Path,
+    note_rel: &str,
+    files: &[PathBuf],
+    stamp: &str,
+) -> Result<SavedFiles, SaveError> {
+    save_pasted_files_with(vault_root, note_rel, files, stamp, &is_clipboard_cache)
+}
+
+pub fn save_pasted_files_with(
+    vault_root: &Path,
+    note_rel: &str,
+    files: &[PathBuf],
+    stamp: &str,
+    is_cache: &dyn Fn(&Path) -> bool,
+) -> Result<SavedFiles, SaveError> {
+    let mut saved = SavedFiles::default();
+    let mut links = Vec::new();
+    let root = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+    let folder = attachment_folder(vault_root, note_rel);
+    for source in files {
+        let display = source
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| source.to_string_lossy().into_owned());
+        let canonical = std::fs::canonicalize(source).unwrap_or_else(|_| source.clone());
+        let extension = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_owned);
+        // Already in the vault: link it where it is.
+        if let Ok(relative) = canonical.strip_prefix(&root) {
+            let relative = relative
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            if !relative.is_empty() {
+                let image = extension.as_deref().is_some_and(is_image_extension);
+                links.push(if image {
+                    embed(&relative)
+                } else {
+                    format!("[[{relative}]]")
+                });
+                saved.in_vault += 1;
+                continue;
+            }
+        }
+        let metadata =
+            std::fs::metadata(source).map_err(|e| SaveError::CopyFile(display.clone(), e))?;
+        if metadata.is_dir() || metadata.len() > MAX_COPY_BYTES {
+            let url = url::Url::from_file_path(&canonical)
+                .map(|u| u.to_string())
+                .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
+            links.push(format!("[{}]({url})", display.replace(['[', ']'], "")));
+            saved.linked_outside.push(display);
+            continue;
+        }
+        // A cached file without an extension: name it by its content.
+        let extension = match extension {
+            Some(extension) => Some(extension),
+            None => {
+                let mut head = [0u8; 16];
+                let read = std::fs::File::open(source)
+                    .and_then(|mut f| io::Read::read(&mut f, &mut head))
+                    .unwrap_or(0);
+                sniff_image(&head[..read]).map(|kind| kind.extension().to_owned())
+            }
+        };
+        let image = extension.as_deref().is_some_and(is_image_extension);
+        let cached = is_cache(source);
+        let stem = if image && cached {
+            format!("Pasted image {stamp}")
+        } else {
+            source
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| display.clone())
+        };
+        let (file_name, bytes) = copy_noclobber(source, &folder, &stem, extension.as_deref())
+            .map_err(|error| match error {
+                CopyError::Folder(e) => SaveError::Folder(e),
+                CopyError::Io(e) => SaveError::CopyFile(display.clone(), e),
+                CopyError::NoFreeName => SaveError::NoFreeName,
+            })?;
+        links.push(if image {
+            embed(&file_name)
+        } else {
+            format!("[[{file_name}]]")
+        });
+        saved.copied += 1;
+        saved.copied_bytes += bytes;
+    }
+    saved.text = links.join("\n");
+    Ok(saved)
+}
+
+enum CopyError {
+    Folder(io::Error),
+    Io(io::Error),
+    NoFreeName,
+}
+
+/// `stem.ext`, `stem-1.ext`, … — the first free one, written completely
+/// before it gets its name.
+fn copy_noclobber(
+    source: &Path,
+    folder: &Path,
+    stem: &str,
+    extension: Option<&str>,
+) -> Result<(String, u64), CopyError> {
+    std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".okilum-paste-")
+        .suffix(".tmp")
+        .tempfile_in(folder)
+        .map_err(CopyError::Io)?;
+    let mut input = std::fs::File::open(source).map_err(CopyError::Io)?;
+    let bytes = io::copy(&mut input, temporary.as_file_mut()).map_err(CopyError::Io)?;
+    temporary.as_file().sync_all().map_err(CopyError::Io)?;
+    for suffix in 0..=MAX_SUFFIX {
+        let base = if suffix == 0 {
+            stem.to_owned()
+        } else {
+            format!("{stem}-{suffix}")
+        };
+        let file_name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{base}.{extension}"),
+            _ => base,
+        };
+        let path = folder.join(&file_name);
+        if path.exists() {
+            continue;
+        }
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => {
+                sync_folder(folder);
+                return Ok((file_name, bytes));
+            }
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+                temporary = error.file;
+            }
+            Err(error) => return Err(CopyError::Io(error.error)),
+        }
+    }
+    Err(CopyError::NoFreeName)
 }
 
 fn sync_folder(folder: &Path) {
@@ -314,6 +535,111 @@ mod tests {
         assert!(bytes.starts_with(b"\x89PNG"));
         let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
         assert_eq!(decoded.get_pixel(1, 1), &image::Rgba([10, 20, 30, 255]));
+    }
+
+    /// #1602 Raycast: a cached clipboard image becomes `Pasted image …`, a
+    /// named file keeps its name, nothing is overwritten.
+    #[test]
+    fn pasted_files_are_copied_and_linked() {
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let cache = outside.path().join("com.raycast.macos/clipboard");
+        std::fs::create_dir_all(&cache).unwrap();
+        let cached_png = cache.join("file-ABC.png");
+        std::fs::write(&cached_png, b"\x89PNG\r\n\x1a\nraycast").unwrap();
+        let cached_bare = cache.join("file-DEF");
+        std::fs::write(&cached_bare, b"\xff\xd8\xff\xe0jpeg").unwrap();
+        let named = outside.path().join("Report Q3.pdf");
+        std::fs::write(&named, b"%PDF-1.7").unwrap();
+        let photo = outside.path().join("photo.JPG");
+        std::fs::write(&photo, b"\xff\xd8\xffjpeg").unwrap();
+        let is_cache = |p: &Path| p.to_string_lossy().contains("com.raycast.macos");
+        let files = vec![cached_png.clone(), cached_bare, named.clone(), photo];
+        let saved = save_pasted_files_with(
+            vault.path(),
+            "Daily/n.md",
+            &files,
+            "20261023193000",
+            &is_cache,
+        )
+        .unwrap();
+        assert_eq!(
+            saved.text,
+            "![[Pasted image 20261023193000.png]]\n![[Pasted image 20261023193000.jpg]]\n[[Report Q3.pdf]]\n![[photo.JPG]]"
+        );
+        assert_eq!(saved.copied, 4);
+        let folder = vault.path().join("attachments");
+        assert_eq!(
+            std::fs::read(folder.join("Pasted image 20261023193000.png")).unwrap(),
+            b"\x89PNG\r\n\x1a\nraycast"
+        );
+        assert_eq!(
+            std::fs::read(folder.join("Report Q3.pdf")).unwrap(),
+            b"%PDF-1.7"
+        );
+        // The same paste again: new names, the first copies untouched.
+        let again = save_pasted_files_with(
+            vault.path(),
+            "n.md",
+            &[cached_png, named],
+            "20261023193000",
+            &is_cache,
+        )
+        .unwrap();
+        assert_eq!(
+            again.text,
+            "![[Pasted image 20261023193000-1.png]]\n[[Report Q3-1.pdf]]"
+        );
+        // No temporary file is left behind.
+        assert!(std::fs::read_dir(&folder).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".okilum-paste-")));
+    }
+
+    #[test]
+    fn a_file_already_in_the_vault_is_linked_not_copied() {
+        let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(vault.path().join("img")).unwrap();
+        let inside = vault.path().join("img/a b.png");
+        std::fs::write(&inside, b"\x89PNG").unwrap();
+        let doc = vault.path().join("Notes.md");
+        std::fs::write(&doc, b"# x").unwrap();
+        let saved =
+            save_pasted_files_with(vault.path(), "n.md", &[inside, doc], "s", &|_| true).unwrap();
+        assert_eq!(saved.text, "![[img/a b.png]]\n[[Notes.md]]");
+        assert_eq!((saved.copied, saved.in_vault), (0, 2));
+        assert!(!vault.path().join("attachments").exists());
+    }
+
+    #[test]
+    fn a_directory_is_linked_where_it_is() {
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let dir = outside.path().join("Folder");
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved =
+            save_pasted_files_with(vault.path(), "n.md", &[dir.clone()], "s", &|_| false).unwrap();
+        assert!(saved.text.starts_with("[Folder](file://"), "{}", saved.text);
+        assert_eq!(saved.linked_outside, ["Folder"]);
+    }
+
+    #[test]
+    fn clipboard_cache_folders_and_sniffing() {
+        for path in [
+            "/Users/o/Library/Application Support/com.raycast.macos/clipboard/file-1.png",
+            "/private/var/folders/xy/T/TemporaryItems/NSIRD_screencaptureui/shot.png",
+            "/var/folders/xy/T/x.png",
+            "/tmp/x.png",
+        ] {
+            assert!(is_clipboard_cache(Path::new(path)), "{path}");
+        }
+        assert!(!is_clipboard_cache(Path::new("/Users/o/Desktop/x.png")));
+        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n"), Some(ImageKind::Png));
+        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some(ImageKind::Webp));
+        assert_eq!(sniff_image(b"%PDF"), None);
+        assert!(is_image_extension("SVG") && !is_image_extension("pdf"));
     }
 
     #[test]

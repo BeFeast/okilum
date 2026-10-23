@@ -23,6 +23,41 @@ pub trait NoteClipboard: Send + Sync {
     fn read_offer(&self) -> Result<PasteOffer, OfferError>;
     /// Whether anything at all is on the clipboard (enables the Paste item).
     fn has_content(&self) -> bool;
+    /// The clipboard's type names, for the paste log (never contents).
+    fn types(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+gpui::actions!(okilum_edit, [PasteFromMenu]);
+
+/// Edit ▸ Paste: the paste command for the focused note editor, for a mouse
+/// user and for tools that press the menu item instead of posting Cmd+V. It
+/// has no key equivalent of its own; Cmd+V stays with the editor's binding.
+pub fn edit_menu() -> gpui::Menu {
+    gpui::Menu {
+        name: "Edit".into(),
+        disabled: false,
+        items: vec![gpui::MenuItem::action("Paste", PasteFromMenu)],
+    }
+}
+
+pub fn install_menu(cx: &mut App) {
+    cx.on_action(|_: &PasteFromMenu, cx: &mut App| {
+        eprintln!("Paste: Edit menu");
+        // Dispatch after the menu command releases the window.
+        cx.defer(|cx| {
+            let Some(window) = cx
+                .active_window()
+                .or_else(|| cx.windows().into_iter().next())
+            else {
+                return;
+            };
+            let _ = window.update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(gpui_component::input::Paste), cx);
+            });
+        });
+    });
 }
 
 pub struct ManagedNoteClipboard(pub Arc<dyn NoteClipboard>);
@@ -102,13 +137,46 @@ impl ExactClipboardProvider for NotePaste {
     }
 
     fn read_text_now(&self, _: &App) -> Option<Result<Option<String>, ClipboardReadError>> {
-        Some(paste_now(
-            self.clipboard.read_offer(),
+        let started = std::time::Instant::now();
+        let offer = self.clipboard.read_offer();
+        let (path, bytes) = describe(&offer);
+        let types = self.clipboard.types();
+        let result = paste_now(
+            offer,
             &self.vault_root,
             self.note_rel.as_deref(),
             &self.notice,
             &attachments::stamp_now(),
-        ))
+        );
+        // One line per paste: type names, the path taken, sizes, time. Never contents.
+        let outcome = match &result {
+            Ok(Some(text)) => format!("inserted={}", text.len()),
+            Ok(None) => "inserted=0".into(),
+            Err(error) => format!("error={error:?}"),
+        };
+        eprintln!(
+            "Paste: attempt types={types:?} path={path} bytes={bytes} {outcome} ms={}",
+            started.elapsed().as_millis()
+        );
+        Some(result)
+    }
+}
+
+/// The path a paste takes and its size, for the log.
+fn describe(offer: &Result<PasteOffer, OfferError>) -> (&'static str, u64) {
+    match offer {
+        Ok(PasteOffer::Text(text)) => ("text", text.len() as u64),
+        Ok(PasteOffer::Image(image)) => ("image", image.bytes.len() as u64),
+        Ok(PasteOffer::Files(files)) => (
+            "files",
+            files
+                .iter()
+                .filter_map(|f| std::fs::metadata(f).ok())
+                .map(|m| m.len())
+                .sum(),
+        ),
+        Ok(PasteOffer::Nothing { .. }) => ("nothing", 0),
+        Err(_) => ("error", 0),
     }
 }
 
@@ -149,6 +217,40 @@ fn paste_now(
                 }
                 Err(error) => {
                     eprintln!("Paste: image not saved ({error:?}), nothing inserted");
+                    tell(error.user_text());
+                    Err(ClipboardReadError::Io)
+                }
+            }
+        }
+        Ok(PasteOffer::Files(files)) => {
+            let Some(note_rel) = note_rel else {
+                // A plain file takes the paths as text.
+                let paths: Vec<String> = files
+                    .iter()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .collect();
+                return Ok(Some(paths.join("\n")));
+            };
+            match attachments::save_pasted_files(vault_root, note_rel, &files, stamp) {
+                Ok(saved) => {
+                    eprintln!(
+                        "Paste: files={} copied={} ({} bytes) in_vault={} linked_outside={}",
+                        files.len(),
+                        saved.copied,
+                        saved.copied_bytes,
+                        saved.in_vault,
+                        saved.linked_outside.len()
+                    );
+                    if !saved.linked_outside.is_empty() {
+                        tell(format!(
+                            "Linked, not copied (over 100 MB or a folder): {}",
+                            saved.linked_outside.join(", ")
+                        ));
+                    }
+                    Ok(Some(saved.text))
+                }
+                Err(error) => {
+                    eprintln!("Paste: files not saved ({error:?}), nothing inserted");
                     tell(error.user_text());
                     Err(ClipboardReadError::Io)
                 }
@@ -231,6 +333,35 @@ mod tests {
         );
         assert_eq!(inserted, Ok(None));
         assert!(notice.lock().unwrap().is_some());
+    }
+
+    /// #1602 Raycast: a file URL into its cache is copied and embedded.
+    #[test]
+    fn pasted_files_are_saved_then_linked() {
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let doc = outside.path().join("spec.pdf");
+        std::fs::write(&doc, b"%PDF").unwrap();
+        let notice = PasteNotice::default();
+        let inserted = paste_now(
+            Ok(PasteOffer::Files(vec![doc.clone()])),
+            vault.path(),
+            Some("n.md"),
+            &notice,
+            "20261023180000",
+        );
+        assert_eq!(inserted, Ok(Some("[[spec.pdf]]".into())));
+        assert!(vault.path().join("attachments/spec.pdf").is_file());
+        assert_eq!(*notice.lock().unwrap(), None);
+        // A plain file takes the path as text.
+        let inserted = paste_now(
+            Ok(PasteOffer::Files(vec![doc.clone()])),
+            vault.path(),
+            None,
+            &notice,
+            "x",
+        );
+        assert_eq!(inserted, Ok(Some(doc.to_string_lossy().into_owned())));
     }
 
     #[test]

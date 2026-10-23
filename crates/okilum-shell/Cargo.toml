@@ -91,7 +91,7 @@ gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
 wry = { package = "lb-wry", version = "=0.53.3" }
 raw-window-handle = { version = "0.6", features = ["std"] }
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSAttributedString"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle"] }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 

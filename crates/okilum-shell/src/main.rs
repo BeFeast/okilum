@@ -7361,6 +7361,7 @@ fn main() {
         if let Some(clipboard) = note_paste::platform_note_clipboard() {
             cx.set_global(note_paste::ManagedNoteClipboard(clipboard));
         }
+        note_paste::install_menu(cx);
         let components_phase = diagnostics.phase("components_init");
         gpui_component::init(cx);
         reader_mermaid::register();

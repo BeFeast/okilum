@@ -55,6 +55,9 @@ impl NoteClipboard for MacClipboard {
                 .is_empty()
         })
     }
+    fn types(&self) -> Vec<String> {
+        autoreleasepool(|_| MacBoard(&NSPasteboard::generalPasteboard()).types())
+    }
 }
 
 /// The general pasteboard's text in any text representation, in this process.
@@ -63,10 +66,14 @@ fn read_general_text() -> Result<Option<String>, OfferError> {
 }
 
 fn read_text(board: &impl Pasteboard) -> Result<Option<String>, OfferError> {
-    match offer::read_offer(board)? {
+    match offer::read_offer_with(board, false)? {
         PasteOffer::Text(text) => Ok(Some(text)),
         PasteOffer::Image(_) => {
             eprintln!("Paste: the clipboard holds an image; this field takes text only");
+            Ok(None)
+        }
+        PasteOffer::Files(_) => {
+            eprintln!("Paste: the clipboard holds files; this field takes text only");
             Ok(None)
         }
         PasteOffer::Nothing { types } => {
@@ -95,6 +102,25 @@ impl Pasteboard for MacBoard<'_> {
         self.0
             .dataForType(&NSString::from_str(kind))
             .map(|data| data.to_vec())
+    }
+    /// Each item's file URL: several copied files are several items, and
+    /// `dataForType` on the board reads the first one only.
+    fn file_urls(&self) -> Vec<String> {
+        let kind = NSString::from_str(offer::FILE_URL);
+        let Some(items) = self.0.pasteboardItems() else {
+            return Vec::new();
+        };
+        (0..items.count())
+            .filter_map(|index| {
+                let item = items.objectAtIndex(index);
+                item.stringForType(&kind)
+                    .map(|url| url.to_string())
+                    .or_else(|| {
+                        item.dataForType(&kind)
+                            .map(|data| String::from_utf8_lossy(&data.to_vec()).into_owned())
+                    })
+            })
+            .collect()
     }
     fn string(&self, kind: &str) -> Option<String> {
         self.0

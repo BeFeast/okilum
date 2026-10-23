@@ -711,6 +711,11 @@ impl Reader {
             move |_, _, event: &ClipboardPasteEvent, window, cx| match event {
                 ClipboardPasteEvent::Applied { bytes, .. } => {
                     eprintln!("Paste: inserted {bytes} bytes");
+                    // A file too large to copy was linked where it is; say so.
+                    let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
+                    if let Some(text) = notice {
+                        reader_toast::transient(text, window, cx);
+                    }
                 }
                 ClipboardPasteEvent::Failed(error) => {
                     eprintln!("Paste: nothing inserted ({error:?})");

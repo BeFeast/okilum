@@ -15,13 +15,23 @@ const ATTEMPTS: usize = 3;
 
 pub const UTF8_TEXT: &str = "public.utf8-plain-text";
 /// Other plain-text representations, decoded by the platform.
-pub const PLAIN_TEXT: [&str; 4] = [
+/// Clipboard managers (Raycast, Alfred, Maccy, Paste) and older apps write
+/// any of these instead of, or next to, `public.utf8-plain-text`.
+pub const PLAIN_TEXT: [&str; 8] = [
     "public.plain-text",
     "NSStringPboardType",
     "public.utf16-plain-text",
     "public.utf16-external-plain-text",
+    "public.text",
+    "com.apple.traditional-mac-plain-text",
+    "public.utf8-tab-separated-values-text",
+    "public.utf16-tab-separated-values-text",
 ];
 pub const FILE_URL: &str = "public.file-url";
+/// Legacy list of copied file paths (a property list of strings).
+pub const FILENAMES: &str = "NSFilenamesPboardType";
+/// A web or file URL; a web URL pastes as its text.
+pub const URL: &str = "public.url";
 pub const RTF: [&str; 2] = ["public.rtf", "NeXT Rich Text Format v1.0 pasteboard type"];
 pub const RTFD: [&str; 2] = ["com.apple.flat-rtfd", "NeXT RTFD pasteboard type"];
 pub const HTML: [&str; 2] = ["public.html", "Apple HTML pasteboard type"];
@@ -49,19 +59,6 @@ impl ImageKind {
         ("public.heic", ImageKind::Heic),
         ("com.microsoft.bmp", ImageKind::Bmp),
     ];
-
-    pub fn from_extension(extension: &str) -> Option<Self> {
-        Some(match extension.to_ascii_lowercase().as_str() {
-            "png" => Self::Png,
-            "jpg" | "jpeg" => Self::Jpeg,
-            "gif" => Self::Gif,
-            "webp" => Self::Webp,
-            "tif" | "tiff" => Self::Tiff,
-            "bmp" => Self::Bmp,
-            "heic" | "heif" => Self::Heic,
-            _ => return None,
-        })
-    }
 
     pub fn extension(self) -> &'static str {
         match self {
@@ -97,6 +94,9 @@ impl std::fmt::Debug for PastedImage {
 pub enum PasteOffer {
     Text(String),
     Image(PastedImage),
+    /// Copied files (Finder, or a clipboard manager's cached image/file):
+    /// existing local paths, in clipboard order.
+    Files(Vec<PathBuf>),
     /// No usable representation; the type names (never contents) for the log.
     Nothing {
         types: Vec<String>,
@@ -118,6 +118,15 @@ pub trait Pasteboard {
     fn change_count(&self) -> i64;
     fn types(&self) -> Vec<String>;
     fn data(&self, kind: &str) -> Option<Vec<u8>>;
+    /// Every item's file URL (several copied files are several items). The
+    /// default reads the first item only.
+    fn file_urls(&self) -> Vec<String> {
+        self.data(FILE_URL)
+            .map(|d| String::from_utf8_lossy(&d).into_owned())
+            .or_else(|| self.string(FILE_URL))
+            .into_iter()
+            .collect()
+    }
     /// The platform's own decoding of a text representation.
     fn string(&self, kind: &str) -> Option<String>;
     /// Plain text of RTF (`rtfd == false`) or flattened RTFD data.
@@ -128,9 +137,15 @@ pub trait Pasteboard {
 /// contents (a clipboard manager writes and pastes at once); a change *during*
 /// the read is read again instead of failing the paste.
 pub fn read_offer(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
+    read_offer_with(board, true)
+}
+
+/// Like [`read_offer`]; `files == false` for a text-only field, where a copied
+/// file pastes as its name (the text next to it) rather than as a file.
+pub fn read_offer_with(board: &impl Pasteboard, files: bool) -> Result<PasteOffer, OfferError> {
     for _ in 0..ATTEMPTS {
         let before = board.change_count();
-        let offer = read_once(board);
+        let offer = read_once(board, files);
         if board.change_count() == before {
             return offer;
         }
@@ -138,13 +153,16 @@ pub fn read_offer(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
     Err(OfferError::Changed)
 }
 
-fn read_once(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
+fn read_once(board: &impl Pasteboard, files: bool) -> Result<PasteOffer, OfferError> {
     let types = board.types();
     let has = |kind: &str| types.iter().any(|t| t == kind);
-    // A copied image file (Finder) also offers its name as text; the image wins.
-    if has(FILE_URL) {
-        if let Some(image) = file_image(board)? {
-            return Ok(PasteOffer::Image(image));
+    // A copied file (Finder) also offers its name as text; the file wins.
+    // Raycast's clipboard history offers an image or file *only* as a file URL
+    // into its cache, so without this a Raycast paste was "nothing" (#1602).
+    if files {
+        let paths = file_paths(board, &types);
+        if !paths.is_empty() {
+            return Ok(PasteOffer::Files(paths));
         }
     }
     let mut text_error = None;
@@ -153,7 +171,7 @@ fn read_once(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
         match board.data(UTF8_TEXT) {
             Some(bytes) if bytes.len() > MAX_TEXT_BYTES => return Err(OfferError::TooLarge),
             Some(bytes) => match String::from_utf8(bytes) {
-                Ok(text) if !text.is_empty() => return Ok(PasteOffer::Text(text)),
+                Ok(text) if !text.is_empty() => return Ok(text_offer(text, files)),
                 Ok(_) => empty_text = true,
                 Err(_) => text_error = Some(OfferError::InvalidUtf8),
             },
@@ -163,7 +181,7 @@ fn read_once(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
     for kind in PLAIN_TEXT.into_iter().filter(|kind| has(kind)) {
         match board.string(kind) {
             Some(text) if text.len() > MAX_TEXT_BYTES => return Err(OfferError::TooLarge),
-            Some(text) if !text.is_empty() => return Ok(PasteOffer::Text(text)),
+            Some(text) if !text.is_empty() => return Ok(text_offer(text, files)),
             Some(_) => empty_text = true,
             None => {}
         }
@@ -217,6 +235,19 @@ fn read_once(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
             return Ok(PasteOffer::Text(text));
         }
     }
+    // A web link alone pastes as its address.
+    if has(URL) {
+        let url = board.string(URL).or_else(|| {
+            board
+                .data(URL)
+                .map(|d| String::from_utf8_lossy(&d).into_owned())
+        });
+        if let Some(url) = url.map(|u| u.trim_end_matches('\0').trim().to_owned()) {
+            if !url.is_empty() && !url.starts_with("file:") && url.len() <= MAX_TEXT_BYTES {
+                return Ok(PasteOffer::Text(url));
+            }
+        }
+    }
     if empty_text {
         return Ok(PasteOffer::Text(String::new()));
     }
@@ -226,38 +257,90 @@ fn read_once(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
     }
 }
 
-/// The image a copied file URL points at, if it is one.
-fn file_image(board: &impl Pasteboard) -> Result<Option<PastedImage>, OfferError> {
-    let Some(raw) = board
-        .data(FILE_URL)
-        .map(|d| String::from_utf8_lossy(&d).into_owned())
-        .or_else(|| board.string(FILE_URL))
-    else {
-        return Ok(None);
-    };
-    let Some(path) = url::Url::parse(raw.trim_end_matches('\0').trim())
-        .ok()
-        .and_then(|url| url.to_file_path().ok())
-    else {
-        return Ok(None);
-    };
-    let Some(kind) = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .and_then(ImageKind::from_extension)
-    else {
-        return Ok(None);
-    };
-    let size = std::fs::metadata(&path).map_err(|_| OfferError::Io)?.len();
-    if size > MAX_IMAGE_BYTES as u64 {
-        return Err(OfferError::TooLarge);
+/// Text, unless it is just the path of a file in Raycast's clipboard cache:
+/// Raycast can offer a history image as that path (#1609), which is the image.
+fn text_offer(text: String, files: bool) -> PasteOffer {
+    if files {
+        if let Some(path) = cached_clipboard_file(&text) {
+            return PasteOffer::Files(vec![path]);
+        }
     }
-    let bytes = std::fs::read(&path).map_err(|_| OfferError::Io)?;
-    Ok(Some(PastedImage {
-        bytes,
-        kind,
-        source: Some(path),
-    }))
+    PasteOffer::Text(text)
+}
+
+/// The existing file a single-line Raycast clipboard-cache path names.
+pub fn cached_clipboard_file(text: &str) -> Option<PathBuf> {
+    let line = text.trim();
+    if line.is_empty() || line.len() > 4096 || line.contains('\n') {
+        return None;
+    }
+    let path = local_path(line)?;
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    (normalized.contains("/com.raycast.macos/clipboard/") && path.is_file()).then_some(path)
+}
+
+/// Local files the clipboard points at that exist, without duplicates:
+/// every item's `public.file-url`, the legacy filename list, a file `public.url`.
+fn file_paths(board: &impl Pasteboard, types: &[String]) -> Vec<PathBuf> {
+    let has = |kind: &str| types.iter().any(|t| t == kind);
+    let mut raw: Vec<String> = Vec::new();
+    if has(FILE_URL) {
+        raw.extend(board.file_urls());
+    }
+    if has(FILENAMES) {
+        if let Some(list) = board
+            .data(FILENAMES)
+            .map(|d| String::from_utf8_lossy(&d).into_owned())
+            .or_else(|| board.string(FILENAMES))
+        {
+            raw.extend(plist_strings(&list));
+        }
+    }
+    if raw.is_empty() && has(URL) {
+        raw.extend(board.string(URL).or_else(|| {
+            board
+                .data(URL)
+                .map(|d| String::from_utf8_lossy(&d).into_owned())
+        }));
+    }
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in raw {
+        let Some(path) = local_path(&entry) else {
+            continue;
+        };
+        if path.exists() && !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// A `file://` URL or an absolute path as a local path.
+pub fn local_path(entry: &str) -> Option<PathBuf> {
+    let entry = entry.trim_end_matches('\0').trim();
+    if entry.starts_with('/') {
+        return Some(PathBuf::from(entry));
+    }
+    let url = url::Url::parse(entry).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    url.to_file_path().ok()
+}
+
+/// The `<string>` values of an XML property list (the legacy filename list).
+fn plist_strings(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<string>") {
+        rest = &rest[start + "<string>".len()..];
+        let Some(end) = rest.find("</string>") else {
+            break;
+        };
+        out.push(decode_entities(&rest[..end]));
+        rest = &rest[end..];
+    }
+    out
 }
 
 /// Plain text of an HTML fragment: tags dropped, blocks on their own lines,
@@ -546,26 +629,97 @@ mod tests {
         }
     }
 
+    /// #1602: a copied file (Finder) or a Raycast clipboard-history image or
+    /// file (a file URL into its cache, nothing else) is offered as the file.
     #[test]
-    fn copied_image_file_is_an_image_not_its_name() {
+    fn copied_files_are_offered_as_files_not_their_names() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.PNG");
         std::fs::write(&path, b"\x89PNG data").unwrap();
         let url = url::Url::from_file_path(&path).unwrap().to_string();
         let board = Board::with(&[(FILE_URL, url.as_bytes()), (UTF8_TEXT, b"shot.PNG")]);
-        match read_offer(&board) {
-            Ok(PasteOffer::Image(image)) => {
-                assert_eq!(image.kind, ImageKind::Png);
-                assert_eq!(image.bytes, b"\x89PNG data");
-            }
-            other => panic!("{other:?}"),
-        }
-        // A copied document is still pasted as its name.
-        let doc = dir.path().join("a.pdf");
+        assert_eq!(
+            read_offer(&board),
+            Ok(PasteOffer::Files(vec![path.clone()]))
+        );
+        // Raycast: the file URL alone.
+        let board = Board::with(&[(FILE_URL, url.as_bytes())]);
+        assert_eq!(
+            read_offer(&board),
+            Ok(PasteOffer::Files(vec![path.clone()]))
+        );
+        let doc = dir.path().join("a b.pdf");
         std::fs::write(&doc, b"%PDF").unwrap();
-        let url = url::Url::from_file_path(&doc).unwrap().to_string();
-        let board = Board::with(&[(FILE_URL, url.as_bytes()), (UTF8_TEXT, b"a.pdf")]);
-        assert_eq!(text(read_offer(&board)), "a.pdf");
+        let doc_url = url::Url::from_file_path(&doc).unwrap().to_string();
+        let board = Board::with(&[(FILE_URL, doc_url.as_bytes()), (UTF8_TEXT, b"a b.pdf")]);
+        assert_eq!(read_offer(&board), Ok(PasteOffer::Files(vec![doc.clone()])));
+        // A text-only field still takes the name.
+        assert_eq!(text(read_offer_with(&board, false)), "a b.pdf");
+        // The legacy filename list, several files, duplicates once.
+        let list = format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><array>\
+             <string>{}</string><string>{}</string><string>{}</string></array></plist>",
+            path.display(),
+            doc.display(),
+            path.display()
+        );
+        let board = Board::with(&[(FILENAMES, list.as_bytes())]);
+        assert_eq!(
+            read_offer(&board),
+            Ok(PasteOffer::Files(vec![path.clone(), doc]))
+        );
+        // A file URL whose file is gone falls back to the text next to it.
+        let gone = url::Url::from_file_path(dir.path().join("gone.png"))
+            .unwrap()
+            .to_string();
+        let board = Board::with(&[(FILE_URL, gone.as_bytes()), (UTF8_TEXT, b"gone.png")]);
+        assert_eq!(text(read_offer(&board)), "gone.png");
+        // Raycast's history image offered as its cache path is the image.
+        let cache = dir.path().join("com.raycast.macos/clipboard");
+        std::fs::create_dir_all(&cache).unwrap();
+        let cached = cache.join("file-1.png");
+        std::fs::write(&cached, b"\x89PNG").unwrap();
+        let board = Board::with(&[(UTF8_TEXT, cached.to_string_lossy().as_bytes())]);
+        assert_eq!(
+            read_offer(&board),
+            Ok(PasteOffer::Files(vec![cached.clone()]))
+        );
+        assert_eq!(
+            text(read_offer_with(&board, false)),
+            cached.to_string_lossy()
+        );
+        // Any other path is just text.
+        let board = Board::with(&[(UTF8_TEXT, path.to_string_lossy().as_bytes())]);
+        assert_eq!(text(read_offer(&board)), path.to_string_lossy());
+        // A web URL alone pastes as its address.
+        let board = Board::with(&[(URL, b"https://example.com/a")]);
+        assert_eq!(text(read_offer(&board)), "https://example.com/a");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_paths_from_urls_and_paths() {
+        assert_eq!(
+            local_path("file:///Users/o/Library/Application%20Support/com.raycast.macos/clipboard/file-1.png\0"),
+            Some(PathBuf::from(
+                "/Users/o/Library/Application Support/com.raycast.macos/clipboard/file-1.png"
+            ))
+        );
+        assert_eq!(local_path("/tmp/x.png"), Some(PathBuf::from("/tmp/x.png")));
+        assert_eq!(local_path("https://example.com/x.png"), None);
+        assert_eq!(local_path("x.png"), None);
+    }
+
+    /// Raycast and other clipboard managers write these text types.
+    #[test]
+    fn every_plain_text_type_is_text() {
+        for kind in PLAIN_TEXT {
+            let board = Board::with(&[
+                (kind, "Привет".as_bytes()),
+                ("org.nspasteboard.source", b"com.raycast.macos"),
+            ]);
+            assert_eq!(text(read_offer(&board)), "Привет", "{kind}");
+        }
     }
 
     #[test]
