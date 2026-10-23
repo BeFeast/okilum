@@ -298,6 +298,9 @@ struct FeedbackView {
     image_note: Option<String>,
     attaching: bool,
     image_generation: u64,
+    /// Optional screen recording, sent as the multipart part "video".
+    video: Option<model::Video>,
+    video_error: Option<String>,
     include_log: bool,
     log_path: Option<PathBuf>,
     state: SendState,
@@ -333,6 +336,8 @@ impl FeedbackView {
             image_note: None,
             attaching: false,
             image_generation: 0,
+            video: None,
+            video_error: None,
             include_log: sprint::enabled(),
             log_path,
             state: SendState::Compose,
@@ -376,6 +381,7 @@ impl FeedbackView {
             meta: self.meta.clone(),
             screenshot: self.image.as_ref().map(|image| image.png.clone()),
             log: None,
+            video: self.video.clone(),
         }
     }
     fn report(&self, cx: &App) -> anyhow::Result<Report> {
@@ -497,21 +503,79 @@ impl FeedbackView {
             Some("Attached the pasted image as the screenshot.".into())
         };
     }
-    /// Routes pasted files to the screenshot slot: one image at a time.
+    /// Attaches a video by path. Only metadata is read here; the file is
+    /// streamed on Send. A rejected file keeps any previous video.
+    fn attach_video(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.busy() {
+            return;
+        }
+        match model::video_file(path) {
+            Ok(video) => {
+                self.video = Some(video);
+                self.video_error = None;
+            }
+            Err(error) => self.video_error = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+    fn remove_video(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.state, SendState::Sending) {
+            return;
+        }
+        self.video = None;
+        self.video_error = None;
+        cx.notify();
+    }
+    /// Routes dropped or pasted files: videos (mp4/mov/webm) to the video
+    /// slot, anything else to the screenshot slot. At most one of each.
     fn attach_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         if self.busy() {
             return;
         }
-        match paths {
-            [path] => {
-                self.note_replacement();
-                self.image_input(ImageInput::File(path.clone()), cx);
-            }
-            _ => {
-                self.image_error = Some("Attach one PNG or JPEG screenshot at a time.".into());
-                cx.notify();
-            }
+        let (videos, images): (Vec<_>, Vec<_>) = paths
+            .iter()
+            .partition(|path| model::video_mime(path).is_some());
+        if paths.is_empty() || videos.len() > 1 || images.len() > 1 {
+            self.image_error =
+                Some("Attach one screenshot and at most one video at a time.".into());
+            cx.notify();
+            return;
         }
+        if let Some(video) = videos.first() {
+            self.attach_video(video, cx);
+        }
+        if let Some(image) = images.first() {
+            self.note_replacement();
+            self.image_input(ImageInput::File((*image).clone()), cx);
+        }
+    }
+    fn video_picker(&mut self, cx: &mut Context<Self>) {
+        if self.busy() {
+            return;
+        }
+        let result = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Attach MP4, MOV or WebM video".into()),
+        });
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let result = result.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        this.attach_video(&path, cx);
+                    }
+                }
+                Ok(Ok(None)) => {}
+                _ => {
+                    this.video_error =
+                        Some("Couldn't open the file picker. Drop the video here instead.".into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
     fn picker(&mut self, cx: &mut Context<Self>) {
         if self.busy() {
@@ -578,8 +642,9 @@ impl FeedbackView {
                     self.image_input(ImageInput::Clipboard(image.bytes), cx);
                     return true;
                 }
-                ClipboardEntry::ExternalPaths(paths) if paths.0.len() == 1 => {
-                    self.image_input(ImageInput::File(paths.0[0].clone()), cx);
+                ClipboardEntry::ExternalPaths(paths) if (1..=2).contains(&paths.0.len()) => {
+                    let paths = paths.0.to_vec();
+                    self.attach_paths(&paths, cx);
                     return true;
                 }
                 _ => {}
@@ -612,12 +677,11 @@ impl Render for FeedbackView {
                 if this.busy() {
                     return;
                 }
-                if paths.0.len() == 1 {
-                    this.image_input(ImageInput::File(paths.0[0].clone()), cx);
-                } else {
-                    this.image_error = Some("Attach one PNG or JPEG screenshot at a time.".into());
-                    cx.notify();
+                let paths = paths.0.to_vec();
+                if paths.is_empty() {
+                    return;
                 }
+                this.attach_paths(&paths, cx);
             }));
         if let SendState::Sent(receipt) = &self.state {
             let url = receipt.issue_url.clone();
@@ -677,6 +741,15 @@ impl Render for FeedbackView {
                             .label("Attach screenshot…")
                             .on_click(cx.listener(|this, _, _, cx| this.picker(cx))),
                     )
+                    .child(
+                        Button::new("feedback-attach-video")
+                            .debug_selector(|| "feedback-attach-video".into())
+                            .small()
+                            .ghost()
+                            .disabled(busy)
+                            .label("Attach video…")
+                            .on_click(cx.listener(|this, _, _, cx| this.video_picker(cx))),
+                    )
                     .when(self.image.is_some() || self.attaching, |row| {
                         row.child(
                             Button::new("feedback-remove")
@@ -694,7 +767,11 @@ impl Render for FeedbackView {
                     .text_sm()
                     .text_color(p.text_muted)
                     .child(screenshot_hint()),
-            );
+            )
+            .child(div().text_sm().text_color(p.text_muted).child(format!(
+                "Video: MP4, MOV or WebM up to {}. Drop it here or use Attach video…",
+                model::human_size(model::MAX_VIDEO)
+            )));
         if let Some(image) = &self.image {
             body = body.child(
                 div()
@@ -706,6 +783,63 @@ impl Render for FeedbackView {
                             .max_h(px(160.))
                             .object_fit(ObjectFit::Contain),
                     ),
+            );
+        }
+        if let Some(video) = &self.video {
+            body = body.child(
+                h_flex()
+                    .debug_selector(|| "feedback-video".into())
+                    .w_full()
+                    .flex_none()
+                    .gap_3()
+                    .items_center()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(Hsla {
+                        a: 1.,
+                        ..p.surface_raised
+                    })
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .truncate()
+                                    .child(format!("Video attached: {}", video.name)),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(p.text_muted)
+                                    .child(video.size_label()),
+                            ),
+                    )
+                    .child(
+                        Button::new("feedback-remove-video")
+                            .debug_selector(|| "feedback-remove-video".into())
+                            .small()
+                            .ghost()
+                            .disabled(matches!(
+                                self.state,
+                                SendState::Sending | SendState::Sent(_)
+                            ))
+                            .label("Remove video")
+                            .on_click(cx.listener(|this, _, _, cx| this.remove_video(cx))),
+                    ),
+            );
+        }
+        if let Some(error) = &self.video_error {
+            body = body.child(
+                div()
+                    .debug_selector(|| "feedback-video-error".into())
+                    .text_sm()
+                    .text_color(p.text_muted)
+                    .child(error.clone()),
             );
         }
         if self.attaching {
@@ -756,6 +890,7 @@ impl Render for FeedbackView {
             );
         }
         let label = match self.state {
+            SendState::Sending if self.video.is_some() => "Uploading video…",
             SendState::Sending => "Sending…",
             SendState::Failed(_) => "Retry",
             _ => "Send",

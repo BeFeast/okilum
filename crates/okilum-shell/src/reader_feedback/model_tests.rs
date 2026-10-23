@@ -26,6 +26,7 @@ fn report() -> Report {
         meta: meta(),
         screenshot: None,
         log: None,
+        video: None,
     }
 }
 fn image(format: image::ImageFormat) -> Vec<u8> {
