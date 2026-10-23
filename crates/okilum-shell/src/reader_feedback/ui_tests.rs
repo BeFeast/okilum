@@ -463,3 +463,144 @@ fn one_click_sprint_send_reuses_the_non_modal_feedback_draft(cx: &mut TestAppCon
         reader.update(|window, cx| assert!(!window.has_active_dialog(cx)));
     });
 }
+
+// Use the geometry actually painted by the input, including its scroll offset.
+// Focus alone would miss a caret below the clipped viewport (#1574).
+fn feedback_caret_in_view(view: &Entity<FeedbackView>, visual: &mut VisualTestContext) {
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        let text = view.read(cx).text.read(cx);
+        assert!(
+            text.focus_handle(cx).is_focused(window),
+            "typing keeps focus"
+        );
+        assert_eq!(
+            text.painted_cursor(),
+            Some(text.cursor()),
+            "painted caret follows the edit"
+        );
+        let (mut caret, _) = text
+            .cursor_layout()
+            .expect("laid-out caret positive control");
+        caret.origin.y += text.scroll_offset().y;
+        let bounds = text.input_bounds();
+        assert!(
+            caret.top() >= bounds.top() && caret.bottom() <= bounds.bottom(),
+            "caret must be fully visible: {caret:?} in {bounds:?}, scroll {:?}",
+            text.scroll_offset()
+        );
+    });
+}
+
+#[gpui::test]
+fn feedback_textarea_grows_from_three_rows_then_scrolls_and_survives_remount(
+    cx: &mut TestAppContext,
+) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        feedback_caret_in_view(&view, &mut feedback);
+        let (initial, line_height) = view.read_with(&feedback, |view, cx| {
+            let text = view.text.read(cx);
+            (
+                text.input_bounds().size.height,
+                text.cursor_layout().unwrap().1,
+            )
+        });
+        assert!(
+            initial >= 3. * line_height - px(1.),
+            "three visible rows initially: {initial:?}"
+        );
+        feedback.simulate_input("one\ntwo\nthree\nfour\nfive\nsix");
+        feedback_caret_in_view(&view, &mut feedback);
+        let grown = view.read_with(&feedback, |view, cx| {
+            view.text.read(cx).input_bounds().size.height
+        });
+        assert!(
+            grown > initial + 2. * line_height,
+            "field grows with multiline text"
+        );
+        feedback.simulate_input(&"\nnext".repeat(20));
+        feedback_caret_in_view(&view, &mut feedback);
+        let capped = view.read_with(&feedback, |view, cx| {
+            let text = view.text.read(cx);
+            assert!(
+                text.scroll_offset().y < -line_height,
+                "positive control: long draft actually scrolls"
+            );
+            text.input_bounds().size.height
+        });
+        assert!(
+            capped <= 8. * line_height + px(1.),
+            "sensible eight-row cap: {capped:?}"
+        );
+        feedback.simulate_input(&"\nmore".repeat(10));
+        feedback_caret_in_view(&view, &mut feedback);
+        assert_eq!(
+            view.read_with(&feedback, |view, cx| view
+                .text
+                .read(cx)
+                .input_bounds()
+                .size
+                .height),
+            capped
+        );
+        // Reopening uses a fresh field and must preserve both its draft and sizing policy.
+        let draft = view.read_with(&feedback, |view, cx| view.text.read(cx).value());
+        feedback.simulate_keystrokes("secondary-w");
+        reader.run_until_parked();
+        reader.update(|window, _| window.activate_window());
+        reader.dispatch_action(SendFeedback);
+        reader.run_until_parked();
+        feedback = feedback_context(reader);
+        feedback_caret_in_view(&view, &mut feedback);
+        view.read_with(&feedback, |view, cx| {
+            let text = view.text.read(cx);
+            assert_eq!(text.value(), draft);
+            assert_eq!(text.input_bounds().size.height, capped);
+        });
+    });
+}
+
+#[gpui::test]
+fn feedback_backspace_to_empty_keeps_caret_and_next_line_visible(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        // Cover the tester's last-character deletion and a previously scrolled draft.
+        for source in [
+            "x".to_string(),
+            "writing a feedback\nsecond row of feedback".into(),
+            "line\n".repeat(12) + "last",
+        ] {
+            feedback.simulate_input(&source);
+            feedback_caret_in_view(&view, &mut feedback);
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(view.text.read(cx).value(), source)
+            });
+            for remaining in (0..source.len()).rev() {
+                feedback.simulate_keystrokes("backspace");
+                feedback_caret_in_view(&view, &mut feedback);
+                view.read_with(&feedback, |view, cx| {
+                    let text = view.text.read(cx);
+                    assert_eq!(text.value(), &source[..remaining]);
+                    assert_eq!(text.cursor(), remaining);
+                });
+            }
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(
+                    view.text.read(cx).scroll_offset().y,
+                    px(0.),
+                    "empty field returns to the first line"
+                );
+            });
+            feedback.simulate_keystrokes("enter");
+            feedback.simulate_input("visible next line");
+            feedback_caret_in_view(&view, &mut feedback);
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(view.text.read(cx).value(), "\nvisible next line")
+            });
+            feedback.simulate_keystrokes("secondary-a backspace");
+            feedback_caret_in_view(&view, &mut feedback);
+        }
+    });
+}

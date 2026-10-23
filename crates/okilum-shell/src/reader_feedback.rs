@@ -279,7 +279,7 @@ impl FeedbackView {
     fn new(meta: Metadata, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .rows(4)
+                .auto_grow(3, 8)
                 .placeholder("What happened, or what would you like to see?")
         });
         let subscription = cx.subscribe(
@@ -320,12 +320,14 @@ impl FeedbackView {
     fn remount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.text.read(cx).value();
         let selection = self.text.read(cx).selected_range();
+        let scroll = self.text.read(cx).scroll_offset();
         self.text = cx.new(|cx| {
             let mut text = TextareaState::new(window, cx)
-                .rows(4)
+                .auto_grow(3, 8)
                 .placeholder("What happened, or what would you like to see?");
             text.set_value(value, window, cx);
             text.set_selected_range(selection, cx);
+            text.set_scroll_offset(scroll, cx);
             text
         });
         self._text = cx.subscribe(
@@ -574,7 +576,7 @@ impl Render for FeedbackView {
                         }))
                 }),
             ))
-            .child(Textarea::new(&self.text).disabled(busy))
+            .child(Textarea::new(&self.text).flex_shrink_0().disabled(busy))
             .child(
                 div()
                     .debug_selector(|| "feedback-metadata".into())
