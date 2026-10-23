@@ -115,7 +115,8 @@ pub struct ProjectMenu(pub Project);
 #[derive(Clone)]
 enum Item {
     Header(Group),
-    Project(Row),
+    /// Boxed: a row carries its project, icon included (#1627).
+    Project(Box<Row>),
     Problem(Problem),
 }
 
@@ -259,7 +260,8 @@ impl ProjectsPicker {
             let rows = std::mem::take(&mut group.rows);
             let problems = std::mem::take(&mut group.problems);
             self.items.push(Item::Header(group));
-            self.items.extend(rows.into_iter().map(Item::Project));
+            self.items
+                .extend(rows.into_iter().map(|row| Item::Project(Box::new(row))));
             self.items.extend(problems.into_iter().map(Item::Problem));
         }
         if !self

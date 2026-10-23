@@ -3759,10 +3759,10 @@ impl Reader {
         let avatar = project.as_ref().map(|project| {
             okilum_shell::project_avatar::project_avatar(project, SIDEBAR_AVATAR, cx)
         });
-        let dot = if accent.is_some() {
-            VAULT_DOT_SLOT
-        } else if avatar.is_some() {
-            SIDEBAR_AVATAR + 4.
+        let dot = if accent.is_some() { VAULT_DOT_SLOT } else { 0. };
+        // The avatar narrows the name, never the fixed action slots.
+        let lead = if avatar.is_some() {
+            SIDEBAR_AVATAR + 4. + SIDEBAR_NAME_GAP
         } else {
             0.
         };
@@ -3772,7 +3772,7 @@ impl Reader {
         let visible = sidebar_visible_actions(room, name, actions);
         let overflow = visible < actions.len();
         let name_max =
-            (room - (visible + usize::from(overflow)) as f32 * SIDEBAR_ACTION_SLOT).max(0.);
+            (room - lead - (visible + usize::from(overflow)) as f32 * SIDEBAR_ACTION_SLOT).max(0.);
         let show_hidden = self.sidebar.show_hidden;
         let reader = cx.entity().downgrade();
         let name_items = self.sidebar_name_menu();
@@ -9478,6 +9478,7 @@ mod document_link_landing_tests {
                 v.sidebar_name_menu(),
                 [
                     SidebarNameItem::SwitchProject,
+                    SidebarNameItem::ChangeProjectIcon,
                     SidebarNameItem::RevealProject,
                     SidebarNameItem::LeaveProject,
                 ]
@@ -9490,6 +9491,11 @@ mod document_link_landing_tests {
             "a project keeps the vault's action slots"
         );
         let header = visual.debug_bounds("sidebar-header").unwrap();
+        // #1627: the project's avatar leads the header, as in T3.
+        let avatar = visual
+            .debug_bounds("sidebar-project-avatar")
+            .expect("the project's avatar in its header");
+        assert!(avatar.left() >= header.left() && avatar.right() < header.center().x);
         let body = visual.debug_bounds("sidebar-tree-body").expect("tree body");
         assert_eq!(
             body.top(),

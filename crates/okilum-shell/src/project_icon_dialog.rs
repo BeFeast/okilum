@@ -12,7 +12,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     tooltip::Tooltip,
-    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
 use okilum_t3::projects::icon::{
     filter_icons, Avatar, IconColor, IconDraft, PickerTab, ProjectIcon, PROJECT_EMOJIS,

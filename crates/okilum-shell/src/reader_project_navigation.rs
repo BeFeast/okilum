@@ -5,7 +5,7 @@ use okilum_shell::projects_picker::{
     LeaveProject, Presentation, ProjectMenu, ProjectsPicker, Selected,
 };
 use okilum_t3::projects::{
-    icon::{Counterpart, ProjectIcon, Saved},
+    icon::{Counterpart, ProjectIcon, Saved as IconSaved},
     Discovery, Project,
 };
 
@@ -489,16 +489,16 @@ impl Reader {
     fn finish_project_icon(
         &mut self,
         project: Project,
-        saved: anyhow::Result<Saved>,
+        saved: anyhow::Result<IconSaved>,
         cx: &mut Context<Self>,
     ) {
         let folder = project.folder.clone();
         match saved {
-            Ok(Saved::T3(counterpart)) => {
+            Ok(IconSaved::T3(counterpart)) => {
                 let links = std::collections::BTreeMap::from([(folder.clone(), counterpart)]);
                 self.merge_icon_links(vec![folder], links, cx);
             }
-            Ok(Saved::Manifest(read_back)) => {
+            Ok(IconSaved::Manifest(read_back)) => {
                 let appearance = read_back.appearance.clone();
                 let navigation = &mut self.project_navigation;
                 for known in navigation

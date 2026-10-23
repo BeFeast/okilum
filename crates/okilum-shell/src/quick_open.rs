@@ -89,7 +89,8 @@ impl PaletteSection {
 pub(super) enum PaletteItem {
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
     Note(reader_title_nav::Entry),
-    Project(ProjectRow),
+    /// Boxed: a row carries its project, icon included (#1627).
+    Project(Box<ProjectRow>),
     /// Opens the full project switcher with the same query.
     AllProjects,
     /// Index into `Palette::rows`.
@@ -753,12 +754,12 @@ impl Reader {
                     .map(|entry| (section, PaletteItem::Note(entry.clone()))),
             );
         }
-        items.extend(
-            sections
-                .projects
-                .iter()
-                .map(|row| (PaletteSection::Projects, PaletteItem::Project(row.clone()))),
-        );
+        items.extend(sections.projects.iter().map(|row| {
+            (
+                PaletteSection::Projects,
+                PaletteItem::Project(Box::new(row.clone())),
+            )
+        }));
         if sections.any_project {
             items.push((PaletteSection::Projects, PaletteItem::AllProjects));
         }
