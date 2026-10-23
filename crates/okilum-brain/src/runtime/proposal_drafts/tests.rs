@@ -1029,25 +1029,13 @@ fn inbox_and_goal_proposals_allow_index_rebuild_but_never_become_evidence() {
             ),
         })
         .unwrap();
-    let index = BrainIndex::start(
-        f.brain.clone(),
-        r.root.clone(),
-        "records".into(),
-        r.state_dir.clone(),
-        true,
-    )
-    .unwrap();
+    let (index, rebuild_requests) =
+        BrainIndex::ready_for_service_test(f.brain.clone(), r.root.clone(), r.state_dir.clone())
+            .unwrap();
     for rebuild in [false, true] {
         let before = index.status().generation;
         if rebuild {
-            index.rebuild().unwrap();
-        }
-        for _ in 0..300 {
-            let status = index.status();
-            if status.status == "ready" && (!rebuild || status.generation != before) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            index.rebuild_for_service_test(&rebuild_requests).unwrap();
         }
         assert_eq!(index.status().status, "ready");
         if rebuild {
