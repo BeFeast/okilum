@@ -1,9 +1,155 @@
 //! Search palette. At most one query runs; intervening edits are coalesced.
+//!
+//! ⌘K is one palette with the sections Pinned, Recent, Projects and Files
+//! (#1518, the keyboard path of #1508). One query matches all four; ↑ ↓ move
+//! through every row, Tab jumps to the next section and ⌘1…⌘4 to a given
+//! one. Content search (⇧⌘F) stays a single list of matches.
 use super::*;
 use okilum_core::search_snippet::{plain_snippet, PlainSnippet};
 use okilum_core::SearchHit;
+use okilum_shell::projects_picker::picker::{kind_label, Row as ProjectRow};
 
 use std::collections::HashMap;
+
+gpui::actions!(
+    quick_open,
+    [
+        PaletteNextSection,
+        PalettePreviousSection,
+        PalettePinned,
+        PaletteRecent,
+        PaletteProjects,
+        PaletteFiles
+    ]
+);
+
+const PALETTE_KEYS: &str = "QuickOpen > Input";
+const NAMES_PLACEHOLDER: &str = "Go to note, project or file";
+/// Pins and projects past these counts stay in the title bar and the switcher.
+const PINNED_SHOWN: usize = 9;
+const PROJECTS_SHOWN: usize = 5;
+
+pub(super) fn bind_palette_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", PaletteNextSection, Some(PALETTE_KEYS)),
+        KeyBinding::new("shift-tab", PalettePreviousSection, Some(PALETTE_KEYS)),
+        KeyBinding::new("secondary-1", PalettePinned, Some(PALETTE_KEYS)),
+        KeyBinding::new("secondary-2", PaletteRecent, Some(PALETTE_KEYS)),
+        KeyBinding::new("secondary-3", PaletteProjects, Some(PALETTE_KEYS)),
+        KeyBinding::new("secondary-4", PaletteFiles, Some(PALETTE_KEYS)),
+    ]);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaletteSection {
+    Pinned,
+    Recent,
+    Projects,
+    Files,
+}
+
+impl PaletteSection {
+    pub const ALL: [PaletteSection; 4] = [
+        PaletteSection::Pinned,
+        PaletteSection::Recent,
+        PaletteSection::Projects,
+        PaletteSection::Files,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            PaletteSection::Pinned => "Pinned",
+            PaletteSection::Recent => "Recent",
+            PaletteSection::Projects => "Projects",
+            PaletteSection::Files => "Files",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            PaletteSection::Pinned => "pinned",
+            PaletteSection::Recent => "recent",
+            PaletteSection::Projects => "projects",
+            PaletteSection::Files => "files",
+        }
+    }
+
+    fn jump_hint(self, cx: &App) -> Option<String> {
+        match self {
+            PaletteSection::Pinned => reader_shortcuts::shortcut(&PalettePinned, cx),
+            PaletteSection::Recent => reader_shortcuts::shortcut(&PaletteRecent, cx),
+            PaletteSection::Projects => reader_shortcuts::shortcut(&PaletteProjects, cx),
+            PaletteSection::Files => reader_shortcuts::shortcut(&PaletteFiles, cx),
+        }
+    }
+}
+
+/// One selectable palette row, in the order shown.
+#[derive(Clone, Debug)]
+pub(super) enum PaletteItem {
+    /// A Pinned or Recent note or folder, as the title-bar menus list it.
+    Note(reader_title_nav::Entry),
+    Project(ProjectRow),
+    /// Opens the full project switcher with the same query.
+    AllProjects,
+    /// Index into `Palette::rows`.
+    File(usize),
+}
+
+/// The synchronous sections, recomputed on every edit. Files arrive from the
+/// query worker into `Palette::rows`.
+#[derive(Clone, Default)]
+pub(super) struct Sections {
+    pub pinned: Vec<reader_title_nav::Entry>,
+    pub recent: Vec<reader_title_nav::Entry>,
+    pub projects: Vec<ProjectRow>,
+    /// The vault has projects: «All projects…» is offered even when the query
+    /// matches none of the few shown here.
+    pub any_project: bool,
+}
+
+/// What the palette's list draws, line by line.
+enum Line {
+    Header(PaletteSection),
+    Hint(String),
+    Item(usize),
+}
+
+/// Keep the entries the query matches, best match first, ranked like Files
+/// (#645 titles, #1562 aliases). Ties keep the list's own order.
+fn matching(
+    entries: Vec<reader_title_nav::Entry>,
+    query: &str,
+    aliases: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<reader_title_nav::Entry> {
+    if query.trim().is_empty() {
+        return entries;
+    }
+    let notes: Vec<_> = entries
+        .iter()
+        .map(|entry| okilum_core::vault::Note {
+            path: entry.path.clone(),
+            title: entry
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&entry.path)
+                .trim_end_matches(".md")
+                .to_owned(),
+        })
+        .collect();
+    let titles: HashMap<_, _> = entries
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.label.clone()))
+        .collect();
+    // Oldest first, so the earlier entry wins a tie.
+    let order: Vec<_> = entries.iter().rev().map(|e| e.path.clone()).collect();
+    let mut entries: HashMap<_, _> = entries.into_iter().map(|e| (e.path.clone(), e)).collect();
+    okilum_core::quick_open::search_named(&notes, &titles, aliases, query, &order, usize::MAX)
+        .into_iter()
+        .filter_map(|note| entries.remove(&note.path))
+        .collect()
+}
 
 fn is_markdown(path: &str) -> bool {
     Path::new(path)
@@ -339,10 +485,16 @@ pub(super) struct Palette {
     pub(super) input: Entity<InputState>,
     pub inventory: Option<Arc<Vec<okilum_core::vault::Note>>>,
     _subscription: Subscription,
+    /// The Files section, or every row of a content search.
     pub(super) rows: Vec<SearchHit>,
     /// Plain-text snippet per row of a content search, same order as `rows`.
     snippets: Vec<PlainSnippet>,
-    selected: usize,
+    /// Pinned, Recent and Projects for the current text (names mode only).
+    pub(super) sections: Sections,
+    /// The trimmed text the sections were built for.
+    query: String,
+    /// Index into `Reader::palette_items`, across all sections.
+    pub(super) selected: usize,
     generation: u64,
     running: bool,
     pending: bool,
@@ -368,7 +520,7 @@ pub(super) struct HeldEnter {
 
 impl Palette {
     pub fn new(window: &mut Window, cx: &mut Context<Reader>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search names and paths…"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(NAMES_PLACEHOLDER));
         let subscription =
             cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.refresh_quick_open(cx),
@@ -383,6 +535,8 @@ impl Palette {
             _subscription: subscription,
             rows: Vec::new(),
             snippets: Vec::new(),
+            sections: Sections::default(),
+            query: String::new(),
             selected: 0,
             generation: 0,
             running: false,
@@ -402,6 +556,7 @@ impl Palette {
         self.supersede();
         self.rows.clear();
         self.snippets.clear();
+        self.sections = Sections::default();
     }
 
     /// A newer query replaces the running one. Its rows stay on screen until the
@@ -439,7 +594,7 @@ impl Reader {
                 if full_text {
                     "Search note contents…"
                 } else {
-                    "Search names and paths…"
+                    NAMES_PLACEHOLDER
                 },
                 window,
                 cx,
@@ -449,6 +604,9 @@ impl Reader {
         });
         // An explicit open starts clean, also when it switches the mode.
         self.quick_open.invalidate();
+        if !full_text {
+            self.ensure_palette_projects(window, cx);
+        }
         self.refresh_quick_open(cx);
     }
 
@@ -483,8 +641,187 @@ impl Reader {
         self.quick_open.supersede();
         self.quick_open.pending = true;
         self.quick_open.message = "Searching…".into();
+        self.quick_open.query = self.quick_open_query(cx);
+        self.quick_open.sections = self.palette_sections();
         self.start_quick_open_query(cx);
         cx.notify();
+    }
+
+    /// Projects arrived or changed while the palette is open: only the
+    /// synchronous sections are rebuilt, the selection stays on its row kind.
+    pub(super) fn refresh_palette_sections(&mut self, cx: &mut Context<Self>) {
+        if self.quick_open.open && !self.quick_open.full_text {
+            self.quick_open.sections = self.palette_sections();
+            let len = self.palette_items().len();
+            self.quick_open.selected = self.quick_open.selected.min(len.saturating_sub(1));
+            cx.notify();
+        }
+    }
+
+    /// Pinned, Recent and Projects for the palette's current text. Pinned and
+    /// Recent are the title-bar lists (#1517), so they follow the project's
+    /// This project / All vault switch and hide hidden notes alike. Recent
+    /// leaves out the note on screen: ↵ on an empty palette goes back.
+    fn palette_sections(&self) -> Sections {
+        if self.quick_open.full_text || !self.quick_open.open {
+            return Sections::default();
+        }
+        let query = self.quick_open.query.clone();
+        let now = reader_sidebar::now();
+        let aliases = self.vault.aliases();
+        let mut pinned = matching(
+            self.nav_entries(reader_title_nav::Menu::Pinned, now),
+            &query,
+            aliases,
+        );
+        pinned.truncate(PINNED_SHOWN);
+        let current = self.selected_file();
+        let mut recent = matching(
+            self.nav_entries(reader_title_nav::Menu::Recent, now)
+                .into_iter()
+                .filter(|entry| entry.path != current)
+                .collect(),
+            &query,
+            aliases,
+        );
+        recent.truncate(reader_sidebar::RECENT_SHOWN);
+        let (projects, any_project) = if self.single_file {
+            (Vec::new(), false)
+        } else {
+            (
+                self.palette_projects(&query, PROJECTS_SHOWN),
+                !self.project_navigation.discovery.projects.is_empty(),
+            )
+        };
+        Sections {
+            pinned,
+            recent,
+            projects,
+            any_project,
+        }
+    }
+
+    /// Every selectable row in display order. Files leaves out what Pinned
+    /// and Recent already show.
+    pub(super) fn palette_items(&self) -> Vec<(PaletteSection, PaletteItem)> {
+        let palette = &self.quick_open;
+        if palette.full_text {
+            return (0..palette.rows.len())
+                .map(|ix| (PaletteSection::Files, PaletteItem::File(ix)))
+                .collect();
+        }
+        let sections = &palette.sections;
+        let mut items = Vec::new();
+        for (section, entries) in [
+            (PaletteSection::Pinned, &sections.pinned),
+            (PaletteSection::Recent, &sections.recent),
+        ] {
+            items.extend(
+                entries
+                    .iter()
+                    .map(|entry| (section, PaletteItem::Note(entry.clone()))),
+            );
+        }
+        items.extend(
+            sections
+                .projects
+                .iter()
+                .map(|row| (PaletteSection::Projects, PaletteItem::Project(row.clone()))),
+        );
+        if sections.any_project {
+            items.push((PaletteSection::Projects, PaletteItem::AllProjects));
+        }
+        let shown: std::collections::HashSet<&str> = sections
+            .pinned
+            .iter()
+            .chain(&sections.recent)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        items.extend(
+            palette
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, hit)| !shown.contains(hit.path.as_str()))
+                .map(|(ix, _)| (PaletteSection::Files, PaletteItem::File(ix))),
+        );
+        items
+    }
+
+    /// The first row of `section`, if it has any (⌘1…⌘4).
+    pub(super) fn jump_palette_section(&mut self, section: PaletteSection, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .palette_items()
+            .iter()
+            .position(|(s, _)| *s == section)
+        {
+            self.select_palette_item(ix, cx);
+        }
+    }
+
+    /// Tab / ⇧Tab: the first row of the next or previous section that has
+    /// rows, wrapping around.
+    pub(super) fn cycle_palette_section(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let items = self.palette_items();
+        let Some((current, _)) = items.get(self.quick_open.selected) else {
+            return;
+        };
+        let at = |section: PaletteSection| {
+            PaletteSection::ALL
+                .iter()
+                .position(|s| *s == section)
+                .unwrap_or(0) as isize
+        };
+        let here = at(*current);
+        let count = PaletteSection::ALL.len() as isize;
+        for step in 1..count {
+            let section = PaletteSection::ALL[(here + delta.signum() * step).rem_euclid(count) as usize];
+            if let Some(ix) = items.iter().position(|(s, _)| *s == section) {
+                self.select_palette_item(ix, cx);
+                return;
+            }
+        }
+    }
+
+    fn select_palette_item(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.quick_open.selected = ix;
+        let line = self
+            .palette_lines(&self.palette_items(), String::new())
+            .iter()
+            .position(|line| matches!(line, Line::Item(i) if *i == ix))
+            .unwrap_or(ix);
+        self.quick_open.scroll.scroll_to_item(line);
+        cx.notify();
+    }
+
+    /// Section headers and hints around the rows (names mode); content
+    /// search is the bare list of matches.
+    fn palette_lines(&self, items: &[(PaletteSection, PaletteItem)], scope: String) -> Vec<Line> {
+        let palette = &self.quick_open;
+        if palette.full_text {
+            return (0..items.len()).map(Line::Item).collect();
+        }
+        let mut lines = Vec::new();
+        for section in PaletteSection::ALL {
+            let first = lines.len();
+            for (ix, _) in items.iter().enumerate().filter(|(_, (s, _))| *s == section) {
+                lines.push(Line::Item(ix));
+            }
+            let has_rows = lines.len() > first;
+            if section == PaletteSection::Files && !has_rows {
+                // Files always says what it would list.
+                let idle = !palette.running && !palette.pending && palette.message.is_empty();
+                if palette.query.is_empty() {
+                    lines.push(Line::Hint(format!("Type to search files in {scope}")));
+                } else if idle {
+                    lines.push(Line::Hint("No matching files".into()));
+                }
+            }
+            if lines.len() > first {
+                lines.insert(first, Line::Header(section));
+            }
+        }
+        lines
     }
 
     fn start_quick_open_query(&mut self, cx: &mut Context<Self>) {
@@ -506,6 +843,8 @@ impl Reader {
         let query = self.quick_open.input.read(cx).value().trim().to_string();
         let recent = self.quick_open.recent.clone();
         let full_text = self.quick_open.full_text;
+        // Inside a project its files rank first, then the rest (#1518).
+        let first = self.project_folder().unwrap_or_default();
         #[cfg(test)]
         let hold = self.quick_open.hold_query.take();
         let title_root = root.clone();
@@ -533,6 +872,10 @@ impl Reader {
                         },
                     )),
                 }
+            } else if query.is_empty() {
+                // Pinned and Recent are the choices before typing; Files
+                // waits for text (#1518).
+                Ok((vec![], String::new()))
             } else {
                 // Before the first inventory publishes, list what the vault
                 // already holds, non-Markdown files included (#686).
@@ -547,12 +890,13 @@ impl Reader {
                         &fallback
                     }
                 };
-                let rows = okilum_core::quick_open::search_named(
+                let rows = okilum_core::quick_open::search_named_first(
                     files,
                     &titles,
                     vault.aliases(),
                     &query,
                     &recent,
+                    &first,
                     100,
                 )
                 .into_iter()
@@ -597,7 +941,11 @@ impl Reader {
                     }
                     match result {
                         Ok((rows, snippets, message)) => {
-                            this.quick_open.message = if rows.is_empty() && message.is_empty() {
+                            // Names mode says so inside its Files section.
+                            this.quick_open.message = if rows.is_empty()
+                                && message.is_empty()
+                                && this.quick_open.full_text
+                            {
                                 "No matches".into()
                             } else {
                                 message
@@ -629,14 +977,12 @@ impl Reader {
     }
 
     pub(super) fn move_quick_open(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let palette = &mut self.quick_open;
-        if !palette.open || palette.rows.is_empty() {
+        let len = self.palette_items().len();
+        if !self.quick_open.open || len == 0 {
             return;
         }
-        palette.selected =
-            (palette.selected as isize + delta).rem_euclid(palette.rows.len() as isize) as usize;
-        palette.scroll.scroll_to_item(palette.selected);
-        cx.notify();
+        let next = (self.quick_open.selected as isize + delta).rem_euclid(len as isize) as usize;
+        self.select_palette_item(next, cx);
     }
 
     fn quick_open_query(&self, cx: &App) -> String {
@@ -665,7 +1011,49 @@ impl Reader {
             });
             return;
         }
-        self.open_quick_open_row(self.quick_open.selected, window, cx);
+        self.open_palette_item(self.quick_open.selected, window, cx);
+    }
+
+    /// Opens the row at `ix` across all sections, as shown.
+    pub(super) fn open_palette_item(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.quick_open.accept_when_ready = None;
+        let Some((_, item)) = self.palette_items().into_iter().nth(ix) else {
+            return;
+        };
+        match item {
+            PaletteItem::File(row) => self.open_quick_open_row(row, window, cx),
+            PaletteItem::Note(entry) => {
+                self.close_quick_open(window, cx);
+                if entry.folder {
+                    self.reveal_in_tree(&entry.path, window, cx);
+                } else {
+                    self.open_note(&entry.path, None, window, cx);
+                }
+            }
+            PaletteItem::Project(row) => {
+                self.close_quick_open(window, cx);
+                let active = self.project_navigation.active.as_ref();
+                if active.is_none_or(|p| p.folder != row.project.folder) {
+                    // The switcher's revalidating entry; recents follow success.
+                    self.enter_vault_project(row.project, window, cx);
+                }
+            }
+            PaletteItem::AllProjects => {
+                let query = self.quick_open.query.clone();
+                self.close_quick_open(window, cx);
+                if !self.title_nav.switcher_open {
+                    self.toggle_project_switcher(window, cx);
+                }
+                if let Some(switcher) = self.project_navigation.switcher.clone() {
+                    switcher.update(cx, |picker, cx| picker.set_query(query, window, cx));
+                }
+            }
+        }
     }
 
     /// Opens the row as shown, which during a query may still belong to the

@@ -75,6 +75,28 @@ pub fn search_named(
     recent: &[String],
     limit: usize,
 ) -> Vec<Note> {
+    search_named_first(notes, titles, aliases, query, recent, "", limit)
+}
+
+/// As [`search_named`], but every match inside `first` (a vault-relative
+/// folder, such as the active project) ranks above every match outside it
+/// (#1518). An empty `first` is the whole vault and changes nothing.
+pub fn search_named_first(
+    notes: &[Note],
+    titles: &HashMap<String, String>,
+    aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    query: &str,
+    recent: &[String],
+    first: &str,
+    limit: usize,
+) -> Vec<Note> {
+    let first = first.trim_end_matches('/');
+    let inside = |path: &str| {
+        first.is_empty()
+            || path
+                .strip_prefix(first)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
     let query = query.trim().to_lowercase();
     let mut matches: Vec<_> = notes
         .iter()
@@ -106,7 +128,9 @@ pub fn search_named(
         })
         .collect();
     matches.sort_by(|a, b| {
-        b.1.cmp(&a.1)
+        inside(&b.0.path)
+            .cmp(&inside(&a.0.path))
+            .then(b.1.cmp(&a.1))
             .then(b.2.cmp(&a.2))
             .then(is_markdown(&b.0.path).cmp(&is_markdown(&a.0.path)))
             .then(a.0.path.cmp(&b.0.path))
@@ -316,6 +340,51 @@ mod tests {
         assert!(all[..3].iter().all(|path| path.ends_with(".md")));
         let recent = vec!["tg.log".to_string()];
         assert_eq!(search(&notes, "", &recent, 30)[0].path, "tg.log");
+    }
+    #[test]
+    fn project_matches_rank_before_the_rest_of_the_vault() {
+        // #1518: inside a project, Files lists the project first.
+        let note = |path: &str| Note {
+            path: path.into(),
+            title: path.rsplit('/').next().unwrap().trim_end_matches(".md").into(),
+        };
+        let notes = vec![
+            note("plan.md"),
+            note("Dev/App/design/plan draft.md"),
+            note("Dev/Apps/plan.md"),
+            note("Dev/App/notes.md"),
+        ];
+        let empty = HashMap::new();
+        let aliases = std::collections::BTreeMap::new();
+        let paths = |first: &str, recent: &[String]| -> Vec<String> {
+            search_named_first(&notes, &empty, &aliases, "plan", recent, first, 30)
+                .into_iter()
+                .map(|n| n.path)
+                .collect()
+        };
+        // Whole vault: the exact name wins, a sibling folder is not the project.
+        assert_eq!(
+            paths("", &[]),
+            ["Dev/Apps/plan.md", "plan.md", "Dev/App/design/plan draft.md"]
+        );
+        assert_eq!(paths("", &[]), {
+            search_named(&notes, &empty, &aliases, "plan", &[], 30)
+                .into_iter()
+                .map(|n| n.path)
+                .collect::<Vec<_>>()
+        });
+        // In the project its weaker match leads; the rest keeps its order.
+        assert_eq!(
+            paths("Dev/App", &[]),
+            ["Dev/App/design/plan draft.md", "Dev/Apps/plan.md", "plan.md"]
+        );
+        assert_eq!(paths("Dev/App/", &[]), paths("Dev/App", &[]));
+        // Recency still orders equal matches inside each part.
+        let recent = vec!["Dev/Apps/plan.md".to_string(), "plan.md".to_string()];
+        assert_eq!(
+            paths("Dev/App", &recent),
+            ["Dev/App/design/plan draft.md", "plan.md", "Dev/Apps/plan.md"]
+        );
     }
     #[test]
     fn landing_uses_literal_match_not_query_expression() {
