@@ -1,0 +1,3 @@
+Name	Qty	Price
+Apples	12	$1,234.50
+Pears | green	3	-7%
