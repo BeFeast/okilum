@@ -224,6 +224,14 @@ impl ManagerPanel {
                         if this.generation != generation {
                             return;
                         }
+                        if event.starts_with("page-load:") {
+                            if event == "page-load:finished" {
+                                if let Some(routing) = &this.focus_routing {
+                                    routing.document_loaded();
+                                }
+                            }
+                            return;
+                        }
                         let owns_native_focus =
                             this.focus_routing.as_ref().is_some_and(|routing| {
                                 routing.refresh();
@@ -272,6 +280,7 @@ impl ManagerPanel {
         let new_windows = link_send.clone();
         let t3 = url.clone();
         let store = crate::reader_manager_store::application_identifier();
+        let page_events = send.clone();
         let browser = wry::WebViewBuilder::new()
             .with_incognito(false)
             .with_data_store_identifier(store)
@@ -288,6 +297,19 @@ impl ManagerPanel {
                         window.ipc.postMessage('escape');
                     }
                 }, true);
+                // Preserve the approved c1dc8dc6 behavior: after page handlers,
+                // keep the active form focused until a pressed button can click.
+                // WebKit otherwise blurs to body and T3 collapses/unmounts the X.
+                window.addEventListener('mousedown', event => {
+                    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+                    const button = target?.closest('button, [role="button"]');
+                    const form = button?.closest('form');
+                    const active = document.activeElement;
+                    const keep = event.button === 0 && !event.defaultPrevented && !!form
+                        && !button.disabled && !button.closest('[draggable="true"]')
+                        && active !== button && form.contains(active);
+                    if (keep) event.preventDefault();
+                });
             "#,
             )
             .with_initialization_script(&crate::reader_manager_links::page_script(&url))
@@ -310,6 +332,13 @@ impl ManagerPanel {
                         .try_send(crate::reader_manager_links::PageRequest::OpenExternal(url));
                 }
                 wry::NewWindowResponse::Deny
+            })
+            .with_on_page_load_handler(move |event, _url| {
+                let event = match event {
+                    wry::PageLoadEvent::Started => "page-load:started",
+                    wry::PageLoadEvent::Finished => "page-load:finished",
+                };
+                let _ = page_events.try_send(event.into());
             })
             .with_navigation_handler(|url| {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
@@ -356,7 +385,72 @@ impl Render for ManagerPanel {
         }
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.webview {
-            body = body.child(div().flex_1().min_h_0().child(view.clone()));
+            let native = view.read(cx).handle();
+            let view_state = view.clone();
+            let panel = cx.weak_entity();
+            body = body.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(view.clone())
+                    .child(
+                        gpui::canvas(
+                            |_, _, _| (),
+                            move |_, (), window, cx| {
+                                if !view_state.read(cx).visible() {
+                                    return;
+                                }
+                                // Wry's element has already laid out the actual native
+                                // child. A sibling absolute canvas can have a different
+                                // static position: never use it to move/hide WebKit.
+                                let full = view_state.read(cx).bounds();
+                                let overlays = gpui_base::GlobalState::native_overlays(window, cx);
+                                let clear = crate::reader_manager_occlusion::uncovered_bounds(
+                                    full, overlays,
+                                );
+                                // All ordinary AND deferred overlays have completed
+                                // prepaint before this paint callback. Never use the
+                                // previous frame's popup geometry.
+                                let obscured = clear != Some(full);
+                                let _ = panel.update(cx, |panel, cx| {
+                                    if obscured
+                                        && panel.focus_routing.as_ref().is_some_and(|r| r.focused())
+                                    {
+                                        let _ = native.raw().focus_parent();
+                                        panel.focused = false;
+                                    }
+                                });
+                                if let Some(bounds) = clear {
+                                    let result = native.raw().set_bounds(wry::Rect {
+                                        position: wry::dpi::LogicalPosition::new(
+                                            f64::from(bounds.origin.x),
+                                            f64::from(bounds.origin.y),
+                                        )
+                                        .into(),
+                                        size: wry::dpi::LogicalSize::new(
+                                            f64::from(bounds.size.width),
+                                            f64::from(bounds.size.height),
+                                        )
+                                        .into(),
+                                    });
+                                    let _ = native.raw().set_visible(result.is_ok());
+                                } else {
+                                    // A full-window modal backdrop leaves no free
+                                    // rectangle. Do not let its native child cover it.
+                                    let _ = native.raw().set_visible(false);
+                                }
+                                let _ = panel.update(cx, |panel, _| {
+                                    if let Some(routing) = &panel.focus_routing {
+                                        routing.refresh();
+                                    }
+                                });
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
+            );
         }
         body.into_any_element()
     }

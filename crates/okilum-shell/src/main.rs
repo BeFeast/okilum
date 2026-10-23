@@ -64,6 +64,8 @@ mod reader_log;
 mod reader_manager_focus;
 #[cfg(any(target_os = "macos", test))]
 mod reader_manager_links;
+#[cfg(any(target_os = "macos", test))]
+mod reader_manager_occlusion;
 mod reader_manager_panel;
 mod reader_manager_start;
 #[cfg(any(target_os = "macos", test))]
@@ -169,6 +171,7 @@ use std::time::Duration;
 use brand::Assets;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_base::ElementExt as _;
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -5279,6 +5282,7 @@ impl Reader {
         Some(
             div()
                 .id("table-overlay")
+                .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                 .absolute()
                 .inset_0()
                 // Nothing under the scrim reacts to the pointer.
