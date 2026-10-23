@@ -149,5 +149,19 @@ fn main() {
     println!("cargo:rustc-link-lib=framework=WebKit");
     println!("cargo:rustc-link-lib=framework=Quartz");
     println!("cargo:rustc-link-lib=framework=QuickLookThumbnailing");
+    // With a library target Cargo attaches rustc-link-lib to that target only.
+    // The existing binary calls these FFI bridges directly and does not yet use
+    // the new shared component library. Preserve its native links explicitly,
+    // including the binary's libtest harness, without changing main.rs.
+    println!("cargo:rustc-link-arg-bin=okilum=-lokilum_updater");
+    for name in [
+        "Sparkle",
+        "AppKit",
+        "WebKit",
+        "Quartz",
+        "QuickLookThumbnailing",
+    ] {
+        println!("cargo:rustc-link-arg-bin=okilum=-Wl,-framework,{name}");
+    }
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 }

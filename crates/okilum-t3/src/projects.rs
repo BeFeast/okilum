@@ -1,5 +1,7 @@
 //! Vault-wide project discovery. Manifests and role registries remain canonical;
 //! discovery never creates a thread or writes to the vault.
+pub mod picker;
+
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
