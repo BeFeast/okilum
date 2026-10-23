@@ -1517,9 +1517,19 @@ impl Conv {
             return;
         }
         let mut out: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+        // Rows still covered by a cell's rowspan, per column: those slots
+        // stay empty so later cells keep their column (Wikipedia tables).
+        let mut covered: Vec<usize> = Vec::new();
         for (r, row) in rows.iter().enumerate() {
             let mut cells = Vec::with_capacity(cols);
+            let skip_covered = |cells: &mut Vec<String>, covered: &mut Vec<usize>| {
+                while let Some(left) = covered.get_mut(cells.len()).filter(|left| **left > 0) {
+                    *left -= 1;
+                    cells.push(String::new());
+                }
+            };
             for cell in row {
+                skip_covered(&mut cells, &mut covered);
                 let mut cb = Builder::new(Mode::Inline { breaks: true });
                 let mut s = style.clone();
                 if tag(cell) == Some("th") {
@@ -1532,15 +1542,31 @@ impl Conv {
                 if r == 0 {
                     runs = runs.into_iter().map(strip_bold).collect();
                 }
-                cells.push(render::render_inline(&runs, InlineMode::Cell));
-                for _ in 1..colspan(cell) {
-                    cells.push(String::new());
+                let below = rowspan(cell, rows.len() - r) - 1;
+                for k in 0..colspan(cell) {
+                    if covered.len() <= cells.len() {
+                        covered.resize(cells.len() + 1, 0);
+                    }
+                    covered[cells.len()] = below;
+                    cells.push(if k == 0 {
+                        render::render_inline(&runs, InlineMode::Cell)
+                    } else {
+                        String::new()
+                    });
                 }
             }
-            while cells.len() < cols {
+            // Covered slots after the row's last cell.
+            while cells.len() < covered.len() {
+                if covered[cells.len()] > 0 {
+                    covered[cells.len()] -= 1;
+                }
                 cells.push(String::new());
             }
             out.push(cells);
+        }
+        let width = out.iter().map(Vec::len).max().unwrap_or(0).max(cols);
+        for cells in &mut out {
+            cells.resize(width, String::new());
         }
         b.push_block(Block::Table { rows: out });
     }
@@ -1966,6 +1992,16 @@ fn table_rows(table: &Handle) -> Vec<Vec<Handle>> {
     let mut all = head_rows;
     all.extend(rows);
     all
+}
+
+/// Rows a cell spans, at most `left` (the rows from this one to the end);
+/// `rowspan="0"` spans them all.
+fn rowspan(cell: &Handle, left: usize) -> usize {
+    let span = attr(cell, "rowspan")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(1);
+    let span = if span == 0 { left } else { span };
+    span.clamp(1, left.max(1))
 }
 
 fn colspan(cell: &Handle) -> usize {

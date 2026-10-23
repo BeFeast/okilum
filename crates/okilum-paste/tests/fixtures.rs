@@ -274,3 +274,40 @@ fn single_column_and_single_row_are_not_tables() {
         assert!(!c.markdown.contains('|'), "{:?}", c.markdown);
     }
 }
+
+/// A rowspan keeps the next rows' cells in their columns (Wikipedia tables).
+#[test]
+fn rowspan_keeps_columns() {
+    let html = "<table><tr><th>Year</th><th>Title</th><th>Role</th></tr>\
+        <tr><td rowspan=\"2\">1999</td><td>A</td><td>Lead</td></tr>\
+        <tr><td>B</td><td>Cameo</td></tr>\
+        <tr><td>2001</td><td rowspan=\"0\">C</td><td>Lead</td></tr>\
+        <tr><td>2002</td><td>Voice</td></tr></table>";
+    let c = html_to_markdown(&HtmlInput {
+        html,
+        base_url: None,
+    });
+    let rows: Vec<Vec<String>> = c
+        .markdown
+        .lines()
+        .filter(|line| !line.contains("---"))
+        .map(|line| {
+            line.trim_matches('|')
+                .split('|')
+                .map(|cell| cell.trim().to_string())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["Year", "Title", "Role"],
+            ["1999", "A", "Lead"],
+            ["", "B", "Cameo"],
+            ["2001", "C", "Lead"],
+            ["2002", "", "Voice"],
+        ],
+        "{}",
+        c.markdown
+    );
+}
