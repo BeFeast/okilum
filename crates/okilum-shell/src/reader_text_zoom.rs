@@ -150,7 +150,7 @@ fn change(
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use gpui::{InputEvent as _, ScrollDelta, TestAppContext, TouchPhase};
+    use gpui::{ScrollDelta, TestAppContext, TouchPhase};
 
     #[gpui::test]
     fn scale_persists_without_changing_base_font_or_other_presentation(cx: &mut TestAppContext) {
@@ -289,15 +289,12 @@ mod tests {
                 ..Default::default()
             }
         };
-        visual.simulate_event(
-            ScrollWheelEvent {
-                position,
-                delta: ScrollDelta::Lines(point(0., 1.)),
-                modifiers,
-                touch_phase: TouchPhase::Moved,
-            }
-            .to_platform_input(),
-        );
+        visual.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Lines(point(0., 1.)),
+            modifiers,
+            touch_phase: TouchPhase::Moved,
+        });
         visual.run_until_parked();
         visual.update(|_, cx| {
             assert!(
@@ -332,7 +329,14 @@ mod tests {
         });
         visual.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.set_cursor_position((30, 8), window, cx)
+                state.set_cursor_position(
+                    gpui_component::input::Position {
+                        line: 30,
+                        character: 8,
+                    },
+                    window,
+                    cx,
+                )
             })
         });
         visual.run_until_parked();
