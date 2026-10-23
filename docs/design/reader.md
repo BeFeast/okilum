@@ -320,9 +320,11 @@ hidden rows use subdued styling without a text badge, and the current row keeps
 its normal selection contrast. The tree never highlights a neighbour instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
 them all and is remembered per vault (#395). Recent, Pinned and Inbox follow the
 same rule and update as soon as it changes; quick open and search still find
-hidden notes (#635). Hovering the Folders header
-shows «Collapse all» and «Focus current» (only the path to the open note stays
-expanded; ⇧⌘← while browsing). ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
+hidden notes (#635). The Folders header always shows its five actions in fixed
+slots — New note, New folder, «Collapse all», «Focus current» (only the path to
+the open note stays expanded) and the eye — idle and hovered alike; hover only
+raises their contrast and never adds, hides or moves an icon (#1512). A narrow
+sidebar folds them into one ⋯ menu. ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
 folder context menu («Expand/Collapse all subfolders») act on the folder and
 everything below it, as in Finder. There is no global «Expand all» (#410).
 F2/Enter starts inline rename for notes and folders (#578); Right/Left expands/
@@ -330,35 +332,24 @@ collapses, and Left on a child selects its parent. A folder-label click selects;
 double-click, its disclosure glyph, or ⌘↓ (Ctrl↓ on Linux) toggles it.
 
 
-### Sections (#369, variant A «Sections», chosen by Oleg 2026-10-04)
+### Tree only (#1508, design session 2026-10-22)
 
-Mockup: [sidebar.html](https://html.me.uk/t/okilum-reader-348/sidebar.html?v=A).
-Under the panel header, top to bottom, each section collapsible (state remembered):
+The left sidebar is the folder tree and nothing else. Recent and Pinned moved
+to the title bar (Recent ▾, Pinned ▾, #1517); Projects, Inbox and Logs are app
+sections in the ⋯ menu (#1474). In a vault the Folders header stays, with its
+actions; clicking it folds the tree. Inside a project there is no Folders
+header at all: the project's tree starts right under the panel header and
+cannot be folded away. Scrolling never changes the sidebar's geometry.
 
-- **Recent** — the last opened notes, 5 shown, «N more» up to 10, with a
-  relative age.
-- **Pinned** — notes and folders pinned with the pin that appears on hover
-  (filled `accent` when pinned). A pinned folder reveals itself in the tree.
-- **Inbox** — computed, never configured or stored: notes created in the last
-  14 days (platform birth time; fallback: first seen by the app after its
-  baseline) that are not yet built into the structure — directly in the vault
-  or a domain root, or without incoming links. Archived and `_` notes never
-  qualify. A note leaves on its own once it is moved into a PARA folder and
-  linked. Each row shows the reason («at root», «in Work», «no links») and age;
-  the header shows the count.
-- **Folders** — the tree above.
+The retired controls are gone with the sections: «Collapse/Expand all
+sections», «Folders only / Restore sections», ⌥-click on a header and their
+shortcuts. Recent, Pinned and the tree's fold are app state per root in the
+Reader state directory; nothing is written into notes. Older state files load
+unchanged: pins and recents survive, and the old per-section fold and
+Folders-only snapshots are ignored.
 
-All four section headers remain visible outside the scrolling bodies (#434).
-Scrolling down in Folders folds Recent/Pinned/Inbox to counted header rows;
-returning to the top restores the user's expanded sections. Clicking a folded
-header expands it in place without resetting the tree position. Automatic folding
-is transient and never overwrites the saved collapse preference. Large upper
-sections have bounded body viewports, sharing the space above a reserved 140px
-minimum tree viewport; their headers do not scroll with their contents.
-
-Recent, Pinned and collapsed sections are app state per root in the Reader
-state directory; nothing is written into notes. Searching in the palette leaves
-the sidebar sections and tree expansion unchanged.
+The earlier variant A «Sections» (#369, #434) — Recent, Pinned and Inbox as
+collapsible sidebar sections above Folders — is superseded.
 
 ## Right panel (R3)
 

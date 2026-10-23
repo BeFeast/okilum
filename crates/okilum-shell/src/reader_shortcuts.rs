@@ -109,8 +109,6 @@ fn catalog() -> Vec<Entry> {
         entry::<PdfZoomFit>("Fit PDF to width", View),
         entry::<ToggleSource>("Edit / Read", View),
         entry::<OpenLivePreview>("Live Preview", View),
-        entry::<CollapseSidebarSections>("Folders only", View),
-        entry::<ExpandSidebarSections>("Expand all sections", View),
         entry::<ToggleNotes>("Notes panel", View),
         entry::<ToggleProject>("Projects", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),

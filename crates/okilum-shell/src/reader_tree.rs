@@ -545,7 +545,6 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::*;
-        use reader_sidebar::Section;
         cx.update(gpui_component::init);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
@@ -583,17 +582,31 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |reader, cx| {
             reader.panels.open(reader_layout::Panel::Notes);
-            assert_eq!(reader.backlink_titles.get("24q4.md").map(String::as_str), Some("Quarterly plans"), "reconciled title positive control");
-            reader.sidebar.pinned = vec!["24q4.md".into(), "Upper.MD".into()];
-            reader.sidebar.recent = vec![("legacy.md".into(), reader_sidebar::now())];
-            let rows = reader.sidebar_items();
-            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Pinned, path, label, ..} if path == "24q4.md" && label == "Quarterly plans")));
-            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Pinned, path, label, folder: false, ..} if path == "Upper.MD" && label == "Upper title")));
-            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Recent, path, label, ..} if path == "legacy.md" && label == "Legacy title")));
-            assert_eq!(reader.tree.rows.iter().map(|r| (r.path.as_str(), r.label.as_str())).collect::<Vec<_>>(), [
-                ("legacy.md", "Legacy title"), ("24q4.md", "Quarterly plans"),
-                ("duplicate.md", "Quarterly plans"), ("Upper.MD", "Upper title"), ("plain.md", "plain"),
-            ]);
+            assert_eq!(
+                reader.backlink_titles.get("24q4.md").map(String::as_str),
+                Some("Quarterly plans"),
+                "reconciled title positive control"
+            );
+            // Recent and Pinned (title bar, #1508) label notes the same way.
+            assert_eq!(reader.note_label("24q4.md"), "Quarterly plans");
+            assert_eq!(reader.note_label("Upper.MD"), "Upper title");
+            assert!(!reader.tree.is_directory("Upper.MD"));
+            assert_eq!(reader.note_label("legacy.md"), "Legacy title");
+            assert_eq!(
+                reader
+                    .tree
+                    .rows
+                    .iter()
+                    .map(|r| (r.path.as_str(), r.label.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("legacy.md", "Legacy title"),
+                    ("24q4.md", "Quarterly plans"),
+                    ("duplicate.md", "Quarterly plans"),
+                    ("Upper.MD", "Upper title"),
+                    ("plain.md", "plain"),
+                ]
+            );
             cx.notify();
         });
         visual.run_until_parked();
