@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 608d4f39..ca78d5aa 100644
+index 608d4f39..b6e661f1 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -714,8 +714,10 @@ impl<M: InputModeKind> InputBaseState<M> {
@@ -106,7 +106,18 @@ index 608d4f39..ca78d5aa 100644
      fn push_history(
          &mut self,
          text: &Rope,
-@@ -4637,6 +4657,139 @@ mod tests {
+@@ -3442,7 +3462,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+-        self.exact_clipboard.invalidate();
++        // No invalidation here: losing focus (on_blur) already cancels a pending
++        // paste, so a focus event during a read is the window's activation
++        // being recorded, which must not cancel the paste it delivered (#1602).
+         self.blink_cursor.update(cx, |cursor, cx| {
+             cursor.start(cx);
+         });
+@@ -4637,6 +4659,139 @@ mod tests {
          }
      }
  
