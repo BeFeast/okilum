@@ -393,8 +393,12 @@ while kill -0 "$pid" 2>/dev/null; do
 done
 # Revalidate both the original inode and the staged bytes immediately before rename.
 test "$target" -ef "$stage/previous.AppImage" || { echo 'Original changed; refusing apply'; exit 1; }
-printf '%s  %s\n' "$original" "$stage/previous.AppImage" | sha256sum -c - || exit 1
-printf '%s  %s\n' "$digest" "$stage/new.AppImage" | sha256sum -c - || exit 1
+# Hash stdin so checksum output never contains an escaped user pathname or a
+# newline-delimited checksum record built from one. Keep read/hash failures fatal.
+actual=$(sha256sum < "$stage/previous.AppImage"); actual=${actual%% *}
+test "$actual" = "$original" || exit 1
+actual=$(sha256sum < "$stage/new.AppImage"); actual=${actual%% *}
+test "$actual" = "$digest" || exit 1
 mv -f -- "$stage/new.AppImage" "$target"
 sync -f "$target"
 echo 'Applied; previous.AppImage is the manual rollback copy'
@@ -422,7 +426,7 @@ fi
 wait "$child" && child_status=0 || child_status=$?
 echo "Updated application exited before startup confirmation ($child_status); restoring previous AppImage"
 # Do not clobber another install/update made while the child was starting.
-actual=$(sha256sum "$target"); actual=${actual%% *}
+actual=$(sha256sum < "$target"); actual=${actual%% *}
 test "$actual" = "$digest" || exit 1
 mv -f -- "$stage/previous.AppImage" "$target"
 sync -f "$target"
@@ -505,11 +509,29 @@ mod tests {
     /// The production apply helper, real rename/rollback and real child process.
     /// Fake executable bodies are transaction controls, not native AppImage proof.
     fn transaction(payload: &[u8], tamper: bool, changed: bool) -> (Vec<u8>, String) {
+        transaction_at(
+            payload,
+            tamper,
+            changed,
+            "apps",
+            "Original with spaces.AppImage",
+        )
+    }
+    fn transaction_at(
+        payload: &[u8],
+        tamper: bool,
+        changed: bool,
+        parent: &str,
+        basename: &str,
+    ) -> (Vec<u8>, String) {
         let dir = tempfile::tempdir().unwrap();
-        let stage = dir.path().join("stage");
+        let parent = dir.path().join(parent);
+        fs::create_dir(&parent).unwrap();
+        let stage = parent.join("stage");
         fs::create_dir(&stage).unwrap();
-        let original = dir.path().join("Original with spaces.AppImage");
+        let original = parent.join(basename);
         executable(&original, b"original");
+        Target::open(&original).unwrap().unchanged().unwrap();
         fs::hard_link(&original, stage.join("previous.AppImage")).unwrap();
         executable(&stage.join("new.AppImage"), payload);
         let digest = sha(&stage.join("new.AppImage")).unwrap();
@@ -521,6 +543,7 @@ mod tests {
             fs::write(&original, b"external replacement").unwrap();
         }
         let output = Command::new("/bin/sh")
+            .current_dir(dir.path())
             .args(["-c", APPLY, "test", "2147483647"])
             .arg(&original)
             .arg(&stage)
@@ -530,6 +553,13 @@ mod tests {
             .arg("path with spaces")
             .output()
             .unwrap();
+        assert!(!dir.path().join("injected").exists());
+        if fs::read(&original).unwrap() != b"original" && !changed {
+            assert_eq!(
+                fs::read(stage.join("previous.AppImage")).unwrap(),
+                b"original"
+            );
+        }
         (
             fs::read(original).unwrap(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -546,6 +576,40 @@ mod tests {
         let (result, log) = transaction(b"#!/bin/sh\nexit 42\n", false, false);
         assert_eq!(result, b"original");
         assert!(log.contains("restoring previous AppImage"));
+    }
+    #[test]
+    fn unusual_paths_restore_failed_replacement_but_preserve_external_install() {
+        for name in [
+            "Okilum\\beta.AppImage",
+            "Okilum\nbeta.AppImage",
+            "Okilum beta.AppImage",
+            "Okilum'$(touch injected)`touch injected`;beta.AppImage",
+        ] {
+            // Exercise both the target basename and the stage's user-owned parent.
+            for (parent, basename) in [("apps", name), (name, "original.AppImage")] {
+                let (result, log) =
+                    transaction_at(b"#!/bin/sh\nexit 42\n", false, false, parent, basename);
+                assert!(log.contains("Applied;"), "{parent:?}/{basename:?}: {log}");
+                assert!(log.contains("restoring previous AppImage"), "{log}");
+                assert_eq!(result, b"original", "{parent:?}/{basename:?}");
+
+                // Rename over the running script, just like an independent installer.
+                // The original backup must survive and rollback must not clobber it.
+                let external = b"#!/bin/sh\nprintf 'external replacement' > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/external\"\nmv -f -- \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/external\" \"$0\"\nexit 42\n";
+                let (result, log) = transaction_at(external, false, false, parent, basename);
+                assert!(log.contains("Applied;"), "{parent:?}/{basename:?}: {log}");
+                assert!(log.contains("restoring previous AppImage"), "{log}");
+                assert_eq!(result, b"external replacement", "{parent:?}/{basename:?}");
+                assert_eq!(
+                    transaction_at(external, true, false, parent, basename).0,
+                    b"original"
+                );
+                assert_eq!(
+                    transaction_at(external, false, true, parent, basename).0,
+                    b"external replacement"
+                );
+            }
+        }
     }
     #[test]
     fn running_executable_is_replaceable_even_though_write_open_is_etxtbsy() {
