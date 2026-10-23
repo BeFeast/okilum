@@ -187,3 +187,18 @@ void okilum_manager_focus_detach(void *handle) {
     OkilumManagerFocus *router = (__bridge_transfer OkilumManagerFocus *)handle;
     [router detach];
 }
+
+// Verify Wry selected durable storage, rather than silently falling back to an
+// ephemeral session. No data-store removal API is called anywhere in this bridge.
+bool okilum_manager_store_matches(void *view, const unsigned char *uuid) {
+    WKWebView *webview = (__bridge WKWebView *)view;
+    if (!webview || !uuid) return false;
+    WKWebsiteDataStore *store = webview.configuration.websiteDataStore;
+    if (!store.isPersistent) return false;
+    if (@available(macOS 14.0, *)) {
+        NSUUID *expected = [[NSUUID alloc] initWithUUIDBytes:uuid];
+        return [store.identifier isEqual:expected];
+    }
+    // Older macOS has only a persistent bundle-scoped default store.
+    return true;
+}
