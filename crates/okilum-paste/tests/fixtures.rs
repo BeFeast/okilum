@@ -257,3 +257,20 @@ fn inline_edge_cases() {
         "### H *i*\n\n==m== ~~d~~"
     );
 }
+
+/// #1611: a copied spreadsheet column or row is text, not a one-column or
+/// header-only table.
+#[test]
+fn single_column_and_single_row_are_not_tables() {
+    for html in [
+        "<table><tr><td>Apples</td></tr><tr><td>Pears</td></tr><tr><td>Plums</td></tr></table>",
+        "<table><tr><td>Apples</td><td>12</td></tr></table>",
+    ] {
+        let c = html_to_markdown(&HtmlInput {
+            html,
+            base_url: None,
+        });
+        assert!(c.plain, "{html} -> {:?}", c.markdown);
+        assert!(!c.markdown.contains('|'), "{:?}", c.markdown);
+    }
+}

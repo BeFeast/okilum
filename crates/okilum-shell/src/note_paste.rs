@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 gpui::actions!(
     okilum_paste,
     [
-        /// Cmd+Shift+V / Ctrl+Shift+V (#1611).
+        /// Option+Shift+Cmd+V on macOS, Ctrl+Shift+V elsewhere (#1611).
         PasteAsPlainText,
         /// Cmd+Alt+V / Ctrl+Alt+V (#1611).
         PasteAsTitledLink

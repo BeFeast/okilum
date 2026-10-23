@@ -385,8 +385,11 @@ pub fn tsv_to_table(text: &str) -> Option<String> {
 }
 
 /// Excel's TSV: a cell holding a tab, newline or quote is quoted, with `""`
-/// for a quote inside.
+/// for a quote inside. `None` at the first row whose column count differs
+/// from the first row's (text with tabs that is not a grid is not parsed to
+/// the end).
 fn parse_tsv(text: &str) -> Option<Vec<Vec<String>>> {
+    let mut cols: Option<usize> = None;
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut cell = String::new();
@@ -430,6 +433,9 @@ fn parse_tsv(text: &str) -> Option<Vec<Vec<String>>> {
             }
             '\n' => {
                 row.push(std::mem::take(&mut cell));
+                if *cols.get_or_insert(row.len()) != row.len() {
+                    return None;
+                }
                 rows.push(std::mem::take(&mut row));
                 at_cell_start = true;
             }
@@ -440,6 +446,9 @@ fn parse_tsv(text: &str) -> Option<Vec<Vec<String>>> {
         }
     }
     row.push(cell);
+    if cols.is_some_and(|cols| cols != row.len()) {
+        return None;
+    }
     rows.push(row);
     Some(rows)
 }

@@ -5,7 +5,10 @@
 //!
 //! Background results go to the paste position, found again after edits
 //! ([`Anchor`]); when it cannot be found they go to the caret, with a toast.
-//! A file's link is inserted only after the file is complete on disk.
+//! A file's link is inserted only after the file is complete on disk. They
+//! go into the note they were pasted into ([`Target`]): its editor while
+//! that editing session lasts, or the note's new editor when it was opened
+//! again; never into an editor that was closed.
 use super::*;
 use crate::note_paste::anchor::{Anchor, Region};
 use crate::note_paste::download::{self, DownloadError};
@@ -18,6 +21,41 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// A background paste job shows its progress toast after this long.
 const PROGRESS_AFTER: Duration = Duration::from_millis(300);
+
+/// The note a background paste result belongs to (#1611).
+#[derive(Clone)]
+struct Target {
+    reader: WeakEntity<Reader>,
+    input: Entity<EditorState>,
+    /// The note's file, to find its editor again after it was reopened.
+    path: Option<PathBuf>,
+}
+
+impl Target {
+    /// The editor to insert into now: the one pasted into while its session
+    /// lasts, else the same note's current editor. `None` once the note is
+    /// no longer being edited (left for Reader, another note, parked).
+    fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
+        let reader = self.reader.upgrade()?;
+        let editing = reader.read(cx).editing.as_ref()?;
+        let same_note = self
+            .path
+            .as_deref()
+            .is_some_and(|path| editing.store.path() == path);
+        (editing.input == self.input || same_note).then(|| editing.input.clone())
+    }
+}
+
+/// A background result that found no editor for its note: say so, and name
+/// what was saved so it can still be linked by hand.
+fn note_closed(saved: &str, window: &mut Window, cx: &mut App) {
+    let text = if saved.is_empty() {
+        "The note was closed before the paste finished, so nothing was inserted.".to_string()
+    } else {
+        format!("The note was closed before the paste finished, so nothing was inserted. Saved: {saved}")
+    };
+    reader_toast::error(text, window, cx);
+}
 
 impl Reader {
     /// Paste as Plain Text and Paste as Titled Link, from keys and menus.
@@ -131,6 +169,16 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let path = self
+            .editing
+            .as_ref()
+            .filter(|editing| editing.input == input)
+            .map(|editing| editing.store.path().to_path_buf());
+        let input = Target {
+            reader: cx.entity().downgrade(),
+            input,
+            path,
+        };
         match follow_up {
             FollowUp::Files { plan, anchor } => {
                 if plan.ask {
@@ -158,8 +206,9 @@ impl Reader {
                 images,
                 region,
                 folder,
+                vault_root,
                 stamp,
-            } => download_images(input, images, region, folder, stamp, window, cx),
+            } => download_images(input, images, region, folder, vault_root, stamp, window, cx),
             FollowUp::Rich { job, anchor } => convert_in_background(input, job, anchor, window, cx),
         }
     }
@@ -176,7 +225,7 @@ pub(super) fn show_notice(notice: &router::Notice, window: &mut Window, cx: &mut
 /// Above the size threshold: Copy into vault, Link to original file, or
 /// Cancel.
 fn ask_then_copy(
-    input: Entity<EditorState>,
+    input: Target,
     plan: FilePlan,
     anchor: Anchor,
     window: &mut Window,
@@ -225,7 +274,9 @@ fn ask_then_copy(
                     .collect::<Vec<_>>()
                     .join("\n");
                 let block = plan.items.len() > 1;
-                insert_at_anchor(&input, &anchor, &text, block, false, window, cx);
+                if insert_at_anchor(&input, &anchor, &text, block, false, window, cx).is_none() {
+                    note_closed("", window, cx);
+                }
             }
             _ => eprintln!("Paste: file copy cancelled"),
         });
@@ -234,13 +285,7 @@ fn ask_then_copy(
 }
 
 /// Copy the plan's files in the background, then insert every link at once.
-fn copy_files(
-    input: Entity<EditorState>,
-    plan: FilePlan,
-    anchor: Anchor,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window, cx: &mut App) {
     let total = plan.copy_bytes.max(1);
     let done = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(AtomicBool::new(false));
@@ -254,6 +299,9 @@ fn copy_files(
     let work_plan = plan.clone();
     let progress = done.clone();
     let task = cx.background_executor().spawn(async move {
+        // The vault's names before the copies, so a copy's link is its path
+        // when its name alone would also match another file.
+        let existing = files::vault_names(&work_plan.vault_root);
         let mut copied = Vec::new();
         let mut errors = Vec::new();
         let mut base = 0u64;
@@ -267,7 +315,11 @@ fn copy_files(
             base += item.size;
             progress.store(base, Ordering::Relaxed);
             match result {
-                Ok(name) => copied.push(Some(name)),
+                Ok(name) => copied.push(Some(files::link_target(
+                    &name,
+                    &work_plan.folder_rel,
+                    &existing,
+                ))),
                 Err(error) => {
                     errors.push(error.user_text(file_name));
                     copied.push(None);
@@ -291,7 +343,10 @@ fn copy_files(
             let links = files::links(&plan, &copied);
             if !links.is_empty() {
                 let block = links.len() > 1;
-                insert_at_anchor(&input, &anchor, &links.join("\n"), block, false, window, cx);
+                let text = links.join("\n");
+                if insert_at_anchor(&input, &anchor, &text, block, false, window, cx).is_none() {
+                    note_closed(&links.join("  "), window, cx);
+                }
             }
             if !errors.is_empty() {
                 reader_toast::error(errors.join("\n"), window, cx);
@@ -303,7 +358,7 @@ fn copy_files(
 
 /// Run `work` in the background and insert its text at `anchor`.
 fn run_job(
-    input: Entity<EditorState>,
+    input: Target,
     anchor: Anchor,
     label: &'static str,
     work: impl FnOnce() -> Result<String, String> + Send + 'static,
@@ -326,7 +381,9 @@ fn run_job(
         finished.store(true, Ordering::Relaxed);
         let _ = cx.update_window(handle, |_, window, cx| match result {
             Ok(text) => {
-                insert_at_anchor(&input, &anchor, &text, false, false, window, cx);
+                if insert_at_anchor(&input, &anchor, &text, false, false, window, cx).is_none() {
+                    note_closed(&text, window, cx);
+                }
             }
             Err(text) => reader_toast::error(text, window, cx),
         });
@@ -336,13 +393,7 @@ fn run_job(
 
 /// Paste as Titled Link without a title on the clipboard: the page title,
 /// fetched in the background, replaces the bare URL if it is still intact.
-fn fetch_title(
-    input: Entity<EditorState>,
-    url: String,
-    anchor: Anchor,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn fetch_title(input: Target, url: String, anchor: Anchor, window: &mut Window, cx: &mut App) {
     let fetched_url = url.clone();
     let task = cx
         .background_executor()
@@ -360,9 +411,16 @@ fn fetch_title(
             return;
         };
         let _ = cx.update_window(handle, |_, window, cx| {
+            let Some(input) = input.live(cx) else {
+                return;
+            };
             input.update(cx, |state, cx| {
                 let current = state.value().to_string();
-                if let Some(at) = anchor.locate_text(&current, &url) {
+                // Only the URL as pasted: one the user extended stays as typed.
+                let at = anchor
+                    .locate_text(&current, &url)
+                    .filter(|at| title::url_ends_before(&current[at + url.len()..]));
+                if let Some(at) = at {
                     let link = title::markdown_link(&title, &url);
                     state.replace_source_range(at..at + url.len(), &link, window, cx);
                 }
@@ -375,9 +433,10 @@ fn fetch_title(
 /// Insert finished text where the paste was; at the caret, with a toast,
 /// when that place can no longer be found. `markdown`: converted Markdown,
 /// fitted like a paste of it (blank lines around a block). The region of the
-/// inserted text, if it went in.
+/// inserted text, if it went in; `None` when the note is no longer being
+/// edited (or its editor is read-only), and the caller says so.
 fn insert_at_anchor(
-    input: &Entity<EditorState>,
+    target: &Target,
     anchor: &Anchor,
     text: &str,
     block: bool,
@@ -385,12 +444,19 @@ fn insert_at_anchor(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Region> {
+    let Some(input) = target.live(cx) else {
+        eprintln!("Paste: background result not inserted (the note is no longer being edited)");
+        return None;
+    };
     let (moved, region) = input.update(cx, |state, cx| {
         let current = state.value().to_string();
         let (at, moved) = match anchor.locate(&current) {
             Some(at) => (at, false),
             None => (state.cursor(), true),
         };
+        // Typed at the paste position meanwhile: on its own line, not glued
+        // to the typed text (`![[clip.mov]]# Trip`).
+        let block = block || (!moved && anchor.typed_at(&current, at));
         let fitted = if markdown {
             crate::note_paste::context::fit_markdown(text, block, &current, at..at)
         } else {
@@ -417,7 +483,7 @@ fn insert_at_anchor(
 /// `data:`/`file://` images saved) in the background, then inserted at the
 /// paste position; its remote images are downloaded after that.
 fn convert_in_background(
-    input: Entity<EditorState>,
+    input: Target,
     job: RichJob,
     anchor: Anchor,
     window: &mut Window,
@@ -433,6 +499,7 @@ fn convert_in_background(
         cx,
     );
     let folder = attachments::attachment_folder(&job.vault_root, &job.note_rel);
+    let vault_root = job.vault_root.clone();
     let stamp = job.stamp.clone();
     let html_bytes = job.html.len();
     let started = std::time::Instant::now();
@@ -466,13 +533,28 @@ fn convert_in_background(
                 window,
                 cx,
             );
+            let Some(region) = region else {
+                // Not inserted: its saved images would be linked from nowhere.
+                for file in &done.files {
+                    let _ = std::fs::remove_file(file);
+                }
+                note_closed("", window, cx);
+                return;
+            };
             if done.failed > 0 {
                 reader_toast::transient(router::failed_images_text(done.failed), window, cx);
             }
-            if let Some(region) = region {
-                if !done.remote.is_empty() {
-                    download_images(input, done.remote, region, folder, stamp, window, cx);
-                }
+            if !done.remote.is_empty() {
+                download_images(
+                    input,
+                    done.remote,
+                    region,
+                    folder,
+                    vault_root,
+                    stamp,
+                    window,
+                    cx,
+                );
             }
         });
     })
@@ -484,11 +566,13 @@ fn convert_in_background(
 /// inside the pasted text with the saved file's embed as it arrives. Text the
 /// user changed is left alone (the remote image stays), and so is a failed
 /// download; a file whose text is gone is removed again.
+#[allow(clippy::too_many_arguments)]
 fn download_images(
-    input: Entity<EditorState>,
+    input: Target,
     images: Vec<RemoteImage>,
     region: Region,
     folder: PathBuf,
+    vault_root: PathBuf,
     stamp: String,
     window: &mut Window,
     cx: &mut App,
@@ -514,21 +598,41 @@ fn download_images(
     );
     let images = Arc::new(images);
     let next = Arc::new(AtomicUsize::new(0));
-    let (sender, receiver) = async_channel::unbounded::<(usize, Result<String, DownloadError>)>();
+    // The vault's names before any download (every worker waits for this
+    // scan before its first download): a name also found elsewhere is
+    // linked by its path.
+    let existing = Arc::new(std::sync::OnceLock::new());
+    let folder_rel = folder
+        .strip_prefix(&vault_root)
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default();
+    let (sender, receiver) =
+        async_channel::unbounded::<(usize, Result<(String, String), DownloadError>)>();
     for _ in 0..total.min(download::PARALLEL) {
         let images = images.clone();
         let next = next.clone();
         let sender = sender.clone();
         let folder = folder.clone();
         let stamp = stamp.clone();
+        let existing = existing.clone();
+        let vault_root = vault_root.clone();
+        let folder_rel = folder_rel.clone();
         cx.background_executor()
             .spawn(async move {
+                let existing: &std::collections::HashSet<String> =
+                    existing.get_or_init(|| files::vault_names(&vault_root));
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(image) = images.get(index) else {
                         break;
                     };
-                    let result = download::save_remote_image(&image.url, &folder, &stamp);
+                    let result = download::save_remote_image(&image.url, &folder, &stamp)
+                        .map(|name| (files::link_target(&name, &folder_rel, existing), name));
                     if sender.send((index, result)).await.is_err() {
                         break;
                     }
@@ -545,8 +649,8 @@ fn download_images(
         while let Ok((index, result)) = receiver.recv().await {
             done.fetch_add(1, Ordering::Relaxed);
             let image = &images[index];
-            let name = match result {
-                Ok(name) => name,
+            let (target, name) = match result {
+                Ok(saved) => saved,
                 Err(error) => {
                     failed += 1;
                     eprintln!("Paste: image download failed ({error})");
@@ -554,14 +658,21 @@ fn download_images(
                 }
             };
             saved += 1;
-            let embed = files::wikilink(&name);
+            let embed = files::wikilink(&target);
             let hits = cx
                 .update_window(handle, |_, window, cx| {
+                    // The note closed: no editor to put the image in.
+                    let Some(input) = input.live(cx) else {
+                        return 0;
+                    };
                     input.update(cx, |state, cx| {
                         let before = state.value().to_string();
                         let hits = region.occurrences(&before, &image.placeholder);
                         for hit in hits.iter().rev() {
-                            state.replace_source_range(hit.clone(), &embed, window, cx);
+                            if !state.replace_source_range(hit.clone(), &embed, window, cx) {
+                                // Read-only: nothing was replaced.
+                                return 0;
+                            }
                         }
                         if !hits.is_empty() {
                             let after = state.value().to_string();

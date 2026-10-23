@@ -43,16 +43,28 @@ impl std::fmt::Display for DownloadError {
     }
 }
 
+/// One client for every download: its connections to a host are reused
+/// across the images of a paste (one TLS handshake per host, not per image).
+fn client() -> Option<&'static reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(TIMEOUT)
+                .connect_timeout(TIMEOUT)
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .user_agent(concat!("Okilum/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
 /// Download the image at `url` into `folder` and return the saved file name.
 pub fn save_remote_image(url: &str, folder: &Path, stamp: &str) -> Result<String, DownloadError> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(TIMEOUT)
-        .connect_timeout(TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(concat!("Okilum/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|_| DownloadError::Request)?;
-    let response = client
+    let response = client()
+        .ok_or(DownloadError::Request)?
         .get(url)
         .header(reqwest::header::ACCEPT, "image/*")
         .send()

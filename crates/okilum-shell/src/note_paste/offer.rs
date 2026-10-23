@@ -8,6 +8,16 @@ use std::path::PathBuf;
 
 /// Largest text a paste accepts (the editor's exact-read limit).
 pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// RTF larger than this is not parsed into rich text on the UI thread when
+/// a plain flavor comes with it (#1611): the plain flavor is the paste.
+pub const UI_RTF_BYTES: usize = 256 * 1024;
+
+/// Whether the board has a plain text flavor.
+pub fn has_plain_text(types: &[String]) -> bool {
+    types
+        .iter()
+        .any(|t| t == UTF8_TEXT || PLAIN_TEXT.contains(&t.as_str()))
+}
 /// Largest image a paste saves into the vault.
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Reads repeated when the clipboard changes while it is being read.
@@ -309,6 +319,26 @@ pub fn read_attachment(board: &(impl Pasteboard + ?Sized)) -> Option<ClipAttachm
         .collect();
     if !media.is_empty() {
         return Some(ClipAttachment::Files(media));
+    }
+    if !has_image_data(&types) {
+        return None;
+    }
+    // The router's step 2 rule: image data that comes with real text or rich
+    // HTML (Excel and Numbers add a picture of copied cells) is not the
+    // paste; the text is.
+    let text = plain_text(board, &types).ok().flatten();
+    if text
+        .as_deref()
+        .is_some_and(|text| !super::router::text_is_incidental(text))
+    {
+        return None;
+    }
+    let rich = html(board, &types).ok().flatten();
+    if rich
+        .as_deref()
+        .is_some_and(|html| !super::router::html_is_only_an_image(html))
+    {
+        return None;
     }
     image_data(board, &types)
         .ok()

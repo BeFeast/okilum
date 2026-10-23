@@ -110,6 +110,21 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Whether a URL that ends right before `rest` still ends there: `rest` is
+/// empty or starts with something that cannot continue a URL (#1611: a bare
+/// URL the user extended is not replaced by a link to the shorter one).
+pub fn url_ends_before(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    match chars.next() {
+        None => true,
+        // Sentence punctuation after a URL, not part of it.
+        Some('.' | ',' | ';' | ':' | '!' | '?') => chars
+            .next()
+            .is_none_or(|c| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\'')),
+        Some(c) => !(c.is_alphanumeric() || "/?#&=_%~+@-$*'".contains(c)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +187,16 @@ mod tests {
             selection_link("t", "https://x.org/a b"),
             "[t](<https://x.org/a b>)"
         );
+    }
+
+    #[test]
+    fn an_extended_url_does_not_end_at_the_old_one() {
+        assert!(url_ends_before(""));
+        assert!(url_ends_before(" and more"));
+        assert!(url_ends_before(". Next"));
+        assert!(url_ends_before(")"));
+        assert!(!url_ends_before("/docs"));
+        assert!(!url_ends_before("?q=1"));
+        assert!(!url_ends_before(".html"));
     }
 }

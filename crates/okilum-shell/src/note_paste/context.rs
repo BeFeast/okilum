@@ -8,24 +8,30 @@ use std::ops::Range;
 /// Whether `offset` is inside a fenced code block (``` or ~~~), on one of its
 /// content lines. The opening and closing fence lines are outside.
 pub fn in_fenced_code(source: &str, offset: usize) -> bool {
+    open_fence(source, offset).is_some()
+}
+
+/// The start of the opening fence line of the fenced code block `offset` is
+/// inside, if any.
+fn open_fence(source: &str, offset: usize) -> Option<usize> {
     let offset = offset.min(source.len());
-    let mut open: Option<(u8, usize)> = None;
+    let mut open: Option<(u8, usize, usize)> = None;
     let mut line_start = 0;
     for line in source.split_inclusive('\n') {
         let line_end = line_start + line.trim_end_matches(['\n', '\r']).len();
         let fence = fence_marker(line);
         if offset <= line_end {
             return match (open, fence) {
-                (Some((ch, len)), Some((fch, flen, rest_empty))) => {
-                    !(fch == ch && flen >= len && rest_empty)
+                (Some((ch, len, at)), Some((fch, flen, rest_empty))) => {
+                    (!(fch == ch && flen >= len && rest_empty)).then_some(at)
                 }
-                (Some(_), None) => true,
-                (None, _) => false,
+                (Some((_, _, at)), None) => Some(at),
+                (None, _) => None,
             };
         }
         match (open, fence) {
-            (None, Some((ch, len, _))) => open = Some((ch, len)),
-            (Some((ch, len)), Some((fch, flen, rest_empty)))
+            (None, Some((ch, len, _))) => open = Some((ch, len, line_start)),
+            (Some((ch, len, _)), Some((fch, flen, rest_empty)))
                 if fch == ch && flen >= len && rest_empty =>
             {
                 open = None
@@ -35,7 +41,38 @@ pub fn in_fenced_code(source: &str, offset: usize) -> bool {
         line_start += line.len();
     }
     // The caret after a final newline is on an empty last line.
-    open.is_some()
+    open.map(|(_, _, at)| at)
+}
+
+/// What every line of the fenced code block at `offset` starts with: its
+/// opening fence's quote markers and indentation (a fence in a blockquote, a
+/// callout or a list item). `None` outside a fence, for a fence with no
+/// such prefix, or when the caret's line does not carry it.
+pub fn code_block_prefix(source: &str, offset: usize) -> Option<String> {
+    let offset = offset.min(source.len());
+    let at = open_fence(source, offset)?;
+    let line = source[at..].lines().next().unwrap_or_default();
+    let prefix = &line[..line.find(['`', '~'])?];
+    let caret_line = &source[source[..offset].rfind('\n').map_or(0, |i| i + 1)..offset];
+    (!prefix.is_empty() && caret_line.starts_with(prefix)).then(|| prefix.to_string())
+}
+
+/// `text` with `prefix` in front of every line after the first (an empty
+/// line gets the prefix without trailing spaces). Nothing else changes.
+pub fn continue_lines(text: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+            if line.is_empty() || line == "\r" {
+                out.push_str(prefix.trim_end());
+            } else {
+                out.push_str(prefix);
+            }
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// A fence on this line: its character, run length and whether nothing but
@@ -212,7 +249,34 @@ pub fn fit_markdown(text: &str, block: bool, source: &str, selection: Range<usiz
         rest_of_line: source[end..line_end].trim_end_matches('\r'),
         in_code_block: false,
     };
-    okilum_paste::adapt_to_context(text, block, &context)
+    let fitted = okilum_paste::adapt_to_context(text, block, &context);
+    // At the start of the line right under a paragraph line: a blank line
+    // first, or a table (a heading, a list) joins that paragraph.
+    if block && line_start == start && line_start > 0 && !fitted.starts_with('\n') {
+        let previous = source[..line_start - 1]
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('\r');
+        if is_paragraph_line(previous) {
+            return format!("\n{fitted}");
+        }
+    }
+    fitted
+}
+
+/// A line of paragraph text: not blank, not a list item, quote, heading,
+/// table row, fence or indented code.
+fn is_paragraph_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || line.len() - trimmed.len() >= 4 {
+        return false;
+    }
+    let (_, markers) = line_prefix(line);
+    markers == line.len() - trimmed.len()
+        && !trimmed.starts_with(['#', '>', '|', '`', '~'])
+        && !trimmed.starts_with("---")
+        && !trimmed.starts_with("***")
 }
 
 fn floor_boundary(text: &str, mut at: usize) -> usize {
@@ -297,5 +361,31 @@ mod tests {
         // A selection is replaced; the rest of the line moves down.
         let source = "keep REPLACE tail";
         assert_eq!(fit("```\nx\n```", true, source, 5..12), "\n```\nx\n```\n");
+    }
+
+    #[test]
+    fn code_block_prefix_comes_from_the_fence_container() {
+        let (source, at) = caret("> [!note]\n> ```\n> |\n> ```\n");
+        assert_eq!(code_block_prefix(&source, at).as_deref(), Some("> "));
+        assert_eq!(continue_lines("a\n\nc", "> "), "a\n>\n> c");
+        let (source, at) = caret("- item\n  ```\n  co|de\n  ```\n");
+        assert_eq!(code_block_prefix(&source, at).as_deref(), Some("  "));
+        let (source, at) = caret("```\n    co|de\n```\n");
+        assert_eq!(code_block_prefix(&source, at), None);
+        let (source, at) = caret("text |here");
+        assert_eq!(code_block_prefix(&source, at), None);
+    }
+
+    #[test]
+    fn a_block_under_a_paragraph_line_gets_a_blank_line() {
+        let (source, at) = caret("Results:\n|");
+        assert_eq!(
+            fit_markdown("| a | b |\n| --- | --- |", true, &source, at..at),
+            "\n| a | b |\n| --- | --- |"
+        );
+        let (source, at) = caret("Results:\n\n|");
+        assert!(!fit_markdown("| a |", true, &source, at..at).starts_with('\n'));
+        let (source, at) = caret("- item\n|");
+        assert!(!fit_markdown("| a |", true, &source, at..at).starts_with('\n'));
     }
 }

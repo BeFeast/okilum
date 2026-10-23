@@ -173,6 +173,12 @@ impl Pasteboard for MacBoard<'_> {
         if data.length() > offer::MAX_TEXT_BYTES * 4 {
             return None;
         }
+        // Parsing large RTF and walking its runs costs the UI thread tens to
+        // hundreds of ms (Terminal output, long documents): the plain flavor
+        // pastes instead when there is one.
+        if data.length() > offer::UI_RTF_BYTES && offer::has_plain_text(&types) {
+            return None;
+        }
         // SAFETY: no document-attributes dictionary is requested.
         let text = unsafe {
             if rtfd {
@@ -245,7 +251,8 @@ fn attributed_runs(text: &NSAttributedString) -> Vec<Run> {
                 Some(ListLevel { ordered, depth })
             });
         runs.push(Run {
-            text: String::from_utf16_lossy(&units[index..end]),
+            // U+FFFC stands for an RTFD attachment, which is not pasted.
+            text: String::from_utf16_lossy(&units[index..end]).replace('\u{fffc}', ""),
             bold: has(NSFontDescriptorSymbolicTraits::TraitBold),
             italic: has(NSFontDescriptorSymbolicTraits::TraitItalic),
             mono,

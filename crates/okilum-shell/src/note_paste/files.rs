@@ -22,6 +22,15 @@ const CHUNK: usize = 1024 * 1024;
 
 const AUDIO_EXTENSIONS: [&str; 8] = ["mp3", "wav", "m4a", "ogg", "flac", "aac", "webm", "3gp"];
 const EMBED_EXTENSIONS: [&str; 1] = ["pdf"];
+/// Video Obsidian embeds that the Feedback window's video slot does not take.
+const MORE_VIDEO_EXTENSIONS: [&str; 2] = ["mkv", "ogv"];
+/// Longest file name in bytes (APFS and ext4 allow 255), leaving room for a
+/// `-999` suffix.
+const MAX_NAME_BYTES: usize = 240;
+/// Vault entries a name scan looks at before giving up (#1611).
+const MAX_SCAN_ENTRIES: usize = 500_000;
+/// A hidden temporary copy older than this was left by an interrupted copy.
+const STALE_TEMPORARY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// What one pasted file becomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +55,11 @@ pub struct FilePlan {
     pub items: Vec<FileItem>,
     /// The attachment folder copies go to.
     pub folder: PathBuf,
+    /// The vault, for the name scan that keeps a copy's link unambiguous.
+    pub vault_root: PathBuf,
+    /// The attachment folder relative to the vault, `/`-separated (`""`: the
+    /// vault root).
+    pub folder_rel: String,
     /// Folders on the clipboard: never pasted.
     pub folders: usize,
     /// Files that were gone by the time of the paste.
@@ -98,10 +112,6 @@ pub fn plan(
 ) -> FilePlan {
     let folder = attachments::attachment_folder(vault_root, note_rel);
     let vault = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
-    let note_dir = Path::new(note_rel)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
     let folder_rel = folder
         .strip_prefix(vault_root)
         .map(Path::to_path_buf)
@@ -109,6 +119,8 @@ pub fn plan(
     let mut plan = FilePlan {
         items: Vec::new(),
         folder,
+        vault_root: vault_root.to_path_buf(),
+        folder_rel: slash_path(&folder_rel),
         folders: 0,
         missing: 0,
         copy_bytes: 0,
@@ -127,7 +139,7 @@ pub fn plan(
         let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
         if let Ok(rel) = real.strip_prefix(&vault) {
             if !hidden(rel) {
-                let text = vault_link(rel, &folder_rel, &note_dir);
+                let text = vault_link(rel);
                 plan.items.push(FileItem {
                     source: path.clone(),
                     size,
@@ -196,7 +208,9 @@ pub fn sanitize_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| match c {
-            '/' | '\\' | ':' | '\0' => '-',
+            // `[ ] # ^ |` are wikilink syntax: `![[a #1.pdf]]` would name a
+            // heading, not the file.
+            '/' | '\\' | ':' | '\0' | '[' | ']' | '#' | '^' | '|' => '-',
             c if c.is_control() => ' ',
             c => c,
         })
@@ -207,14 +221,20 @@ pub fn sanitize_name(name: &str) -> String {
     } else {
         cleaned
     };
-    if cleaned.chars().count() <= 120 {
+    if cleaned.chars().count() <= 120 && cleaned.len() <= MAX_NAME_BYTES {
         return cleaned;
     }
     let (stem, extension) = split_name(&cleaned);
     let keep = 120usize
         .saturating_sub(extension.chars().count() + 1)
         .max(1);
-    let stem: String = stem.chars().take(keep).collect();
+    // Characters, then bytes: 120 CJK characters are 360 bytes.
+    let byte_budget = MAX_NAME_BYTES.saturating_sub(extension.len() + 1).max(4);
+    let mut stem: String = stem.chars().take(keep).collect();
+    while stem.len() > byte_budget {
+        stem.pop();
+    }
+    let stem = stem.trim_end().to_string();
     if extension.is_empty() {
         stem
     } else {
@@ -250,6 +270,7 @@ pub fn embeds_inline(name: &str) -> bool {
     };
     is_image_extension(&extension)
         || VIDEO_EXTENSIONS.contains(&extension.as_str())
+        || MORE_VIDEO_EXTENSIONS.contains(&extension.as_str())
         || AUDIO_EXTENSIONS.contains(&extension.as_str())
         || EMBED_EXTENSIONS.contains(&extension.as_str())
 }
@@ -270,25 +291,101 @@ pub fn wikilink(target: &str) -> String {
     }
 }
 
-/// The link to a vault file: its name when it sits in the attachment folder,
-/// the vault root or the note's folder (Obsidian resolves those by name),
-/// otherwise its vault-relative path, which is never ambiguous.
-fn vault_link(rel: &Path, attachment_rel: &Path, note_dir: &Path) -> String {
-    let parent = rel.parent().unwrap_or(Path::new(""));
+/// The link to a vault file by its vault-relative path, which is never
+/// ambiguous (#1611: a name alone can resolve to another file of that name
+/// elsewhere in the vault). A path holding wikilink syntax (`[ ] # ^ |`) is a
+/// Markdown link instead, percent-encoded.
+fn vault_link(rel: &Path) -> String {
+    let target = slash_path(rel);
+    if !has_link_syntax(&target) {
+        return wikilink(&target);
+    }
     let name = rel
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|n| n.to_string_lossy().replace(['[', ']'], ""))
         .unwrap_or_default();
-    let by_name = parent == attachment_rel || parent.as_os_str().is_empty() || parent == note_dir;
-    let target = if by_name {
-        name
+    let encoded: String = target
+        .chars()
+        .map(|c| match c {
+            ' ' => "%20".to_string(),
+            '#' => "%23".to_string(),
+            '%' => "%25".to_string(),
+            '^' => "%5E".to_string(),
+            '|' => "%7C".to_string(),
+            '[' => "%5B".to_string(),
+            ']' => "%5D".to_string(),
+            '(' => "%28".to_string(),
+            ')' => "%29".to_string(),
+            '<' => "%3C".to_string(),
+            '>' => "%3E".to_string(),
+            c => c.to_string(),
+        })
+        .collect();
+    if embeds_inline(&target) {
+        format!("![{name}]({encoded})")
     } else {
-        rel.components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/")
-    };
-    wikilink(&target)
+        format!("[{name}]({encoded})")
+    }
+}
+
+/// Characters a wikilink target cannot hold.
+fn has_link_syntax(target: &str) -> bool {
+    target.contains(['[', ']', '#', '^', '|'])
+}
+
+/// A relative path with `/` separators.
+fn slash_path(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Every file name in the vault, lowercased (dot folders skipped), taken
+/// before files are added to it (#1611). Blocking: background only.
+pub fn vault_names(vault_root: &Path) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    let mut folders = vec![vault_root.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > MAX_SCAN_ENTRIES {
+                return names;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                Ok(_) => {
+                    names.insert(name.to_lowercase());
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    names
+}
+
+/// The link target for `name`, just placed in the attachment folder
+/// `folder_rel`: the name alone, or the vault-relative path when the vault
+/// already had a file of that name elsewhere (`existing`: from
+/// [`vault_names`] taken before the file was added).
+pub fn link_target(
+    name: &str,
+    folder_rel: &str,
+    existing: &std::collections::HashSet<String>,
+) -> String {
+    if folder_rel.is_empty() || !existing.contains(&name.to_lowercase()) {
+        name.to_string()
+    } else {
+        format!("{folder_rel}/{name}")
+    }
 }
 
 /// A Markdown link to a file left outside the vault ("Link to original
@@ -307,7 +404,7 @@ pub fn original_link(path: &Path) -> String {
 }
 
 /// The links for a finished plan, in clipboard order: `copied` holds the
-/// final names of the copies, in order.
+/// link targets of the copies (see [`link_target`]), in order.
 pub fn links(plan: &FilePlan, copied: &[Option<String>]) -> Vec<String> {
     let mut copies = copied.iter();
     plan.items
@@ -352,6 +449,7 @@ pub fn copy_into(
     progress: &mut dyn FnMut(u64),
 ) -> Result<String, CopyError> {
     std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
+    remove_stale_temporaries(folder);
     let temporary = folder.join(format!(".okilum-paste-{}.tmp", uuid::Uuid::new_v4()));
     let result = copy_to_temporary(source, folder, &temporary, progress)
         .and_then(|()| place(&temporary, folder, wanted));
@@ -381,6 +479,41 @@ pub fn write_into(folder: &Path, wanted: &str, bytes: &[u8]) -> Result<String, C
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// Remove hidden temporary copies an interrupted copy (Quit, a crash) left
+/// in `folder`; once per folder per run, only ones older than
+/// [`STALE_TEMPORARY`] so a copy in progress is never touched.
+fn remove_stale_temporaries(folder: &Path) {
+    static SWEPT: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    {
+        let Ok(mut swept) = SWEPT.lock() else {
+            return;
+        };
+        if swept.iter().any(|done| done == folder) {
+            return;
+        }
+        swept.push(folder.to_path_buf());
+    }
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with(".okilum-paste-") && name.ends_with(".tmp")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > STALE_TEMPORARY);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn copy_to_temporary(
@@ -570,10 +703,10 @@ mod tests {
         assert_eq!(
             texts,
             [
-                "![[shot.png]]",
+                "![[attachments/shot.png]]",
                 "![[Projects/spec.pdf]]",
                 "[[Projects/Plan]]",
-                "[[here.zip]]"
+                "[[Notes/here.zip]]"
             ]
         );
         assert!(!plan.ask, "nothing is copied, nothing to confirm");
@@ -697,6 +830,14 @@ mod tests {
         assert_eq!(sanitize_name(".hidden"), "hidden");
         assert_eq!(sanitize_name("a/b:c"), "a-b-c");
         assert_eq!(sanitize_name("  "), "Pasted file");
+        assert_eq!(
+            sanitize_name("Invoice #42 [v2] a|b^c.pdf"),
+            "Invoice -42 -v2- a-b-c.pdf"
+        );
+        let cjk = format!("{}.png", "画".repeat(110));
+        let cut = sanitize_name(&cjk);
+        assert!(cut.len() <= MAX_NAME_BYTES, "{}", cut.len());
+        assert!(cut.ends_with(".png"));
         let long = format!("{}.png", "x".repeat(200));
         let cut = sanitize_name(&long);
         assert_eq!(cut.chars().count(), 120);
@@ -715,10 +856,38 @@ mod tests {
         assert_eq!(wikilink("data.csv"), "[[data.csv]]");
         assert_eq!(wikilink("Note.md"), "[[Note]]");
         assert_eq!(wikilink("Makefile"), "[[Makefile]]");
+        assert_eq!(wikilink("clip.mkv"), "![[clip.mkv]]");
         let link = original_link(Path::new("/Volumes/Big Disk/movie [cut].mov"));
         assert_eq!(
             link,
             "![movie cut.mov](<file:///Volumes/Big%20Disk/movie%20[cut].mov>)"
         );
+    }
+
+    #[test]
+    fn vault_files_with_link_syntax_get_markdown_links() {
+        assert_eq!(
+            vault_link(Path::new("Docs/Invoice #42.pdf")),
+            "![Invoice #42.pdf](Docs/Invoice%20%2342.pdf)"
+        );
+        assert_eq!(vault_link(Path::new("a|b.zip")), "[a|b.zip](a%7Cb.zip)");
+    }
+
+    #[test]
+    fn a_name_taken_elsewhere_in_the_vault_is_linked_by_path() {
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        write(&root.join("Projects/README.md"), b"x");
+        write(&root.join(".obsidian/logo.png"), b"x");
+        let names = vault_names(root);
+        assert!(names.contains("readme.md"));
+        assert!(!names.contains("logo.png"));
+        assert_eq!(
+            link_target("README.md", "attachments", &names),
+            "attachments/README.md"
+        );
+        assert_eq!(wikilink("attachments/README.md"), "[[attachments/README]]");
+        assert_eq!(link_target("logo.png", "attachments", &names), "logo.png");
+        assert_eq!(link_target("README.md", "", &names), "README.md");
     }
 }

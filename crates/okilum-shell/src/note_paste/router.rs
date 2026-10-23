@@ -24,7 +24,7 @@
 
 use super::anchor::{Anchor, Region};
 use super::attachments;
-use super::context::{fit, fit_markdown, in_fenced_code};
+use super::context::{code_block_prefix, continue_lines, fit, fit_markdown, in_fenced_code};
 use super::download;
 use super::files::{self, FilePlan};
 use super::offer::{
@@ -43,6 +43,8 @@ const ATTEMPTS: usize = 3;
 const BACKGROUND_TIFF_BYTES: usize = 4 * 1024 * 1024;
 /// HTML larger than this is converted off the UI thread.
 const BACKGROUND_HTML_BYTES: usize = 512 * 1024;
+/// Tab-separated text larger than this is tried as a table off the UI thread.
+const BACKGROUND_TSV_BYTES: usize = 256 * 1024;
 /// A `file://` image in pasted HTML larger than this is left out.
 const MAX_LOCAL_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
@@ -129,6 +131,8 @@ pub enum FollowUp {
         images: Vec<RemoteImage>,
         region: Region,
         folder: PathBuf,
+        /// The vault, for links that stay unambiguous.
+        vault_root: PathBuf,
         stamp: String,
     },
     /// Convert HTML too large for the UI thread, then insert it at `anchor`
@@ -147,6 +151,7 @@ pub struct RemoteImage {
 /// Rich text converted in the background.
 #[derive(Debug)]
 pub struct RichJob {
+    /// Empty: only the plain flavor, tried as a TSV table.
     pub html: String,
     pub base_url: Option<String>,
     /// The plain flavor, for HTML without formatting.
@@ -211,7 +216,7 @@ pub fn route(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offer
         let before = board.change_count();
         let routed = route_once(board, cx);
         if board.change_count() == before {
-            return routed.map(|routed| finish(routed, cx));
+            return routed.map(|routed| clear_selection(finish(routed, cx), cx));
         }
     }
     Err(OfferError::Changed)
@@ -246,6 +251,28 @@ fn finish(mut routed: Routed, cx: &RouteContext) -> Routed {
     }
 }
 
+/// A follow-up that inserts later still replaces the selection: the
+/// selection goes now (an empty insert, one undo step) and the result goes
+/// where it was.
+fn clear_selection(mut routed: Routed, cx: &RouteContext) -> Routed {
+    let sel = selection(cx);
+    if sel.is_empty() || routed.insert.is_some() {
+        return routed;
+    }
+    let anchor = match &mut routed.follow_up {
+        Some(
+            FollowUp::Files { anchor, .. }
+            | FollowUp::Image { anchor, .. }
+            | FollowUp::Rich { anchor, .. },
+        ) => anchor,
+        _ => return routed,
+    };
+    let after = format!("{}{}", &cx.source[..sel.start], &cx.source[sel.end..]);
+    *anchor = Anchor::at(&after, sel.start);
+    routed.insert = Some(String::new());
+    routed
+}
+
 fn selection(cx: &RouteContext) -> Range<usize> {
     let len = cx.source.len();
     let start = cx.selection.start.min(cx.selection.end).min(len);
@@ -271,9 +298,15 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
     let sel = selection(cx);
     let fitted = |text: &str, block: bool| fit(text, block, cx.source, sel.clone());
 
-    // 0. Inside a fenced code block: the plain flavor, untouched.
+    // 0. Inside a fenced code block: the plain flavor, untouched, except
+    //    that a fence inside a blockquote, callout or list item continues its
+    //    `> ` markers or indentation on every pasted line.
     if in_fenced_code(cx.source, sel.start) {
         if let Some(text) = offer::plain_text(board, &types)? {
+            let text = match code_block_prefix(cx.source, sel.start) {
+                Some(prefix) if text.contains('\n') => continue_lines(&text, &prefix),
+                _ => text,
+            };
             return Ok(Routed::text(Route::CodeBlockText, &types, text));
         }
     }
@@ -346,8 +379,29 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
         }
     }
 
+    // Work too large for the UI thread: converted, its images saved, then
+    // inserted at the paste position.
+    let background = |html: String, base_url: Option<String>, plain: Option<String>| {
+        let mut routed = Routed::new(Route::RichText, &types);
+        routed.bytes = html.len().max(plain.as_ref().map_or(0, String::len));
+        routed.detail = "background=true".into();
+        routed.follow_up = Some(FollowUp::Rich {
+            job: RichJob {
+                html,
+                base_url,
+                plain,
+                vault_root: cx.vault_root.to_path_buf(),
+                note_rel: note_rel.to_string(),
+                stamp: cx.stamp.to_string(),
+            },
+            anchor: Anchor::at(cx.source, sel.start),
+        });
+        routed
+    };
+
     // 3 (rich text) and 5. HTML, or RTF/RTFD as HTML: code when it is all
     // monospace, otherwise Markdown.
+    let mut from_rtf = false;
     let html = if skip_rich {
         None
     } else {
@@ -355,33 +409,27 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
             Some(html) => Some(html),
             None => match offer::html(board, &types)? {
                 Some(html) => Some(html),
-                None if RTF.iter().chain(RTFD.iter()).any(|kind| has(kind)) => board.rich_html(),
+                None if RTF.iter().chain(RTFD.iter()).any(|kind| has(kind)) => {
+                    from_rtf = true;
+                    board.rich_html()
+                }
                 None => None,
             },
         }
     };
-    if let Some(html) = html.filter(|html| !html.trim().is_empty()) {
+    // RTF has no tables (Numbers): a TSV plain flavor is the table (step 6).
+    let rtf_table = from_rtf
+        && plain.as_deref().is_some_and(|text| {
+            text.len() <= BACKGROUND_TSV_BYTES && okilum_paste::tsv_to_table(text).is_some()
+        });
+    if let Some(html) = html.filter(|html| !rtf_table && !html.trim().is_empty()) {
         let base_url = if has(CHROMIUM_SOURCE_URL) {
             board.source_url()
         } else {
             None
         };
         if html.len() > BACKGROUND_HTML_BYTES {
-            let mut routed = Routed::new(Route::RichText, &types);
-            routed.bytes = html.len();
-            routed.detail = "background=true".into();
-            routed.follow_up = Some(FollowUp::Rich {
-                job: RichJob {
-                    html,
-                    base_url,
-                    plain: plain.clone(),
-                    vault_root: cx.vault_root.to_path_buf(),
-                    note_rel: note_rel.to_string(),
-                    stamp: cx.stamp.to_string(),
-                },
-                anchor: Anchor::at(cx.source, sel.start),
-            });
-            return Ok(routed);
+            return Ok(background(html, base_url, plain.clone()));
         }
         let started = Instant::now();
         let converted = okilum_paste::html_to_markdown(&HtmlInput {
@@ -389,6 +437,15 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
             base_url: base_url.as_deref(),
         });
         let convert_ms = started.elapsed().as_secs_f64() * 1000.0;
+        // `data:` and `file://` images are read and saved off the UI thread,
+        // and only for the read that is kept.
+        let local_images = converted
+            .assets
+            .iter()
+            .any(|asset| !matches!(asset.source, AssetSource::Remote(_)));
+        if local_images {
+            return Ok(background(html, base_url, plain.clone()));
+        }
         if let Some(rich) = rich_text(
             converted,
             plain.as_deref(),
@@ -408,7 +465,11 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
     }
 
     if let Some(text) = plain {
-        // 6. A TSV grid: a table.
+        // 6. A TSV grid: a table (a large one is tried off the UI thread).
+        let tabbed = text.lines().next().is_some_and(|line| line.contains('\t'));
+        if tabbed && text.len() > BACKGROUND_TSV_BYTES {
+            return Ok(background(String::new(), None, Some(text)));
+        }
         if let Some(table) = okilum_paste::tsv_to_table(&text) {
             let table = fit_markdown(&table, true, cx.source, sel.clone());
             return Ok(Routed::text(Route::Table, &types, table));
@@ -461,7 +522,7 @@ fn file_paste(paths: &[PathBuf], note_rel: &str, types: &[String], cx: &RouteCon
     routed
 }
 
-/// Cmd+Shift+V: the plain flavor, rich text as plain, or file paths.
+/// Paste as Plain Text (Option+Shift+Cmd+V): the plain flavor, rich text as plain, or file paths.
 fn plain_command(board: &impl Pasteboard, types: &[String]) -> Result<Routed, OfferError> {
     let paths = offer::file_paths(board, types);
     if !paths.is_empty() {
@@ -577,14 +638,24 @@ pub fn lf(text: &str) -> String {
 
 /// An HTML flavor that only wraps one image (a browser's Copy Image): the
 /// image data is the paste, no network needed.
-fn html_is_only_an_image(html: &str) -> bool {
-    let images = html.to_ascii_lowercase().matches("<img").count();
-    images <= 1 && offer::html_to_text(html).trim().is_empty()
+pub(crate) fn html_is_only_an_image(html: &str) -> bool {
+    let images = html
+        .as_bytes()
+        .windows(4)
+        .filter(|w| w.eq_ignore_ascii_case(b"<img"))
+        .take(2)
+        .count();
+    // Large HTML without an image is a page or a sheet, never just a picture;
+    // it is not converted to text here on the UI thread.
+    if images > 1 || (images == 0 && html.len() > 64 * 1024) {
+        return false;
+    }
+    offer::html_to_text(html).trim().is_empty()
 }
 
 /// Text that comes along with image data without being the content: none,
 /// whitespace, or one URL or path (Safari's Copy Image, a screenshot tool).
-fn text_is_incidental(text: &str) -> bool {
+pub(crate) fn text_is_incidental(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return true;
@@ -637,6 +708,8 @@ pub struct RichText {
     pub saved: usize,
     /// Images that could not be saved; their alt text was kept.
     pub failed: usize,
+    /// The files saved, removed again if the text is never inserted.
+    pub files: Vec<PathBuf>,
 }
 
 /// Steps 3 and 5 for converted HTML (or RTF as HTML). `None`: the plain
@@ -656,6 +729,12 @@ pub fn rich_text(
     stamp: &str,
 ) -> Option<RichText> {
     let plain = plain.filter(|text| !text.trim().is_empty());
+    // One line of code (a JetBrains `<pre>`, a page's one-command block):
+    // the plain flavor, never a fence in the middle of a sentence.
+    let one_line = plain.is_some_and(|text| !lf(text).trim_end_matches('\n').contains('\n'));
+    if (converted.monospace || converted.code_language.is_some()) && one_line {
+        return None;
+    }
     if converted.monospace {
         if let Some(language) = converted.code_language.as_deref() {
             let markdown = match plain {
@@ -675,10 +754,6 @@ pub fn rich_text(
                 block: true,
                 ..RichText::default()
             });
-        }
-        let one_line = plain.is_some_and(|text| !lf(text).trim_end_matches('\n').contains('\n'));
-        if one_line {
-            return None;
         }
     }
     if converted.plain && plain.is_some() {
@@ -725,10 +800,11 @@ pub fn rich_text(
 
 impl RichText {
     /// The text for one saved (or failed) image.
-    fn account(&mut self, saved: Option<String>, alt: &str) -> String {
+    fn account(&mut self, saved: Option<(String, PathBuf)>, alt: &str) -> String {
         match saved {
-            Some(embed) => {
+            Some((embed, path)) => {
                 self.saved += 1;
+                self.files.push(path);
                 embed
             }
             None => {
@@ -764,14 +840,14 @@ fn kind_of_mime(mime: &str) -> Option<ImageKind> {
     })
 }
 
-/// Save a `data:` image as a pasted image; its embed.
+/// Save a `data:` image as a pasted image; its embed and path.
 fn save_data_image(
     mime: &str,
     bytes: Vec<u8>,
     vault_root: &Path,
     note_rel: &str,
     stamp: &str,
-) -> Option<String> {
+) -> Option<(String, PathBuf)> {
     if bytes.is_empty() {
         return None;
     }
@@ -780,7 +856,7 @@ fn save_data_image(
         let name = attachments::pasted_name(stamp, 0, "svg");
         return files::write_into(&folder, &name, &bytes)
             .ok()
-            .map(|name| files::wikilink(&name));
+            .map(|name| (files::wikilink(&name), folder.join(name)));
     }
     let kind = attachments::sniff_image(&bytes[..bytes.len().min(16)]).or(kind_of_mime(mime))?;
     let image = PastedImage {
@@ -789,7 +865,7 @@ fn save_data_image(
         source: None,
     };
     match attachments::save_pasted_image(vault_root, note_rel, &image, stamp) {
-        Ok(saved) => Some(saved.embed),
+        Ok(saved) => Some((saved.embed, saved.path)),
         Err(error) => {
             eprintln!("Paste: a data image was not saved ({error:?})");
             None
@@ -799,7 +875,12 @@ fn save_data_image(
 
 /// Save a `file://` image of pasted HTML (Word's `msohtmlclip` files): a
 /// temporary file is named like a pasted image, any other keeps its name.
-fn save_local_image(path: &Path, vault_root: &Path, note_rel: &str, stamp: &str) -> Option<String> {
+fn save_local_image(
+    path: &Path,
+    vault_root: &Path,
+    note_rel: &str,
+    stamp: &str,
+) -> Option<(String, PathBuf)> {
     let metadata = std::fs::metadata(path).ok()?;
     if !metadata.is_file() || metadata.len() > MAX_LOCAL_IMAGE_BYTES {
         return None;
@@ -821,7 +902,7 @@ fn save_local_image(path: &Path, vault_root: &Path, note_rel: &str, stamp: &str)
             };
             attachments::save_pasted_image(vault_root, note_rel, &image, stamp)
                 .ok()
-                .map(|saved| saved.embed)
+                .map(|saved| (saved.embed, saved.path))
         }
         _ => {
             let is_image = kind.is_some()
@@ -838,7 +919,7 @@ fn save_local_image(path: &Path, vault_root: &Path, note_rel: &str, stamp: &str)
             let folder = attachments::attachment_folder(vault_root, note_rel);
             files::write_into(&folder, &name, &bytes)
                 .ok()
-                .map(|name| files::wikilink(&name))
+                .map(|name| (files::wikilink(&name), folder.join(name)))
         }
     }
 }
@@ -878,6 +959,7 @@ fn rich_routed(
             region: Region::at(&after, sel.start, inserted.len()),
             images: rich.remote,
             folder: attachments::attachment_folder(cx.vault_root, note_rel),
+            vault_root: cx.vault_root.to_path_buf(),
             stamp: cx.stamp.to_string(),
         });
     }
@@ -894,6 +976,8 @@ pub struct RichJobDone {
     pub remote: Vec<RemoteImage>,
     pub saved: usize,
     pub failed: usize,
+    /// The images saved, removed again if the text is never inserted.
+    pub files: Vec<PathBuf>,
     pub convert_ms: f64,
 }
 
@@ -901,18 +985,22 @@ pub struct RichJobDone {
 /// with its `data:` and `file://` images saved.
 pub fn run_rich_job(job: RichJob) -> RichJobDone {
     let started = Instant::now();
-    let converted = okilum_paste::html_to_markdown(&HtmlInput {
-        html: &job.html,
-        base_url: job.base_url.as_deref(),
-    });
+    let rich = if job.html.is_empty() {
+        None
+    } else {
+        let converted = okilum_paste::html_to_markdown(&HtmlInput {
+            html: &job.html,
+            base_url: job.base_url.as_deref(),
+        });
+        rich_text(
+            converted,
+            job.plain.as_deref(),
+            &job.vault_root,
+            &job.note_rel,
+            &job.stamp,
+        )
+    };
     let convert_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let rich = rich_text(
-        converted,
-        job.plain.as_deref(),
-        &job.vault_root,
-        &job.note_rel,
-        &job.stamp,
-    );
     if let Some(rich) = rich {
         return RichJobDone {
             text: rich.markdown,
@@ -921,6 +1009,7 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
             remote: rich.remote,
             saved: rich.saved,
             failed: rich.failed,
+            files: rich.files,
             convert_ms,
         };
     }
@@ -1024,6 +1113,10 @@ mod tests {
         route(board, &note.cx(Mode::Smart, source, at..at)).unwrap()
     }
 
+    fn smart_selection(board: &Board, note: &Note, source: &str, sel: Range<usize>) -> Routed {
+        route(board, &note.cx(Mode::Smart, source, sel)).unwrap()
+    }
+
     #[test]
     fn plain_text_is_inserted_with_lf() {
         let note = Note::new();
@@ -1091,7 +1184,10 @@ mod tests {
             root.join("attachments/b.zip"),
         ];
         let routed = smart(&board, &note, "- ", 2);
-        assert_eq!(routed.insert.as_deref(), Some("![[a.png]]\n  [[b.zip]]"));
+        assert_eq!(
+            routed.insert.as_deref(),
+            Some("![[attachments/a.png]]\n  [[attachments/b.zip]]")
+        );
         assert!(routed.follow_up.is_none());
     }
 
@@ -1423,16 +1519,72 @@ mod tests {
         ]);
         let routed = smart(&board, &note, "", 0);
         assert_eq!(routed.route, Route::RichText);
-        assert_eq!(
-            routed.insert.as_deref(),
-            Some("One ![[Pasted image 20261023120000.png]] two")
-        );
-        assert!(note
+        // Nothing is saved on the UI thread (or for a read that is retried).
+        assert_eq!(routed.insert, None);
+        let image = note
             .vault
             .path()
-            .join("attachments/Pasted image 20261023120000.png")
-            .is_file());
-        assert!(routed.follow_up.is_none());
+            .join("attachments/Pasted image 20261023120000.png");
+        assert!(!image.exists());
+        let Some(FollowUp::Rich { job, .. }) = routed.follow_up else {
+            panic!("no background job");
+        };
+        let done = run_rich_job(job);
+        assert_eq!(done.text, "One ![[Pasted image 20261023120000.png]] two");
+        assert_eq!(done.files, std::slice::from_ref(&image));
+        assert!(image.is_file());
+    }
+
+    #[test]
+    fn a_one_line_pre_is_plain_text() {
+        let note = Note::new();
+        let board = Board::with(&[
+            (
+                "public.html",
+                b"<pre style=\"font-family:'JetBrains Mono'\">println(\"hi\")</pre>",
+            ),
+            (offer::UTF8_TEXT, b"println(\"hi\")"),
+        ]);
+        let routed = smart(&board, &note, "say ", 4);
+        assert_eq!(routed.route, Route::Text);
+        assert_eq!(routed.insert.as_deref(), Some("println(\"hi\")"));
+    }
+
+    #[test]
+    fn a_follow_up_still_replaces_the_selection() {
+        let note = Note::new();
+        let html = "<p>x</p>".repeat(70_000);
+        let board = Board::with(&[("public.html", html.as_bytes())]);
+        let routed = smart_selection(&board, &note, "a TODO b", 2..6);
+        assert_eq!(routed.insert.as_deref(), Some(""));
+        let Some(FollowUp::Rich { anchor, .. }) = routed.follow_up else {
+            panic!("no background job");
+        };
+        assert_eq!(anchor.locate("a  b"), Some(2));
+    }
+
+    #[test]
+    fn code_pasted_into_a_quoted_fence_keeps_the_quote() {
+        let note = Note::new();
+        let board = Board::with(&[(offer::UTF8_TEXT, b"a\nb\nc")]);
+        let source = "> [!note]\n> ```\n> \n> ```\n";
+        let routed = smart(&board, &note, source, 18);
+        assert_eq!(routed.route, Route::CodeBlockText);
+        assert_eq!(routed.insert.as_deref(), Some("a\n> b\n> c"));
+    }
+
+    #[test]
+    fn large_tab_separated_text_is_tried_as_a_table_in_the_background() {
+        let note = Note::new();
+        let text = "a\tb\n".repeat(70_000);
+        let board = Board::with(&[(offer::UTF8_TEXT, text.as_bytes())]);
+        let routed = smart(&board, &note, "", 0);
+        let Some(FollowUp::Rich { job, .. }) = routed.follow_up else {
+            panic!("no background job");
+        };
+        assert!(job.html.is_empty());
+        let done = run_rich_job(job);
+        assert!(done.text.starts_with("| a"), "{:?}", &done.text[..20]);
     }
 
     #[test]

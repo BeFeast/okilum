@@ -1492,11 +1492,18 @@ impl Conv {
             }
             return;
         }
-        if rows.len() == 1 && cols == 1 {
-            // A single spreadsheet cell: its content, as text.
-            let inner = self.blocks_of(&rows[0][0], style, depth + 1);
+        if rows.len() < 2 || cols < 2 {
+            // A single cell, row or column (spreadsheet copies always carry
+            // HTML): its cells' content, as text, never a header-only or
+            // one-column table (#1611).
             b.flush();
-            b.blocks.extend(inner);
+            for row in &rows {
+                for cell in row {
+                    let inner = self.blocks_of(cell, style, depth + 1);
+                    b.flush();
+                    b.blocks.extend(inner);
+                }
+            }
             return;
         }
         let mut out: Vec<Vec<String>> = Vec::with_capacity(rows.len());

@@ -18,6 +18,8 @@ pub struct Anchor {
     pub offset: usize,
     before: String,
     after: String,
+    /// `after` runs to the end of the text.
+    to_end: bool,
 }
 
 impl Anchor {
@@ -30,7 +32,21 @@ impl Anchor {
             offset,
             before: source[from..offset].to_string(),
             after: source[offset..to].to_string(),
+            to_end: to == source.len(),
         }
+    }
+
+    /// Whether text was typed right at the anchor since (#1611): what follows
+    /// `at` (from [`Self::locate`]) in `current` is no longer what followed
+    /// the anchor, and it starts with a visible character. A result inserted
+    /// there then goes on its own line instead of being glued to it.
+    pub fn typed_at(&self, current: &str, at: usize) -> bool {
+        let Some(rest) = current.get(at..) else {
+            return false;
+        };
+        let intact =
+            rest.starts_with(&self.after) && (!self.to_end || rest.len() == self.after.len());
+        !intact && rest.chars().next().is_some_and(|c| !c.is_whitespace())
     }
 
     /// The anchor's position in the current text, if it can still be told.
@@ -223,5 +239,19 @@ mod tests {
         let source = "שלום עולם ".repeat(10);
         let anchor = Anchor::at(&source, source.len() / 2);
         assert!(anchor.locate(&source).is_some());
+    }
+
+    #[test]
+    fn text_typed_at_the_anchor_is_noticed() {
+        let anchor = Anchor::at("", 0);
+        assert!(anchor.typed_at("# Trip", 0));
+        assert!(!anchor.typed_at("", 0));
+        let anchor = Anchor::at("intro text before \nafter text here", 18);
+        let typed = "intro text before X\nafter text here";
+        let at = anchor.locate(typed).unwrap();
+        assert_eq!(at, 18);
+        assert!(anchor.typed_at(typed, at));
+        let untouched = "intro text before \nafter text here";
+        assert!(!anchor.typed_at(untouched, anchor.locate(untouched).unwrap()));
     }
 }
