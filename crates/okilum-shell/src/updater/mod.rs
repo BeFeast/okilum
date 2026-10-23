@@ -264,11 +264,6 @@ pub(crate) fn install_update() {
     macos::install();
 }
 
-/// The inline result line for About and Settings, if a check has run.
-pub(crate) fn status_line() -> Option<String> {
-    status::text(&status::get(), std::time::SystemTime::now())
-}
-
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     whats_new::notice(window, cx);
     #[cfg(windows)]
