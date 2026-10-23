@@ -74,7 +74,7 @@ overflowing as described above.
 The main toolbar search glyph opens vault-wide **content search** (#624), with
 Ctrl+Shift+F / ⇧⌘F in its tooltip. **Find in note** lives in the document's **…**
 menu and in its header as a distinct `TextSearch` glyph, with Ctrl+F / ⌘F.
-Quick open (Ctrl+K / ⌘K) is unchanged. The same Find action works in preview
+Quick open (Ctrl+K / ⌘K) is the palette described under «⌘K palette». The same Find action works in preview
 and Edit source. Both match literal text without case by default, including
 Unicode letters. The optional Aa / Match case switch starts off; its explicit
 choice is remembered globally in the application UI store outside the vault (#682).
@@ -355,6 +355,21 @@ toggle:
   remembered per project with the sidebar state (`nav_all_vault`); the
   stores themselves stay vault-wide (Recent keeps 40), and the project is a
   folder-prefix filter.
+
+### ⌘K palette (#1518)
+
+Quick open (Ctrl+K / ⌘K) is one palette with the sections **Pinned**,
+**Recent**, **Projects** and **Files**, in that order; one query filters all
+four. Pinned and Recent are the title-bar lists, so inside a project they
+follow its This project / All vault switch; Recent leaves out the note on
+screen. Projects shows up to five rows from the shared picker, then «All
+projects…», which opens the switcher with the same text. Files waits for text
+(«Type to search files in <project or vault>») and, inside a project, ranks
+the project's files first; it leaves out what Pinned and Recent already show.
+↑ ↓ move across all rows, Tab / ⇧Tab jump between sections, ⌘1…⌘4 (Ctrl
+elsewhere) to a given one, ↵ opens, Esc clears then closes. Opening it closes
+an open title-bar menu or the switcher. Content search (⇧⌘F) stays one flat
+list of matches.
 
 ### Tree only (#1508, design session 2026-10-22)
 

@@ -166,6 +166,20 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
     assert!(visual.debug_bounds("title-nav-recent").is_none());
     reader.read_with(visual, |view, _| assert_eq!(view.title_nav.menu, None));
 
+    // ⌘K from an open menu replaces it, so Escape then closes the palette
+    // instead of a menu drawn over it.
+    click(visual, "title-recent");
+    visual.simulate_keystrokes("ctrl-k");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("title-nav-recent").is_none());
+    reader.read_with(visual, |view, _| {
+        assert!(view.quick_open.open);
+        assert_eq!(view.title_nav.menu, None);
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| assert!(!view.quick_open.open));
+
     // A project: its notes by default.
     let project = okilum_t3::projects::Project::read(&vault.join("Dev/Areas/App")).unwrap();
     visual.update(|window, cx| {
@@ -391,4 +405,15 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     reader.read_with(visual, |view, _| assert!(!view.title_nav.switcher_open));
+    // ⌘K from the open switcher replaces it with the palette.
+    click(visual, "title-switcher");
+    visual.simulate_keystrokes("ctrl-k");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("projects-picker").is_none());
+    reader.read_with(visual, |view, _| {
+        assert!(view.quick_open.open && !view.title_nav.switcher_open);
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| assert!(!view.quick_open.open));
 }

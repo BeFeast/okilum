@@ -586,6 +586,10 @@ impl Reader {
         if self.find_open {
             self.close_find(window, cx);
         }
+        // The title-bar menus are drawn above the palette and would keep
+        // Escape for themselves: ⌘K from an open menu replaces it (#1508).
+        self.close_nav_menu(window, cx);
+        self.close_project_switcher(window, cx);
         self.shortcut_sheet.open = false;
         self.quick_open.open = true;
         self.quick_open.full_text = full_text;
