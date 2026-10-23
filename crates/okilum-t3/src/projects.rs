@@ -206,10 +206,9 @@ impl Project {
         ensure!(doc.is_mapping(), "project.yaml must be a mapping");
         let text = |value: &serde_yaml::Value| value.as_str().map(str::to_owned);
         let kind = match doc.get("kind") {
-            Some(serde_yaml::Value::String(kind))
-                if !matches!(kind.as_str(), "code" | "knowledge" | "hybrid") =>
-            {
-                return Err(NotAProject(kind.clone()).into());
+            Some(value @ serde_yaml::Value::String(kind)) => {
+                serde_yaml::from_value::<Kind>(value.clone())
+                    .map_err(|_| NotAProject(kind.clone()))?
             }
             Some(value) => serde_yaml::from_value(value.clone()).context("invalid project kind")?,
             None => {

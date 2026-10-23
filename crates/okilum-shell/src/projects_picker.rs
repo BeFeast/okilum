@@ -425,7 +425,11 @@ impl ProjectsPicker {
                     .truncate()
                     .child(problem.name.clone()),
             )
-            .child(div().text_size(px(12.)).child("Cannot read project.yaml"))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .child("Project configuration problem"),
+            )
             .child(div().w(px(14.)).flex_none())
             .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
     }
