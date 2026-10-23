@@ -3294,7 +3294,14 @@ impl Reader {
 
     /// Folders header «Collapse all» (#410).
     fn collapse_folders(&mut self, cx: &mut Context<Self>) {
-        self.tree.collapse_all();
+        if self.single_file {
+            // Folder browsing is a flat file list, not an expanded vault tree.
+            if !self.sidebar.is_collapsed(reader_sidebar::Section::Folders) {
+                self.toggle_section(reader_sidebar::Section::Folders, cx);
+            }
+        } else {
+            self.tree.collapse_all();
+        }
         cx.notify();
     }
 
@@ -4262,13 +4269,6 @@ impl Reader {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(tokens.text_faint)
                     .cursor_pointer()
-                    .tooltip(|window, cx| {
-                        gpui_component::tooltip::Tooltip::new(if cfg!(target_os = "macos") {
-                            "Option-click to collapse or expand all sections"
-                        } else {
-                            "Alt-click to collapse or expand all sections"
-                        }).build(window, cx)
-                    })
                     .hover(move |d| d.text_color(p.text_muted))
                     .child(
                         Icon::new(if closed {
@@ -4279,7 +4279,18 @@ impl Reader {
                         .xsmall(),
                     )
                     .child(icon.xsmall())
-                    .child(div().flex_1().child(section.label()))
+                    .child(
+                        div().id(SharedString::from(format!("section-label-{}", section.label())))
+                            .debug_selector(move || format!("section-label-{}", section.label()))
+                            .flex_1().child(section.label())
+                    .tooltip(|window, cx| {
+                        gpui_component::tooltip::Tooltip::new(if cfg!(target_os = "macos") {
+                            "Option-click to collapse or expand all sections"
+                        } else {
+                            "Alt-click to collapse or expand all sections"
+                        }).build(window, cx)
+                    })
+                    )
                     .when(section == Section::Folders, |row| {
                         if folder_actions_overflow {
                             return row.child(
@@ -4423,6 +4434,7 @@ impl Reader {
                             .child(
                                 div()
                                     .id("toggle-hidden-files")
+                                    .debug_selector(|| "toggle-hidden-files".into())
                                     .flex_none()
                                     .px_1()
                                     .text_color(if show_hidden { p.accent } else { p.text_muted })
@@ -4472,6 +4484,10 @@ impl Reader {
                     .when_some(count, |d, count| {
                         d.child(
                             div()
+                                .id(SharedString::from(format!("section-count-{}", section.label())))
+                                .debug_selector(move || format!("section-count-{}", section.label()))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(|_, _, cx| cx.stop_propagation())
                                 .px_1p5()
                                 .rounded_full()
                                 .bg(p.tile)
@@ -9388,6 +9404,90 @@ mod document_link_landing_tests {
             view.update_in(visual, |_, window, _| window.remove_window());
             visual.run_until_parked();
         }
+    }
+
+    #[gpui::test]
+    fn folder_view_count_collapse_and_tooltip_targets(cx: &mut gpui::TestAppContext) {
+        use reader_sidebar::Section;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("folder");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Note.md"), "# Note").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("Note.md")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        view.update(visual, |v, cx| {
+            assert!(v.single_file, "exercise the non-vault launch path");
+            v.panels.open(reader_layout::Panel::Notes);
+            v.load_quick_folder(String::new(), cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let visible = |visual: &mut gpui::VisualTestContext| {
+            view.read_with(visual, |v, _| {
+                v.sidebar_items()
+                    .iter()
+                    .any(|item| matches!(item, SideItem::Tree(_)))
+            })
+        };
+        assert!(visible(visual), "positive control: populated file list");
+        let count = visual.debug_bounds("section-count-Folders").unwrap();
+        visual.simulate_click(count.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visible(visual), "count clicks must leave files visible");
+        let label = visual.debug_bounds("section-label-Folders").unwrap();
+        for id in [
+            "folders-new-note",
+            "folders-new-folder",
+            "folders-collapse-all",
+            "folders-focus-current",
+            "toggle-hidden-files",
+        ] {
+            let action = visual
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("missing action {id}"));
+            assert!(
+                !label.contains(&action.center()),
+                "section tooltip must not cover {id}"
+            );
+        }
+        let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
+        visual.simulate_click(collapse.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!visible(visual), "collapse must hide even a flat file list");
+        view.read_with(visual, |v, _| {
+            assert!(v.sidebar.is_collapsed(Section::Folders))
+        });
+        // Positive control: the header still toggles the section independently.
+        let label = visual.debug_bounds("section-label-Folders").unwrap();
+        visual.simulate_click(label.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visible(visual), "header reopens files after collapse");
+        let label = visual.debug_bounds("section-label-Folders").unwrap();
+        visual.simulate_click(label.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!visible(visual), "header click still collapses files");
     }
 
     #[gpui::test]
