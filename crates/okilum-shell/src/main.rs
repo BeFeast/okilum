@@ -1535,6 +1535,9 @@ struct Reader {
     tree: reader_tree::Tree,
     tree_source: Option<Arc<Vault>>,
     tree_revealed: String,
+    /// A folder's index note opened from its own tree row (#1512): the file
+    /// row, not the folder, then stands for it in the tree.
+    tree_index_entry: Option<String>,
     tree_focus: FocusHandle,
     typed_navigation: reader_typed_view::Navigation,
     tree_scroll: UniformListScrollHandle,
@@ -1814,6 +1817,7 @@ impl Reader {
             tree: reader_tree::Tree::default(),
             tree_source: None,
             tree_revealed: String::new(),
+            tree_index_entry: None,
             hover_preview: Default::default(),
             file_preview: None,
             tree_preview: Default::default(),
@@ -3060,10 +3064,58 @@ impl Reader {
             .as_ref()
             .map_or(selected, |rename| rename.path.clone());
         if self.tree_revealed != selected {
+            // Another note is open: the index row's explicit entry is over.
+            if self
+                .tree_index_entry
+                .as_ref()
+                .is_some_and(|entry| *entry == self.tree_revealed && entry != self.selected_file())
+            {
+                self.tree_index_entry = None;
+            }
+            // An inline rename edits the row itself, whatever stands for it.
+            let note = selected == self.selected_file();
+            #[cfg(any(unix, windows))]
+            let note = note && self.renaming.is_none();
             self.tree_revealed = selected.clone();
-            if let Some(ix) = self.tree.reveal(&selected) {
+            let ix = self.tree.reveal(&selected);
+            let ix = if note {
+                self.select_index_folder(&selected, ix)
+            } else {
+                ix
+            };
+            if let Some(ix) = ix {
                 self.scroll_tree_to(ix);
             }
+        }
+    }
+
+    /// The folder row that stands for `note` in the tree (#1512): `note` is
+    /// that folder's index note and was not opened from its own row. The
+    /// root and a project's own folder have no row; their index stays itself.
+    fn tree_index_folder(&self, note: &str) -> Option<String> {
+        if self.tree_index_entry.as_deref() == Some(note) {
+            return None;
+        }
+        let (folder, _) = note.rsplit_once('/')?;
+        (folder != self.tree.scope() && self.tree.is_index_note(note)).then(|| folder.to_owned())
+    }
+
+    /// The tree row highlighted as the open note (#1512).
+    fn tree_current(&self) -> String {
+        let current = self.selected_file();
+        self.tree_index_folder(current)
+            .unwrap_or_else(|| current.to_owned())
+    }
+
+    /// After revealing `note` (row `ix`), select its folder instead when the
+    /// folder stands for it (#1512).
+    fn select_index_folder(&mut self, note: &str, ix: Option<usize>) -> Option<usize> {
+        match (ix, self.tree_index_folder(note)) {
+            (Some(_), Some(folder)) => {
+                self.tree.cursor = Some(folder);
+                self.tree.cursor_index()
+            }
+            _ => ix,
         }
     }
 
@@ -3184,7 +3236,8 @@ impl Reader {
     }
 
     /// Sidebar header «Reveal current» (#410): only the path to the
-    /// open note stays expanded, and the note is selected.
+    /// open note stays expanded, and the note is selected; a folder's index
+    /// note selects its folder unless it was opened from its own row (#1512).
     fn focus_current_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() {
             return;
@@ -3200,7 +3253,8 @@ impl Reader {
         }
         self.sync_tree();
         let current = self.selected_file().to_owned();
-        if let Some(ix) = self.tree.focus(&current) {
+        let ix = self.tree.focus(&current);
+        if let Some(ix) = self.select_index_folder(&current, ix) {
             self.scroll_tree_to(ix);
         }
         self.tree_focus.focus(window, cx);
@@ -3219,19 +3273,16 @@ impl Reader {
         tree.cursor = Some(row.path.clone());
         match row.kind {
             EntryKind::Directory => {
-                self.toggle_tree_folder(row, window, cx);
-                // Expanding a folder with an index note opens it, like
-                // clicking the note (#1099); the chevron only toggles.
-                // Collapsing never opens: revealing the index would expand
-                // the folder again.
-                let index = if row.expanded {
-                    reader_tree::FolderIndex::None
-                } else {
-                    reader_tree::folder_index(&row.path, &self.vault.entries)
-                };
-                match index {
+                // The folder's name (#1099, #1512): expand, never collapse,
+                // and open its index note while the selection stays on the
+                // folder. The chevron only toggles.
+                self.tree_index_entry = None;
+                if !row.expanded {
+                    self.expand_tree_folder(&row.path, true, cx);
+                }
+                match reader_tree::folder_index(&row.path, &self.vault.entries) {
                     reader_tree::FolderIndex::One(index) => {
-                        if self.current_rel != index {
+                        if self.selected_file() != index {
                             self.open_note(&index, None, window, cx);
                         }
                     }
@@ -3242,8 +3293,12 @@ impl Reader {
                     }
                     reader_tree::FolderIndex::None => {}
                 }
+                self.tree.cursor = Some(row.path.clone());
             }
             EntryKind::Markdown => {
+                // The index row itself: that row, not its folder, stays
+                // selected for this open (#1512).
+                self.tree_index_entry = row.index.then(|| row.path.clone());
                 self.open_note(&row.path, None, window, cx);
             }
             EntryKind::Attachment => {
@@ -3259,7 +3314,8 @@ impl Reader {
         cx.notify();
     }
 
-    /// Expand or collapse a folder row, nothing else (the chevron, #1099).
+    /// Expand or collapse a folder row, nothing else (the chevron, #1099):
+    /// no note opens and the selection stays where it is (#1512).
     fn toggle_tree_folder(
         &mut self,
         row: &reader_tree::Row,
@@ -3267,13 +3323,16 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         self.tree_preview.close();
-        self.tree.cursor = Some(row.path.clone());
-        self.tree.toggle(&row.path);
-        if self.single_file && !row.expanded {
-            self.load_quick_folder(row.path.clone(), cx);
-        }
+        self.expand_tree_folder(&row.path, !row.expanded, cx);
         self.tree_focus.focus(window, cx);
         cx.notify();
+    }
+
+    fn expand_tree_folder(&mut self, path: &str, expand: bool, cx: &mut Context<Self>) {
+        self.tree.set_expanded(path, expand);
+        if self.single_file && expand {
+            self.load_quick_folder(path.to_owned(), cx);
+        }
     }
 
     fn history_move(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -3949,6 +4008,8 @@ impl Reader {
         let pinned: Rc<std::collections::BTreeSet<String>> =
             Rc::new(self.sidebar.pinned.iter().cloned().collect());
         let current = self.selected_file().to_owned();
+        // A folder's index note opened through the folder lights the folder.
+        let tree_current = self.tree_current();
         // The selection stays visible when the tree loses focus: New note /
         // New folder go next to it, so it must never be invisible (#1512).
         let tree_focused = self.tree_focus.is_focused(window);
@@ -4241,13 +4302,15 @@ impl Reader {
                 }
                 SideItem::Tree(row) => {
                     let directory = row.kind == EntryKind::Directory;
-                    let is_current = row.path == current;
+                    let is_current = row.path == tree_current;
                     let is_cursor = cursor.as_ref() == Some(&row.path);
                     let label = row.label.clone();
                     let icon = match row.kind {
                         EntryKind::Directory if row.depth == 0 => None,
                         EntryKind::Directory if row.expanded => Some(IconName::FolderOpen),
                         EntryKind::Directory => Some(IconName::Folder),
+                        // The folder's index note has its own glyph (#1512).
+                        EntryKind::Markdown if row.index => Some(IconName::BookOpen),
                         EntryKind::Markdown => Some(IconName::FileText),
                         EntryKind::Attachment => Some(IconName::File),
                     };
@@ -4316,6 +4379,8 @@ impl Reader {
                         .when((row.archived || row.hidden) && !is_current, |d| {
                             d.text_color(p.text_muted).opacity(0.75)
                         })
+                        // The index note recedes under its folder (#1512).
+                        .when(row.index && !is_current, |d| d.text_color(p.text_muted))
                         .child(if directory {
                             let toggle_entity = entity.clone();
                             let toggle_row = row.clone();
@@ -4324,6 +4389,10 @@ impl Reader {
                                     "folder-disclosure-{}",
                                     row.path
                                 )))
+                                .debug_selector({
+                                    let path = row.path.clone();
+                                    move || format!("folder-disclosure-{path}")
+                                })
                                 .on_click(move |event, window, cx| {
                                     cx.stop_propagation();
                                     if event.click_count() != 1 {
@@ -4376,8 +4445,8 @@ impl Reader {
                                             cx,
                                         )
                                     } else if directory && event.click_count() > 1 {
-                                        // The first click already toggled and
-                                        // opened; a double click must not undo it.
+                                        // The first click already expanded and
+                                        // opened; a double click adds nothing.
                                     } else {
                                         this.activate_tree_row(&row, window, cx)
                                     }
@@ -9452,7 +9521,7 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
-    fn folder_click_opens_its_index_note_and_the_chevron_only_toggles(
+    fn folder_name_opens_its_index_keeping_the_folder_selected_and_the_chevron_only_toggles(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -9461,12 +9530,13 @@ mod document_link_landing_tests {
         });
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
-        for dir in ["Areas/apertune", "Areas/plain", "Areas/other"] {
+        for dir in ["Areas/apertune/specs", "Areas/plain", "Areas/other"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
         std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
-        std::fs::write(root.join("Areas/apertune/Plan.md"), "# Plan\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/specs/Spec.md"), "# Spec\n").unwrap();
         std::fs::write(root.join("Areas/plain/Note.md"), "# Note\n").unwrap();
         std::fs::write(root.join("Areas/other/_Index.md"), "# Other\n").unwrap();
         let mut reader = None;
@@ -9477,6 +9547,8 @@ mod document_link_landing_tests {
                         vault: Some(root.clone()),
                         note: Some("Start.md".into()),
                         index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
                         ..Opts::default()
                     },
                     window,
@@ -9489,77 +9561,192 @@ mod document_link_landing_tests {
         let view = reader.unwrap();
         visual.simulate_resize(size(px(1400.), px(860.)));
         visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
         let row = |visual: &mut gpui::VisualTestContext, path: &str| {
             view.update_in(visual, |v, _, _| {
                 v.sync_tree();
-                v.tree
-                    .rows
-                    .iter()
-                    .find(|r| r.path == path)
-                    .cloned()
-                    .unwrap()
+                v.tree.rows.iter().find(|r| r.path == path).cloned()
             })
         };
-        // Expand «Areas» to reach its folders.
-        let areas = row(visual, "Areas");
-        view.update_in(visual, |v, window, cx| {
-            v.toggle_tree_folder(&areas, window, cx)
-        });
-        visual.run_until_parked();
-
-        // Click on a folder with an index: expands and opens the index.
-        let apertune = row(visual, "Areas/apertune");
-        assert!(!apertune.expanded);
-        view.update_in(visual, |v, window, cx| {
-            v.activate_tree_row(&apertune, window, cx)
-        });
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
-        });
-        assert!(row(visual, "Areas/apertune").expanded);
-
-        // Positive control: a folder without an index only toggles.
-        let plain = row(visual, "Areas/plain");
-        view.update_in(visual, |v, window, cx| {
-            v.activate_tree_row(&plain, window, cx)
-        });
-        visual.run_until_parked();
-        assert!(row(visual, "Areas/plain").expanded);
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
-        });
-
-        // The chevron toggles a folder with an index and opens nothing.
-        let other = row(visual, "Areas/other");
-        view.update_in(visual, |v, window, cx| {
-            v.toggle_tree_folder(&other, window, cx)
-        });
-        visual.run_until_parked();
-        assert!(row(visual, "Areas/other").expanded);
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
-        });
-
-        // Enter behaves like the click: collapsing only collapses ...
-        let enter = |visual: &mut gpui::VisualTestContext| {
-            view.update_in(visual, |v, window, cx| {
-                v.tree.cursor = Some("Areas/other".into());
-                v.tree_key(TreeKey::Open, window, cx)
-            });
+        // (open note, tree selection, highlighted row), after the tree has
+        // caught up with the open note.
+        let state = |visual: &mut gpui::VisualTestContext| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                (
+                    v.current_rel.clone(),
+                    v.tree.cursor.clone(),
+                    v.tree_current(),
+                )
+            })
+        };
+        let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"));
+            visual.simulate_click(bounds.center(), gpui::Modifiers::default());
             visual.run_until_parked();
         };
-        enter(visual);
-        assert!(!row(visual, "Areas/other").expanded, "Enter collapsed it");
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
+        let some = |path: &str| Some(path.to_owned());
+        let want =
+            |note: &str, cursor: &str, lit: &str| (note.to_owned(), some(cursor), lit.to_owned());
+
+        // A folder without an index note: its name only expands it.
+        click(visual, "tree-row-Areas");
+        assert!(row(visual, "Areas").unwrap().expanded);
+        assert_eq!(state(visual), want("Start.md", "Areas", "Start.md"));
+
+        // The name of a folder with an index: expands, opens the index, and
+        // the folder keeps the selection, the highlight and keyboard focus.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        let index = "Areas/apertune/_index.md";
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
         });
-        // ... and expanding opens the index, here spelled `_Index.md`.
-        enter(visual);
-        assert!(row(visual, "Areas/other").expanded);
+
+        // The index row stays listed without Show hidden files: first in its
+        // folder (above the subfolder), flagged for its muted style and icon.
         view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/other/_Index.md")
+            assert!(!v.tree.show_hidden());
+            let paths: Vec<_> = v.tree.rows.iter().map(|r| r.path.as_str()).collect();
+            let folder = paths.iter().position(|p| *p == "Areas/apertune").unwrap();
+            assert_eq!(
+                paths[folder + 1..folder + 4],
+                [index, "Areas/apertune/specs", "Areas/apertune/Alpha.md"]
+            );
+            let rows: Vec<_> = v.tree.rows.iter().filter(|r| r.index).collect();
+            assert_eq!(rows.len(), 1, "only the open folder's index is listed");
+            assert_eq!(rows[0].path, index);
+            assert!(!rows[0].hidden);
+            // Positive control: an ordinary note is not an index row.
+            assert!(
+                !v.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == "Areas/apertune/Alpha.md")
+                    .unwrap()
+                    .index
+            );
         });
+
+        // The name of an expanded folder re-opens its index and never collapses.
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "tree-row-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+
+        // The chevron only toggles: nothing opens, the selection stays.
+        view.update(visual, |v, _| v.tree.cursor = some("Areas/plain"));
+        click(visual, "folder-disclosure-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        click(visual, "folder-disclosure-Areas/other");
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(index, "Areas/plain", "Areas/apertune"));
+        click(visual, "folder-disclosure-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(state(visual).1, some("Areas/plain"));
+
+        // Reveal current with the index opened through its folder: the folder.
+        view.update_in(visual, |v, window, cx| v.focus_current_folder(window, cx));
+        visual.run_until_parked();
+        assert_eq!(state(visual).1, some("Areas/apertune"));
+
+        // Clicking the index row itself selects and highlights that row, and
+        // Reveal current keeps it.
+        click(visual, "tree-row-Areas/apertune/_index.md");
+        assert_eq!(state(visual), want(index, index, index));
+        view.update_in(visual, |v, window, cx| v.focus_current_folder(window, cx));
+        visual.run_until_parked();
+        assert_eq!(state(visual), want(index, index, index));
+        // The folder name moves both back to the folder.
+        click(visual, "tree-row-Areas/apertune");
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+        // An index opened any other way (here a link-style open after
+        // another note) stands on its folder too.
+        click(visual, "tree-row-Areas/apertune/_index.md");
+        assert_eq!(state(visual).1, some(index));
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(state(visual).0, "Start.md");
+        view.update_in(visual, |v, window, cx| v.open_note(index, None, window, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+
+        // Keyboard: ←/→ only collapse and expand; Enter is the name click
+        // (here an index spelled `_Index.md`), never a collapse.
+        click(visual, "tree-row-Areas/plain");
+        assert_eq!(state(visual).1, some("Areas/plain"));
+        // Reveal current folded «Areas/other» away again.
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        view.update(visual, |v, _| v.tree.cursor = some("Areas/other"));
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/other", "Areas/apertune"),
+            "arrows open nothing"
+        );
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        let other = "Areas/other/_Index.md";
+        assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(
+            row(visual, "Areas/other").unwrap().expanded,
+            "Enter never collapses"
+        );
+        assert_eq!(state(visual).1, some("Areas/other"));
+        // Enter on a collapsed folder expands it and opens its index.
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |v, window, cx| {
+            v.tree.cursor = some("Areas/other");
+            v.tree_focus.focus(window, cx);
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
     }
 
     #[gpui::test]
