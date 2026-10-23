@@ -466,7 +466,7 @@ fn insert_at_anchor(
         if !inserted {
             eprintln!("Paste: background result not inserted (the editor is read-only)");
         }
-        let region = inserted.then(|| Region::at(&state.value().to_string(), at, fitted.len()));
+        let region = inserted.then(|| Region::at(state.value().as_ref(), at, fitted.len()));
         (moved && inserted, region)
     });
     if moved {
@@ -718,11 +718,11 @@ fn progress_toast(
         let key = cx.update_window(handle, |_, window, cx| {
             reader_toast::push(
                 gpui_component::notification::Notification::new().content(move |_, _, _| {
-                    let text = if total > 0 {
-                        let percent = shown_done.load(Ordering::Relaxed).min(total) * 100 / total;
-                        format!("{label}… {percent}%")
-                    } else {
-                        format!("{label}…")
+                    let percent =
+                        (shown_done.load(Ordering::Relaxed).min(total) * 100).checked_div(total);
+                    let text = match percent {
+                        Some(percent) => format!("{label}… {percent}%"),
+                        None => format!("{label}…"),
                     };
                     div()
                         .debug_selector(|| "paste-progress-toast".into())
