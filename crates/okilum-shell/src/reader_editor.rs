@@ -1,8 +1,9 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
 mod live_preview;
+mod paste_jobs;
 use super::*;
 use crate::platform::labels::Os;
-use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError};
+use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError, PasteMode};
 use gpui_component::input::projection::{
     ActiveSource, MarkerClick, MarkerKind, ProjectionProvider, SourceClick, SourceMutation,
     SourceProjection, SourceSnapshot,
@@ -468,11 +469,14 @@ impl Reader {
         // A note takes images as attachments and embeds; a plain file takes
         // text only (#1602).
         let paste_notice = crate::note_paste::PasteNotice::default();
+        // What a smart paste leaves to do: a toast, background work (#1611).
+        let paste_outbox = crate::note_paste::PasteOutbox::default();
         let clipboard = crate::note_paste::provider_for_note(
             cx,
             self.vault_root.clone(),
             (!plain_file).then(|| self.selected_file().to_owned()),
             paste_notice.clone(),
+            paste_outbox.clone(),
         );
         // Code files keep their grammar, line numbers and wrap preference (#998).
         let code = plain_file
@@ -708,31 +712,49 @@ impl Reader {
         let pasted = cx.subscribe_in(
             &input,
             window,
-            move |_, _, event: &ClipboardPasteEvent, window, cx| match event {
-                ClipboardPasteEvent::Applied { bytes, .. } => {
-                    eprintln!("Paste: inserted {bytes} bytes");
-                    // A file too large to copy was linked where it is; say so.
-                    let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
-                    if let Some(text) = notice {
-                        reader_toast::transient(text, window, cx);
-                    }
+            move |this, input, event: &ClipboardPasteEvent, window, cx| {
+                // #1611: the paste's notice and background work (file copies,
+                // a page title) run whatever was inserted now.
+                let pending = paste_outbox
+                    .lock()
+                    .map(|mut outbox| std::mem::take(&mut *outbox))
+                    .unwrap_or_default();
+                let handled = pending.notice.is_some() || pending.follow_up.is_some();
+                if let Some(notice) = &pending.notice {
+                    paste_jobs::show_notice(notice, window, cx);
                 }
-                ClipboardPasteEvent::Failed(error) => {
-                    eprintln!("Paste: nothing inserted ({error:?})");
-                    // An image that couldn't be saved says why itself.
-                    let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
-                    if let Some(text) = notice {
-                        reader_toast::error(text, window, cx);
-                        return;
+                if let Some(follow_up) = pending.follow_up {
+                    this.run_paste_follow_up(input.clone(), follow_up, window, cx);
+                }
+                match event {
+                    ClipboardPasteEvent::Applied { bytes, .. } => {
+                        eprintln!("Paste: inserted {bytes} bytes");
+                        // A file too large to copy was linked where it is; say so.
+                        let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
+                        if let Some(text) = notice {
+                            reader_toast::transient(text, window, cx);
+                        }
                     }
-                    let image = matches!(error, ClipboardReadError::Unavailable)
-                        && cx.read_from_clipboard().is_some_and(|item| {
-                            item.entries()
-                                .iter()
-                                .any(|entry| matches!(entry, ClipboardEntry::Image(_)))
-                        });
-                    if let Some(text) = paste_failure_text(error, image) {
-                        reader_toast::error(text, window, cx);
+                    ClipboardPasteEvent::Failed(error) => {
+                        eprintln!("Paste: nothing inserted ({error:?})");
+                        if handled && matches!(error, ClipboardReadError::Unavailable) {
+                            return;
+                        }
+                        // An image that couldn't be saved says why itself.
+                        let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
+                        if let Some(text) = notice {
+                            reader_toast::error(text, window, cx);
+                            return;
+                        }
+                        let image = matches!(error, ClipboardReadError::Unavailable)
+                            && cx.read_from_clipboard().is_some_and(|item| {
+                                item.entries()
+                                    .iter()
+                                    .any(|entry| matches!(entry, ClipboardEntry::Image(_)))
+                            });
+                        if let Some(text) = paste_failure_text(error, image) {
+                            reader_toast::error(text, window, cx);
+                        }
                     }
                 }
             },
@@ -1418,6 +1440,24 @@ impl Reader {
             .key_context("ReaderSource")
             .size_full()
             .min_w_0()
+            // #1611: the paste commands beside Cmd+V, and files dropped onto
+            // the note, through the same router.
+            .on_action(cx.listener(
+                |this, _: &crate::note_paste::PasteAsPlainText, window, cx| {
+                    this.paste_with_mode(PasteMode::Plain, window, cx)
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::note_paste::PasteAsTitledLink, window, cx| {
+                    this.paste_with_mode(PasteMode::TitledLink, window, cx)
+                },
+            ))
+            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                style.bg(brand::palette(cx).selected.opacity(0.12))
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.drop_on_editor(paths, window, cx)
+            }))
             .when(editing.save_failed || editing.conflict_detected, |column| {
                 column.child(
                     h_flex()

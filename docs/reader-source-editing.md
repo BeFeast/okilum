@@ -30,6 +30,22 @@ document newlines (#848) do to pasted text anyway. Shift+Insert pastes like
 Ctrl+V: Linux clipboard managers and dictation tools send it. A paste that inserts
 nothing says why.
 
+Smart paste (#1611) decides by the clipboard and the caret, first match wins:
+inside a fenced code block the plain text (with the fence's quote or list
+prefix); files, copied into the attachment folder in the background and
+embedded (vault files are linked in place; above Settings > Editor's threshold a
+Copy / Link to Original / Cancel prompt); image data, saved and embedded; IDE
+code (VS Code editor data, or all-monospace HTML/RTF over several lines) as a
+fence with its language; a selection plus one URL as `[selection](url)`;
+HTML or RTF converted to Markdown by `okilum-paste`, remote images downloaded
+in the background; TSV as a table; plain text. Paste as Plain Text is
+Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
+Cmd+Alt+V / Ctrl+Alt+V. Files dropped onto the editor take the files path.
+Background results land only in the editing session of the note they were
+pasted into; otherwise a toast names the saved file. The rich-text, image and
+file readers are macOS-only for now; Linux (#1618) and Windows (#1619) paste
+text as described above.
+
 A byte comparison with the opened base guards every changed save. An external
 change blocks navigation and app-owned Quit until Reload or Keep mine resolves
 it. Compare shows the current disk source above the editable draft. Keep mine is

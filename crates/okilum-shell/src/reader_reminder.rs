@@ -72,6 +72,8 @@ enum Command {
     Cut,
     Copy,
     Paste,
+    PastePlain,
+    PasteTitledLink,
     SelectAll,
     CopyLinkToLine,
     Remind,
@@ -125,6 +127,17 @@ fn editor_entries(
     ));
     entries.push(item("Copy", !capabilities.is_copyable(), Command::Copy));
     entries.push(item("Paste", !(editable && clipboard), Command::Paste));
+    // #1611: the other paste commands, beside Paste.
+    entries.push(item(
+        "Paste as Plain Text",
+        !(editable && clipboard),
+        Command::PastePlain,
+    ));
+    entries.push(item(
+        "Paste as Titled Link",
+        !(editable && clipboard),
+        Command::PasteTitledLink,
+    ));
     entries.push(Entry::Separator);
     entries.push(item("Select All", false, Command::SelectAll));
     entries.push(Entry::Separator);
@@ -228,6 +241,8 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                     Command::Cut => Box::new(Cut),
                     Command::Copy => Box::new(Copy),
                     Command::Paste => Box::new(Paste),
+                    Command::PastePlain => Box::new(crate::note_paste::PasteAsPlainText),
+                    Command::PasteTitledLink => Box::new(crate::note_paste::PasteAsTitledLink),
                     Command::SelectAll => Box::new(SelectAll),
                     Command::CopyLinkToLine => Box::new(CopyLinkToLine),
                     Command::Remind => Box::new(RemindOnSelection),
@@ -825,7 +840,15 @@ mod menu_tests {
         let names: Vec<_> = plain.iter().map(|(label, _)| label.as_str()).collect();
         assert_eq!(
             names,
-            ["Cut", "Copy", "Paste", "Select All", "Copy link to line"]
+            [
+                "Cut",
+                "Copy",
+                "Paste",
+                "Paste as Plain Text",
+                "Paste as Titled Link",
+                "Select All",
+                "Copy link to line"
+            ]
         );
         assert_ne!(
             editor_entries(&editor, true, None).first(),
@@ -844,6 +867,8 @@ mod menu_tests {
                 "Cut",
                 "Copy",
                 "Paste",
+                "Paste as Plain Text",
+                "Paste as Titled Link",
                 "Select All",
                 "Copy link to line"
             ]

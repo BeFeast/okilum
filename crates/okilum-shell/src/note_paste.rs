@@ -6,16 +6,35 @@
 //! note editor keeps the text-only [`ExactClipboardProvider`].
 // Until the Linux and Windows lanes implement `NoteClipboard`, the offer reader is macOS-only.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod anchor;
 pub mod attachments;
+pub mod context;
+pub mod download;
+pub mod fetch;
+pub mod files;
 pub mod offer;
+pub mod rich;
+pub mod router;
+pub mod title;
 
 use gpui::{App, Global, Task};
 use gpui_component::input::clipboard::{
-    ClipboardReadError, ClipboardReadRequest, ExactClipboardProvider,
+    ClipboardReadError, ClipboardReadRequest, ExactClipboardProvider, PasteContext, PasteMode,
 };
 use offer::{OfferError, PasteOffer};
+use router::{FollowUp, Notice, RouteContext, Routed};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+gpui::actions!(
+    okilum_paste,
+    [
+        /// Option+Shift+Cmd+V on macOS, Ctrl+Shift+V elsewhere (#1611).
+        PasteAsPlainText,
+        /// Cmd+Alt+V / Ctrl+Alt+V (#1611).
+        PasteAsTitledLink
+    ]
+);
 
 /// The platform clipboard as a note sees it, read synchronously inside the
 /// paste command: text (rich text already converted), an image, or nothing.
@@ -27,18 +46,40 @@ pub trait NoteClipboard: Send + Sync {
     fn types(&self) -> Vec<String> {
         Vec::new()
     }
+    /// Smart paste (#1611): the router run against this clipboard.
+    fn route(&self, context: &RouteContext) -> Result<Routed, OfferError>;
+    /// Copied image or video files, or image data, for the Feedback window
+    /// (#1609): attached, never pasted as a path.
+    fn read_attachment(&self) -> Option<offer::ClipAttachment>;
 }
+
+/// What a paste left to do after its text went in: a notice for the toast and
+/// background work for the editor (#1611). Taken by the editor's paste
+/// event handler.
+#[derive(Debug, Default)]
+pub struct Outbox {
+    pub notice: Option<Notice>,
+    pub follow_up: Option<FollowUp>,
+}
+pub type PasteOutbox = Arc<Mutex<Outbox>>;
 
 gpui::actions!(okilum_edit, [PasteFromMenu]);
 
-/// Edit ▸ Paste: the paste command for the focused note editor, for a mouse
-/// user and for tools that press the menu item instead of posting Cmd+V. It
-/// has no key equivalent of its own; Cmd+V stays with the editor's binding.
+/// The Edit menu. Paste is the paste command for the focused note editor,
+/// for a mouse user and for tools that press the menu item instead of posting
+/// Cmd+V (#1602). It has no key equivalent of its own; Cmd+V stays with the
+/// editor's binding, and the Cmd+V key monitor finds this item by its title
+/// "Paste". Paste as Plain Text and Paste as Titled Link (#1611) act on the
+/// focused note editor and show their shortcuts.
 pub fn edit_menu() -> gpui::Menu {
     gpui::Menu {
         name: "Edit".into(),
         disabled: false,
-        items: vec![gpui::MenuItem::action("Paste", PasteFromMenu)],
+        items: vec![
+            gpui::MenuItem::action("Paste", PasteFromMenu),
+            gpui::MenuItem::action("Paste as Plain Text", PasteAsPlainText),
+            gpui::MenuItem::action("Paste as Titled Link", PasteAsTitledLink),
+        ],
     }
 }
 
@@ -58,6 +99,58 @@ pub fn install_menu(cx: &mut App) {
             });
         });
     });
+}
+
+/// Files dropped onto a note, routed like a paste of their URLs (#1611).
+pub struct DroppedFiles(pub Vec<PathBuf>);
+
+impl DroppedFiles {
+    fn urls(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .filter_map(|path| url::Url::from_file_path(path).ok())
+            .map(|url| url.to_string())
+            .collect()
+    }
+}
+
+impl offer::Pasteboard for DroppedFiles {
+    fn change_count(&self) -> i64 {
+        0
+    }
+    fn types(&self) -> Vec<String> {
+        vec![offer::FILE_URL.to_string()]
+    }
+    fn data(&self, kind: &str) -> Option<Vec<u8>> {
+        self.string(kind).map(String::into_bytes)
+    }
+    fn string(&self, kind: &str) -> Option<String> {
+        if kind != offer::FILE_URL {
+            return None;
+        }
+        self.urls().into_iter().next()
+    }
+    fn rich_text(&self, _: &[u8], _: bool) -> Option<String> {
+        None
+    }
+    fn file_urls(&self) -> Vec<String> {
+        self.urls()
+    }
+}
+
+/// Settings → Editor: ask before copying a file larger than this many MB
+/// into the vault (0: never ask).
+pub fn ask_above_bytes(cx: &App) -> Option<u64> {
+    let mb = crate::reader_ui_state::paste_ask_above_mb(cx);
+    (mb > 0).then(|| u64::from(mb) * 1024 * 1024)
+}
+
+fn router_mode(mode: PasteMode) -> router::Mode {
+    match mode {
+        PasteMode::Smart => router::Mode::Smart,
+        PasteMode::Plain => router::Mode::Plain,
+        PasteMode::TitledLink => router::Mode::TitledLink,
+    }
 }
 
 pub struct ManagedNoteClipboard(pub Arc<dyn NoteClipboard>);
@@ -97,6 +190,7 @@ pub fn provider_for_note(
     vault_root: PathBuf,
     note_rel: Option<String>,
     notice: PasteNotice,
+    outbox: PasteOutbox,
 ) -> Option<Arc<dyn ExactClipboardProvider>> {
     let text = cx
         .try_global::<crate::platform::ManagedClipboard>()
@@ -113,6 +207,7 @@ pub fn provider_for_note(
         vault_root,
         note_rel,
         notice,
+        outbox,
     }))
 }
 
@@ -122,6 +217,7 @@ struct NotePaste {
     vault_root: PathBuf,
     note_rel: Option<String>,
     notice: PasteNotice,
+    outbox: PasteOutbox,
 }
 
 impl ExactClipboardProvider for NotePaste {
@@ -159,6 +255,73 @@ impl ExactClipboardProvider for NotePaste {
             started.elapsed().as_millis()
         );
         Some(result)
+    }
+
+    /// Smart paste, Paste as Plain Text and Paste as Titled Link (#1611): the
+    /// router decides from the clipboard and the caret; a notice and any
+    /// background work go to the outbox for the editor.
+    fn read_paste_now(
+        &self,
+        context: &PasteContext,
+        cx: &App,
+    ) -> Option<Result<Option<String>, ClipboardReadError>> {
+        let started = std::time::Instant::now();
+        if let Ok(mut slot) = self.notice.lock() {
+            *slot = None;
+        }
+        if let Ok(mut outbox) = self.outbox.lock() {
+            *outbox = Outbox::default();
+        }
+        let stamp = attachments::stamp_now();
+        let route_context = RouteContext {
+            mode: router_mode(context.mode),
+            source: &context.source,
+            selection: context.selection.clone(),
+            vault_root: &self.vault_root,
+            note_rel: self.note_rel.as_deref(),
+            stamp: &stamp,
+            ask_above: ask_above_bytes(cx),
+        };
+        let routed = self.clipboard.route(&route_context);
+        let elapsed = started.elapsed();
+        Some(match routed {
+            Ok(routed) => {
+                // Type names, the path taken, sizes and time; never contents.
+                eprintln!(
+                    "Paste: mode={:?} route={:?} bytes={} inserted={} follow_up={} ms={:.1} {} types={:?}",
+                    context.mode,
+                    routed.route,
+                    routed.bytes,
+                    routed.insert.as_ref().map_or(0, String::len),
+                    routed.follow_up.is_some(),
+                    elapsed.as_secs_f64() * 1000.0,
+                    routed.detail,
+                    routed.types
+                );
+                let insert = routed.insert;
+                let failed = routed
+                    .notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.error && insert.is_none());
+                if failed {
+                    if let (Ok(mut slot), Some(notice)) = (self.notice.lock(), &routed.notice) {
+                        *slot = Some(notice.text.clone());
+                    }
+                } else if let Ok(mut outbox) = self.outbox.lock() {
+                    outbox.notice = routed.notice;
+                    outbox.follow_up = routed.follow_up;
+                }
+                if failed {
+                    Err(ClipboardReadError::Io)
+                } else {
+                    Ok(insert)
+                }
+            }
+            Err(error) => {
+                eprintln!("Paste: clipboard read failed ({error:?})");
+                Err(clipboard_error(error))
+            }
+        })
     }
 }
 

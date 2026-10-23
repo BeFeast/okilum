@@ -8,6 +8,16 @@ use std::path::PathBuf;
 
 /// Largest text a paste accepts (the editor's exact-read limit).
 pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// RTF larger than this is not parsed into rich text on the UI thread when
+/// a plain flavor comes with it (#1611): the plain flavor is the paste.
+pub const UI_RTF_BYTES: usize = 256 * 1024;
+
+/// Whether the board has a plain text flavor.
+pub fn has_plain_text(types: &[String]) -> bool {
+    types
+        .iter()
+        .any(|t| t == UTF8_TEXT || PLAIN_TEXT.contains(&t.as_str()))
+}
 /// Largest image a paste saves into the vault.
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Reads repeated when the clipboard changes while it is being read.
@@ -35,6 +45,13 @@ pub const URL: &str = "public.url";
 pub const RTF: [&str; 2] = ["public.rtf", "NeXT Rich Text Format v1.0 pasteboard type"];
 pub const RTFD: [&str; 2] = ["com.apple.flat-rtfd", "NeXT RTFD pasteboard type"];
 pub const HTML: [&str; 2] = ["public.html", "Apple HTML pasteboard type"];
+/// VS Code, Cursor and Windsurf: JSON whose `mode` is the language id (#1611).
+pub const VSCODE_EDITOR_DATA: &str = "vscode-editor-data";
+/// The page a Chromium browser copied from.
+pub const CHROMIUM_SOURCE_URL: &str = "org.chromium.source-url";
+pub const PUBLIC_URL: &str = URL;
+/// A copied link's title (Safari, Chrome, Finder bookmarks).
+pub const URL_NAME: &str = "public.url-name";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageKind {
@@ -70,6 +87,20 @@ impl ImageKind {
             Self::Bmp => "bmp",
             Self::Heic => "heic",
         }
+    }
+
+    /// The kind a file extension names (any case); `None` for other files.
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        Some(match extension.to_ascii_lowercase().as_str() {
+            "png" => Self::Png,
+            "jpg" | "jpeg" => Self::Jpeg,
+            "gif" => Self::Gif,
+            "webp" => Self::Webp,
+            "tif" | "tiff" => Self::Tiff,
+            "bmp" => Self::Bmp,
+            "heic" | "heif" => Self::Heic,
+            _ => return None,
+        })
     }
 }
 
@@ -131,6 +162,223 @@ pub trait Pasteboard {
     fn string(&self, kind: &str) -> Option<String>;
     /// Plain text of RTF (`rtfd == false`) or flattened RTFD data.
     fn rich_text(&self, data: &[u8], rtfd: bool) -> Option<String>;
+    /// RTF or RTFD on the board as simple HTML (`b`, `i`, `s`, `code`, `a`,
+    /// `p`, `br`, lists) for the Markdown converter (#1611). Reads the rich
+    /// data only when called. `None`: no rich text, or no platform reader.
+    fn rich_html(&self) -> Option<String> {
+        None
+    }
+    /// One flavor as text: the platform's string, else its bytes as UTF-8.
+    /// `None` when the board does not have it.
+    fn text_flavor(&self, kind: &str) -> Option<String> {
+        self.string(kind).or_else(|| {
+            self.data(kind).map(|d| {
+                String::from_utf8_lossy(&d)
+                    .trim_end_matches('\0')
+                    .to_owned()
+            })
+        })
+    }
+    /// VS Code, Cursor and Windsurf's `vscode-editor-data` JSON (its `mode`
+    /// is the language id), read only when called (#1611).
+    fn vscode_editor_data(&self) -> Option<String> {
+        self.text_flavor(VSCODE_EDITOR_DATA)
+    }
+    /// The page a Chromium browser copied from (`org.chromium.source-url`).
+    fn source_url(&self) -> Option<String> {
+        self.text_flavor(CHROMIUM_SOURCE_URL)
+            .map(|url| url.trim().to_owned())
+            .filter(|url| !url.is_empty())
+    }
+    /// A copied link: `public.url` and its title `public.url-name`, if any.
+    fn url_with_name(&self) -> Option<(String, Option<String>)> {
+        let url = self
+            .text_flavor(URL)
+            .map(|url| url.trim().to_owned())
+            .filter(|url| !url.is_empty())?;
+        let name = self
+            .text_flavor(URL_NAME)
+            .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|name| !name.is_empty());
+        Some((url, name))
+    }
+    /// The HTML flavor (`public.html`, then the legacy Apple type) as text.
+    fn html_string(&self) -> Option<String> {
+        HTML.into_iter().find_map(|kind| self.text_flavor(kind))
+    }
+}
+
+/// The board's plain text flavor only (`public.utf8-plain-text`, then the
+/// legacy plain types), never converted from rich text or HTML. `Ok(None)`
+/// when there is none.
+pub fn plain_text(
+    board: &(impl Pasteboard + ?Sized),
+    types: &[String],
+) -> Result<Option<String>, OfferError> {
+    let has = |kind: &str| types.iter().any(|t| t == kind);
+    // Empty text in one type falls through to the next (#1602: clipboard
+    // managers write several); empty everywhere is empty text.
+    let mut empty = false;
+    if has(UTF8_TEXT) {
+        if let Some(bytes) = board.data(UTF8_TEXT) {
+            if bytes.len() > MAX_TEXT_BYTES {
+                return Err(OfferError::TooLarge);
+            }
+            match String::from_utf8(bytes) {
+                Ok(text) if !text.is_empty() => return Ok(Some(text)),
+                Ok(_) => empty = true,
+                Err(_) => {}
+            }
+        }
+    }
+    for kind in PLAIN_TEXT.into_iter().filter(|kind| has(kind)) {
+        match board.string(kind) {
+            Some(text) if text.len() > MAX_TEXT_BYTES => return Err(OfferError::TooLarge),
+            Some(text) if !text.is_empty() => return Ok(Some(text)),
+            Some(_) => empty = true,
+            None => {}
+        }
+    }
+    Ok(empty.then(String::new))
+}
+
+/// The board's HTML flavor, if any (read only when called).
+pub fn html(
+    board: &(impl Pasteboard + ?Sized),
+    types: &[String],
+) -> Result<Option<String>, OfferError> {
+    for kind in HTML
+        .into_iter()
+        .filter(|kind| types.iter().any(|t| t == kind))
+    {
+        let html = board.string(kind).or_else(|| {
+            board
+                .data(kind)
+                .map(|d| String::from_utf8_lossy(&d).into_owned())
+        });
+        if let Some(html) = html {
+            if html.len() > MAX_TEXT_BYTES * 4 {
+                return Err(OfferError::TooLarge);
+            }
+            return Ok(Some(html));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether the board offers image data (not a file).
+pub fn has_image_data(types: &[String]) -> bool {
+    ImageKind::TYPES
+        .iter()
+        .any(|(kind, _)| types.iter().any(|t| t == kind))
+}
+
+/// The most faithful image data on the board.
+pub fn image_data(
+    board: &(impl Pasteboard + ?Sized),
+    types: &[String],
+) -> Result<Option<PastedImage>, OfferError> {
+    for (kind, image_kind) in ImageKind::TYPES {
+        if !types.iter().any(|t| t == kind) {
+            continue;
+        }
+        match board.data(kind) {
+            Some(bytes) if bytes.len() > MAX_IMAGE_BYTES => return Err(OfferError::TooLarge),
+            Some(bytes) if !bytes.is_empty() => {
+                return Ok(Some(PastedImage {
+                    bytes,
+                    kind: image_kind,
+                    source: None,
+                }))
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// Video files a feedback report takes (#1611, #1609).
+pub const VIDEO_EXTENSIONS: [&str; 4] = ["mp4", "mov", "m4v", "webm"];
+
+/// What the Feedback window attaches from the clipboard instead of pasting a
+/// path (#1609): copied image or video files, or image data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipAttachment {
+    Files(Vec<PathBuf>),
+    Image(PastedImage),
+}
+
+/// The media on the board, if any. Files win over image data: Raycast's
+/// clipboard history offers its cached file (a file URL, or only its path as
+/// text), and its text is that path (#1609).
+pub fn read_attachment(board: &(impl Pasteboard + ?Sized)) -> Option<ClipAttachment> {
+    let types = board.types();
+    let media: Vec<PathBuf> = clipboard_files(board, &types)
+        .into_iter()
+        .filter(|path| is_media_file(path))
+        .collect();
+    if !media.is_empty() {
+        return Some(ClipAttachment::Files(media));
+    }
+    if !has_image_data(&types) {
+        return None;
+    }
+    // The router's step 2 rule: image data that comes with real text or rich
+    // HTML (Excel and Numbers add a picture of copied cells) is not the
+    // paste; the text is.
+    let text = plain_text(board, &types).ok().flatten();
+    if text
+        .as_deref()
+        .is_some_and(|text| !super::router::text_is_incidental(text))
+    {
+        return None;
+    }
+    let rich = html(board, &types).ok().flatten();
+    if rich
+        .as_deref()
+        .is_some_and(|html| !super::router::html_is_only_an_image(html))
+    {
+        return None;
+    }
+    image_data(board, &types)
+        .ok()
+        .flatten()
+        .map(ClipAttachment::Image)
+}
+
+/// An image or video file by its extension, or an image by its first bytes
+/// when it has none (Raycast's cache names some files `file-…`).
+pub fn is_media_file(path: &std::path::Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(extension) => {
+            super::attachments::is_image_extension(extension)
+                || VIDEO_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+        }
+        None => {
+            let mut head = [0u8; 16];
+            let read = std::fs::File::open(path)
+                .and_then(|mut file| std::io::Read::read(&mut file, &mut head))
+                .unwrap_or(0);
+            super::attachments::sniff_image(&head[..read]).is_some()
+        }
+    }
+}
+
+/// The local files a paste of this board means, in clipboard order: every
+/// item's file URL, the legacy filename list, a file `public.url`, or, with
+/// none of those, a plain text that is just the path of a file in Raycast's
+/// clipboard cache (#1602). Reads only the type list and small flavors.
+pub fn clipboard_files(board: &(impl Pasteboard + ?Sized), types: &[String]) -> Vec<PathBuf> {
+    let paths = file_paths(board, types);
+    if !paths.is_empty() {
+        return paths;
+    }
+    plain_text(board, types)
+        .ok()
+        .flatten()
+        .and_then(|text| cached_clipboard_file(&text))
+        .into_iter()
+        .collect()
 }
 
 /// The offer on the board. A change *before* the read is simply the newest
@@ -281,7 +529,7 @@ pub fn cached_clipboard_file(text: &str) -> Option<PathBuf> {
 
 /// Local files the clipboard points at that exist, without duplicates:
 /// every item's `public.file-url`, the legacy filename list, a file `public.url`.
-fn file_paths(board: &impl Pasteboard, types: &[String]) -> Vec<PathBuf> {
+pub fn file_paths(board: &(impl Pasteboard + ?Sized), types: &[String]) -> Vec<PathBuf> {
     let has = |kind: &str| types.iter().any(|t| t == kind);
     let mut raw: Vec<String> = Vec::new();
     if has(FILE_URL) {
@@ -462,7 +710,7 @@ pub fn html_to_text(html: &str) -> String {
     text.trim_end().to_string()
 }
 
-fn decode_entities(text: &str) -> String {
+pub(crate) fn decode_entities(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('&') {

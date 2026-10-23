@@ -89,6 +89,60 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
     });
 }
 
+/// Settings → Editor (#1611): the paste-size threshold, stepped through
+/// presets; "Never" turns the question off.
+const PASTE_ASK_STEPS: [u32; 9] = [10, 25, 50, 100, 250, 500, 1000, 2000, 0];
+
+fn paste_size_label(mb: u32) -> String {
+    match mb {
+        0 => "Never ask".into(),
+        mb if mb >= 1000 && mb % 1000 == 0 => format!("{} GB", mb / 1000),
+        mb => format!("{mb} MB"),
+    }
+}
+
+fn paste_size_stepper(cx: &App) -> impl IntoElement {
+    let current = reader_ui_state::paste_ask_above_mb(cx);
+    let index = PASTE_ASK_STEPS
+        .iter()
+        .position(|step| *step == current)
+        .unwrap_or(3);
+    let previous = index.checked_sub(1).map(|i| PASTE_ASK_STEPS[i]);
+    let next = PASTE_ASK_STEPS.get(index + 1).copied();
+    h_flex()
+        .gap_1()
+        .items_center()
+        .debug_selector(|| "settings-paste-ask".into())
+        .child(
+            Button::new("settings-paste-ask-smaller")
+                .ghost()
+                .label("−")
+                .disabled(previous.is_none())
+                .on_click(move |_, _, cx| {
+                    if let Some(value) = previous {
+                        reader_ui_state::set_paste_ask_above_mb(value, cx);
+                    }
+                }),
+        )
+        .child(
+            div()
+                .min_w(px(84.))
+                .text_center()
+                .child(paste_size_label(current)),
+        )
+        .child(
+            Button::new("settings-paste-ask-larger")
+                .ghost()
+                .label("+")
+                .disabled(next.is_none())
+                .on_click(move |_, _, cx| {
+                    if let Some(value) = next {
+                        reader_ui_state::set_paste_ask_above_mb(value, cx);
+                    }
+                }),
+        )
+}
+
 pub(super) fn setting_row(
     label: &'static str,
     help: &'static str,
@@ -186,6 +240,8 @@ const INBOX_HELP: &str =
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Appearance,
+    /// Editing notes: pasting and dropping files (#1611).
+    Editor,
     /// The vault's name, colour and files (#1355: was «Files»).
     Vault,
     /// Log source links: for logs of software you build (#1355).
@@ -200,6 +256,7 @@ impl Section {
     fn icon(self) -> Icon {
         match self {
             Self::Appearance => Icon::new(IconName::Palette),
+            Self::Editor => Icon::new(IconName::FileText),
             Self::Vault => Icon::new(IconName::Folder),
             Self::Logs => Icon::new(IconName::SquareTerminal),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
@@ -212,6 +269,7 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
             Self::Vault => "Vault",
             Self::Logs => "Logs",
             Self::Updates => "Updates",
@@ -774,6 +832,14 @@ impl Settings {
                     )
                     .into_any_element()
             }
+            Section::Editor => content
+                .child(setting_row(
+                    "Ask before copying files larger than",
+                    "Pasting or dropping a file larger than this asks whether to copy it into the vault or link to the original.",
+                    paste_size_stepper(cx),
+                    cx,
+                ))
+                .into_any_element(),
             Section::Vault => {
                 if let Some(reader) = self.vault(cx) {
                     let state = reader.read(cx);
@@ -1136,6 +1202,7 @@ impl Render for Settings {
                     .children(
                         [
                             Section::Appearance,
+                            Section::Editor,
                             Section::Vault,
                             Section::Updates,
                             Section::Inbox,
