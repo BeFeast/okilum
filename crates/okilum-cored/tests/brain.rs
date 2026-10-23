@@ -1,7 +1,7 @@
 //! A real backend child survives client disconnect, and the next process reads
 //! the same durable goal/source state. No installed server or personal vault.
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -58,18 +58,78 @@ fn start_config(root: &Path, runtime: &Path, config: Option<&Path>) -> Server {
         address: data["listen"].as_str().unwrap().to_owned(),
     }
 }
+// Fixture liveness bound, not a product latency assertion. Keep one absolute
+// deadline so a fragmented reply cannot restart the watchdog on every read.
+const FIXTURE_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(60);
 fn call(address: &str, body: Value) -> Value {
-    let mut stream = TcpStream::connect(address).unwrap();
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-        .unwrap();
-    writeln!(stream, "{body}").unwrap();
-    let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply).unwrap();
-    serde_json::from_str(&reply).unwrap()
+    let started = std::time::Instant::now();
+    let deadline = started + FIXTURE_WATCHDOG;
+    let operation = body["op"].as_str().unwrap_or("unknown");
+    let remaining = || {
+        deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_else(|| {
+                panic!("fixture RPC {operation} to {address} exceeded {FIXTURE_WATCHDOG:?}")
+            })
+    };
+    let fail = |stage: &str, error: std::io::Error| -> ! {
+        panic!("fixture RPC {operation} to {address}: {stage} after {:?} (watchdog {FIXTURE_WATCHDOG:?}): {error}", started.elapsed());
+    };
+    let mut stream = TcpStream::connect_timeout(&address.parse().unwrap(), remaining())
+        .unwrap_or_else(|error| fail("connect", error));
+    stream.set_write_timeout(Some(remaining())).unwrap();
+    writeln!(stream, "{body}").unwrap_or_else(|error| fail("write", error));
+    let mut reply = Vec::new();
+    loop {
+        stream.set_read_timeout(Some(remaining())).unwrap();
+        let mut chunk = [0; 8192];
+        let count = stream
+            .read(&mut chunk)
+            .unwrap_or_else(|error| fail("read", error));
+        assert!(
+            count != 0,
+            "fixture RPC {operation} to {address}: EOF before reply newline after {:?}",
+            started.elapsed()
+        );
+        if let Some(end) = chunk[..count].iter().position(|byte| *byte == b'\n') {
+            reply.extend_from_slice(&chunk[..end]);
+            return serde_json::from_slice(&reply).unwrap_or_else(|error| {
+                panic!("fixture RPC {operation} to {address}: invalid reply JSON: {error}")
+            });
+        }
+        reply.extend_from_slice(&chunk[..count]);
+    }
 }
 fn request(op: &str) -> Value {
     json!({"schema":"ai-brain/v1","id":1,"op":op})
+}
+
+#[test]
+fn fixture_rpc_reads_a_large_unicode_reply_without_resending_the_request() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let expected = json!({"ok":true,"data":"Ж".repeat(10_000)});
+    let response = expected.clone();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(FIXTURE_WATCHDOG)).unwrap();
+        let mut request_line = String::new();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        reader.read_line(&mut request_line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&request_line).unwrap(),
+            request("snapshot")
+        );
+        writeln!(stream, "{response}").unwrap();
+        let mut extra = String::new();
+        assert_eq!(
+            reader.read_line(&mut extra).unwrap(),
+            0,
+            "RPC must not resend the request"
+        );
+    });
+    assert_eq!(call(&address, request("snapshot")), expected);
+    server.join().unwrap();
 }
 
 #[test]
@@ -114,7 +174,7 @@ fn client_disconnect_and_backend_restart_preserve_goal_and_raw_source() {
 }
 
 fn wait_chat(address: &str, id: &Value, wanted: &str) -> Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + FIXTURE_WATCHDOG;
     loop {
         let mut get = request("chat_get");
         get["conversation_id"] = id.clone();
@@ -130,7 +190,7 @@ fn wait_chat(address: &str, id: &Value, wanted: &str) -> Value {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "chat did not reach {wanted}: {reply}"
+            "chat did not reach {wanted} within {FIXTURE_WATCHDOG:?}: {reply}"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -158,9 +218,7 @@ fn chat_job_survives_socket_disconnect_and_restart_retains_partial_without_retry
         let mut captured = Vec::new();
         for index in 0..2 {
             let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
+            stream.set_read_timeout(Some(FIXTURE_WATCHDOG)).unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut headers = String::new();
             loop {
@@ -186,9 +244,12 @@ fn chat_job_survives_socket_disconnect_and_restart_retains_partial_without_retry
             let terminal="data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",delta.len()+terminal.len(),delta).unwrap();
             stream.flush().unwrap();
-            release_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            // The caller deliberately holds the stream across API requests and
+            // a backend restart. Only its release (or unwind/disconnect) ends
+            // this phase; elapsed setup time must not kill the provider mock.
+            if release_rx.recv().is_err() {
+                return captured;
+            }
             if index == 0 {
                 stream.write_all(terminal.as_bytes()).unwrap();
                 stream.flush().unwrap();
