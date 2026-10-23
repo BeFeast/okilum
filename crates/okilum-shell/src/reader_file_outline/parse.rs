@@ -33,6 +33,15 @@ pub(super) fn supported(language: &str) -> bool {
 /// No unbounded reads, custom parser, error UI or dependency on a theme/App.
 /// An incomplete syntax tree can still contribute correctly located entries.
 pub(super) fn parse(language: &str, source: &str) -> Outline {
+    parse_with_clock(language, source, Instant::now)
+}
+
+// Tests control elapsed time without disabling either production bound.
+pub(super) fn parse_with_clock(
+    language: &str,
+    source: &str,
+    mut now: impl FnMut() -> Instant,
+) -> Outline {
     if !supported(language) || source.len() > MAX_BYTES {
         return Outline::default();
     }
@@ -46,9 +55,9 @@ pub(super) fn parse(language: &str, source: &str) -> Outline {
     if parser.set_language(&grammar).is_err() {
         return Outline::default();
     }
-    let deadline = Instant::now() + BUDGET;
+    let deadline = now() + BUDGET;
     let mut cancelled = |_: &tree_sitter::ParseState| {
-        if Instant::now() >= deadline {
+        if now() >= deadline {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -66,8 +75,7 @@ pub(super) fn parse(language: &str, source: &str) -> Outline {
     let mut visited = 0;
     while let Some((node, parent, depth, array_index)) = stack.pop() {
         visited += 1;
-        if visited > MAX_NODES || outline.entries.len() >= MAX_ENTRIES || Instant::now() >= deadline
-        {
+        if visited > MAX_NODES || outline.entries.len() >= MAX_ENTRIES || now() >= deadline {
             break;
         }
         if depth > MAX_DEPTH || node.is_missing() {
@@ -183,6 +191,19 @@ fn label(
 }
 
 impl Outline {
+    pub fn current(&self, top_line: usize, visible: &[usize]) -> Option<usize> {
+        let mut ix = self
+            .entries
+            .partition_point(|entry| entry.line <= top_line)
+            .checked_sub(1)?;
+        loop {
+            if visible.binary_search(&ix).is_ok() {
+                return Some(ix);
+            }
+            ix = self.entries[ix].parent?;
+        }
+    }
+
     pub fn visible(&self, expanded: &std::collections::BTreeSet<usize>) -> Vec<usize> {
         let mut visible = vec![false; self.entries.len()];
         self.entries

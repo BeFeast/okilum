@@ -88,6 +88,7 @@ jobs:
       - name: Build, sign and notarize
         shell: bash
         env:
+          OKILUM_SCCACHE_ISOLATED: "1"
           OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
           OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
           SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=

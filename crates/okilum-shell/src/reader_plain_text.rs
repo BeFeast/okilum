@@ -29,6 +29,16 @@ pub(crate) struct PlainTextPreview {
 }
 
 impl PlainTextPreview {
+    pub(crate) fn preserve_zoom_anchor(
+        &mut self,
+        pointer: Option<Point<Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let State::Content { content, .. } = &self.state {
+            content.update(cx, |state, _| state.preserve_zoom_anchor(pointer));
+        }
+    }
+
     pub(crate) fn new(root: PathBuf, rel: String, path: PathBuf, cx: &mut Context<Self>) -> Self {
         let task = cx.background_executor().spawn(async move {
             source::load(&path).map(|preview| match preview {

@@ -229,6 +229,8 @@ impl Searcher {
     }
 
     /// Build (or rebuild) the persistent index from the vault.
+    /// The caller exclusively owns this staging path and must finish previous
+    /// searchers before reusing it; concurrent same-path rebuilds are unsupported.
     pub fn build(vault: &Vault, index_dir: &Path) -> Result<Searcher> {
         Self::build_cancellable(vault, index_dir, &mut |_| Ok(()))
     }
@@ -335,6 +337,16 @@ impl Searcher {
             .unwrap_or_else(|| "memory".into());
         if let Some(index_dir) = index_dir {
             if index_dir.exists() {
+                // Detect a previous writer still active at this caller-owned path.
+                // Release the probe before removing files (Windows locks are handles).
+                // This probe is not a concurrency guard: the caller must exclude
+                // new writers for the entire replacement (see build()).
+                let directory = tantivy::directory::MmapDirectory::open(index_dir)?;
+                drop(
+                    directory
+                        .acquire_lock(&tantivy::directory::INDEX_WRITER_LOCK)
+                        .context("Cannot replace search staging while its writer is active")?,
+                );
                 std::fs::remove_dir_all(index_dir)
                     .with_context(|| format!("Remove owned search staging directory {location}"))?;
             }
@@ -697,6 +709,18 @@ impl Searcher {
         Ok(())
     }
 
+    /// Each query opens the current commit synchronously. A delayed reload is
+    /// both redundant and unsafe here: Tantivy can retain an already-dispatched
+    /// callback after this short-lived reader drops. That callback opens a meta
+    /// lock file even after finish_build has joined every indexing/merge worker.
+    fn committed_reader(&self) -> Result<tantivy::IndexReader> {
+        Ok(self
+            .index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()?)
+    }
+
     /// Why `rel` matched `query`: the engine's own scoring explanation, as text.
     ///
     /// `None` when the note is not a hit for that query at all. This is the
@@ -709,7 +733,7 @@ impl Searcher {
             .parser()
             .parse_query(&widened)
             .map_err(|e| anyhow::anyhow!("could not parse the query: {e}"))?;
-        let reader = self.index.reader()?;
+        let reader = self.committed_reader()?;
         let searcher = reader.searcher();
         // Find the document address for this note by its exact path term.
         let by_path = tantivy::query::TermQuery::new(
@@ -997,7 +1021,7 @@ impl Searcher {
         // A fresh reader per search sees the latest commit, which is what an
         // update_note() followed by a search must guarantee. Readers are cheap;
         // a cached one would need reload plumbing for no measured gain yet.
-        let reader = self.index.reader()?;
+        let reader = self.committed_reader()?;
         let searcher = reader.searcher();
         let scoped = |query: Box<dyn Query>| -> Box<dyn Query> {
             if let Some(paths) = paths {
@@ -1323,3 +1347,7 @@ mod hidden_link_context_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "search_lifecycle_tests.rs"]
+mod lifecycle_tests;

@@ -16,6 +16,8 @@ pub(crate) struct View {
     data: Arc<parse::Outline>,
     expanded: BTreeSet<usize>,
     visible: Vec<usize>,
+    current: Option<usize>,
+    sample_pending: bool,
     list: ListState,
 }
 
@@ -32,6 +34,8 @@ impl View {
             data: Arc::default(),
             expanded: BTreeSet::new(),
             visible: Vec::new(),
+            current: None,
+            sample_pending: false,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
         }
     }
@@ -106,6 +110,7 @@ impl View {
         self.data = Arc::default();
         self.visible.clear();
         self.expanded.clear();
+        self.current = None;
         self.list.reset(0);
         cx.notify();
         let Some((input, language)) = self.input.as_ref().zip(self.language) else {
@@ -148,7 +153,50 @@ impl View {
                 offset_in_item: top.offset_in_item,
             });
         }
+        self.sync_current(cx);
         cx.notify();
+    }
+
+    /// Paint this outside the cached panel. Editor notifications precede layout,
+    /// and the editor publishes its viewport during paint. A deferred sample
+    /// sees that completed paint regardless of sibling order, without requesting
+    /// another frame unless the highlighted row actually changed.
+    pub(crate) fn track_viewport(
+        outline: impl Fn(&App) -> Option<Entity<Self>> + 'static,
+    ) -> impl IntoElement {
+        canvas(
+            |_, _, _| (),
+            move |_, _, _, cx| {
+                let Some(view) = outline(cx) else { return };
+                view.update(cx, |this, cx| {
+                    if this.input.is_none() || this.sample_pending {
+                        return;
+                    }
+                    this.sample_pending = true;
+                    let view = cx.entity().downgrade();
+                    cx.defer(move |cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.sample_pending = false;
+                            this.sync_current(cx);
+                        });
+                    });
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    fn sync_current(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .input
+            .as_ref()
+            .and_then(|input| input.read(cx).top_visible_line())
+            .and_then(|line| self.data.current(line, &self.visible));
+        if self.current != current {
+            self.current = current;
+            cx.notify();
+        }
     }
 
     pub(super) fn has_entries(&self) -> bool {
@@ -196,6 +244,7 @@ impl Render for View {
                         let entry = &this.data.entries[ix];
                         let p = brand::palette(cx);
                         let hover = brand::reader_palette(cx).hover;
+                        let current = this.current == Some(ix);
                         h_flex()
                             .id(("file-outline-row", ix))
                             .debug_selector(move || format!("file-outline-row-{ix}"))
@@ -207,6 +256,11 @@ impl Render for View {
                             .border_l_2()
                             .border_color(gpui::transparent_black())
                             .text_color(p.text_muted)
+                            .when(current, |row| {
+                                row.border_color(p.accent)
+                                    .text_color(p.text)
+                                    .font_weight(FontWeight::MEDIUM)
+                            })
                             .overflow_hidden()
                             .cursor_pointer()
                             .hover(move |row| row.bg(hover))

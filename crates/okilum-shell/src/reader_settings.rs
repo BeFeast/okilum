@@ -995,6 +995,7 @@ impl Settings {
                                                         .label(label)
                                                         .icon(Icon::default().path(icon))
                                                         .selected(selected)
+                                                        .disabled(updater::status::in_flight())
                                                         .when(selected, |button| button.primary())
                                                         .tooltip(if value {
                                                             "Beta: preview new features and fixes"
@@ -1215,12 +1216,20 @@ impl Render for Settings {
 /// The last check's outcome, inline next to the check button (#995). A found
 /// update offers its install action here instead of a modal.
 pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement> {
-    let line = updater::status_line()?;
+    render_update_status(id, updater::status::get(), updater::restart_now, cx)
+}
+
+pub(crate) fn render_update_status(
+    id: &'static str,
+    status: updater::status::CheckStatus,
+    restart: impl Fn(&mut App) + 'static,
+    cx: &App,
+) -> Option<AnyElement> {
+    let restart = std::rc::Rc::new(restart);
+    let line = updater::status::text(&status, std::time::SystemTime::now())?;
+    let progress = updater::status::progress(&status);
     let p = brand::palette(cx);
-    let available = matches!(
-        updater::status::get(),
-        updater::status::CheckStatus::Available(_)
-    );
+    let available = matches!(status, updater::status::CheckStatus::Available(_));
     Some(
         h_flex()
             .gap_2()
@@ -1229,10 +1238,53 @@ pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement
             .child(
                 div()
                     .debug_selector(move || format!("{id}-update-status"))
-                    .text_sm()
-                    .text_color(p.text_muted)
+                    .text_size(px(13.))
+                    .text_color(p.text)
                     .child(line),
             )
+            .when_some(progress, |row, progress| {
+                row.child(
+                    gpui_base::Progress::new(SharedString::from(format!("{id}-update-progress")))
+                        .debug_selector(move || format!("{id}-update-progress"))
+                        .accessibility_label("Update progress")
+                        .value(f32::from(progress.percent.unwrap_or(0)))
+                        .indeterminate(progress.percent.is_none())
+                        .w(px(200.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(p.surface_raised)
+                        .child(if let Some(percent) = progress.percent {
+                            div()
+                                .h_full()
+                                .w(gpui::relative(f32::from(percent) / 100.))
+                                .rounded_full()
+                                .bg(p.accent)
+                                .into_any_element()
+                        } else {
+                            let fill = div().size_full().rounded_full().bg(p.accent);
+                            if cx.reduce_motion() {
+                                fill.opacity(0.45).into_any_element()
+                            } else {
+                                fill.with_animation(
+                                    SharedString::from(format!("{id}-update-indeterminate")),
+                                    Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                                    |fill, t| fill.opacity(0.25 + 0.5 * (1. - (2. * t - 1.).abs())),
+                                )
+                                .into_any_element()
+                            }
+                        }),
+                )
+                .when(progress.restart, |row| {
+                    row.child(
+                        Button::new(SharedString::from(format!("{id}-restart-update")))
+                            .debug_selector(move || format!("{id}-restart-update"))
+                            .small()
+                            .label("Restart now")
+                            .on_click(move |_, _, cx| restart(cx)),
+                    )
+                })
+            })
             .when(available, |row| {
                 row.child(
                     Button::new(SharedString::from(format!("{id}-install-update")))

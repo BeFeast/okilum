@@ -6,10 +6,14 @@ pub(super) struct ManagerPanel {
     project: Project,
     state: Option<PathBuf>,
     pub(super) focused: bool,
+    #[cfg(any(target_os = "macos", test))]
+    previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
     error: Option<String>,
     loading: bool,
     generation: u64,
+    #[cfg(target_os = "macos")]
+    focus_routing: Option<crate::reader_manager_focus::FocusRouting>,
     #[cfg(target_os = "macos")]
     webview: Option<Entity<gpui_wry::WebView>>,
 }
@@ -59,13 +63,43 @@ impl ManagerPanel {
             project,
             state: saved_state,
             focused: false,
+            #[cfg(any(target_os = "macos", test))]
+            previous_gpui_focus: None,
             origin,
             error: None,
             loading: false,
             generation: 0,
             #[cfg(target_os = "macos")]
+            focus_routing: None,
+            #[cfg(target_os = "macos")]
             webview: None,
         }
+    }
+
+    // Called for the AppKit mouse-down notification, not merely DOM focus.
+    #[cfg(any(target_os = "macos", test))]
+    fn native_focus_entered(
+        &mut self,
+        generation: u64,
+        owns_native_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.generation {
+            return;
+        }
+        if !owns_native_focus {
+            self.focused = false;
+            return;
+        }
+        if let Some(focus) = window.focused(cx) {
+            self.previous_gpui_focus = Some(focus);
+        }
+        // Window::blur clears GPUI's logical input and pending chords without
+        // changing AppKit's first responder, which is already the WKWebView.
+        window.blur(cx);
+        self.focused = true;
+        cx.notify();
     }
 
     pub(super) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -81,6 +115,10 @@ impl ManagerPanel {
                 }
             });
         }
+        #[cfg(target_os = "macos")]
+        if let Some(routing) = &self.focus_routing {
+            routing.refresh();
+        }
         if !visible && self.focused {
             self.focused = false;
             cx.notify();
@@ -90,6 +128,8 @@ impl ManagerPanel {
     pub(super) fn hide(&mut self, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
         self.focused = false;
+        #[cfg(target_os = "macos")]
+        self.focus_routing.take();
         #[cfg(target_os = "macos")]
         if let Some(view) = self.webview.take() {
             view.update(cx, |view, _| view.hide());
@@ -136,8 +176,11 @@ impl ManagerPanel {
                 match result {
                     Ok(url) => {
                         #[cfg(target_os = "macos")]
-                        match Self::browser(&url, window, cx) {
-                            Ok(view) => this.webview = Some(view),
+                        match Self::browser(&url, generation, window, cx) {
+                            Ok((view, routing)) => {
+                                this.focus_routing = Some(routing);
+                                this.webview = Some(view);
+                            }
                             Err(e) => {
                                 this.error = Some(format!("Manager could not be opened: {e:#}"))
                             }
@@ -159,23 +202,43 @@ impl ManagerPanel {
     #[cfg(target_os = "macos")]
     fn browser(
         url: &url::Url,
+        generation: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> anyhow::Result<Entity<gpui_wry::WebView>> {
+    ) -> anyhow::Result<(
+        Entity<gpui_wry::WebView>,
+        crate::reader_manager_focus::FocusRouting,
+    )> {
         use raw_window_handle::HasWindowHandle;
         use wry::WebViewBuilderExtDarwin;
         let handle = HasWindowHandle::window_handle(window)?;
         // Stable application-specific WKWebsiteDataStore. Cookies never enter
         // Okilum settings or the MCP keychain; login happens in this view.
         let (send, receive) = async_channel::unbounded::<String>();
+        let native_events = send.clone();
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = receive.recv().await {
                 if this
-                    .update_in(cx, |this, _window, cx| {
-                        this.focused = event == "focus";
-                        if event == "escape" {
-                            if let Some(view) = &this.webview {
-                                let _ = view.read(cx).raw().focus_parent();
+                    .update_in(cx, |this, window, cx| {
+                        // An old browser's queued callbacks must not affect its successor.
+                        if this.generation != generation {
+                            return;
+                        }
+                        let owns_native_focus =
+                            this.focus_routing.as_ref().is_some_and(|routing| {
+                                routing.refresh();
+                                routing.focused()
+                            });
+                        if event == "native-focus" {
+                            this.native_focus_entered(generation, owns_native_focus, window, cx);
+                        } else {
+                            this.focused = owns_native_focus;
+                        }
+                        // Escape already returned native focus. Do not overwrite a newer
+                        // outside input or a subsequent re-entry into the webview.
+                        if event == "escape" && !owns_native_focus && window.focused(cx).is_none() {
+                            if let Some(focus) = this.previous_gpui_focus.take() {
+                                focus.focus(window, cx);
                             }
                         }
                         cx.notify();
@@ -187,8 +250,31 @@ impl ManagerPanel {
             }
         })
         .detach();
+        // #1596: links and copies the T3 page cannot carry out in a WKWebView.
+        let (link_send, link_receive) =
+            async_channel::unbounded::<crate::reader_manager_links::PageRequest>();
+        cx.spawn_in(window, async move |_, cx| {
+            while let Ok(request) = link_receive.recv().await {
+                let handled = cx.update(|_, cx| match request {
+                    crate::reader_manager_links::PageRequest::OpenExternal(url) => {
+                        cx.open_url(url.as_str())
+                    }
+                    crate::reader_manager_links::PageRequest::Copy(text) => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
+                    }
+                });
+                if handled.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let new_windows = link_send.clone();
+        let t3 = url.clone();
+        let store = crate::reader_manager_store::application_identifier();
         let browser = wry::WebViewBuilder::new()
-            .with_data_store_identifier(*b"OkilumManagerWeb")
+            .with_incognito(false)
+            .with_data_store_identifier(store)
             .with_url(url.as_str())
             .with_focused(false)
             .with_initialization_script(
@@ -204,16 +290,38 @@ impl ManagerPanel {
                 }, true);
             "#,
             )
+            .with_initialization_script(&crate::reader_manager_links::page_script(&url))
             .with_ipc_handler(move |request| {
                 if matches!(request.body().as_str(), "focus" | "blur" | "escape") {
                     let _ = send.try_send(request.body().clone());
+                } else if let Some(request) = crate::reader_manager_links::page_request(
+                    request.body(),
+                    &request.uri().to_string(),
+                    &t3,
+                ) {
+                    let _ = link_send.try_send(request);
                 }
+            })
+            // target=_blank links and any window.open the page script did not
+            // take: WebKit gets no second web view; the system browser opens it.
+            .with_new_window_req_handler(move |url, _| {
+                if let Some(url) = crate::reader_manager_links::external_url(&url) {
+                    let _ = new_windows
+                        .try_send(crate::reader_manager_links::PageRequest::OpenExternal(url));
+                }
+                wry::NewWindowResponse::Deny
             })
             .with_navigation_handler(|url| {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
             })
             .build_as_child(&handle)?;
-        Ok(cx.new(|cx| gpui_wry::WebView::new(browser, window, cx)))
+        crate::reader_manager_store::verify(&browser, &store)?;
+        let routing =
+            crate::reader_manager_focus::FocusRouting::new(&browser, window, native_events)?;
+        Ok((
+            cx.new(|cx| gpui_wry::WebView::new(browser, window, cx)),
+            routing,
+        ))
     }
 }
 
@@ -259,7 +367,14 @@ impl Reader {
         self.project_navigation
             .manager_panel
             .as_ref()
-            .is_some_and(|panel| panel.read(cx).focused)
+            .is_some_and(|panel| {
+                let panel = panel.read(cx);
+                #[cfg(target_os = "macos")]
+                if let Some(routing) = &panel.focus_routing {
+                    return routing.focused();
+                }
+                panel.focused
+            })
     }
 
     pub(super) fn render_manager_panel(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -283,5 +398,85 @@ impl Reader {
         }
         let _ = cx;
         div().p_4().child("Loading manager…").into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod native_focus_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn webview_mouse_down_notification_clears_focused_gpui_origin_input(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let project = Project {
+            folder: temp.path().into(),
+            name: "Test".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("test".into()),
+            manager_project: Some("brain".into()),
+            manager: Manager::Thread("mcp:test".into()),
+        };
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let panel = cx.new(|cx| ManagerPanel::new(project, None, window, cx));
+            Root::new(panel, window, cx)
+        });
+        visual.run_until_parked();
+        let panel = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ManagerPanel>().unwrap()
+        });
+        panel.update_in(visual, |panel, window, cx| {
+            panel.origin.update(cx, |input, cx| {
+                input.set_value("https://t3.oklabs.uk", window, cx);
+                input.focus_handle(cx).focus(window, cx);
+            });
+        });
+        visual.run_until_parked();
+        panel.update_in(visual, |panel, window, cx| {
+            assert_eq!(
+                window.focused(cx),
+                Some(panel.origin.read(cx).focus_handle(cx)),
+                "positive control: origin owns GPUI input"
+            );
+            // Same handler called by the native mouse-down callback. A real
+            // WKWebView first-responder check remains Oleg's Mac acceptance.
+            panel.native_focus_entered(panel.generation, true, window, cx);
+            assert!(
+                window.focused(cx).is_none(),
+                "webview entry must release every GPUI input"
+            );
+            assert!(panel.focused);
+            assert!(
+                panel.previous_gpui_focus.is_some(),
+                "Escape can restore the prior GPUI focus"
+            );
+            assert_eq!(
+                panel.origin.read(cx).value().as_str(),
+                "https://t3.oklabs.uk"
+            );
+            // Entry was queued, but an outside click acquired another input
+            // before delivery. The live native-focus check must preserve it.
+            let queued_generation = panel.generation;
+            let outside = cx.new(|cx| InputState::new(window, cx));
+            let outside_focus = outside.read(cx).focus_handle(cx);
+            outside_focus.focus(window, cx);
+            panel.native_focus_entered(queued_generation, false, window, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(outside_focus.clone()),
+                "late entry must not clear the outside-click target"
+            );
+            assert!(!panel.focused);
+            // A replaced browser's entry remains stale even if its successor
+            // now owns native focus.
+            panel.generation += 1;
+            panel.native_focus_entered(queued_generation, true, window, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(outside_focus),
+                "old routing instance cannot blur a successor's GPUI target"
+            );
+        });
     }
 }

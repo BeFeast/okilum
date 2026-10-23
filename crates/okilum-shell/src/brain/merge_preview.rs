@@ -11,6 +11,23 @@ pub(super) const MAX_INPUT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_LINES: usize = 4096;
 const MAX_ELAPSED: Duration = Duration::from_millis(100);
 
+// Unbounded work is available only to deterministic correctness fixtures.
+#[derive(Clone, Copy)]
+enum Deadline {
+    At(Instant),
+    #[cfg(test)]
+    Unbounded,
+}
+impl Deadline {
+    fn instant(self) -> Option<Instant> {
+        match self {
+            Self::At(at) => Some(at),
+            #[cfg(test)]
+            Self::Unbounded => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ManualReason {
     MissingBase,
@@ -61,14 +78,35 @@ pub(super) fn preview_merge(
     current: Option<&[u8]>,
     draft: &[u8],
 ) -> MergePreview {
-    preview_until(base, current, draft, Instant::now() + MAX_ELAPSED)
+    preview_until(
+        base,
+        current,
+        draft,
+        Deadline::At(Instant::now() + MAX_ELAPSED),
+    )
+}
+
+// Only fixtures may disable the clock; runtime callers always use preview_merge.
+#[cfg(test)]
+pub(super) fn preview_for_test(
+    base: Option<&[u8]>,
+    current: Option<&[u8]>,
+    draft: &[u8],
+    deadline: Option<Instant>,
+) -> MergePreview {
+    preview_until(
+        base,
+        current,
+        draft,
+        deadline.map_or(Deadline::Unbounded, Deadline::At),
+    )
 }
 
 fn preview_until(
     base: Option<&[u8]>,
     current: Option<&[u8]>,
     draft: &[u8],
-    deadline: Instant,
+    deadline: Deadline,
 ) -> MergePreview {
     match merge(base, current, draft, deadline) {
         Ok((text, current_edits, draft_edits)) => MergePreview::Ready {
@@ -79,8 +117,11 @@ fn preview_until(
         Err(reason) => MergePreview::Manual { reason },
     }
 }
-fn check_time(deadline: Instant) -> Result<(), ManualReason> {
-    if Instant::now() >= deadline {
+fn check_time(deadline: Deadline) -> Result<(), ManualReason> {
+    if deadline
+        .instant()
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
         Err(ManualReason::WorkLimit)
     } else {
         Ok(())
@@ -90,7 +131,7 @@ fn merge(
     base: Option<&[u8]>,
     current: Option<&[u8]>,
     draft: &[u8],
-    deadline: Instant,
+    deadline: Deadline,
 ) -> Result<(String, usize, usize), ManualReason> {
     let base = base.ok_or(ManualReason::MissingBase)?;
     let current = current.ok_or(ManualReason::MissingCurrent)?;
@@ -185,10 +226,10 @@ fn edits<'a>(
     base: &[&'a str],
     next: &[&'a str],
     counts: &BTreeMap<&str, usize>,
-    deadline: Instant,
+    deadline: Deadline,
 ) -> Result<Vec<Edit<'a>>, ManualReason> {
     check_time(deadline)?;
-    let ops = capture_diff_slices_deadline(Algorithm::Myers, base, next, Some(deadline));
+    let ops = capture_diff_slices_deadline(Algorithm::Myers, base, next, deadline.instant());
     // similar may produce a coarse valid diff on deadline; never treat that
     // fallback as proof that a merge location is unambiguous.
     check_time(deadline)?;
@@ -247,10 +288,11 @@ fn edits<'a>(
 mod tests {
     use super::*;
     fn result(base: &str, current: &str, draft: &str) -> MergePreview {
-        preview_merge(
+        preview_until(
             Some(base.as_bytes()),
             Some(current.as_bytes()),
             draft.as_bytes(),
+            Deadline::Unbounded,
         )
     }
     fn ready(base: &str, current: &str, draft: &str) -> String {
@@ -375,7 +417,12 @@ mod tests {
             }
         );
         assert_eq!(
-            preview_until(Some(b"A\nB\n"), Some(b"X\nB\n"), b"A\nY\n", Instant::now()),
+            preview_until(
+                Some(b"A\nB\n"),
+                Some(b"X\nB\n"),
+                b"A\nY\n",
+                Deadline::At(Instant::now())
+            ),
             MergePreview::Manual {
                 reason: ManualReason::WorkLimit
             }
@@ -421,7 +468,7 @@ mod tests {
                 Some(base.as_bytes()),
                 Some(current.as_bytes()),
                 draft.as_bytes(),
-                Instant::now() + Duration::from_secs(10),
+                Deadline::Unbounded,
             ),
             MergePreview::Ready {
                 text: expected.concat(),
@@ -434,7 +481,7 @@ mod tests {
                 Some(base.as_bytes()),
                 Some(current.as_bytes()),
                 draft.as_bytes(),
-                Instant::now(),
+                Deadline::At(Instant::now()),
             ),
             MergePreview::Manual {
                 reason: ManualReason::WorkLimit,

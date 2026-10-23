@@ -93,3 +93,10 @@ jobs:
       # #1312: the shaped-line cache over the right-to-left repair equals the
       # shaper on Windows (the order text_platform.rs installs).
       name: Run native text tests
+
+    - name: Run updater progress and restart regressions
+      shell: pwsh
+      run: |
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        cargo test --locked -p okilum-shell --bin okilum updater:: -- --nocapture --test-threads=1
+        exit $LASTEXITCODE

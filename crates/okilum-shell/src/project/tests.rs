@@ -294,6 +294,129 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+        bind_keys(cx);
+    });
+    let fixture = tempfile::tempdir().unwrap();
+    let vault = fixture.path().join("vault");
+    let grisaille_id = "b0728fed-73e6-45c2-9c61-a96f7df467f8";
+    for (folder, manifest) in [
+        ("Dev/Areas/App", "kind: knowledge\n".to_owned()),
+        (
+            "Dev/Areas/grisaille",
+            format!(
+                "slug: grisaille\nkind: code\nt3:\n  manager: {{thread_id: \"{grisaille_id}\"}}\n"
+            ),
+        ),
+        ("Dev/Areas/intake", "kind: operating-area\n".to_owned()),
+        ("Music/Areas/Broken", "kind: [code]\n".to_owned()),
+    ] {
+        std::fs::create_dir_all(vault.join(folder).join("ops")).unwrap();
+        std::fs::write(vault.join(folder).join("ops/project.yaml"), manifest).unwrap();
+        std::fs::write(vault.join(folder).join("note.md"), "# Project note\n").unwrap();
+    }
+    std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(vault.clone()),
+                    note: Some("note.md".into()),
+                    index_dir: Some(fixture.path().join("index")),
+                    session_directory: Some(fixture.path().join("state")),
+                    ..Opts::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    visual.simulate_resize(size(px(1400.), px(900.)));
+    visual.run_until_parked();
+    let show = |visual: &mut gpui::VisualTestContext| {
+        visual.update(|window, cx| {
+            reader.update(cx, |view, cx| {
+                view.show_app_section(reader_project_navigation::Section::Projects, window, cx)
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    show(visual);
+    reader.read_with(visual, |view, _| {
+        let discovery = &view.project_navigation.discovery;
+        let names: Vec<_> = discovery.projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["App", "grisaille"], "intake is skipped quietly");
+        assert_eq!(
+            discovery.projects[1].manager,
+            okilum_t3::projects::Manager::Thread(grisaille_id.into()),
+            "a plain T3 UUID is a valid manager id"
+        );
+        assert_eq!(discovery.errors.len(), 1, "{:?}", discovery.errors);
+        assert!(discovery.errors[0].0.ends_with("Music/Areas/Broken"));
+    });
+    // The picker is the rendered surface: left-aligned, grouped by domain,
+    // the broken manifest is a muted row in its own domain.
+    let section = visual
+        .debug_bounds("app-section")
+        .expect("section rendered");
+    let picker = visual
+        .debug_bounds("projects-picker")
+        .expect("the shared picker is the Projects surface");
+    assert!(
+        picker.origin.x - section.origin.x < px(40.),
+        "left-aligned, not centered: {picker:?} in {section:?}"
+    );
+    for selector in [
+        "project-domain-0",
+        "project-choice-1",
+        "project-choice-2",
+        "project-domain-3",
+        "project-problem-4",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    assert!(visual.debug_bounds("project-choice-5").is_none());
+    let entity = reader.read_with(visual, |view, _| {
+        view.project_navigation.picker.clone().unwrap()
+    });
+    entity.read_with(visual, |picker, _| {
+        let groups = picker.model().groups();
+        let labels: Vec<_> = groups.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(labels, ["Dev", "Music"]);
+        assert!(groups[1].problems[0]
+            .detail
+            .contains("invalid project kind"));
+    });
+    // Choosing a row enters through the existing pipeline and becomes recent.
+    let app = visual.debug_bounds("project-choice-1").unwrap();
+    visual.simulate_click(app.center(), gpui::Modifiers::none());
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert_eq!(
+            view.project_navigation.active.as_ref().unwrap().folder,
+            vault.join("Dev/Areas/App")
+        );
+        assert_eq!(view.sidebar.recent_projects, ["Dev/Areas/App"]);
+    });
+    show(visual);
+    entity.read_with(visual, |picker, _| {
+        let groups = picker.model().groups();
+        assert_eq!(groups[0].label, "Recent", "recents first");
+        assert_eq!(groups[0].rows[0].project.name, "App");
+    });
+}
+
+#[gpui::test]
 fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);

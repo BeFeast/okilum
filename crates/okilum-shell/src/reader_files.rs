@@ -1231,12 +1231,20 @@ mod tests {
             })
         };
         let fit = zoom(visual);
+        let note_zoom = visual.update(|_, cx| reader_ui_state::text_zoom(cx));
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-="
         } else {
             "ctrl-="
         });
         assert_eq!(zoom(visual), fit + 1);
+        visual.update(|_, cx| {
+            assert_eq!(
+                reader_ui_state::text_zoom(cx),
+                note_zoom,
+                "PDF zoom never changes note text zoom"
+            )
+        });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-0"
         } else {

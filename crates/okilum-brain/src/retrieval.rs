@@ -399,6 +399,46 @@ impl BrainIndex {
         index.trigger.send(false)?;
         Ok(index)
     }
+    /// Service tests need a completed generation, not watcher/debounce timing.
+    #[cfg(test)]
+    pub(crate) fn ready_for_service_test(
+        brain_id: String,
+        root: PathBuf,
+        operational: PathBuf,
+    ) -> Result<(Arc<Self>, mpsc::Receiver<bool>)> {
+        let cache_root = operational.join("derived/brain-index-v1");
+        fs::create_dir_all(&cache_root)?;
+        let source = SourceStore::open_read_only(&brain_id, &root, &operational.join("source"))?;
+        let (trigger, requests) = mpsc::channel();
+        let index = Arc::new(Self {
+            brain_id,
+            root,
+            records_dir: "records".into(),
+            operational,
+            cache_root,
+            source,
+            view: RwLock::new(View {
+                epoch: 0,
+                status: IndexStatus::default(),
+                generation: None,
+            }),
+            trigger,
+            _watcher: Mutex::new(None),
+        });
+        index.refresh(false)?;
+        Ok((index, requests))
+    }
+    /// Drive the real forced refresh without a worker scheduling deadline.
+    #[cfg(test)]
+    pub(crate) fn rebuild_for_service_test(
+        &self,
+        requests: &mpsc::Receiver<bool>,
+    ) -> Result<IndexStatus> {
+        self.rebuild()?;
+        ensure!(requests.recv()?, "expected a forced rebuild request");
+        self.refresh(true)?;
+        Ok(self.status())
+    }
     fn relevant_event(&self, event: &notify::Event) -> bool {
         if matches!(event.kind, EventKind::Access(_)) {
             return false;

@@ -21,6 +21,7 @@ mod desktop_app_menu;
 mod export;
 #[cfg(windows)]
 mod markdown_handler;
+mod note_paste;
 mod open_in;
 mod pdf_engine;
 mod platform;
@@ -50,6 +51,7 @@ mod reader_editor;
 mod reader_embeds;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
+mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
@@ -59,8 +61,14 @@ mod reader_instance;
 mod reader_layout;
 mod reader_loading;
 mod reader_log;
+#[cfg(target_os = "macos")]
+mod reader_manager_focus;
+#[cfg(any(target_os = "macos", test))]
+mod reader_manager_links;
 mod reader_manager_panel;
 mod reader_manager_start;
+#[cfg(any(target_os = "macos", test))]
+mod reader_manager_store;
 mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;
@@ -114,6 +122,7 @@ mod reader_task_actions;
 mod reader_tasks;
 #[cfg(any(unix, windows))]
 mod reader_templates;
+mod reader_text_zoom;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod reader_thumbnail;
 #[cfg(any(unix, windows))]
@@ -347,6 +356,7 @@ const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
 const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
+    reader_text_zoom::bind_keys(cx);
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
@@ -2911,8 +2921,15 @@ impl Reader {
         if let Some(title) = quick_open::drawing_title(path) {
             return title;
         }
-        if path.ends_with(".md") {
-            self.vault.note_title(path)
+        if !self.tree.is_directory(path)
+            && Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            self.backlink_titles
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| self.vault.note_title(path))
         } else {
             path.rsplit('/').next().unwrap_or(path).to_owned()
         }
@@ -3011,7 +3028,7 @@ impl Reader {
                     label: self.note_label(path),
                     meta: None,
                     location: None,
-                    folder: !path.ends_with(".md"),
+                    folder: self.tree.is_directory(path),
                 });
             }
         }
@@ -3110,11 +3127,14 @@ impl Reader {
                 self.tree_revealed.clear();
             }
             // Titles belong to this inventory and root.
-            Arc::make_mut(&mut self.backlink_titles).clear();
+            if !same_root {
+                Arc::make_mut(&mut self.backlink_titles).clear();
+            }
             self.backlinks_expanded.clear();
             // Collapsed cards are shorter: the list measures them again.
             self.backlinks_list.remeasure();
         }
+        self.tree.set_titles(self.backlink_titles.clone());
         let selected = self.selected_file().to_owned();
         #[cfg(any(unix, windows))]
         let selected = self
@@ -3277,7 +3297,14 @@ impl Reader {
 
     /// Folders header «Collapse all» (#410).
     fn collapse_folders(&mut self, cx: &mut Context<Self>) {
-        self.tree.collapse_all();
+        if self.single_file {
+            // Folder browsing is a flat file list, not an expanded vault tree.
+            if !self.sidebar.is_collapsed(reader_sidebar::Section::Folders) {
+                self.toggle_section(reader_sidebar::Section::Folders, cx);
+            }
+        } else {
+            self.tree.collapse_all();
+        }
         cx.notify();
     }
 
@@ -3516,6 +3543,7 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
+                    .child(reader_feedback::button(cx))
                     .child(reader_more_menu(
                         self.vault_root.clone(),
                         self.selected_file().to_owned(),
@@ -4244,13 +4272,6 @@ impl Reader {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(tokens.text_faint)
                     .cursor_pointer()
-                    .tooltip(|window, cx| {
-                        gpui_component::tooltip::Tooltip::new(if cfg!(target_os = "macos") {
-                            "Option-click to collapse or expand all sections"
-                        } else {
-                            "Alt-click to collapse or expand all sections"
-                        }).build(window, cx)
-                    })
                     .hover(move |d| d.text_color(p.text_muted))
                     .child(
                         Icon::new(if closed {
@@ -4261,7 +4282,18 @@ impl Reader {
                         .xsmall(),
                     )
                     .child(icon.xsmall())
-                    .child(div().flex_1().child(section.label()))
+                    .child(
+                        div().id(SharedString::from(format!("section-label-{}", section.label())))
+                            .debug_selector(move || format!("section-label-{}", section.label()))
+                            .flex_1().child(section.label())
+                    .tooltip(|window, cx| {
+                        gpui_component::tooltip::Tooltip::new(if cfg!(target_os = "macos") {
+                            "Option-click to collapse or expand all sections"
+                        } else {
+                            "Alt-click to collapse or expand all sections"
+                        }).build(window, cx)
+                    })
+                    )
                     .when(section == Section::Folders, |row| {
                         if folder_actions_overflow {
                             return row.child(
@@ -4405,6 +4437,7 @@ impl Reader {
                             .child(
                                 div()
                                     .id("toggle-hidden-files")
+                                    .debug_selector(|| "toggle-hidden-files".into())
                                     .flex_none()
                                     .px_1()
                                     .text_color(if show_hidden { p.accent } else { p.text_muted })
@@ -4454,6 +4487,10 @@ impl Reader {
                     .when_some(count, |d, count| {
                         d.child(
                             div()
+                                .id(SharedString::from(format!("section-count-{}", section.label())))
+                                .debug_selector(move || format!("section-count-{}", section.label()))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(|_, _, cx| cx.stop_propagation())
                                 .px_1p5()
                                 .rounded_full()
                                 .bg(p.tile)
@@ -4536,6 +4573,13 @@ impl Reader {
                     let open_act = act.clone();
                     row_base(group.clone())
                         .when(location.is_some(), |row| row.h(px(44.)))
+                        .tooltip({
+                            let path = path.clone();
+                            move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(path.clone())
+                                    .build(window, cx)
+                            }
+                        })
                         .debug_selector({
                             let group = group.clone();
                             move || group.to_string()
@@ -4601,14 +4645,7 @@ impl Reader {
                     let directory = row.kind == EntryKind::Directory;
                     let is_current = row.path == current;
                     let is_cursor = cursor.as_ref() == Some(&row.path);
-                    let label = match row.kind {
-                        EntryKind::Markdown => row
-                            .label
-                            .strip_suffix(".md")
-                            .unwrap_or(&row.label)
-                            .to_string(),
-                        _ => row.label.clone(),
-                    };
+                    let label = row.label.clone();
                     let icon = match row.kind {
                         EntryKind::Directory if row.depth == 0 => None,
                         EntryKind::Directory if row.expanded => Some(IconName::FolderOpen),
@@ -4655,6 +4692,13 @@ impl Reader {
                         })
                         .group(group.clone())
                         .pl(px(4. + row.depth as f32 * 14.))
+                        .tooltip({
+                            let path = row.path.clone();
+                            move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(path.clone())
+                                    .build(window, cx)
+                            }
+                        })
                         .cursor_pointer()
                         .when(is_current, |d| {
                             d.bg(p.selected).font_weight(FontWeight::MEDIUM)
@@ -6223,7 +6267,9 @@ fn display_title(path: &Path) -> Option<String> {
 }
 
 fn display_title_source(source: &str) -> Option<String> {
-    display_title_bytes(&source.as_bytes()[..source.len().min(16 * 1024)])
+    // Reconciliation already owns these bytes; do not miss an H1 after a long
+    // introduction or perform another filesystem read for sidebar labels.
+    display_title_bytes(source.as_bytes())
 }
 
 fn display_title_bytes(head: &[u8]) -> Option<String> {
@@ -6562,6 +6608,7 @@ impl Render for Reader {
         let bounds_view = cx.entity().downgrade();
         let main = v_flex()
             .id("reader-document")
+            .map(|view| reader_text_zoom::document(view, cx))
             .debug_selector(|| "reader-document".into())
             .ml(px(if overlay { 0. } else { panel_widths.notes }))
             .mr(px(if overlay { 0. } else { panel_widths.backlinks }))
@@ -6705,6 +6752,7 @@ impl Render for Reader {
                 READER_CONTEXT
             })
             .track_focus(&self.focus_handle)
+            .map(|view| reader_text_zoom::reader(view, cx))
             .on_action(
                 cx.listener(|this, _: &reader_reminder::CopyLinkToLine, window, cx| {
                     this.copy_link_to_line(window, cx)
@@ -7309,6 +7357,11 @@ fn main() {
         }
         drop(recovery_phase);
         cx.set_global(platform::ManagedClipboard(clipboard));
+        // Notes take images and rich text where the platform can read them (#1602).
+        if let Some(clipboard) = note_paste::platform_note_clipboard() {
+            cx.set_global(note_paste::ManagedNoteClipboard(clipboard));
+        }
+        note_paste::install_menu(cx);
         let components_phase = diagnostics.phase("components_init");
         gpui_component::init(cx);
         reader_mermaid::register();
@@ -9359,6 +9412,90 @@ mod document_link_landing_tests {
             view.update_in(visual, |_, window, _| window.remove_window());
             visual.run_until_parked();
         }
+    }
+
+    #[gpui::test]
+    fn folder_view_count_collapse_and_tooltip_targets(cx: &mut gpui::TestAppContext) {
+        use reader_sidebar::Section;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("folder");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Note.md"), "# Note").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("Note.md")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        view.update(visual, |v, cx| {
+            assert!(v.single_file, "exercise the non-vault launch path");
+            v.panels.open(reader_layout::Panel::Notes);
+            v.load_quick_folder(String::new(), cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let visible = |visual: &mut gpui::VisualTestContext| {
+            view.read_with(visual, |v, _| {
+                v.sidebar_items()
+                    .iter()
+                    .any(|item| matches!(item, SideItem::Tree(_)))
+            })
+        };
+        assert!(visible(visual), "positive control: populated file list");
+        let count = visual.debug_bounds("section-count-Folders").unwrap();
+        visual.simulate_click(count.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visible(visual), "count clicks must leave files visible");
+        let label = visual.debug_bounds("section-label-Folders").unwrap();
+        for id in [
+            "folders-new-note",
+            "folders-new-folder",
+            "folders-collapse-all",
+            "folders-focus-current",
+            "toggle-hidden-files",
+        ] {
+            let action = visual
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("missing action {id}"));
+            assert!(
+                !label.contains(&action.center()),
+                "section tooltip must not cover {id}"
+            );
+        }
+        let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
+        visual.simulate_click(collapse.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!visible(visual), "collapse must hide even a flat file list");
+        view.read_with(visual, |v, _| {
+            assert!(v.sidebar.is_collapsed(Section::Folders))
+        });
+        // Positive control: the header still toggles the section independently.
+        let label = visual.debug_bounds("section-label-Folders").unwrap();
+        visual.simulate_click(label.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visible(visual), "header reopens files after collapse");
+        let label = visual.debug_bounds("section-label-Folders").unwrap();
+        visual.simulate_click(label.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!visible(visual), "header click still collapses files");
     }
 
     #[gpui::test]

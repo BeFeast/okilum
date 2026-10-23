@@ -208,7 +208,12 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
     #[cfg(test)]
     MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
     let Facts { capabilities, date } = facts.0.get();
-    editor_entries(&capabilities, cx.read_from_clipboard().is_some(), date)
+    // Rich-text-only and image clipboards paste too (#1602).
+    let clipboard = cx.read_from_clipboard().is_some()
+        || cx
+            .try_global::<crate::note_paste::ManagedNoteClipboard>()
+            .is_some_and(|clipboard| clipboard.0.has_content());
+    editor_entries(&capabilities, clipboard, date)
         .into_iter()
         .fold(menu, |menu, entry| match entry {
             Entry::Separator => menu.separator(),
