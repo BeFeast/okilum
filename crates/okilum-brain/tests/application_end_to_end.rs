@@ -1,4 +1,6 @@
 //! Independent application acceptance using real transports and synthetic providers.
+#[path = "../test_support/http_fixture.rs"]
+mod http_fixture;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use okilum_brain::{application::*, chat::ChatClient, *};
 use okilum_core::source::{SourceWrite, WriteBoundary};
@@ -8,7 +10,6 @@ use std::{
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    thread,
     time::Duration,
 };
 use uuid::Uuid;
@@ -22,10 +23,9 @@ const RESULT: &str = "Pack 4 AA, 2 markers, 1 tape. Buy 0 AA, 1 marker for 1 cre
 fn listener() -> TcpListener {
     TcpListener::bind("127.0.0.1:0").unwrap()
 }
-fn accept(listener: &TcpListener) -> TcpStream {
+fn accept(listener: &http_fixture::Listener) -> TcpStream {
     // Application setup and earlier provider stages can take arbitrary time.
-    // The enclosing test watchdog catches missing requests; accepting one does
-    // not impose a separate deadline on unrelated preparation.
+    // Joining the fixture reports any missing request after client completion.
     let (stream, _) = listener.accept().expect("fixture accept");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -60,15 +60,15 @@ struct Providers {
     todoist: String,
     chat: String,
     t3: String,
-    task_worker: thread::JoinHandle<()>,
-    chat_worker: thread::JoinHandle<()>,
-    t3_worker: thread::JoinHandle<Value>,
+    task_worker: http_fixture::Worker<()>,
+    chat_worker: http_fixture::Worker<()>,
+    t3_worker: http_fixture::Worker<Value>,
 }
 impl Providers {
     fn new(operation: String) -> Self {
         let tasks = listener();
         let todoist = format!("http://{}/api/v1/", tasks.local_addr().unwrap());
-        let task_worker = thread::spawn(move || {
+        let task_worker = http_fixture::Worker::spawn(tasks, move |tasks| {
             let mut original = None;
             for step in 0..4 {
                 let mut stream = accept(&tasks);
@@ -106,7 +106,7 @@ impl Providers {
         });
         let chats = listener();
         let chat = format!("http://{}/v1/", chats.local_addr().unwrap());
-        let chat_worker = thread::spawn(move || {
+        let chat_worker = http_fixture::Worker::spawn(chats, move |chats| {
             let mut stream = accept(&chats);
             let (headers, body) = request(&mut stream);
             assert!(headers.starts_with("POST /v1/chat/completions "));
@@ -126,7 +126,7 @@ impl Providers {
         });
         let t3_listener = listener();
         let t3 = format!("http://{}", t3_listener.local_addr().unwrap());
-        let t3_worker = thread::spawn(move || {
+        let t3_worker = http_fixture::Worker::spawn(t3_listener, move |t3_listener| {
             let mut command = Value::Null;
             for step in 0..4 {
                 let mut http = accept(&t3_listener);

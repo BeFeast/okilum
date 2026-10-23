@@ -1,3 +1,5 @@
+#[path = "../test_support/http_fixture.rs"]
+mod http_fixture;
 use super::*;
 use okilum_core::source::WriteBoundary;
 use std::{fs, io::Read, sync::mpsc, thread};
@@ -17,13 +19,13 @@ fn reply(status: u16, body: Value) -> Step {
 }
 struct Server {
     base: String,
-    worker: thread::JoinHandle<Vec<String>>,
+    worker: http_fixture::Worker<Vec<String>>,
 }
 impl Server {
     fn new(steps: Vec<Step>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/api/v1/", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
+        let worker = http_fixture::Worker::spawn(listener, move |listener| {
             let mut requests = vec![];
             for step in steps {
                 // Backend/client preparation happens after this server is created.

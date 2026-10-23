@@ -1,8 +1,9 @@
+#[path = "../test_support/http_fixture.rs"]
+mod http_fixture;
 use okilum_brain::todoist::*;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::thread;
 use std::time::Duration;
 
 const OP: &str = "06000000-0000-4000-8000-000000000001";
@@ -25,13 +26,13 @@ fn reply(status: u16, body: Value) -> Step {
 }
 struct Server {
     url: String,
-    worker: thread::JoinHandle<Vec<String>>,
+    worker: http_fixture::Worker<Vec<String>>,
 }
 impl Server {
     fn new(steps: Vec<Step>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/api/v1/", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
+        let worker = http_fixture::Worker::spawn(listener, move |listener| {
             let mut requests = Vec::new();
             for step in steps {
                 // Backend/client preparation happens after this server is created.
