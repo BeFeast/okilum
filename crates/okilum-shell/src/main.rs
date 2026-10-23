@@ -4424,6 +4424,7 @@ impl Reader {
                             .child(
                                 div()
                                     .id("toggle-hidden-files")
+                                    .debug_selector(|| "toggle-hidden-files".into())
                                     .flex_none()
                                     .px_1()
                                     .text_color(if show_hidden { p.accent } else { p.text_muted })
@@ -9444,7 +9445,9 @@ mod document_link_landing_tests {
             "folders-focus-current",
             "toggle-hidden-files",
         ] {
-            let action = visual.debug_bounds(id).unwrap();
+            let action = visual
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("missing action {id}"));
             assert!(
                 !label.contains(&action.center()),
                 "section tooltip must not cover {id}"
