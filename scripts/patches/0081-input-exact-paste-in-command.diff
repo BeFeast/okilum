@@ -1,0 +1,268 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 608d4f39..ca78d5aa 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -714,8 +714,10 @@ impl<M: InputModeKind> InputBaseState<M> {
+             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
+             // Blink the cursor when the window is active, pause when it's not.
+             cx.observe_window_activation(window, |input, window, cx| {
+-                input.exact_clipboard.invalidate();
++                // Leaving the window cancels a pending paste; the activation
++                // that delivered the paste command must not (#1602).
+                 if !window.is_window_active() {
++                    input.exact_clipboard.invalidate();
+                     input.cancel_mouse_gesture(cx);
+                 }
+                 if window.is_window_active() {
+@@ -2786,10 +2788,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     fn paste_exact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+-        if !self.is_editable()
+-            || !self.focus_handle.is_focused(window)
+-            || !window.is_window_active()
+-        {
++        // Key and menu commands only reach the key window, so window activity is
++        // not checked here: GPUI records an activation one executor turn after
++        // AppKit, and a paste posted right after another app hands focus back
++        // (a clipboard manager) would otherwise be dropped (#1602).
++        if !self.is_editable() || !self.focus_handle.is_focused(window) {
+             cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Cancelled));
+             return;
+         }
+@@ -2805,6 +2808,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 return;
+             }
+         };
++        if let Some(result) = provider.read_text_now(cx) {
++            // Read inside the paste command: the request completes before
++            // anything else can run, so it applies to the state it was made in.
++            if self.exact_clipboard.complete(nonce, revision) {
++                self.apply_exact_paste(nonce, result, window, cx);
++            } else {
++                cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Cancelled));
++            }
++            return;
++        }
+         let source = self.source_stamp();
+         let active = self.projection.active.clone();
+         let task = provider.read_text(request, cx);
+@@ -2815,33 +2828,40 @@ impl<M: InputModeKind> InputBaseState<M> {
+                     && source == state.source_stamp()
+                     && active == state.projection.active
+                     && state.is_editable()
+-                    && state.focus_handle.is_focused(window)
+-                    && window.is_window_active();
++                    && state.focus_handle.is_focused(window);
+                 if !valid {
+                     cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Cancelled));
+                     return;
+                 }
+-                match result {
+-                    Ok(Some(text)) => {
+-                        let text = state.clipboard_newlines(&text);
+-                        state.undo_manager.pending_intent = Some(EditIntent::Atomic);
+-                        state.replace_text_in_range_silent(None, &text, window, cx);
+-                        state.scroll_to(state.cursor(), None, cx);
+-                        cx.emit(ClipboardPasteEvent::Applied {
+-                            request: nonce,
+-                            bytes: text.len(),
+-                        });
+-                    }
+-                    Ok(None) => {
+-                        cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Unavailable))
+-                    }
+-                    Err(error) => cx.emit(ClipboardPasteEvent::Failed(error)),
+-                }
++                state.apply_exact_paste(nonce, result, window, cx);
+             });
+         })
+         .detach();
+     }
+ 
++    fn apply_exact_paste(
++        &mut self,
++        nonce: u64,
++        result: Result<Option<String>, ClipboardReadError>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        match result {
++            Ok(Some(text)) => {
++                let text = self.clipboard_newlines(&text);
++                self.undo_manager.pending_intent = Some(EditIntent::Atomic);
++                self.replace_text_in_range_silent(None, &text, window, cx);
++                self.scroll_to(self.cursor(), None, cx);
++                cx.emit(ClipboardPasteEvent::Applied {
++                    request: nonce,
++                    bytes: text.len(),
++                });
++            }
++            Ok(None) => cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Unavailable)),
++            Err(error) => cx.emit(ClipboardPasteEvent::Failed(error)),
++        }
++    }
++
+     fn push_history(
+         &mut self,
+         text: &Rope,
+@@ -4637,6 +4657,139 @@ mod tests {
+         }
+     }
+ 
++    /// Answers inside the paste command, like the macOS pasteboard reader.
++    struct InCommandClipboardProvider(Result<Option<String>, ClipboardReadError>);
++    impl ExactClipboardProvider for InCommandClipboardProvider {
++        fn read_text(
++            &self,
++            _: super::super::clipboard::ClipboardReadRequest,
++            _: &App,
++        ) -> gpui::Task<Result<Option<String>, ClipboardReadError>> {
++            panic!("an in-command read never starts the asynchronous path")
++        }
++        fn read_text_now(&self, _: &App) -> Option<Result<Option<String>, ClipboardReadError>> {
++            Some(self.0.clone())
++        }
++    }
++
++    /// #1602: a clipboard manager re-activates the window and posts Cmd+V at
++    /// once; GPUI records the activation one turn later. The paste still lands,
++    /// inside the command, with one Undo step and the busy slot released.
++    #[gpui::test]
++    fn exact_paste_in_command_lands_before_the_activation_is_recorded(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        for (response, expected) in [
++            (Ok(Some("b\u{301}🧠".to_string())), "ab\u{301}🧠c"),
++            (Ok(Some(String::new())), "ac"),
++            (Ok(None), "ac"),
++            (Err(ClipboardReadError::ChangedOffer), "ac"),
++        ] {
++            let view = InputView::new(cx);
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            let outcomes = Rc::new(std::cell::RefCell::new(Vec::new()));
++            let provider = Arc::new(InCommandClipboardProvider(response.clone()));
++            let _subscription = v.update(|window, cx| {
++                let captured = outcomes.clone();
++                let subscription =
++                    cx.subscribe(&view.input, move |_, event: &ClipboardPasteEvent, _| {
++                        captured.borrow_mut().push(event.clone())
++                    });
++                view.input.update(cx, |state, cx| {
++                    state.set_value("ac", window, cx);
++                    state.set_selected_range(1..1, cx);
++                    state.set_exact_clipboard_provider(Some(provider.clone()), cx);
++                    window.activate_window();
++                    state.focus(window, cx);
++                });
++                subscription
++            });
++            v.run_until_parked();
++            v.deactivate_window();
++            v.update(|window, cx| {
++                assert!(!window.is_window_active(), "positive control: GPUI flag is off");
++                view.input.update(cx, |state, cx| {
++                    state.paste(&Paste, window, cx);
++                    // Applied before the command returns, not on a later turn.
++                    assert_eq!(state.value().as_ref(), expected, "{response:?}");
++                });
++            });
++            v.update(|window, _| window.activate_window());
++            v.run_until_parked();
++            let outcome = outcomes.borrow().last().cloned();
++            match &response {
++                Ok(Some(text)) => assert_eq!(
++                    outcome,
++                    Some(ClipboardPasteEvent::Applied {
++                        request: 1,
++                        bytes: text.len()
++                    })
++                ),
++                Ok(None) => assert_eq!(
++                    outcome,
++                    Some(ClipboardPasteEvent::Failed(ClipboardReadError::Unavailable))
++                ),
++                Err(error) => {
++                    assert_eq!(outcome, Some(ClipboardPasteEvent::Failed(error.clone())))
++                }
++            }
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    let (id, revision, _) = state.exact_clipboard.begin().unwrap();
++                    assert!(state.exact_clipboard.complete(id, revision));
++                    if response.as_ref().is_ok_and(|text| text.as_deref() == Some("b\u{301}🧠")) {
++                        state.undo(&Undo, window, cx);
++                        assert_eq!(state.value().as_ref(), "ac");
++                    }
++                });
++            });
++        }
++    }
++
++    /// #1602: an asynchronous read started in the turn before the activation
++    /// is recorded still applies; leaving the window still cancels it.
++    #[gpui::test]
++    fn exact_async_paste_survives_activation_and_cancels_on_deactivation(
++        cx: &mut TestAppContext,
++    ) {
++        cx.update(crate::init);
++        for leave in [false, true] {
++            let view = InputView::new(cx);
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            let (sender, receiver) = futures::channel::oneshot::channel();
++            let provider = Arc::new(DelayedClipboardProvider {
++                receiver: std::sync::Mutex::new(Some(receiver)),
++                calls: std::sync::atomic::AtomicUsize::new(0),
++            });
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.set_value("ac", window, cx);
++                    state.set_selected_range(1..1, cx);
++                    state.set_exact_clipboard_provider(Some(provider.clone()), cx);
++                    window.activate_window();
++                    state.focus(window, cx);
++                })
++            });
++            v.run_until_parked();
++            v.deactivate_window();
++            v.update(|window, cx| {
++                view.input
++                    .update(cx, |state, cx| state.paste(&Paste, window, cx))
++            });
++            assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
++            v.update(|window, _| window.activate_window());
++            v.run_until_parked();
++            if leave {
++                v.deactivate_window();
++            }
++            sender.send(Ok(Some("b".into()))).unwrap();
++            v.run_until_parked();
++            v.update(|_, cx| {
++                let expected = if leave { "ac" } else { "abc" };
++                assert_eq!(view.input.read(cx).value().as_ref(), expected, "leave={leave}");
++            });
++        }
++    }
++
+     struct PrefixRevealProvider;
+     struct PrefixRevealProjection {
+         source: super::super::projection::SourceSnapshot,
+diff --git a/crates/base/src/input/clipboard.rs b/crates/base/src/input/clipboard.rs
+index 114e2797..fdb6d22e 100644
+--- a/crates/base/src/input/clipboard.rs
++++ b/crates/base/src/input/clipboard.rs
+@@ -45,6 +45,15 @@ pub trait ExactClipboardProvider: Send + Sync {
+         request: ClipboardReadRequest,
+         cx: &App,
+     ) -> Task<Result<Option<String>, ClipboardReadError>>;
++
++    /// A provider that can read inside the paste command itself answers here,
++    /// and the editor applies the text before the command returns: no window
++    /// activation, focus or selection change can come in between. `None` (the
++    /// default) keeps the asynchronous `read_text` path.
++    fn read_text_now(&self, cx: &App) -> Option<Result<Option<String>, ClipboardReadError>> {
++        let _ = cx;
++        None
++    }
+ }
+ 
+ #[derive(Default)]

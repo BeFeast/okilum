@@ -1,4 +1,6 @@
-//! Raw macOS pasteboard access isolated from the GUI and bounded by its parent.
+//! Raw macOS pasteboard access: exact `public.utf8-plain-text` bytes, read in
+//! the paste command itself (#1602), plus a helper-process reader bounded by
+//! its parent for asynchronous callers.
 use super::clipboard_process::{self, MAX_BYTES, TIMEOUT};
 use gpui::{App, Task};
 use gpui_component::input::clipboard::{
@@ -25,6 +27,22 @@ impl ExactClipboardProvider for MacClipboard {
             })
         })
     }
+
+    /// The editor's paste reads here, on the UI thread, while it handles the
+    /// user's Cmd+V or Paste command (#1602). A helper process never received
+    /// that command, and its result arrived turns later, after an activation,
+    /// layout or focus change could cancel it: pastes into notes were dropped
+    /// without a word. The read is the same one AppKit text views make.
+    fn read_text_now(&self, _: &App) -> Option<Result<Option<String>, Error>> {
+        Some(read_general())
+    }
+}
+
+/// The general pasteboard's exact UTF-8 text, in this process.
+fn read_general() -> Result<Option<String>, Error> {
+    autoreleasepool(|_| read_board(&NSPasteboard::generalPasteboard(), || {}))?
+        .map(|bytes| String::from_utf8(bytes).map_err(|_| Error::InvalidUtf8))
+        .transpose()
 }
 
 /// Runs before application, configuration, backend or GPUI startup.
