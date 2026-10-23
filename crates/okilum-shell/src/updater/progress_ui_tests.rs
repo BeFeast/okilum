@@ -1,4 +1,5 @@
 use super::status::CheckStatus;
+use gpui::prelude::*;
 use gpui::{AppContext, Context, IntoElement, Render, TestAppContext, Window};
 use gpui_component::Root;
 use std::{cell::Cell, rc::Rc};
@@ -10,12 +11,12 @@ struct UpdateControls {
 impl Render for UpdateControls {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let restarted = self.restarted.clone();
-        crate::reader_settings::render_update_status(
+        gpui::div().children(crate::reader_settings::render_update_status(
             "fixture",
             self.status.clone(),
             move |_| restarted.set(true),
             cx,
-        )
+        ))
     }
 }
 #[gpui::test]
