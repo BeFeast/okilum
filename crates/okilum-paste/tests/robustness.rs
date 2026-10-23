@@ -64,6 +64,19 @@ fn self_closing_slash_on_html_elements_still_nests() {
     });
 }
 
+/// Sibling lists nest by `data-indent` (Slack), with no DOM nesting: a
+/// steadily rising indent must not recurse once per level.
+#[test]
+fn rising_data_indent_lists() {
+    let html: String = (0..10_000)
+        .map(|i| format!("<ul data-indent=\"{i}\"><li>item {i}</li></ul>"))
+        .collect();
+    on_small_stack(move || {
+        let md = convert(&html);
+        assert!(md.contains("item 9999"), "{md:.200}");
+    });
+}
+
 #[test]
 fn unclosed_tags_and_mixed_nesting() {
     let mut html = String::new();

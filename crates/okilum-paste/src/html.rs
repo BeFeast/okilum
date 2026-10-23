@@ -102,6 +102,8 @@ fn surviving_assets(assets: Vec<Asset>, markdown: &str) -> Vec<Asset> {
 /// checks walk the stack of open elements, so 10 000 nested lists take
 /// seconds; no real clipboard comes near this depth.
 const PARSE_DEPTH: usize = 256;
+/// Deepest Slack-style `data-indent` list level (Word levels stop at 8 too).
+const MAX_DATA_INDENT: u32 = 8;
 
 /// Drops tags nested deeper than [`PARSE_DEPTH`] (their text stays), in one
 /// linear scan. Borrowed when nothing is that deep, which is always the case
@@ -1378,9 +1380,12 @@ impl Conv {
         let start = attr(node, "start")
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(1);
+        // Clamped like Word list levels: sibling lists nest by this number,
+        // so it bounds the nesting depth that the DOM depth guard can't see.
         let indent = attr(node, "data-indent")
             .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(MAX_DATA_INDENT);
         let mut items: Vec<Item> = Vec::new();
         let children: Vec<Handle> = node.children.borrow().iter().cloned().collect();
         for child in &children {
