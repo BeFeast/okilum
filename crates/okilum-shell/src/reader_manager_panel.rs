@@ -137,6 +137,40 @@ impl ManagerPanel {
         let _ = cx;
     }
 
+    /// The T3 origin this panel uses (saved, or typed in Settings → T3).
+    pub(super) fn origin_value(&self, cx: &App) -> String {
+        self.origin.read(cx).value().to_string()
+    }
+
+    /// One line for Settings → T3.
+    pub(super) fn connection_status(&self) -> String {
+        if self.loading {
+            return "Connecting…".into();
+        }
+        if let Some(error) = &self.error {
+            return error.clone();
+        }
+        #[cfg(target_os = "macos")]
+        if self.webview.is_some() {
+            return "Connected".into();
+        }
+        "Not connected".into()
+    }
+
+    /// Settings → T3 (#1507): replace the current browser with one for `origin`.
+    pub(super) fn connect_to(
+        &mut self,
+        origin: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.hide(cx);
+        self.loading = false;
+        self.origin
+            .update(cx, |input, cx| input.set_value(origin, window, cx));
+        self.connect(window, cx);
+    }
+
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Manager::Thread(thread) = self.project.manager.clone() else {
             return;
@@ -336,20 +370,28 @@ impl Render for ManagerPanel {
         if self.project.manager == Manager::NotStarted {
             return body.child("Manager не запущен").into_any_element();
         }
-        body = body.child(
-            h_flex()
-                .gap_2()
-                .child(Input::new(&self.origin).flex_1())
-                .child(
-                    Button::new("manager-browser-connect")
-                        .ghost()
-                        .label("Connect")
-                        .disabled(self.loading)
-                        .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
-                ),
-        );
+        // #1507: the T3 connector lives only in Settings. While T3 is shown
+        // the panel has no address row; otherwise one line and a way there.
+        #[cfg(target_os = "macos")]
+        let connected = self.webview.is_some();
+        #[cfg(not(target_os = "macos"))]
+        let connected = false;
         if self.loading {
             body = body.child("Connecting to T3…");
+        } else if !connected {
+            body = body.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child("T3 not connected"))
+                    .child(
+                        Button::new("manager-open-t3-settings")
+                            .ghost()
+                            .small()
+                            .label("Open T3 settings")
+                            .on_click(|_, _, cx| reader_settings::show_t3(cx)),
+                    ),
+            );
         }
         if let Some(error) = &self.error {
             body = body.child(div().text_color(cx.theme().danger).child(error.clone()));

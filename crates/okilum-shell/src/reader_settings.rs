@@ -22,6 +22,11 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+/// Manager panel → «Open T3 settings» (#1507).
+pub(crate) fn show_t3(cx: &mut App) {
+    show_section(None, Some(Section::T3), cx);
+}
+
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }
@@ -239,6 +244,8 @@ const INBOX_HELP: &str =
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    /// The T3 server of the open project's Manager (#1507).
+    T3,
     Appearance,
     /// Editing notes: pasting and dropping files (#1611).
     Editor,
@@ -255,6 +262,7 @@ enum Section {
 impl Section {
     fn icon(self) -> Icon {
         match self {
+            Self::T3 => Icon::new(IconName::SquareTerminal),
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Editor => Icon::new(IconName::FileText),
             Self::Vault => Icon::new(IconName::Folder),
@@ -268,6 +276,7 @@ impl Section {
     }
     fn label(self) -> &'static str {
         match self {
+            Self::T3 => "T3",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Vault => "Vault",
@@ -308,6 +317,8 @@ struct Settings {
     editor_command: Option<(Entity<InputState>, Subscription)>,
     /// The build path of a new source-link mapping (#1165).
     map_from: Option<Entity<InputState>>,
+    /// Settings → T3 origin, made on first render of that section.
+    t3_origin: Option<Entity<InputState>>,
 }
 impl Settings {
     fn new(reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) -> Self {
@@ -330,6 +341,7 @@ impl Settings {
             _reader_changes: observer,
             editor_command: None,
             map_from: None,
+            t3_origin: None,
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -386,6 +398,37 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         self.reader = reader;
+        self.t3_origin = None;
+        cx.notify();
+    }
+    /// The open project's Manager panel and its T3 environment alias.
+    fn t3_target(&self, cx: &App) -> Option<(Entity<Reader>, okilum_t3::projects::Project)> {
+        let reader = self.reader.as_ref()?.upgrade()?;
+        let project = reader.read(cx).project_navigation.active.clone()?;
+        Some((reader, project))
+    }
+    fn t3_connect(&mut self, cx: &mut Context<Self>) {
+        let (Some((reader, _)), Some(input)) = (self.t3_target(cx), self.t3_origin.clone()) else {
+            return;
+        };
+        let Some(panel) = reader.read(cx).project_navigation.manager_panel.clone() else {
+            return;
+        };
+        let origin = input.read(cx).value().trim().to_string();
+        // The browser is a native child of the Reader's window: connect there.
+        for handle in cx.windows() {
+            let Some(root) = handle.downcast::<Root>() else {
+                continue;
+            };
+            let panel = panel.clone();
+            let origin = origin.clone();
+            let reader_id = reader.entity_id();
+            let _ = root.update(cx, move |root, window, cx| {
+                if root.view().entity_id() == reader_id {
+                    panel.update(cx, |panel, cx| panel.connect_to(origin, window, cx));
+                }
+            });
+        }
         cx.notify();
     }
     fn vault(&self, cx: &App) -> Option<Entity<Reader>> {
@@ -1146,6 +1189,43 @@ impl Settings {
             }
             #[cfg(target_os = "linux")]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
+            Section::T3 => {
+                let Some((reader, project)) = self.t3_target(cx) else {
+                    return content
+                        .child("Open a vault project to connect its Manager to T3.")
+                        .into_any_element();
+                };
+                let panel = reader.read(cx).project_navigation.manager_panel.clone();
+                let status = panel.as_ref().map_or("Not connected".into(), |panel| {
+                    panel.read(cx).connection_status()
+                });
+                content
+                    .child(div().text_sm().text_color(p.text_muted).child(
+                        "The T3 server where this project's Manager runs. Okilum remembers it per T3 environment.",
+                    ))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .children(self.t3_origin.clone().map(|input| Input::new(&input).flex_1()))
+                            .child(
+                                Button::new("settings-t3-connect")
+                                    .label("Connect")
+                                    .disabled(panel.is_none())
+                                    .on_click(cx.listener(|this, _, _, cx| this.t3_connect(cx))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child(format!(
+                                "{} · {}: {status}",
+                                project.name,
+                                project.environment.as_deref().unwrap_or("project")
+                            )),
+                    )
+                    .into_any_element()
+            }
             Section::About => content.child(about::content(cx)).into_any_element(),
             // Nothing to do here yet, and it says so (#1356): connecting an
             // Inbox server is not offered in the Reader.
@@ -1185,6 +1265,19 @@ impl Render for Settings {
                     InputState::new(window, cx).placeholder("Build path, e.g. /src/ordgw")
                 }));
         }
+        if self.section == Section::T3 && self.t3_origin.is_none() {
+            let saved = self
+                .t3_target(cx)
+                .and_then(|(reader, _)| reader.read(cx).project_navigation.manager_panel.clone())
+                .map(|panel| panel.read(cx).origin_value(cx))
+                .filter(|origin| !origin.trim().is_empty())
+                .unwrap_or_else(|| "https://t3.oklabs.uk".into());
+            self.t3_origin = Some(cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("https://t3.oklabs.uk")
+                    .default_value(saved)
+            }));
+        }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
@@ -1204,6 +1297,7 @@ impl Render for Settings {
                             Section::Appearance,
                             Section::Editor,
                             Section::Vault,
+                            Section::T3,
                             Section::Updates,
                             Section::Inbox,
                             #[cfg(target_os = "linux")]
