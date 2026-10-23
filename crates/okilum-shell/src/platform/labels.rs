@@ -85,6 +85,40 @@ impl Os {
     /// binding semantics. macOS uses glyphs in the canonical ⌃⌥⇧⌘ order;
     /// Linux and Windows spell the modifiers out, joined by `+`.
     pub fn shortcut(self, keystroke: &str) -> String {
+        let (modifiers, key) = self.parts(keystroke);
+        if self == Os::Mac {
+            let mut text: String = modifiers.iter().map(|(glyph, _)| *glyph).collect();
+            text.push_str(&key);
+            text
+        } else {
+            let mut words: Vec<&str> = modifiers.iter().map(|(_, word)| *word).collect();
+            words.push(&key);
+            words.join("+")
+        }
+    }
+
+    /// One key cap per key of `keystroke` (#1517), e.g. «Ctrl» «Tab».
+    /// Control is the word Ctrl on every system: a lone ⌃ in small type
+    /// reads as a smudge. macOS keeps its ⌥ ⇧ ⌘ glyphs; elsewhere every
+    /// modifier is a word, as in [`Os::shortcut`].
+    pub fn key_caps(self, keystroke: &str) -> Vec<String> {
+        let (modifiers, key) = self.parts(keystroke);
+        modifiers
+            .into_iter()
+            .map(|(glyph, word)| {
+                if self == Os::Mac && glyph != "⌃" {
+                    glyph.to_owned()
+                } else {
+                    word.to_owned()
+                }
+            })
+            .chain([key])
+            .collect()
+    }
+
+    /// The pressed modifiers of `keystroke` in canonical ⌃⌥⇧⌘ order, each as
+    /// (macOS glyph, word), and the display name of its key.
+    fn parts(self, keystroke: &str) -> (Vec<(&'static str, &'static str)>, String) {
         let mut parts: Vec<&str> = keystroke.split('-').collect();
         // `secondary--` binds the minus key itself.
         let key = match parts.pop() {
@@ -112,25 +146,12 @@ impl Os {
             (has("alt"), "⌥", "Alt"),
             (has("shift") || shifted, "⇧", "Shift"),
             (command, "⌘", platform_word),
-        ];
-        let key = self.key_name(key);
-        if self == Os::Mac {
-            let mut text: String = modifiers
-                .iter()
-                .filter(|(on, ..)| *on)
-                .map(|(_, glyph, _)| *glyph)
-                .collect();
-            text.push_str(&key);
-            text
-        } else {
-            let mut words: Vec<&str> = modifiers
-                .iter()
-                .filter(|(on, ..)| *on)
-                .map(|(.., word)| *word)
-                .collect();
-            words.push(&key);
-            words.join("+")
-        }
+        ]
+        .into_iter()
+        .filter(|(on, ..)| *on)
+        .map(|(_, glyph, word)| (glyph, word))
+        .collect();
+        (modifiers, self.key_name(key))
     }
 
     fn key_name(self, key: &str) -> String {
@@ -236,6 +257,17 @@ mod tests {
         assert_eq!(Os::Mac.shortcut("alt-left"), "⌥←");
         assert_eq!(Os::Mac.shortcut("shift-enter"), "⇧⏎");
         assert_eq!(Os::Mac.shortcut("ctrl-alt-secondary-x"), "⌃⌥⌘X");
+        // #1517: key caps spell Control out on every system.
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            assert_eq!(os.key_caps("ctrl-tab"), ["Ctrl", "Tab"], "{os:?}");
+        }
+        assert_eq!(Os::Mac.key_caps("ctrl-shift-tab"), ["Ctrl", "⇧", "Tab"]);
+        assert_eq!(
+            Os::Linux.key_caps("ctrl-shift-tab"),
+            ["Ctrl", "Shift", "Tab"]
+        );
+        assert_eq!(Os::Mac.key_caps("secondary-k"), ["⌘", "K"]);
+        assert_eq!(Os::Windows.key_caps("secondary-k"), ["Ctrl", "K"]);
         assert_eq!(Os::Mac.shortcut("secondary--"), "⌘-");
         assert_eq!(Os::Mac.shortcut("cmd->"), "⇧⌘.");
         assert_eq!(Os::Mac.shortcut("escape"), "Esc");

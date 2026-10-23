@@ -179,6 +179,60 @@ pub(crate) fn shortcut(action: &dyn Action, cx: &App) -> Option<String> {
         .next()
 }
 
+/// The bound key of `action` as key caps (#1517): «Ctrl» «Tab», the key the
+/// tooltip [`shortcut`] names, split into its keys.
+pub(crate) fn shortcut_caps(action: &dyn Action, cx: &App) -> Option<Vec<String>> {
+    let bindings = cx.key_bindings();
+    let keymap = bindings.borrow();
+    let shown = keys_for(&keymap, action.name(), Os::CURRENT)
+        .into_iter()
+        .next()?;
+    let caps = keymap
+        .bindings()
+        .rev()
+        .filter(|binding| binding.action().name() == action.name())
+        .map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(|key| key.unparse())
+                .collect::<Vec<_>>()
+        })
+        .find(|keys| {
+            keys.iter()
+                .map(|key| Os::CURRENT.shortcut(key))
+                .collect::<Vec<_>>()
+                .join(" ")
+                == shown
+        })
+        .map(|keys| {
+            keys.iter()
+                .flat_map(|key| Os::CURRENT.key_caps(key))
+                .collect()
+        });
+    caps
+}
+
+/// One key as a small muted cap, the shortcut sheet's style; hints that name
+/// a key (the Recent menu footer, #1517) use the same cap.
+pub(crate) fn key_cap(
+    key: impl Into<SharedString>,
+    palette: brand::Palette,
+    tokens: brand::ReaderPalette,
+) -> Div {
+    div()
+        .h(px(20.))
+        .px(px(6.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(px(4.))
+        .bg(tokens.hover)
+        .text_size(px(12.))
+        .text_color(palette.text_muted)
+        .child(key.into())
+}
+
 /// `label` followed by the bound key of `action`, e.g. "Back ⌥←" — the same
 /// shape as [`platform::labels::with_shortcut`] for keys the keymap cannot
 /// describe (keys an input handles itself).
@@ -337,21 +391,12 @@ impl Reader {
                             .child(row.label),
                     )
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .children(row.keys.iter().take(2).map(|key| {
-                                div()
-                                    .h(px(20.))
-                                    .px(px(6.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.))
-                                    .bg(tokens.hover)
-                                    .text_size(px(12.))
-                                    .text_color(palette.text_muted)
-                                    .child(key.clone())
-                            })),
+                        h_flex().flex_none().gap_1().children(
+                            row.keys
+                                .iter()
+                                .take(2)
+                                .map(|key| key_cap(key.clone(), palette, tokens)),
+                        ),
                     ),
             );
         }

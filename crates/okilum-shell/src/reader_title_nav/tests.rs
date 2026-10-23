@@ -446,7 +446,8 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
     reader.read_with(visual, |view, _| assert!(!view.quick_open.open));
 }
 
-/// #1517: the Recent menu's footer says «⌃Tab cycles recent», so ⌃Tab with
+/// #1517: the Recent menu's footer says «[Ctrl] [Tab] cycles recent» in key
+/// caps, the word Ctrl on every system, so Ctrl+Tab with
 /// the menu open moves its highlight (wrapping) and Enter opens that row.
 /// Closed, ⌃Tab is still the Reader-wide recent switcher.
 #[gpui::test]
@@ -469,12 +470,25 @@ fn ctrl_tab_cycles_the_open_recent_menu(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
-    // The footer hint names the key the open menu handles.
+    // The footer hint names the key the open menu handles, as key caps.
     visual.update(|_, cx| {
         assert!(reader_shortcuts::shortcut(&NavMenuCycleNext, cx).is_some());
+        assert_eq!(
+            reader_shortcuts::shortcut_caps(&NavMenuCycleNext, cx).unwrap(),
+            ["Ctrl", "Tab"]
+        );
     });
+    assert_eq!(CYCLE_HINT, "cycles recent");
+    assert!(visual.debug_bounds("title-nav-cycle-hint").is_none());
 
     click(visual, "title-recent");
+    let hint = visual
+        .debug_bounds("title-nav-cycle-hint")
+        .expect("the open Recent menu shows its key hint");
+    assert!(
+        hint.size.height <= px(20.),
+        "small caps fit the footer: {hint:?}"
+    );
     let rows = reader.read_with(visual, |view, _| {
         assert_eq!(view.title_nav.menu, Some(Menu::Recent));
         assert_eq!(view.title_nav.selected, 0);

@@ -23,10 +23,12 @@ const MENU_CONTEXT: &str = "TitleNavMenu";
 /// Below this window width Recent and Pinned shrink to their glyphs.
 const COMPACT_BELOW: f32 = 960.;
 const MENU_WIDTH: f32 = 350.;
+/// The Recent footer's words after its key caps (#1517).
+const CYCLE_HINT: &str = "cycles recent";
 
 pub(super) fn bind_menu_keys(cx: &mut App) {
     cx.bind_keys([
-        // The open menu owns ⌃Tab, the key its footer names (#1517): without
+        // The open menu owns Ctrl+Tab, the key its footer names (#1517): without
         // these the Reader-wide recent switcher took it behind the menu.
         KeyBinding::new("ctrl-tab", NavMenuCycleNext, Some(MENU_CONTEXT)),
         KeyBinding::new("ctrl-shift-tab", NavMenuCyclePrevious, Some(MENU_CONTEXT)),
@@ -568,8 +570,20 @@ impl Reader {
         if menu == Menu::Recent {
             // Names the key the open menu itself handles, not the
             // Reader-wide recent switcher it would otherwise fall through to.
-            let cycle = reader_shortcuts::shortcut(&NavMenuCycleNext, cx)
-                .map(|key| format!("{key} cycles recent"));
+            // The keys are caps, «Ctrl» «Tab» on every system (#1517): a
+            // bare ⌃ in 12 px type read as a smudge.
+            let tokens = brand::reader_palette(cx);
+            let cycle = reader_shortcuts::shortcut_caps(&NavMenuCycleNext, cx).map(|caps| {
+                h_flex()
+                    .id("title-nav-cycle-hint")
+                    .debug_selector(|| "title-nav-cycle-hint".into())
+                    .gap_1()
+                    .children(
+                        caps.into_iter()
+                            .map(|key| reader_shortcuts::key_cap(key, p, tokens)),
+                    )
+                    .child(CYCLE_HINT)
+            });
             panel = panel.child(
                 h_flex()
                     .px_2()
