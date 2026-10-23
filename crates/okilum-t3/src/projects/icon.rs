@@ -353,6 +353,130 @@ pub fn t3_logo(
     usable_logo(&path).then_some(path)
 }
 
+/// A vault project's T3 counterpart, as last read from T3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Counterpart {
+    /// The connection alias (`t3.environment`).
+    pub environment: String,
+    pub project_id: String,
+    /// T3's manual `projectIcon`.
+    pub icon: Option<ProjectIcon>,
+    /// T3's `faviconPath` as a file here, when the T3 project is rooted at
+    /// the vault folder.
+    pub logo: Option<PathBuf>,
+}
+
+impl Counterpart {
+    fn new(
+        environment: &str,
+        folder: &Path,
+        vault_relative: &str,
+        t3_project: &crate::Project,
+    ) -> Self {
+        Self {
+            environment: environment.to_owned(),
+            project_id: t3_project.id.clone(),
+            icon: t3_project.project_icon.clone(),
+            logo: t3_logo(folder, vault_relative, t3_project),
+        }
+    }
+}
+
+/// `folder` relative to the vault, `/`-separated; `None` outside it.
+pub fn vault_relative(vault: &Path, folder: &Path) -> Option<String> {
+    let relative = folder.strip_prefix(vault).ok()?;
+    let parts: Vec<_> = relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Some(parts.join("/"))
+}
+
+/// The T3 counterparts of `projects`: one listing per environment. A
+/// project whose environment could not be listed is absent, and keeps its
+/// project.yaml icon until T3 answers.
+pub fn counterparts(
+    vault: &Path,
+    projects: &[super::Project],
+    gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
+) -> std::collections::BTreeMap<PathBuf, Counterpart> {
+    let mut listings = std::collections::BTreeMap::<String, Option<Vec<crate::Project>>>::new();
+    let mut result = std::collections::BTreeMap::new();
+    for project in projects {
+        let Some(alias) = project.environment.as_ref() else {
+            continue;
+        };
+        let Some(gateway) = gateways.get(alias) else {
+            continue;
+        };
+        let listing = listings
+            .entry(alias.clone())
+            .or_insert_with(|| gateway.list_projects().ok());
+        let (Some(listing), Some(relative)) =
+            (listing.as_ref(), vault_relative(vault, &project.folder))
+        else {
+            continue;
+        };
+        if let Some(t3_project) = t3_counterpart(project, &relative, listing) {
+            result.insert(
+                project.folder.clone(),
+                Counterpart::new(alias, &project.folder, &relative, t3_project),
+            );
+        }
+    }
+    result
+}
+
+/// Where a chosen icon went.
+#[derive(Clone, Debug)]
+pub enum Saved {
+    /// T3's `projectIcon`, read back from T3.
+    T3(Counterpart),
+    /// `icon:` in project.yaml, with the project read back.
+    Manifest(Box<super::Project>),
+}
+
+/// Store a manual icon (`None` resets to automatic) where it belongs: in
+/// T3 when the project has a T3 counterpart there, in project.yaml
+/// otherwise. A project bound to a T3 executor project is never written to
+/// project.yaml behind T3's back: without a connection it is an error.
+/// Blocks; run it off the UI thread.
+pub fn save_icon(
+    vault: &Path,
+    project: &super::Project,
+    gateway: Option<&dyn crate::ManagerGateway>,
+    icon: Option<&ProjectIcon>,
+) -> Result<Saved> {
+    let relative =
+        vault_relative(vault, &project.folder).context("Project is outside this vault")?;
+    match (gateway, project.environment.as_deref()) {
+        (Some(gateway), Some(alias)) => {
+            let listing = gateway
+                .list_projects()
+                .map_err(|e| anyhow::anyhow!("{e}; the icon was not changed"))?;
+            if let Some(t3_project) = t3_counterpart(project, &relative, &listing) {
+                let updated = gateway
+                    .set_project_icon(&t3_project.id, icon)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                return Ok(Saved::T3(Counterpart::new(
+                    alias,
+                    &project.folder,
+                    &relative,
+                    &updated,
+                )));
+            }
+        }
+        _ if project.appearance.executor_project.is_some() => {
+            bail!("Connect to T3 to change this project's icon: T3 keeps it")
+        }
+        _ => {}
+    }
+    save_manifest_icon(&project.folder, icon)?;
+    Ok(Saved::Manifest(Box::new(super::Project::read(
+        &project.folder,
+    )?)))
+}
+
 /// Lines ending in `\r\n` keep that ending.
 fn line_ending(source: &str) -> &'static str {
     if source.contains("\r\n") {

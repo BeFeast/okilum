@@ -7,7 +7,7 @@
 use super::*;
 use okilum_core::search_snippet::{plain_snippet, PlainSnippet};
 use okilum_core::SearchHit;
-use okilum_shell::projects_picker::{icon_slot, picker::Row as ProjectRow, project_icon};
+use okilum_shell::projects_picker::{icon_slot, kind_icon, picker::Row as ProjectRow};
 
 use std::collections::HashMap;
 
@@ -1387,7 +1387,7 @@ impl Reader {
                             .child(
                                 div()
                                     .text_color(muted)
-                                    .child(icon_slot(Some(project_icon(&project.project)))),
+                                    .child(icon_slot(Some(kind_icon(&project.project)))),
                             )
                             .child(
                                 div()

@@ -37,6 +37,7 @@ fn init(cx: &mut App) {
         return;
     }
     cx.set_global(KeysInstalled);
+    crate::project_avatar::init(cx);
     cx.bind_keys([
         KeyBinding::new("down", NextProject, Some("ProjectsPicker > Input")),
         KeyBinding::new("up", PreviousProject, Some("ProjectsPicker > Input")),
@@ -56,10 +57,15 @@ pub const ACTIVITY_ICON: &str = "icons/activity.svg";
 const ROW_HEIGHT: f32 = 26.;
 const ICON_SLOT: f32 = 16.;
 
-/// The one picture in front of a project's name, here, in the title bar and
-/// in the palette. Today it is the kind; a per-project icon or avatar will
-/// replace it in this one place.
-pub fn project_icon(project: &Project) -> Icon {
+/// The one picture in front of a project's name, here, in the title bar,
+/// the sidebar header and the Manager panel (#1627): its avatar, the icon
+/// T3 Code shows too.
+pub fn project_icon(project: &Project, cx: &App) -> gpui::AnyElement {
+    crate::project_avatar::project_avatar(project, ICON_SLOT, cx)
+}
+
+/// The project's kind, where a project is listed without its avatar (⌘K).
+pub fn kind_icon(project: &Project) -> Icon {
     Icon::default().path(match project.kind {
         Kind::Code => CODE_ICON,
         Kind::Knowledge => KNOWLEDGE_ICON,
@@ -69,11 +75,16 @@ pub fn project_icon(project: &Project) -> Icon {
 
 /// A fixed 16 px slot, so names line up whether or not a picture is there.
 pub fn icon_slot(icon: Option<Icon>) -> gpui::Div {
+    avatar_slot(icon.map(|icon| icon.small()))
+}
+
+/// The same slot around any element, an avatar for one.
+pub fn avatar_slot(picture: Option<impl IntoElement>) -> gpui::Div {
     h_flex()
         .size(px(ICON_SLOT))
         .flex_none()
         .justify_center()
-        .children(icon.map(|icon| icon.small()))
+        .children(picture)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +107,10 @@ pub struct RecentsChanged(pub Vec<PathBuf>);
 /// in `Popover` while a project is active; the host leaves and dismisses.
 #[derive(Clone, Debug)]
 pub struct LeaveProject;
+/// A right-click on a project's row: the host offers «Change icon…» at the
+/// pointer (#1627).
+#[derive(Clone, Debug)]
+pub struct ProjectMenu(pub Project);
 
 #[derive(Clone)]
 enum Item {
@@ -119,6 +134,7 @@ pub struct ProjectsPicker {
 impl EventEmitter<Selected> for ProjectsPicker {}
 impl EventEmitter<RecentsChanged> for ProjectsPicker {}
 impl EventEmitter<LeaveProject> for ProjectsPicker {}
+impl EventEmitter<ProjectMenu> for ProjectsPicker {}
 impl EventEmitter<DismissEvent> for ProjectsPicker {}
 impl Focusable for ProjectsPicker {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -354,6 +370,7 @@ impl ProjectsPicker {
     fn render_row(&self, row: &Row, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let key = row.key.clone();
         let hovered_key = key.clone();
+        let menu_project = row.project.clone();
         let theme = cx.theme();
         let selected = self.selected.as_ref() == Some(&row.key);
         let active = self.active.as_ref() == Some(&row.project.folder);
@@ -370,6 +387,7 @@ impl ProjectsPicker {
             Kind::Hybrid => "Hybrid project",
         }
         .into();
+        let avatar = project_icon(&row.project, cx);
         h_flex()
             .id(("project-choice", index))
             .debug_selector(move || format!("project-choice-{index}"))
@@ -389,7 +407,7 @@ impl ProjectsPicker {
                     .debug_selector(move || format!("project-icon-{index}"))
                     .flex_none()
                     .text_color(muted)
-                    .child(icon_slot(Some(project_icon(&row.project))))
+                    .child(avatar_slot(Some(avatar)))
                     .tooltip(move |window, cx| Tooltip::new(kind.clone()).build(window, cx)),
             )
             .child(div().min_w_0().truncate().child(row.project.name.clone()))
@@ -421,6 +439,13 @@ impl ProjectsPicker {
                 this.selected = Some(key.clone());
                 this.confirm(cx);
             }))
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(ProjectMenu(menu_project.clone()));
+                }),
+            )
     }
     /// A folder whose project.yaml cannot be read: a muted row with the
     /// same ⚠ after its name; the reason is in the tooltip.

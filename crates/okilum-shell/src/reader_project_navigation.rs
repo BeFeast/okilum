@@ -2,9 +2,59 @@
 use super::*;
 use okilum_shell::projects_picker::{
     picker::{ManagerObservation, PickerModel},
-    LeaveProject, Presentation, ProjectsPicker, Selected,
+    LeaveProject, Presentation, ProjectMenu, ProjectsPicker, Selected,
 };
-use okilum_t3::projects::{Discovery, Project};
+use okilum_t3::projects::{
+    icon::{Counterpart, ProjectIcon, Saved},
+    Discovery, Project,
+};
+
+type Gateways = std::collections::BTreeMap<String, Arc<dyn okilum_t3::ManagerGateway>>;
+
+/// One MCP gateway per T3 connection saved on this machine, with its token
+/// from the keychain. `None` once the Reader is gone.
+async fn t3_gateways(
+    this: &WeakEntity<Reader>,
+    state: Option<PathBuf>,
+    cx: &mut AsyncWindowContext,
+) -> Option<Gateways> {
+    let connections = cx
+        .background_executor()
+        .spawn(async move {
+            let Some(state) = state else {
+                return Ok(std::collections::BTreeMap::<String, String>::new());
+            };
+            match std::fs::read(state.join("t3-connections.json")) {
+                Ok(source) => serde_json::from_slice(&source).map_err(anyhow::Error::from),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await;
+    let mut gateways = Gateways::new();
+    if let Ok(connections) = connections {
+        for (alias, origin) in connections {
+            let Ok(env) = okilum_t3::Environment::new(&alias, &origin) else {
+                continue;
+            };
+            let task = this
+                .update_in_own_window(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
+                .ok()?;
+            let token = match task.await {
+                Ok(Some((_, bytes))) => okilum_t3::StoredToken::from_secret(&bytes).ok(),
+                _ => None,
+            };
+            let gateway = cx
+                .background_executor()
+                .spawn(async move { okilum_t3::McpGateway::new(env, token) })
+                .await;
+            if let Ok(gateway) = gateway {
+                gateways.insert(alias, Arc::new(gateway));
+            }
+        }
+    }
+    Some(gateways)
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Section {
@@ -22,6 +72,8 @@ pub(super) struct State {
     pub status_managers: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Manager>,
     pub statuses: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Status>,
     pub loading: bool,
+    /// The T3 connections of the last status sweep, kept for icon writes.
+    pub t3_gateways: Gateways,
     /// `discovery` holds this vault's scan, possibly empty (#1518).
     pub discovered: bool,
     pub generation: u64,
@@ -54,6 +106,7 @@ impl Reader {
             generation,
             ..Default::default()
         };
+        cx.set_global(okilum_shell::project_avatar::ProjectIcons::default());
         self.tree_sticky.clear();
     }
 
@@ -196,65 +249,276 @@ impl Reader {
         let projects = self.project_navigation.discovery.projects.clone();
         let state = self.session_directory.clone();
         let generation = self.project_navigation.generation;
+        let vault = self.vault_root.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let connections = cx
-                .background_executor()
-                .spawn(async move {
-                    let Some(state) = state else {
-                        return Ok(std::collections::BTreeMap::<String, String>::new());
-                    };
-                    match std::fs::read(state.join("t3-connections.json")) {
-                        Ok(source) => serde_json::from_slice(&source).map_err(anyhow::Error::from),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            Ok(Default::default())
-                        }
-                        Err(e) => Err(e.into()),
-                    }
-                })
-                .await;
-            let mut gateways =
-                std::collections::BTreeMap::<String, Arc<dyn okilum_t3::ManagerGateway>>::new();
-            if let Ok(connections) = connections {
-                for (alias, origin) in connections {
-                    let Ok(env) = okilum_t3::Environment::new(&alias, &origin) else {
-                        continue;
-                    };
-                    let Ok(task) =
-                        this.update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
-                    else {
-                        return;
-                    };
-                    let token = match task.await {
-                        Ok(Some((_, bytes))) => okilum_t3::StoredToken::from_secret(&bytes).ok(),
-                        _ => None,
-                    };
-                    let gateway = cx
-                        .background_executor()
-                        .spawn(async move { okilum_t3::McpGateway::new(env, token) })
-                        .await;
-                    if let Ok(gateway) = gateway {
-                        gateways.insert(alias, Arc::new(gateway));
-                    }
-                }
-            }
+            let Some(gateways) = t3_gateways(&this, state, cx).await else {
+                return;
+            };
             let managers = projects
                 .iter()
                 .map(|p| (p.folder.clone(), p.manager.clone()))
                 .collect();
-            let statuses = cx
+            let folders: Vec<PathBuf> = projects.iter().map(|p| p.folder.clone()).collect();
+            let kept = gateways.clone();
+            let (statuses, links) = cx
                 .background_executor()
-                .spawn(async move { okilum_t3::projects::statuses(&projects, &gateways) })
+                .spawn(async move {
+                    // The same connections answer the icons (#1627): one
+                    // project listing per environment.
+                    let links =
+                        okilum_t3::projects::icon::counterparts(&vault, &projects, &gateways);
+                    (okilum_t3::projects::statuses(&projects, &gateways), links)
+                })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in_own_window(cx, |this, _, cx| {
                 if this.project_navigation.generation == generation {
                     this.project_navigation.statuses = statuses;
                     this.project_navigation.status_managers = managers;
+                    this.project_navigation.t3_gateways = kept;
                     this.sync_projects_picker_statuses(cx);
+                    this.merge_icon_links(folders, links, cx);
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    /// T3's word on these projects' icons replaces what was known of them.
+    fn merge_icon_links(
+        &mut self,
+        folders: Vec<PathBuf>,
+        links: std::collections::BTreeMap<PathBuf, Counterpart>,
+        cx: &mut Context<Self>,
+    ) {
+        let icons = cx.default_global::<okilum_shell::project_avatar::ProjectIcons>();
+        for folder in folders {
+            icons.links.remove(&folder);
+        }
+        icons.links.extend(links);
+        for picker in self.pickers() {
+            picker.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
+    }
+
+    /// The entered project's T3 icon, without the full status sweep.
+    fn refresh_project_icon(
+        &mut self,
+        project: Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if project.environment.is_none() {
+            return;
+        }
+        let state = self.session_directory.clone();
+        let vault = self.vault_root.clone();
+        let known = self.project_navigation.t3_gateways.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let gateways = if known.is_empty() {
+                match t3_gateways(&this, state, cx).await {
+                    Some(gateways) => gateways,
+                    None => return,
+                }
+            } else {
+                known
+            };
+            let folder = project.folder.clone();
+            let kept = gateways.clone();
+            let scan = vault.clone();
+            let links = cx
+                .background_executor()
+                .spawn(async move {
+                    okilum_t3::projects::icon::counterparts(
+                        &scan,
+                        std::slice::from_ref(&project),
+                        &gateways,
+                    )
+                })
+                .await;
+            let _ = this.update_in_own_window(cx, |this, _, cx| {
+                if this.vault_root != vault {
+                    return;
+                }
+                if this.project_navigation.t3_gateways.is_empty() {
+                    this.project_navigation.t3_gateways = kept;
+                }
+                this.merge_icon_links(vec![folder], links, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Right-click on a project (#1627): «Change icon…» at the pointer.
+    pub(super) fn open_project_menu(
+        &mut self,
+        project: Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::menu::{PopupMenu, PopupMenuItem};
+        self.close_project_switcher(window, cx);
+        let reader = cx.entity().downgrade();
+        let popup = PopupMenu::build(window, cx, move |menu, _, _| {
+            let reader = reader.clone();
+            let project = project.clone();
+            menu.item(
+                PopupMenuItem::new("Change icon…").on_click(move |_, window, cx| {
+                    let project = project.clone();
+                    let _ = reader.update(cx, |this, cx| {
+                        this.open_project_icon_dialog(project, window, cx)
+                    });
+                }),
+            )
+        });
+        cx.subscribe(&popup, |this, dismissed, _: &DismissEvent, cx| {
+            if this
+                .file_menu
+                .as_ref()
+                .is_some_and(|(menu, _)| menu.entity_id() == dismissed.entity_id())
+            {
+                this.file_menu = None;
+                cx.notify();
+            }
+        })
+        .detach();
+        popup.focus_handle(cx).focus(window, cx);
+        self.file_menu = Some((popup, window.mouse_position()));
+        cx.notify();
+    }
+
+    /// T3 Code's «Choose project icon»; Save and Reset store the choice.
+    pub(super) fn open_project_icon_dialog(
+        &mut self,
+        project: Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::WindowExt as _;
+        use okilum_shell::project_icon_dialog::{IconDialogEvent, ProjectIconDialog, TITLE};
+        self.file_menu = None;
+        let current = okilum_shell::project_avatar::manual_icon(&project, cx);
+        let name = project.name.clone();
+        let dialog = cx.new(|cx| ProjectIconDialog::new(&name, current.as_ref(), window, cx));
+        cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, event: &IconDialogEvent, window, cx| {
+                let icon = match event {
+                    IconDialogEvent::Cancel => {
+                        window.close_dialog(cx);
+                        return;
+                    }
+                    IconDialogEvent::Reset => None,
+                    IconDialogEvent::Save(icon) => Some(icon.clone()),
+                };
+                window.close_dialog(cx);
+                this.save_project_icon(project.clone(), icon, window, cx);
+            },
+        )
+        .detach();
+        let content = dialog.clone();
+        window.open_dialog(cx, move |d, _, _| {
+            d.title(TITLE)
+                .width(px(520.))
+                .on_ok(|_, _, _| false)
+                .child(content.clone())
+        });
+        // The dialog takes the focus as it opens; the search gets it after.
+        window.defer(cx, move |window, cx| {
+            dialog.update(cx, |dialog, cx| {
+                let tab = dialog.draft().tab;
+                dialog.set_tab(tab, window, cx)
+            });
+        });
+        cx.notify();
+    }
+
+    /// In T3 for a project T3 has, in project.yaml otherwise (#1627).
+    fn save_project_icon(
+        &mut self,
+        project: Project,
+        icon: Option<ProjectIcon>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let vault = self.vault_root.clone();
+        let known = project
+            .environment
+            .as_ref()
+            .and_then(|alias| self.project_navigation.t3_gateways.get(alias).cloned());
+        let connect = known.is_none()
+            && project.environment.is_some()
+            && self.project_navigation.t3_gateways.is_empty();
+        let state = self.session_directory.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let gateway = match known {
+                Some(gateway) => Some(gateway),
+                None if connect => {
+                    let gateways = t3_gateways(&this, state, cx).await.unwrap_or_default();
+                    project
+                        .environment
+                        .as_ref()
+                        .and_then(|alias| gateways.get(alias).cloned())
+                }
+                None => None,
+            };
+            let target = project.clone();
+            let scan = vault.clone();
+            let saved = cx
+                .background_executor()
+                .spawn(async move {
+                    okilum_t3::projects::icon::save_icon(
+                        &scan,
+                        &target,
+                        gateway.as_deref(),
+                        icon.as_ref(),
+                    )
+                })
+                .await;
+            let _ = this.update_in_own_window(cx, |this, _, cx| {
+                if this.vault_root == vault {
+                    this.finish_project_icon(project, saved, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn finish_project_icon(
+        &mut self,
+        project: Project,
+        saved: anyhow::Result<Saved>,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = project.folder.clone();
+        match saved {
+            Ok(Saved::T3(counterpart)) => {
+                let links = std::collections::BTreeMap::from([(folder.clone(), counterpart)]);
+                self.merge_icon_links(vec![folder], links, cx);
+            }
+            Ok(Saved::Manifest(read_back)) => {
+                let appearance = read_back.appearance.clone();
+                let navigation = &mut self.project_navigation;
+                for known in navigation
+                    .discovery
+                    .projects
+                    .iter_mut()
+                    .chain(navigation.active.iter_mut())
+                    .filter(|p| p.folder == folder)
+                {
+                    known.appearance = appearance.clone();
+                }
+                self.sync_projects_picker(cx);
+                self.merge_icon_links(vec![folder], Default::default(), cx);
+            }
+            Err(error) => {
+                self.link_notice =
+                    Some(format!("Cannot change the project icon: {error:#}").into());
+            }
+        }
+        cx.notify();
     }
 
     /// Every mounted picker: the Projects section and the title-bar switcher.
@@ -372,6 +636,7 @@ impl Reader {
         self.project_navigation.section = Section::Reader;
         self.record_recent_project(&project.folder, cx);
         self.release_picker_focus(window, cx);
+        self.refresh_project_icon(project.clone(), window, cx);
         self.open_project_area(project.folder, window, cx);
         cx.notify();
     }
@@ -479,6 +744,14 @@ impl Reader {
             // recorded only after a successful entry.
             this.enter_vault_project(event.0.clone(), window, cx);
         })
+        .detach();
+        cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, event: &ProjectMenu, window, cx| {
+                this.open_project_menu(event.0.clone(), window, cx);
+            },
+        )
         .detach();
         picker
     }
