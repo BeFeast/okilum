@@ -250,6 +250,27 @@ impl ManagerPanel {
             }
         })
         .detach();
+        // #1596: links and copies the T3 page cannot carry out in a WKWebView.
+        let (link_send, link_receive) =
+            async_channel::unbounded::<crate::reader_manager_links::PageRequest>();
+        cx.spawn_in(window, async move |_, cx| {
+            while let Ok(request) = link_receive.recv().await {
+                let handled = cx.update(|_, cx| match request {
+                    crate::reader_manager_links::PageRequest::OpenExternal(url) => {
+                        cx.open_url(url.as_str())
+                    }
+                    crate::reader_manager_links::PageRequest::Copy(text) => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
+                    }
+                });
+                if handled.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let new_windows = link_send.clone();
+        let t3 = url.clone();
         let store = crate::reader_manager_store::application_identifier();
         let browser = wry::WebViewBuilder::new()
             .with_incognito(false)
@@ -269,10 +290,26 @@ impl ManagerPanel {
                 }, true);
             "#,
             )
+            .with_initialization_script(crate::reader_manager_links::PAGE_SCRIPT)
             .with_ipc_handler(move |request| {
                 if matches!(request.body().as_str(), "focus" | "blur" | "escape") {
                     let _ = send.try_send(request.body().clone());
+                } else if let Some(request) = crate::reader_manager_links::page_request(
+                    request.body(),
+                    &request.uri().to_string(),
+                    &t3,
+                ) {
+                    let _ = link_send.try_send(request);
                 }
+            })
+            // target=_blank links and any window.open the page script did not
+            // take: WebKit gets no second web view; the system browser opens it.
+            .with_new_window_req_handler(move |url, _| {
+                if let Some(url) = crate::reader_manager_links::external_url(&url) {
+                    let _ = new_windows
+                        .try_send(crate::reader_manager_links::PageRequest::OpenExternal(url));
+                }
+                wry::NewWindowResponse::Deny
             })
             .with_navigation_handler(|url| {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
