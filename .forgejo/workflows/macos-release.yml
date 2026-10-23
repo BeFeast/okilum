@@ -33,10 +33,25 @@ jobs:
       lane: ${{ steps.route.outputs.lane }}
       source: ${{ steps.route.outputs.source }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+      - name: Check out the exact source from git.oklabs.uk
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
       - name: Select unpublished main or dispatch a source-pinned run
         id: select
         env:
@@ -69,10 +84,21 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-          github-server-url: ${{ vars.FORGEJO_CHECKOUT_URL || github.server_url }}
+      - name: Check out the exact source from git.oklabs.uk
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          git fetch -q --no-tags --depth 1 origin "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
 
       - name: Build, sign and notarize
         shell: bash
@@ -133,7 +159,7 @@ jobs:
           SIGNATURE="$(printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - -p "$ARCHIVE")"
           export SIGNATURE
           python3 scripts/releases/macos-artifact.py stage "$RUNNER_TEMP/publish"
-      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+      - uses: https://git.oklabs.uk/BeFeast/actions-upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # upstream v3 (MIT)
         if: github.ref == 'refs/heads/main'
         with:
           name: macos-publication
@@ -153,11 +179,25 @@ jobs:
     runs-on: bridge
     timeout-minutes: 105
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Check out the exact source from git.oklabs.uk
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
       - name: Produce a source-pinned hosted shipping artifact
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}

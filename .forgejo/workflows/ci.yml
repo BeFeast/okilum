@@ -42,9 +42,21 @@ jobs:
       # two jobs reading it minutes apart could both skip (PR #1214).
       macos_lane: ${{ steps.native-scope.outputs.macos_lane }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Check out the exact source from git.oklabs.uk
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          git fetch -q --no-tags --depth 1 origin "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
       - name: Select native PR check
         id: native-scope
         if: github.event_name == 'pull_request'
@@ -383,11 +395,21 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
-          github-server-url: ${{ vars.FORGEJO_CHECKOUT_URL || github.server_url }}
+      - name: Check out the exact source from git.oklabs.uk
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://git.oklabs.uk/${CHECKOUT_REPOSITORY}.git"
+          git fetch -q --no-tags --depth 1 origin "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
       - name: Compile Reader and run quick native regressions
         shell: bash
         run: bash scripts/ci/check-macos.sh
@@ -396,7 +418,7 @@ jobs:
         # Diagnostic PNG transport must not mask the native compile/test result.
         continue-on-error: true
         if: always()
-        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        uses: https://git.oklabs.uk/BeFeast/actions-upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # upstream v3 (MIT)
         with:
           name: native-thumbnail-evidence
           path: ${{ runner.temp }}/thumbnail-evidence/
