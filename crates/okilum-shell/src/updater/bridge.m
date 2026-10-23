@@ -22,10 +22,24 @@ static void TSSend(int kind, NSString *text) {
     if (TSReporter) TSReporter(kind, (text ?: @"").UTF8String);
 }
 
+// Foreground metadata checks must use Sparkle's foreground selector, not its
+// always-background information probe. This driver never accepts a download.
+@interface TSMetadataDriver : SPUStandardUserDriver
+@end
+@implementation TSMetadataDriver
+- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {}
+- (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
+    reply(SPUUserUpdateChoiceDismiss);
+}
+- (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement { acknowledgement(); }
+- (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement { acknowledgement(); }
+@end
+
 // A probe must have its own host identity: probing the installation updater
 // resumes its retained installer instead of fetching the feed. Copy the host's
 // version/security configuration, but never allow this metadata-only updater to
-// schedule, download or install anything. Sparkle still selects/filter items.
+// download or install anything. Each probe updater is released on completion
+// so it cannot retain a second scheduler. Sparkle still selects/filters items.
 @interface TSFreshnessProbe : NSObject <SPUUpdaterDelegate>
 @property(nonatomic, strong) SPUUpdater *updater;
 @property(nonatomic, strong) NSURL *directory;
@@ -33,28 +47,34 @@ static void TSSend(int kind, NSString *text) {
 @property(nonatomic, copy) void (^completion)(SUAppcastItem *, NSError *);
 @property(nonatomic, copy) NSSet<NSString *> *channels;
 @property(nonatomic, copy) NSString *feed;
+@property(nonatomic) BOOL foreground;
 - (void)check:(SPUUpdater *)source channels:(NSSet<NSString *> *)channels
-  userDriver:(id<SPUUserDriver>)userDriver completion:(void (^)(SUAppcastItem *, NSError *))completion;
+  foreground:(BOOL)foreground completion:(void (^)(SUAppcastItem *, NSError *))completion;
 @end
 @implementation TSFreshnessProbe
 - (void)check:(SPUUpdater *)source channels:(NSSet<NSString *> *)channels
-  userDriver:(id<SPUUserDriver>)userDriver completion:(void (^)(SUAppcastItem *, NSError *))completion {
+  foreground:(BOOL)foreground completion:(void (^)(SUAppcastItem *, NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
     if (self.completion) {
         completion(nil, [NSError errorWithDomain:@"OkilumUpdate" code:6 userInfo:@{NSLocalizedDescriptionKey:@"An update verification is already in progress. Try again."}]);
         return;
     }
+    self.foreground = foreground;
     self.channels = channels;
     self.completion = completion;
     self.selected = nil;
     NSError *error = nil;
-    if (!self.updater) {
+    if (!self.directory) {
         self.directory = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
             URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
         NSURL *contents = [self.directory URLByAppendingPathComponent:@"Freshness.bundle/Contents" isDirectory:YES];
         NSMutableDictionary *info = [source.hostBundle.infoDictionary mutableCopy];
         info[@"CFBundleIdentifier"] = [source.hostBundle.bundleIdentifier stringByAppendingString:
             [@".freshness." stringByAppendingString:NSUUID.UUID.UUIDString]];
+        // SUDefaultsDomain is Sparkle's supported preference-domain contract.
+        // Keep the source's actual skip/rollout (including a not-yet-assigned
+        // group) and validation state. Do not invent/copy private preference keys.
+        info[@"SUDefaultsDomain"] = [source.hostBundle objectForInfoDictionaryKey:@"SUDefaultsDomain"] ?: source.hostBundle.bundleIdentifier;
         info[@"SUEnableAutomaticChecks"] = @NO;
         info[@"SUAllowsAutomaticUpdates"] = @NO;
         [info removeObjectForKey:@"CFBundleExecutable"];
@@ -62,23 +82,33 @@ static void TSSend(int kind, NSString *text) {
             || ![info writeToURL:[contents URLByAppendingPathComponent:@"Info.plist"] error:&error]) {
             [self finish:error]; return;
         }
-        NSBundle *bundle = [NSBundle bundleWithURL:[contents URLByDeletingLastPathComponent]];
-        self.updater = [[SPUUpdater alloc] initWithHostBundle:bundle
-            applicationBundle:source.hostBundle userDriver:userDriver delegate:self];
+        // Delta eligibility checks inspect this framework's permissions, size
+        // and locales. Point at the real framework rather than an empty bundle.
+        NSURL *frameworks = [contents URLByAppendingPathComponent:@"Frameworks" isDirectory:YES];
+        if (![[NSFileManager defaultManager] createDirectoryAtURL:frameworks withIntermediateDirectories:YES attributes:nil error:&error]
+            || ![[NSFileManager defaultManager] createSymbolicLinkAtURL:[frameworks URLByAppendingPathComponent:@"Sparkle.framework"]
+                withDestinationURL:[NSBundle bundleForClass:SPUUpdater.class].bundleURL error:&error]) {
+            [self finish:error]; return;
+        }
     }
+    NSBundle *bundle = [NSBundle bundleWithURL:[self.directory URLByAppendingPathComponent:@"Freshness.bundle"]];
+    TSMetadataDriver *driver = [[TSMetadataDriver alloc] initWithHostBundle:bundle delegate:nil];
+    self.updater = [[SPUUpdater alloc] initWithHostBundle:bundle
+        applicationBundle:source.hostBundle userDriver:driver delegate:self];
     self.updater.httpHeaders = source.httpHeaders;
     self.updater.userAgentString = source.userAgentString;
     // The delegate supplies the source's effective URL, including any supported
     // existing preference. No override of signing/validation/selection is used.
     self.feed = source.feedURL.absoluteString;
     if (![self.updater startUpdater:&error]) { [self finish:error]; return; }
-    [self.updater checkForUpdateInformation];
+    if (foreground) [self.updater checkForUpdates];
+    else [self.updater checkForUpdateInformation];
 }
 - (NSSet<NSString *> *)allowedChannelsForUpdater:(SPUUpdater *)updater { return self.channels; }
 - (NSString *)feedURLStringForUpdater:(SPUUpdater *)updater { return self.feed; }
 - (BOOL)updaterShouldPromptForPermissionToCheckForUpdates:(SPUUpdater *)updater { return NO; }
 - (BOOL)updater:(SPUUpdater *)updater mayPerformUpdateCheck:(SPUUpdateCheck)check error:(NSError **)error {
-    if (check == SPUUpdateCheckUpdateInformation) return YES;
+    if (check == (self.foreground ? SPUUpdateCheckUpdates : SPUUpdateCheckUpdateInformation)) return YES;
     *error = [NSError errorWithDomain:@"OkilumUpdate" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The freshness probe only reads update information."}];
     return NO;
 }
@@ -89,6 +119,9 @@ static void TSSend(int kind, NSString *text) {
 - (void)finish:(NSError *)error {
     void (^completion)(SUAppcastItem *, NSError *) = self.completion;
     self.completion = nil;
+    // Sharing selection preferences must not leave a second updater scheduling
+    // background checks. SPUUpdater invalidates its weak-delegate timer on dealloc.
+    self.updater = nil;
     if (completion) completion(self.selected, error);
 }
 - (void)dealloc {
@@ -102,6 +135,7 @@ static SPUUpdater *TSUpdater;
 static TSUserDriver *TSDriver;
 static TSFreshnessProbe *TSProbe;
 static BOOL TSRestartAfterCycle;
+static BOOL TSReplacementForeground;
 static NSString *TSCycleFailure;
 static BOOL TSGuardRequested;
 static BOOL TSManualCheck;
@@ -109,10 +143,10 @@ static NSSet<NSString *> *TSChannels(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey]
         ? [NSSet setWithObjects:@"stable", @"beta", nil] : [NSSet setWithObject:@"stable"];
 }
-static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSError *)) {
+static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^completion)(BOOL, NSError *)) {
     NSSet<NSString *> *channels = TSChannels();
     NSString *feed = TSUpdater.feedURL.absoluteString;
-    [TSProbe check:TSUpdater channels:channels userDriver:(id<SPUUserDriver>)TSDriver completion:^(SUAppcastItem *selected, NSError *error) {
+    [TSProbe check:TSUpdater channels:channels foreground:foreground completion:^(SUAppcastItem *selected, NSError *error) {
         if (![channels isEqualToSet:TSChannels()] || ![feed isEqualToString:TSUpdater.feedURL.absoluteString])
             error = [NSError errorWithDomain:@"OkilumUpdate" code:5 userInfo:@{NSLocalizedDescriptionKey:@"The update channel changed during verification. Check again."}];
         if (!error && !selected) error = [NSError errorWithDomain:@"OkilumUpdate" code:2
@@ -142,7 +176,10 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
     BOOL restart = TSRestartAfterCycle && !error;
     TSRestartAfterCycle = NO;
     if (TSCycleFailure) { TSSend(2, TSCycleFailure); TSCycleFailure = nil; }
-    if (restart) dispatch_async(dispatch_get_main_queue(), ^{ [TSUpdater checkForUpdates]; });
+    if (restart) dispatch_async(dispatch_get_main_queue(), ^{
+        if (TSReplacementForeground) [TSUpdater checkForUpdates];
+        else [TSUpdater checkForUpdatesInBackground];
+    });
 }
 - (void)updaterDidNotFindUpdate:(SPUUpdater *)updater {
     TSSend(0, nil);
@@ -168,6 +205,7 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
 @property(nonatomic) BOOL verifiedRestart;
 @property(nonatomic) BOOL replacing;
 @property(nonatomic) BOOL preparing;
+@property(nonatomic) BOOL foreground;
 @property(nonatomic) NSUInteger generation;
 @property(nonatomic, copy) void (^quitReply)(BOOL);
 - (void)verifyQuit:(void (^)(BOOL))reply;
@@ -179,6 +217,7 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
 @implementation TSUserDriver
 - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
     self.item = item;
+    self.foreground = state.userInitiated;
     // A pre-existing installer (from a previous build) also enters the hook.
     if (state.stage == SPUUserUpdateStageInstalling) {
         [self showReadyToInstallAndRelaunch:reply]; return;
@@ -202,6 +241,7 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
     TSGuardRequested = NO;
     if (self.quitReply) { void (^quit)(BOOL) = self.quitReply; self.quitReply = nil; quit(NO); }
     TSRestartAfterCycle = error == nil;
+    TSReplacementForeground = self.foreground;
     self.replacing = error == nil;
     TSCycleFailure = error.localizedDescription;
     // At Ready this cancels installation without recording a user skip.
@@ -234,15 +274,17 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
     NSUInteger generation = self.generation;
     TSSend(4, nil);
     __weak TSUserDriver *weakSelf = self;
-    TSCheckFreshness(self.item, ^(BOOL current, NSError *error) {
+    TSCheckFreshness(self.item, self.foreground, ^(BOOL current, NSError *error) {
         TSUserDriver *driver = weakSelf;
         if (!driver || driver.generation != generation) return;
         driver.verifying = NO;
         if (!current) { [driver cancelForReplacement:reply error:error]; return; }
         driver.restartReply = reply;
         if (driver.quitReply) {
+            driver.verifiedRestart = YES;
+            TSGuardRequested = YES;
             TSSend(5, nil);
-            void (^quit)(BOOL) = driver.quitReply; driver.quitReply = nil; quit(YES); return;
+            return;
         }
         TSSend(5, nil);
         [driver presentReady:^(SPUUserUpdateChoice choice) {
@@ -267,16 +309,12 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
     NSUInteger generation = self.generation;
     TSSend(4, nil);
     __weak TSUserDriver *weakSelf = self;
-    TSCheckFreshness(self.item, ^(BOOL current, NSError *error) {
+    TSCheckFreshness(self.item, self.foreground, ^(BOOL current, NSError *error) {
         TSUserDriver *driver = weakSelf;
         if (!driver || driver.generation != generation) return;
         driver.verifying = NO;
         if (!driver.restartReply) return;
         if (!current) { [driver cancelForReplacement:driver.restartReply error:error]; return; }
-        if (driver.quitReply) {
-            TSSend(5, nil);
-            void (^quit)(BOOL) = driver.quitReply; driver.quitReply = nil; quit(YES); return;
-        }
         driver.verifiedRestart = YES;
         TSGuardRequested = YES;
         // Rust reruns editor protection/UI persistence after the async check,
@@ -341,12 +379,12 @@ static void TSCheckFreshness(SUAppcastItem *item, void (^completion)(BOOL, NSErr
 static TSTerminationDelegate *TSTermination;
 static TSUpdaterDelegate *TSDelegate;
 
-static void TSStart(NSBundle *bundle, TSUserDriver *driver) {
+static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *delegate) {
     TSTermination = [TSTerminationDelegate new];
     TSTermination.original = NSApp.delegate;
     NSApp.delegate = TSTermination;
     TSProbe = [TSFreshnessProbe new];
-    TSDelegate = [TSUpdaterDelegate new];
+    TSDelegate = delegate ?: [TSUpdaterDelegate new];
     TSDriver = driver;
     TSUpdater = [[SPUUpdater alloc] initWithHostBundle:bundle
                                  applicationBundle:bundle
@@ -358,7 +396,7 @@ void okilum_updater_start(void) {
     TSRegisterChannelDefault();
     // A bare `cargo run` binary has no bundle feed; Sparkle would only report errors.
     if (TSUpdater || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;
-    TSStart(NSBundle.mainBundle, [[TSUserDriver alloc] initWithHostBundle:NSBundle.mainBundle delegate:nil]);
+    TSStart(NSBundle.mainBundle, [[TSUserDriver alloc] initWithHostBundle:NSBundle.mainBundle delegate:nil], nil);
 }
 
 bool okilum_updater_available(void) { return TSUpdater != nil; }
@@ -371,7 +409,7 @@ bool okilum_updater_check(void) {
     if (TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return false;
     TSManualCheck = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [TSProbe check:TSUpdater channels:TSChannels() userDriver:TSDriver completion:^(SUAppcastItem *selected, NSError *error) {
+        [TSProbe check:TSUpdater channels:TSChannels() foreground:NO completion:^(SUAppcastItem *selected, NSError *error) {
             TSManualCheck = NO;
             if (error && !([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError))
                 TSSend(2, error.localizedDescription);
@@ -410,8 +448,18 @@ bool okilum_updater_restart(void) {
 bool okilum_updater_finish_restart(void) {
     if (!TSDriver.restartReply || TSDriver.verifying || !TSDriver.verifiedRestart || !TSGuardRequested) return false;
     TSDriver.verifiedRestart = NO;
-    TSDriver.preparing = NO;
     TSGuardRequested = NO;
+    if (TSDriver.quitReply) {
+        // The same Rust protection/persistence guard has just succeeded. Only
+        // now may AppKit accept ordinary Quit; do not request a relaunch.
+        void (^quit)(BOOL) = TSDriver.quitReply;
+        TSDriver.quitReply = nil;
+        // Release GPUI's mutable App borrow before AppKit synchronously sends
+        // applicationWillTerminate (the same ordering as GPUI's normal Quit).
+        dispatch_async(dispatch_get_main_queue(), ^{ quit(YES); });
+        return true;
+    }
+    TSDriver.preparing = NO;
     void (^continuation)(SPUUserUpdateChoice) = TSDriver.restartReply;
     TSDriver.restartReply = nil;
     // Close the standard driver UI and clear its stored handlers before consuming

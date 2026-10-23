@@ -14,6 +14,48 @@ static void Trace(NSString *event) {
 static void Report(int kind, const char *text) {
     Trace([NSString stringWithFormat:@"report %d %s", kind, text ?: ""]);
 }
+extern bool fixture_finish_verified_install(void);
+bool fixture_protect_current_editor(void) {
+    Trace(@"protect current editor after verification");
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]) return false;
+    NSString *editor = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSEditor"];
+    NSData *current = [NSData dataWithContentsOfFile:editor];
+    NSString *protected = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSProtectedEditor"];
+    return [current writeToFile:protected atomically:YES];
+}
+bool fixture_persist_ui_state(void) { Trace(@"persist UI after editor protection"); return true; }
+
+static BOOL TSCompare;
+static BOOL TSComparisonForeground;
+static SUAppcastItem *TSActualSelection;
+static void FinishComparison(void) {
+    [TSProbe check:TSUpdater channels:TSChannels() foreground:TSComparisonForeground completion:^(SUAppcastItem *selected, NSError *error) {
+        NSString *actual = TSActualSelection.versionString ?: @"none";
+        NSString *probed = selected.versionString ?: @"none";
+        BOOL samePayload = (!selected && !TSActualSelection) || [selected.fileURL isEqual:TSActualSelection.fileURL];
+        if (![actual isEqualToString:probed] || !samePayload) exit(41);
+        NSString *expected = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSExpectedSelection"];
+        if (![actual isEqualToString:expected]) exit(42);
+        if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSExpectDelta"] boolValue] && !TSActualSelection.deltaUpdate) exit(46);
+        if (error && !([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError)) exit(43);
+        Trace([NSString stringWithFormat:@"eligibility matches %@ %@", TSComparisonForeground ? @"foreground" : @"background", actual]);
+        NSString *receipt = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSReceipt"];
+        [@"eligibility matched" writeToFile:receipt atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        exit(0);
+    }];
+}
+@interface TestUpdaterDelegate : TSUpdaterDelegate
+@end
+@implementation TestUpdaterDelegate
+- (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
+    TSActualSelection = item;
+    [super updater:updater didFindValidUpdate:item];
+}
+- (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
+    [super updater:updater didFinishUpdateCycleForUpdateCheck:check error:error];
+    if (TSCompare) dispatch_async(dispatch_get_main_queue(), ^{ FinishComparison(); });
+}
+@end
 @interface TestDriver : TSUserDriver
 @end
 @implementation TestDriver
@@ -30,6 +72,8 @@ static void Report(int kind, const char *text) {
 }
 - (void)presentUpdate:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
     Trace([@"offer " stringByAppendingString:item.versionString]);
+    Trace(state.userInitiated ? @"selection foreground" : @"selection background");
+    if (TSCompare) { reply(SPUUserUpdateChoiceDismiss); return; }
     if (self.replacing) [super presentUpdate:item state:state reply:reply];
     else reply(SPUUserUpdateChoiceInstall); // automated click on Install
 }
@@ -62,6 +106,7 @@ static void Report(int kind, const char *text) {
         if (![data writeToFile:[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSFeedPath"] atomically:YES]) exit(34);
         Trace(@"published while ready");
     }
+    if (TSCompare) return;
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSQuit"] boolValue]) {
         [NSApp terminate:nil]; return;
     }
@@ -100,15 +145,36 @@ int main(void) {
         [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"SUAutomaticallyUpdate"];
         [NSUserDefaults.standardUserDefaults setBool:[[bundle objectForInfoDictionaryKey:@"TSBeta"] boolValue] forKey:TSBetaKey];
         TSReporter = Report;
-        TSStart(bundle, [[TestDriver alloc] initWithHostBundle:bundle delegate:nil]);
+        TSCompare = [[bundle objectForInfoDictionaryKey:@"TSCompareEligibility"] boolValue];
+        TSComparisonForeground = [[bundle objectForInfoDictionaryKey:@"TSForeground"] boolValue];
+        {
+            // Fixture inputs for pinned Sparkle, never product-side selection.
+            NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"] ?: bundle.bundleIdentifier;
+            NSUserDefaults *preferences = [[NSUserDefaults alloc] initWithSuiteName:domain];
+            [preferences setInteger:6 forKey:@"SUUpdateGroupIdentifier"];
+            NSString *skip = [bundle objectForInfoDictionaryKey:@"TSSkip"];
+            if (skip) [preferences setObject:skip forKey:@"SUSkippedVersion"];
+            NSString *major = [bundle objectForInfoDictionaryKey:@"TSSkipMajor"];
+            if (major) {
+                [preferences setObject:major forKey:@"SUSkippedMajorVersion"];
+                [preferences setObject:@"4" forKey:@"SUSkippedMajorSubreleaseVersion"];
+            }
+        }
+        TSStart(bundle, [[TestDriver alloc] initWithHostBundle:bundle delegate:nil], TSCompare ? [TestUpdaterDelegate new] : nil);
         if (TSUpdater.automaticallyDownloadsUpdates || !TSUpdater.automaticallyChecksForUpdates) return 32;
-        // Start in the same runloop ordering as production's manual Install.
-        [TSUpdater checkForUpdates];
+        if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];
+        else if ([[bundle objectForInfoDictionaryKey:@"TSBackgroundInstall"] boolValue]) [TSUpdater checkForUpdatesInBackground];
+        else [TSUpdater checkForUpdates];
         [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *timer) {
             if (okilum_updater_guard_requested()) {
                 Trace(@"final editor guard boundary");
-                if ([[bundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]) okilum_updater_refuse_restart();
-                else if (!okilum_updater_finish_restart()) exit(33);
+                // A user edit made AFTER the successful fetch must be the
+                // revision protected by the production Rust coordinator.
+                NSString *editor = [bundle objectForInfoDictionaryKey:@"TSEditor"];
+                if (![@"edited after verification" writeToFile:editor atomically:YES encoding:NSUTF8StringEncoding error:NULL]) exit(45);
+                Trace(@"editor changed after verification");
+                bool completed = fixture_finish_verified_install();
+                if (completed == [[bundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]) exit(33);
             }
         }];
         [NSApp run];

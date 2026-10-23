@@ -13,7 +13,9 @@ The production `TSUserDriver` in `crates/okilum-shell/src/updater/bridge.m` now:
 1. Rechecks the appcast after download/extraction, before presenting Ready.
 2. Rechecks again when either Restart button is chosen. Rust then protects all
    editors and persists UI state **after** the asynchronous check, before a
-   separate guarded FFI entry point consumes the install continuation.
+   separate guarded FFI entry point consumes the install continuation. Ordinary
+   Quit uses this same post-verification Rust protection/persistence boundary;
+   only after it succeeds can AppKit accept termination without relaunching.
 3. Defers ordinary AppKit termination during download/extraction/verification,
    and rechecks a prepared update on ordinary Quit. This matters even with silent
    automatic installation disabled: Sparkle installs prepared interactive updates
@@ -34,15 +36,25 @@ The production `TSUserDriver` in `crates/okilum-shell/src/updater/bridge.m` now:
    install the old archive.
 
 The freshness probe is a controlled **metadata-only** `SPUUpdater`, not another
-installer. It receives a temporary host bundle with a distinct identity, the
-running host version and unchanged validation/security configuration. It copies
-the effective feed URL/HTTP headers and uses the same allowed channels. Only
-`SPUUpdateCheckUpdateInformation` is permitted; scheduling, downloads and
-installation are disallowed. Sparkle owns eligibility, OS compatibility, version
-selection, appcast validation and archive validation; there is no XML picker or
-`bestValidUpdateInAppcast` override. A separate identity is necessary because a
-probe on the installation updater can resume its retained N instead of fetching
-the appcast. Manual inline checks also use this metadata-only path.
+installer. Its temporary bundle has a distinct installation identity but uses
+Sparkle's supported `SUDefaultsDomain` to share the source's actual selection
+preferences, including skips and phased rollout group. This includes the first
+assignment of a rollout group; no private preference-key copying or independent
+random group is involved. The current cycle's `state.userInitiated` determines
+the check type: foreground `checkForUpdates` with a metadata driver that always
+replies Dismiss, or background `checkForUpdateInformation`. Replacement cycles
+keep the same foreground/background context. Manual inline probes retain their
+normal background skip/rollout semantics.
+
+The probe copies the source version/security configuration, effective feed URL,
+HTTP headers and allowed channels. A framework symlink preserves the actual
+Sparkle executable/locale inputs to delta eligibility. Sparkle owns OS/channel,
+skip/phase, version and delta selection and signature validation. There is no XML
+picker or `bestValidUpdateInAppcast` override. Only the requested check type is
+permitted, the metadata driver never accepts a download, and the transient
+updater is released on completion so it retains no second scheduler. A separate
+installation identity is necessary because probing the installation updater can
+resume retained N instead of fetching the feed.
 
 All Sparkle calls, reply blocks, continuation ownership and AppKit termination
 replies run on the main thread. Cancellation precedes a new cycle; callbacks from
@@ -93,9 +105,20 @@ archive was downloaded, and the installed bundle plus relaunch receipt are 4.
 An unchanged-feed control must install 2 with the same hook. Additional cases
 cover a feed changing while Ready is displayed, ordinary Quit, Quit during
 extraction, stable-only selection, a rejected archive signature, an older eligible
-feed, malformed feed, and refusal at the final editor-guard boundary. The latter
-exercises the production bridge's refusal/cancellation continuation; it does not
-claim to simulate an actual Rust editor save failure.
+feed, malformed feed, and post-verification refusal for both Restart and ordinary
+Quit. The host links the same Rust final-guard coordinator as production and
+changes a file-backed editor after verification; accepting Quit/Restart must
+protect that new revision, while refusal must leave the app installed at 1.
+A separate hosted GPUI regression calls the production protection binding with
+an actual Reader editor: it verifies the latest edit is saved before commit and
+that a real recovery-directory failure invokes refusal instead of commit.
+
+Eligibility fixtures compare the actual source updater selection and the
+production probe's version and payload URL under foreground/background phased,
+minor-skip and major-skip contexts, a custom defaults domain, OS filtering and
+delta selection. They assert metadata checks download no archive. Foreground
+phased unchanged-feed and background phased unchanged-install controls ensure
+that valid N is neither rejected nor replaced by an ineligible newer version.
 
 The normal GitHub-hosted macOS PR lane invokes this fixture from
 `scripts/ci/check-macos.sh` and uploads logs, callback traces and feed requests.

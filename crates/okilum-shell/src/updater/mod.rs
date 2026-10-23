@@ -401,3 +401,6 @@ mod tests {
 
 #[cfg(test)]
 mod progress_ui_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use macos::protect_verified_install;

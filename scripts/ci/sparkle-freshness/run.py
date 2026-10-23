@@ -4,6 +4,8 @@
 No production signing keys, feed overrides, vendor patches or bypassed validation.
 Each run owns isolated app identities, bundles, ephemeral test keys and a local feed.
 """
+import datetime
+import email.utils
 import functools
 import hashlib
 import http.server
@@ -67,13 +69,20 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
         key = work / 'test-key'
         key.chmod(0o600)
         public_key = (work / 'public-key').read_text()
+        guard = work / 'libfixture_guard.a'
+        run('rustc', '--edition=2021', '--crate-type=staticlib',
+            ROOT / 'scripts/ci/sparkle-freshness/guard.rs', '-o', guard)
         executable = work / 'Freshness'
         run('xcrun', 'clang', '-fobjc-arc', '-fblocks', '-Wall', '-Werror',
             '-Wno-unused-parameter',
             '-F', FRAMEWORK, '-framework', 'Sparkle', '-framework', 'AppKit',
             '-Wl,-rpath,@executable_path/../Frameworks',
-            ROOT / 'scripts/ci/sparkle-freshness/host.m', '-o', executable)
-        for scenario in ('newest', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'older-feed', 'feed-error'):
+            ROOT / 'scripts/ci/sparkle-freshness/host.m', guard, '-liconv', '-o', executable)
+        for scenario in ('newest', 'background-newest', 'background-phase-unchanged', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+                         'eligibility-phase-background', 'eligibility-phase-foreground',
+                         'eligibility-skip-background', 'eligibility-skip-foreground',
+                         'eligibility-major-background', 'eligibility-major-foreground',
+                         'eligibility-delta-foreground', 'eligibility-os-background'):
             case = work / scenario
             case.mkdir()
             trace = evidence / f'{scenario}.trace'
@@ -95,6 +104,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             identifier = 'uk.oklabs.okilum.freshness.' + scenario + '.' + os.urandom(6).hex()
             receipt = case / 'installed'
             app = case / 'Freshness.app'
+            compare = scenario.startswith('eligibility-')
+            foreground = scenario.endswith('-foreground')
             base_info = {
                 'CFBundleIdentifier': identifier, 'CFBundleExecutable': 'Freshness',
                 'CFBundleName': 'Freshness', 'CFBundlePackageType': 'APPL',
@@ -104,7 +115,10 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
                 'TSTrace': str(trace), 'TSReceipt': str(receipt),
                 'TSPendingFeed': str(case / 'pending.xml'), 'TSFeedPath': str(case / 'appcast.xml'),
-                'TSBeta': scenario != 'stable', 'TSRefuse': scenario == 'guard-refusal',
+                'TSBeta': scenario != 'stable', 'TSRefuse': scenario in ('guard-refusal', 'quit-guard-refusal'),
+                'TSEditor': str(case / 'editor'), 'TSProtectedEditor': str(case / 'protected-editor'),
+                'TSCompareEligibility': compare, 'TSForeground': foreground,
+                'TSBackgroundInstall': scenario.startswith('background-'),
                 'TSQuit': scenario.startswith('quit-'),
                 'TSQuitDuringDownload': scenario == 'quit-during-download',
             }
@@ -117,6 +131,15 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 (destination / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
                 run('codesign', '--force', '--sign', '-', destination, stdout=subprocess.DEVNULL)
 
+            (case / 'editor').write_text('saved before verification')
+            if compare:
+                base_info['SUDefaultsDomain'] = identifier + '.updates'
+                base_info['TSExpectDelta'] = 'delta' in scenario
+                base_info['TSExpectedSelection'] = '4' if foreground else '2' if ('phase' in scenario or 'os' in scenario) else 'none'
+                if 'skip' in scenario:
+                    base_info['TSSkip'] = '4'
+                if 'major' in scenario:
+                    base_info['TSSkipMajor'] = '2'
             if scenario in ('restart-newest', 'quit-newest'):
                 base_info['TSRestartFeed'] = str(case / 'restart.xml')
             signatures = {}
@@ -135,16 +158,29 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     signature = signatures[version]
                     if scenario == 'bad-signature' and version == 4:
                         signature = 'A' * 86 + '=='
-                    items.append(f'''<item><title>{version}</title><sparkle:channel>{channel}</sparkle:channel>
+                    context = ''
+                    if ('phase' in scenario and (version == 4 or scenario == 'phase-unchanged')):
+                        released = email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=60))
+                        context += f'<pubDate>{released}</pubDate><sparkle:phasedRolloutInterval>604800</sparkle:phasedRolloutInterval>'
+                    if compare and 'major' in scenario:
+                        context += '<sparkle:minimumAutoupdateVersion>2</sparkle:minimumAutoupdateVersion>'
+                    if compare and 'os' in scenario and version == 4:
+                        context += '<sparkle:minimumSystemVersion>99.0</sparkle:minimumSystemVersion>'
+                    if compare and 'delta' in scenario and version == 4:
+                        (case / 'delta4.zip').write_bytes((case / '4.zip').read_bytes())
+                        context += f'<sparkle:deltas><enclosure url="{address}/delta4.zip" sparkle:version="4" sparkle:deltaFrom="1" sparkle:edSignature="{signature}" length="{(case / "4.zip").stat().st_size}" type="application/octet-stream"/></sparkle:deltas>'
+                    items.append(f'''<item><title>{version}</title><sparkle:channel>{channel}</sparkle:channel>{context}
 <enclosure url="{address}/{version}.zip" sparkle:version="{version}"
  sparkle:shortVersionString="0.1.{version}" sparkle:edSignature="{signature}"
  length="{(case / f'{version}.zip').stat().st_size}" type="application/octet-stream"/></item>''')
                 path.write_text('<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Freshness test</title>' + ''.join(items) + '</channel></rss>')
                 run(signer, '--ed-key-file', key, path, stdout=subprocess.DEVNULL)
 
-            feed(case / 'appcast.xml', [(2, 'stable')])
+            feed(case / 'appcast.xml', [(4, 'stable'), (2, 'stable')] if compare else [(2, 'stable')])
             newer = [(4, 'beta'), (3, 'stable'), (2, 'stable')]
-            feed(case / 'pending.xml', [(2, 'stable')] if scenario in ('unchanged', 'guard-refusal', 'restart-newest', 'quit-newest') else newer)
+            feed(case / 'pending.xml', [(2, 'stable')] if scenario in ('unchanged', 'phase-unchanged', 'guard-refusal', 'quit-guard-refusal', 'restart-newest', 'quit-newest') else newer)
+            if scenario == 'background-phase-unchanged':
+                feed(case / 'pending.xml', [(4, 'beta'), (2, 'stable')])
             if scenario in ('restart-newest', 'quit-newest'):
                 feed(case / 'restart.xml', newer)
             if scenario == 'older-feed':
@@ -160,8 +196,15 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 environment.pop('DYLD_FRAMEWORK_PATH', None)
                 process = subprocess.Popen([str(app / 'Contents/MacOS/Freshness')], stdout=log_file, stderr=log_file, env=environment)
                 try:
-                    expected = '2' if scenario == 'unchanged' else '3' if scenario == 'stable' else '4'
-                    if scenario in ('bad-signature', 'guard-refusal', 'older-feed', 'feed-error'):
+                    expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
+                    if compare:
+                        wait_for(receipt.exists, process, output)
+                        assert receipt.read_text() == 'eligibility matched', trace.read_text()
+                        assert 'eligibility matches' in trace.read_text(), trace.read_text()
+                        assert not any('.zip' in r for r in requests), requests
+                        print(f'PASS Sparkle source/probe eligibility: {scenario}', flush=True)
+                        continue
+                    if scenario in ('bad-signature', 'guard-refusal', 'quit-guard-refusal', 'older-feed', 'feed-error'):
                         wait_for(lambda: 'report 2 ' in trace.read_text(), process, output)
                         assert not receipt.exists(), trace.read_text()
                         assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
@@ -179,16 +222,27 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                             assert receipt.read_text() == expected, trace.read_text()
                         installed = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion']
                         assert installed == expected, (installed, trace.read_text())
-                        if not scenario.startswith('quit-'):
-                            assert 'final editor guard boundary' in trace.read_text()
+                        assert 'final editor guard boundary' in trace.read_text()
+                        assert (case / 'protected-editor').read_text() == 'edited after verification', trace.read_text()
+                        assert trace.read_text().index('editor changed after verification') < trace.read_text().index('protect current editor after verification'), trace.read_text()
                         if scenario != 'quit-during-download':
                             assert f'verified-ready {expected}' in trace.read_text()
                         assert trace.read_text().count('original delegate restored for shutdown') == 1, trace.read_text()
-                        if scenario != 'unchanged':
+                        if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged'):
                             assert trace.read_text().index('dismiss 2') < trace.read_text().index(f'offer {expected}'), trace.read_text()
                             assert any(f'GET /{expected}.zip' in r for r in requests), requests
-                        if scenario not in ('unchanged', 'restart-newest', 'quit-newest'):
+                        if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged', 'restart-newest', 'quit-newest'):
                             assert 'verified-ready 2' not in trace.read_text(), trace.read_text()
+                    if scenario in ('guard-refusal', 'quit-guard-refusal'):
+                        assert 'editor changed after verification' in trace.read_text()
+                        assert 'protect current editor after verification' in trace.read_text()
+                        assert 'persist UI after editor protection' not in trace.read_text()
+                        assert not (case / 'protected-editor').exists()
+                        assert 'termination requested' not in trace.read_text()
+                    if scenario.startswith('background-'):
+                        assert 'selection background' in trace.read_text()
+                    if scenario == 'background-phase-unchanged':
+                        assert not any('GET /4.zip' in r for r in requests), requests
                     assert 'downloaded 2' in trace.read_text(), trace.read_text()
                     assert 'prepared 2' in trace.read_text(), trace.read_text()
                     assert 'published feed' in trace.read_text(), trace.read_text()
@@ -214,6 +268,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         }, indent=2))
                     # Only this throwaway test identity, never the user's defaults.
                     subprocess.run(['defaults', 'delete', identifier], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if compare:
+                        subprocess.run(['defaults', 'delete', identifier + '.updates'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     shutil.rmtree(case)
 
 
