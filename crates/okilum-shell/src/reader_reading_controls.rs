@@ -70,9 +70,12 @@ fn reading_width_slider(window: &mut Window, cx: &mut App) -> AnyElement {
             reader_ui_state::set_reading_width(value.start(), cx);
         })
         .detach();
+        // `max` before `min`: SliderState starts at 0..100 and every setter
+        // clamps the value against the current range, so `.min(560.)` first
+        // panics in f32::clamp (min > max) and aborts the app.
         SliderState::new()
-            .min(560.)
             .max(1200.)
+            .min(560.)
             .step(10.)
             .default_value(width)
     });
