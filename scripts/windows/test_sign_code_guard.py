@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -31,12 +32,23 @@ class GuardTests(unittest.TestCase):
             (root / '.config/forgejo/token.env').write_text('FORGEJO_TOKEN=offline-test\n')
             (root / 'responses').write_text(json.dumps(responses))
             (root / 'clock').write_text('0')
-            # Freeze only the guard's clock, not subprocess.run's watchdog clock.
-            # Imported subprocess retains its original monotonic reference.
-            (root / 'sitecustomize.py').write_text('''import os, pathlib, subprocess, time
+            # Override only the embedded guard's time import. subprocess and
+            # fake curl keep the real clock and inherited Python instrumentation.
+            python = root / 'python3'
+            python.write_text('#!' + sys.executable + '\n' + '''import builtins, os, pathlib, sys, time, types
+if sys.argv[1:] != ['-']:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+source = sys.stdin.read()
+assert 'deadline = time.monotonic() + 60' in source, 'expected embedded cancellation guard'
 clock = pathlib.Path(os.environ['HOME']) / 'clock'
-time.monotonic = lambda: float(clock.read_text())
+guard_time = types.SimpleNamespace(**vars(time))
+guard_time.monotonic = lambda: float(clock.read_text())
+def guard_import(name, *args, **kwargs):
+    return guard_time if name == 'time' else builtins.__import__(name, *args, **kwargs)
+scope = dict(vars(builtins), __import__=guard_import)
+exec(compile(source, '<embedded-cancel-guard>', 'exec'), {'__builtins__': scope})
 ''')
+            python.chmod(0o755)
             curl = root / 'curl'
             curl.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -60,8 +72,7 @@ print(json.dumps(response))
             ssh.write_text('#!/bin/sh\necho UNEXPECTED-LOGIN >&2\nexit 92\n')
             ssh.chmod(0o755)
             env = dict(os.environ, HOME=str(root), XDG_RUNTIME_DIR=str(root),
-                       PATH=str(root) + os.pathsep + os.environ['PATH'],
-                       PYTHONPATH=str(root))
+                       PATH=str(root) + os.pathsep + os.environ['PATH'])
             env.pop('OKILUM_SIGN_CANCEL_ALLOWLIST', None)
             if allowlist is not None:
                 env['OKILUM_SIGN_CANCEL_ALLOWLIST'] = json.dumps(allowlist)
