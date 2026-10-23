@@ -2520,6 +2520,12 @@ impl Reader {
             self.close_find(window, cx);
             return;
         }
+        // Esc in the tree with nothing else to close deselects, so the next
+        // New note / New folder goes to the root (#1512).
+        if self.tree_focus.is_focused(window) && self.tree.cursor.is_some() {
+            self.clear_tree_selection(cx);
+            return;
+        }
         #[cfg(any(unix, windows))]
         if self.editing.is_some() {
             self.toggle_source(window, cx);
@@ -2945,8 +2951,12 @@ impl Reader {
         #[cfg(any(unix, windows))]
         let creation = self.creation.as_ref();
         #[cfg(any(unix, windows))]
-        if let Some(create) = creation.filter(|c| c.folder.is_empty()) {
-            append_creation_rows(&mut items, create, 0);
+        let scope = self.tree.scope();
+        // The tree's root (the vault root, or a project's folder) has no
+        // row: its inline create row comes first (#1512).
+        #[cfg(any(unix, windows))]
+        if let Some(create) = creation.filter(|c| c.folder.is_empty() || c.folder == scope) {
+            append_creation_rows(&mut items, create, 0, scope);
         }
         if hints && self.tree.rows.is_empty() {
             items.push(SideItem::Empty("Notes and folders appear here."));
@@ -2984,7 +2994,7 @@ impl Reader {
             items.push(SideItem::Tree(row.clone()));
             #[cfg(any(unix, windows))]
             if let Some(create) = creation.filter(|c| c.folder == row.path) {
-                append_creation_rows(&mut items, create, row.depth + 1);
+                append_creation_rows(&mut items, create, row.depth + 1, scope);
             }
         }
         items
@@ -3146,6 +3156,24 @@ impl Reader {
         }
         self.tree_focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Whether `position` is in the tree's empty space under its `rows`.
+    fn tree_space_below_rows(&self, position: Point<Pixels>, rows: usize) -> bool {
+        let scroll = self.tree_scroll.0.borrow();
+        let bounds = scroll.base_handle.bounds();
+        let end = bounds.top() + scroll.base_handle.offset().y + px(TREE_ROW_HEIGHT * rows as f32);
+        bounds.contains(&position) && position.y >= end
+    }
+
+    /// Nothing selected in the tree: New note / New folder then create in
+    /// the root (Esc in the tree, a click on its empty space; #1512). The
+    /// open note keeps its highlight.
+    fn clear_tree_selection(&mut self, cx: &mut Context<Self>) {
+        if self.tree.cursor.take().is_some() {
+            self.tree_revealed = self.selected_file().to_owned();
+            cx.notify();
+        }
     }
 
     /// Sidebar header «Collapse all» (#410): folds every folder; the root
@@ -3921,11 +3949,10 @@ impl Reader {
         let pinned: Rc<std::collections::BTreeSet<String>> =
             Rc::new(self.sidebar.pinned.iter().cloned().collect());
         let current = self.selected_file().to_owned();
-        let cursor = self
-            .tree_focus
-            .is_focused(window)
-            .then(|| tree.cursor.clone())
-            .flatten();
+        // The selection stays visible when the tree loses focus: New note /
+        // New folder go next to it, so it must never be invisible (#1512).
+        let tree_focused = self.tree_focus.is_focused(window);
+        let cursor = tree.cursor.clone();
         let published_root = self.vault_root.clone();
         let published_generation = self.watcher_generation;
         // Every row action is bound to the inventory it was rendered from.
@@ -4005,7 +4032,10 @@ impl Reader {
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
                 #[cfg(any(unix, windows))]
-                SideItem::Create(input, depth, directory, templates, selected) => {
+                SideItem::Create(input, depth, directory, templates, selected, destination) => {
+                    let (destination, destination_tip) = destination;
+                    let destination_entity = entity.clone();
+                    let destination_act = act.clone();
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
@@ -4084,6 +4114,27 @@ impl Reader {
                                     ),
                             )
                         })
+                        // Where it will be created, changeable before Enter
+                        // (#1512): «in: /» is the vault (or project) root.
+                        .child(
+                            Button::new("create-destination")
+                                .ghost()
+                                .small()
+                                .label(destination)
+                                .dropdown_caret(true)
+                                .tooltip(destination_tip)
+                                .debug_selector(|| "create-destination".into())
+                                .on_click(move |_, window, cx| {
+                                    destination_act(
+                                        &destination_entity,
+                                        window,
+                                        cx,
+                                        &|this, window, cx| {
+                                            this.choose_creation_folder(window, cx);
+                                        },
+                                    )
+                                }),
+                        )
                         .into_any_element()
                 }
                 #[cfg(any(unix, windows))]
@@ -4251,7 +4302,12 @@ impl Reader {
                             d.bg(p.selected).font_weight(FontWeight::MEDIUM)
                         })
                         .when(!is_current, |d| d.hover(move |d| d.bg(tokens.hover)))
-                        .when(is_cursor, |d| d.border_1().border_color(p.focus))
+                        .when(is_cursor && tree_focused, |d| {
+                            d.border_1().border_color(p.focus)
+                        })
+                        .when(is_cursor && !tree_focused && !is_current, |d| {
+                            d.bg(p.selected.opacity(0.5))
+                        })
                         .when(directory && row.depth == 0, |d| {
                             d.font_weight(FontWeight::SEMIBOLD)
                         })
@@ -4453,6 +4509,16 @@ impl Reader {
                     .debug_selector(|| "sidebar-tree-body".into())
                     .key_context("ReaderTree")
                     .track_focus(&self.tree_focus)
+                    // A click below the last row clears the selection, so
+                    // the next New note goes to the root (#1512).
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            if this.tree_space_below_rows(event.position, count) {
+                                this.clear_tree_selection(cx);
+                            }
+                        }),
+                    )
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
@@ -5759,8 +5825,17 @@ enum SideItem {
     },
     Empty(&'static str),
     Tree(reader_tree::Row),
+    /// Input, depth, folder?, templates, chosen template, and where the
+    /// item lands as «in: …» label and tooltip (#1512).
     #[cfg(any(unix, windows))]
-    Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
+    Create(
+        Entity<InputState>,
+        usize,
+        bool,
+        Vec<String>,
+        Option<String>,
+        (SharedString, SharedString),
+    ),
     #[cfg(any(unix, windows))]
     CreateError(String, usize),
     #[cfg(any(unix, windows))]
@@ -5768,7 +5843,12 @@ enum SideItem {
 }
 
 #[cfg(any(unix, windows))]
-fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creation, depth: usize) {
+fn append_creation_rows(
+    items: &mut Vec<SideItem>,
+    create: &reader_create::Creation,
+    depth: usize,
+    scope: &str,
+) {
     items.push(SideItem::Create(
         create.input.clone(),
         depth,
@@ -5778,7 +5858,29 @@ fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creat
             .as_ref()
             .map_or_else(Vec::new, |c| c.files.clone()),
         create.selected_template.clone(),
+        creation_destination(scope, &create.folder),
     ));
+}
+
+/// The inline create row's «in: …» (#1512): the tree's root is «/» (the
+/// vault root, or the project's folder inside a project), any other folder
+/// its name; the tooltip says it in full.
+#[cfg(any(unix, windows))]
+fn creation_destination(scope: &str, folder: &str) -> (SharedString, SharedString) {
+    if folder == scope || folder.is_empty() {
+        let tooltip = if scope.is_empty() || folder.is_empty() {
+            "Vault root"
+        } else {
+            "Project root"
+        };
+        return ("in: /".into(), tooltip.into());
+    }
+    let name = folder.rsplit('/').next().unwrap_or(folder);
+    let mut label: String = name.chars().take(12).collect();
+    if name.chars().count() > 12 {
+        label.push('…');
+    }
+    (format!("in: {label}").into(), folder.to_owned().into())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -5820,6 +5922,8 @@ const VAULT_ACCENT_LINE: f32 = 2.;
 /// 8 px dot + 4 px margin + the header row's 4 px gap.
 const VAULT_DOT_SLOT: f32 = 16.;
 
+/// Every sidebar tree row, inline create and rename rows included.
+const TREE_ROW_HEIGHT: f32 = 28.;
 const HIDDEN_FILES_MENU: &str = "Show hidden files";
 /// One sidebar header action (#1512): a 28 px button and its 2 px gap.
 const SIDEBAR_ACTION_SLOT: f32 = 30.;

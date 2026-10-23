@@ -241,6 +241,32 @@ impl Tree {
         self.flatten();
     }
 
+    /// The folder the tree lists: the vault root («»), or a project's folder.
+    /// New note / New folder with nothing selected land here (#1512).
+    pub(crate) fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// Every folder below the tree's root in path order, hidden ones only
+    /// while Show hidden is on: the inline create row's destinations (#1512).
+    #[cfg(any(unix, windows))]
+    pub(crate) fn folders(&self) -> Vec<String> {
+        let prefix = if self.scope.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", self.scope)
+        };
+        self.kinds
+            .range(prefix.clone()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .filter(|(path, kind)| {
+                **kind == EntryKind::Directory
+                    && (self.show_hidden || !hidden(&path[prefix.len()..]))
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     fn flatten(&mut self) {
         let mut rows = Vec::new();
         let mut stack = vec![(self.scope.clone(), 0)];
