@@ -154,20 +154,7 @@ jobs:
           set -euo pipefail
           # The native container has tail as PID 1. Reap orphaned fixtures
           # throughout the suites without changing Stopped certification (#1541).
-          # Temporary #1607 measurement; removed before this PR is merge-ready.
-          # Both invocations use this exact checkout and the existing suites.
-          set +e
-          before_start=$SECONDS
-          env -u RUST_TEST_THREADS tini -s -- bash scripts/ci/check-shared.sh
-          before_status=$?
-          before_seconds=$((SECONDS - before_start))
-          after_start=$SECONDS
           tini -s -- bash scripts/ci/check-shared.sh
-          after_status=$?
-          after_seconds=$((SECONDS - after_start))
-          printf 'SHARED_TRIAL sha=%s before_seconds=%s before_exit=%s after_seconds=%s after_exit=%s\n' \
-            "$GITHUB_SHA" "$before_seconds" "$before_status" "$after_seconds" "$after_status"
-          test "$before_status" -eq 0 && test "$after_status" -eq 0
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
