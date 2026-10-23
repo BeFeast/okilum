@@ -1,0 +1,14 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -256,6 +256,10 @@
+         KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
+         #[cfg(not(target_os = "macos"))]
+         KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
++        // Linux clipboard managers and dictation paste with Shift+Insert
++        // (Omarchy's clipboard panel, voxtype), as Windows edit controls do.
++        #[cfg(not(target_os = "macos"))]
++        KeyBinding::new("shift-insert", Paste, Some(CONTEXT)),
+         #[cfg(target_os = "macos")]
+         KeyBinding::new("ctrl-a", MoveHome, Some(CONTEXT)),
+         #[cfg(target_os = "macos")]

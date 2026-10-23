@@ -62,3 +62,10 @@ jobs:
         with:
           name: native-thumbnail-evidence
           path: ${{ runner.temp }}/thumbnail-evidence/
+      - name: Save Sparkle lifecycle evidence
+        if: always() && steps.native.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sparkle-freshness-evidence
+          path: ${{ runner.temp }}/sparkle-freshness-evidence/
+          if-no-files-found: warn

@@ -25,6 +25,7 @@ pub(crate) fn set_menus(cx: &mut App) {
             disabled: false,
         },
         crate::reader_open::file_menu(),
+        crate::note_paste::edit_menu(),
         crate::version_info::help_menu(),
     ]);
 }
