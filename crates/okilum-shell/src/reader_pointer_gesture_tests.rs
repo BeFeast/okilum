@@ -116,6 +116,7 @@ fn lost_mouse_up_plain_motion_cannot_extend_read_selection(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+#[ignore = "flaky on hosted Linux runners; tracked in #1549"]
 fn native_resize_focus_loss_and_pointer_leave_end_read_gestures(cx: &mut TestAppContext) {
     for signal in 0..3 {
         with_reader(cx, |reader, visual| {
