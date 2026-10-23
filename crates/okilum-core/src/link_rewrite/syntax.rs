@@ -213,15 +213,25 @@ fn replace_scalar(value: &mut serde_yaml::Value, needle: &str, replacement: &str
 }
 
 fn scalar_contains(value: &serde_yaml::Value, needle: &str) -> bool {
+    // Only a frontmatter-root declaration is reserved. A nested mapping may
+    // legitimately call a field `aliases` without declaring this note's names.
+    match value {
+        serde_yaml::Value::Mapping(v) => v.iter().any(|(k, v)| {
+            !k.as_str().is_some_and(crate::properties::alias_key)
+                && scalar_value_contains(v, needle)
+        }),
+        _ => scalar_value_contains(value, needle),
+    }
+}
+
+fn scalar_value_contains(value: &serde_yaml::Value, needle: &str) -> bool {
     match value {
         serde_yaml::Value::String(s) => s
             .find(needle)
             .is_some_and(|at| s[..at].trim_end().ends_with("[[")),
-        serde_yaml::Value::Sequence(v) => v.iter().any(|v| scalar_contains(v, needle)),
-        serde_yaml::Value::Mapping(v) => v.iter().any(|(k, v)| {
-            !k.as_str().is_some_and(crate::properties::alias_key) && scalar_contains(v, needle)
-        }),
-        serde_yaml::Value::Tagged(t) => scalar_contains(&t.value, needle),
+        serde_yaml::Value::Sequence(v) => v.iter().any(|v| scalar_value_contains(v, needle)),
+        serde_yaml::Value::Mapping(v) => v.values().any(|v| scalar_value_contains(v, needle)),
+        serde_yaml::Value::Tagged(t) => scalar_value_contains(&t.value, needle),
         _ => false,
     }
 }

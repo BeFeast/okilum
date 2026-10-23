@@ -301,3 +301,23 @@ fn aliases_cold_graph_reads_each_source_once_before_resolving_referrers() {
     assert_eq!(vault.resolve("Late alias").path(), Some("z.md"));
     assert_eq!(vault.backlinks("z.md").len(), 1);
 }
+
+#[test]
+fn aliases_are_reserved_only_at_the_frontmatter_root() {
+    let root = tempfile::tempdir().unwrap();
+    let source = "---\naliases: ['[[Declared]]']\nproject:\n  aliases: ['[[Nested]]']\nrelated: '[[Other]]'\n---\n# Declaration\n";
+    for name in ["Declared", "Nested", "Other"] {
+        std::fs::write(root.path().join(format!("{name}.md")), "# Namesake\n").unwrap();
+    }
+    std::fs::write(root.path().join("declaration.md"), source).unwrap();
+    let vault = Vault::scan(root.path()).unwrap();
+    assert!(vault.backlinks("Declared.md").is_empty());
+    assert_eq!(vault.backlinks("Nested.md").len(), 1);
+    assert_eq!(vault.backlinks("Other.md").len(), 1);
+    let targets = crate::link_candidates::syntax::targets(source);
+    assert_eq!(
+        targets.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+        vec!["Nested", "Other"]
+    );
+    assert!(!vault.aliases()["declaration.md"].contains(&"Nested".into()));
+}
