@@ -7,11 +7,12 @@ python3 scripts/ci/test_supervisor_bundle.py
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-# Same toolchain/profile/cache as main releases; the single runner serializes jobs.
+# Same toolchain/profile/cache as main releases; Cargo locks the shared target.
 export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
 export CARGO_INCREMENTAL=0
 rustc --version
 rustup target add aarch64-apple-darwin
+export OKILUM_SCCACHE_ISOLATED=1
 source scripts/ci/release-cache.sh
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
