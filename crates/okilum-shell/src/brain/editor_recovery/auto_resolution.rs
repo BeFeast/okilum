@@ -63,6 +63,21 @@ impl EditorRecovery {
         original_request: &Value,
         conflict: &Value,
     ) -> Result<AutoResolution, String> {
+        self.retain_auto_resolution_with_preview(
+            expected,
+            original_request,
+            conflict,
+            preview_merge,
+        )
+    }
+
+    fn retain_auto_resolution_with_preview(
+        &self,
+        expected: &Draft,
+        original_request: &Value,
+        conflict: &Value,
+        preview: impl FnOnce(Option<&[u8]>, Option<&[u8]>, &[u8]) -> MergePreview,
+    ) -> Result<AutoResolution, String> {
         let _lock = self.lock()?;
         let mut d = self.compare(expected)?;
         self.validate_request(&d, original_request, true)?;
@@ -91,7 +106,7 @@ impl EditorRecovery {
                 &d.base["path"],
             )?)
         };
-        let merged = match preview_merge(Some(&base), current.as_deref(), &proposed) {
+        let merged = match preview(Some(&base), current.as_deref(), &proposed) {
             MergePreview::Manual { reason } => return Ok(AutoResolution::Manual { reason }),
             MergePreview::Ready { text, .. } => text,
         };
@@ -193,12 +208,20 @@ mod tests {
                 conflict,
             }
         }
+        fn resolve(&self) -> Result<AutoResolution, String> {
+            // Byte/identity assertions must not depend on CI scheduler pauses.
+            // Production still uses its 100 ms deadline; expiry is tested below.
+            self.store.retain_auto_resolution_with_preview(
+                &self.pending,
+                &self.original,
+                &self.conflict,
+                |base, current, draft| {
+                    crate::brain::merge_preview::preview_for_test(base, current, draft, None)
+                },
+            )
+        }
         fn ready(&self) -> (Draft, Value) {
-            match self
-                .store
-                .retain_auto_resolution(&self.pending, &self.original, &self.conflict)
-                .unwrap()
-            {
+            match self.resolve().unwrap() {
                 AutoResolution::Ready { draft, request } => (*draft, request),
                 other => panic!("Expected independent merge, got {other:?}"),
             }
@@ -404,15 +427,49 @@ mod tests {
         f.store
             .fail_after_publish
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        assert!(f
-            .store
-            .retain_auto_resolution(&f.pending, &f.original, &f.conflict)
-            .is_err());
+        assert!(f.resolve().is_err());
         let d = f.store.list().unwrap().drafts.pop().unwrap();
         assert!(d.automatic_format);
         let r = d.pending_save.as_ref().unwrap();
         assert!(d.is_automatic_request(r));
         assert_eq!(f.store.retain_save(&d, r).unwrap(), d);
+    }
+
+    #[test]
+    fn expired_merge_deadline_preserves_exact_pending_record_and_original_request() {
+        let f = Fixture::new("A\nB\n", "A\nY\n", "X\nB\n");
+        let path = f.store.path(&f.pending.id).unwrap();
+        let before = fs::read(&path).unwrap();
+        let result = f
+            .store
+            .retain_auto_resolution_with_preview(
+                &f.pending,
+                &f.original,
+                &f.conflict,
+                |base, current, draft| {
+                    crate::brain::merge_preview::preview_for_test(
+                        base,
+                        current,
+                        draft,
+                        Some(std::time::Instant::now()),
+                    )
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            AutoResolution::Manual {
+                reason: ManualReason::WorkLimit
+            }
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(f.store.read(&f.pending.id).unwrap(), f.pending);
+        assert_eq!(f.pending.pending_save.as_ref(), Some(&f.original));
+        assert!(!f.pending.automatic_format);
+        // A subsequent independent merge is the positive control for this fixture.
+        let (draft, request) = f.ready();
+        assert_eq!(draft.text, "X\nY\n");
+        assert!(draft.is_automatic_request(&request));
     }
 
     #[test]
