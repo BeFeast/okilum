@@ -215,11 +215,15 @@ mod tests {
 
     #[gpui::test]
     fn keyboard_and_modified_wheel_zoom_only_document_text(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
         cx.update(|cx| {
+            // Reader::new does not run the application startup that installs
+            // the persisted appearance store used by document zoom.
+            reader_ui_state::install(&temp.path().join("state"), cx);
+            assert!(reader_ui_state::installed(cx));
             gpui_component::init(cx);
             super::super::bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
         let vault = temp.path().join("vault");
         std::fs::create_dir(&vault).unwrap();
         let source =
@@ -252,7 +256,11 @@ mod tests {
         let base = visual.update(|_, cx| reader_ui_state::base_font_size(cx));
         visual.simulate_keystrokes("secondary-=");
         visual.update(|_, cx| {
-            assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001);
+            assert!(
+                (reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001,
+                "keyboard zoom updates the installed store: {}",
+                reader_ui_state::text_zoom(cx)
+            );
             assert_eq!(reader_ui_state::base_font_size(cx), base);
         });
         visual.simulate_keystrokes("secondary-0");
@@ -340,11 +348,29 @@ mod tests {
         });
         visual.run_until_parked();
         visual.update(|window, cx| window.simulate_next_frame(cx));
-        let old_y = input.read_with(visual, |state, _| state.cursor_layout().unwrap().0.origin.y);
+        // cursor_layout reports content coordinates; painting applies the
+        // scroll offset afterward. Compare the actual on-screen caret.
+        let caret_y = |state: &gpui_component::input::EditorState, _: &App| {
+            state.cursor_layout().unwrap().0.origin.y + state.scroll_offset().y
+        };
+        let old_y = input.read_with(visual, caret_y);
+        input.read_with(visual, |state, _| {
+            let bounds = state.input_bounds();
+            assert!(
+                old_y >= bounds.top() && old_y < bounds.bottom(),
+                "visible Source caret positive control: {old_y:?} in {bounds:?}"
+            );
+        });
         visual.simulate_keystrokes("secondary-=");
         visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert!(
+                (reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001,
+                "Source keyboard zoom positive control"
+            );
+        });
         visual.update(|window, cx| window.simulate_next_frame(cx));
-        let new_y = input.read_with(visual, |state, _| state.cursor_layout().unwrap().0.origin.y);
+        let new_y = input.read_with(visual, caret_y);
         assert!(
             (new_y - old_y).abs() < px(2.),
             "Source caret stays anchored: {:?} vs {:?}",
@@ -355,5 +381,30 @@ mod tests {
             std::fs::read_to_string(vault.join("start.md")).unwrap(),
             source
         );
+
+        // Even an unreadable PDF retains its own shortcut scope and scale.
+        // PDF preview starts real worker and native file-watcher threads.
+        visual.executor().allow_parking();
+        std::fs::write(vault.join("report.pdf"), b"%PDF-fixture").unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("report.pdf", window, cx);
+            reader.focus_handle.focus(window, cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.simulate_next_frame(cx));
+        let pdf = reader.read_with(visual, |reader, _| {
+            reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
+        });
+        let pdf_zoom = pdf.read_with(visual, |pdf, _| pdf.zoom_step());
+        visual.simulate_keystrokes("secondary-=");
+        assert_eq!(
+            pdf.read_with(visual, |pdf, _| pdf.zoom_step()),
+            pdf_zoom + 1
+        );
+        visual.update(|_, cx| assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001));
+        visual.simulate_keystrokes("secondary-0");
+        assert_eq!(pdf.read_with(visual, |pdf, _| pdf.zoom_step()), pdf_zoom);
+        visual.update(|_, cx| assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001));
+        reader.update(visual, |reader, _| reader.file_preview = None);
     }
 }
