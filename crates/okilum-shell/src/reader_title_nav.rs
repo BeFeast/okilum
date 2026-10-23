@@ -127,6 +127,25 @@ pub(super) fn location(path: &str, folder: &str) -> Option<String> {
     parent.rsplit('/').next().map(str::to_owned)
 }
 
+/// The switcher's label, icon and tooltip for the active project, if any.
+pub(super) fn switcher_face(
+    active: Option<&okilum_t3::projects::Project>,
+) -> (SharedString, Icon, &'static str) {
+    use okilum_shell::projects_picker::{project_icon, PROJECTS_ICON};
+    match active {
+        Some(project) => (
+            project.name.clone().into(),
+            project_icon(project),
+            "Switch or leave project",
+        ),
+        None => (
+            "Projects".into(),
+            Icon::default().path(PROJECTS_ICON),
+            "Projects",
+        ),
+    }
+}
+
 impl Reader {
     /// The active project's folder, vault-relative.
     pub(super) fn project_folder(&self) -> Option<String> {
@@ -302,19 +321,14 @@ impl Reader {
         if self.single_file {
             return row;
         }
-        let label: SharedString = match &self.project_navigation.active {
-            Some(project) => project.name.clone().into(),
-            None => vault_name::shown(&self.vault_root, cx).into(),
-        };
-        let tip = if self.project_navigation.active.is_some() {
-            "Switch or leave project"
-        } else {
-            "Projects"
-        };
+        // «Projects ▾» outside a project, «◆ <project> ▾» inside (#1519).
+        // The vault's own name lives in the sidebar header, not here.
+        let (label, icon, tip) = switcher_face(self.project_navigation.active.as_ref());
         row = row.child(
             self.trigger_probe(
                 Button::new("title-switcher")
                     .ghost()
+                    .icon(icon)
                     .label(label)
                     .dropdown_caret(true)
                     .selected(self.title_nav.switcher_open)

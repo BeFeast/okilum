@@ -7,7 +7,7 @@
 use super::*;
 use okilum_core::search_snippet::{plain_snippet, PlainSnippet};
 use okilum_core::SearchHit;
-use okilum_shell::projects_picker::picker::{kind_label, Row as ProjectRow};
+use okilum_shell::projects_picker::{icon_slot, picker::Row as ProjectRow, project_icon};
 
 use std::collections::HashMap;
 
@@ -1380,8 +1380,15 @@ impl Reader {
                         .into_any_element(),
                     PaletteItem::Project(project) => {
                         let active = active_project.as_ref() == Some(&project.project.folder);
+                        // The Projects list's row (#1520): icon slot, name,
+                        // muted domain; no kind text column.
                         section_row(*ix)
                             .h(px(32.))
+                            .child(
+                                div()
+                                    .text_color(muted)
+                                    .child(icon_slot(Some(project_icon(&project.project)))),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -1391,16 +1398,6 @@ impl Reader {
                                     .child(project.project.name.clone()),
                             )
                             .child(quiet(project.domain.clone()))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .px_1()
-                                    .rounded_sm()
-                                    .text_size(px(12.))
-                                    .bg(palette.tile)
-                                    .text_color(muted)
-                                    .child(kind_label(project.project.kind)),
-                            )
                             .child(
                                 div()
                                     .w(px(14.))

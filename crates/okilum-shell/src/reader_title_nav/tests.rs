@@ -3,6 +3,22 @@ use ::core::prelude::v1::test;
 use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
 
 #[test]
+fn the_switcher_names_projects_or_the_active_project() {
+    let (label, _, tip) = switcher_face(None);
+    assert_eq!((label.as_ref(), tip), ("Projects", "Projects"));
+    let project = okilum_t3::projects::Project {
+        folder: "vault/Dev/Areas/okilum".into(),
+        name: "okilum".into(),
+        kind: okilum_t3::projects::Kind::Code,
+        environment: None,
+        manager_project: None,
+        manager: okilum_t3::projects::Manager::NotStarted,
+    };
+    let (label, _, tip) = switcher_face(Some(&project));
+    assert_eq!((label.as_ref(), tip), ("okilum", "Switch or leave project"));
+}
+
+#[test]
 fn project_prefix_and_parent_location() {
     assert!(in_folder("Dev/App/plan.md", "Dev/App"));
     assert!(in_folder("Dev/App", "Dev/App"), "a pinned project folder");
@@ -322,6 +338,16 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
             .collect::<Vec<_>>()
     });
 
+    // #1519: outside a project the switcher says «Projects», never the
+    // vault's name (that lives in the sidebar header).
+    let label = |visual: &mut VisualTestContext| {
+        reader.read_with(visual, |view, _| {
+            switcher_face(view.project_navigation.active.as_ref())
+                .0
+                .to_string()
+        })
+    };
+    assert_eq!(label(visual), "Projects");
     click(visual, "title-switcher");
     visual.update(|window, cx| window.draw(cx).clear(cx));
     let switcher = visual.debug_bounds("title-switcher").unwrap();
@@ -358,6 +384,7 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
             .all(|r| r.path.starts_with("Dev/Areas/App/")));
     });
     assert!(visual.debug_bounds("projects-picker").is_none());
+    assert_eq!(label(visual), "App", "inside a project: its name");
 
     // Switch straight to another project from the same menu.
     click(visual, "title-switcher");
@@ -386,6 +413,7 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
     // Leave project sits at the foot of the same menu.
     click(visual, "title-switcher");
     click(visual, "projects-picker-leave");
+    assert_eq!(label(visual), "Projects", "left the project");
     reader.read_with(visual, |view, _| {
         assert!(view.project_navigation.active.is_none());
         assert!(!view.title_nav.switcher_open);

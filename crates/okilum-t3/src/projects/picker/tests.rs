@@ -183,6 +183,62 @@ fn status_needs_a_live_observation_of_the_current_manager_pointer() {
     assert_eq!(indicator(&model), ManagerIndicator::NotStarted);
 }
 
+/// #1520: no status dots. A row shows only a working manager (activity) or
+/// a manifest that needs fixing (problem); idle, unstarted, still checking
+/// and an unconnected T3 show nothing.
+#[test]
+fn row_status_shows_only_activity_or_a_manifest_problem() {
+    let vault = Vault::new();
+    let wired = vault.manifest(
+        "Dev/Areas/Wired",
+        "name: Wired\nt3:\n  environment: maestro\n  manager: {project_id: p1, thread_id: 'mcp:w'}\n",
+    );
+    vault.manifest(
+        "Dev/Areas/Orphan",
+        "name: Orphan\nt3:\n  manager: {thread_id: 'mcp:o'}\n",
+    );
+    vault.manifest("Dev/Areas/Quiet", "name: Quiet\n");
+    let mut model = vault.model(Vec::new());
+    let status = |m: &PickerModel, name: &str| {
+        m.groups()[0]
+            .rows
+            .iter()
+            .find(|r| r.project.name == name)
+            .unwrap()
+            .status()
+    };
+    assert_eq!(status(&model, "Quiet"), None, "not started: nothing");
+    assert_eq!(status(&model, "Wired"), None, "checking: nothing");
+    assert!(matches!(
+        status(&model, "Orphan"),
+        Some(RowStatus::Problem(text)) if text.contains("project.yaml")
+    ));
+    let observe = |status: Status| {
+        BTreeMap::from([(
+            wired.clone(),
+            ManagerObservation {
+                manager: Manager::Thread("mcp:w".into()),
+                status,
+            },
+        )])
+    };
+    for quiet in [
+        Status::NotRunning("idle".into()),
+        Status::Unreachable("Connect to T3 to read manager status".into()),
+        Status::Settled,
+    ] {
+        model.set_observations(observe(quiet));
+        assert_eq!(status(&model, "Wired"), None);
+    }
+    model.set_observations(observe(Status::Running("queued".into())));
+    assert_eq!(
+        status(&model, "Wired"),
+        Some(RowStatus::Active(
+            "Manager agent is working · queued".into()
+        ))
+    );
+}
+
 #[test]
 fn broken_manifests_stay_visible_and_external_paths_never_become_rows() {
     let vault = Vault::new();
