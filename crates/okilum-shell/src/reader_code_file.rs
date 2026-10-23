@@ -106,6 +106,16 @@ enum Loaded {
 }
 
 impl CodePreview {
+    pub(crate) fn preserve_zoom_anchor(
+        &mut self,
+        pointer: Option<Point<Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let State::Content(input) = &self.state {
+            input.update(cx, |state, _| state.preserve_zoom_anchor(pointer));
+        }
+    }
+
     pub(crate) fn new(
         root: PathBuf,
         rel: String,
