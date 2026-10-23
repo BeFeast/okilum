@@ -620,8 +620,14 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let dir = outside.path().join("Folder");
         std::fs::create_dir_all(&dir).unwrap();
-        let saved =
-            save_pasted_files_with(vault.path(), "n.md", &[dir.clone()], "s", &|_| false).unwrap();
+        let saved = save_pasted_files_with(
+            vault.path(),
+            "n.md",
+            std::slice::from_ref(&dir),
+            "s",
+            &|_| false,
+        )
+        .unwrap();
         assert!(saved.text.starts_with("[Folder](file://"), "{}", saved.text);
         assert_eq!(saved.linked_outside, ["Folder"]);
     }
