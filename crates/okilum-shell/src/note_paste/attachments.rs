@@ -302,7 +302,8 @@ pub fn save_pasted_files_with(
         }
         let metadata =
             std::fs::metadata(source).map_err(|e| SaveError::CopyFile(display.clone(), e))?;
-        if metadata.is_dir() || metadata.len() > MAX_COPY_BYTES {
+        // Only regular files are copied: a FIFO or device would block or never end.
+        if !metadata.is_file() || metadata.len() > MAX_COPY_BYTES {
             let url = url::Url::from_file_path(&canonical)
                 .map(|u| u.to_string())
                 .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
@@ -623,6 +624,23 @@ mod tests {
             save_pasted_files_with(vault.path(), "n.md", &[dir.clone()], "s", &|_| false).unwrap();
         assert!(saved.text.starts_with("[Folder](file://"), "{}", saved.text);
         assert_eq!(saved.linked_outside, ["Folder"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_device_is_linked_not_read() {
+        let vault = tempfile::tempdir().unwrap();
+        let saved = save_pasted_files_with(
+            vault.path(),
+            "n.md",
+            &[PathBuf::from("/dev/null")],
+            "s",
+            &|_| false,
+        )
+        .unwrap();
+        assert_eq!(saved.linked_outside, ["null"]);
+        assert_eq!(saved.copied, 0);
+        assert!(!vault.path().join("attachments").exists());
     }
 
     #[test]
