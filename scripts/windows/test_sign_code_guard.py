@@ -30,6 +30,13 @@ class GuardTests(unittest.TestCase):
             (root / '.cache').mkdir()
             (root / '.config/forgejo/token.env').write_text('FORGEJO_TOKEN=offline-test\n')
             (root / 'responses').write_text(json.dumps(responses))
+            (root / 'clock').write_text('0')
+            # Freeze only the guard's clock, not subprocess.run's watchdog clock.
+            # Imported subprocess retains its original monotonic reference.
+            (root / 'sitecustomize.py').write_text('''import os, pathlib, subprocess, time
+clock = pathlib.Path(os.environ['HOME']) / 'clock'
+time.monotonic = lambda: float(clock.read_text())
+''')
             curl = root / 'curl'
             curl.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -43,6 +50,9 @@ response = responses.pop(0)
 (root / 'responses').write_text(json.dumps(responses))
 if response == 'timeout':
     sys.exit(28)
+if isinstance(response, dict) and 'advance_clock' in response:
+    (root / 'clock').write_text(str(response['advance_clock']))
+    response = response['body']
 print(json.dumps(response))
 ''')
             curl.chmod(0o755)
@@ -50,12 +60,14 @@ print(json.dumps(response))
             ssh.write_text('#!/bin/sh\necho UNEXPECTED-LOGIN >&2\nexit 92\n')
             ssh.chmod(0o755)
             env = dict(os.environ, HOME=str(root), XDG_RUNTIME_DIR=str(root),
-                       PATH=str(root) + os.pathsep + os.environ['PATH'])
+                       PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       PYTHONPATH=str(root))
             env.pop('OKILUM_SIGN_CANCEL_ALLOWLIST', None)
             if allowlist is not None:
                 env['OKILUM_SIGN_CANCEL_ALLOWLIST'] = json.dumps(allowlist)
+            # Scheduling/startup watchdog only; guard timing uses the clock above.
             result = subprocess.run(['bash', str(HELPER), SHA, '14766'], env=env,
-                                    input='invalid-otp\n', text=True, capture_output=True, timeout=5)
+                                    input='invalid-otp\n', text=True, capture_output=True, timeout=60)
             calls = (root / 'calls').read_text() if (root / 'calls').exists() else ''
             self.assertNotIn('UNEXPECTED-LOGIN', result.stderr)
             return result, calls.splitlines()
@@ -126,6 +138,21 @@ print(json.dumps(response))
                                   ([page(RUN), page(RUN), page(RUN), {}, 'timeout'], 1)]:
             with self.subTest(responses=responses):
                 self.assert_stopped(responses, [APPROVED], posts)
+
+    def test_guard_deadline_is_checked_without_elapsed_wall_time(self):
+        expired = dict(advance_clock=61, body=page(RUN))
+        for responses, posts in [
+                ([expired], 0),
+                ([page(RUN), expired], 0),
+                ([page(RUN), page(RUN), page(RUN),
+                  dict(advance_clock=61, body={})], 1)]:
+            with self.subTest(responses=responses):
+                result, calls = self.run_helper(responses, [APPROVED])
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn('inventory/cancellation deadline exceeded', result.stderr)
+                self.assertIn('OTP was not read', result.stderr)
+                self.assertEqual(sum(c.startswith('POST ') for c in calls), posts)
+                self.assertFalse(any('variables' in c or 'dispatch' in c for c in calls))
 
     def test_incomplete_inventory(self):
         self.assert_stopped([dict(total_count=2, workflow_runs=[RUN])], [APPROVED])
