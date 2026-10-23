@@ -1,5 +1,9 @@
 //! Projects is an application section; entering one temporarily scopes the vault.
 use super::*;
+use okilum_shell::projects_picker::{
+    picker::{ManagerObservation, PickerModel},
+    Presentation, ProjectsPicker, Selected,
+};
 use okilum_t3::projects::{Discovery, Project};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -22,6 +26,8 @@ pub(super) struct State {
     pub active: Option<Project>,
     saved: Option<Saved>,
     pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
+    /// The shared #1520 picker is the Projects section surface.
+    pub picker: Option<Entity<ProjectsPicker>>,
 }
 
 struct Saved {
@@ -54,9 +60,25 @@ impl Reader {
         self.project_navigation.section = section;
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         self.project_navigation.loading = false;
+        if section != Section::Projects {
+            self.release_picker_focus(window, cx);
+        }
         if section == Section::Projects {
             let generation = self.project_navigation.generation;
             self.project_navigation.loading = true;
+            self.ensure_projects_picker(window, cx);
+            if let Some(picker) = &self.project_navigation.picker {
+                let active = self
+                    .project_navigation
+                    .active
+                    .as_ref()
+                    .map(|p| p.folder.clone());
+                picker.update(cx, |picker, cx| {
+                    picker.set_loading(true, cx);
+                    picker.set_active(active, cx);
+                    picker.focus_input(window, cx);
+                });
+            }
             let vault = self.vault_root.clone();
             cx.spawn_in(window, async move |this, cx| {
                 let discovery = cx
@@ -69,6 +91,7 @@ impl Reader {
                     }
                     this.project_navigation.discovery = discovery;
                     this.project_navigation.loading = false;
+                    this.sync_projects_picker(cx);
                     this.refresh_project_statuses(window, cx);
                     cx.notify();
                 });
@@ -135,6 +158,7 @@ impl Reader {
                 if this.project_navigation.generation == generation {
                     this.project_navigation.statuses = statuses;
                     this.project_navigation.status_managers = managers;
+                    this.sync_projects_picker_statuses(cx);
                     cx.notify();
                 }
             });
@@ -151,6 +175,7 @@ impl Reader {
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         let generation = self.project_navigation.generation;
         let vault = self.vault_root.clone();
+        let folder = project.folder.clone();
         cx.spawn_in(window, async move |this, cx| {
             let root = vault.clone();
             let fresh = cx
@@ -173,11 +198,19 @@ impl Reader {
                 match fresh {
                     Ok(project) => this.finish_enter_vault_project(project, window, cx),
                     Err(error) => {
-                        this.project_navigation
+                        // The failed project becomes a muted problem row, not a recent.
+                        let navigation = &mut this.project_navigation;
+                        navigation.discovery.projects.retain(|p| p.folder != folder);
+                        navigation
                             .discovery
                             .errors
-                            .push((vault, format!("{error:#}")));
-                        this.project_navigation.section = Section::Projects;
+                            .retain(|(path, _)| path != &folder);
+                        navigation
+                            .discovery
+                            .errors
+                            .push((folder, format!("{error:#}")));
+                        navigation.section = Section::Projects;
+                        this.sync_projects_picker(cx);
                         cx.notify();
                     }
                 }
@@ -235,6 +268,8 @@ impl Reader {
         }
         self.project_navigation.active = Some(project.clone());
         self.project_navigation.section = Section::Reader;
+        self.record_recent_project(&project.folder, cx);
+        self.release_picker_focus(window, cx);
         self.open_project_area(project.folder, window, cx);
         cx.notify();
     }
@@ -247,6 +282,9 @@ impl Reader {
         self.close_project(window, cx);
         self.project_navigation.active = None;
         self.project_navigation.section = Section::Reader;
+        if let Some(picker) = &self.project_navigation.picker {
+            picker.update(cx, |picker, cx| picker.set_active(None, cx));
+        }
         if let Some(saved) = self.project_navigation.saved.take() {
             self.tree = saved.tree;
             // Refresh inventory while retaining the original expansion/cursor.
@@ -264,67 +302,127 @@ impl Reader {
         cx.notify();
     }
 
+    /// The hidden picker's search must not keep keyboard focus from the note.
+    fn release_picker_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self
+            .project_navigation
+            .picker
+            .as_ref()
+            .is_some_and(|picker| {
+                gpui::Focusable::focus_handle(picker.read(cx), cx).contains_focused(window, cx)
+            });
+        if focused {
+            self.restore_document_focus(window, cx);
+        }
+    }
+
+    fn recent_project_folders(&self) -> Vec<PathBuf> {
+        self.sidebar
+            .recent_projects
+            .iter()
+            .map(|rel| self.vault_root.join(rel))
+            .collect()
+    }
+
+    /// One picker per vault generation; `reset_vault_projects` drops it.
+    fn ensure_projects_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_navigation.picker.is_some() {
+            return;
+        }
+        let model = PickerModel::new(
+            self.vault_root.clone(),
+            self.project_navigation.discovery.clone(),
+            self.recent_project_folders(),
+        );
+        let picker = cx.new(|cx| ProjectsPicker::new(model, Presentation::Page, window, cx));
+        cx.subscribe_in(&picker, window, |this, _, event: &Selected, window, cx| {
+            // Same revalidating activation pipeline as before; recents are
+            // recorded only after a successful entry.
+            this.enter_vault_project(event.0.clone(), window, cx);
+        })
+        .detach();
+        self.project_navigation.picker = Some(picker);
+    }
+
+    fn sync_projects_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = self.project_navigation.picker.clone() else {
+            return;
+        };
+        let discovery = self.project_navigation.discovery.clone();
+        picker.update(cx, |picker, cx| picker.update_discovery(discovery, cx));
+        self.sync_projects_picker_statuses(cx);
+    }
+
+    fn sync_projects_picker_statuses(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = self.project_navigation.picker.clone() else {
+            return;
+        };
+        let navigation = &self.project_navigation;
+        let observations = navigation
+            .statuses
+            .iter()
+            .filter_map(|(folder, status)| {
+                let manager = navigation.status_managers.get(folder)?.clone();
+                Some((
+                    folder.clone(),
+                    ManagerObservation {
+                        manager,
+                        status: status.clone(),
+                    },
+                ))
+            })
+            .collect();
+        picker.update(cx, |picker, cx| picker.update_statuses(observations, cx));
+    }
+
+    fn record_recent_project(&mut self, folder: &Path, cx: &mut Context<Self>) {
+        let Ok(relative) = folder.strip_prefix(&self.vault_root) else {
+            return;
+        };
+        let relative = okilum_core::vault::note_path(relative);
+        let recent = &mut self.sidebar.recent_projects;
+        if recent.first() != Some(&relative) {
+            recent.retain(|p| p != &relative);
+            recent.insert(0, relative);
+            recent.truncate(32);
+            self.save_sidebar(cx);
+        }
+        if let Some(picker) = &self.project_navigation.picker {
+            let folder = folder.to_owned();
+            picker.update(cx, |picker, cx| {
+                picker.record_opened(&folder, cx);
+                picker.set_active(Some(folder.clone()), cx);
+            });
+        }
+    }
+
     pub(super) fn render_app_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let section = self.project_navigation.section;
         let mut body = v_flex()
             .id("app-section")
+            .debug_selector(|| "app-section".into())
             .size_full()
             .overflow_y_scroll()
             .p_4()
             .gap_3();
         match section {
             Section::Projects => {
-                body = body.child(div().text_lg().child("Projects"));
-                if self.project_navigation.loading {
-                    body = body.child("Loading projects…");
-                }
-                for (index, project) in self
-                    .project_navigation
-                    .discovery
-                    .projects
-                    .iter()
-                    .enumerate()
-                {
-                    let project = project.clone();
-                    let selected = project.clone();
-                    let path = project
-                        .folder
-                        .strip_prefix(&self.vault_root)
-                        .unwrap_or(&project.folder)
-                        .display()
-                        .to_string();
-                    let state = self
-                        .project_navigation
-                        .statuses
-                        .get(&project.folder)
-                        .map(okilum_t3::projects::Status::label)
-                        .unwrap_or_else(|| {
-                            if project.manager == okilum_t3::projects::Manager::NotStarted {
-                                "Manager не запущен".into()
-                            } else {
-                                "Checking manager…".into()
-                            }
-                        });
-                    body = body.child(
-                        Button::new(("vault-project", index))
-                            .ghost()
-                            .label(format!("{} · {} · {}", project.name, path, state))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.enter_vault_project(selected.clone(), window, cx)
-                            })),
-                    );
-                }
-                for (path, error) in &self.project_navigation.discovery.errors {
-                    body = body.child(div().text_color(cx.theme().danger).child(format!(
-                        "{}: {}",
-                        path.display(),
-                        error
-                    )));
-                }
+                body = body
+                    .overflow_hidden()
+                    .child(div().text_lg().child("Projects"));
+                body = match &self.project_navigation.picker {
+                    Some(picker) => body.child(div().flex_1().min_h_0().child(picker.clone())),
+                    None => body.child("Loading projects…"),
+                };
                 if !self.project_navigation.loading
                     && self.project_navigation.discovery.projects.is_empty()
+                    && self.project_navigation.discovery.errors.is_empty()
                 {
-                    body = body.child("No project manifests found in this vault.");
+                    body = body.child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("No project manifests found in this vault."),
+                    );
                 }
             }
             Section::Inbox => {

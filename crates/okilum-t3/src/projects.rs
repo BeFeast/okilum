@@ -30,12 +30,23 @@ pub struct Project {
     pub manager: Manager,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Discovery {
     pub projects: Vec<Project>,
     /// A broken manifest must stay visible, without suppressing healthy projects.
     pub errors: Vec<(PathBuf, String)>,
 }
+
+/// `ops/project.yaml` names a `kind` that is not a project kind (for example
+/// the Dev intake `operating-area`). Discovery skips such folders quietly.
+#[derive(Debug)]
+pub struct NotAProject(pub String);
+impl std::fmt::Display for NotAProject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}` is not a project kind", self.0)
+    }
+}
+impl std::error::Error for NotAProject {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -195,6 +206,11 @@ impl Project {
         ensure!(doc.is_mapping(), "project.yaml must be a mapping");
         let text = |value: &serde_yaml::Value| value.as_str().map(str::to_owned);
         let kind = match doc.get("kind") {
+            Some(serde_yaml::Value::String(kind))
+                if !matches!(kind.as_str(), "code" | "knowledge" | "hybrid") =>
+            {
+                return Err(NotAProject(kind.clone()).into());
+            }
             Some(value) => serde_yaml::from_value(value.clone()).context("invalid project kind")?,
             None => {
                 if doc.get("repo").is_some_and(|v| !v.is_null()) {
@@ -289,15 +305,16 @@ pub fn register_manager(source: &str, expected: &Manager, id: &str) -> Result<St
     Ok(updated)
 }
 
+/// Any T3 thread id: MCP-created `mcp:<id>` and plain UUIDs created in the
+/// T3 UI alike. Only path-safe characters, so the id cannot escape a route.
 fn thread_id(id: &str) -> Result<String> {
-    let suffix = id
-        .strip_prefix("mcp:")
-        .context("Manager id must start with mcp:")?;
+    let suffix = id.strip_prefix("mcp:").unwrap_or(id);
     ensure!(
         !suffix.is_empty()
+            && suffix.len() <= 128
             && suffix
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-'),
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
         "invalid Manager thread id"
     );
     Ok(id.to_owned())
@@ -324,6 +341,7 @@ pub fn discover(vault: &Path) -> Discovery {
             })();
             match read {
                 Ok(project) => result.projects.push(project),
+                Err(e) if e.is::<NotAProject>() => {}
                 Err(e) => result.errors.push((folder.clone(), format!("{e:#}"))),
             }
         }
@@ -487,7 +505,9 @@ mod tests {
         )
         .unwrap();
         write("Life/Projects/Plan", "name: Plan\n");
-        write("HomeLab/Projects/Broken", "kind: nonsense\n");
+        write("HomeLab/Projects/Broken", "kind: [code]\n");
+        // A non-project area kind (Dev intake) is skipped without an error.
+        write("Dev/Areas/intake", "name: Intake\nkind: operating-area\n");
         std::fs::create_dir_all(vault.join("Dev/Areas/NotAProject")).unwrap();
         let result = discover(&vault);
         assert_eq!(result.projects.len(), 3);
@@ -514,6 +534,58 @@ mod tests {
             Project::read(&app.folder).unwrap().manager,
             Manager::NotStarted
         );
+        std::fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn a_plain_t3_uuid_is_a_valid_manager_id_and_non_project_kinds_are_skipped() {
+        let vault = std::env::temp_dir().join(format!("okilum-projects-{}", uuid::Uuid::new_v4()));
+        let write = |folder: &str, source: &str| {
+            let path = vault.join(folder).join("ops");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("project.yaml"), source).unwrap();
+        };
+        // Grisaille: a manager thread created in the T3 UI has no `mcp:` prefix.
+        write(
+            "Dev/Areas/grisaille",
+            "slug: grisaille\nrepo: {name: grisaille}\nt3:\n  schema_version: 1\n  environment: maestro\n  manager: {project_id: \"b912c7ad\", thread_id: \"b0728fed-73e6-45c2-9c61-a96f7df467f8\", workspace_mode: local}\n",
+        );
+        write(
+            "Dev/Areas/intake",
+            "slug: intake\nkind: operating-area # not a product\n",
+        );
+        write(
+            "Dev/Areas/bad-id",
+            "t3:\n  manager: {thread_id: 'mcp:../x'}\n",
+        );
+        let result = discover(&vault);
+        assert_eq!(
+            result
+                .projects
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["grisaille"]
+        );
+        assert_eq!(
+            result.projects[0].manager,
+            Manager::Thread("b0728fed-73e6-45c2-9c61-a96f7df467f8".into())
+        );
+        assert_eq!(result.errors.len(), 1, "{:?}", result.errors);
+        assert!(result.errors[0].0.ends_with("Dev/Areas/bad-id"));
+        assert!(Project::read(&vault.join("Dev/Areas/intake"))
+            .unwrap_err()
+            .is::<NotAProject>());
+        // Registry rows, registration and the browser route take plain ids too.
+        assert_eq!(
+            manager_role("| Manager | `0f6c2e1a-1b2c-4d5e-8f90-123456789abc` |").unwrap(),
+            Manager::Thread("0f6c2e1a-1b2c-4d5e-8f90-123456789abc".into())
+        );
+        let source = "| Manager | — (not started) |\n";
+        assert!(register_manager(source, &Manager::NotStarted, "abc-123").is_ok());
+        for bad in ["", "mcp:", "a b", "x/y", "../x", "mcp:a`b"] {
+            assert!(thread_id(bad).is_err(), "{bad:?} must be rejected");
+        }
         std::fs::remove_dir_all(vault).unwrap();
     }
 }
