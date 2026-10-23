@@ -8,7 +8,16 @@
 use super::*;
 use std::cell::Cell;
 
-gpui::actions!(title_nav, [NavMenuNext, NavMenuPrevious, NavMenuOpen]);
+gpui::actions!(
+    title_nav,
+    [
+        NavMenuNext,
+        NavMenuPrevious,
+        NavMenuCycleNext,
+        NavMenuCyclePrevious,
+        NavMenuOpen
+    ]
+);
 
 const MENU_CONTEXT: &str = "TitleNavMenu";
 /// Below this window width Recent and Pinned shrink to their glyphs.
@@ -17,6 +26,10 @@ const MENU_WIDTH: f32 = 350.;
 
 pub(super) fn bind_menu_keys(cx: &mut App) {
     cx.bind_keys([
+        // The open menu owns ⌃Tab, the key its footer names (#1517): without
+        // these the Reader-wide recent switcher took it behind the menu.
+        KeyBinding::new("ctrl-tab", NavMenuCycleNext, Some(MENU_CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", NavMenuCyclePrevious, Some(MENU_CONTEXT)),
         KeyBinding::new("down", NavMenuNext, Some(MENU_CONTEXT)),
         KeyBinding::new("up", NavMenuPrevious, Some(MENU_CONTEXT)),
         KeyBinding::new("enter", NavMenuOpen, Some(MENU_CONTEXT)),
@@ -226,7 +239,8 @@ impl Reader {
         }
     }
 
-    fn move_nav_menu(&mut self, delta: isize, cx: &mut Context<Self>) {
+    /// Arrows stop at the ends; ⌃Tab cycling (`wrap`) goes round.
+    fn move_nav_menu(&mut self, delta: isize, wrap: bool, cx: &mut Context<Self>) {
         let Some(menu) = self.title_nav.menu else {
             return;
         };
@@ -234,11 +248,12 @@ impl Reader {
         if len == 0 {
             return;
         }
-        let next = self
-            .title_nav
-            .selected
-            .saturating_add_signed(delta)
-            .min(len - 1);
+        let current = self.title_nav.selected.min(len - 1);
+        let next = if wrap {
+            (current as isize + delta).rem_euclid(len as isize) as usize
+        } else {
+            current.saturating_add_signed(delta).min(len - 1)
+        };
         self.title_nav.selected = next;
         self.title_nav.scroll.scroll_to_item(next);
         cx.notify();
@@ -417,8 +432,18 @@ impl Reader {
                     this.close_nav_menu(window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &NavMenuNext, _, cx| this.move_nav_menu(1, cx)))
-            .on_action(cx.listener(|this, _: &NavMenuPrevious, _, cx| this.move_nav_menu(-1, cx)))
+            .on_action(cx.listener(|this, _: &NavMenuNext, _, cx| this.move_nav_menu(1, false, cx)))
+            .on_action(
+                cx.listener(|this, _: &NavMenuPrevious, _, cx| this.move_nav_menu(-1, false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NavMenuCycleNext, _, cx| this.move_nav_menu(1, true, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NavMenuCyclePrevious, _, cx| {
+                    this.move_nav_menu(-1, true, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &NavMenuOpen, window, cx| {
                 this.open_nav_entry(this.title_nav.selected, window, cx)
             }));
@@ -527,7 +552,9 @@ impl Reader {
                 })),
         );
         if menu == Menu::Recent {
-            let cycle = reader_shortcuts::shortcut(&RecentOlder, cx)
+            // Names the key the open menu itself handles, not the
+            // Reader-wide recent switcher it would otherwise fall through to.
+            let cycle = reader_shortcuts::shortcut(&NavMenuCycleNext, cx)
                 .map(|key| format!("{key} cycles recent"));
             panel = panel.child(
                 h_flex()

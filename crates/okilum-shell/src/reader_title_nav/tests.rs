@@ -417,3 +417,97 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
     visual.run_until_parked();
     reader.read_with(visual, |view, _| assert!(!view.quick_open.open));
 }
+
+/// #1517: the Recent menu's footer says «⌃Tab cycles recent», so ⌃Tab with
+/// the menu open moves its highlight (wrapping) and Enter opens that row.
+/// Closed, ⌃Tab is still the Reader-wide recent switcher.
+#[gpui::test]
+fn ctrl_tab_cycles_the_open_recent_menu(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let vault = fixture.path().join("vault");
+    std::fs::create_dir_all(&vault).unwrap();
+    std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();
+    for name in ["a", "b", "c"] {
+        std::fs::write(vault.join(format!("{name}.md")), format!("# {name}\n")).unwrap();
+    }
+    let (reader, visual) = open_reader(cx, fixture.path(), &vault);
+    reader.update(visual, |view, cx| {
+        let now = reader_sidebar::now();
+        view.sidebar.recent = vec![
+            ("a.md".into(), now - 60),
+            ("b.md".into(), now - 120),
+            ("c.md".into(), now - 180),
+        ];
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The footer hint names the key the open menu handles.
+    visual.update(|_, cx| {
+        assert!(reader_shortcuts::shortcut(&NavMenuCycleNext, cx).is_some());
+    });
+
+    click(visual, "title-recent");
+    let rows = reader.read_with(visual, |view, _| {
+        assert_eq!(view.title_nav.menu, Some(Menu::Recent));
+        assert_eq!(view.title_nav.selected, 0);
+        paths(view, Menu::Recent)
+    });
+    assert_eq!(rows, ["a.md", "b.md", "c.md"]);
+    let selected = |visual: &mut VisualTestContext| {
+        reader.read_with(visual, |view, _| {
+            assert_eq!(view.title_nav.menu, Some(Menu::Recent), "menu stays open");
+            assert!(!view.recent_switcher.open(), "no switcher behind the menu");
+            view.title_nav.selected
+        })
+    };
+    for expected in [1, 2, 0] {
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        assert_eq!(selected(visual), expected, "⌃Tab moves down and wraps");
+    }
+    visual.simulate_keystrokes("ctrl-shift-tab");
+    visual.run_until_parked();
+    assert_eq!(selected(visual), 2, "⌃⇧Tab moves up and wraps");
+    assert!(visual.debug_bounds("recent-switcher").is_none());
+    // Arrows still stop at the ends.
+    visual.simulate_keystrokes("down");
+    visual.run_until_parked();
+    assert_eq!(selected(visual), 2);
+    visual.simulate_keystrokes("ctrl-shift-tab");
+    visual.run_until_parked();
+    assert_eq!(selected(visual), 1);
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.current_rel, "b.md");
+        assert_eq!(view.title_nav.menu, None);
+    });
+
+    // Escape closes the menu without opening anything.
+    click(visual, "title-recent");
+    visual.simulate_keystrokes("ctrl-tab escape");
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.title_nav.menu, None);
+        assert_eq!(view.current_rel, "b.md");
+    });
+
+    // Closed menu: ⌃Tab is the recent switcher, as before.
+    reader.update_in(visual, |view, window, cx| {
+        view.quick_open.remember("a.md");
+        view.quick_open.remember("b.md");
+        view.focus_handle.focus(window, cx);
+        window.activate_window();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("ctrl-tab");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("recent-switcher").is_some());
+    reader.read_with(visual, |view, _| {
+        assert!(view.recent_switcher.open());
+        assert_eq!(view.title_nav.menu, None);
+    });
+    visual.simulate_keystrokes("ctrl-escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("recent-switcher").is_none());
+}

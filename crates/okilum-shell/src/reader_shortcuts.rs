@@ -83,6 +83,11 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_move_picker::CloseFolderPicker>("Close destination picker", Notes),
         entry::<reader_title_nav::NavMenuNext>("Next Recent or Pinned item", Navigation),
         entry::<reader_title_nav::NavMenuPrevious>("Previous Recent or Pinned item", Navigation),
+        entry::<reader_title_nav::NavMenuCycleNext>("Cycle Recent or Pinned items", Navigation),
+        entry::<reader_title_nav::NavMenuCyclePrevious>(
+            "Cycle Recent or Pinned items backwards",
+            Navigation,
+        ),
         entry::<reader_title_nav::NavMenuOpen>("Open Recent or Pinned item", Navigation),
         entry::<DeleteNote>(Os::CURRENT.move_to_trash(), Notes),
         entry::<UndoTrash>(Os::CURRENT.undo_move_to_trash(), Notes),
