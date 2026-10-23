@@ -291,7 +291,13 @@ if ! mkdir "$root/build.lock" 2>/dev/null; then
 fi
 lock_owned=1
 log="$root/build.log"
-cp "$run_log" "$root/stages.log"
+# Process-substitution tee may not have created the bootstrap log yet.
+# Missing diagnostics must not replace the actual fetch/build failure status.
+if [[ -f $run_log ]]; then
+    cp "$run_log" "$root/stages.log"
+else
+    : > "$root/stages.log"
+fi
 run_log="$root/stages.log"
 exec > >(tee -a "$run_log") 2>&1
 set_stage fetch
