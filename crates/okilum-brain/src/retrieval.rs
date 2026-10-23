@@ -428,6 +428,17 @@ impl BrainIndex {
         index.refresh(false)?;
         Ok(index)
     }
+    /// Drive the real forced refresh without a worker scheduling deadline.
+    #[cfg(test)]
+    pub(crate) fn rebuild_for_service_test(&self) -> Result<IndexStatus> {
+        {
+            let mut view = self.view.write().unwrap();
+            view.epoch += 1;
+            view.status.status = "indexing".into();
+        }
+        self.refresh(true)?;
+        Ok(self.status())
+    }
     fn relevant_event(&self, event: &notify::Event) -> bool {
         if matches!(event.kind, EventKind::Access(_)) {
             return false;
