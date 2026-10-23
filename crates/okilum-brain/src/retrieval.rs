@@ -405,11 +405,11 @@ impl BrainIndex {
         brain_id: String,
         root: PathBuf,
         operational: PathBuf,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<(Arc<Self>, mpsc::Receiver<bool>)> {
         let cache_root = operational.join("derived/brain-index-v1");
         fs::create_dir_all(&cache_root)?;
         let source = SourceStore::open_read_only(&brain_id, &root, &operational.join("source"))?;
-        let (trigger, _requests) = mpsc::channel();
+        let (trigger, requests) = mpsc::channel();
         let index = Arc::new(Self {
             brain_id,
             root,
@@ -426,16 +426,16 @@ impl BrainIndex {
             _watcher: Mutex::new(None),
         });
         index.refresh(false)?;
-        Ok(index)
+        Ok((index, requests))
     }
     /// Drive the real forced refresh without a worker scheduling deadline.
     #[cfg(test)]
-    pub(crate) fn rebuild_for_service_test(&self) -> Result<IndexStatus> {
-        {
-            let mut view = self.view.write().unwrap();
-            view.epoch += 1;
-            view.status.status = "indexing".into();
-        }
+    pub(crate) fn rebuild_for_service_test(
+        &self,
+        requests: &mpsc::Receiver<bool>,
+    ) -> Result<IndexStatus> {
+        self.rebuild()?;
+        ensure!(requests.recv()?, "expected a forced rebuild request");
         self.refresh(true)?;
         Ok(self.status())
     }

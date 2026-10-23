@@ -276,7 +276,7 @@ fn stalled_semantic_query_keeps_backend_responsive_and_provider_failure_is_expli
             }
         }
     });
-    let index = {
+    let (index, _rebuild_requests) = {
         let b = shared.lock().unwrap();
         crate::retrieval::BrainIndex::ready_for_service_test(
             b.runner.workspace_identity()["brain_id"]
@@ -492,7 +492,7 @@ fn inbox_plan_wire_rejects_client_origin_or_goal_overrides_and_requires_workspac
 #[test]
 fn incoming_reference_wire_workspace_goal_capability_and_read_only_dispatch() {
     let (_temp, shared, goal) = fixture();
-    let (workspace, revision, index) = {
+    let (workspace, revision, index, _rebuild_requests) = {
         let backend = shared.lock().unwrap();
         fs::write(backend.runner.root().join("target.md"), "# Target\n").unwrap();
         fs::write(
@@ -502,13 +502,13 @@ fn incoming_reference_wire_workspace_goal_capability_and_read_only_dispatch() {
         .unwrap();
         let workspace = backend.runner.workspace_identity();
         let revision = backend.runner.read_source("target.md").unwrap().revision;
-        let index = crate::retrieval::BrainIndex::ready_for_service_test(
+        let (index, requests) = crate::retrieval::BrainIndex::ready_for_service_test(
             workspace["brain_id"].as_str().unwrap().into(),
             backend.runner.root().into(),
             backend.runner.operational_root().into(),
         )
         .unwrap();
-        (workspace, revision, index)
+        (workspace, revision, index, requests)
     };
     shared.lock().unwrap().index = Some(index.clone());
     assert_eq!(index.status().status, "ready");
