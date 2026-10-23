@@ -151,6 +151,9 @@ bool okilum_updater_restart(void) {
     if (!TSDriver.restartReply) return false;
     void (^continuation)(SPUUserUpdateChoice) = TSDriver.restartReply;
     TSDriver.restartReply = nil;
+    // Close the standard driver UI and clear its stored handlers before consuming
+    // our retained continuation. This public cleanup does not cancel installation.
+    [TSDriver dismissUpdateInstallation];
     TSSend(6, nil);
     continuation(SPUUserUpdateChoiceInstall);
     return true;

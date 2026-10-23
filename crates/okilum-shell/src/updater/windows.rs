@@ -31,6 +31,17 @@ pub(super) fn take_announcement() -> Option<String> {
 pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
     // Serialize restart against background checks until Velopack is armed.
     if BUSY.swap(true, Ordering::AcqRel) {
+        cx.defer(|cx| {
+            if let Some(window) = cx.active_window() {
+                let _ = window.update(cx, |_, window, cx| {
+                    crate::reader_toast::error(
+                        "The updater is busy. Wait for it to finish, then choose Restart now again.",
+                        window,
+                        cx,
+                    )
+                });
+            }
+        });
         return;
     }
     let result = (|| -> anyhow::Result<()> {
