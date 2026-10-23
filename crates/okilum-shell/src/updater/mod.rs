@@ -100,7 +100,10 @@ pub(crate) fn install(_cx: &mut App) {
                 .await;
             if status::generation() != checked {
                 checked = status::generation();
-                cx.update(|cx| cx.refresh_windows());
+                cx.update(|cx| {
+                    macos::finish_requested_restart(cx);
+                    cx.refresh_windows();
+                });
             }
         }
     })

@@ -8,7 +8,10 @@ extern "C" {
     fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
     fn okilum_updater_restart() -> bool;
+    fn okilum_updater_finish_restart() -> bool;
     fn okilum_updater_ready() -> bool;
+    fn okilum_updater_guard_requested() -> bool;
+    fn okilum_updater_refuse_restart();
     fn okilum_updater_beta() -> bool;
     fn okilum_updater_set_beta(enabled: bool);
     #[cfg(test)]
@@ -96,6 +99,15 @@ pub(super) fn restart(cx: &mut gpui::App) {
     if !ready() {
         return;
     }
+    // Freshness is asynchronous. The final save guards run after it completes,
+    // through finish_requested_restart, even for Sparkle's own Restart button.
+    unsafe { okilum_updater_restart() };
+}
+
+pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
+    if !unsafe { okilum_updater_guard_requested() } {
+        return;
+    }
     let result = (|| -> anyhow::Result<()> {
         anyhow::ensure!(
             crate::reader_editor::protect_all_for_quit(cx),
@@ -103,12 +115,13 @@ pub(super) fn restart(cx: &mut gpui::App) {
         );
         crate::reader_ui_state::prepare_for_restart(cx)?;
         anyhow::ensure!(
-            unsafe { okilum_updater_restart() },
+            unsafe { okilum_updater_finish_restart() },
             "The update is no longer ready. Check for updates again."
         );
         Ok(())
     })();
     if let Err(error) = result {
+        unsafe { okilum_updater_refuse_restart() };
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, cx| {
                 crate::reader_toast::error(
