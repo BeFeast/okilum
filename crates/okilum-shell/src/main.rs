@@ -6660,12 +6660,24 @@ impl Render for Reader {
                     }
                 })
             });
+        // The Manager panel has no Okilum header: T3 starts at the top of the
+        // panel and its own thread header says where you are.
+        let manager_headerless = cfg!(target_os = "macos")
+            && self.project_navigation.manager_panel.is_some()
+            && self
+                .project_navigation
+                .active
+                .as_ref()
+                .is_some_and(|p| p.manager != okilum_t3::projects::Manager::NotStarted);
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
             .filter(|panel| self.panels.visible(*panel, available))
             .map(|panel| {
                 let left = panel == reader_layout::Panel::Notes;
                 let resize_view = cx.entity().downgrade();
+                let header = (left || !manager_headerless).then(|| {
+                    self.render_panel_header(panel, panel_widths.get(panel), window, cx)
+                });
                 v_flex()
                     .id(if left {
                         "reader-notes-panel"
@@ -6694,7 +6706,7 @@ impl Render for Reader {
                     })
                     .border_color(brand::palette(cx).border_subtle)
                     .when(overlay, |p| p.shadow_lg())
-                    .child(self.render_panel_header(panel, panel_widths.get(panel), window, cx))
+                    .children(header)
                     .child(
                         div()
                             .flex_1()

@@ -2,6 +2,21 @@
 use super::*;
 use okilum_t3::projects::{Manager, Project};
 
+/// Used when no origin was saved for this T3 environment.
+pub(super) const DEFAULT_T3_ORIGIN: &str = "https://t3.oklabs.uk";
+
+/// Wait before the next automatic connection attempt. The Mac's network or
+/// VPN may come up after Okilum starts; never wait for a click to recover.
+fn retry_delay(failures: u32) -> std::time::Duration {
+    let seconds = match failures {
+        0 | 1 => 2,
+        2 => 5,
+        3 => 10,
+        _ => 30,
+    };
+    std::time::Duration::from_secs(seconds)
+}
+
 pub(super) struct ManagerPanel {
     project: Project,
     state: Option<PathBuf>,
@@ -10,8 +25,15 @@ pub(super) struct ManagerPanel {
     previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
     error: Option<String>,
+    /// The last error is transient: another attempt is scheduled.
+    retrying: bool,
+    /// Consecutive failed attempts since the last success or address change.
+    failures: u32,
+    /// Set by `hide`: a released panel never reconnects.
+    closed: bool,
     loading: bool,
     generation: u64,
+    _activation: Option<Subscription>,
     #[cfg(target_os = "macos")]
     focus_routing: Option<crate::reader_manager_focus::FocusRouting>,
     #[cfg(target_os = "macos")]
@@ -46,19 +68,29 @@ impl ManagerPanel {
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                match saved {
-                    Ok(Some(origin)) => {
-                        this.origin
-                            .update(cx, |input, cx| input.set_value(origin, window, cx));
-                        this.connect(window, cx);
+                let origin = match saved {
+                    Ok(Some(origin)) if !origin.trim().is_empty() => origin,
+                    Ok(_) => DEFAULT_T3_ORIGIN.into(),
+                    Err(e) => {
+                        this.log_failure(&format!("saved T3 origin unreadable: {e:#}"), cx);
+                        DEFAULT_T3_ORIGIN.into()
                     }
-                    Ok(None) => {}
-                    Err(e) => this.error = Some(format!("{e:#}")),
-                }
+                };
+                this.origin
+                    .update(cx, |input, cx| input.set_value(origin, window, cx));
+                // The app connects by itself; Linux shows the project view instead.
+                #[cfg(all(target_os = "macos", not(test)))]
+                this.connect(window, cx);
                 cx.notify();
             });
         })
         .detach();
+        // Coming back to the window (wake, VPN up, app switch) retries at once.
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.retry_now(window, cx);
+            }
+        });
         Self {
             project,
             state: saved_state,
@@ -67,8 +99,12 @@ impl ManagerPanel {
             previous_gpui_focus: None,
             origin,
             error: None,
+            retrying: false,
+            failures: 0,
+            closed: false,
             loading: false,
             generation: 0,
+            _activation: Some(activation),
             #[cfg(target_os = "macos")]
             focus_routing: None,
             #[cfg(target_os = "macos")]
@@ -126,6 +162,7 @@ impl ManagerPanel {
     }
 
     pub(super) fn hide(&mut self, cx: &mut Context<Self>) {
+        self.closed = true;
         self.generation = self.generation.wrapping_add(1);
         self.focused = false;
         #[cfg(target_os = "macos")]
@@ -142,19 +179,25 @@ impl ManagerPanel {
         self.origin.read(cx).value().to_string()
     }
 
-    /// One line for Settings → T3.
-    pub(super) fn connection_status(&self) -> String {
-        if self.loading {
-            return "Connecting…".into();
-        }
-        if let Some(error) = &self.error {
-            return error.clone();
-        }
+    fn connected(&self) -> bool {
         #[cfg(target_os = "macos")]
-        if self.webview.is_some() {
-            return "Connected".into();
+        return self.webview.is_some();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    /// One short status line (panel and Settings → T3) and the full error,
+    /// shown only as a tooltip.
+    pub(super) fn connection_status(&self) -> (String, Option<String>) {
+        if self.connected() {
+            return ("Connected".into(), None);
         }
-        "Not connected".into()
+        let line = match (&self.error, self.retrying) {
+            (Some(_), true) => "T3 unreachable — retrying",
+            (Some(_), false) => "T3 not connected — check the address in Settings › T3",
+            (None, _) => "Connecting to T3…",
+        };
+        (line.into(), self.error.clone())
     }
 
     /// Settings → T3 (#1507): replace the current browser with one for `origin`.
@@ -165,23 +208,77 @@ impl ManagerPanel {
         cx: &mut Context<Self>,
     ) {
         self.hide(cx);
+        self.closed = false;
         self.loading = false;
+        self.failures = 0;
+        self.error = None;
+        self.retrying = false;
         self.origin
             .update(cx, |input, cx| input.set_value(origin, window, cx));
         self.connect(window, cx);
+    }
+
+    /// Window became active: skip the backoff wait if still disconnected.
+    fn retry_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed || self.loading || self.connected() || !self.retrying {
+            return;
+        }
+        self.failures = 0;
+        self.connect(window, cx);
+    }
+
+    fn log_failure(&self, error: &str, cx: &App) {
+        eprintln!(
+            "okilum: manager T3 connect failed (attempt {}): {error}",
+            self.failures
+        );
+        if let Some(trace) = reader_diagnostics::trace(cx) {
+            trace.event(
+                "manager_t3_connect",
+                serde_json::json!({"failures": self.failures, "error": error}),
+            );
+        }
+    }
+
+    /// A failed attempt: keep one quiet line and try again with backoff.
+    fn failed(&mut self, error: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.failures = self.failures.saturating_add(1);
+        self.log_failure(&error, cx);
+        self.error = Some(error);
+        self.retrying = true;
+        let generation = self.generation;
+        let delay = retry_delay(self.failures);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                // A newer attempt, an address change or `hide` supersedes this one.
+                if this.generation != generation || this.closed || this.loading || this.connected()
+                {
+                    return;
+                }
+                this.connect(window, cx);
+            });
+        })
+        .detach();
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Manager::Thread(thread) = self.project.manager.clone() else {
             return;
         };
+        if self.closed {
+            return;
+        }
         let env = match okilum_t3::Environment::new(
             self.project.environment.as_deref().unwrap_or("project"),
             &self.origin.read(cx).value(),
         ) {
             Ok(env) => env,
             Err(e) => {
+                // A malformed address does not heal by retrying.
                 self.error = Some(e.to_string());
+                self.retrying = false;
+                self.log_failure(&e.to_string(), cx);
                 cx.notify();
                 return;
             }
@@ -189,7 +286,7 @@ impl ManagerPanel {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.loading = true;
-        self.error = None;
+        // The previous error stays until this attempt ends: no flicker.
         let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -214,17 +311,23 @@ impl ManagerPanel {
                             Ok((view, routing)) => {
                                 this.focus_routing = Some(routing);
                                 this.webview = Some(view);
+                                this.error = None;
+                                this.retrying = false;
+                                this.failures = 0;
                             }
                             Err(e) => {
-                                this.error = Some(format!("Manager could not be opened: {e:#}"))
+                                let error = format!("Manager could not be opened: {e:#}");
+                                this.failed(error, window, cx);
                             }
                         }
                         #[cfg(not(target_os = "macos"))]
                         {
                             let _ = (url, window);
+                            this.error = None;
+                            this.retrying = false;
                         }
                     }
-                    Err(e) => this.error = Some(format!("T3 is unreachable: {e:#}")),
+                    Err(e) => this.failed(format!("T3 is unreachable: {e:#}"), window, cx),
                 }
                 cx.notify();
             });
@@ -361,46 +464,29 @@ impl ManagerPanel {
 
 impl Render for ManagerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut body = v_flex()
-            .size_full()
-            .min_h_0()
-            .gap_2()
-            .p_2()
-            .child(div().child(format!("{} · Manager", self.project.name)));
         if self.project.manager == Manager::NotStarted {
-            return body.child("Manager не запущен").into_any_element();
+            return div().p_2().child("Manager не запущен").into_any_element();
         }
-        // #1507: the T3 connector lives only in Settings. While T3 is shown
-        // the panel has no address row; otherwise one line and a way there.
-        #[cfg(target_os = "macos")]
-        let connected = self.webview.is_some();
-        #[cfg(not(target_os = "macos"))]
-        let connected = false;
-        if self.loading {
-            body = body.child("Connecting to T3…");
-        } else if !connected {
-            body = body.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().flex_1().min_w_0().child("T3 not connected"))
-                    .child(
-                        Button::new("manager-open-t3-settings")
-                            .ghost()
-                            .small()
-                            .label("Open T3 settings")
-                            .on_click(|_, _, cx| reader_settings::show_t3(cx)),
-                    ),
-            );
-        }
-        if let Some(error) = &self.error {
-            body = body.child(div().text_color(cx.theme().danger).child(error.clone()));
-        }
+        // No Okilum header or project line above T3: T3's own thread header
+        // says where you are. Until connected, one quiet status line.
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.webview {
-            body = body.child(div().flex_1().min_h_0().child(view.clone()));
+            return div().size_full().child(view.clone()).into_any_element();
         }
-        body.into_any_element()
+        let (line, error) = self.connection_status();
+        div()
+            .id("manager-t3-status")
+            .px_3()
+            .py_2()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(line)
+            .when_some(error, |status, error| {
+                status.tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
+                })
+            })
+            .into_any_element()
     }
 }
 

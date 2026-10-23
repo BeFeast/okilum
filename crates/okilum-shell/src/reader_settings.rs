@@ -22,11 +22,6 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
-/// Manager panel → «Open T3 settings» (#1507).
-pub(crate) fn show_t3(cx: &mut App) {
-    show_section(None, Some(Section::T3), cx);
-}
-
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }
@@ -317,8 +312,9 @@ struct Settings {
     editor_command: Option<(Entity<InputState>, Subscription)>,
     /// The build path of a new source-link mapping (#1165).
     map_from: Option<Entity<InputState>>,
-    /// Settings → T3 origin, made on first render of that section.
-    t3_origin: Option<Entity<InputState>>,
+    /// Settings → T3 origin, made on first render of that section. Applied
+    /// on Enter, and on blur when it changed: there is no Connect button.
+    t3_origin: Option<(Entity<InputState>, Subscription)>,
 }
 impl Settings {
     fn new(reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) -> Self {
@@ -407,14 +403,19 @@ impl Settings {
         let project = reader.read(cx).project_navigation.active.clone()?;
         Some((reader, project))
     }
-    fn t3_connect(&mut self, cx: &mut Context<Self>) {
-        let (Some((reader, _)), Some(input)) = (self.t3_target(cx), self.t3_origin.clone()) else {
+    fn t3_connect(&mut self, only_if_changed: bool, cx: &mut Context<Self>) {
+        let (Some((reader, _)), Some((input, _))) = (self.t3_target(cx), self.t3_origin.as_ref())
+        else {
             return;
         };
         let Some(panel) = reader.read(cx).project_navigation.manager_panel.clone() else {
             return;
         };
         let origin = input.read(cx).value().trim().to_string();
+        if origin.is_empty() || only_if_changed && panel.read(cx).origin_value(cx).trim() == origin
+        {
+            return;
+        }
         // The browser is a native child of the Reader's window: connect there.
         for handle in cx.windows() {
             let Some(root) = handle.downcast::<Root>() else {
@@ -1196,33 +1197,36 @@ impl Settings {
                         .into_any_element();
                 };
                 let panel = reader.read(cx).project_navigation.manager_panel.clone();
-                let status = panel.as_ref().map_or("Not connected".into(), |panel| {
-                    panel.read(cx).connection_status()
-                });
+                let (status, error) = panel
+                    .as_ref()
+                    .map_or(("Not connected".into(), None), |panel| {
+                        panel.read(cx).connection_status()
+                    });
                 content
                     .child(div().text_sm().text_color(p.text_muted).child(
                         "The T3 server where this project's Manager runs. Okilum remembers it per T3 environment.",
                     ))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .children(self.t3_origin.clone().map(|input| Input::new(&input).flex_1()))
-                            .child(
-                                Button::new("settings-t3-connect")
-                                    .label("Connect")
-                                    .disabled(panel.is_none())
-                                    .on_click(cx.listener(|this, _, _, cx| this.t3_connect(cx))),
-                            ),
+                    .children(
+                        self.t3_origin
+                            .as_ref()
+                            .map(|(input, _)| Input::new(input).w_full()),
                     )
                     .child(
                         div()
+                            .id("settings-t3-status")
                             .text_sm()
                             .text_color(p.text_muted)
                             .child(format!(
                                 "{} · {}: {status}",
                                 project.name,
                                 project.environment.as_deref().unwrap_or("project")
-                            )),
+                            ))
+                            .when_some(error, |line, error| {
+                                line.tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(error.clone())
+                                        .build(window, cx)
+                                })
+                            }),
                     )
                     .into_any_element()
             }
@@ -1271,12 +1275,19 @@ impl Render for Settings {
                 .and_then(|(reader, _)| reader.read(cx).project_navigation.manager_panel.clone())
                 .map(|panel| panel.read(cx).origin_value(cx))
                 .filter(|origin| !origin.trim().is_empty())
-                .unwrap_or_else(|| "https://t3.oklabs.uk".into());
-            self.t3_origin = Some(cx.new(|cx| {
+                .unwrap_or_else(|| reader_manager_panel::DEFAULT_T3_ORIGIN.into());
+            let input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("https://t3.oklabs.uk")
+                    .placeholder(reader_manager_panel::DEFAULT_T3_ORIGIN)
                     .default_value(saved)
-            }));
+            });
+            let subscription =
+                cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+                    InputEvent::PressEnter { .. } => this.t3_connect(false, cx),
+                    InputEvent::Blur => this.t3_connect(true, cx),
+                    _ => {}
+                });
+            self.t3_origin = Some((input, subscription));
         }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
