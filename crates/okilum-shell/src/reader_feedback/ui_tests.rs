@@ -604,3 +604,38 @@ fn feedback_backspace_to_empty_keeps_caret_and_next_line_visible(cx: &mut TestAp
         }
     });
 }
+
+#[test]
+fn sprint_default_text_is_a_placeholder_and_the_empty_send_fallback() {
+    // #1597: the Sprint line was the starting value with the caret before it.
+    assert_eq!(placeholder(true), "Sprint test report");
+    assert_ne!(placeholder(false), "Sprint test report");
+    assert_eq!(report_text("", true).as_deref(), Some("Sprint test report"));
+    assert_eq!(
+        report_text("  \n", true).as_deref(),
+        Some("Sprint test report")
+    );
+    assert_eq!(report_text("", false), None, "release Send stays disabled");
+    assert_eq!(report_text("ываы", true).as_deref(), Some("ываы"));
+    assert_eq!(report_text("Typed", false).as_deref(), Some("Typed"));
+}
+
+#[gpui::test]
+fn feedback_field_starts_empty_and_typing_is_the_whole_value(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "", "no prefilled text (#1597)");
+            assert_eq!(
+                view.text.read(cx).presentation().placeholder().as_ref(),
+                placeholder(sprint::enabled())
+            );
+        });
+        feedback.simulate_input("ываы");
+        feedback.run_until_parked();
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "ываы");
+            assert_eq!(view.report(cx).unwrap().text, "ываы");
+        });
+    });
+}

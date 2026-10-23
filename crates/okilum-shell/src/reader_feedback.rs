@@ -117,6 +117,32 @@ fn native_backing_scale(window: &Window) -> Option<f32> {
 fn show(window: &mut Window, cx: &mut App) {
     show_mode(window, cx, false);
 }
+/// What a Sprint report says when the tester typed nothing (#1597). It used to be
+/// the field's starting value, with the caret before it, so typing produced
+/// "ываыSprint test report". Now it is the placeholder and the sent fallback.
+const SPRINT_REPORT_TEXT: &str = "Sprint test report";
+
+fn placeholder(sprint: bool) -> &'static str {
+    if sprint {
+        SPRINT_REPORT_TEXT
+    } else {
+        "What happened, or what would you like to see?"
+    }
+}
+
+/// The report text to send, or `None` when there is nothing to send. A Sprint
+/// build sends its default line for an empty field, as the menu's one-click
+/// Sprint report always has.
+fn report_text(value: &str, sprint: bool) -> Option<String> {
+    if !value.trim().is_empty() {
+        Some(value.to_string())
+    } else if sprint {
+        Some(SPRINT_REPORT_TEXT.to_string())
+    } else {
+        None
+    }
+}
+
 fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
     cx.default_global::<Drafts>();
     let id = window.window_handle().window_id();
@@ -280,7 +306,7 @@ impl FeedbackView {
         let text = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(3, 8)
-                .placeholder("What happened, or what would you like to see?")
+                .placeholder(placeholder(sprint::enabled()))
         });
         let subscription = cx.subscribe(
             &text,
@@ -292,11 +318,6 @@ impl FeedbackView {
         );
         let log_path = reader_diagnostics::feedback_log_path(cx).ok();
         let sprint_log = log_path.clone();
-        if sprint::enabled() {
-            text.update(cx, |text, cx| {
-                text.set_value("Sprint test report", window, cx)
-            });
-        }
         Self {
             text,
             meta,
@@ -324,7 +345,7 @@ impl FeedbackView {
         self.text = cx.new(|cx| {
             let mut text = TextareaState::new(window, cx)
                 .auto_grow(3, 8)
-                .placeholder("What happened, or what would you like to see?");
+                .placeholder(placeholder(sprint::enabled()));
             text.set_value(value, window, cx);
             text.set_selected_range(selection, cx);
             text.set_scroll_offset(scroll, cx);
@@ -344,7 +365,7 @@ impl FeedbackView {
     }
     fn report_without_log(&self, cx: &App) -> Report {
         Report {
-            text: self.text.read(cx).value().to_string(),
+            text: report_text(&self.text.read(cx).value(), sprint::enabled()).unwrap_or_default(),
             kind: self.kind,
             meta: self.meta.clone(),
             screenshot: self.image.as_ref().map(|image| image.png.clone()),
@@ -687,7 +708,9 @@ impl Render for FeedbackView {
                         .debug_selector(|| "feedback-send".into())
                         .primary()
                         .disabled(
-                            busy || self.attaching || self.text.read(cx).value().trim().is_empty(),
+                            busy || self.attaching
+                                || report_text(&self.text.read(cx).value(), sprint::enabled())
+                                    .is_none(),
                         )
                         .label(label)
                         .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
