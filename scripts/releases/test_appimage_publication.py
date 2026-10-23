@@ -20,7 +20,7 @@ def evidence():
            'head_sha': SOURCE, 'head_branch': 'main', 'event': 'push', 'path': artifact.WORKFLOW,
            'status': 'completed', 'conclusion': 'success'}
     jobs = [{'id': i, 'name': name, 'run_id': 17, 'head_sha': SOURCE, 'status': 'completed',
-             'conclusion': 'success', 'steps': [{'name': step, 'conclusion': 'success'}]}
+             'conclusion': 'success', 'steps': [{'name': step, 'status': 'completed', 'conclusion': 'success'}]}
             for i, (name, step) in enumerate([('appimage', artifact.SMOKE), ('linux', 'Run full Linux gate')])]
     image = b'original embedded 5023 AppImage'
     provenance = {'source_sha': SOURCE, 'artifact': artifact.IMAGE, 'sha256': publisher.digest(image),

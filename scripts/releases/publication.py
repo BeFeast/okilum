@@ -23,7 +23,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
              'windows': 'windows-diagnostic.yml'}
 ARTIFACTS = {'macos': {'macos-publication': 'macos'},
-             'linux': {'arch-publication': 'arch', 'appimage-publication': 'appimage'},
+             'linux': {'arch-publication': 'arch'},
              'windows': {'okilum-windows-velopack': 'windows', 'windows-portable': 'portable'}}
 
 
@@ -172,12 +172,6 @@ def publish(client, platform, run_id):
             command = [str(SCRIPTS / 'windows/publish.py'), 'publish', '--build', str(build),
                        '--source', source, '--directory', str(root / 'windows'),
                        '--portable', one(root / 'portable', '*.zip'), *extra]
-        if platform == 'linux':
-            # AppImage version is embedded by its GitHub producer, not this Forgejo run.
-            # Validate/sign/publish only through the same protected runner and shared lock.
-            subprocess.run([sys.executable, str(SCRIPTS / 'releases/appimage_publish.py'),
-                            '--directory', str(root / 'appimage'), '--source', source,
-                            '--publication-build', str(build), *extra], env=env, check=True)
         subprocess.run([sys.executable, *command], env=env, check=True)
         release_notes.record(R2(), notes)
         print(f'Published {platform} build {build} from completed run {run_id}, source {source}'
