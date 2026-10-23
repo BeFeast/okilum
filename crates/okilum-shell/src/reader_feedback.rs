@@ -282,6 +282,9 @@ struct Attachment {
 enum ImageInput {
     File(PathBuf),
     Clipboard(Vec<u8>),
+    /// Image data read from the platform pasteboard (#1609); a TIFF is
+    /// converted to PNG first.
+    Pasted(crate::note_paste::offer::PastedImage),
 }
 type Sender = Arc<dyn Fn(Report) -> anyhow::Result<Receipt> + Send + Sync>;
 struct FeedbackView {
@@ -291,6 +294,8 @@ struct FeedbackView {
     visible: bool,
     image: Option<Attachment>,
     image_error: Option<String>,
+    /// What a paste did to the attachments, e.g. replaced the screenshot.
+    image_note: Option<String>,
     attaching: bool,
     image_generation: u64,
     include_log: bool,
@@ -325,6 +330,7 @@ impl FeedbackView {
             visible: false,
             image: None,
             image_error: None,
+            image_note: None,
             attaching: false,
             image_generation: 0,
             include_log: sprint::enabled(),
@@ -445,6 +451,12 @@ impl FeedbackView {
                     match input {
                         ImageInput::File(path) => model::image_file(&path),
                         ImageInput::Clipboard(bytes) => model::image_bytes(&bytes, true),
+                        ImageInput::Pasted(image) => {
+                            match crate::note_paste::attachments::normalize(&image) {
+                                Ok((bytes, _)) => model::image_bytes(&bytes, true),
+                                Err(_) => Err(anyhow::anyhow!("Choose a PNG or JPEG screenshot.")),
+                            }
+                        }
                     }
                 })
                 .await;
@@ -473,7 +485,33 @@ impl FeedbackView {
         self.attaching = false;
         self.image = None;
         self.image_error = None;
+        self.image_note = None;
         cx.notify();
+    }
+    /// Says so when a paste replaces the screenshot: a report takes one.
+    fn note_replacement(&mut self) {
+        self.image_note = if self.image.is_some() || self.attaching {
+            Some("Replaced the screenshot with the pasted image: a report takes one.".into())
+        } else {
+            // Pasted media is attached, never typed in as a path (#1609).
+            Some("Attached the pasted image as the screenshot.".into())
+        };
+    }
+    /// Routes pasted files to the screenshot slot: one image at a time.
+    fn attach_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        if self.busy() {
+            return;
+        }
+        match paths {
+            [path] => {
+                self.note_replacement();
+                self.image_input(ImageInput::File(path.clone()), cx);
+            }
+            _ => {
+                self.image_error = Some("Attach one PNG or JPEG screenshot at a time.".into());
+                cx.notify();
+            }
+        }
     }
     fn picker(&mut self, cx: &mut Context<Self>) {
         if self.busy() {
@@ -506,6 +544,28 @@ impl FeedbackView {
         .detach();
     }
     fn paste_image(&mut self, cx: &mut Context<Self>) -> bool {
+        // #1609: the platform pasteboard first. GPUI's clipboard read reports
+        // a copied file's path as text before the file (Raycast's history
+        // pasted ".../com.raycast.macos/clipboard/file-….png" into the text).
+        let platform = cx
+            .try_global::<crate::note_paste::ManagedNoteClipboard>()
+            .map(|managed| managed.0.clone());
+        if let Some(attachment) = platform.and_then(|clipboard| clipboard.read_attachment()) {
+            use crate::note_paste::offer::ClipAttachment;
+            // Media never goes into the text as a path, not even while an
+            // attachment is still loading.
+            if self.busy() {
+                return true;
+            }
+            match attachment {
+                ClipAttachment::Files(paths) => self.attach_paths(&paths, cx),
+                ClipAttachment::Image(image) => {
+                    self.note_replacement();
+                    self.image_input(ImageInput::Pasted(image), cx);
+                }
+            }
+            return true;
+        }
         if self.busy() {
             return false;
         }
@@ -657,6 +717,15 @@ impl Render for FeedbackView {
                     .text_sm()
                     .text_color(p.text_muted)
                     .child(error.clone()),
+            );
+        }
+        if let Some(note) = &self.image_note {
+            body = body.child(
+                div()
+                    .debug_selector(|| "feedback-paste-note".into())
+                    .text_sm()
+                    .text_color(p.text_muted)
+                    .child(note.clone()),
             );
         }
         body = body

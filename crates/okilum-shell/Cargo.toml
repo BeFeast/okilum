@@ -23,6 +23,8 @@ project-ui-harness = []
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 okilum-core = { workspace = true, default-features = false }
 okilum-t3 = { path = "../okilum-t3" }
+# Smart paste converters (#1611): HTML/RTF to Markdown, TSV, code fences, titles.
+okilum-paste = { path = "../okilum-paste" }
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-base = { path = "../../vendor/gpui-component/crates/base" }
@@ -37,6 +39,8 @@ smallvec = "1"
 async-channel = "2"
 notify = "7"
 url = "2"
+# Names of downloaded pasted images (#1611); already locked through url.
+percent-encoding = "2"
 regex = "1"
 resvg = "=0.45.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
@@ -91,8 +95,8 @@ gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
 wry = { package = "lb-wry", version = "=0.53.3" }
 raw-window-handle = { version = "0.6", features = ["std"] }
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSTextList"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue"] }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]

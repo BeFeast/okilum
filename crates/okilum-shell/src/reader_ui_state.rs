@@ -125,6 +125,9 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// Pasting or dropping a file larger than this many MB asks before
+    /// copying it into the vault (#1611); 0 never asks.
+    paste_ask_above_mb: u32,
     /// JSON files show their raw text instead of a pretty-printed view (#1131).
     json_raw: bool,
     /// Where log source locations open (#1165): vscode, cursor, zed,
@@ -174,6 +177,7 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             json_raw: false,
             log_editor: "vscode".into(),
             log_editor_command: String::new(),
@@ -208,6 +212,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -302,6 +307,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        paste_ask_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
         source_maps_changed: Default::default(),
@@ -526,6 +532,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -609,6 +616,9 @@ impl WriteJob {
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.paste_ask_changed {
+            latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
         }
         if self.json_raw_changed {
             latest.json_raw = self.saved.json_raw;
@@ -728,6 +738,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
+            && !state.paste_ask_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
             && state.source_maps_changed.is_empty()
@@ -760,6 +771,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        paste_ask_changed: state.paste_ask_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
         source_maps_changed: state.source_maps_changed.clone(),
@@ -1298,6 +1310,26 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Settings → Editor (#1611): ask before copying a pasted or dropped file
+/// larger than this many MB into the vault; 0 never asks.
+pub(crate) fn paste_ask_above_mb(cx: &App) -> u32 {
+    cx.try_global::<Store>()
+        .map_or(crate::note_paste::files::DEFAULT_ASK_ABOVE_MB, |state| {
+            state.saved.paste_ask_above_mb
+        })
+}
+
+pub(crate) fn set_paste_ask_above_mb(value: u32, cx: &mut App) {
+    if !installed(cx) || paste_ask_above_mb(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.paste_ask_above_mb = value;
+    state.paste_ask_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Pretty-printed JSON is the default (#1131); this remembers Raw.
 pub(crate) fn json_raw(cx: &App) -> bool {
     cx.try_global::<Store>()
@@ -1682,6 +1714,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.paste_ask_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
         state.source_maps_changed.clear();
@@ -2070,6 +2103,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                paste_ask_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
                 source_maps_changed: Default::default(),
