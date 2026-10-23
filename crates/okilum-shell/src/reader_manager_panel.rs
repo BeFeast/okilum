@@ -290,7 +290,7 @@ impl ManagerPanel {
                 }, true);
             "#,
             )
-            .with_initialization_script(crate::reader_manager_links::PAGE_SCRIPT)
+            .with_initialization_script(&crate::reader_manager_links::page_script(&url))
             .with_ipc_handler(move |request| {
                 if matches!(request.body().as_str(), "focus" | "blur" | "escape") {
                     let _ = send.try_send(request.body().clone());

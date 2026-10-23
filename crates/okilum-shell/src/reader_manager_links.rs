@@ -21,8 +21,9 @@ pub(crate) const COPY_PREFIX: &str = "clipboard:";
 
 /// Injected after the focus script. Capture listeners on `window` run before
 /// T3's own handlers on the menu buttons.
-pub(crate) const PAGE_SCRIPT: &str = r#"
+const PAGE_SCRIPT: &str = r#"
 (() => {
+    if (location.origin !== __OKILUM_T3_ORIGIN__) return;
     const okilumOpen = url => {
         let parsed;
         try { parsed = new URL(String(url), location.href); } catch { return false; }
@@ -68,6 +69,15 @@ pub(crate) const PAGE_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Preserve the browser APIs on authentication and other navigated pages.
+pub(crate) fn page_script(t3: &url::Url) -> String {
+    PAGE_SCRIPT.replace(
+        "__OKILUM_T3_ORIGIN__",
+        &serde_json::to_string(&t3.origin().ascii_serialization())
+            .expect("an origin string is JSON serializable"),
+    )
+}
+
 /// What the T3 page asked Okilum to do.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PageRequest {
@@ -83,7 +93,8 @@ pub(crate) fn external_url(raw: &str) -> Option<url::Url> {
 }
 
 /// Parses an IPC message. Only the T3 page itself may ask: a page reached by
-/// navigating inside the panel gets no pasteboard or app launching.
+/// navigating inside the panel gets no pasteboard or IPC app launching.
+/// Native new-window requests separately allow HTTP(S) browser navigation.
 pub(crate) fn page_request(body: &str, page: &str, t3: &url::Url) -> Option<PageRequest> {
     let page = url::Url::parse(page).ok()?;
     if page.origin() != t3.origin() {
@@ -157,6 +168,13 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn page_script_pins_the_configured_origin_before_overriding_apis() {
+        let script = page_script(&url::Url::parse("https://t3.example:8443/thread").unwrap());
+        assert!(script.contains("if (location.origin !== \"https://t3.example:8443\") return;"));
+        assert!(!script.contains("__OKILUM_T3_ORIGIN__"));
     }
 
     #[test]
