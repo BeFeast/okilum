@@ -65,9 +65,8 @@ pub(crate) fn document<E: ParentElement + InteractiveElement>(
     view.child(
         div().absolute().inset_0().child(
             canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let hitbox = window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal);
+                |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                move |_, hitbox, window, _| {
                     let weak = weak.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if phase != DispatchPhase::Capture
