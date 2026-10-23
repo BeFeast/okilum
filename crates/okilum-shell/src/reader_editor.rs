@@ -2,11 +2,30 @@
 mod live_preview;
 use super::*;
 use crate::platform::labels::Os;
+use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError};
 use gpui_component::input::projection::{
     ActiveSource, MarkerClick, MarkerKind, ProjectionProvider, SourceClick, SourceMutation,
     SourceProjection, SourceSnapshot,
 };
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
+
+/// What a paste that inserted nothing tells the user (#1602); it is never
+/// silent. `None` for a second paste while the first is still reading.
+fn paste_failure_text(error: &ClipboardReadError, image: bool) -> Option<&'static str> {
+    use ClipboardReadError as E;
+    Some(match error {
+        E::Unavailable if image => "Images can’t be pasted into a note yet, only text.",
+        E::Unavailable => "Nothing to paste: the clipboard has no text or image.",
+        E::Busy => return None,
+        E::Cancelled => "Paste was cancelled. Click in the note and paste again.",
+        E::Timeout => "The clipboard didn’t answer in time. Paste again.",
+        E::TooLarge => "The clipboard text is too large to paste.",
+        E::InvalidUtf8 => "The clipboard text isn’t valid UTF-8, so it wasn’t pasted.",
+        E::ChangedOffer => "The clipboard changed while pasting. Paste again.",
+        E::Unsupported | E::AmbiguousSeat => "Paste isn’t available here.",
+        E::Io => "The clipboard couldn’t be read.",
+    })
+}
 
 #[cfg(test)]
 fn source_link_at(source: &str, offset: usize) -> Option<okilum_core::document_links::ParsedLink> {
@@ -446,9 +465,15 @@ impl Reader {
         // Cancel a pending navigation before exposing an editable snapshot.
         self.navigation.preparation_generation =
             self.navigation.preparation_generation.wrapping_add(1);
-        let clipboard = cx
-            .try_global::<platform::ManagedClipboard>()
-            .map(|p| p.0.clone());
+        // A note takes images as attachments and embeds; a plain file takes
+        // text only (#1602).
+        let paste_notice = crate::note_paste::PasteNotice::default();
+        let clipboard = crate::note_paste::provider_for_note(
+            cx,
+            self.vault_root.clone(),
+            (!plain_file).then(|| self.selected_file().to_owned()),
+            paste_notice.clone(),
+        );
         // Code files keep their grammar, line numbers and wrap preference (#998).
         let code = plain_file
             .then(|| crate::reader_code_file::language(self.selected_file()))
@@ -678,6 +703,40 @@ impl Reader {
                 });
             },
         );
+        // #1602: every paste outcome reaches the log (sizes and kinds only,
+        // never clipboard text); one that inserts nothing also says why.
+        let pasted = cx.subscribe_in(
+            &input,
+            window,
+            move |_, _, event: &ClipboardPasteEvent, window, cx| match event {
+                ClipboardPasteEvent::Applied { bytes, .. } => {
+                    eprintln!("Paste: inserted {bytes} bytes");
+                    // A file too large to copy was linked where it is; say so.
+                    let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
+                    if let Some(text) = notice {
+                        reader_toast::transient(text, window, cx);
+                    }
+                }
+                ClipboardPasteEvent::Failed(error) => {
+                    eprintln!("Paste: nothing inserted ({error:?})");
+                    // An image that couldn't be saved says why itself.
+                    let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
+                    if let Some(text) = notice {
+                        reader_toast::error(text, window, cx);
+                        return;
+                    }
+                    let image = matches!(error, ClipboardReadError::Unavailable)
+                        && cx.read_from_clipboard().is_some_and(|item| {
+                            item.entries()
+                                .iter()
+                                .any(|entry| matches!(entry, ClipboardEntry::Image(_)))
+                        });
+                    if let Some(text) = paste_failure_text(error, image) {
+                        reader_toast::error(text, window, cx);
+                    }
+                }
+            },
+        );
         let (menu_facts, menu_watch) = reader_reminder::MenuFacts::watch(&input, cx);
         self.editing = Some(Editing {
             store,
@@ -697,7 +756,15 @@ impl Reader {
             saved_at: None,
             current_input,
             menu_facts,
-            _subscriptions: vec![changed, blur, clicked, toggled, highlighting, menu_watch],
+            _subscriptions: vec![
+                changed,
+                blur,
+                clicked,
+                toggled,
+                highlighting,
+                menu_watch,
+                pasted,
+            ],
         });
         // Back from the Reader to unchanged text: Undo continues (#1095).
         if let Some((file, history)) = self.retained_edit.take() {
@@ -4350,6 +4417,38 @@ mod edit_error_tests {
             // Positive control: stderr keeps the OS detail.
             assert!(format!("{raw:#}").contains("os error 5"));
         }
+    }
+
+    /// #1602: a paste that inserts nothing is never silent, except a second
+    /// paste while the first is still reading.
+    #[test]
+    fn paste_failures_are_explained_in_plain_words() {
+        use ClipboardReadError as E;
+        for error in [
+            E::Unsupported,
+            E::Unavailable,
+            E::Cancelled,
+            E::Timeout,
+            E::TooLarge,
+            E::InvalidUtf8,
+            E::ChangedOffer,
+            E::AmbiguousSeat,
+            E::Io,
+        ] {
+            let text = paste_failure_text(&error, false).expect("explained");
+            assert!(
+                !text.contains("Unavailable") && !text.contains("Err"),
+                "{text}"
+            );
+        }
+        assert_eq!(paste_failure_text(&E::Busy, false), None);
+        assert!(paste_failure_text(&E::Unavailable, true)
+            .unwrap()
+            .starts_with("Images can’t be pasted"));
+        assert_eq!(
+            paste_failure_text(&E::Unavailable, false),
+            Some("Nothing to paste: the clipboard has no text or image.")
+        );
     }
 }
 
