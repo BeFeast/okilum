@@ -269,7 +269,7 @@ class BridgeTests(unittest.TestCase):
     def test_forgejo_gate_result_matrix(self):
         workflow = Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml'
         block = workflow.read_text().split('      - name: Require a native result\n', 1)[1]
-        block = block.split('  # Keep the existing protected-branch context.', 1)[0]
+        block = block.split('  # Keep the protected context;', 1)[0]
         script = '\n'.join(line[10:] for line in block.split('        run: |\n', 1)[1].splitlines())
         import itertools
         for lane, required, hosted_job, hosted, local, linux in itertools.product(
@@ -277,7 +277,7 @@ class BridgeTests(unittest.TestCase):
                 ['success', 'failure', 'cancelled', 'skipped'],
                 ['success', 'failure', 'unavailable', ''],
                 ['success', 'failure', 'cancelled', 'skipped'], ['success', 'failure']):
-            expected = linux == 'success' and (required == 'false' or
+            expected = (required == 'false' or
                 (required == 'true' and (
                     (hosted_job == 'success' and
                      hosted == 'success' and local == 'skipped') or

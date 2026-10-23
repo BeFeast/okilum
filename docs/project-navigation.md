@@ -57,3 +57,23 @@ Required CI and one code review remain premerge gates. Ordinary UI acceptance is
 human QA on a concrete Mac beta build; code and fixture tests do not establish
 live OAuth, browser interaction or user acceptance. Manager rotation policy is
 tracked separately in #1473.
+
+### Native Manager input on macOS (#1510)
+
+A panel-owned AppKit event monitor makes the clicked WKWebView first responder.
+Its mouse-down notification clears GPUI logical focus and pending chords, so the
+previously focused origin input cannot receive paste. Escape restores that prior
+GPUI focus; outside clicks choose their own target.
+While that view (or a descendant) is the key window's first responder, editing
+shortcuts use native responder actions and all other keyboard events go directly
+to WebKit. Paste keeps the original system pasteboard, including images; no
+JavaScript clipboard emulation is involved. The bridge temporarily provides a
+native Edit menu with nil-target responder actions and restores the original menu
+on blur, hide, window change or teardown. Escape and outside clicks return first
+responder to the GPUI parent. Native focus, rather than delayed DOM notifications,
+controls suppression of Reader shortcuts.
+
+The bridge uses public AppKit APIs and lives outside GPUI core and the vendored
+webview. Hosted selector tests cover native edit command mapping. Oleg's Mac beta
+acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
+T3 shortcuts, outside-click/Escape return and closing/reopening the panel.

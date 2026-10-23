@@ -68,7 +68,10 @@ class ReaderImageTests(unittest.TestCase):
     def test_apt_manifest_matches_current_linux_gate(self):
         # Detect dependency drift before replacing the install step in a later PR.
         workflow = (Path(__file__).resolve().parents[2] / ".forgejo/workflows/ci.yml").read_text()
-        install = workflow.split("sudo apt-get install -y -qq --no-install-recommends", 1)[1]
+        # Shared has its own runner-only packages (for example its subreaper).
+        # The reader image replaces the Linux gate, so compare that job only.
+        linux = workflow.split("\n  linux-local:\n", 1)[1]
+        install = linux.split("sudo apt-get install -y -qq --no-install-recommends", 1)[1]
         install = install.split("\n\n", 1)[0]
         packages = install.replace("\\", "").split()
         self.assertEqual(packages, (RECIPE / "packages.txt").read_text().split())

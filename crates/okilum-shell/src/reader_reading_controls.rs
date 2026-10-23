@@ -18,10 +18,10 @@ pub(crate) fn render(cx: &App) -> impl IntoElement {
                         .icon(IconName::Minus)
                         .accessibility_label("Smaller text")
                         .tooltip("Smaller text")
-                        .disabled(reader_ui_state::font_size(cx) <= 12.)
+                        .disabled(reader_ui_state::base_font_size(cx) <= 12.)
                         .on_click(|_, _, cx| {
                             reader_ui_state::set_reading(
-                                reader_ui_state::font_size(cx) - 1.,
+                                reader_ui_state::base_font_size(cx) - 1.,
                                 reader_ui_state::reading_width(cx),
                                 cx,
                             )
@@ -31,7 +31,7 @@ pub(crate) fn render(cx: &App) -> impl IntoElement {
                     div()
                         .w(px(36.))
                         .text_center()
-                        .child(format!("{:.1}", reader_ui_state::font_size(cx))),
+                        .child(format!("{:.1}", reader_ui_state::base_font_size(cx))),
                 )
                 .child(
                     Button::new("reading-larger")
@@ -40,10 +40,10 @@ pub(crate) fn render(cx: &App) -> impl IntoElement {
                         .icon(IconName::Plus)
                         .accessibility_label("Larger text")
                         .tooltip("Larger text")
-                        .disabled(reader_ui_state::font_size(cx) >= 24.)
+                        .disabled(reader_ui_state::base_font_size(cx) >= 24.)
                         .on_click(|_, _, cx| {
                             reader_ui_state::set_reading(
-                                reader_ui_state::font_size(cx) + 1.,
+                                reader_ui_state::base_font_size(cx) + 1.,
                                 reader_ui_state::reading_width(cx),
                                 cx,
                             )
@@ -69,7 +69,11 @@ pub(crate) fn render(cx: &App) -> impl IntoElement {
                         .selected(selected)
                         .when(selected, |button| button.primary())
                         .on_click(move |_, _, cx| {
-                            reader_ui_state::set_reading(reader_ui_state::font_size(cx), width, cx)
+                            reader_ui_state::set_reading(
+                                reader_ui_state::base_font_size(cx),
+                                width,
+                                cx,
+                            )
                         })
                 }),
             ),

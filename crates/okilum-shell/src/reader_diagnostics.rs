@@ -184,6 +184,15 @@ fn log_path(state: Option<&Path>) -> Result<PathBuf> {
         .join(LOG_FILE))
 }
 
+pub(crate) fn feedback_log_path(cx: &App) -> Result<PathBuf> {
+    let trace = trace(cx);
+    log_path(
+        trace
+            .as_ref()
+            .and_then(|trace| trace.inner.state.as_deref()),
+    )
+}
+
 fn record(root: &Path, state: Option<&Path>, report: serde_json::Value) {
     append_report(Some(root), state, &report);
 }

@@ -27,6 +27,15 @@ and is chosen explicitly. On Linux, Settings → About says which pacman reposit
 
 The current release is at <https://okilum.app/download>.
 
+## In-app feedback
+
+Use the feedback icon next to ⋯ or Help → Send feedback. Write one message and,
+if useful, attach a PNG/JPEG with the file picker, paste an image, or drop a file.
+You can preview and remove the image before sending. Build, OS and window details
+are filled automatically. This creates an issue in Okilum's public tracker; log
+attachment is optional and off by default. A failed send keeps the draft while
+its window stays open, with Retry and Copy report.
+
 ## Logs
 
 Okilum keeps a diagnostic log of each launch: startup timings, warnings, failures

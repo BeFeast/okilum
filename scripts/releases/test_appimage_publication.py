@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 import zipfile
 
@@ -15,12 +16,54 @@ import appimage_publish as publisher
 SOURCE = 'a' * 40
 
 
+class ArtifactTransport(unittest.TestCase):
+    def test_transient_failure_recovers_with_bounded_backoff(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'archive'
+        opener = Mock()
+        opener.open.side_effect = [urllib.error.HTTPError('https://example.invalid',
+            503, 'Egress is over the account limit', {}, None), response]
+        with patch.object(artifact.urllib.request, 'build_opener', return_value=opener), \
+                patch.object(artifact.time, 'sleep') as sleep:
+            self.assertEqual(artifact.download('test-token', 29), b'archive')
+        self.assertEqual(opener.open.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_exhausted_transport_is_infrastructure_failure_never_success(self):
+        for code in [429, 502, 503, 504]:
+            opener = Mock()
+            opener.open.side_effect = [urllib.error.HTTPError(
+                'https://example.invalid', code, 'unavailable', {}, None) for _ in range(3)]
+            with self.subTest(code=code), \
+                    patch.object(artifact.urllib.request, 'build_opener', return_value=opener), \
+                    patch.object(artifact.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(artifact.ArtifactTransportUnavailable,
+                                            'APPIMAGE_INFRA_UNAVAILABLE'):
+                    artifact.download('test-token', 29)
+                self.assertEqual(opener.open.call_count, 3)
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+
+    def test_other_http_failures_are_not_retried(self):
+        for code in [401, 403, 404, 422]:
+            error = urllib.error.HTTPError('https://example.invalid', code, 'denied', {}, None)
+            opener = Mock(); opener.open.side_effect = error
+            with self.subTest(code=code), \
+                    patch.object(artifact.urllib.request, 'build_opener', return_value=opener), \
+                    patch.object(artifact.time, 'sleep') as sleep:
+                with self.assertRaises(urllib.error.HTTPError):
+                    artifact.download('test-token', 29)
+                opener.open.assert_called_once()
+                sleep.assert_not_called()
+
+
 def evidence():
     run = {'id': 17, 'run_number': 23, 'run_attempt': 1, 'repository': {'full_name': artifact.REPOSITORY},
            'head_sha': SOURCE, 'head_branch': 'main', 'event': 'push', 'path': artifact.WORKFLOW,
            'status': 'completed', 'conclusion': 'success'}
     jobs = [{'id': i, 'name': name, 'run_id': 17, 'head_sha': SOURCE, 'status': 'completed',
-             'conclusion': 'success', 'steps': [{'name': step, 'conclusion': 'success'}]}
+             'conclusion': 'success', 'steps': [{'name': step, 'status': 'completed', 'conclusion': 'success'}]}
             for i, (name, step) in enumerate([('appimage', artifact.SMOKE), ('linux', 'Run full Linux gate')])]
     image = b'original embedded 5023 AppImage'
     provenance = {'source_sha': SOURCE, 'artifact': artifact.IMAGE, 'sha256': publisher.digest(image),
