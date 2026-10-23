@@ -1197,11 +1197,13 @@ impl Settings {
                         .into_any_element();
                 };
                 let panel = reader.read(cx).project_navigation.manager_panel.clone();
-                let (status, error) = panel
-                    .as_ref()
-                    .map_or(("Not connected".into(), None), |panel| {
-                        panel.read(cx).connection_status()
-                    });
+                let (status, error) =
+                    panel
+                        .as_ref()
+                        .map_or(("Not connected".into(), None), |panel| {
+                            let (line, error) = panel.read(cx).connection_status();
+                            (line.unwrap_or_else(|| "Connecting…".into()), error)
+                        });
                 content
                     .child(div().text_sm().text_color(p.text_muted).child(
                         "The T3 server where this project's Manager runs. Okilum remembers it per T3 environment.",

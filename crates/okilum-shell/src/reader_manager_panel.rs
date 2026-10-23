@@ -17,6 +17,32 @@ fn retry_delay(failures: u32) -> std::time::Duration {
     std::time::Duration::from_secs(seconds)
 }
 
+/// Quiet period after start or an address change: the network, VPN or T3
+/// itself may need a moment, so no error is shown until it has passed.
+const CONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The one status line for the panel and Settings › T3, or `None` while
+/// there is nothing worth saying (connecting within the grace period).
+fn status_line(
+    connected: bool,
+    error: bool,
+    retrying: bool,
+    loading: bool,
+    elapsed: std::time::Duration,
+) -> Option<&'static str> {
+    if connected {
+        return Some("Connected");
+    }
+    if error && !retrying {
+        // A malformed address does not heal by waiting.
+        return Some("T3 unavailable — check the address in Settings › T3");
+    }
+    if elapsed < CONNECT_GRACE {
+        return None;
+    }
+    (error || loading).then_some("T3 unavailable — reconnecting…")
+}
+
 pub(super) struct ManagerPanel {
     project: Project,
     state: Option<PathBuf>,
@@ -32,6 +58,8 @@ pub(super) struct ManagerPanel {
     /// Set by `hide`: a released panel never reconnects.
     closed: bool,
     loading: bool,
+    /// Start of the current grace period (panel creation or address change).
+    started: std::time::Instant,
     generation: u64,
     _activation: Option<Subscription>,
     #[cfg(target_os = "macos")]
@@ -85,6 +113,7 @@ impl ManagerPanel {
             });
         })
         .detach();
+        Self::refresh_after_grace(window, cx);
         // Coming back to the window (wake, VPN up, app switch) retries at once.
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
@@ -103,6 +132,7 @@ impl ManagerPanel {
             failures: 0,
             closed: false,
             loading: false,
+            started: std::time::Instant::now(),
             generation: 0,
             _activation: Some(activation),
             #[cfg(target_os = "macos")]
@@ -186,18 +216,33 @@ impl ManagerPanel {
         false
     }
 
+    /// Re-render once the grace period ends so a still-failing connection
+    /// shows its quiet line without waiting for the next attempt.
+    fn refresh_after_grace(window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(CONNECT_GRACE).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
     /// One short status line (panel and Settings → T3) and the full error,
-    /// shown only as a tooltip.
-    pub(super) fn connection_status(&self) -> (String, Option<String>) {
-        if self.connected() {
-            return ("Connected".into(), None);
-        }
-        let line = match (&self.error, self.retrying) {
-            (Some(_), true) => "T3 unreachable — retrying",
-            (Some(_), false) => "T3 not connected — check the address in Settings › T3",
-            (None, _) => "Connecting to T3…",
+    /// shown only as a tooltip. No line and no error during the grace period.
+    pub(super) fn connection_status(&self) -> (Option<String>, Option<String>) {
+        let connected = self.connected();
+        let line = status_line(
+            connected,
+            self.error.is_some(),
+            self.retrying,
+            self.loading,
+            self.started.elapsed(),
+        );
+        let error = if connected || line.is_none() {
+            None
+        } else {
+            self.error.clone()
         };
-        (line.into(), self.error.clone())
+        (line.map(Into::into), error)
     }
 
     /// Settings → T3 (#1507): replace the current browser with one for `origin`.
@@ -213,6 +258,8 @@ impl ManagerPanel {
         self.failures = 0;
         self.error = None;
         self.retrying = false;
+        self.started = std::time::Instant::now();
+        Self::refresh_after_grace(window, cx);
         self.origin
             .update(cx, |input, cx| input.set_value(origin, window, cx));
         self.connect(window, cx);
@@ -480,7 +527,7 @@ impl Render for ManagerPanel {
             .py_2()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child(line)
+            .children(line)
             .when_some(error, |status, error| {
                 status.tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
@@ -526,6 +573,42 @@ impl Reader {
         }
         let _ = cx;
         div().p_4().child("Loading manager…").into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use std::time::Duration;
+
+    #[test]
+    fn no_status_before_grace_deadline_quiet_line_after() {
+        let before = CONNECT_GRACE - Duration::from_millis(1);
+        // First attempts, failing or still loading: nothing at all.
+        assert_eq!(status_line(false, false, false, true, Duration::ZERO), None);
+        assert_eq!(status_line(false, true, true, false, before), None);
+        assert_eq!(status_line(false, true, true, true, before), None);
+        // Grace over without success: one quiet line.
+        assert_eq!(
+            status_line(false, true, true, false, CONNECT_GRACE),
+            Some("T3 unavailable — reconnecting…")
+        );
+        assert_eq!(
+            status_line(false, false, false, true, CONNECT_GRACE),
+            Some("T3 unavailable — reconnecting…")
+        );
+        // Nothing attempted (Linux): still nothing to say.
+        assert_eq!(status_line(false, false, false, false, CONNECT_GRACE), None);
+        // A malformed address is reported at once.
+        assert_eq!(
+            status_line(false, true, false, false, Duration::ZERO),
+            Some("T3 unavailable — check the address in Settings › T3")
+        );
+        assert_eq!(
+            status_line(true, false, false, false, Duration::ZERO),
+            Some("Connected")
+        );
     }
 }
 
