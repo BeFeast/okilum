@@ -254,18 +254,50 @@ fn aliases_incremental_edit_remove_and_delta_restart_refresh_unchanged_referrers
 }
 
 #[test]
-fn aliases_in_flow_mapping_are_not_edges_to_existing_namesakes() {
+fn aliases_in_yaml_forms_are_not_edges_to_existing_namesakes() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("Actual.md"), "# Exact filename\n").unwrap();
     std::fs::write(root.path().join("Other.md"), "# Other\n").unwrap();
-    let source = "---\n{aliases: ['[[Actual]]'], related: '[[Other]]'}\n---\n# Declaration\n";
-    std::fs::write(root.path().join("decl.md"), source).unwrap();
-    let vault = Vault::scan(root.path()).unwrap();
-    assert!(vault.backlinks("Actual.md").is_empty());
-    assert_eq!(
-        vault.backlinks("Other.md").len(),
-        1,
-        "ordinary relationship positive control"
-    );
-    assert_eq!(crate::link_candidates::syntax::targets(source).len(), 1);
+    for yaml in [
+        "{aliases: ['[[Actual]]'], related: '[[Other]]'}",
+        "'ALIASES': ['[[Actual]]']\nrelated: '[[ Other#Heading|Shown ]]'",
+        r#""\u0061liases": ['[[Actual]]']
+related: '[[Other]]'"#,
+        "aliases:\n  - '[[Actual]]'\nrelated:\n  - '[[Other]]'",
+    ] {
+        let source = format!("---\n{yaml}\n---\n# Declaration\n");
+        std::fs::write(root.path().join("decl.md"), &source).unwrap();
+        let vault = Vault::scan(root.path()).unwrap();
+        assert!(vault.backlinks("Actual.md").is_empty(), "{yaml}");
+        assert_eq!(
+            vault.backlinks("Other.md").len(),
+            1,
+            "ordinary relationship positive control: {yaml}"
+        );
+        assert_eq!(crate::link_candidates::syntax::targets(&source).len(), 1);
+    }
+}
+
+#[test]
+fn aliases_cold_graph_reads_each_source_once_before_resolving_referrers() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.md"), "[[Late alias]]\n").unwrap();
+    std::fs::write(
+        root.path().join("z.md"),
+        "---\naliases: [Late alias]\n---\n",
+    )
+    .unwrap();
+    let mut vault = Vault::scan_metadata(root.path()).unwrap();
+    let mut reads = HashMap::new();
+    vault
+        .build_backlinks_from(&mut |_, _| Ok(()), |path| {
+            let count = reads.entry(path.to_owned()).or_insert(0);
+            *count += 1;
+            assert_eq!(*count, 1, "graph must not reread {path}");
+            Some(std::fs::read_to_string(root.path().join(path)).unwrap())
+        })
+        .unwrap();
+    assert_eq!(reads.len(), 2);
+    assert_eq!(vault.resolve("Late alias").path(), Some("z.md"));
+    assert_eq!(vault.backlinks("z.md").len(), 1);
 }

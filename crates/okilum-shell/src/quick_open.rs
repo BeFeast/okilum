@@ -911,6 +911,7 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    use std::collections::BTreeSet;
 
     #[gpui::test]
     fn aliases_open_the_canonical_note_from_quick_open_and_body_links(cx: &mut TestAppContext) {
