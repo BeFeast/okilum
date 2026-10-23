@@ -77,8 +77,20 @@ fn call(address: &str, body: Value) -> Value {
     };
     let mut stream = TcpStream::connect_timeout(&address.parse().unwrap(), remaining())
         .unwrap_or_else(|error| fail("connect", error));
-    stream.set_write_timeout(Some(remaining())).unwrap();
-    writeln!(stream, "{body}").unwrap_or_else(|error| fail("write", error));
+    let mut payload = serde_json::to_vec(&body).unwrap();
+    payload.push(b'\n');
+    let mut written = 0;
+    while written < payload.len() {
+        stream.set_write_timeout(Some(remaining())).unwrap();
+        let count = stream
+            .write(&payload[written..])
+            .unwrap_or_else(|error| fail("write", error));
+        assert!(
+            count != 0,
+            "fixture RPC {operation} to {address}: zero-byte write"
+        );
+        written += count;
+    }
     let mut reply = Vec::new();
     loop {
         stream.set_read_timeout(Some(remaining())).unwrap();
