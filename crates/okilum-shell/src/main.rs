@@ -352,6 +352,7 @@ const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 fn bind_keys(cx: &mut App) {
     reader_text_zoom::bind_keys(cx);
     reader_title_nav::bind_menu_keys(cx);
+    quick_open::bind_palette_keys(cx);
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);

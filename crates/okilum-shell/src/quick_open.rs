@@ -605,7 +605,7 @@ impl Reader {
         // An explicit open starts clean, also when it switches the mode.
         self.quick_open.invalidate();
         if !full_text {
-            self.ensure_palette_projects(window, cx);
+            self.ensure_palette_projects(cx);
         }
         self.refresh_quick_open(cx);
     }
@@ -648,14 +648,41 @@ impl Reader {
     }
 
     /// Projects arrived or changed while the palette is open: only the
-    /// synchronous sections are rebuilt, the selection stays on its row kind.
+    /// synchronous sections are rebuilt, and the selection stays on the row
+    /// it was on (the first row if that row is gone).
     pub(super) fn refresh_palette_sections(&mut self, cx: &mut Context<Self>) {
-        if self.quick_open.open && !self.quick_open.full_text {
-            self.quick_open.sections = self.palette_sections();
-            let len = self.palette_items().len();
-            self.quick_open.selected = self.quick_open.selected.min(len.saturating_sub(1));
-            cx.notify();
+        if !self.quick_open.open || self.quick_open.full_text {
+            return;
         }
+        let before = self
+            .palette_items()
+            .get(self.quick_open.selected)
+            .map(|item| self.palette_key(item));
+        self.quick_open.sections = self.palette_sections();
+        let items = self.palette_items();
+        self.quick_open.selected = before
+            .and_then(|key| items.iter().position(|item| self.palette_key(item) == key))
+            .unwrap_or(0);
+        cx.notify();
+    }
+
+    /// What a row stands for, independent of its place in the list.
+    fn palette_key(
+        &self,
+        (section, item): &(PaletteSection, PaletteItem),
+    ) -> (PaletteSection, String) {
+        let key = match item {
+            PaletteItem::Note(entry) => entry.path.clone(),
+            PaletteItem::Project(row) => row.project.folder.to_string_lossy().into_owned(),
+            PaletteItem::AllProjects => String::new(),
+            PaletteItem::File(row) => self
+                .quick_open
+                .rows
+                .get(*row)
+                .map(|hit| hit.path.clone())
+                .unwrap_or_default(),
+        };
+        (*section, key)
     }
 
     /// Pinned, Recent and Projects for the palette's current text. Pinned and
@@ -750,11 +777,7 @@ impl Reader {
 
     /// The first row of `section`, if it has any (⌘1…⌘4).
     pub(super) fn jump_palette_section(&mut self, section: PaletteSection, cx: &mut Context<Self>) {
-        if let Some(ix) = self
-            .palette_items()
-            .iter()
-            .position(|(s, _)| *s == section)
-        {
+        if let Some(ix) = self.palette_items().iter().position(|(s, _)| *s == section) {
             self.select_palette_item(ix, cx);
         }
     }
@@ -775,7 +798,8 @@ impl Reader {
         let here = at(*current);
         let count = PaletteSection::ALL.len() as isize;
         for step in 1..count {
-            let section = PaletteSection::ALL[(here + delta.signum() * step).rem_euclid(count) as usize];
+            let section =
+                PaletteSection::ALL[(here + delta.signum() * step).rem_euclid(count) as usize];
             if let Some(ix) = items.iter().position(|(s, _)| *s == section) {
                 self.select_palette_item(ix, cx);
                 return;
@@ -813,7 +837,7 @@ impl Reader {
                 let idle = !palette.running && !palette.pending && palette.message.is_empty();
                 if palette.query.is_empty() {
                     lines.push(Line::Hint(format!("Type to search files in {scope}")));
-                } else if idle {
+                } else if idle && palette.rows.is_empty() {
                     lines.push(Line::Hint("No matching files".into()));
                 }
             }
@@ -1086,167 +1110,332 @@ impl Reader {
         let root = self.vault_root.clone();
         let inventory = self.watcher_generation;
         let vault_name = super::vault_name::shown(&self.vault_root, cx);
+        let active_project = self
+            .project_navigation
+            .active
+            .as_ref()
+            .map(|project| project.folder.clone());
+        let scope = self
+            .project_navigation
+            .active
+            .as_ref()
+            .map_or_else(|| vault_name.clone(), |project| project.name.clone());
+        let items = self.palette_items();
+        let lines = self.palette_lines(&items, scope);
         // Results are capped at 100. Content-sized rows avoid reserving blank
         // snippet/reason lines, and keep the keyboard scroll target exact.
         let query = self.quick_open.input.read(cx).value().to_string();
+        // One Files row (or content-search row): `ix` is its place among all
+        // palette items, `row` its index in `rows`.
+        let file_row = |ix: usize, row: usize| -> AnyElement {
+            let hit = &rows[row];
+            let location = if full_text {
+                result_folder(&hit.path)
+            } else {
+                result_location(&vault_name, &hit.path)
+            };
+            let label = |value: String| {
+                let ranges = if full_text {
+                    label_matches(&value, &query)
+                } else {
+                    vec![]
+                };
+                search_label::SearchLabel::new(value, ranges, mark)
+            };
+            let entity = entity.clone();
+            let root = root.clone();
+            let hover_entity = entity.clone();
+            let hover_path = hit.path.clone();
+            let hover_root = root.clone();
+            v_flex()
+                .id(("quick-open-result", row))
+                .on_hover(move |active, window, cx| {
+                    let _ = hover_entity.update(cx, |this, cx| {
+                        let key = format!("quick:{generation}:{hover_path}");
+                        if *active
+                            && this.quick_open.open
+                            && this.quick_open.generation == generation
+                            && this.vault_root == hover_root
+                            && this.watcher_generation == inventory
+                        {
+                            this.hover_note(
+                                key,
+                                reader_hover::Target {
+                                    path: hover_path.clone(),
+                                    heading: None,
+                                },
+                                window.mouse_position(),
+                                window,
+                                cx,
+                            );
+                        } else {
+                            this.leave_hover(&key, cx);
+                        }
+                    });
+                })
+                .debug_selector(move || format!("quick-open-result-{row}"))
+                .cursor_pointer()
+                .hover(|row| row.bg(selected_bg))
+                .on_click(move |_, window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        if this.quick_open.open
+                            && this.quick_open.generation == generation
+                            && this.vault_root == root
+                            && this.watcher_generation == inventory
+                        {
+                            this.quick_open.selected = ix;
+                            this.open_quick_open_row(row, window, cx);
+                        }
+                    });
+                })
+                .w_full()
+                .flex_none()
+                .px_3()
+                .py_1()
+                .when(ix == selected, |row| row.bg(selected_bg))
+                .child(
+                    div()
+                        .text_sm()
+                        .line_height(px(20.))
+                        .flex_none()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(label(hit.title.clone())),
+                )
+                .when(!location.is_empty(), |row| {
+                    row.child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(18.))
+                            .flex_none()
+                            .text_color(muted)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(label(location)),
+                    )
+                })
+                .when_some(
+                    snippets.get(row).filter(|s| {
+                        full_text
+                            && (!s.text.is_empty()
+                                || s.hidden_match.is_some()
+                                || s.property_match.is_some()
+                                || s.name_match.is_some())
+                    }),
+                    |row_el, snippet| {
+                        let snippet = visible_snippet(snippet);
+                        let mut row_el = row_el.when(!snippet.text.is_empty(), |row_el| {
+                            row_el.child(
+                                div()
+                                    .id(("quick-open-snippet", row))
+                                    .debug_selector(move || format!("quick-open-snippet-{row}"))
+                                    .text_size(px(12.))
+                                    .line_height(px(18.))
+                                    .flex_none()
+                                    .text_color(muted)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(search_label::SearchLabel::new(
+                                        snippet.text.clone(),
+                                        snippet.highlights.clone(),
+                                        mark,
+                                    )),
+                            )
+                        });
+                        for reason in [
+                            snippet.property_match.as_ref(),
+                            snippet.hidden_match.as_ref(),
+                            snippet.name_match.as_ref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            let reason = visible_context(reason);
+                            row_el = row_el.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(18.))
+                                    .flex_none()
+                                    .text_color(muted)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(search_label::SearchLabel::new(
+                                        reason.text.clone(),
+                                        reason.highlights.clone(),
+                                        mark,
+                                    )),
+                            );
+                        }
+                        row_el
+                    },
+                )
+                .into_any_element()
+        };
+        // A Pinned, Recent or Projects row: opens through `open_palette_item`.
+        let section_row = |ix: usize| {
+            let entity = entity.clone();
+            let root = root.clone();
+            h_flex()
+                .id(("quick-open-item", ix))
+                .debug_selector(move || format!("quick-open-item-{ix}"))
+                .w_full()
+                .min_w_0()
+                .flex_none()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .cursor_pointer()
+                .hover(|row| row.bg(selected_bg))
+                .when(ix == selected, |row| row.bg(selected_bg))
+                .on_click(move |_, window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        if this.quick_open.open
+                            && this.quick_open.generation == generation
+                            && this.vault_root == root
+                        {
+                            this.quick_open.selected = ix;
+                            this.open_palette_item(ix, window, cx);
+                        }
+                    });
+                })
+        };
+        let quiet = |text: String| {
+            div()
+                .flex_none()
+                .text_size(px(12.))
+                .text_color(muted)
+                .whitespace_nowrap()
+                .child(text)
+        };
+        let children: Vec<AnyElement> = lines
+            .iter()
+            .map(|line| match line {
+                Line::Header(section) => {
+                    let section = *section;
+                    h_flex()
+                        .id(("quick-open-section", section as usize))
+                        .debug_selector(move || format!("quick-open-section-{}", section.id()))
+                        .w_full()
+                        .flex_none()
+                        .px_3()
+                        .pt_2()
+                        .pb_0p5()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(muted)
+                        .child(div().flex_1().child(section.label()))
+                        .when_some(section.jump_hint(cx), |header, key| header.child(key))
+                        .into_any_element()
+                }
+                Line::Hint(text) => div()
+                    .w_full()
+                    .flex_none()
+                    .px_3()
+                    .py_1()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(text.clone())
+                    .into_any_element(),
+                Line::Item(ix) => match &items[*ix].1 {
+                    PaletteItem::File(row) => file_row(*ix, *row),
+                    PaletteItem::Note(entry) => section_row(*ix)
+                        .child(
+                            Icon::new(if entry.folder {
+                                IconName::Folder
+                            } else {
+                                IconName::FileText
+                            })
+                            .small()
+                            .text_color(muted),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .line_height(px(20.))
+                                        .truncate()
+                                        .child(entry.label.clone()),
+                                )
+                                .when_some(entry.location.clone(), |column, location| {
+                                    column.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(18.))
+                                            .text_color(muted)
+                                            .truncate()
+                                            .child(location),
+                                    )
+                                }),
+                        )
+                        .when_some(entry.age.clone(), |row, age| row.child(quiet(age)))
+                        .into_any_element(),
+                    PaletteItem::Project(project) => {
+                        let active = active_project.as_ref() == Some(&project.project.folder);
+                        section_row(*ix)
+                            .h(px(32.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .truncate()
+                                    .child(project.project.name.clone()),
+                            )
+                            .child(quiet(project.domain.clone()))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .px_1()
+                                    .rounded_sm()
+                                    .text_size(px(12.))
+                                    .bg(palette.tile)
+                                    .text_color(muted)
+                                    .child(kind_label(project.project.kind)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .flex_none()
+                                    .when(active, |d| d.child(Icon::new(IconName::Check).small())),
+                            )
+                            .into_any_element()
+                    }
+                    PaletteItem::AllProjects => section_row(*ix)
+                        .h(px(30.))
+                        .text_sm()
+                        .text_color(muted)
+                        .child("All projects…")
+                        .into_any_element(),
+                },
+            })
+            .collect();
         let list = v_flex()
             .id("quick-open-results")
             .debug_selector(|| "quick-open-results".to_string())
             .w_full()
             .overflow_y_scroll()
-            .children(
-                (0..rows.len())
-                    .map(|ix| {
-                        let hit = &rows[ix];
-                        let location = if full_text {
-                            result_folder(&hit.path)
-                        } else {
-                            result_location(&vault_name, &hit.path)
-                        };
-                        let label = |value: String| {
-                            let ranges = if full_text {
-                                label_matches(&value, &query)
-                            } else {
-                                vec![]
-                            };
-                            search_label::SearchLabel::new(value, ranges, mark)
-                        };
-                        let entity = entity.clone();
-                        let root = root.clone();
-                        let hover_entity = entity.clone();
-                        let hover_path = hit.path.clone();
-                        let hover_root = root.clone();
-                        v_flex()
-                            .id(("quick-open-result", ix))
-                            .on_hover(move |active, window, cx| {
-                                let _ = hover_entity.update(cx, |this, cx| {
-                                    let key = format!("quick:{generation}:{hover_path}");
-                                    if *active
-                                        && this.quick_open.open
-                                        && this.quick_open.generation == generation
-                                        && this.vault_root == hover_root
-                                        && this.watcher_generation == inventory
-                                    {
-                                        this.hover_note(
-                                            key,
-                                            reader_hover::Target {
-                                                path: hover_path.clone(),
-                                                heading: None,
-                                            },
-                                            window.mouse_position(),
-                                            window,
-                                            cx,
-                                        );
-                                    } else {
-                                        this.leave_hover(&key, cx);
-                                    }
-                                });
-                            })
-                            .debug_selector(move || format!("quick-open-result-{ix}"))
-                            .cursor_pointer()
-                            .hover(|row| row.bg(selected_bg))
-                            .on_click(move |_, window, cx| {
-                                let _ = entity.update(cx, |this, cx| {
-                                    if this.quick_open.open
-                                        && this.quick_open.generation == generation
-                                        && this.vault_root == root
-                                        && this.watcher_generation == inventory
-                                    {
-                                        this.quick_open.selected = ix;
-                                        this.open_quick_open_row(ix, window, cx);
-                                    }
-                                });
-                            })
-                            .w_full()
-                            .flex_none()
-                            .px_3()
-                            .py_1()
-                            .when(ix == selected, |row| row.bg(selected_bg))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .line_height(px(20.))
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(label(hit.title.clone())),
-                            )
-                            .when(!location.is_empty(), |row| {
-                                row.child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .line_height(px(18.))
-                                        .flex_none()
-                                        .text_color(muted)
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(label(location)),
-                                )
-                            })
-                            .when_some(
-                                snippets.get(ix).filter(|s| {
-                                    full_text
-                                        && (!s.text.is_empty()
-                                            || s.hidden_match.is_some()
-                                            || s.property_match.is_some()
-                                            || s.name_match.is_some())
-                                }),
-                                |row, snippet| {
-                                    let snippet = visible_snippet(snippet);
-                                    let mut row = row.when(!snippet.text.is_empty(), |row| {
-                                        row.child(
-                                            div()
-                                                .id(("quick-open-snippet", ix))
-                                                .debug_selector(move || {
-                                                    format!("quick-open-snippet-{ix}")
-                                                })
-                                                .text_size(px(12.))
-                                                .line_height(px(18.))
-                                                .flex_none()
-                                                .text_color(muted)
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .child(search_label::SearchLabel::new(
-                                                    snippet.text.clone(),
-                                                    snippet.highlights.clone(),
-                                                    mark,
-                                                )),
-                                        )
-                                    });
-                                    for reason in [
-                                        snippet.property_match.as_ref(),
-                                        snippet.hidden_match.as_ref(),
-                                        snippet.name_match.as_ref(),
-                                    ]
-                                    .into_iter()
-                                    .flatten()
-                                    {
-                                        let reason = visible_context(reason);
-                                        row = row.child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .line_height(px(18.))
-                                                .flex_none()
-                                                .text_color(muted)
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .child(search_label::SearchLabel::new(
-                                                    reason.text.clone(),
-                                                    reason.highlights.clone(),
-                                                    mark,
-                                                )),
-                                        );
-                                    }
-                                    row
-                                },
-                            )
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            .children(children)
             .track_scroll(&self.quick_open.scroll)
             .h(px(352.));
+        let footer = if !self.quick_open.message.is_empty() {
+            self.quick_open.message.clone()
+        } else {
+            let escape = if self.quick_open.input.read(cx).value().is_empty() {
+                "Esc Close"
+            } else {
+                "Esc Clear"
+            };
+            if full_text {
+                format!("↑ ↓ Select · Enter Open · {escape}")
+            } else {
+                format!("↑ ↓ Move · ↵ Open · Tab Next section · {escape}")
+            }
+        };
         div()
             .absolute()
             .inset_0()
@@ -1268,6 +1457,24 @@ impl Reader {
                     .border_1()
                     .border_color(palette.border)
                     .shadow_lg()
+                    .on_action(cx.listener(|this, _: &PaletteNextSection, _, cx| {
+                        this.cycle_palette_section(1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &PalettePreviousSection, _, cx| {
+                        this.cycle_palette_section(-1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &PalettePinned, _, cx| {
+                        this.jump_palette_section(PaletteSection::Pinned, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &PaletteRecent, _, cx| {
+                        this.jump_palette_section(PaletteSection::Recent, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &PaletteProjects, _, cx| {
+                        this.jump_palette_section(PaletteSection::Projects, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &PaletteFiles, _, cx| {
+                        this.jump_palette_section(PaletteSection::Files, cx)
+                    }))
                     .child(div().px_3().py_2().text_sm().child(if full_text {
                         reader_shortcuts::hint("Search contents", &FullTextSearch, cx)
                     } else {
@@ -1279,17 +1486,13 @@ impl Reader {
                             .child(Input::new(&self.quick_open.input).cleanable(true)),
                     )
                     .child(list)
-                    .child(div().px_3().text_size(px(12.)).text_color(muted).child(
-                        if self.quick_open.message.is_empty() {
-                            if self.quick_open.input.read(cx).value().is_empty() {
-                                "↑ ↓ Select · Enter Open · Esc Close".to_string()
-                            } else {
-                                "↑ ↓ Select · Enter Open · Esc Clear".to_string()
-                            }
-                        } else {
-                            self.quick_open.message.clone()
-                        },
-                    )),
+                    .child(
+                        div()
+                            .px_3()
+                            .text_size(px(12.))
+                            .text_color(muted)
+                            .child(footer),
+                    ),
             )
             .into_any_element()
     }
@@ -1799,7 +2002,14 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
-        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        reader.update_in(visual, |v, window, cx| {
+            v.open_quick_open(false, window, cx);
+            // Files lists matches once there is text (#1518).
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("r", window, cx));
+            v.refresh_quick_open(cx);
+        });
         visual.run_until_parked();
         let (release, hold) = async_channel::bounded(1);
         reader.update_in(visual, |v, window, cx| {
@@ -2028,12 +2238,19 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update(visual, |v, _| {
+            assert!(v.quick_open.rows.is_empty(), "Files waits for text (#1518)")
+        });
+        visual.simulate_input("Note");
+        visual.run_until_parked();
+        reader.update(visual, |v, _| {
             assert_eq!(v.quick_open.rows[0].path, "area/Note 4999.md")
         });
         visual.simulate_keystrokes("down");
         reader.update(visual, |v, _| assert_eq!(v.quick_open.selected, 1));
         visual.simulate_keystrokes("up");
         reader.update(visual, |v, _| assert_eq!(v.quick_open.selected, 0));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
         visual.simulate_keystrokes("escape");
         reader.update(visual, |v, _| assert!(!v.quick_open.open));
         visual.simulate_keystrokes("ctrl-k");
@@ -2069,8 +2286,8 @@ mod tests {
                 .focus_handle(cx)
                 .is_focused(window));
             assert!(
-                !v.quick_open.rows.is_empty(),
-                "empty query restores choices"
+                v.quick_open.rows.is_empty(),
+                "empty query returns Files to its hint (#1518)"
             );
         });
         visual.simulate_keystrokes("escape");
@@ -2369,8 +2586,8 @@ canaryhidden [[Target]]",
                 ),
             ]
         );
-        // Every openable file is listed before a query is typed.
-        assert_eq!(rows("", visual).len(), 4);
+        // Files waits for text; Pinned and Recent are the empty palette (#1518).
+        assert!(rows("", visual).is_empty());
         rows("tg.log", visual);
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
@@ -2554,5 +2771,298 @@ canaryhidden [[Target]]",
         }
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(index).unwrap();
+    }
+
+    #[test]
+    fn palette_note_sections_match_like_files_and_keep_their_order() {
+        // #1518: Pinned and Recent filter with the Files ranking; equal
+        // matches keep the list's own order (most recent first).
+        let entry = |path: &str, label: &str| reader_title_nav::Entry {
+            path: path.into(),
+            label: label.into(),
+            location: None,
+            age: None,
+            folder: !path.ends_with(".md"),
+        };
+        let entries = vec![
+            entry("B/notes.md", "Notes"),
+            entry("Other/Planning.md", "Planning"),
+            entry("Dev/App/plan.md", "Launch plan"),
+            entry("A/notes.md", "Notes"),
+            entry("Other/far.md", "Far"),
+            entry("Dev/App", "App"),
+        ];
+        let aliases = std::collections::BTreeMap::from([(
+            "Other/far.md".to_string(),
+            vec!["Distant".to_string()],
+        )]);
+        let paths = |query: &str| -> Vec<String> {
+            matching(entries.clone(), query, &aliases)
+                .into_iter()
+                .map(|e| e.path)
+                .collect()
+        };
+        // No text: the list as the title bar shows it.
+        assert_eq!(
+            paths(" "),
+            entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>()
+        );
+        // Exact name beats a name prefix; non-matches drop out.
+        assert_eq!(paths("plan"), ["Dev/App/plan.md", "Other/Planning.md"]);
+        // The shown label (the note title) and declared aliases match too.
+        assert_eq!(paths("launch"), ["Dev/App/plan.md"]);
+        assert_eq!(paths("distant"), ["Other/far.md"]);
+        // A tie keeps list order, not path order.
+        assert_eq!(paths("notes"), ["B/notes.md", "A/notes.md"]);
+        // Folders (pinned project folders) match by name.
+        assert_eq!(paths("app")[0], "Dev/App");
+        assert!(paths("nothing here").is_empty());
+    }
+
+    /// `Section: what` per palette row, in display order.
+    fn palette_rows(v: &Reader) -> Vec<String> {
+        v.palette_items()
+            .iter()
+            .map(|(section, item)| {
+                let what = match item {
+                    PaletteItem::Note(entry) => entry.path.clone(),
+                    PaletteItem::Project(row) => row.project.name.clone(),
+                    PaletteItem::AllProjects => "All projects…".into(),
+                    PaletteItem::File(ix) => v.quick_open.rows[*ix].path.clone(),
+                };
+                format!("{}: {what}", section.label())
+            })
+            .collect()
+    }
+
+    fn files_hint(v: &Reader) -> Option<String> {
+        let items = v.palette_items();
+        v.palette_lines(&items, "here".into())
+            .into_iter()
+            .find_map(|line| match line {
+                Line::Hint(text) => Some(text),
+                _ => None,
+            })
+    }
+
+    #[gpui::test]
+    fn palette_sections_scope_to_the_project_and_enter_projects(cx: &mut TestAppContext) {
+        // #1518: ⌘K lists Pinned, Recent, Projects and Files; one text
+        // filters all four, ⌘1…⌘4 and Tab move between them, a project row
+        // enters the project, and in a project its files come first.
+        let fixture = tempfile::tempdir().unwrap();
+        let vault = fixture.path().join("vault");
+        for folder in ["Dev/Areas/App", "Music/Areas/Studio"] {
+            std::fs::create_dir_all(vault.join(folder).join("ops")).unwrap();
+            std::fs::write(
+                vault.join(folder).join("ops/project.yaml"),
+                "kind: knowledge\n",
+            )
+            .unwrap();
+        }
+        for (path, body) in [
+            ("note.md", "# Retained note\n"),
+            ("Dev/Areas/App/design/rules.md", "# Rules\n"),
+            ("Dev/Areas/App/design/plan draft.md", "# Plan draft\n"),
+            ("Other/far.md", "# Far\n"),
+            ("Other/plan.md", "# Plan\n"),
+        ] {
+            std::fs::create_dir_all(vault.join(path).parent().unwrap()).unwrap();
+            std::fs::write(vault.join(path), body).unwrap();
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let now = reader_sidebar::now();
+        reader.update(visual, |v, _| {
+            v.sidebar.recent = vec![
+                ("Dev/Areas/App/design/rules.md".into(), now - 60),
+                ("note.md".into(), now - 90),
+                ("Other/far.md".into(), now - 120),
+            ];
+            v.sidebar.pinned = vec!["Other/far.md".into()];
+        });
+        let type_text = |visual: &mut VisualTestContext, text: &'static str| {
+            reader.update_in(visual, |v, window, cx| {
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+                v.refresh_quick_open(cx);
+            });
+            visual.run_until_parked();
+        };
+        let selected = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |v, _| {
+                palette_rows(v)[v.quick_open.selected].clone()
+            })
+        };
+
+        // Before typing: every section but Files, which says what it would
+        // list. Recent leaves out the note on screen. Projects are found on
+        // the first open, without opening the switcher.
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.project_navigation.discovered);
+            assert_eq!(
+                palette_rows(v),
+                [
+                    "Pinned: Other/far.md",
+                    "Recent: Dev/Areas/App/design/rules.md",
+                    "Recent: Other/far.md",
+                    "Projects: App",
+                    "Projects: Studio",
+                    "Projects: All projects…",
+                ]
+            );
+            assert_eq!(
+                files_hint(v).as_deref(),
+                Some("Type to search files in here")
+            );
+            assert!(v.quick_open.rows.is_empty(), "Files waits for text");
+        });
+        assert_eq!(selected(visual), "Pinned: Other/far.md");
+        visual.simulate_keystrokes("tab");
+        assert_eq!(selected(visual), "Recent: Dev/Areas/App/design/rules.md");
+        visual.simulate_keystrokes("tab");
+        assert_eq!(selected(visual), "Projects: App");
+        visual.simulate_keystrokes("tab");
+        assert_eq!(
+            selected(visual),
+            "Pinned: Other/far.md",
+            "an empty Files is skipped and Tab wraps"
+        );
+        visual.simulate_keystrokes("shift-tab");
+        assert_eq!(selected(visual), "Projects: App");
+        visual.simulate_keystrokes("secondary-2");
+        assert_eq!(selected(visual), "Recent: Dev/Areas/App/design/rules.md");
+        visual.simulate_keystrokes("down down");
+        assert_eq!(selected(visual), "Projects: App", "↓ crosses sections");
+
+        // One text filters every section. Files ranks the whole vault and
+        // leaves out what Pinned and Recent already show.
+        type_text(visual, "plan");
+        reader.read_with(visual, |v, _| {
+            assert_eq!(
+                palette_rows(v),
+                [
+                    "Projects: All projects…",
+                    "Files: Other/plan.md",
+                    "Files: Dev/Areas/App/design/plan draft.md",
+                ]
+            );
+            assert_eq!(files_hint(v), None);
+        });
+        type_text(visual, "far");
+        reader.read_with(visual, |v, _| {
+            let rows = palette_rows(v);
+            assert_eq!(rows[..2], ["Pinned: Other/far.md", "Recent: Other/far.md"]);
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.starts_with("Files: Other/far.md")),
+                "{rows:?}"
+            );
+            assert!(v
+                .quick_open
+                .rows
+                .iter()
+                .any(|hit| hit.path == "Other/far.md"));
+        });
+        type_text(visual, "zzzz qqq");
+        reader.read_with(visual, |v, _| {
+            assert_eq!(palette_rows(v), ["Projects: All projects…"]);
+            assert_eq!(files_hint(v).as_deref(), Some("No matching files"));
+        });
+
+        // ⌘3 and ↵ enter a project through the switcher's pipeline.
+        type_text(visual, "");
+        visual.simulate_keystrokes("secondary-3");
+        assert_eq!(selected(visual), "Projects: App");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(!v.quick_open.open);
+            assert_eq!(
+                v.project_navigation
+                    .active
+                    .as_ref()
+                    .map(|p| p.folder.clone()),
+                Some(vault.join("Dev/Areas/App"))
+            );
+            assert_eq!(v.sidebar.recent_projects, ["Dev/Areas/App"]);
+        });
+
+        // In the project: Pinned and Recent follow its This project scope,
+        // the entered project leads Projects, and the project's weaker
+        // match leads Files before the rest of the vault.
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            let rows = palette_rows(v);
+            assert!(rows.iter().all(|row| !row.contains("Other/")), "{rows:?}");
+            assert!(rows.contains(&"Recent: Dev/Areas/App/design/rules.md".to_string()));
+            let projects: Vec<_> = rows.iter().filter(|r| r.starts_with("Projects")).collect();
+            assert_eq!(
+                projects,
+                [
+                    "Projects: App",
+                    "Projects: Studio",
+                    "Projects: All projects…"
+                ]
+            );
+        });
+        type_text(visual, "plan");
+        reader.read_with(visual, |v, _| {
+            let files: Vec<_> = palette_rows(v)
+                .into_iter()
+                .filter(|row| row.starts_with("Files"))
+                .collect();
+            assert_eq!(
+                files,
+                [
+                    "Files: Dev/Areas/App/design/plan draft.md",
+                    "Files: Other/plan.md",
+                ]
+            );
+        });
+
+        // «All projects…» hands the text to the full switcher.
+        type_text(visual, "Stu");
+        reader.read_with(visual, |v, _| {
+            assert_eq!(
+                palette_rows(v)[..2],
+                ["Projects: Studio", "Projects: All projects…"]
+            );
+        });
+        visual.simulate_keystrokes("secondary-3 down enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |v, cx| {
+            assert!(!v.quick_open.open);
+            assert!(v.title_nav.switcher_open);
+            let switcher = v.project_navigation.switcher.as_ref().unwrap();
+            assert_eq!(switcher.read(cx).model().query(), "Stu");
+        });
     }
 }

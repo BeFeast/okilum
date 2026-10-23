@@ -346,7 +346,12 @@ mod tests {
         // #1518: inside a project, Files lists the project first.
         let note = |path: &str| Note {
             path: path.into(),
-            title: path.rsplit('/').next().unwrap().trim_end_matches(".md").into(),
+            title: path
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .trim_end_matches(".md")
+                .into(),
         };
         let notes = vec![
             note("plan.md"),
@@ -365,7 +370,11 @@ mod tests {
         // Whole vault: the exact name wins, a sibling folder is not the project.
         assert_eq!(
             paths("", &[]),
-            ["Dev/Apps/plan.md", "plan.md", "Dev/App/design/plan draft.md"]
+            [
+                "Dev/Apps/plan.md",
+                "plan.md",
+                "Dev/App/design/plan draft.md"
+            ]
         );
         assert_eq!(paths("", &[]), {
             search_named(&notes, &empty, &aliases, "plan", &[], 30)
@@ -376,14 +385,22 @@ mod tests {
         // In the project its weaker match leads; the rest keeps its order.
         assert_eq!(
             paths("Dev/App", &[]),
-            ["Dev/App/design/plan draft.md", "Dev/Apps/plan.md", "plan.md"]
+            [
+                "Dev/App/design/plan draft.md",
+                "Dev/Apps/plan.md",
+                "plan.md"
+            ]
         );
         assert_eq!(paths("Dev/App/", &[]), paths("Dev/App", &[]));
         // Recency still orders equal matches inside each part.
         let recent = vec!["Dev/Apps/plan.md".to_string(), "plan.md".to_string()];
         assert_eq!(
             paths("Dev/App", &recent),
-            ["Dev/App/design/plan draft.md", "plan.md", "Dev/Apps/plan.md"]
+            [
+                "Dev/App/design/plan draft.md",
+                "plan.md",
+                "Dev/Apps/plan.md"
+            ]
         );
     }
     #[test]

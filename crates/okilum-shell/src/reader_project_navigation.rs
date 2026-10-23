@@ -22,6 +22,8 @@ pub(super) struct State {
     pub status_managers: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Manager>,
     pub statuses: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Status>,
     pub loading: bool,
+    /// `discovery` holds this vault's scan, possibly empty (#1518).
+    pub discovered: bool,
     pub generation: u64,
     pub active: Option<Project>,
     saved: Option<Saved>,
@@ -101,9 +103,11 @@ impl Reader {
                     return;
                 }
                 this.project_navigation.discovery = discovery;
+                this.project_navigation.discovered = true;
                 this.project_navigation.loading = false;
                 this.sync_projects_picker(cx);
                 this.refresh_project_statuses(window, cx);
+                this.refresh_palette_sections(cx);
                 cx.notify();
             });
         })
@@ -126,6 +130,66 @@ impl Reader {
         });
         let generation = self.project_navigation.generation;
         self.discover_projects(generation, window, cx);
+    }
+
+    /// ⌘K lists projects too (#1518). The first open in a vault scans the
+    /// manifests once, without the manager status sweep the switcher runs;
+    /// the switcher and the Projects section rescan as before.
+    pub(super) fn ensure_palette_projects(&mut self, cx: &mut Context<Self>) {
+        if self.single_file || self.project_navigation.discovered || !self.vault_root.is_dir() {
+            return;
+        }
+        let generation = self.project_navigation.generation;
+        let vault = self.vault_root.clone();
+        cx.spawn(async move |this, cx| {
+            let scan = vault.clone();
+            let discovery = cx
+                .background_executor()
+                .spawn(async move { okilum_t3::projects::discover(&scan) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let navigation = &mut this.project_navigation;
+                if this.vault_root != vault
+                    || navigation.generation != generation
+                    || navigation.discovered
+                {
+                    return;
+                }
+                navigation.discovery = discovery;
+                navigation.discovered = true;
+                this.sync_projects_picker(cx);
+                this.refresh_palette_sections(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The palette's Projects section: the shared #1520 picker model's rows
+    /// for `query` (recent projects first, then by domain), each project
+    /// once. «All projects…» opens the full switcher with the same text.
+    pub(super) fn palette_projects(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Vec<okilum_shell::projects_picker::picker::Row> {
+        let navigation = &self.project_navigation;
+        if navigation.discovery.projects.is_empty() {
+            return Vec::new();
+        }
+        let mut model = PickerModel::new(
+            self.vault_root.clone(),
+            navigation.discovery.clone(),
+            self.recent_project_folders(),
+        );
+        model.set_query(query);
+        let mut seen = std::collections::BTreeSet::new();
+        model
+            .groups()
+            .into_iter()
+            .flat_map(|group| group.rows)
+            .filter(|row| seen.insert(row.project.folder.clone()))
+            .take(limit)
+            .collect()
     }
 
     fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
