@@ -183,12 +183,22 @@ pub(crate) fn channel() -> &'static str {
 
 /// Shares Sparkle's persisted channel preference with Settings and the menu.
 pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
+    #[cfg(any(target_os = "macos", windows))]
+    if status::in_flight() {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, cx| {
+                crate::reader_toast::error(
+                    "Finish the current update before changing channels.",
+                    window,
+                    cx,
+                )
+            });
+        }
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         let changed = macos::beta() != enabled;
-        if status::in_flight() {
-            return;
-        }
         macos::set_beta(enabled);
         if changed {
             macos::check();
@@ -201,9 +211,6 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
     }
     #[cfg(windows)]
     {
-        if status::in_flight() {
-            return;
-        }
         let previous = windows::beta();
         windows::set_beta(enabled);
         if windows::beta() != previous {

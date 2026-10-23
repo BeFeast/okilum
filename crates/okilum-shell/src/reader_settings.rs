@@ -1254,15 +1254,26 @@ pub(crate) fn render_update_status(
                         .rounded_full()
                         .overflow_hidden()
                         .bg(p.surface_raised)
-                        .child(
+                        .child(if let Some(percent) = progress.percent {
                             div()
                                 .h_full()
-                                .w(gpui::relative(
-                                    f32::from(progress.percent.unwrap_or(35)) / 100.,
-                                ))
+                                .w(gpui::relative(f32::from(percent) / 100.))
                                 .rounded_full()
-                                .bg(p.accent),
-                        ),
+                                .bg(p.accent)
+                                .into_any_element()
+                        } else {
+                            let fill = div().size_full().rounded_full().bg(p.accent);
+                            if cx.reduce_motion() {
+                                fill.opacity(0.45).into_any_element()
+                            } else {
+                                fill.with_animation(
+                                    SharedString::from(format!("{id}-update-indeterminate")),
+                                    Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                                    |fill, t| fill.opacity(0.25 + 0.5 * (1. - (2. * t - 1.).abs())),
+                                )
+                                .into_any_element()
+                            }
+                        }),
                 )
                 .when(progress.restart, |row| {
                     row.child(

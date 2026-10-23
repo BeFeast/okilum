@@ -29,6 +29,10 @@ pub(super) fn take_announcement() -> Option<String> {
     state().lock().unwrap().take_announcement()
 }
 pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
+    // Serialize restart against background checks until Velopack is armed.
+    if BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let result = (|| -> anyhow::Result<()> {
         let manager = manager()?;
         let pending = manager.get_update_pending_restart();
@@ -55,6 +59,10 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                 return Ok(());
             }
         }
+        anyhow::ensure!(
+            super::status::begin_restart(),
+            "The update is not ready to restart. Check for updates again."
+        );
         use super::ready::{restart_transaction, RestartStep};
         let mut restart_args = Vec::new();
         restart_transaction(|stage| -> anyhow::Result<()> {
@@ -74,7 +82,6 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                     std::mem::take(&mut restart_args),
                 )?,
                 RestartStep::Quit => {
-                    super::status::begin_restart();
                     cx.quit();
                 }
             }
@@ -97,6 +104,7 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
             }
         });
     }
+    BUSY.store(false, Ordering::Release);
 }
 
 const VERIFIED: &str = "windows-update-verified";
