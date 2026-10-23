@@ -471,6 +471,8 @@ pub struct Vault {
     suffix_map: HashMap<String, Vec<String>>,
     /// lowercase full rel path without .md -> rel path
     path_map: HashMap<String, String>,
+    pub(crate) aliases: std::collections::BTreeMap<String, Vec<String>>,
+    alias_map: HashMap<String, Vec<String>>,
     /// lowercase asset filename -> absolute path
     asset_map: HashMap<String, PathBuf>,
     /// target rel path -> backlinks
@@ -722,6 +724,8 @@ impl Vault {
             entries,
             suffix_map,
             path_map,
+            aliases: Default::default(),
+            alias_map: Default::default(),
             asset_map,
             backlink_map: HashMap::new(),
             occupied_paths,
@@ -796,6 +800,7 @@ impl Vault {
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
             self.notes.sort_by(|a, b| a.path.cmp(&b.path));
         }
+        self.rebuild_alias_map();
     }
 
     fn refresh_backlinks_from(
@@ -834,6 +839,8 @@ impl Vault {
             entries: Vec::new(),
             suffix_map: HashMap::new(),
             path_map: HashMap::new(),
+            aliases: Default::default(),
+            alias_map: Default::default(),
             asset_map: HashMap::new(),
             backlink_map: HashMap::new(),
             occupied_paths: HashSet::new(),
@@ -989,11 +996,52 @@ impl Vault {
         if let Some(path) = self.path_map.get(key) {
             return ResolutionRef::Resolved(path);
         }
-        match self.suffix_map.get(key) {
+        match self.alias_map.get(key).or_else(|| self.suffix_map.get(key)) {
             None => ResolutionRef::Unresolved,
             Some(c) if c.len() == 1 => ResolutionRef::Resolved(&c[0]),
             Some(c) => ResolutionRef::Ambiguous(c),
         }
+    }
+
+    /// Authored aliases, keyed by canonical path. No filesystem I/O.
+    pub fn aliases(&self) -> &std::collections::BTreeMap<String, Vec<String>> {
+        &self.aliases
+    }
+
+    fn rebuild_alias_map(&mut self) {
+        self.alias_map.clear();
+        if self.aliases.is_empty() {
+            return;
+        }
+        let identities: HashSet<_> = self.notes.iter().map(|note| &note.path).collect();
+        for (path, names) in &self.aliases {
+            if !identities.contains(path) {
+                continue;
+            }
+            for name in names {
+                let lower = name.to_lowercase();
+                let key = lower.trim_end_matches(".md").trim_matches('/');
+                let candidates = self
+                    .alias_map
+                    .entry(key.into())
+                    .or_insert_with(|| self.suffix_map.get(key).cloned().unwrap_or_default());
+                candidates.push(path.clone());
+            }
+        }
+        for candidates in self.alias_map.values_mut() {
+            candidates.sort();
+            candidates.dedup();
+        }
+    }
+
+    fn update_aliases(&mut self, path: &str, source: Option<&str>) -> bool {
+        let aliases = source.map(crate::properties::aliases).unwrap_or_default();
+        let previous = self.aliases.remove(path).unwrap_or_default();
+        let changed = previous != aliases;
+        if !aliases.is_empty() {
+            self.aliases.insert(path.into(), aliases);
+        }
+        changed
     }
 
     /// Ordinary Markdown is relative-first; existing but unreadable/invalid
@@ -1262,6 +1310,7 @@ impl Vault {
             &self.entries,
             &self.unreadable,
             self.inventory_complete,
+            &self.aliases,
             sorted(&self.occupied_paths),
             sorted(&self.non_directory_paths),
             sorted(&self.symlink_paths),
@@ -1297,7 +1346,24 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
         mut source: impl FnMut(&str) -> Option<String>,
     ) -> Result<()> {
-        self.build_backlinks_selected(None, checkpoint, &mut source)
+        let mut sources = HashMap::new();
+        self.aliases.clear();
+        for (count, path) in self
+            .notes
+            .iter()
+            .map(|n| n.path.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+        {
+            checkpoint("Preparing aliases", count)?;
+            if let Some(text) = source(&path) {
+                self.update_aliases(&path, Some(&text));
+                sources.insert(path, text);
+            }
+        }
+        self.rebuild_alias_map();
+        self.build_backlinks_selected(None, checkpoint, |path| sources.remove(path))
     }
 
     fn build_backlinks_selected(
@@ -1324,9 +1390,29 @@ impl Vault {
                 continue;
             };
             let frontmatter_len = text.len() - crate::render::without_frontmatter(&text).len();
+            // Use YAML-aware ranges for notes carrying alias metadata, so flow
+            // mappings and quoted keys cannot turn declarations into edges.
+            let property_targets = text[..frontmatter_len]
+                .to_ascii_lowercase()
+                .contains("aliases")
+                .then(|| {
+                    crate::link_candidates::syntax::property_targets(&text)
+                        .into_iter()
+                        .map(|target| target.range.start)
+                        .collect::<HashSet<_>>()
+                });
             let mut occurrences = Vec::new();
             for span in prose_spans(&text) {
                 for cap in link_re.captures_iter(&text[span.clone()]) {
+                    let target_at = span.start + cap.get(1).unwrap().start() + cap[1].len()
+                        - cap[1].trim_start().len();
+                    if target_at < frontmatter_len
+                        && property_targets
+                            .as_ref()
+                            .is_some_and(|targets| !targets.contains(&target_at))
+                    {
+                        continue;
+                    }
                     occurrences.push((
                         span.start + cap.get(0).unwrap().start(),
                         cap[1].trim().to_owned(),
@@ -1346,6 +1432,14 @@ impl Vault {
             }
             occurrences.sort_by_key(|(at, _, _)| *at);
             for (at, target, wiki) in occurrences {
+                // Alias declarations are metadata, not outgoing relationships.
+                if at < frontmatter_len
+                    && property_key(&text[..at])
+                        .as_deref()
+                        .is_some_and(crate::properties::alias_key)
+                {
+                    continue;
+                }
                 let line = line_around(&text, at);
                 // An ambiguous link is recorded against EVERY candidate,
                 // marked. The alternatives are both dishonest: giving it to
@@ -1946,3 +2040,7 @@ mod preimage_visibility_tests {
         assert!(!palette.iter().any(|n| n.path.ends_with(&filename)));
     }
 }
+
+#[cfg(test)]
+#[path = "vault/alias_tests.rs"]
+mod alias_tests;

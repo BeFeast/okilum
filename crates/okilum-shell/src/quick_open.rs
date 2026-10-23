@@ -547,17 +547,23 @@ impl Reader {
                         &fallback
                     }
                 };
-                let rows =
-                    okilum_core::quick_open::search_titled(files, &titles, &query, &recent, 100)
-                        .into_iter()
-                        .map(|note| SearchHit {
-                            path: note.path,
-                            title: note.title,
-                            score: 0.,
-                            snippet_html: String::new(),
-                            display_snippet: None,
-                        })
-                        .collect();
+                let rows = okilum_core::quick_open::search_named(
+                    files,
+                    &titles,
+                    vault.aliases(),
+                    &query,
+                    &recent,
+                    100,
+                )
+                .into_iter()
+                .map(|note| SearchHit {
+                    path: note.path,
+                    title: note.title,
+                    score: 0.,
+                    snippet_html: String::new(),
+                    display_snippet: None,
+                })
+                .collect();
                 Ok((rows, String::new()))
             };
             result.map(|(mut rows, message)| {
@@ -905,6 +911,150 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn aliases_open_the_canonical_note_from_quick_open_and_body_links(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let source = "---\ntype: Quarter\naliases: ['[[Winter alias]]']\nrelated: '[[start]]'\n---\n# Quarterly plans\n";
+        std::fs::write(root.join("24q4.md"), source).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n\nSee [[Winter alias]].\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let url = reader.read_with(visual, |v, _| {
+            let link = v
+                .link_identities
+                .iter()
+                .find(|l| l.target == "Winter alias")
+                .expect("body alias positive control");
+            assert_eq!(
+                v.prepared_links[&link.url].status,
+                okilum_core::document_links::prepared::LinkStatus::Resolved
+            );
+            link.url.clone()
+        });
+        visual.update(|window, cx| {
+            reader_link_navigation::handle_link(&reader.downgrade(), &url, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "24q4.md");
+            let props = v.properties.as_ref().unwrap();
+            assert_eq!(
+                reader_properties::summary(props),
+                "Quarter · 1 relation",
+                "alias declaration does not inflate relations"
+            );
+            let alias = props.iter().find(|p| p.key == "aliases").unwrap();
+            assert_eq!(
+                alias.value,
+                okilum_core::properties::PropertyValue::List(vec![
+                    okilum_core::properties::PropertyValue::Text("Winter alias".into())
+                ])
+            );
+        });
+        reader.update_in(visual, |v, window, cx| {
+            v.open_note_at("start.md", None, None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            v.open_quick_open(false, window, cx);
+            v.quick_open
+                .input
+                .update(cx, |i, cx| i.set_value("Winter alias", window, cx));
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(
+                v.quick_open
+                    .rows
+                    .iter()
+                    .map(|h| h.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["24q4.md"]
+            );
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| assert_eq!(v.current_rel, "24q4.md"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("24q4.md")).unwrap(),
+            source,
+            "read-only aliases never rewrite canonical source"
+        );
+        // An alias-only edit must invalidate an unchanged source's prepared
+        // link and the palette while the Reader stays open.
+        reader.update_in(visual, |v, window, cx| {
+            v.open_note_at("start.md", None, None, window, cx)
+        });
+        visual.run_until_parked();
+        std::fs::write(
+            root.join("24q4.md"),
+            source.replace("Winter alias", "Summer alias"),
+        )
+        .unwrap();
+        reader.update_in(visual, |v, window, cx| {
+            v.apply_vault_changes(
+                okilum_core::Changes {
+                    changed: BTreeSet::from(["24q4.md".into()]),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "start.md");
+            let link = v
+                .link_identities
+                .iter()
+                .find(|l| l.target == "Winter alias")
+                .unwrap();
+            assert_eq!(
+                v.prepared_links[&link.url].status,
+                okilum_core::document_links::prepared::LinkStatus::MissingDocument
+            );
+        });
+        for (query, count) in [("Winter alias", 0), ("Summer alias", 1)] {
+            reader.update_in(visual, |v, window, cx| {
+                v.open_quick_open(false, window, cx);
+                v.quick_open
+                    .input
+                    .update(cx, |i, cx| i.set_value(query, window, cx));
+                v.refresh_quick_open(cx);
+            });
+            visual.run_until_parked();
+            reader.read_with(visual, |v, _| {
+                assert_eq!(v.quick_open.rows.len(), count, "{query}")
+            });
+        }
+    }
 
     #[gpui::test]
     fn content_palette_keeps_hebrew_and_human_property_and_target_context(cx: &mut TestAppContext) {

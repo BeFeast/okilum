@@ -27,9 +27,8 @@ pub fn targets_in_vault(source: &str, vault: &crate::Vault, from: &str) -> Vec<T
     out
 }
 
-pub fn targets(source: &str) -> Vec<Target> {
-    let body = render::without_frontmatter(source);
-    let offset = source.len() - body.len();
+/// Frontmatter link destinations, excluding reserved alias declarations.
+pub(crate) fn property_targets(source: &str) -> Vec<Target> {
     let mut out = Vec::new();
     // YAML is never reserialized. A sentinel parse proves each lexical match is
     // inside a scalar value, not a comment, mapping key or YAML collection syntax.
@@ -59,6 +58,13 @@ pub fn targets(source: &str) -> Vec<Target> {
             }
         }
     }
+    out
+}
+
+pub fn targets(source: &str) -> Vec<Target> {
+    let body = render::without_frontmatter(source);
+    let offset = source.len() - body.len();
+    let mut out = property_targets(source);
     let arena = Arena::new();
     // Comrak treats Obsidian ![[embeds]] as plain text. Mask only the bang
     // with a non-whitespace ASCII byte: offsets and indentation stay identical,
@@ -212,7 +218,9 @@ fn scalar_contains(value: &serde_yaml::Value, needle: &str) -> bool {
             .find(needle)
             .is_some_and(|at| s[..at].trim_end().ends_with("[[")),
         serde_yaml::Value::Sequence(v) => v.iter().any(|v| scalar_contains(v, needle)),
-        serde_yaml::Value::Mapping(v) => v.values().any(|v| scalar_contains(v, needle)),
+        serde_yaml::Value::Mapping(v) => v.iter().any(|(k, v)| {
+            !k.as_str().is_some_and(crate::properties::alias_key) && scalar_contains(v, needle)
+        }),
         serde_yaml::Value::Tagged(t) => scalar_contains(&t.value, needle),
         _ => false,
     }

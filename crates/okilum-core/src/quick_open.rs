@@ -55,6 +55,26 @@ pub fn search_titled(
     recent: &[String],
     limit: usize,
 ) -> Vec<Note> {
+    search_named(
+        notes,
+        titles,
+        &std::collections::BTreeMap::new(),
+        query,
+        recent,
+        limit,
+    )
+}
+
+/// Match declared aliases at the same rank as file names and display titles.
+/// Each canonical path remains one result, including ambiguous aliases.
+pub fn search_named(
+    notes: &[Note],
+    titles: &HashMap<String, String>,
+    aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    query: &str,
+    recent: &[String],
+    limit: usize,
+) -> Vec<Note> {
     let query = query.trim().to_lowercase();
     let mut matches: Vec<_> = notes
         .iter()
@@ -66,6 +86,13 @@ pub fn search_titled(
                 score(&note.title.to_lowercase(), &query, true)
                     .into_iter()
                     .chain(display.and_then(|title| score(&title, &query, true)))
+                    .chain(
+                        aliases
+                            .get(&note.path)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|name| score(&name.to_lowercase(), &query, true)),
+                    )
                     .map(|s| s + 1000)
                     .chain(score(&note.path.to_lowercase(), &query, false))
                     .max()?
