@@ -97,6 +97,7 @@ mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
+mod reader_title_nav;
 #[cfg(windows)]
 mod url_protocol;
 mod vault_name;
@@ -350,6 +351,7 @@ const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
     reader_text_zoom::bind_keys(cx);
+    reader_title_nav::bind_menu_keys(cx);
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
@@ -1371,6 +1373,8 @@ struct Reader {
     project: Option<Entity<project::ProjectView>>,
     project_open: bool,
     project_navigation: reader_project_navigation::State,
+    /// Title-bar switcher and Recent/Pinned menus (#1508).
+    title_nav: reader_title_nav::State,
     project_request: u64,
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
@@ -1816,6 +1820,7 @@ impl Reader {
             project: None,
             project_open: false,
             project_navigation: Default::default(),
+            title_nav: Default::default(),
             project_request: 0,
             project_views: Default::default(),
             file_menu: None,
@@ -2428,6 +2433,10 @@ impl Reader {
     /// Escape clears or dismisses local transient UI; it never toggles panels (#483).
     /// A non-empty focused search field is cleared and keeps focus; an empty one closes.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.title_nav.menu.is_some() {
+            self.close_nav_menu(window, cx);
+            return;
+        }
         if self.recent_switcher.open() {
             self.recent_switcher.cancel();
             cx.notify();
@@ -3351,11 +3360,14 @@ impl Reader {
                             reader_shortcuts::hint("Notes", &ToggleNotes, cx),
                             cx,
                         )
+                        .debug_selector(|| "reader-notes".into())
                         .selected(notes_open)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_panel(reader_layout::Panel::Notes, window, cx)
                         })),
                     ))
+                    // Variant A (#1508): switcher, Recent ▾, Pinned ▾, then search.
+                    .child(self.render_title_nav(available, cx))
                     .child(
                         div()
                             .id("sidebar-search")
@@ -3382,16 +3394,6 @@ impl Reader {
                     ),
             )
             .child(div().flex_1().min_w_0())
-            .when_some(self.project_navigation.active.as_ref(), |row, project| {
-                row.child(
-                    Button::new("leave-vault-project")
-                        .ghost()
-                        .label(format!("{} · Leave project", project.name))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.leave_vault_project(window, cx)),
-                        ),
-                )
-            })
             .child(
                 header_controls()
                     .flex_shrink(1.)
@@ -6900,6 +6902,7 @@ impl Render for Reader {
                     .as_ref()
                     .map(|(menu, position)| anchored().position(*position).child(menu.clone())),
             )
+            .children(self.render_title_nav_overlay(cx))
     }
 }
 

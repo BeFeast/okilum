@@ -28,7 +28,8 @@ localisation.
 Oleg's toolbar organization decision of **2026-10-08 (#767)** supersedes the
 original combined titlebar and document controls:
 
-- **App titlebar (46 px).** Sidebar toggle and one vault Search at the left;
+- **App titlebar (46 px).** Sidebar toggle, the project switcher, Recent ▾,
+  Pinned ▾ and one vault Search at the left (#1508, see «Title-bar navigation»);
   loading feedback, app More and right-panel toggle at the right. Native window
   controls and dragging remain unchanged. Appearance and Settings are in app
   More rather than separate toolbar buttons.
@@ -331,6 +332,29 @@ F2/Enter starts inline rename for notes and folders (#578); Right/Left expands/
 collapses, and Left on a child selects its parent. A folder-label click selects;
 double-click, its disclosure glyph, or ⌘↓ (Ctrl↓ on Linux) toggles it.
 
+
+### Title-bar navigation (#1508: #1517, #1519)
+
+Variant A, decided 2026-10-22. Left of the title bar, after the sidebar
+toggle:
+
+- **«<project> ▾» switcher (#1519).** Outside a project it reads «<vault> ▾».
+  It opens the shared Projects picker (#1520) as a popover left-aligned under
+  it: search, kind filter, recent projects first, then vault domains. Choosing
+  a project enters it through the same revalidating pipeline as the Projects
+  section. Inside a project the popover ends with **Leave project**; the old
+  «<name> · Leave project» text button is gone. Esc, a second press on the
+  switcher or an outside press closes it.
+- **Recent ▾ and Pinned ▾ (#1517).** Popover lists: title, the parent folder's
+  name under it, and the age for Recent. Recent shows six and «Show all»; its
+  footer names the Ctrl+Tab cycle, which is unchanged. Hidden notes follow
+  Show hidden files (#635). ↑ ↓ ↵ work inside; Esc closes. Below 960 px the
+  two buttons shrink to their clock and pin glyphs.
+- **Inside a project** both lists show the project's notes, with a
+  This project / All vault segmented switch at the top. The choice is
+  remembered per project with the sidebar state (`nav_all_vault`); the
+  stores themselves stay vault-wide (Recent keeps 40), and the project is a
+  folder-prefix filter.
 
 ### Tree only (#1508, design session 2026-10-22)
 

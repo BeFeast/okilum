@@ -204,3 +204,40 @@ fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestA
         assert!(p.items.iter().any(|i| matches!(i,Item::Project(row) if row.project.name=="Project00" && row.manager==ManagerIndicator::Running)));
     });
 }
+
+#[gpui::test]
+fn leave_project_closes_the_popover_only_while_a_project_is_active(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+    });
+    let left = Rc::new(RefCell::new(0));
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| ProjectsPicker::new(catalog(), Presentation::Popover, window, cx));
+        let left = left.clone();
+        cx.subscribe(&picker, move |_, _, _: &LeaveProject, _| {
+            *left.borrow_mut() += 1
+        })
+        .detach();
+        entity = Some(picker.clone());
+        let host = cx.new(|_| Host(picker));
+        Root::new(host, window, cx)
+    });
+    let picker = entity.unwrap();
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(visual.debug_bounds("projects-picker").is_some());
+    assert!(visual.debug_bounds("projects-picker-leave").is_none());
+    picker.update_in(visual, |p, _, cx| {
+        p.set_active(Some(PathBuf::from("vault/Dev/Areas/Editor")), cx)
+    });
+    visual.run_until_parked();
+    let leave = visual
+        .debug_bounds("projects-picker-leave")
+        .expect("Leave project at the foot of the switcher");
+    let results = visual.debug_bounds("projects-picker-results").unwrap();
+    assert!(leave.top() >= results.bottom(), "below the list");
+    visual.simulate_click(leave.center(), gpui::Modifiers::none());
+    assert_eq!(*left.borrow(), 1);
+}

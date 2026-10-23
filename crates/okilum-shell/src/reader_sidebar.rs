@@ -9,11 +9,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// How many recent notes a list shows before «N more»; for the title-bar
-/// Recent menu (#1517) now that the sidebar no longer lists them (#1508).
-#[allow(dead_code)]
-pub const RECENT_SHOWN: usize = 5;
-pub const RECENT_KEPT: usize = 10;
+/// How many notes the title-bar Recent menu lists before «Show all» (#1517).
+pub const RECENT_SHOWN: usize = 6;
+/// Kept vault-wide. Inside a project the Recent menu filters this list to the
+/// project's folder (#1517), so it keeps more than one menu shows.
+pub const RECENT_KEPT: usize = 40;
 
 /// A section header's count badge (#687). An empty section shows no badge:
 /// its placeholder row already says so, and the UI never shows a zero count.
@@ -92,6 +92,10 @@ pub struct State {
     /// Projects entered successfully, most recent first, vault-relative (#1520).
     #[serde(default)]
     pub recent_projects: Vec<String>,
+    /// Project folders whose Recent/Pinned menus show the whole vault. A
+    /// project not listed here shows its own notes, the default (#1517).
+    #[serde(default)]
+    pub nav_all_vault: BTreeSet<String>,
 }
 
 fn write_collapsed<S: serde::Serializer>(
@@ -291,7 +295,6 @@ pub fn now() -> u64 {
 
 /// Compact relative age: "now", "12m", "3h", "yesterday", "4d", "3w".
 /// Used by the title-bar Recent menu (#1517).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn age_label(then: u64, now: u64) -> String {
     let secs = now.saturating_sub(then);
     match secs {
@@ -454,7 +457,7 @@ mod tests {
         let path = State::path(&directory, Path::new("/vault/a"));
         assert_ne!(path, State::path(&directory, Path::new("/vault/b")));
         let mut state = State::default();
-        for i in 0..12 {
+        for i in 0..RECENT_KEPT as u64 + 2 {
             state.record_open(&format!("n{i}.md"), i);
         }
         state.record_open("n3.md", 99);
