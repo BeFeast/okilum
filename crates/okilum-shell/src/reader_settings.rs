@@ -808,7 +808,7 @@ impl Settings {
                         ),
                         cx,
                     ))
-                    .child(reader_reading_controls::render(cx))
+                    .child(reader_reading_controls::render(window, cx))
                     .child(setting_row(
                         "Show labels on toolbar buttons",
                         "Show names beside icons when there is room.",
@@ -1471,8 +1471,7 @@ mod tests {
         let original = visual.update(|_, cx| reader_ui_state::font_size(cx));
         for (selector, font, width) in [
             ("reading-larger", original + 1., READER_MAX_WIDTH),
-            ("reading-wide", original + 1., 960.),
-            ("reading-smaller", original, 960.),
+            ("reading-smaller", original, READER_MAX_WIDTH),
         ] {
             let bounds = visual
                 .debug_bounds(selector)

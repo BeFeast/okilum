@@ -251,7 +251,7 @@ impl Reader {
             let widths = self.panels.widths(&self.panel_widths, available);
             available - widths.notes - widths.backlinks
         };
-        let offset = ((pane - reader_ui_state::reading_width(cx)) / 2.).max(0.);
+        let offset = ((pane - reader_ui_state::note_column_width(cx)) / 2.).max(0.);
         // The editor keeps 10 px between its wrap width and its right padding.
         (
             px(offset) + note_gutter(window),
@@ -330,8 +330,40 @@ actions!(
         PdfZoomOut,
         PdfZoomFit,
         ToggleShortcutSheet,
+        ToggleNoteWidth,
     ]
 );
+
+/// ⌥⌘W / Ctrl+Alt+W: normal (reading width) or full note width. Free in
+/// every Reader context; W for width.
+const NOTE_WIDTH_KEY: &str = "secondary-alt-w";
+
+/// One app-wide, remembered toggle; every window follows it.
+pub(crate) fn toggle_note_width(cx: &mut App) {
+    reader_ui_state::set_full_note_width(!reader_ui_state::full_note_width(cx), cx);
+    #[cfg(all(unix, feature = "brain"))]
+    brain::app_quit::set_menus(cx);
+    #[cfg(not(all(unix, feature = "brain")))]
+    reader_app_menu::set_menus(cx);
+}
+
+/// Toolbar and menu label: what the toggle switches to.
+pub(crate) fn note_width_label(cx: &App) -> &'static str {
+    if reader_ui_state::full_note_width(cx) {
+        "Normal note width"
+    } else {
+        "Full note width"
+    }
+}
+
+pub(crate) fn view_menu(cx: &App) -> Menu {
+    Menu {
+        name: "View".into(),
+        disabled: false,
+        items: vec![MenuItem::action("Full Note Width", ToggleNoteWidth)
+            .checked(reader_ui_state::full_note_width(cx))],
+    }
+}
 
 /// Tree shortcuts (#410) work while the folder tree has focus. Arrow keys
 /// keep their modifiers on macOS, so these strings are what a Mac reports;
@@ -361,6 +393,12 @@ fn bind_keys(cx: &mut App) {
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
     reader_delimited::bind_keys(cx);
+    // App-level, so the key, the View menu and the toolbar all reach it.
+    cx.on_action(|_: &ToggleNoteWidth, cx| toggle_note_width(cx));
+    cx.bind_keys([
+        KeyBinding::new(NOTE_WIDTH_KEY, ToggleNoteWidth, Some(READER_CONTEXT)),
+        KeyBinding::new(NOTE_WIDTH_KEY, ToggleNoteWidth, Some("Reader > Input")),
+    ]);
     cx.bind_keys([
         KeyBinding::new("secondary-alt-p", ToggleProject, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
@@ -5154,7 +5192,7 @@ impl Reader {
                     )
                     .h_full()
                     .w_full()
-                    .max_w(px(reader_ui_state::reading_width(cx)))
+                    .max_w(px(reader_ui_state::note_column_width(cx)))
                     .when_some(self.render_properties_strip(cx), |column, strip| {
                         column.child(strip)
                     })
