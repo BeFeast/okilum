@@ -397,3 +397,33 @@ fn interrupted_primary_upload_reopens_video_for_the_one_fallback() {
         .any(|part| part == video_bytes));
     assert_eq!(std::fs::read(video_path).unwrap(), video_bytes);
 }
+
+#[test]
+fn truncated_http_rejection_keeps_its_status_and_never_retries() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let primary = format!("http://{}/feedback", listener.local_addr().unwrap());
+    let rejected = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut first = [0; 8192];
+        assert!(socket.read(&mut first).unwrap() > 0);
+        socket
+            .write_all(
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort",
+            )
+            .unwrap();
+        // Shutdown the write half after the declared, incomplete response.
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    let alternate = TcpListener::bind("127.0.0.1:0").unwrap();
+    alternate.set_nonblocking(true).unwrap();
+    let fallback = format!("http://{}/feedback", alternate.local_addr().unwrap());
+    let error = send_using(&primary, &fallback, &report()).unwrap_err();
+    rejected.join().unwrap();
+    assert!(error.to_string().contains("HTTP 403"), "{error:#}");
+    assert!(
+        matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}

@@ -295,11 +295,19 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     let status = response.status();
     let bytes = bounded(response, 16 * 1024).map_err(|error| {
         // Never turn an HTTP rejection into a retry, even if its body stalls.
-        failure(if status == reqwest::StatusCode::CREATED {
-            okilum_http::transport_failure(error)
+        if status == reqwest::StatusCode::CREATED {
+            failure(okilum_http::transport_failure(error))
         } else {
-            error
-        })
+            let error = error.context(format!(
+                "Feedback returned HTTP {} with an unreadable body",
+                status.as_u16()
+            ));
+            crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
+            error.context(format!(
+                "{}. Your feedback is kept.",
+                okilum_http::http_reason(status.as_u16())
+            ))
+        }
     })?;
     if status != reqwest::StatusCode::CREATED {
         let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
