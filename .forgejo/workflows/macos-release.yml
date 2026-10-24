@@ -52,6 +52,7 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
           MACOS_BETA_TICK: ${{ inputs.beta_tick }}
+          MACOS_PR_PREVIEWS_ENABLED: ${{ vars.OKILUM_MACOS_PR_PREVIEWS }}
           MACOS_PREVIEW_PR: ${{ inputs.preview_pr }}
           MACOS_PREVIEW_HEAD: ${{ inputs.preview_head }}
           RELEASE_SCHEDULE: ${{ github.event.schedule }}
