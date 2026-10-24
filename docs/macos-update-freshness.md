@@ -16,7 +16,7 @@ The production `TSUserDriver` in `crates/okilum-shell/src/updater/bridge.m` now:
    separate guarded FFI entry point consumes the install continuation. Ordinary
    Quit uses this same post-verification Rust protection/persistence boundary;
    only after it succeeds can AppKit accept termination without relaunching.
-3. Defers ordinary AppKit termination during download/extraction/verification,
+3. Cancels ordinary AppKit termination during download/extraction/verification,
    and rechecks a prepared update on ordinary Quit. This matters even with silent
    automatic installation disabled: Sparkle installs prepared interactive updates
    when the app exits. Other application delegate callbacks and existing
@@ -58,7 +58,7 @@ installation identity is necessary because probing the installation updater can
 resume retained N instead of fetching the feed.
 
 All Sparkle calls, reply blocks, continuation ownership and AppKit termination
-replies run on the main thread. Cancellation precedes a new cycle; callbacks from
+requests run on the main thread. Cancellation precedes a new cycle; callbacks from
 a dismissed driver are rejected by a generation token. Freshness is bounded to
 the last successful appcast fetch, not a guarantee about publication after it.
 
@@ -122,6 +122,33 @@ N→N+2 installation/relaunch, unchanged-feed, foreground/background eligibility
 and post-verification editor-guard cases remain mandatory. Static source evidence
 establishes the conflict; hosted CI on the fix head is still required to establish
 successful installation and detect any subsequent lifecycle failure.
+
+### Ordinary Quit modal-loop stall
+
+Hosted run `40084047136` on `1ed6e809` passed `newest`, `background-newest`,
+`background-phase-unchanged` and `restart-newest`, then timed out in `quit-newest`.
+The Quit trace reached `verified-ready 2`, published N+2, and reported verification
+starting, but made no subsequent appcast request and never reached the editor
+guard. Evidence is retained under `~/work/qa-evidence/1634/quit-newest/`.
+The installed-bundle snapshot was taken after the fixture terminated the timed-out
+process; its version 2 is not evidence that installation preceded the timeout.
+
+The fixture requests ordinary Quit from the real Sparkle callback on the main
+queue. Our delegate returned `NSTerminateLater` while requesting asynchronous
+freshness. Apple's [termination contract](https://developer.apple.com/documentation/appkit/nsapplication/terminatereply/terminatelater)
+states that this runs a nested `NSModalPanelRunLoopMode` loop until the app replies.
+It cannot drain pending blocks from the main queue whose callback is still inside
+`terminate:`. Verification and the default-mode editor-guard timer therefore
+cannot complete; this is independent of the replacement scheduling fix above.
+
+Return `NSTerminateCancel` for the first Quit instead, so the initiating callback
+can unwind. After fresh verification and the Rust editor guard succeed, reissue
+ordinary Quit with a one-use approval. The original application delegate still
+makes the final decision, including refusal or its own deferred reply. Guard
+refusal and supersession keep the app open without arming that approval. This
+does not use Sparkle's Restart/relaunch continuation. Hosted Quit cases assert
+that the first Quit returns, the guard precedes the original delegate's decision,
+and the real N+2 installation occurs without a relaunch receipt.
 
 ## Hosted regression
 

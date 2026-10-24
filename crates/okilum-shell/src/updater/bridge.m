@@ -345,12 +345,14 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     [super dismissUpdateInstallation];
 }
 @end
-// Sparkle also installs prepared interactive updates on ordinary Quit. Use
-// AppKit's public asynchronous termination contract so this path cannot exit
-// during verification or install an old prepared update after a long UI wait.
+// Sparkle also installs prepared interactive updates on ordinary Quit.
+// Cancel the first Quit while verification runs, then reissue it after the
+// editor guard. NSTerminateLater enters AppKit's modal run loop, which cannot
+// complete verification queued on the main dispatch queue that requested Quit.
 // Forward every other delegate callback unchanged; no GPUI/source patch.
 @interface TSTerminationDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) id<NSApplicationDelegate> original;
+@property(nonatomic) BOOL verifiedQuit;
 @end
 @implementation TSTerminationDelegate
 - (BOOL)respondsToSelector:(SEL)selector {
@@ -365,17 +367,20 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     if ([self.original respondsToSelector:_cmd]) [self.original applicationWillTerminate:notification];
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
-    if (!TSDriver.restartReply && !TSDriver.preparing) {
+    if (self.verifiedQuit || (!TSDriver.restartReply && !TSDriver.preparing)) {
+        // Consume approval once, even if the original delegate refuses Quit.
+        // Its own NSTerminateLater/reply contract remains its responsibility.
+        self.verifiedQuit = NO;
         return [self.original respondsToSelector:_cmd] ? [self.original applicationShouldTerminate:app] : NSTerminateNow;
     }
     [TSDriver verifyQuit:^(BOOL current) {
-        if (!current) { [app replyToApplicationShouldTerminate:NO]; return; }
-        NSApplicationTerminateReply decision = [self.original respondsToSelector:@selector(applicationShouldTerminate:)]
-            ? [self.original applicationShouldTerminate:app] : NSTerminateNow;
-        // An existing async delegate retains its own responsibility to reply.
-        if (decision != NSTerminateLater) [app replyToApplicationShouldTerminate:decision == NSTerminateNow];
+        if (!current) return;
+        // The final Rust editor guard queues this callback outside its GPUI
+        // borrow. Reissue ordinary Quit; never request Sparkle's relaunch path.
+        self.verifiedQuit = YES;
+        [app terminate:nil];
     }];
-    return NSTerminateLater;
+    return NSTerminateCancel;
 }
 @end
 static TSTerminationDelegate *TSTermination;

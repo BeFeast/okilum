@@ -126,7 +126,10 @@ static void FinishComparison(void) {
     }
     if (TSCompare) return;
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSQuit"] boolValue]) {
-        [NSApp terminate:nil]; return;
+        Trace(@"ordinary quit requested");
+        [NSApp terminate:nil];
+        Trace(@"ordinary quit returned to main queue");
+        return;
     }
     reply(SPUUserUpdateChoiceInstall); // automated click on Restart
 }
