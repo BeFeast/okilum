@@ -3,9 +3,10 @@
     if (window.__okilumKeysV2?.document === document) return;
     const ids = new WeakMap();
     let nextId = 1;
+    const documentId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const state = {
         document, live: true,
-        doc: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+        doc: documentId(),
         origin: location.origin, focus: 0, edit: 0, selection: 0, activity: 0,
         seq: 0, events: [],
     };
@@ -56,6 +57,15 @@
     ['focusin', 'pointerdown', 'selectionchange', 'input', 'beforeinput', 'paste', 'copy', 'cut', 'keydown']
         .forEach(name => document.addEventListener(name, record, true));
     window.addEventListener('pagehide', () => { state.live = false; report('invalid'); }, true);
+    window.addEventListener('pageshow', () => {
+        if (state.live) return;
+        state.doc = documentId();
+        state.live = true;
+        state.events = [];
+        state.focus++;
+        state.activity++;
+        report('context');
+    }, true);
     const observe = (before, action) => {
         if (!sameDocumentTarget(before)) return {cancel: true, reason: 'document-or-focus-changed'};
         const expected = {'paste:': 'paste', 'copy:': 'copy', 'cut:': 'cut'}[action];

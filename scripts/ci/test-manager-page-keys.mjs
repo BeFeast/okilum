@@ -29,7 +29,7 @@ function page(doc = 'document-1', engine = false) {
         }};
     const window = {addEventListener(name, fn) { listeners.set(name, fn); }, getSelection() { return 'page-selection'; }};
     const location = {origin: 'https://t3.example'};
-    vm.runInNewContext(source, {window, document, location, crypto: {randomUUID: () => doc},
+    vm.runInNewContext(source, {window, document, location, crypto: {randomUUID: (() => { let generation = 0; return () => `${doc}-${++generation}`; })()},
         getComputedStyle: a => ({webkitTextSecurity: a.secureCss || 'none'})});
     return {state: window.__okilumKeysV2, field, document, location, calls,
         emit(type, extra = {}) { listeners.get(type)?.({type, isTrusted: true, ...extra}); }};
@@ -163,3 +163,19 @@ for (const foreign of ['selection', 'input']) {
     assert.equal(press({target: new Element()}), false, 'non-buttons retain native defaults');
 }
 console.log('PASS: shipped button focus guard preserves composer and respects other targets');
+
+{
+    const p = page();
+    const before = p.state.context();
+    assert.equal(p.state.run('copy:', null, before).ok, true);
+    p.emit('pagehide');
+    assert.equal(p.state.run('copy:', null, before).ok, false);
+    p.emit('pageshow', {persisted: true});
+    const restored = p.state.context();
+    assert.notEqual(restored.doc, before.doc);
+    assert.equal(p.state.run('copy:', null, before).ok, false, 'queued pre-navigation commands stay invalid');
+    assert.equal(p.state.run('copy:', null, restored).ok, true, 'restored page accepts fresh commands');
+    p.emit('pageshow', {persisted: false});
+    assert.equal(p.state.context().doc, restored.doc, 'ordinary pageshow does not invalidate a live page');
+}
+console.log('PASS: cached restoration renews context and rejects pre-navigation commands');
