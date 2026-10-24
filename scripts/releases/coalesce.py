@@ -126,6 +126,8 @@ def select_macos_preview(event, source, env, now):
     queued stale heads exit before reserving the M4, without cancelling notary work.
     """
     skip = lambda reason: (False, source, False, reason)
+    if env.get('MACOS_PR_PREVIEWS_ENABLED') != 'true':
+        return skip('Mac PR previews disabled; beta builds use main')
     if now >= MACOS_BETA_UNTIL:
         return skip('Mac PR preview window expired; request a build explicitly')
     number = env.get('MACOS_PREVIEW_PR', '')

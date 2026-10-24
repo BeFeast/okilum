@@ -38,7 +38,9 @@ def wait_for(predicate, process, log, seconds=90):
         if process.poll() not in (None, 0):
             raise AssertionError(f'Host exited {process.returncode}: {log.read_text()}')
         time.sleep(.1)
-    raise AssertionError(f'Timeout: {log.read_text()}')
+    trace = log.with_suffix('.trace')
+    callbacks = trace.read_text() if trace.exists() else '(no callback trace)'
+    raise AssertionError(f'Timeout: {log.read_text()}\nCallbacks:\n{callbacks}')
 
 
 def main():
@@ -217,6 +219,10 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         if scenario.startswith('quit-'):
                             wait_for(lambda: installed_version() == expected, process, output)
                             assert not receipt.exists(), 'Ordinary Quit must not request relaunch'
+                            assert trace.read_text().count('termination requested') == 1, trace.read_text()
+                            assert trace.read_text().index('protect current editor after verification') < trace.read_text().index('termination requested'), trace.read_text()
+                            if scenario != 'quit-during-download':
+                                assert 'ordinary quit returned to main queue' in trace.read_text(), trace.read_text()
                         else:
                             wait_for(receipt.exists, process, output)
                             assert receipt.read_text() == expected, trace.read_text()
@@ -229,6 +235,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                             assert f'verified-ready {expected}' in trace.read_text()
                         assert trace.read_text().count('original delegate restored for shutdown') == 1, trace.read_text()
                         if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged'):
+                            assert 'replacement session started before scheduling' in trace.read_text(), trace.read_text()
                             assert trace.read_text().index('dismiss 2') < trace.read_text().index(f'offer {expected}'), trace.read_text()
                             assert any(f'GET /{expected}.zip' in r for r in requests), requests
                         if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged', 'restart-newest', 'quit-newest'):
