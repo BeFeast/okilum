@@ -105,6 +105,9 @@ pub(crate) fn attach(owner: Option<AnyWindowHandle>, tool: &Window, cx: &mut App
         eprintln!("Could not attach tool window to its owner: {error:#}");
     }
     #[cfg(windows)]
+    // GPUI 0.3.3 WindowsWindow::activate first applies the initial placement
+    // saved for show:false, then activates it. The native test exercises the
+    // underlying hidden-window placement contract; focus alone is not enough.
     tool.activate_window();
 }
 
@@ -229,6 +232,18 @@ mod native {
             let owner = native_window();
             let tool = native_window();
             unsafe {
+                assert_eq!(
+                    IsWindowVisible(tool.0),
+                    0,
+                    "starts hidden, like GPUI show:false"
+                );
+                // GPUI retrieve_window_placement caches GetWindowPlacement for
+                // show:false; activate later applies it with SetWindowPlacement.
+                let mut initial = WINDOWPLACEMENT {
+                    length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                    ..Default::default()
+                };
+                assert_ne!(GetWindowPlacement(tool.0, &mut initial), 0);
                 attach_hwnd(owner.0, tool.0).unwrap();
                 assert_eq!(GetWindow(tool.0, GW_OWNER), owner.0);
                 assert_ne!(IsWindowEnabled(owner.0), 0, "non-modal positive control");
@@ -236,8 +251,12 @@ mod native {
                 assert_eq!(style & WS_EX_APPWINDOW, 0);
                 assert_ne!(style & WS_EX_TOOLWINDOW, 0);
                 ShowWindow(owner.0, SW_SHOW);
-                ShowWindow(tool.0, SW_SHOWNOACTIVATE);
-                assert_ne!(IsWindowVisible(tool.0), 0, "visibility positive control");
+                assert_ne!(SetWindowPlacement(tool.0, &initial), 0);
+                assert_ne!(
+                    IsWindowVisible(tool.0),
+                    0,
+                    "deferred placement must show the tool"
+                );
                 ShowWindow(owner.0, SW_MINIMIZE);
                 assert_eq!(IsWindowVisible(tool.0), 0);
                 ShowWindow(owner.0, SW_RESTORE);
