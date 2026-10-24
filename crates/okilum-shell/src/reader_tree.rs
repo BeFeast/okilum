@@ -62,6 +62,9 @@ pub struct Tree {
     expanded: BTreeSet<String>,
     pub rows: Rc<Vec<Row>>,
     pub cursor: Option<String>,
+    /// The folder row the last single click landed on, and whether it was
+    /// expanded before that click: a double click toggles from there (#1512).
+    pub folder_press: Option<(String, bool)>,
     /// Show `_`/`.` items (per-vault preference, #395).
     show_hidden: bool,
     /// A hidden path revealed for navigation; its branch is shown until the

@@ -3314,6 +3314,30 @@ impl Reader {
         cx.notify();
     }
 
+    /// The second click of a double click on a folder's name (#1512): the
+    /// first click expanded the folder and opened its index; a folder that
+    /// was already expanded before it collapses now. The index stays open
+    /// and the selection stays on the folder.
+    fn double_click_tree_folder(
+        &mut self,
+        row: &reader_tree::Row,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_expanded = match self.tree.folder_press.take() {
+            Some((path, expanded)) if path == row.path => expanded,
+            _ => false,
+        };
+        if !was_expanded {
+            return;
+        }
+        self.tree_preview.close();
+        self.expand_tree_folder(&row.path, false, cx);
+        self.tree.cursor = Some(row.path.clone());
+        self.tree_focus.focus(window, cx);
+        cx.notify();
+    }
+
     /// Expand or collapse a folder row, nothing else (the chevron, #1099):
     /// no note opens and the selection stays where it is (#1512).
     fn toggle_tree_folder(
@@ -4446,8 +4470,16 @@ impl Reader {
                                         )
                                     } else if directory && event.click_count() > 1 {
                                         // The first click already expanded and
-                                        // opened; a double click adds nothing.
+                                        // opened; the second collapses a folder
+                                        // that was open before (#1512).
+                                        if event.click_count() == 2 {
+                                            this.double_click_tree_folder(&row, window, cx)
+                                        }
                                     } else {
+                                        if directory {
+                                            this.tree.folder_press =
+                                                Some((row.path.clone(), row.expanded));
+                                        }
                                         this.activate_tree_row(&row, window, cx)
                                     }
                                 })
@@ -9753,6 +9785,139 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         assert!(row(visual, "Areas/other").unwrap().expanded);
         assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+    }
+
+    /// #1512 (Oleg): a double click on a folder's name toggles it. A
+    /// collapsed folder expands and opens its index, as one click does; an
+    /// expanded one collapses, its index stays open and the folder selected.
+    /// One click still never collapses.
+    #[gpui::test]
+    fn double_click_on_a_folder_name_toggles_the_folder(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Areas/apertune/specs")).unwrap();
+        std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(860.)));
+        visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let expanded = |visual: &mut gpui::VisualTestContext, path: &str| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                v.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == path)
+                    .unwrap_or_else(|| panic!("{path} is listed"))
+                    .expanded
+            })
+        };
+        let state = |visual: &mut gpui::VisualTestContext| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                (v.current_rel.clone(), v.tree.cursor.clone())
+            })
+        };
+        let bounds = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"))
+                .center()
+        };
+        let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = bounds(visual, selector);
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+        };
+        // A real double click: a first click, then a second with click_count 2.
+        let double_click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = bounds(visual, selector);
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+            });
+            visual.run_until_parked();
+        };
+        let folder = "Areas/apertune";
+        let index = "Areas/apertune/_index.md";
+        let opened = || (index.to_owned(), Some(folder.to_owned()));
+        click(visual, "tree-row-Areas");
+        assert!(expanded(visual, "Areas"));
+        assert!(!expanded(visual, folder));
+
+        // Collapsed: a double click expands and opens the index.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder), "a collapsed folder expands");
+        assert_eq!(state(visual), opened());
+
+        // Expanded: a double click collapses; the index stays open and the
+        // selection stays on the folder.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!expanded(visual, folder), "an expanded folder collapses");
+        assert_eq!(state(visual), opened());
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
+        });
+
+        // And back again.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder));
+        assert_eq!(state(visual), opened());
+
+        // One click on the expanded folder still never collapses it.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder), "a single click never collapses");
+        assert_eq!(state(visual), opened());
+
+        // A folder without an index toggles the same way and opens nothing.
+        double_click(visual, "tree-row-Areas");
+        assert!(!expanded(visual, "Areas"));
+        assert_eq!(state(visual), (index.to_owned(), Some("Areas".to_owned())));
+        double_click(visual, "tree-row-Areas");
+        assert!(expanded(visual, "Areas"));
     }
 
     #[gpui::test]
