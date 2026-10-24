@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import urllib.request
+from urllib.parse import quote
 
 
 def needed(event, published, source, platform):
@@ -80,12 +81,12 @@ def macos_api(method, path, body=None):
     return json.loads(payload) if payload else None
 
 
-def macos_attempted(source, current_run, before_current=False):
+def macos_attempted(source, current_run, before_current=False, ref='main'):
     # One automatic attempt per main SHA: any prior main dispatch (including a
     # failed build or a successful build awaiting publication) backs off until
     # the next SHA. Never repeat notarization while publication is still pending.
     data = macos_api('GET', '/actions/runs?workflow_id=macos-release.yml'
-                     '&ref=refs/heads/main&head_sha=' + source +
+                     '&ref=' + quote('refs/heads/' + ref, safe='') + '&head_sha=' + source +
                      '&limit=50&page=1')
     runs = data['workflow_runs']
     if (not isinstance(runs, list) or type(data['total_count']) is not int
@@ -93,11 +94,20 @@ def macos_attempted(source, current_run, before_current=False):
         raise ValueError('Incomplete Mac attempt inventory')
     for run in runs:
         if (run['workflow_id'] != 'macos-release.yml' or run['commit_sha'] != source
-                or run['prettyref'] != 'main' or run['is_fork_pull_request']
+                or run['prettyref'] != ref or run['is_fork_pull_request']
                 or run['trigger_event'] not in ('workflow_dispatch', 'schedule')):
             raise ValueError('Unexpected Mac attempt identity')
         if type(run['id']) is not int or run['id'] < 1 or not current_run.isdigit():
             raise ValueError('Invalid Mac run identity')
+        if ref != 'main':
+            payload = run['event_payload']
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            # Dispatch resolves a mutable branch. A run that captured a newer
+            # commit than requested exits without signing and is not an attempt
+            # for that new head, which must remain eligible when its CI is green.
+            if payload.get('inputs', {}).get('preview_head') != source:
+                continue
         # The oldest dispatched run owns this SHA. A newer queued duplicate must
         # not make the first run back off too (otherwise neither would build).
         if before_current and run['id'] >= int(current_run):
@@ -108,7 +118,57 @@ def macos_attempted(source, current_run, before_current=False):
     return False
 
 
+def select_macos_preview(event, source, env, now):
+    """Only the current, green, non-draft same-repo PR head can enter the signer.
+
+    The coordinator dispatches the PR branch, so the build's workflow SHA stays
+    equal to the artifact source. Revalidate once the serialized build starts:
+    queued stale heads exit before reserving the M4, without cancelling notary work.
+    """
+    skip = lambda reason: (False, source, False, reason)
+    if env.get('MACOS_PR_PREVIEWS_ENABLED') != 'true':
+        return skip('Mac PR previews disabled; beta builds use main')
+    if now >= MACOS_BETA_UNTIL:
+        return skip('Mac PR preview window expired; request a build explicitly')
+    number = env.get('MACOS_PREVIEW_PR', '')
+    if (event not in ('pull_request', 'workflow_dispatch')
+            or not re.fullmatch('[1-9][0-9]*', number)):
+        raise ValueError('Invalid Mac preview request')
+    repo = env['GITHUB_REPOSITORY']
+    if repo != 'BeFeast/okilum':
+        raise ValueError('Mac previews require the product repository')
+    pr = macos_api('GET', '/pulls/' + number)
+    if (pr['state'] != 'open' or pr['merged'] or pr['draft']
+            or (pr['head']['repo'] or {}).get('full_name') != repo
+            or pr['base']['repo']['full_name'] != repo or pr['base']['ref'] != 'main'):
+        return skip('Mac PR preview skipped: closed, draft or untrusted PR')
+    head, ref = pr['head']['sha'], pr['head']['ref']
+    if (not re.fullmatch('[0-9a-f]{40}', head) or not ref or ref == 'main'):
+        raise ValueError('Invalid Mac preview source identity')
+    expected = env.get('MACOS_PREVIEW_HEAD')
+    if head != expected or (event == 'workflow_dispatch' and source != expected) or (event == 'workflow_dispatch'
+                            and env.get('GITHUB_REF') != 'refs/heads/' + ref):
+        return skip('Mac PR preview superseded: newest PR head wins')
+    source = head
+    status = macos_api('GET', '/commits/' + head + '/status')
+    contexts = [s for s in status['statuses'] if s['context'] == 'ci / macos (pull_request)']
+    if status['sha'] != head or len(contexts) != 1 or contexts[0]['status'] != 'success':
+        return skip('Mac PR preview waiting for exact-head macOS success')
+    if not needed('schedule', descriptor(head, 'macos'), head, 'macos'):
+        return skip('Mac PR head already published')
+    if macos_attempted(head, env['GITHUB_RUN_ID'],
+                       before_current=event == 'workflow_dispatch', ref=ref):
+        return skip('Mac PR preview backoff: head already attempted')
+    if event == 'pull_request':
+        macos_api('POST', '/actions/workflows/macos-release.yml/dispatches',
+                  {'ref': ref, 'inputs': {'preview_pr': number, 'preview_head': head}})
+        return skip('Dispatched signed Mac PR preview; coordinator does not use macos runner')
+    return True, source, True, 'Build signed Mac PR preview #' + number + ' · ' + head[:8]
+
+
 def select_macos(event, source, env, now):
+    if env.get('MACOS_PREVIEW_PR'):
+        return select_macos_preview(event, source, env, now)
     tick = env.get('MACOS_BETA_TICK', '')
     if event != 'schedule' and not tick:
         return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
@@ -225,3 +285,5 @@ if __name__ == '__main__':
         output.write(f'resign={resign}\n')
         if args.platform == 'macos':
             output.write(f'local={str(local).lower()}\n')
+            preview = bool(build and os.environ.get('MACOS_PREVIEW_PR'))
+            output.write(f'preview={str(preview).lower()}\n')

@@ -106,6 +106,16 @@ enum Loaded {
 }
 
 impl CodePreview {
+    pub(crate) fn preserve_zoom_anchor(
+        &mut self,
+        pointer: Option<Point<Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let State::Content(input) = &self.state {
+            input.update(cx, |state, _| state.preserve_zoom_anchor(pointer));
+        }
+    }
+
     pub(crate) fn new(
         root: PathBuf,
         rel: String,
@@ -375,9 +385,11 @@ impl Render for CodePreview {
             .key_context(KEY_CONTEXT)
             .debug_selector(|| "reader-code-file".into())
             .w_full()
+            .max_w(px(reader_ui_state::note_column_width(cx)))
+            .mx_auto()
             .flex_1()
             .min_h_0()
-            .px_6()
+            .px(px(READER_SIDE_PADDING))
             .pb_6();
         match &self.state {
             State::Loading => view.child(

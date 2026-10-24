@@ -2764,7 +2764,8 @@ mod maestro_network_tests {
             reader.read_line(&mut line).unwrap();
             assert_eq!(line, "GET /api/v1/fleet HTTP/1.1\r\n");
             requested.send(()).unwrap();
-            wait_release.recv_timeout(Duration::from_secs(3)).unwrap();
+            // Only the test may release this response after committing its race.
+            wait_release.recv().unwrap();
             let mut body = crate::maestro::tests::raw();
             body["refreshed_at"] = json!(time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
@@ -2789,7 +2790,7 @@ mod maestro_network_tests {
         let in_flight = std::thread::spawn(move || {
             dispatch(&invoked, Command::MaestroLink { request: delayed }, None)
         });
-        wait_request.recv_timeout(Duration::from_secs(3)).unwrap();
+        wait_request.recv().unwrap();
         {
             let mut owner = backend
                 .try_lock()

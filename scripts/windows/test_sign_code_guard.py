@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -30,6 +31,24 @@ class GuardTests(unittest.TestCase):
             (root / '.cache').mkdir()
             (root / '.config/forgejo/token.env').write_text('FORGEJO_TOKEN=offline-test\n')
             (root / 'responses').write_text(json.dumps(responses))
+            (root / 'clock').write_text('0')
+            # Override only the embedded guard's time import. subprocess and
+            # fake curl keep the real clock and inherited Python instrumentation.
+            python = root / 'python3'
+            python.write_text('#!' + sys.executable + '\n' + '''import builtins, os, pathlib, sys, time, types
+if sys.argv[1:] != ['-']:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+source = sys.stdin.read()
+assert 'deadline = time.monotonic() + 60' in source, 'expected embedded cancellation guard'
+clock = pathlib.Path(os.environ['HOME']) / 'clock'
+guard_time = types.SimpleNamespace(**vars(time))
+guard_time.monotonic = lambda: float(clock.read_text())
+def guard_import(name, *args, **kwargs):
+    return guard_time if name == 'time' else builtins.__import__(name, *args, **kwargs)
+scope = dict(vars(builtins), __import__=guard_import)
+exec(compile(source, '<embedded-cancel-guard>', 'exec'), {'__builtins__': scope})
+''')
+            python.chmod(0o755)
             curl = root / 'curl'
             curl.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -43,6 +62,9 @@ response = responses.pop(0)
 (root / 'responses').write_text(json.dumps(responses))
 if response == 'timeout':
     sys.exit(28)
+if isinstance(response, dict) and 'advance_clock' in response:
+    (root / 'clock').write_text(str(response['advance_clock']))
+    response = response['body']
 print(json.dumps(response))
 ''')
             curl.chmod(0o755)
@@ -54,8 +76,9 @@ print(json.dumps(response))
             env.pop('OKILUM_SIGN_CANCEL_ALLOWLIST', None)
             if allowlist is not None:
                 env['OKILUM_SIGN_CANCEL_ALLOWLIST'] = json.dumps(allowlist)
+            # Scheduling/startup watchdog only; guard timing uses the clock above.
             result = subprocess.run(['bash', str(HELPER), SHA, '14766'], env=env,
-                                    input='invalid-otp\n', text=True, capture_output=True, timeout=5)
+                                    input='invalid-otp\n', text=True, capture_output=True, timeout=60)
             calls = (root / 'calls').read_text() if (root / 'calls').exists() else ''
             self.assertNotIn('UNEXPECTED-LOGIN', result.stderr)
             return result, calls.splitlines()
@@ -126,6 +149,21 @@ print(json.dumps(response))
                                   ([page(RUN), page(RUN), page(RUN), {}, 'timeout'], 1)]:
             with self.subTest(responses=responses):
                 self.assert_stopped(responses, [APPROVED], posts)
+
+    def test_guard_deadline_is_checked_without_elapsed_wall_time(self):
+        expired = dict(advance_clock=61, body=page(RUN))
+        for responses, posts in [
+                ([expired], 0),
+                ([page(RUN), expired], 0),
+                ([page(RUN), page(RUN), page(RUN),
+                  dict(advance_clock=61, body={})], 1)]:
+            with self.subTest(responses=responses):
+                result, calls = self.run_helper(responses, [APPROVED])
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn('inventory/cancellation deadline exceeded', result.stderr)
+                self.assertIn('OTP was not read', result.stderr)
+                self.assertEqual(sum(c.startswith('POST ') for c in calls), posts)
+                self.assertFalse(any('variables' in c or 'dispatch' in c for c in calls))
 
     def test_incomplete_inventory(self):
         self.assert_stopped([dict(total_count=2, workflow_runs=[RUN])], [APPROVED])

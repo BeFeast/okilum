@@ -100,8 +100,21 @@ pub(crate) struct ReadingHistory {
     #[serde(default)]
     recent_roots: Vec<PathBuf>,
 }
+
+// Closing a descriptor alone does not release a Unix flock if a concurrent
+// fork inherited its open file description. End the writer's critical section
+// explicitly so a child waiting to exec cannot keep later history writes busy.
+struct HistoryLock(fs::File);
+impl Drop for HistoryLock {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.unlock() {
+            eprintln!("Cannot release Reader history lock: {error}");
+        }
+    }
+}
+
 impl ReadingHistory {
-    fn lock<'a>(directory: &Path, roots: impl Iterator<Item = &'a Path>) -> Result<fs::File> {
+    fn lock<'a>(directory: &Path, roots: impl Iterator<Item = &'a Path>) -> Result<HistoryLock> {
         let mut roots = roots.map(Path::to_path_buf).collect::<Vec<_>>();
         match Self::load(directory) {
             Ok(Some(previous)) => roots.extend(previous.last_documents.into_keys()),
@@ -126,7 +139,7 @@ impl ReadingHistory {
         }
         let lock = options.open(path)?;
         lock.try_lock().map_err(|_| Busy)?;
-        Ok(lock)
+        Ok(HistoryLock(lock))
     }
     fn outside_notes<'a>(directory: &Path, roots: impl Iterator<Item = &'a Path>) -> Result<()> {
         let ancestor = directory
@@ -549,6 +562,36 @@ mod tests {
         fs::write(root.join(FILE), b"broken").unwrap();
         assert!(ReadingHistory::last_document_or_recover(&root, &root).is_err());
         assert_eq!(fs::read(root.join(FILE)).unwrap(), b"broken");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_writer_releases_lock_even_with_an_inherited_descriptor() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        ReadingHistory::record_usable_document(&state, &vault, "first.md").unwrap();
+        let before = fs::read(state.join(FILE)).unwrap();
+        let writer = ReadingHistory::lock(&state, std::iter::once(vault.as_path())).unwrap();
+        // dup and fork share the same open file description on Unix. Holding
+        // this descriptor models a child paused between fork and exec.
+        let inherited = writer.0.try_clone().unwrap();
+        let busy = ReadingHistory::record_usable_document(&state, &vault, "second.md").unwrap_err();
+        assert!(
+            busy.is::<Busy>(),
+            "positive control: the writer excludes another writer"
+        );
+        assert_eq!(fs::read(state.join(FILE)).unwrap(), before);
+        drop(writer);
+        ReadingHistory::record_usable_document(&state, &vault, "second.md").unwrap();
+        assert_eq!(
+            ReadingHistory::last_document(&state, &vault)
+                .unwrap()
+                .as_deref(),
+            Some("second.md")
+        );
+        drop(inherited);
     }
 
     #[test]

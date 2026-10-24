@@ -249,6 +249,7 @@ mod tests {
                 title: "Brain".into(),
                 workspace_root: "/vault".into(),
                 default_model_selection: None,
+                ..Default::default()
             }])
         }
         fn list_threads(

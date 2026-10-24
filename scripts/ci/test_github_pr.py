@@ -64,12 +64,12 @@ class HostedPRTests(unittest.TestCase):
         for file, job, lane in [('brain-ci', 'brain-tests', 'brain'), ('inbox-ci', 'inbox-tests', 'inbox'),
                                  ('linux-release', 'release', 'arch'), ('windows-diagnostic', 'release', 'windows-release')]:
             workflow = (root / f'.forgejo/workflows/{file}.yml').read_text()
-            def evaluate(name, event, setting, fork):
+            def evaluate(name, event, setting, fork, appimage_only=''):
                 block = re.search(rf'^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S)[1]
                 expr = re.search(r'    if: (?:>-\n      )?([^\n]+)', block)[1]
                 replacements = {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
                     'github.repository': 'BeFeast/okilum', 'github.event_name': event, 'vars.OKILUM_PR_LANE': setting,
-                    'needs.select.outputs.build': 'true',
+                    'needs.select.outputs.build': 'true', 'inputs.appimage_only': appimage_only,
                     # Ordinary builds: no re-sign (#1104) is requested.
                     'needs.select.outputs.resign': ''}
                 for key, value in replacements.items():
@@ -81,3 +81,10 @@ class HostedPRTests(unittest.TestCase):
                         expected = event == 'pull_request' and setting != 'local' and not fork
                         self.assertEqual(evaluate(lane+'-github', event, setting, fork), expected)
                         self.assertEqual(evaluate(job, event, setting, fork), not expected)
+            if lane == 'arch':
+                for setting in ['', 'hosted', 'local']:
+                    for fork in [False, True]:
+                        with self.subTest(setting=setting, fork=fork):
+                            self.assertTrue(evaluate(job, 'workflow_dispatch', setting, fork, 'false'))
+                            self.assertFalse(evaluate(job, 'workflow_dispatch', setting, fork, 'true'))
+                            self.assertFalse(evaluate(lane+'-github', 'workflow_dispatch', setting, fork, 'true'))

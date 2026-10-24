@@ -103,6 +103,26 @@ fn main() {
             "-o",
         ])
         .arg(&quicklook));
+    println!("cargo:rerun-if-changed=src/reader_manager_focus/bridge.m");
+    println!("cargo:rerun-if-changed=src/reader_manager_focus/keys.inc");
+    println!("cargo:rerun-if-changed=src/reader_manager_focus/page_keys.js");
+    println!("cargo:rerun-if-changed=src/reader_manager_focus/page_keys.inc");
+    let manager_focus = out.join("manager_focus.o");
+    run(Command::new("xcrun")
+        .args([
+            "clang",
+            "-fobjc-arc",
+            "-fblocks",
+            "-Wall",
+            "-Werror",
+            "-arch",
+            architecture,
+            "-mmacosx-version-min=11.0",
+            "-c",
+            "src/reader_manager_focus/bridge.m",
+            "-o",
+        ])
+        .arg(&manager_focus));
     let object = out.join("updater.o");
     run(Command::new("xcrun")
         .args([
@@ -122,13 +142,29 @@ fn main() {
         .arg(out.join("libokilum_updater.a"))
         .arg(object)
         .arg(thumbnail)
-        .arg(quicklook));
+        .arg(quicklook)
+        .arg(manager_focus));
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=okilum_updater");
     println!("cargo:rustc-link-search=framework={}", framework.display());
     println!("cargo:rustc-link-lib=framework=Sparkle");
     println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=WebKit");
     println!("cargo:rustc-link-lib=framework=Quartz");
     println!("cargo:rustc-link-lib=framework=QuickLookThumbnailing");
+    // With a library target Cargo attaches rustc-link-lib to that target only.
+    // The existing binary calls these FFI bridges directly and does not yet use
+    // the new shared component library. Preserve its native links explicitly,
+    // including the binary's libtest harness, without changing main.rs.
+    println!("cargo:rustc-link-arg-bin=okilum=-lokilum_updater");
+    for name in [
+        "Sparkle",
+        "AppKit",
+        "WebKit",
+        "Quartz",
+        "QuickLookThumbnailing",
+    ] {
+        println!("cargo:rustc-link-arg-bin=okilum=-Wl,-framework,{name}");
+    }
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 }

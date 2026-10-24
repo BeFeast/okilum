@@ -1,0 +1,139 @@
+--- a/crates/base/src/global_state.rs
++++ b/crates/base/src/global_state.rs
+@@ -1,6 +1,7 @@
+ use std::rc::{Rc, Weak};
+ 
+-use gpui::{App, Entity, Global, OwnedMenu};
++use gpui::{App, Bounds, Entity, Global, OwnedMenu, Pixels, Window, WindowId};
++use std::collections::HashMap;
+ 
+ use crate::text::TextViewState;
+ 
+@@ -13,6 +14,7 @@
+ 
+ /// Application-wide state shared by Base behaviors.
+ pub struct GlobalState {
++    native_overlays: HashMap<WindowId, Vec<Bounds<Pixels>>>,
+     app_menus: Vec<OwnedMenu>,
+     deferred_popovers: Vec<Weak<()>>,
+     suppress_text_selection: bool,
+@@ -25,12 +27,48 @@
+ impl GlobalState {
+     fn new() -> Self {
+         Self {
++            native_overlays: HashMap::new(),
+             app_menus: Vec::new(),
+             deferred_popovers: Vec::new(),
+             suppress_text_selection: false,
+             text_view_state_stack: Vec::new(),
+             selection_document_order: 1,
+         }
++    }
++
++    /// Begin the current window's prepaint pass. Entries never survive a frame.
++    /// Native children read the complete list during paint, after deferred prepaint.
++    pub fn begin_native_overlays(window: &Window, cx: &mut App) {
++        Self::init(cx);
++        Self::global_mut(cx)
++            .native_overlays
++            .entry(window.window_handle().window_id())
++            .or_default()
++            .clear();
++    }
++
++    /// Record the resolved, clipped bounds of an actual overlay surface.
++    pub fn record_native_overlay(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
++        Self::init(cx);
++        let bounds = bounds.intersect(&window.content_mask().bounds);
++        if bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.) {
++            Self::global_mut(cx)
++                .native_overlays
++                .entry(window.window_handle().window_id())
++                .or_default()
++                .push(bounds);
++        }
++    }
++
++    pub fn native_overlays<'a>(window: &Window, cx: &'a App) -> &'a [Bounds<Pixels>] {
++        cx.try_global::<Self>()
++            .and_then(|state| {
++                state
++                    .native_overlays
++                    .get(&window.window_handle().window_id())
++            })
++            .map(Vec::as_slice)
++            .unwrap_or(&[])
+     }
+ 
+     /// Ensures that the Base global exists.
+--- a/crates/component/src/root.rs
++++ b/crates/component/src/root.rs
+@@ -592,6 +592,14 @@
+             .bg(cx.theme().tokens.background)
+             .text_color(cx.theme().foreground)
+             .refine_style(&self.style)
++            .child(
++                gpui::canvas(
++                    |_, window, cx| gpui_base::GlobalState::begin_native_overlays(window, cx),
++                    |_, _, _, _| {},
++                )
++                .absolute()
++                .size_full(),
++            )
+             .child(TextSelectionLayer)
+             .child(self.view.clone())
+             .child(self.tooltip_overlay.clone())
+--- a/crates/base/src/positioner.rs
++++ b/crates/base/src/positioner.rs
+@@ -341,6 +341,7 @@
+             window.viewport_size(),
+             self.margin + client_inset,
+         );
++        crate::GlobalState::record_native_overlay(position.bounds, window, cx);
+         // Ahead of the children so it blocks what is behind the popup without
+         // blocking the popup's own content.
+         if self.occlude {
+--- a/crates/component/src/dialog/dialog.rs
++++ b/crates/component/src/dialog/dialog.rs
+@@ -532,6 +532,7 @@
+             .child(
+                 div()
+                     .id("dialog")
++                    .on_prepaint(gpui_base::GlobalState::record_native_overlay)
+                     .occlude()
+                     .w(view_size.width)
+                     .h(view_size.height)
+--- a/crates/component/src/sheet.rs
++++ b/crates/component/src/sheet.rs
+@@ -158,6 +158,7 @@
+         }
+ 
+         let overlay = div()
++            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
+             .occlude()
+             .w(size.width)
+             .h(size.height)
+--- a/crates/base/src/toast.rs
++++ b/crates/base/src/toast.rs
+@@ -529,7 +529,10 @@
+                     .when(!expanded && rank >= collapsed_visible, |this| {
+                         this.invisible()
+                     })
+-                    .on_prepaint(move |bounds, _, cx| {
++                    .on_prepaint(move |bounds, window, cx| {
++                        if opacity > 0. && (expanded || rank < collapsed_visible) {
++                            crate::GlobalState::record_native_overlay(bounds, window, cx);
++                        }
+                         let mut heights = measured.borrow_mut();
+                         if heights.get(&measured_id).copied() != Some(bounds.size.height) {
+                             heights.insert(measured_id.clone(), bounds.size.height);
+--- a/crates/component/src/menu/popup_menu.rs
++++ b/crates/component/src/menu/popup_menu.rs
+@@ -1427,6 +1427,7 @@
+ 
+         v_flex()
+             .id("popup-menu")
++            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
+             .role(Role::Menu)
+             .key_context(CONTEXT)
+             .track_focus(&self.focus_handle)

@@ -27,6 +27,11 @@ pub(crate) fn show_updates(cx: &mut App) {
     show_section(None, Some(Section::Updates), cx);
 }
 
+/// Settings on the Vault pane: the sidebar's vault menu (#1512).
+pub(crate) fn show_vault(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
+    show_section(reader, Some(Section::Vault), cx);
+}
+
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }
@@ -36,6 +41,12 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
     let active = cx.active_window();
     // Menu dispatch can still hold the active Reader's update borrow.
     cx.defer(move |cx| {
+        let owner = reader
+            .as_ref()
+            .and_then(|reader| reader.upgrade())
+            .map(|reader| reader.read(cx).reader_window)
+            .or(active)
+            .map(|owner| reader_owned_windows::owner(owner, cx));
         let reader = reader.or_else(|| {
             let root = active?.downcast::<Root>()?;
             let reader = root
@@ -56,7 +67,7 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                                 settings.set_reader(Some(reader), cx);
                             }
                             if let Some(section) = section {
-                                settings.select_section(section, cx);
+                                settings.show_entry_section(section, cx);
                             }
                         });
                     }
@@ -67,30 +78,86 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                 return;
             }
         }
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
-                size(px(780.), px(520.)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(700.), px(440.))),
-            ..TitleBar::window_options()
-        };
+        let options = reader_owned_windows::options(
+            owner,
+            size(px(780.), px(520.)),
+            size(px(700.), px(440.)),
+            cx,
+        );
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Okilum Settings");
+            reader_owned_windows::attach(owner, window, cx);
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(reader, cx);
                 if let Some(section) = section {
-                    settings.select_section(section, cx);
+                    settings.show_entry_section(section, cx);
                 }
                 settings
             });
             settings.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(settings, window, cx))
         }) {
-            Ok(handle) => cx.set_global(SettingsWindow(Some(handle))),
+            Ok(handle) => {
+                reader_owned_windows::register(owner, handle.into(), cx);
+                cx.set_global(SettingsWindow(Some(handle)));
+            }
             Err(error) => eprintln!("Could not open Settings: {error}"),
         }
     });
+}
+
+/// Settings → Editor (#1611): the paste-size threshold, stepped through
+/// presets; "Never" turns the question off.
+const PASTE_ASK_STEPS: [u32; 9] = [10, 25, 50, 100, 250, 500, 1000, 2000, 0];
+
+fn paste_size_label(mb: u32) -> String {
+    match mb {
+        0 => "Never ask".into(),
+        mb if mb >= 1000 && mb % 1000 == 0 => format!("{} GB", mb / 1000),
+        mb => format!("{mb} MB"),
+    }
+}
+
+fn paste_size_stepper(cx: &App) -> impl IntoElement {
+    let current = reader_ui_state::paste_ask_above_mb(cx);
+    let index = PASTE_ASK_STEPS
+        .iter()
+        .position(|step| *step == current)
+        .unwrap_or(3);
+    let previous = index.checked_sub(1).map(|i| PASTE_ASK_STEPS[i]);
+    let next = PASTE_ASK_STEPS.get(index + 1).copied();
+    h_flex()
+        .gap_1()
+        .items_center()
+        .debug_selector(|| "settings-paste-ask".into())
+        .child(
+            Button::new("settings-paste-ask-smaller")
+                .ghost()
+                .label("−")
+                .disabled(previous.is_none())
+                .on_click(move |_, _, cx| {
+                    if let Some(value) = previous {
+                        reader_ui_state::set_paste_ask_above_mb(value, cx);
+                    }
+                }),
+        )
+        .child(
+            div()
+                .min_w(px(84.))
+                .text_center()
+                .child(paste_size_label(current)),
+        )
+        .child(
+            Button::new("settings-paste-ask-larger")
+                .ghost()
+                .label("+")
+                .disabled(next.is_none())
+                .on_click(move |_, _, cx| {
+                    if let Some(value) = next {
+                        reader_ui_state::set_paste_ask_above_mb(value, cx);
+                    }
+                }),
+        )
 }
 
 pub(super) fn setting_row(
@@ -189,7 +256,11 @@ const INBOX_HELP: &str =
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    /// The T3 server of the open project's Manager (#1507).
+    T3,
     Appearance,
+    /// Editing notes: pasting and dropping files (#1611).
+    Editor,
     /// The vault's name, colour and files (#1355: was «Files»).
     Vault,
     /// Log source links: for logs of software you build (#1355).
@@ -203,6 +274,8 @@ enum Section {
 impl Section {
     fn key(self) -> &'static str {
         match self {
+            Self::T3 => "t3",
+            Self::Editor => "editor",
             Self::Appearance => "appearance",
             Self::Vault => "vault",
             Self::Logs => "logs",
@@ -215,6 +288,8 @@ impl Section {
     }
     fn remembered(cx: &App) -> Self {
         match reader_ui_state::settings_section(cx) {
+            Some("t3") => Self::T3,
+            Some("editor") => Self::Editor,
             Some("appearance") => Self::Appearance,
             Some("vault") => Self::Vault,
             Some("logs") => Self::Logs,
@@ -228,7 +303,9 @@ impl Section {
 
     fn icon(self) -> Icon {
         match self {
+            Self::T3 => Icon::new(IconName::SquareTerminal),
             Self::Appearance => Icon::new(IconName::Palette),
+            Self::Editor => Icon::new(IconName::FileText),
             Self::Vault => Icon::new(IconName::Folder),
             Self::Logs => Icon::new(IconName::SquareTerminal),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
@@ -240,7 +317,9 @@ impl Section {
     }
     fn label(self) -> &'static str {
         match self {
+            Self::T3 => "T3",
             Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
             Self::Vault => "Vault",
             Self::Logs => "Logs",
             Self::Updates => "Updates",
@@ -279,11 +358,23 @@ struct Settings {
     editor_command: Option<(Entity<InputState>, Subscription)>,
     /// The build path of a new source-link mapping (#1165).
     map_from: Option<Entity<InputState>>,
+    /// Settings → T3 origin, made on first render of that section. Applied
+    /// on Enter, and on blur when it changed: there is no Connect button.
+    t3_origin: Option<(Entity<InputState>, Subscription)>,
+    /// What Settings itself put into that field (the panel's origin when it
+    /// was read), as opposed to what the user typed.
+    t3_seed: String,
 }
 impl Settings {
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         self.section = section;
         reader_ui_state::set_settings_section(section.key(), cx);
+        cx.notify();
+    }
+
+    /// Explicit entries do not replace the pane chosen in the sidebar (#1496).
+    fn show_entry_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section = section;
         cx.notify();
     }
 
@@ -307,6 +398,8 @@ impl Settings {
             _reader_changes: observer,
             editor_command: None,
             map_from: None,
+            t3_origin: None,
+            t3_seed: String::new(),
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -363,6 +456,52 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         self.reader = reader;
+        self.t3_origin = None;
+        cx.notify();
+    }
+    /// The open project's Manager panel and its T3 environment alias.
+    fn t3_target(&self, cx: &App) -> Option<(Entity<Reader>, okilum_t3::projects::Project)> {
+        let reader = self.reader.as_ref()?.upgrade()?;
+        let project = reader.read(cx).project_navigation.active.clone()?;
+        Some((reader, project))
+    }
+    /// The open project's Manager panel origin, if it has one yet.
+    fn t3_panel_origin(&self, cx: &App) -> Option<String> {
+        self.t3_target(cx)
+            .and_then(|(reader, _)| reader.read(cx).project_navigation.manager_panel.clone())
+            .map(|panel| panel.read(cx).origin_value(cx))
+            .filter(|origin| !origin.trim().is_empty())
+    }
+    fn t3_connect(&mut self, only_if_changed: bool, cx: &mut Context<Self>) {
+        let (Some((reader, _)), Some((input, _))) = (self.t3_target(cx), self.t3_origin.as_ref())
+        else {
+            return;
+        };
+        let Some(panel) = reader.read(cx).project_navigation.manager_panel.clone() else {
+            return;
+        };
+        let origin = input.read(cx).value().trim().to_string();
+        let current = panel.read(cx).origin_value(cx);
+        if origin.is_empty()
+            || only_if_changed && !t3_blur_applies(&origin, &self.t3_seed, &current)
+        {
+            return;
+        }
+        self.t3_seed = origin.clone();
+        // The browser is a native child of the Reader's window: connect there.
+        for handle in cx.windows() {
+            let Some(root) = handle.downcast::<Root>() else {
+                continue;
+            };
+            let panel = panel.clone();
+            let origin = origin.clone();
+            let reader_id = reader.entity_id();
+            let _ = root.update(cx, move |root, window, cx| {
+                if root.view().entity_id() == reader_id {
+                    panel.update(cx, |panel, cx| panel.connect_to(origin, window, cx));
+                }
+            });
+        }
         cx.notify();
     }
     fn vault(&self, cx: &App) -> Option<Entity<Reader>> {
@@ -785,7 +924,7 @@ impl Settings {
                         ),
                         cx,
                     ))
-                    .child(reader_reading_controls::render(cx))
+                    .child(reader_reading_controls::render(window, cx))
                     .child(setting_row(
                         "Show labels on toolbar buttons",
                         "Show names beside icons when there is room.",
@@ -809,6 +948,14 @@ impl Settings {
                     )
                     .into_any_element()
             }
+            Section::Editor => content
+                .child(setting_row(
+                    "Ask before copying files larger than",
+                    "Pasting or dropping a file larger than this asks whether to copy it into the vault or link to the original.",
+                    paste_size_stepper(cx),
+                    cx,
+                ))
+                .into_any_element(),
             Section::Vault => {
                 if let Some(reader) = self.vault(cx) {
                     let state = reader.read(cx);
@@ -1030,6 +1177,7 @@ impl Settings {
                                                         .label(label)
                                                         .icon(Icon::default().path(icon))
                                                         .selected(selected)
+                                                        .disabled(updater::status::in_flight())
                                                         .when(selected, |button| button.primary())
                                                         .tooltip(if value {
                                                             "Beta: preview new features and fixes"
@@ -1114,6 +1262,48 @@ impl Settings {
             }
             #[cfg(target_os = "linux")]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
+            Section::T3 => {
+                let Some((reader, project)) = self.t3_target(cx) else {
+                    return content
+                        .child("Open a vault project to connect its Manager to T3.")
+                        .into_any_element();
+                };
+                let panel = reader.read(cx).project_navigation.manager_panel.clone();
+                let (status, error) =
+                    panel
+                        .as_ref()
+                        .map_or(("Not connected".into(), None), |panel| {
+                            let (line, error) = panel.read(cx).connection_status();
+                            (line.unwrap_or_else(|| "Connecting…".into()), error)
+                        });
+                content
+                    .child(div().text_sm().text_color(p.text_muted).child(
+                        "The T3 server where this project's Manager runs. Okilum remembers it per T3 environment.",
+                    ))
+                    .children(
+                        self.t3_origin
+                            .as_ref()
+                            .map(|(input, _)| Input::new(input).w_full()),
+                    )
+                    .child(
+                        div()
+                            .id("settings-t3-status")
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child(format!(
+                                "{} · {}: {status}",
+                                project.name,
+                                project.environment.as_deref().unwrap_or("project")
+                            ))
+                            .when_some(error, |line, error| {
+                                line.tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(error.clone())
+                                        .build(window, cx)
+                                })
+                            }),
+                    )
+                    .into_any_element()
+            }
             Section::About => content.child(about::content(cx)).into_any_element(),
             // Nothing to do here yet, and it says so (#1356): connecting an
             // Inbox server is not offered in the Reader.
@@ -1157,6 +1347,36 @@ impl Render for Settings {
                     InputState::new(window, cx).placeholder("Build path, e.g. /src/ordgw")
                 }));
         }
+        if self.section == Section::T3 {
+            // The panel reads its saved origin asynchronously: an untouched
+            // field follows it instead of keeping the fallback it showed first.
+            let input = self.t3_origin.as_ref().map(|(input, _)| input.clone());
+            if let (Some(input), Some(panel)) = (input, self.t3_panel_origin(cx)) {
+                let typed = input.read(cx).value().to_string();
+                if let Some(origin) = t3_resync(&typed, &self.t3_seed, &panel) {
+                    input.update(cx, |input, cx| input.set_value(origin.clone(), window, cx));
+                    self.t3_seed = origin;
+                }
+            }
+        }
+        if self.section == Section::T3 && self.t3_origin.is_none() {
+            let saved = self
+                .t3_panel_origin(cx)
+                .unwrap_or_else(|| reader_manager_panel::DEFAULT_T3_ORIGIN.into());
+            self.t3_seed = saved.clone();
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(reader_manager_panel::DEFAULT_T3_ORIGIN)
+                    .default_value(saved)
+            });
+            let subscription =
+                cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+                    InputEvent::PressEnter { .. } => this.t3_connect(false, cx),
+                    InputEvent::Blur => this.t3_connect(true, cx),
+                    _ => {}
+                });
+            self.t3_origin = Some((input, subscription));
+        }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
@@ -1174,7 +1394,9 @@ impl Render for Settings {
                     .children(
                         [
                             Section::Appearance,
+                            Section::Editor,
                             Section::Vault,
+                            Section::T3,
                             Section::Updates,
                             Section::Inbox,
                             #[cfg(target_os = "linux")]
@@ -1253,12 +1475,20 @@ impl Render for Settings {
 /// The last check's outcome, inline next to the check button (#995). A found
 /// update offers its install action here instead of a modal.
 pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement> {
-    let line = updater::status_line()?;
+    render_update_status(id, updater::status::get(), updater::restart_now, cx)
+}
+
+pub(crate) fn render_update_status(
+    id: &'static str,
+    status: updater::status::CheckStatus,
+    restart: impl Fn(&mut App) + 'static,
+    cx: &App,
+) -> Option<AnyElement> {
+    let restart = std::rc::Rc::new(restart);
+    let line = updater::status::text(&status, std::time::SystemTime::now())?;
+    let progress = updater::status::progress(&status);
     let p = brand::palette(cx);
-    let available = matches!(
-        updater::status::get(),
-        updater::status::CheckStatus::Available(_)
-    );
+    let available = matches!(status, updater::status::CheckStatus::Available(_));
     Some(
         h_flex()
             .gap_2()
@@ -1267,10 +1497,53 @@ pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement
             .child(
                 div()
                     .debug_selector(move || format!("{id}-update-status"))
-                    .text_sm()
-                    .text_color(p.text_muted)
+                    .text_size(px(13.))
+                    .text_color(p.text)
                     .child(line),
             )
+            .when_some(progress, |row, progress| {
+                row.child(
+                    gpui_base::Progress::new(SharedString::from(format!("{id}-update-progress")))
+                        .debug_selector(move || format!("{id}-update-progress"))
+                        .accessibility_label("Update progress")
+                        .value(f32::from(progress.percent.unwrap_or(0)))
+                        .indeterminate(progress.percent.is_none())
+                        .w(px(200.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(p.surface_raised)
+                        .child(if let Some(percent) = progress.percent {
+                            div()
+                                .h_full()
+                                .w(gpui::relative(f32::from(percent) / 100.))
+                                .rounded_full()
+                                .bg(p.accent)
+                                .into_any_element()
+                        } else {
+                            let fill = div().size_full().rounded_full().bg(p.accent);
+                            if cx.reduce_motion() {
+                                fill.opacity(0.45).into_any_element()
+                            } else {
+                                fill.with_animation(
+                                    SharedString::from(format!("{id}-update-indeterminate")),
+                                    Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                                    |fill, t| fill.opacity(0.25 + 0.5 * (1. - (2. * t - 1.).abs())),
+                                )
+                                .into_any_element()
+                            }
+                        }),
+                )
+                .when(progress.restart, |row| {
+                    row.child(
+                        Button::new(SharedString::from(format!("{id}-restart-update")))
+                            .debug_selector(move || format!("{id}-restart-update"))
+                            .small()
+                            .label("Restart now")
+                            .on_click(move |_, _, cx| restart(cx)),
+                    )
+                })
+            })
             .when(available, |row| {
                 row.child(
                     Button::new(SharedString::from(format!("{id}-install-update")))
@@ -1282,6 +1555,20 @@ pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement
             })
             .into_any_element(),
     )
+}
+
+/// Blur applies the Settings › T3 field only when the user typed something
+/// (it differs from what Settings put there) that differs from the panel's
+/// current origin. Enter always applies.
+fn t3_blur_applies(typed: &str, seed: &str, current: &str) -> bool {
+    let typed = typed.trim();
+    typed != seed.trim() && typed != current.trim()
+}
+
+/// An untouched Settings › T3 field takes the panel's origin when that
+/// arrives or changes; a field the user edited is left alone.
+fn t3_resync(typed: &str, seed: &str, panel: &str) -> Option<String> {
+    (typed.trim() == seed.trim() && panel.trim() != seed.trim()).then(|| panel.trim().to_string())
 }
 
 #[cfg(test)]
@@ -1324,10 +1611,15 @@ mod tests {
                 assert!(settings.read(cx).section == Section::Logs);
             })
             .unwrap();
-        // Explicit application entries reuse the window but override the preference.
+        // Explicit entries reuse the window and show their pane, but the
+        // remembered pane stays the one the user picked.
         for (entry, expected) in [
             (show_about as fn(&mut App), Section::About),
             (show_updates, Section::Updates),
+            (
+                (|cx: &mut App| show_vault(None, cx)) as fn(&mut App),
+                Section::Vault,
+            ),
         ] {
             cx.update(entry);
             cx.run_until_parked();
@@ -1339,8 +1631,30 @@ mod tests {
                 .unwrap();
             cx.update(reader_ui_state::flush);
             cx.update(|cx| reader_ui_state::install(&directory, cx));
-            assert!(cx.read(Section::remembered) == expected);
+            assert!(cx.read(Section::remembered) == Section::Logs);
         }
+        // A fresh window opened by an explicit entry also leaves it alone.
+        handle
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| cx.set_global(SettingsWindow(None)));
+        cx.update(show_about);
+        cx.run_until_parked();
+        let handle = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
+        handle
+            .update(cx, |root, _, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                assert!(settings.read(cx).section == Section::About);
+                // Navigating afterwards is a real choice and is remembered.
+                settings.update(cx, |settings, cx| {
+                    settings.select_section(Section::Vault, cx)
+                });
+            })
+            .unwrap();
+        cx.update(reader_ui_state::flush);
+        cx.update(|cx| reader_ui_state::install(&directory, cx));
+        assert!(cx.read(Section::remembered) == Section::Vault);
         // A pane unavailable on this platform/newer build never breaks Settings.
         cx.update(|cx| {
             reader_ui_state::set_settings_section("future-pane", cx);
@@ -1348,6 +1662,28 @@ mod tests {
             reader_ui_state::flush(cx);
         });
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn t3_field_blur_applies_only_what_the_user_typed() {
+        let saved = "http://10.10.0.23:23110";
+        let default = reader_manager_panel::DEFAULT_T3_ORIGIN;
+        // Settings opened before the panel's saved origin loaded: the field
+        // still shows the fallback, which must not replace the saved origin.
+        assert!(!t3_blur_applies(default, default, saved));
+        // An edit that differs from the panel's origin applies on blur.
+        assert!(t3_blur_applies("http://192.168.1.5:23110", default, saved));
+        // Typing the panel's own origin is not a change.
+        assert!(!t3_blur_applies(&format!(" {saved} "), default, saved));
+    }
+
+    #[test]
+    fn untouched_t3_field_follows_the_panel_origin_and_edits_stay() {
+        let saved = "http://10.10.0.23:23110";
+        let default = reader_manager_panel::DEFAULT_T3_ORIGIN;
+        assert_eq!(t3_resync(default, default, saved).as_deref(), Some(saved));
+        assert_eq!(t3_resync(saved, saved, saved), None);
+        assert_eq!(t3_resync("http://192.168.1.5", default, saved), None);
     }
 
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
@@ -1437,7 +1773,11 @@ mod tests {
             reader_ui_state::install(directory.path(), cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let settings = cx.new(|cx| Settings::new(None, cx));
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(None, cx);
+                settings.section = Section::Appearance;
+                settings
+            });
             Root::new(settings, window, cx)
         });
         visual.run_until_parked();
@@ -1448,11 +1788,21 @@ mod tests {
         visual.simulate_click(labels.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.update(|_, cx| reader_ui_state::toolbar_labels(cx)));
+        // The normal-width slider renders (its range used to panic: min > max)
+        // and shows the stored width.
+        assert!(
+            visual.debug_bounds("reading-width").is_some(),
+            "normal note width slider visible"
+        );
+        visual.update(|_, cx| reader_ui_state::set_reading_width(900., cx));
+        visual.run_until_parked();
+        visual.update(|_, cx| assert_eq!(reader_ui_state::reading_width(cx), 900.));
+        visual.update(|_, cx| reader_ui_state::set_reading_width(READER_MAX_WIDTH, cx));
+        visual.run_until_parked();
         let original = visual.update(|_, cx| reader_ui_state::font_size(cx));
         for (selector, font, width) in [
             ("reading-larger", original + 1., READER_MAX_WIDTH),
-            ("reading-wide", original + 1., 960.),
-            ("reading-smaller", original, 960.),
+            ("reading-smaller", original, READER_MAX_WIDTH),
         ] {
             let bounds = visual
                 .debug_bounds(selector)
@@ -1922,7 +2272,11 @@ mod tests {
     fn color_theme_actions_receive_the_current_canonical_root(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let (root, visual) = cx.add_window_view(|window, cx| {
-            let settings = cx.new(|cx| Settings::new(None, cx));
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(None, cx);
+                settings.section = Section::Appearance;
+                settings
+            });
             Root::new(settings, window, cx)
         });
         let settings = root.read_with(visual, |root, _| {
@@ -2165,6 +2519,81 @@ mod tests {
         visual.run_until_parked();
         visual.update(|_, cx| {
             assert_eq!(cx.global::<SettingsWindow>().0.unwrap().window_id(), first)
+        });
+    }
+
+    #[gpui::test]
+    fn owned_settings_center_reuse_escape_and_close_with_owner(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            Root::new(reader, window, cx)
+        });
+        // Own the visual context so the parent context can drive other windows.
+        let mut visual = visual.clone();
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        let main = visual.update(|window, cx| {
+            window.activate_window();
+            show(None, cx);
+            window.window_handle()
+        });
+        visual.run_until_parked();
+        let handle = visual.update(|owner, cx| {
+            let handle = cx.global::<SettingsWindow>().0.unwrap();
+            assert_eq!(
+                reader_owned_windows::owner(handle.into(), cx),
+                owner.window_handle()
+            );
+            let center = owner.bounds().center();
+            handle
+                .update(cx, |_, window, _| {
+                    assert_eq!(
+                        window.bounds().center(),
+                        center,
+                        "center over the actual owner"
+                    );
+                    assert!(!window.is_minimizable());
+                })
+                .unwrap();
+            handle
+        });
+        let mut settings = VisualTestContext::from_window(handle.into(), cx);
+        settings.update(|window, cx| {
+            window.activate_window();
+            show(None, cx);
+        });
+        settings.run_until_parked();
+        settings.update(|_, cx| {
+            assert_eq!(cx.global::<SettingsWindow>().0.unwrap(), handle);
+            assert_eq!(cx.windows().len(), 2, "reopen must focus the same window");
+        });
+        settings.simulate_keystrokes("escape");
+        settings.run_until_parked();
+        assert!(
+            cx.read(|cx| cx.windows().contains(&main)),
+            "Escape leaves owner usable"
+        );
+        visual.update(|window, cx| {
+            window.activate_window();
+            show(None, cx);
+        });
+        visual.run_until_parked();
+        let reopened = visual.update(|_, cx| cx.global::<SettingsWindow>().0.unwrap());
+        let unrelated = cx.add_window(|_, cx| Settings::new(None, cx));
+        visual.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(
+                !cx.windows().contains(&reopened.into()),
+                "owner closure closes Settings"
+            );
+            assert!(
+                cx.windows().contains(&unrelated.into()),
+                "unrelated windows stay open"
+            );
         });
     }
 }

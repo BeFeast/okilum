@@ -48,6 +48,35 @@ class AppcastTest(unittest.TestCase):
         tree = self.run_tool('promote', '--build', '5001')
         self.assertEqual(self.channels(tree), {'5001': 'stable', '5002': 'beta'})
 
+    def test_pr_preview_title_notes_and_next_main_superseding_it(self):
+        path = pathlib.Path(self.dir.name) / 'preview-notes.json'
+        payload = {'build': 5001, 'source': SOURCE, 'platform': 'macos', 'channel': 'beta',
+                   'items': [{'pr': 42, 'kind': 'feature', 'text': 'Jump to projects'}],
+                   'preview': {'pr': 42}}
+        path.write_text(json.dumps(payload))
+        with patch.dict(os.environ, OKILUM_RELEASE_NOTES=str(path)):
+            tree = self.run_tool(*add_args(5001), existing=False)
+        item = appcast.items(tree)[0]
+        self.assertEqual(item.findtext('title'), 'PR #42 · aaaaaaaa')
+        self.assertIn('Jump to projects', item.findtext('description'))
+        self.assertEqual(item.find('enclosure').get(appcast.s('edSignature')), 'c2ln')
+        tree = self.run_tool(*add_args(5002))
+        newest = appcast.items(tree)[0]
+        self.assertEqual(newest.findtext('title'), 'Okilum 0.1.5002')
+        self.assertEqual(newest.findtext(appcast.s('version')), '5002')
+
+    def test_preview_notes_cannot_name_another_pr_or_stable(self):
+        path = pathlib.Path(self.dir.name) / 'preview-notes.json'
+        original = {'build': 5001, 'source': SOURCE, 'platform': 'macos', 'channel': 'beta',
+                    'items': [{'pr': 42, 'kind': 'feature', 'text': 'Outline'}],
+                    'preview': {'pr': 42}}
+        for change in [{'preview': {'pr': 43}}, {'preview': {'pr': True}},
+                       {'items': []}, {'channel': 'stable'}]:
+            value = dict(original, **change)
+            path.write_text(json.dumps(value))
+            with patch.dict(os.environ, OKILUM_RELEASE_NOTES=str(path)), self.assertRaises(ValueError):
+                self.run_tool(*add_args(5001, value['channel']), existing=False)
+
     def test_notes_description_and_promotion_preserve_same_items(self):
         notes_path = pathlib.Path(self.dir.name) / 'notes.json'
         payload = {'build': 5001, 'source': SOURCE, 'platform': 'macos', 'channel': 'beta',
@@ -63,6 +92,29 @@ class AppcastTest(unittest.TestCase):
         self.assertEqual(item.find('enclosure').get(appcast.s('edSignature')), 'c2ln')
         promoted = self.run_tool('promote', '--build', '5001')
         self.assertEqual(appcast.items(promoted)[0].findtext('description'), text)
+
+    def test_stable_promotion_replaces_beta_description_with_cumulative_items(self):
+        beta = pathlib.Path(self.dir.name) / 'beta-notes.json'
+        beta.write_text(json.dumps({'build': 5002, 'source': SOURCE, 'platform': 'macos',
+                                  'channel': 'beta', 'items': [{'pr': 2, 'kind': 'fix', 'text': 'Newest fix'}]}))
+        self.run_tool(*add_args(5001), existing=False)
+        with patch.dict(os.environ, OKILUM_RELEASE_NOTES=str(beta)):
+            self.run_tool(*add_args(5002))
+        before = ET.parse(self.path); original = appcast.find(before, 5002).find('enclosure').attrib.copy()
+        stable = {'build': 5002, 'source': SOURCE, 'platform': 'macos', 'channel': 'stable',
+                  'items': [{'pr': 2, 'kind': 'fix', 'text': 'Newest fix'},
+                            {'pr': 1, 'kind': 'feature', 'text': 'Earlier beta feature'}]}
+        tree = self.run_tool('promote', '--build', '5002', '--notes-json', json.dumps(stable))
+        item = appcast.find(tree, 5002)
+        self.assertIn('Newest fix', item.findtext('description'))
+        self.assertIn('Earlier beta feature', item.findtext('description'))
+        self.assertEqual(item.find('enclosure').attrib, original)
+        self.assertEqual(item.findtext(appcast.t('source')), SOURCE)
+        self.assertEqual(item.findtext(appcast.s('channel')), 'stable')
+        self.assertIsNone(appcast.find(tree, 5001).find('description'))
+        for mismatch in [{'build': 5003}, {'source': 'b' * 40}, {'channel': 'beta'}, {'platform': 'windows'}]:
+            with self.assertRaises(ValueError):
+                self.run_tool('promote', '--build', '5002', '--notes-json', json.dumps({**stable, **mismatch}))
 
     def test_notes_for_different_build_source_platform_or_channel_are_rejected(self):
         notes_path = pathlib.Path(self.dir.name) / 'notes.json'

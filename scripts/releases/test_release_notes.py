@@ -82,7 +82,7 @@ class PreviousChannel(unittest.TestCase):
         self.assertEqual(notes.predecessor(store, 'linux'), {'build': 102, 'source': OLD})
         self.assertEqual(notes.predecessor(store, 'windows'), {'build': 103, 'source': SOURCE})
         with self.assertRaises(ValueError):
-            notes.predecessor(store, 'macos', 'stable')
+            notes.predecessor(store, 'macos', 'unknown')
         for platform in ['macos', 'linux', 'windows']:
             self.assertIsNone(notes.predecessor(Store(), platform))
 
@@ -147,6 +147,29 @@ class MergedRange(unittest.TestCase):
         self.client.call.assert_not_called()
         self.assertIn('Maintenance and stability fixes', notes.description({'items': []}))
         self.assertEqual([x['pr'] for x in self.select(None, self.source)], [2, 1])
+
+    def test_stable_range_accumulates_several_beta_builds(self):
+        # Stable skipped both intermediate beta builds; its own baseline wins.
+        store = Store({'okilum/appcast.xml': feed((700, self.previous, 'stable'),
+                       (750, self.source, 'beta'), (760, self.future, 'beta'))})
+        execute = subprocess.run
+        with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
+            payload = notes.prepare_stable(store, self.client, 'macos', 760, self.future)
+        self.assertEqual(payload['previous_source'], self.previous)
+        self.assertEqual(payload['previous_build'], 700)
+        self.assertEqual(payload['channel'], 'stable')
+        self.assertEqual([item['pr'] for item in payload['items']], [3, 2])
+        notes.record(store, payload)
+        self.assertEqual(store.writes, [notes.key(self.future, 'macos', 'stable')])
+
+    def test_stable_empty_range_uses_maintenance(self):
+        store = Store({'okilum/appcast.xml': feed((700, self.source, 'stable'))})
+        execute = subprocess.run
+        with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
+            payload = notes.prepare_stable(store, self.client, 'macos', 701, self.source)
+        self.assertEqual(payload['items'], [])
+        self.assertEqual(payload['previous_build'], 700)
+        self.assertIn(notes.MAINTENANCE, notes.description(payload))
 
     def test_archive_only_older_source_keeps_real_beta_predecessor_and_empty_range(self):
         # Historical archive builds do not move beta. Their source is already
@@ -242,5 +265,5 @@ class PublicationSidecar(unittest.TestCase):
                 self.assertEqual(result['items'], expected_items)
                 self.assertEqual(store.data[f'okilum/releases/{SOURCE}/{platform}.json'], b'unchanged descriptor bytes')
                 self.assertEqual(store.writes, [notes.key(SOURCE, platform, 'beta')])
-                self.assertEqual(len(commands), 2 if platform == 'linux' else 1)
+                self.assertEqual(len(commands), 1)
                 self.assertNotIn('--archive-only', commands[-1])
