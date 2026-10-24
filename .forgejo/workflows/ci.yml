@@ -431,7 +431,7 @@ jobs:
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
-  # #1290: a frame of the scroll must not grow with the note (scripts/perf/scroll/budget.py).
+  # #1639: calibrated editor latency; the legacy Reader scroll probe is informational.
   perf-linux:
     needs: native-scope
     if: >-
@@ -447,7 +447,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Run the exact PR head's scroll frame-cost guard on GitHub Linux
+      - name: Run the exact PR head's editor latency gate on GitHub Linux
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -529,22 +529,27 @@ jobs:
             *) exit 1 ;;
           esac
 
-  # Keep the protected context; only shared code and applicable macOS block it.
+  # Keep the protected context: shared code, applicable macOS and editor latency.
   # Main's Linux release health is still reported independently by main-health.
   check:
-    needs: [shared, macos]
+    needs: [shared, macos, perf-linux]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
     steps:
-      - name: Require shared code and applicable macOS checks
+      - name: Require shared code, applicable macOS and editor latency checks
         env:
           EVENT: ${{ github.event_name }}
           SHARED_RESULT: ${{ needs.shared.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
+          PERF_RESULT: ${{ needs.perf-linux.result }}
         run: |
           set -euo pipefail
           test "$SHARED_RESULT" = success
+          case "$PERF_RESULT" in
+            success|skipped) ;;
+            *) echo "Editor latency gate failed or was cancelled: $PERF_RESULT"; exit 1 ;;
+          esac
           if [ "$EVENT" = pull_request ]; then
             test "$MACOS_RESULT" = success
           fi
