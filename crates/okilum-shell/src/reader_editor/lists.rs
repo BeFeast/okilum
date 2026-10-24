@@ -52,24 +52,29 @@ enum Marker {
 /// One line of the source, split into its Markdown prefix. Offsets are
 /// absolute; `end` is before the newline (and a CR before it).
 #[derive(Clone, Debug)]
-struct Line {
-    start: usize,
-    end: usize,
+pub(super) struct Line {
+    pub(super) start: usize,
+    pub(super) end: usize,
     /// After the `>` markers of block quotes and the space after each.
-    quote_end: usize,
+    pub(super) quote_end: usize,
     /// After the indentation inside the quote.
-    indent_end: usize,
+    pub(super) indent_end: usize,
     /// The marker characters: a bullet, or digits and their delimiter.
     marker: Option<(Marker, Range<usize>)>,
     task: bool,
     /// Where the text starts: after the marker, its spaces and a task box.
-    content: usize,
+    pub(super) content: usize,
     /// Where an item's own content column is: after the marker and its
     /// spaces, before a task box.
     marker_end: usize,
 }
 
 impl Line {
+    /// A list item: it has a bullet or a number.
+    pub(super) fn item(&self) -> bool {
+        self.marker.is_some()
+    }
+
     fn depth(&self, text: &str) -> usize {
         text[self.start..self.quote_end].matches('>').count()
     }
@@ -78,11 +83,11 @@ impl Line {
         &text[self.quote_end..self.indent_end]
     }
 
-    fn width(&self, text: &str) -> usize {
+    pub(super) fn width(&self, text: &str) -> usize {
         columns(self.indent(text))
     }
 
-    fn blank(&self, text: &str) -> bool {
+    pub(super) fn blank(&self, text: &str) -> bool {
         text[self.quote_end..self.end].trim().is_empty()
     }
 
@@ -106,13 +111,13 @@ fn columns(indent: &str) -> usize {
 
 /// Lines scanned up or down from the edit before giving up: bounds the cost
 /// of an Enter in a very long note.
-const SCAN_LINES: usize = 10_000;
+pub(super) const SCAN_LINES: usize = 10_000;
 
-fn line_start(text: &str, offset: usize) -> usize {
+pub(super) fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map_or(0, |at| at + 1)
 }
 
-fn line_end(text: &str, start: usize) -> usize {
+pub(super) fn line_end(text: &str, start: usize) -> usize {
     let end = text[start..].find('\n').map_or(text.len(), |at| start + at);
     if end > start && text.as_bytes()[end - 1] == b'\r' {
         end - 1
@@ -121,7 +126,7 @@ fn line_end(text: &str, start: usize) -> usize {
     }
 }
 
-fn line_at(text: &str, offset: usize) -> Line {
+pub(super) fn line_at(text: &str, offset: usize) -> Line {
     let start = line_start(text, offset);
     parse(text, start, line_end(text, start))
 }
@@ -236,7 +241,7 @@ fn newline(text: &str) -> &'static str {
 
 /// True when the line at `start` is inside a code fence or the front matter:
 /// no list there.
-fn in_code(text: &str, start: usize) -> bool {
+pub(super) fn in_code(text: &str, start: usize) -> bool {
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut from = text.len() - body.len();
     // Front matter: a `---` first line up to a closing `---` or `...`.
@@ -454,7 +459,7 @@ fn renumber(text: &str, anchor: usize, first: Option<u64>, skip: Option<usize>) 
     edits
 }
 
-fn apply(text: &str, edits: &[Edit]) -> String {
+pub(super) fn apply(text: &str, edits: &[Edit]) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     let mut at = 0;
     for (range, new) in edits {
@@ -468,7 +473,7 @@ fn apply(text: &str, edits: &[Edit]) -> String {
 
 /// Where `offset` lands after sorted `edits`. `right`: an insertion at the
 /// offset goes before it.
-fn map_offset(edits: &[Edit], offset: usize, right: bool) -> usize {
+pub(super) fn map_offset(edits: &[Edit], offset: usize, right: bool) -> usize {
     let mut delta = 0isize;
     for (range, new) in edits {
         let grow = new.len() as isize - range.len() as isize;
@@ -910,7 +915,7 @@ pub(crate) fn indent(text: &str, selection: Range<usize>, outdent: bool) -> Opti
 impl Reader {
     /// The note editor, when a list command may run in it now: a Markdown
     /// note, focused and editable, no completion owning the key.
-    fn list_input(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
+    pub(super) fn list_input(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
         let editing = self.editing.as_ref()?;
         let input = editing.input.read(cx);
         (editing.markdown
@@ -920,7 +925,7 @@ impl Reader {
         .then(|| editing.input.clone())
     }
 
-    fn apply_list_edit(
+    pub(super) fn apply_list_edit(
         &mut self,
         input: &Entity<EditorState>,
         edit: ListEdit,

@@ -5,6 +5,7 @@
 //! bindings `bind_keys` installed. Tooltips use [`hint`] for the same reason,
 //! so a rebound key changes the sheet, the tooltip and the menu together.
 use super::*;
+use crate::reader_editor::format;
 use gpui_base::ElementExt as _;
 use platform::labels::Os;
 
@@ -12,6 +13,7 @@ use platform::labels::Os;
 pub(crate) enum Group {
     Navigation,
     Notes,
+    Format,
     Search,
     View,
 }
@@ -21,6 +23,7 @@ impl Group {
         match self {
             Group::Navigation => "Navigation",
             Group::Notes => "Notes",
+            Group::Format => "Format",
             Group::Search => "Search",
             Group::View => "View",
         }
@@ -75,6 +78,17 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleTask>("Toggle task", Notes),
         entry::<note_paste::PasteAsPlainText>("Paste as plain text", Notes),
         entry::<note_paste::PasteAsTitledLink>("Paste as titled link", Notes),
+        entry::<format::ToggleBold>("Bold", Format),
+        entry::<format::ToggleItalic>("Italic", Format),
+        entry::<format::ToggleStrikethrough>("Strikethrough", Format),
+        entry::<format::ToggleInlineCode>("Inline code", Format),
+        entry::<format::Heading1>("Heading 1", Format),
+        entry::<format::Heading2>("Heading 2", Format),
+        entry::<format::Heading3>("Heading 3", Format),
+        entry::<format::Heading4>("Heading 4", Format),
+        entry::<format::Heading5>("Heading 5", Format),
+        entry::<format::Heading6>("Heading 6", Format),
+        entry::<format::Paragraph>("Paragraph", Format),
         entry::<CloseNote>("Close note", Notes),
         entry::<RenameTreeNote>("Rename selected item", Notes),
         entry::<RenameNote>("Rename note", Notes),
@@ -526,7 +540,13 @@ mod tests {
         let mut sorted = groups.clone();
         sorted.sort();
         assert_eq!(groups, sorted, "rows stay grouped");
-        for group in [Group::Navigation, Group::Notes, Group::Search, Group::View] {
+        for group in [
+            Group::Navigation,
+            Group::Notes,
+            Group::Format,
+            Group::Search,
+            Group::View,
+        ] {
             assert!(groups.contains(&group), "{group:?} has rows");
         }
         let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();

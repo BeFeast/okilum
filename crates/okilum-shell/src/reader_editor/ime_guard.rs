@@ -18,10 +18,7 @@ pub(super) const IME_SETTLE: std::time::Duration = std::time::Duration::from_mil
 
 /// What would start an automatic edit or open a menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "Space is constructed by #1636 and #1638")
-)]
+#[cfg_attr(not(test), allow(dead_code, reason = "Space is constructed by #1638"))]
 pub(crate) enum Trigger {
     /// List continuation, completion accept.
     Enter,

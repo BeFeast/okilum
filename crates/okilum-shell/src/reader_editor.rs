@@ -1,4 +1,5 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
+pub(crate) mod format;
 mod ime_guard;
 mod lists;
 mod live_preview;
@@ -523,6 +524,10 @@ impl Reader {
             input.set_search_query("", !reader_ui_state::find_case_sensitive(cx), cx);
             // The key that confirmed an IME candidate runs no automation (#1637).
             input.set_ime_settle(ime_guard::IME_SETTLE);
+            // Typed autoformat in notes: wrap a selection, close a pair (#1636).
+            if !plain_file {
+                input.set_typed_text_hook(Some(format::typed_hook()));
+            }
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
@@ -1451,7 +1456,9 @@ impl Reader {
         let editing = self.editing.as_ref().unwrap();
         let palette = brand::palette(cx);
         let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
-        // #1635: Enter, Tab and Backspace in lists, before the input.
+        // #1635: Enter, Tab and Backspace in lists, before the input;
+        // #1636: the formatting keys.
+        let column = self.format_actions(column, cx);
         self.list_actions(column, cx)
             // #1611: the paste commands beside Cmd+V, and files dropped onto
             // the note, through the same router.
