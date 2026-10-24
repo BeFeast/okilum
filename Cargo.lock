@@ -6131,11 +6131,14 @@ name = "okilum-http"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "image",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-util",
  "url",
  "windows-sys 0.61.2",
 ]
@@ -6168,6 +6171,7 @@ dependencies = [
  "flate2",
  "fsevent-sys",
  "futures",
+ "futures-util",
  "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
@@ -6204,6 +6208,8 @@ dependencies = [
  "smallvec",
  "tempfile",
  "time",
+ "tokio",
+ "tokio-util",
  "tree-sitter",
  "tree-sitter-mermaid",
  "unicode-bidi",

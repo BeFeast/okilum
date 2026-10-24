@@ -25,8 +25,39 @@ pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<Clien
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none());
     #[cfg(windows)]
-    let builder = windows_proxy::configure(builder.use_native_tls(), &endpoint)?;
+    let builder = {
+        let builder = builder.use_native_tls();
+        match windows_proxy::resolve(&endpoint)? {
+            windows_proxy::Policy::Inherit => builder,
+            windows_proxy::Policy::Direct => builder.no_proxy(),
+            windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
+        }
+    };
     Ok(builder)
+}
+
+/// Async uploads preserve an early HTTP rejection while the body is streaming.
+pub fn async_client(endpoint: &str, version: &str, timeout: Duration) -> Result<reqwest::Client> {
+    let endpoint = url::Url::parse(endpoint).context("Invalid HTTP endpoint")?;
+    anyhow::ensure!(
+        matches!(endpoint.scheme(), "https" | "http"),
+        "Unsupported HTTP scheme"
+    );
+    let builder = reqwest::Client::builder()
+        .user_agent(format!("Okilum/{version} ({})", std::env::consts::OS))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none());
+    #[cfg(windows)]
+    let builder = {
+        let builder = builder.use_native_tls();
+        match windows_proxy::resolve(&endpoint)? {
+            windows_proxy::Policy::Inherit => builder,
+            windows_proxy::Policy::Direct => builder.no_proxy(),
+            windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
+        }
+    };
+    builder.build().context("Build HTTP client")
 }
 
 /// Classifies actual client/stream errors, never HTTP/application rejection.

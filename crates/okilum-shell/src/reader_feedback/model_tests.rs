@@ -448,10 +448,50 @@ fn missing_local_attachment_does_not_contact_either_address() {
         &report,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("attached video"), "{error:#}");
+    assert!(error.to_string().contains("video file"), "{error:#}");
     for listener in [primary, alternate] {
         assert!(
             matches!(listener.accept(), Err(error) if error.kind()==std::io::ErrorKind::WouldBlock)
         );
     }
+}
+
+#[test]
+fn early_http_rejection_during_video_upload_never_retries() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let primary = format!("http://{}/feedback", listener.local_addr().unwrap());
+    let rejected = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // Stop at the headers: most of this 32 MB upload is still pending.
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            headers.push(byte[0]);
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            )
+            .unwrap();
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+        // Drain unread upload data so teardown does not replace HTTP with TCP RST.
+        let _ = std::io::copy(&mut socket, &mut std::io::sink());
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = sized_file(dir.path(), "early.mp4", 32 * 1024 * 1024);
+    let mut report = report();
+    report.video = Some(video_file(&path).unwrap());
+    let alternate = TcpListener::bind("127.0.0.1:0").unwrap();
+    alternate.set_nonblocking(true).unwrap();
+    let fallback = format!("http://{}/feedback", alternate.local_addr().unwrap());
+    let error = send_using(&primary, &fallback, &report).unwrap_err();
+    rejected.join().unwrap();
+    assert!(error.to_string().contains("HTTP 403"), "{error:#}");
+    assert!(
+        matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
 }

@@ -1,10 +1,14 @@
 //! Resolve the current user's Windows proxy, including PAC/WPAD, for this URL.
 //! Credentials are not copied from Windows or placed in headers/logs.
 #[cfg(windows)]
-pub(super) fn configure(
-    builder: reqwest::blocking::ClientBuilder,
-    url: &url::Url,
-) -> anyhow::Result<reqwest::blocking::ClientBuilder> {
+pub(super) enum Policy {
+    Inherit,
+    Direct,
+    Proxy(reqwest::Proxy),
+}
+
+#[cfg(windows)]
+pub(super) fn resolve(url: &url::Url) -> anyhow::Result<Policy> {
     use anyhow::{ensure, Context};
     use std::{ffi::c_void, ptr};
     use windows_sys::Win32::{Foundation::GlobalFree, Networking::WinHttp::*};
@@ -19,7 +23,7 @@ pub(super) fn configure(
         .iter()
         .any(|name| std::env::var(name).is_ok_and(|v| !v.is_empty()))
     {
-        return Ok(builder);
+        return Ok(Policy::Inherit);
     }
     struct Strings(Vec<*mut u16>);
     impl Drop for Strings {
@@ -119,7 +123,7 @@ pub(super) fn configure(
         }
     }
     if bypasses(url.host_str().unwrap_or_default(), &bypass) {
-        return Ok(builder.no_proxy());
+        return Ok(Policy::Direct);
     }
     match select_proxy(&proxy, url.scheme()) {
         Some(proxy) => {
@@ -131,11 +135,11 @@ pub(super) fn configure(
                 bypass,
             ]
             .join(",");
-            Ok(builder.proxy(
+            Ok(Policy::Proxy(
                 reqwest::Proxy::all(proxy)?.no_proxy(reqwest::NoProxy::from_string(&no_proxy)),
             ))
         }
-        None => Ok(builder.no_proxy()),
+        None => Ok(Policy::Direct),
     }
 }
 

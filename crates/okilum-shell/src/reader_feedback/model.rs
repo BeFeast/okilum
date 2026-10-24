@@ -220,23 +220,16 @@ fn send_using(primary: &str, fallback: &str, report: &Report) -> Result<Receipt>
     okilum_http::primary_then_fallback(primary, fallback, |endpoint| send_to(endpoint, report))
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
-    use reqwest::blocking::multipart::{Form, Part};
-    // reqwest's body error also covers a receiver disappearing mid-upload.
-    // Track the selected file's own Read failures rather than guessing by kind.
-    struct VideoReader {
-        file: std::io::Take<std::fs::File>,
-        error: Arc<std::sync::Mutex<Option<String>>>,
-    }
-    impl Read for VideoReader {
-        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-            let result = self.file.read(bytes);
-            if let Err(error) = &result {
-                *self.error.lock().unwrap_or_else(|error| error.into_inner()) =
-                    Some(error.to_string());
-            }
-            result
-        }
-    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Create Feedback network runtime")?
+        .block_on(send_to_async(endpoint, report))
+}
+async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
+    use futures_util::TryStreamExt;
+    use reqwest::multipart::{Form, Part};
+    use tokio::io::AsyncReadExt;
     let attachment_error = Arc::new(std::sync::Mutex::new(None::<String>));
     report.validate()?;
     // A large video needs far longer than the text-only 45 s budget.
@@ -250,7 +243,7 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         let message = format!("{}. Your feedback is kept.", okilum_http::reason(&error));
         error.context(message)
     };
-    let client = okilum_http::client(endpoint, &report.meta.version, timeout)
+    let client = okilum_http::async_client(endpoint, &report.meta.version, timeout)
         .map_err(|error| failure(okilum_http::transport_failure(error)))?;
     let mut meta = serde_json::to_value(&report.meta)?;
     if super::sprint::enabled() {
@@ -291,11 +284,18 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         );
         form = form.part(
             "video",
-            Part::reader_with_length(
-                VideoReader {
-                    file: file.take(length),
-                    error: attachment_error.clone(),
-                },
+            Part::stream_with_length(
+                reqwest::Body::wrap_stream(
+                    tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file).take(length))
+                        .map_err({
+                            let attachment_error = attachment_error.clone();
+                            move |error| {
+                                *attachment_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some(error.to_string());
+                                error
+                            }
+                        }),
+                ),
                 length,
             )
             .file_name(video.name.clone())
@@ -306,6 +306,7 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         .post(endpoint)
         .multipart(form)
         .send()
+        .await
         .map_err(|error| {
             let local = attachment_error
                 .lock()
@@ -324,22 +325,27 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
             }
         })?;
     let status = response.status();
-    let bytes = bounded(response, 16 * 1024).map_err(|error| {
-        // Never turn an HTTP rejection into a retry, even if its body stalls.
-        if status == reqwest::StatusCode::CREATED {
-            failure(okilum_http::transport_failure(error))
-        } else {
-            let error = error.context(format!(
-                "Feedback returned HTTP {} with an unreadable body",
-                status.as_u16()
-            ));
-            crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
-            error.context(format!(
-                "{}. Your feedback is kept.",
-                okilum_http::http_reason(status.as_u16())
-            ))
-        }
-    })?;
+    let bytes = bounded_response(response, 16 * 1024)
+        .await
+        .map_err(|error| {
+            // Never turn an HTTP rejection into a retry, even if its body stalls.
+            if status == reqwest::StatusCode::CREATED {
+                failure(okilum_http::transport_failure(error))
+            } else {
+                let error = error.context(format!(
+                    "Feedback returned HTTP {} with an unreadable body",
+                    status.as_u16()
+                ));
+                crate::reader_diagnostics::network_failure(
+                    &format!("Feedback via {endpoint}"),
+                    &error,
+                );
+                error.context(format!(
+                    "{}. Your feedback is kept.",
+                    okilum_http::http_reason(status.as_u16())
+                ))
+            }
+        })?;
     if status != reqwest::StatusCode::CREATED {
         let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
         crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
@@ -374,6 +380,17 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     receipt.delivery_endpoint = Some(endpoint.to_owned());
     crate::reader_diagnostics::feedback_delivery(endpoint);
     Ok(receipt)
+}
+async fn bounded_response(mut response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len().saturating_add(chunk.len()) <= maximum,
+            "Attachment or response exceeds its size limit."
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 fn bounded(reader: impl Read, maximum: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
