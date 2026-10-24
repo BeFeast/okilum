@@ -11,6 +11,7 @@ use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
 #[cfg(all(unix, feature = "brain"))]
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::{Colorize as _, Theme};
+use okilum_shell::projects_picker;
 
 pub const SANS_FONT: &str = "Noto Sans";
 pub const MONO_FONT: &str = "Cascadia Code";
@@ -39,7 +40,7 @@ pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_EXPAND_ICON: &str = "icons/chevrons-up-down.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
 pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
-const IMAGES: [(&str, &[u8]); 28] = [
+const IMAGES: [(&str, &[u8]); 33] = [
     (
         "icons/code-xml.svg",
         include_bytes!("../assets/icons/code-xml.svg"),
@@ -121,6 +122,27 @@ const IMAGES: [(&str, &[u8]); 28] = [
     (
         "icons/project-planned.svg",
         include_bytes!("../assets/icons/project-planned.svg"),
+    ),
+    // The projects switcher and list (#1519, #1520).
+    (
+        projects_picker::PROJECTS_ICON,
+        include_bytes!("../assets/icons/projects.svg"),
+    ),
+    (
+        projects_picker::CODE_ICON,
+        include_bytes!("../assets/icons/project-code.svg"),
+    ),
+    (
+        projects_picker::KNOWLEDGE_ICON,
+        include_bytes!("../assets/icons/project-knowledge.svg"),
+    ),
+    (
+        projects_picker::HYBRID_ICON,
+        include_bytes!("../assets/icons/project-hybrid.svg"),
+    ),
+    (
+        projects_picker::ACTIVITY_ICON,
+        include_bytes!("../assets/icons/activity.svg"),
     ),
     (READER_LIST_ICON, include_bytes!("../assets/icons/list.svg")),
     (READER_LINK_ICON, include_bytes!("../assets/icons/link.svg")),

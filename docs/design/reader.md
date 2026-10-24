@@ -28,7 +28,8 @@ localisation.
 Oleg's toolbar organization decision of **2026-10-08 (#767)** supersedes the
 original combined titlebar and document controls:
 
-- **App titlebar (46 px).** Sidebar toggle and one vault Search at the left;
+- **App titlebar (46 px).** Sidebar toggle, the project switcher, Recent ▾,
+  Pinned ▾ and one vault Search at the left (#1508, see «Title-bar navigation»);
   loading feedback, app More and right-panel toggle at the right. Native window
   controls and dragging remain unchanged. Appearance and Settings are in app
   More rather than separate toolbar buttons.
@@ -73,7 +74,7 @@ overflowing as described above.
 The main toolbar search glyph opens vault-wide **content search** (#624), with
 Ctrl+Shift+F / ⇧⌘F in its tooltip. **Find in note** lives in the document's **…**
 menu and in its header as a distinct `TextSearch` glyph, with Ctrl+F / ⌘F.
-Quick open (Ctrl+K / ⌘K) is unchanged. The same Find action works in preview
+Quick open (Ctrl+K / ⌘K) is the palette described under «⌘K palette». The same Find action works in preview
 and Edit source. Both match literal text without case by default, including
 Unicode letters. The optional Aa / Match case switch starts off; its explicit
 choice is remembered globally in the application UI store outside the vault (#682).
@@ -320,9 +321,11 @@ hidden rows use subdued styling without a text badge, and the current row keeps
 its normal selection contrast. The tree never highlights a neighbour instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
 them all and is remembered per vault (#395). Recent, Pinned and Inbox follow the
 same rule and update as soon as it changes; quick open and search still find
-hidden notes (#635). Hovering the Folders header
-shows «Collapse all» and «Focus current» (only the path to the open note stays
-expanded; ⇧⌘← while browsing). ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
+hidden notes (#635). The Folders header always shows its five actions in fixed
+slots — New note, New folder, «Collapse all», «Focus current» (only the path to
+the open note stays expanded) and the eye — idle and hovered alike; hover only
+raises their contrast and never adds, hides or moves an icon (#1512). A narrow
+sidebar folds them into one ⋯ menu. ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
 folder context menu («Expand/Collapse all subfolders») act on the folder and
 everything below it, as in Finder. There is no global «Expand all» (#410).
 F2/Enter starts inline rename for notes and folders (#578); Right/Left expands/
@@ -330,35 +333,62 @@ collapses, and Left on a child selects its parent. A folder-label click selects;
 double-click, its disclosure glyph, or ⌘↓ (Ctrl↓ on Linux) toggles it.
 
 
-### Sections (#369, variant A «Sections», chosen by Oleg 2026-10-04)
+### Title-bar navigation (#1508: #1517, #1519)
 
-Mockup: [sidebar.html](https://html.me.uk/t/okilum-reader-348/sidebar.html?v=A).
-Under the panel header, top to bottom, each section collapsible (state remembered):
+Variant A, decided 2026-10-22. Left of the title bar, after the sidebar
+toggle:
 
-- **Recent** — the last opened notes, 5 shown, «N more» up to 10, with a
-  relative age.
-- **Pinned** — notes and folders pinned with the pin that appears on hover
-  (filled `accent` when pinned). A pinned folder reveals itself in the tree.
-- **Inbox** — computed, never configured or stored: notes created in the last
-  14 days (platform birth time; fallback: first seen by the app after its
-  baseline) that are not yet built into the structure — directly in the vault
-  or a domain root, or without incoming links. Archived and `_` notes never
-  qualify. A note leaves on its own once it is moved into a PARA folder and
-  linked. Each row shows the reason («at root», «in Work», «no links») and age;
-  the header shows the count.
-- **Folders** — the tree above.
+- **«<project> ▾» switcher (#1519).** Outside a project it reads «<vault> ▾».
+  It opens the shared Projects picker (#1520) as a popover left-aligned under
+  it: search, kind filter, recent projects first, then vault domains. Choosing
+  a project enters it through the same revalidating pipeline as the Projects
+  section. Inside a project the popover ends with **Leave project**; the old
+  «<name> · Leave project» text button is gone. Esc, a second press on the
+  switcher or an outside press closes it.
+- **Recent ▾ and Pinned ▾ (#1517).** Popover lists: title, the parent folder's
+  name under it, and the age for Recent. Recent shows six and «Show all»; its
+  footer names the Ctrl+Tab cycle, which is unchanged. Hidden notes follow
+  Show hidden files (#635). ↑ ↓ ↵ work inside; Esc closes. Below 960 px the
+  two buttons shrink to their clock and pin glyphs.
+- **Inside a project** both lists show the project's notes, with a
+  This project / All vault segmented switch at the top. The choice is
+  remembered per project with the sidebar state (`nav_all_vault`); the
+  stores themselves stay vault-wide (Recent keeps 40), and the project is a
+  folder-prefix filter.
 
-All four section headers remain visible outside the scrolling bodies (#434).
-Scrolling down in Folders folds Recent/Pinned/Inbox to counted header rows;
-returning to the top restores the user's expanded sections. Clicking a folded
-header expands it in place without resetting the tree position. Automatic folding
-is transient and never overwrites the saved collapse preference. Large upper
-sections have bounded body viewports, sharing the space above a reserved 140px
-minimum tree viewport; their headers do not scroll with their contents.
+### ⌘K palette (#1518)
 
-Recent, Pinned and collapsed sections are app state per root in the Reader
-state directory; nothing is written into notes. Searching in the palette leaves
-the sidebar sections and tree expansion unchanged.
+Quick open (Ctrl+K / ⌘K) is one palette with the sections **Pinned**,
+**Recent**, **Projects** and **Files**, in that order; one query filters all
+four. Pinned and Recent are the title-bar lists, so inside a project they
+follow its This project / All vault switch; Recent leaves out the note on
+screen. Projects shows up to five rows from the shared picker, then «All
+projects…», which opens the switcher with the same text. Files waits for text
+(«Type to search files in <project or vault>») and, inside a project, ranks
+the project's files first; it leaves out what Pinned and Recent already show.
+↑ ↓ move across all rows, Tab / ⇧Tab jump between sections, ⌘1…⌘4 (Ctrl
+elsewhere) to a given one, ↵ opens, Esc clears then closes. Opening it closes
+an open title-bar menu or the switcher. Content search (⇧⌘F) stays one flat
+list of matches.
+
+### Tree only (#1508, design session 2026-10-22)
+
+The left sidebar is the folder tree and nothing else. Recent and Pinned moved
+to the title bar (Recent ▾, Pinned ▾, #1517); Projects, Inbox and Logs are app
+sections in the ⋯ menu (#1474). In a vault the Folders header stays, with its
+actions; clicking it folds the tree. Inside a project there is no Folders
+header at all: the project's tree starts right under the panel header and
+cannot be folded away. Scrolling never changes the sidebar's geometry.
+
+The retired controls are gone with the sections: «Collapse/Expand all
+sections», «Folders only / Restore sections», ⌥-click on a header and their
+shortcuts. Recent, Pinned and the tree's fold are app state per root in the
+Reader state directory; nothing is written into notes. Older state files load
+unchanged: pins and recents survive, and the old per-section fold and
+Folders-only snapshots are ignored.
+
+The earlier variant A «Sections» (#369, #434) — Recent, Pinned and Inbox as
+collapsible sidebar sections above Folders — is superseded.
 
 ## Right panel (R3)
 

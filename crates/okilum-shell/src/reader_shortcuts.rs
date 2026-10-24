@@ -81,6 +81,14 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_move_picker::FolderNext>("Next destination folder", Notes),
         entry::<reader_move_picker::FolderPrevious>("Previous destination folder", Notes),
         entry::<reader_move_picker::CloseFolderPicker>("Close destination picker", Notes),
+        entry::<reader_title_nav::NavMenuNext>("Next Recent or Pinned item", Navigation),
+        entry::<reader_title_nav::NavMenuPrevious>("Previous Recent or Pinned item", Navigation),
+        entry::<reader_title_nav::NavMenuCycleNext>("Cycle Recent or Pinned items", Navigation),
+        entry::<reader_title_nav::NavMenuCyclePrevious>(
+            "Cycle Recent or Pinned items backwards",
+            Navigation,
+        ),
+        entry::<reader_title_nav::NavMenuOpen>("Open Recent or Pinned item", Navigation),
         entry::<DeleteNote>(Os::CURRENT.move_to_trash(), Notes),
         entry::<UndoTrash>(Os::CURRENT.undo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
@@ -101,6 +109,12 @@ fn catalog() -> Vec<Entry> {
         entry::<RecentNewer>("Next recent note", Navigation),
         entry::<PaletteNext>("Next result", Search),
         entry::<PalettePrevious>("Previous result", Search),
+        entry::<quick_open::PaletteNextSection>("Next palette section", Search),
+        entry::<quick_open::PalettePreviousSection>("Previous palette section", Search),
+        entry::<quick_open::PalettePinned>("Go to Pinned in quick open", Search),
+        entry::<quick_open::PaletteRecent>("Go to Recent in quick open", Search),
+        entry::<quick_open::PaletteProjects>("Go to Projects in quick open", Search),
+        entry::<quick_open::PaletteFiles>("Go to Files in quick open", Search),
         entry::<reader_text_zoom::ZoomIn>("Zoom in note text", View),
         entry::<reader_text_zoom::ZoomOut>("Zoom out note text", View),
         entry::<reader_text_zoom::Reset>("Reset note text zoom", View),
@@ -109,8 +123,6 @@ fn catalog() -> Vec<Entry> {
         entry::<PdfZoomFit>("Fit PDF to width", View),
         entry::<ToggleSource>("Edit / Read", View),
         entry::<OpenLivePreview>("Live Preview", View),
-        entry::<CollapseSidebarSections>("Folders only", View),
-        entry::<ExpandSidebarSections>("Expand all sections", View),
         entry::<ToggleNotes>("Notes panel", View),
         entry::<ToggleProject>("Projects", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),
@@ -165,6 +177,60 @@ pub(crate) fn shortcut(action: &dyn Action, cx: &App) -> Option<String> {
     keys_for(&cx.key_bindings().borrow(), action.name(), Os::CURRENT)
         .into_iter()
         .next()
+}
+
+/// The bound key of `action` as key caps (#1517): «Ctrl» «Tab», the key the
+/// tooltip [`shortcut`] names, split into its keys.
+pub(crate) fn shortcut_caps(action: &dyn Action, cx: &App) -> Option<Vec<String>> {
+    let bindings = cx.key_bindings();
+    let keymap = bindings.borrow();
+    let shown = keys_for(&keymap, action.name(), Os::CURRENT)
+        .into_iter()
+        .next()?;
+    let caps = keymap
+        .bindings()
+        .rev()
+        .filter(|binding| binding.action().name() == action.name())
+        .map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(|key| key.unparse())
+                .collect::<Vec<_>>()
+        })
+        .find(|keys| {
+            keys.iter()
+                .map(|key| Os::CURRENT.shortcut(key))
+                .collect::<Vec<_>>()
+                .join(" ")
+                == shown
+        })
+        .map(|keys| {
+            keys.iter()
+                .flat_map(|key| Os::CURRENT.key_caps(key))
+                .collect()
+        });
+    caps
+}
+
+/// One key as a small muted cap, the shortcut sheet's style; hints that name
+/// a key (the Recent menu footer, #1517) use the same cap.
+pub(crate) fn key_cap(
+    key: impl Into<SharedString>,
+    palette: brand::Palette,
+    tokens: brand::ReaderPalette,
+) -> Div {
+    div()
+        .h(px(20.))
+        .px(px(6.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(px(4.))
+        .bg(tokens.hover)
+        .text_size(px(12.))
+        .text_color(palette.text_muted)
+        .child(key.into())
 }
 
 /// `label` followed by the bound key of `action`, e.g. "Back ⌥←" — the same
@@ -325,21 +391,12 @@ impl Reader {
                             .child(row.label),
                     )
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .children(row.keys.iter().take(2).map(|key| {
-                                div()
-                                    .h(px(20.))
-                                    .px(px(6.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.))
-                                    .bg(tokens.hover)
-                                    .text_size(px(12.))
-                                    .text_color(palette.text_muted)
-                                    .child(key.clone())
-                            })),
+                        h_flex().flex_none().gap_1().children(
+                            row.keys
+                                .iter()
+                                .take(2)
+                                .map(|key| key_cap(key.clone(), palette, tokens)),
+                        ),
                     ),
             );
         }

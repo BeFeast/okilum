@@ -1,5 +1,7 @@
-//! Vault sidebar: Recent, Pinned and the folder tree. Inbox remains an
-//! inventory projection consumed by the application section, never a sidebar.
+//! Vault sidebar state: the folder tree's collapse and hidden-file settings,
+//! plus the Recent and Pinned stores the title bar reads (#1508). The sidebar
+//! itself shows only the tree. Inbox remains an inventory projection consumed
+//! by the application section, never a sidebar.
 use anyhow::{Context, Result};
 use okilum_core::Vault;
 use serde::{Deserialize, Serialize};
@@ -7,14 +9,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub const RECENT_SHOWN: usize = 5;
-pub const RECENT_KEPT: usize = 10;
-
-/// A section header's count badge (#687). An empty section shows no badge:
-/// its placeholder row already says so, and the UI never shows a zero count.
-pub fn section_count(len: usize) -> Option<usize> {
-    (len > 0).then_some(len)
-}
+/// How many notes the title-bar Recent menu lists before «Show all» (#1517).
+pub const RECENT_SHOWN: usize = 6;
+/// Kept vault-wide. Inside a project the Recent menu filters this list to the
+/// project's folder (#1517), so it keeps more than one menu shows.
+pub const RECENT_KEPT: usize = 40;
 
 /// Notes created within this window and not yet filed are the Inbox.
 pub const INBOX_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
@@ -24,7 +23,9 @@ const PRESENT_AT_BASELINE: u64 = 0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Section {
+    /// Labels Recent entries; no longer a sidebar section (#1508).
     Recent,
+    /// Labels Pinned entries; no longer a sidebar section (#1508).
     Pinned,
     /// Decode legacy profile/layout values; never rendered as sidebar sections.
     Inbox,
@@ -36,14 +37,8 @@ pub enum Section {
     Properties,
 }
 
-pub enum SectionAction {
-    FoldersOnly,
-    ExpandAll,
-    ToggleFoldersOnly,
-    CollapseAll,
-}
-
-pub const LEFT_SECTIONS: [Section; 3] = [Section::Recent, Section::Pinned, Section::Folders];
+/// The only section the left sidebar renders (#1508): the folder tree.
+pub const LEFT_SECTIONS: [Section; 1] = [Section::Folders];
 
 impl Section {
     pub fn label(self) -> &'static str {
@@ -66,18 +61,15 @@ pub struct State {
     /// Notes or folders, in pin order.
     #[serde(default)]
     pub pinned: Vec<String>,
+    /// Only `Folders` is written. Older profiles may still carry Recent or
+    /// Pinned here; they are read and ignored. The retired `scroll_revealed`
+    /// and `folders_only_restore` keys are dropped on load (#1508).
     #[serde(default, serialize_with = "write_collapsed")]
     pub collapsed: BTreeSet<Section>,
-    /// Explicit reveals while browsing a scrolled tree survive relaunch.
-    #[serde(default)]
-    pub scroll_revealed: BTreeSet<Section>,
     /// Kept outside `collapsed` so an older build, which cannot read the
     /// `Properties` variant, does not discard the whole state.
     #[serde(default)]
     pub properties_collapsed: bool,
-    /// Saved section state for the reversible Folders-only toolbar toggle.
-    #[serde(default, deserialize_with = "read_folders_restore")]
-    pub folders_only_restore: Option<[bool; 3]>,
     /// Show `_`/`.` files and folders in the tree for this root (#395).
     #[serde(default)]
     pub show_hidden: bool,
@@ -94,6 +86,10 @@ pub struct State {
     /// Projects entered successfully, most recent first, vault-relative (#1520).
     #[serde(default)]
     pub recent_projects: Vec<String>,
+    /// Project folders whose Recent/Pinned menus show the whole vault. A
+    /// project not listed here shows its own notes, the default (#1517).
+    #[serde(default)]
+    pub nav_all_vault: BTreeSet<String>,
 }
 
 fn write_collapsed<S: serde::Serializer>(
@@ -105,20 +101,6 @@ fn write_collapsed<S: serde::Serializer>(
         .filter(|s| LEFT_SECTIONS.contains(s))
         .collect::<Vec<_>>()
         .serialize(serializer)
-}
-
-// Migrate only the old five-section snapshot; never discard pins/recent when
-// upgrading a profile that saved a reversible Folders-only state.
-fn read_folders_restore<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> std::result::Result<Option<[bool; 3]>, D::Error> {
-    let value = Option::<Vec<bool>>::deserialize(d)?;
-    match value.as_deref() {
-        None => Ok(None),
-        Some([recent, pinned, folders]) => Ok(Some([*recent, *pinned, *folders])),
-        Some([recent, pinned, _, _, folders]) => Ok(Some([*recent, *pinned, *folders])),
-        _ => Err(serde::de::Error::custom("invalid sidebar restore state")),
-    }
 }
 
 impl State {
@@ -192,48 +174,7 @@ impl State {
         }
     }
 
-    fn set_collapsed(&mut self, section: Section, collapsed: bool) {
-        match section {
-            Section::Properties => self.properties_collapsed = collapsed,
-            _ => {
-                if collapsed {
-                    self.collapsed.insert(section);
-                } else {
-                    self.collapsed.remove(&section);
-                }
-            }
-        }
-    }
-
-    pub fn folders_only(&mut self, toggle: bool) {
-        if toggle {
-            if let Some(previous) = self.folders_only_restore.take() {
-                for (section, closed) in LEFT_SECTIONS.into_iter().zip(previous) {
-                    self.set_collapsed(section, closed);
-                }
-                return;
-            }
-        }
-        if self.folders_only_restore.is_none() {
-            self.folders_only_restore =
-                Some(LEFT_SECTIONS.map(|section| self.is_collapsed(section)));
-        }
-        for section in LEFT_SECTIONS {
-            self.set_collapsed(section, section != Section::Folders);
-        }
-    }
-
-    pub fn all_sections(&mut self, collapsed: bool) {
-        self.folders_only_restore = None;
-        for section in LEFT_SECTIONS {
-            self.set_collapsed(section, collapsed);
-        }
-    }
-
     pub fn toggle_section(&mut self, section: Section) {
-        if section != Section::Properties {
-            self.folders_only_restore = None;
-        }
         if section == Section::Properties {
             self.properties_collapsed = !self.properties_collapsed;
             return;
@@ -347,6 +288,7 @@ pub fn now() -> u64 {
 }
 
 /// Compact relative age: "now", "12m", "3h", "yesterday", "4d", "3w".
+/// Used by the title-bar Recent menu (#1517).
 pub fn age_label(then: u64, now: u64) -> String {
     let secs = now.saturating_sub(then);
     match secs {
@@ -366,36 +308,23 @@ mod tests {
     const DAY: u64 = 86_400;
 
     #[test]
-    fn section_bulk_actions_restore_and_preserve_right_panel() {
-        let mut state = State::default();
-        state.toggle_section(Section::Pinned);
-        state.toggle_section(Section::Recent);
-        state.properties_collapsed = true;
-        let previous = LEFT_SECTIONS.map(|s| state.is_collapsed(s));
-        state.folders_only(true);
-        assert_eq!(
-            LEFT_SECTIONS.map(|s| state.is_collapsed(s)),
-            [true, true, false]
-        );
-        let mut state: State =
-            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
-        state.folders_only(true);
-        assert_eq!(LEFT_SECTIONS.map(|s| state.is_collapsed(s)), previous);
-        state.folders_only(false);
-        state.folders_only(false);
-        state.folders_only(true);
-        assert_eq!(LEFT_SECTIONS.map(|s| state.is_collapsed(s)), previous);
-        state.all_sections(true);
-        assert!(LEFT_SECTIONS.into_iter().all(|s| state.is_collapsed(s)));
-        state.all_sections(false);
-        assert!(LEFT_SECTIONS.into_iter().all(|s| !state.is_collapsed(s)));
-        assert!(state.properties_collapsed);
-        state.folders_only(true);
-        state.toggle_section(Section::Recent);
+    fn sidebar_is_only_the_tree_and_its_toggle_spares_the_right_panel() {
+        assert_eq!(LEFT_SECTIONS, [Section::Folders]);
+        let mut state = State {
+            properties_collapsed: true,
+            ..Default::default()
+        };
+        state.toggle_section(Section::Folders);
+        assert!(state.is_collapsed(Section::Folders));
         assert!(
-            state.folders_only_restore.is_none(),
-            "manual changes invalidate the restore snapshot"
+            state.properties_collapsed,
+            "the right panel keeps its own state"
         );
+        state.toggle_section(Section::Folders);
+        assert!(!state.is_collapsed(Section::Folders));
+        state.toggle_section(Section::Properties);
+        assert!(!state.properties_collapsed);
+        assert!(!state.is_collapsed(Section::Folders));
     }
 
     fn vault_with(notes: &[(&str, &str)]) -> Vault {
@@ -408,12 +337,6 @@ mod tests {
         let vault = Vault::scan(&root).unwrap();
         let _ = std::fs::remove_dir_all(root);
         vault
-    }
-
-    #[test]
-    fn empty_sections_carry_no_count() {
-        assert_eq!(section_count(0), None);
-        assert_eq!(section_count(3), Some(3));
     }
 
     #[test]
@@ -483,64 +406,35 @@ mod tests {
         assert!(compute_inbox(&after, &mut seen, true, 30 * DAY, |_| None).is_empty());
     }
 
+    /// #1508: profiles written while Recent and Pinned were sidebar sections
+    /// still load. Their pins and recents survive; the retired section state
+    /// (Recent/Pinned collapse, scroll reveals, Folders-only snapshots of any
+    /// shape) is read, ignored and not written back.
     #[test]
-    fn scrolling_preserves_explicit_section_visibility() {
-        let mut scroll = ScrollSections::default();
-        let saved = BTreeSet::from([Section::Pinned]);
-        for offset in [-28., -120., 0., -28., 0.] {
-            assert!(!scroll.observe(offset));
-            assert!(!scroll.closed(Section::Recent, &saved));
-            assert!(scroll.closed(Section::Pinned, &saved));
-            assert!(!scroll.closed(Section::Folders, &saved));
-        }
-        assert_eq!(
-            LEFT_SECTIONS,
-            [Section::Recent, Section::Pinned, Section::Folders]
-        );
-    }
-
-    #[test]
-    fn old_five_section_profile_preserves_pins_and_restore_snapshot() {
-        let state: State = serde_json::from_str(
-            r#"{"pinned":["keep.md"],"folders_only_restore":[true,false,true,true,false]}"#,
-        )
-        .unwrap();
-        assert_eq!(state.pinned, ["keep.md"]);
-        assert_eq!(state.folders_only_restore, Some([true, false, false]));
-    }
-
-    #[test]
-    fn bulk_round_trip_all_sections_after_restart_and_scroll() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("sidebar.json");
-        for mask in 0..32 {
-            let mut state = State::default();
-            for (i, section) in LEFT_SECTIONS.into_iter().enumerate() {
-                state.set_collapsed(section, mask & (1 << i) != 0);
-            }
-            state.properties_collapsed = true;
-            let expected = LEFT_SECTIONS.map(|s| state.is_collapsed(s));
-            state.folders_only(true);
-            state.save(&path).unwrap();
-            let mut state = State::load(&path);
-            state.folders_only(true);
-            let mut scroll = ScrollSections::default();
-            scroll.observe(-120.);
-            scroll.honor_expanded(&state.collapsed);
-            for _ in 0..4 {
-                scroll.observe(-120.);
-            }
-            let visible = |state: &State, scroll: &ScrollSections| {
-                LEFT_SECTIONS.map(|s| scroll.closed(s, &state.collapsed))
-            };
-            assert_eq!(visible(&state, &scroll), expected, "mask {mask}");
-            state.all_sections(false);
-            scroll.honor_expanded(&state.collapsed);
-            for _ in 0..4 {
-                scroll.observe(-120.);
-            }
-            assert_eq!(visible(&state, &scroll), [false; 3]);
-            assert!(state.properties_collapsed);
+    fn older_profiles_keep_pins_and_recent_and_drop_retired_section_state() {
+        for restore in [
+            "[true,false,true,true,false]",
+            "[true,false,true]",
+            "[true]",
+        ] {
+            let state: State = serde_json::from_str(&format!(
+                r#"{{"recent":[["a.md",7]],"pinned":["keep.md"],
+                    "collapsed":["recent","pinned","inbox","folders"],
+                    "scroll_revealed":["recent","pinned"],
+                    "folders_only_restore":{restore},
+                    "properties_collapsed":true,"show_hidden":true}}"#
+            ))
+            .unwrap_or_else(|e| panic!("{restore}: {e}"));
+            assert_eq!(state.pinned, ["keep.md"], "{restore}");
+            assert_eq!(state.recent, [("a.md".to_owned(), 7)], "{restore}");
+            assert!(state.is_collapsed(Section::Folders));
+            assert!(state.properties_collapsed && state.show_hidden);
+            let written: serde_json::Value =
+                serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+            assert_eq!(written["collapsed"], serde_json::json!(["folders"]));
+            assert!(written.get("scroll_revealed").is_none());
+            assert!(written.get("folders_only_restore").is_none());
+            assert_eq!(written["pinned"], serde_json::json!(["keep.md"]));
         }
     }
 
@@ -551,14 +445,14 @@ mod tests {
         let path = State::path(&directory, Path::new("/vault/a"));
         assert_ne!(path, State::path(&directory, Path::new("/vault/b")));
         let mut state = State::default();
-        for i in 0..12 {
+        for i in 0..RECENT_KEPT as u64 + 2 {
             state.record_open(&format!("n{i}.md"), i);
         }
         state.record_open("n3.md", 99);
         assert_eq!(state.recent.len(), RECENT_KEPT);
         assert_eq!(state.recent[0], ("n3.md".to_owned(), 99));
         state.toggle_pin("Work/Projects");
-        state.toggle_section(Section::Recent);
+        state.toggle_section(Section::Folders);
         state.save(&path).unwrap();
         assert_eq!(State::load(&path), state);
         state.toggle_pin("Work/Projects");
@@ -566,66 +460,5 @@ mod tests {
         assert_eq!(age_label(0, 90), "1m");
         assert_eq!(age_label(0, DAY + 5), "yesterday");
         let _ = std::fs::remove_dir_all(directory);
-    }
-}
-
-/// Automatic folding is temporary; explicit reveals are saved with sidebar state.
-#[derive(Default)]
-pub(crate) struct ScrollSections {
-    pub compact: bool,
-    pub revealed: BTreeSet<Section>,
-    last_offset: f32,
-    ignore_reflow: bool,
-}
-
-impl ScrollSections {
-    pub fn from_state(state: &State) -> Self {
-        let revealed: BTreeSet<_> = state
-            .scroll_revealed
-            .iter()
-            .copied()
-            .filter(|s| {
-                matches!(s, Section::Recent | Section::Pinned | Section::Inbox)
-                    && !state.is_collapsed(*s)
-            })
-            .collect();
-        Self {
-            compact: !revealed.is_empty(),
-            revealed,
-            ignore_reflow: true,
-            ..Default::default()
-        }
-    }
-
-    pub fn closed(&self, section: Section, saved: &BTreeSet<Section>) -> bool {
-        saved.contains(&section)
-    }
-
-    /// Scrolling cannot alter section visibility or sidebar geometry (#1474).
-    pub fn observe(&mut self, offset: f32) -> bool {
-        self.last_offset = offset;
-        false
-    }
-
-    pub fn restore(&mut self) -> bool {
-        let changed = self.compact;
-        *self = Self::default();
-        changed
-    }
-
-    /// Explicit bulk choices override automatic folding at the current scroll
-    /// position. Returning to the top restores ordinary automatic behaviour.
-    pub fn honor_expanded(&mut self, saved: &BTreeSet<Section>) {
-        self.compact = true;
-        self.revealed = [Section::Recent, Section::Pinned, Section::Inbox]
-            .into_iter()
-            .filter(|section| !saved.contains(section))
-            .collect();
-        self.ignore_reflow = true;
-    }
-
-    pub fn reveal(&mut self, section: Section) {
-        self.revealed.insert(section);
-        self.ignore_reflow = true;
     }
 }
