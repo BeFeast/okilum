@@ -555,7 +555,7 @@ impl Reader {
                                         .text_size(px(BODY_FONT_SIZE))
                                         .px(px(READER_SIDE_PADDING))
                                         .py_4()
-                                        .max_w(px(READER_MAX_WIDTH))
+                                        .max_w(px(reader_ui_state::note_column_width(cx)))
                                         .w_full()
                                         .flex_1()
                                         .min_h_0(),

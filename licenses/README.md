@@ -28,6 +28,10 @@ components; this is a conservative superset of any individual release.
 - Shell icons: Lucide ISC, plus Feather MIT for inherited icons (including
   arrow-up-right, clock, link and list). Lucide.txt retains both notices.
   Source: https://github.com/lucide-icons/lucide/blob/main/LICENSE
+- Project icon picker: the complete Lucide set from lucide-static 0.564.0 (ISC,
+  with the same Feather MIT portions; Lucide.txt), the release T3 Code ships,
+  bundled as crates/okilum-shell/assets/lucide/lucide.tsv.gz by
+  scripts/lucide/bundle.py. Source: https://www.npmjs.com/package/lucide-static/v/0.564.0
 - PDF standard fonts: hayro-interpret embeds PDFium's Foxit fonts (BSD-3-Clause)
   and a CC0 CMYK profile. Foxit-PDFium.txt retains the PDFium/Foxit notice;
   about.toml clarifies hayro-interpret so cargo-about lists both licences.

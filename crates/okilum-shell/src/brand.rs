@@ -40,7 +40,18 @@ pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_EXPAND_ICON: &str = "icons/chevrons-up-down.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
 pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
-const IMAGES: [(&str, &[u8]); 33] = [
+/// Note width toggle: shown in full width (back to normal) and in normal width.
+pub const NOTE_WIDTH_NORMAL_ICON: &str = "icons/fold-horizontal.svg";
+pub const NOTE_WIDTH_FULL_ICON: &str = "icons/unfold-horizontal.svg";
+const IMAGES: [(&str, &[u8]); 35] = [
+    (
+        NOTE_WIDTH_NORMAL_ICON,
+        include_bytes!("../assets/icons/fold-horizontal.svg"),
+    ),
+    (
+        NOTE_WIDTH_FULL_ICON,
+        include_bytes!("../assets/icons/unfold-horizontal.svg"),
+    ),
     (
         "icons/code-xml.svg",
         include_bytes!("../assets/icons/code-xml.svg"),
@@ -168,6 +179,10 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
+        }
+        // The full Lucide set for project icons (#1627), unpacked on first use.
+        if path.starts_with(okilum_shell::lucide::ASSET_PREFIX) {
+            return Ok(okilum_shell::lucide::load(path).map(Cow::Owned));
         }
         gpui_kit_assets::Assets.load(path)
     }

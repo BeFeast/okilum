@@ -192,6 +192,93 @@ fn picker_and_native_file_drop_attach_images_and_invalid_replacement_keeps_the_p
 }
 
 #[gpui::test]
+fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_it(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("screenshot.png");
+    std::fs::write(&image, png()).unwrap();
+    let video = dir.path().join("recording.MOV");
+    std::fs::write(&video, b"moov").unwrap();
+    let second = dir.path().join("second.webm");
+    std::fs::write(&second, b"webm").unwrap();
+    with_reader(cx, |visual| {
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let visual = &mut feedback;
+        assert!(visual.debug_bounds("feedback-video-hint").is_some());
+        let center = visual.debug_bounds("feedback-form").unwrap().center();
+        visual.simulate_event(FileDropEvent::Entered {
+            position: center,
+            paths: ExternalPaths([video.clone(), image.clone()].into_iter().collect()),
+        });
+        visual.simulate_event(FileDropEvent::Submit { position: center });
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            let report = view.report(cx).unwrap();
+            let attached = report.video.expect("dropped video is attached");
+            assert_eq!(attached.mime, "video/quicktime");
+            assert_eq!(attached.path, video);
+            assert!(
+                report.screenshot.is_some(),
+                "the PNG still goes to the screenshot"
+            );
+            assert!(view.video_error.is_none() && view.image_error.is_none());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("feedback-video").is_some());
+
+        // Two videos at once are refused and the attached one stays.
+        view.update(visual, |view, cx| {
+            view.attach_paths(&[second.clone(), video.clone()], cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_some());
+            assert_eq!(view.video.as_ref().unwrap().path, video);
+        });
+        // A rejected replacement keeps the previous video.
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.video_error.is_some());
+            assert_eq!(view.video.as_ref().unwrap().path, video);
+        });
+
+        // The next good drop clears both stale reasons (review: 1630).
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&video), cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_none() && view.video_error.is_none());
+        });
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&image), cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(
+                view.video_error.is_none(),
+                "screenshot drop clears the old video reason"
+            );
+            assert!(view.image.is_some() && view.video.is_some());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        let remove = visual.debug_bounds("feedback-remove-video").unwrap();
+        visual.simulate_click(remove.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            assert!(view.report(cx).unwrap().video.is_none());
+            assert!(view.video_error.is_none());
+        });
+    });
+}
+
+#[gpui::test]
 fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
     cx: &mut TestAppContext,
 ) {
@@ -637,5 +724,43 @@ fn feedback_field_starts_empty_and_typing_is_the_whole_value(cx: &mut TestAppCon
             assert_eq!(view.text.read(cx).value(), "ываы");
             assert_eq!(view.report(cx).unwrap().text, "ываы");
         });
+    });
+}
+
+#[gpui::test]
+fn owned_feedback_center_single_instance_escape_and_close_with_owner(cx: &mut TestAppContext) {
+    with_reader(cx, |owner| {
+        let (draft, mut feedback) = open_from_button(owner);
+        let handle = feedback.update(|window, cx| {
+            let owner_handle = reader_owned_windows::owner(window.window_handle(), cx);
+            let expected = owner_handle
+                .update(cx, |_, owner, _| owner.bounds().center())
+                .unwrap();
+            assert_eq!(window.bounds().center(), expected);
+            assert!(!window.is_minimizable());
+            window.window_handle()
+        });
+        feedback.update(show);
+        feedback.run_until_parked();
+        assert_eq!(feedback.update(|window, _| window.window_handle()), handle);
+        assert_eq!(feedback.update(|_, cx| cx.windows().len()), 2);
+        feedback.simulate_keystrokes("escape");
+        feedback.run_until_parked();
+        assert!(!draft.read_with(owner, |draft, _| draft.visible));
+        owner.update(|window, cx| {
+            assert_eq!(cx.windows().len(), 1);
+            show(window, cx);
+        });
+        owner.run_until_parked();
+        let reopened = owner.update(|window, cx| {
+            cx.global::<Drafts>().0[&window.window_handle().window_id()].window
+        });
+        owner.update(|window, _| window.remove_window());
+        owner.run_until_parked();
+        assert!(!owner.read(|cx| cx.windows().contains(&reopened.into())));
+        assert!(
+            !draft.read_with(owner, |draft, _| draft.visible),
+            "closed content releases visible state"
+        );
     });
 }

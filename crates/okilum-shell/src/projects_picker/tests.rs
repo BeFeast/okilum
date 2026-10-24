@@ -26,6 +26,7 @@ fn catalog() -> PickerModel {
         environment: None,
         manager_project: None,
         manager: Manager::NotStarted,
+        appearance: Default::default(),
     })
     .to_vec();
     PickerModel::new(
@@ -159,6 +160,7 @@ fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestA
             environment: Some("maestro".into()),
             manager_project: Some(format!("project-{i}")),
             manager: Manager::Thread(format!("mcp:manager-{i}")),
+            appearance: Default::default(),
         })
         .collect();
     let model = PickerModel::new(
@@ -353,4 +355,88 @@ fn sections_icon_slots_no_dots_and_the_segmented_filter(cx: &mut TestAppContext)
     visual.simulate_click(all.center(), gpui::Modifiers::none());
     visual.run_until_parked();
     picker.read_with(visual, |p, _| assert_eq!(p.model.filter(), KindFilter::All));
+}
+
+/// #1627: a right-click on a row asks the host for the project's menu
+/// (Change icon…); the row's slot shows the avatar, and a T3 icon seen for
+/// the project wins over its project.yaml.
+#[gpui::test]
+fn right_click_asks_for_the_project_menu_and_the_avatar_follows_t3(cx: &mut TestAppContext) {
+    use crate::project_avatar::{avatar, ProjectIcons};
+    use okilum_t3::projects::icon::{Avatar, Counterpart, IconColor, ProjectIcon};
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+    });
+    let menus = Rc::new(RefCell::new(Vec::<String>::new()));
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| ProjectsPicker::new(catalog(), Presentation::Page, window, cx));
+        let menus = menus.clone();
+        cx.subscribe(&picker, move |_, _, event: &ProjectMenu, _| {
+            menus.borrow_mut().push(event.0.name.clone())
+        })
+        .detach();
+        entity = Some(picker.clone());
+        let host = cx.new(|_| Host(picker));
+        Root::new(host, window, cx)
+    });
+    let picker = entity.unwrap();
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let row = visual
+        .debug_bounds("project-choice-1")
+        .expect("the first project row");
+    visual.simulate_mouse_down(
+        row.center(),
+        gpui::MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_up(
+        row.center(),
+        gpui::MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    visual.run_until_parked();
+    assert_eq!(*menus.borrow(), ["Editor"]);
+    picker.read_with(visual, |p, _| {
+        assert!(p
+            .model
+            .project(Path::new("vault/Dev/Areas/Editor"))
+            .is_some());
+    });
+
+    let mut editor = picker.read_with(visual, |p, _| {
+        p.model
+            .project(Path::new("vault/Dev/Areas/Editor"))
+            .unwrap()
+            .clone()
+    });
+    let auto = visual.update(|_, cx| avatar(&editor, cx));
+    assert!(matches!(auto, Avatar::Monogram { ref text, .. } if text == "E"));
+    editor.appearance.icon = Some(ProjectIcon::Emoji {
+        emoji: "📚".into()
+    });
+    let manifest = visual.update(|_, cx| avatar(&editor, cx));
+    assert!(matches!(manifest, Avatar::Icon(ProjectIcon::Emoji { .. })));
+    let t3_icon = ProjectIcon::Lucide {
+        name: "bot".into(),
+        color: IconColor::Cyan,
+    };
+    visual.update(|_, cx| {
+        cx.default_global::<ProjectIcons>().links.insert(
+            editor.folder.clone(),
+            Counterpart {
+                environment: "maestro".into(),
+                project_id: "editor".into(),
+                icon: Some(t3_icon.clone()),
+                logo: None,
+            },
+        );
+    });
+    let linked = visual.update(|_, cx| avatar(&editor, cx));
+    assert_eq!(linked, Avatar::Icon(t3_icon), "T3's icon is the one icon");
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let slot = visual.debug_bounds("project-icon-1").unwrap();
+    assert_eq!(slot.size.width, px(16.), "the avatar keeps the 16 px slot");
 }

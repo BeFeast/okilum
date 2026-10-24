@@ -350,6 +350,27 @@ impl ManagerGateway for McpGateway {
         self.paginate("t3_project_list", json!({}), "projects")
     }
 
+    fn read_project(&self, project_id: &str) -> GatewayResult<Project> {
+        self.call("t3_project_read", json!({ "projectId": project_id }))
+    }
+
+    fn set_project_icon(
+        &self,
+        project_id: &str,
+        icon: Option<&crate::projects::icon::ProjectIcon>,
+    ) -> GatewayResult<Project> {
+        // `null` clears the override; omitted fields stay as they are.
+        let args = json!({ "projectId": project_id, "projectIcon": icon });
+        self.call_value("t3_project_update", args)?;
+        let project = self.read_project(project_id)?;
+        if project.project_icon.as_ref() != icon {
+            return Err(GatewayError::Protocol(
+                "T3 did not keep the project icon".into(),
+            ));
+        }
+        Ok(project)
+    }
+
     fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>> {
         let args = json!({ "projectId": project_id, "includeSubagents": true });
         self.paginate("t3_thread_list", args, "threads")

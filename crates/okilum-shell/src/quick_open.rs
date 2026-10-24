@@ -7,7 +7,7 @@
 use super::*;
 use okilum_core::search_snippet::{plain_snippet, PlainSnippet};
 use okilum_core::SearchHit;
-use okilum_shell::projects_picker::{icon_slot, picker::Row as ProjectRow, project_icon};
+use okilum_shell::projects_picker::{icon_slot, kind_icon, picker::Row as ProjectRow};
 
 use std::collections::HashMap;
 
@@ -89,7 +89,8 @@ impl PaletteSection {
 pub(super) enum PaletteItem {
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
     Note(reader_title_nav::Entry),
-    Project(ProjectRow),
+    /// Boxed: a row carries its project, icon included (#1627).
+    Project(Box<ProjectRow>),
     /// Opens the full project switcher with the same query.
     AllProjects,
     /// Index into `Palette::rows`.
@@ -753,12 +754,12 @@ impl Reader {
                     .map(|entry| (section, PaletteItem::Note(entry.clone()))),
             );
         }
-        items.extend(
-            sections
-                .projects
-                .iter()
-                .map(|row| (PaletteSection::Projects, PaletteItem::Project(row.clone()))),
-        );
+        items.extend(sections.projects.iter().map(|row| {
+            (
+                PaletteSection::Projects,
+                PaletteItem::Project(Box::new(row.clone())),
+            )
+        }));
         if sections.any_project {
             items.push((PaletteSection::Projects, PaletteItem::AllProjects));
         }
@@ -1387,7 +1388,7 @@ impl Reader {
                             .child(
                                 div()
                                     .text_color(muted)
-                                    .child(icon_slot(Some(project_icon(&project.project)))),
+                                    .child(icon_slot(Some(kind_icon(&project.project)))),
                             )
                             .child(
                                 div()
