@@ -303,7 +303,7 @@ impl RetainedPresentation {
         if cut == 0 {
             return None;
         }
-        let definitions = |text: &str| {
+        fn definitions(text: &str) -> Vec<&str> {
             let mut rows: Vec<&str> = text
                 .lines()
                 .map(|line| container_content(line).trim_end())
@@ -311,7 +311,7 @@ impl RetainedPresentation {
                 .collect();
             rows.sort_unstable();
             rows
-        };
+        }
         if definitions(&old[cut..]) != definitions(&new[cut..]) {
             return None;
         }
