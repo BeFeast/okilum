@@ -209,6 +209,43 @@ fn create_writes_the_manifest_and_an_index_only_when_there_is_none() {
         .contains("domain: \"Music\"\nindex: \"Music/Areas/Studio/_index.md\"\n"));
 }
 
+/// An `_index.md` that cannot be written takes the manifest (and the `ops/`
+/// folder create made) back, so a retry is not refused as «already a project».
+#[cfg(unix)]
+#[test]
+fn a_failed_index_write_leaves_the_folder_as_it_was() {
+    use std::os::unix::fs::PermissionsExt;
+    let vault = Vault::new();
+    let folder = vault.folder("HomeLab");
+    let draft = Draft::for_folder(&folder);
+    // `ops/` exists and is writable; the folder itself is not, so the
+    // manifest lands and the index cannot.
+    let ops = folder.join("ops");
+    std::fs::create_dir(&ops).unwrap();
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    mode(&folder, 0o555);
+    let probe = folder.join("probe");
+    if std::fs::write(&probe, "").is_ok() {
+        // Root ignores the mode; nothing to prove here.
+        let _ = std::fs::remove_file(&probe);
+        mode(&folder, 0o755);
+        return;
+    }
+    let error = create(&vault.0, &folder, &draft).unwrap_err();
+    assert!(format!("{error:#}").contains(INDEX), "{error:#}");
+    assert!(!folder.join(MANIFEST).exists());
+    assert!(!is_project(&folder));
+    // The `ops/` folder was already there, so it stays.
+    assert!(ops.is_dir());
+
+    mode(&folder, 0o755);
+    let created = create(&vault.0, &folder, &draft).unwrap();
+    assert!(created.wrote_index);
+    assert!(folder.join(MANIFEST).is_file());
+}
+
 #[test]
 fn the_vault_root_and_missing_folders_are_refused() {
     let vault = Vault::new();

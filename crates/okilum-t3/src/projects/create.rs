@@ -248,14 +248,21 @@ pub struct Created {
     pub wrote_index: bool,
 }
 
-/// Write a new file; never replace one.
+/// Write a new file; never replace one. A file this call created but could
+/// not finish is removed again.
 fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written
 }
 
 /// Turn `folder` (inside `vault`) into a project: `ops/project.yaml`, and
@@ -280,23 +287,46 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
         "{relative} is already a project: it has {MANIFEST}"
     );
     let ops = folder.join("ops");
-    match std::fs::symlink_metadata(&ops) {
-        Ok(metadata) => ensure!(
-            metadata.is_dir(),
-            "{relative}/ops is not a folder (a symlink or a file)"
-        ),
+    let created_ops = match std::fs::symlink_metadata(&ops) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.is_dir(),
+                "{relative}/ops is not a folder (a symlink or a file)"
+            );
+            false
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(&ops).with_context(|| format!("cannot create {relative}/ops"))?
+            std::fs::create_dir(&ops).with_context(|| format!("cannot create {relative}/ops"))?;
+            true
         }
         Err(error) => return Err(error).with_context(|| format!("cannot read {relative}/ops")),
-    }
-    write_new(&folder.join(MANIFEST), &manifest(draft, &relative)).map_err(|error| {
+    };
+    let rollback_ops = || {
+        if created_ops {
+            // Only an empty folder goes: never anything someone else put there.
+            let _ = std::fs::remove_dir(&ops);
+        }
+    };
+    let manifest_path = folder.join(MANIFEST);
+    write_new(&manifest_path, &manifest(draft, &relative)).map_err(|error| {
+        rollback_ops();
         if error.kind() == std::io::ErrorKind::AlreadyExists {
             anyhow::anyhow!("{relative} is already a project: it has {MANIFEST}")
         } else {
             anyhow::Error::new(error).context(format!("cannot write {relative}/{MANIFEST}"))
         }
     })?;
+    // From here a failure takes the manifest back, so the folder is not left
+    // half made and refused as «already a project» on the next try.
+    finish(folder, draft, &relative).inspect_err(|_| {
+        let _ = std::fs::remove_file(&manifest_path);
+        rollback_ops();
+    })
+}
+
+/// The rest of [`create`] once the manifest is written: `_index.md` when the
+/// folder has none, then the project as the Projects list reads it.
+fn finish(folder: &Path, draft: &Draft, relative: &str) -> Result<Created> {
     let index = folder.join(INDEX);
     let wrote_index = match std::fs::symlink_metadata(&index) {
         Ok(_) => false,
