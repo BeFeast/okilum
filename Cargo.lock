@@ -6027,6 +6027,7 @@ dependencies = [
  "async-channel",
  "base64 0.22.1",
  "bzip2",
+ "caseless",
  "comrak",
  "crc32fast",
  "csv",

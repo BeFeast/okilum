@@ -17,13 +17,16 @@ use std::{
 struct Key {
     snapshot: Snapshot,
     references: Arc<[Reference]>,
+    allow_frontmatter: bool,
 }
 
 // Identity is deliberately not the parse key. HashMap still checks exact bytes
 // and the complete reference context on a hash collision; hashes are not leases.
 impl PartialEq for Key {
     fn eq(&self, other: &Self) -> bool {
-        self.snapshot.source() == other.snapshot.source() && self.references == other.references
+        self.snapshot.source() == other.snapshot.source()
+            && self.references == other.references
+            && self.allow_frontmatter == other.allow_frontmatter
     }
 }
 impl Eq for Key {}
@@ -31,6 +34,7 @@ impl Hash for Key {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.snapshot.source().hash(state);
         self.references.hash(state);
+        self.allow_frontmatter.hash(state);
     }
 }
 
@@ -94,10 +98,20 @@ impl BlockCache {
         snapshot: &Snapshot,
         references: &[Reference],
     ) -> Classification {
+        self.classify_fragment(snapshot, references, true)
+    }
+
+    pub(crate) fn classify_fragment(
+        &mut self,
+        snapshot: &Snapshot,
+        references: &[Reference],
+        allow_frontmatter: bool,
+    ) -> Classification {
         self.clock = self.clock.saturating_add(1);
         let key = Key {
             snapshot: snapshot.clone(),
             references: references.to_vec().into(),
+            allow_frontmatter,
         };
         if let Some(entry) = self.entries.get_mut(&key) {
             self.stats.hits += 1;
@@ -110,7 +124,7 @@ impl BlockCache {
             return result;
         }
         self.stats.misses += 1;
-        let result = super::classify_with(snapshot, references);
+        let result = super::classify_fragment(snapshot, references, allow_frontmatter);
         let bytes = references.iter().fold(snapshot.source().len(), |sum, r| {
             sum.saturating_add(r.label.len())
                 .saturating_add(r.url.len())

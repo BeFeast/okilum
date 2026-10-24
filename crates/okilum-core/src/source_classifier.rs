@@ -10,6 +10,7 @@ use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 pub mod block_cache;
 pub mod decorations;
 mod retained;
+pub mod segmented;
 pub use retained::{RetainedPresentation, RevealSnapshot};
 
 pub const MAX_BYTES: usize = 64 * 1024;
@@ -63,7 +64,7 @@ impl comrak::options::BrokenLinkCallback for References {
     ) -> Option<comrak::ResolvedReference> {
         self.0
             .iter()
-            .find(|known| known.label == reference.original)
+            .find(|known| normalized_label(&known.label) == reference.normalized)
             .map(|known| comrak::ResolvedReference {
                 url: known.url.clone(),
                 title: known.title.clone(),
@@ -78,6 +79,8 @@ pub enum SourceReason {
     StructureLimit,
     UnsupportedOrAmbiguous,
     ProjectionBoundary,
+    /// A progressive classification has not visited every offscreen block yet.
+    PendingBlocks,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +209,18 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
 
 /// `references` resolve uses whose definitions lie outside a local fragment.
 pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Classification {
+    classify_fragment(snapshot, references, true)
+}
+
+fn normalized_label(label: &str) -> String {
+    caseless::default_case_fold_str(&label.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+pub(crate) fn classify_fragment(
+    snapshot: &Snapshot,
+    references: &[Reference],
+    allow_frontmatter: bool,
+) -> Classification {
     let source = snapshot.source();
     if source.len() > MAX_BYTES {
         return fallback(snapshot, SourceReason::InputLimit);
@@ -237,7 +252,7 @@ pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Cl
     } else {
         "---"
     };
-    options.extension.front_matter_delimiter = Some(delimiter.into());
+    options.extension.front_matter_delimiter = allow_frontmatter.then(|| delimiter.into());
     let root = comrak::parse_document(&arena, source, &options);
     for (count, node) in root.descendants().enumerate() {
         if count >= MAX_NODES || node.ancestors().take(MAX_DEPTH + 2).count() > MAX_DEPTH + 1 {
@@ -245,7 +260,8 @@ pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Cl
         }
     }
     // An unterminated frontmatter opener must not expose its body as Markdown.
-    if first_line == Some(delimiter)
+    if allow_frontmatter
+        && first_line == Some(delimiter)
         && !root
             .children()
             .any(|n| matches!(n.data.borrow().value, NodeValue::FrontMatter(_)))

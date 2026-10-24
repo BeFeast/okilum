@@ -14,6 +14,9 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 comrak = { version = "0.47", features = ["syntect"] }
+# Existing locked parsers: block-only index and the same label casefold as comrak.
+markdown = "1.0.0"
+caseless = "0.2.2"
 syntect = "5"
 tantivy = "0.26"
 # The same stemmers tantivy uses, driven per token by script (see analyzer.rs).
@@ -60,10 +63,6 @@ tokio = { version = "1", features = ["rt", "sync", "macros", "time", "net"] }
 async-channel = "2"
 
 [dev-dependencies]
-# The default reader parses Markdown with markdown-rs inside gpui-component
-# (vendored). The spec harness (#650) measures that parse too. Keep the
-# requirement identical to the vendor's so both resolve to one locked build.
-markdown = "1.0.0"
 # Hand-written ZIP fixtures in archive.rs; already in Cargo.lock.
 crc32fast = "1"
 # An independent CSV parser for the log CSV export (#1387): the test reads the

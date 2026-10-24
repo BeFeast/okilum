@@ -5,9 +5,10 @@
 use std::{ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
-pub const MAX_BYTES: usize = 256 * 1024;
-pub const MAX_RANGES: usize = 4096;
-pub const MAX_WORK: usize = 2 * 1024 * 1024;
+// Large-document projection is still bounded independently of per-block parsing.
+pub const MAX_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_RANGES: usize = 64 * 1024;
+pub const MAX_WORK: usize = 16 * 1024 * 1024;
 const MAX_DOCUMENT_ID_BYTES: usize = 4096;
 
 /// Immutable identity and authored bytes. A generation alone is never a lease.
