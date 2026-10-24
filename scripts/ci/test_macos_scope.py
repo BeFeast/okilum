@@ -42,7 +42,9 @@ class ScopeTests(unittest.TestCase):
         workflow = Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml'
         gate = re.search(r'^  check:\n(.*?)(?=^  [\w-]+:|\Z)',
                          workflow.read_text(), re.M | re.S)[1]
-        script = '\n'.join(line[10:] for line in gate.split('        run: |\n', 1)[1].splitlines())
+        run = re.match(r'((?: {10}[^\n]*(?:\n|$)|\n)*)',
+                       gate.split('        run: |\n', 1)[1])[1]
+        script = '\n'.join(line[10:] for line in run.splitlines())
         for event in ['pull_request', 'push']:
             for shared in ['success', 'failure', 'cancelled', 'skipped']:
                 for needed in ['true', 'false', '']:

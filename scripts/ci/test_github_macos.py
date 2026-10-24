@@ -271,7 +271,9 @@ class BridgeTests(unittest.TestCase):
         import re
         block = re.search(r'^  macos:\n(.*?)(?=^  [\w-]+:|\Z)',
                           workflow.read_text(), re.M | re.S)[1]
-        script = '\n'.join(line[10:] for line in block.split('        run: |\n', 1)[1].splitlines())
+        run = re.match(r'((?: {10}[^\n]*(?:\n|$)|\n)*)',
+                       block.split('        run: |\n', 1)[1])[1]
+        script = '\n'.join(line[10:] for line in run.splitlines())
         import itertools
         for lane, required, hosted_job, hosted, local, linux in itertools.product(
                 ['hosted', 'local', 'invalid'], ['true', 'false', ''],
