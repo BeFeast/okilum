@@ -20,7 +20,7 @@ class PreviewTests(unittest.TestCase):
             head=dict(sha=SHA, ref=REF, repo=dict(full_name=REPO)),
             base=dict(ref='main', repo=dict(full_name=REPO)))
         self.env = dict(GITHUB_REPOSITORY=REPO, GITHUB_REF='refs/heads/' + REF,
-            GITHUB_RUN_ID='100', MACOS_PREVIEW_PR='7', MACOS_PREVIEW_HEAD=SHA)
+            GITHUB_RUN_ID='100', MACOS_PR_PREVIEWS_ENABLED='true', MACOS_PREVIEW_PR='7', MACOS_PREVIEW_HEAD=SHA)
         self.now = m.datetime(2026, 10, 22, tzinfo=m.timezone.utc)
         self.status = dict(sha=SHA, statuses=[dict(context='ci / macos (pull_request)', status='success')])
         self.runs = dict(total_count=0, workflow_runs=[])
@@ -51,6 +51,17 @@ class PreviewTests(unittest.TestCase):
         return dict(id=rid, workflow_id='macos-release.yml', commit_sha=sha,
             prettyref=REF, is_fork_pull_request=False, trigger_event='workflow_dispatch',
             status='success', event_payload=json.dumps({'inputs': {'preview_pr': '7', 'preview_head': requested}}))
+
+    def test_disabled_by_default_blocks_dispatch_and_signer_before_api_access(self):
+        for enabled in (None, '', 'false', 'TRUE'):
+            if enabled is None:
+                self.env.pop('MACOS_PR_PREVIEWS_ENABLED', None)
+            else:
+                self.env['MACOS_PR_PREVIEWS_ENABLED'] = enabled
+            for event in ('pull_request', 'workflow_dispatch', 'schedule'):
+                self.assertFalse(self.select(event)[0])
+        self.api_mock.assert_not_called()
+        self.desc.assert_not_called()
 
     def test_coordinator_dispatches_exact_requested_head_without_a_signer(self):
         self.assertFalse(self.select()[0])
@@ -142,6 +153,8 @@ class PreviewTests(unittest.TestCase):
         ci = (ROOT / '.forgejo/workflows/ci.yml').read_text()
         block = ci.split('  macos-preview:\n', 1)[1].split('  macos:\n', 1)[0]
         self.assertIn('needs: [native-scope, macos]', block)
+        self.assertIn("vars.OKILUM_MACOS_PR_PREVIEWS == 'true'", block)
+        self.assertIn('MACOS_PR_PREVIEWS_ENABLED: ${{ vars.OKILUM_MACOS_PR_PREVIEWS }}', block)
         self.assertNotIn('needs.linux', block)
         self.assertIn('ref: main', block)
         self.assertIn('actions: write', block)
@@ -149,5 +162,6 @@ class PreviewTests(unittest.TestCase):
         self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', block)
         workflow = (ROOT / '.forgejo/workflows/macos-release.yml').read_text()
         self.assertIn('cancel-in-progress: false', workflow)
+        self.assertIn('MACOS_PR_PREVIEWS_ENABLED: ${{ vars.OKILUM_MACOS_PR_PREVIEWS }}', workflow)
         self.assertIn('MACOS_PREVIEW_HEAD: ${{ inputs.preview_head }}', workflow)
         self.assertIn("needs.select.outputs.preview == 'true'", workflow)
