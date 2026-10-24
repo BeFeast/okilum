@@ -22,14 +22,16 @@ budget = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(budget)
 
 FIXTURES = ("tiny.md", "sections-460.md", "one-mib.md", "novel-1200k.md")
+LIVE_FIXTURES = ("tiny.md", "raw-tail-60k.md")
 METRICS = ("open_first_ms", "input_frame_ms", "scroll_frame_ms")
 
 
 def summary(value=100):
     samples = {f"source:{name}": {metric: [9999, *([value] * 5)] for metric in METRICS}
                for name in FIXTURES}
-    samples["live:tiny.md"] = {metric: [9999, *([value] * 5)]
-                               for metric in (*METRICS, "open_full_ms")}
+    samples.update({f"live:{name}": {metric: [9999, *([value] * 5)]
+                                     for metric in (*METRICS, "open_full_ms")}
+                    for name in LIVE_FIXTURES})
     return {"schema": 1, "boundary": "xvfb-software-post-frame", "samples": samples,
             "unsupported": [f"live:{name}" for name in FIXTURES[1:]],
             "evidence": ["CT141/run/source-and-live-traces"]}
@@ -54,9 +56,13 @@ class AggregateTests(unittest.TestCase):
         original = copy.deepcopy(raw)
         result = budget.aggregate(raw)
         expected = {f"source:{name}/{metric}" for name in FIXTURES for metric in METRICS}
-        expected.update(f"live:tiny.md/{metric}" for metric in (*METRICS, "open_full_ms"))
+        expected.update(f"live:{name}/{metric}" for name in LIVE_FIXTURES
+                        for metric in (*METRICS, "open_full_ms"))
         self.assertEqual(set(result), expected)
-        self.assertEqual(len(result), 16)
+        self.assertEqual(len(result), 20)
+        self.assertEqual(budget.METRIC_KEYS, expected)
+        self.assertEqual(budget.UNSUPPORTED,
+                         ("live:sections-460.md", "live:one-mib.md", "live:novel-1200k.md"))
         self.assertEqual(result["source:tiny.md/open_first_ms"], {"median_ms": 3.0, "p90_ms": 20.0})
         self.assertEqual(raw, original)
 
@@ -115,6 +121,12 @@ class AggregateTests(unittest.TestCase):
         cases.append(raw)
         raw = summary()
         raw["samples"]["live:one-mib.md"] = copy.deepcopy(raw["samples"]["live:tiny.md"])
+        cases.append(raw)
+        raw = summary()
+        raw["samples"]["source:raw-tail-60k.md"] = copy.deepcopy(raw["samples"]["source:tiny.md"])
+        cases.append(raw)
+        raw = summary()
+        raw["unsupported"].append("live:raw-tail-60k.md")
         cases.append(raw)
         raw = summary()
         raw["samples"]["source:tiny.md"]["open_full_ms"] = [1] * 6
@@ -202,17 +214,19 @@ class VerdictTests(unittest.TestCase):
                 self.assertEqual({failure["statistic"] for failure in failures}, {"median_ms", "p90_ms"})
 
     def test_p90_only_regression_is_not_hidden_by_stable_median(self):
-        raw = summary()
-        replace_samples(raw, "live:tiny.md/open_full_ms", [9999, 100, 100, 100, 100, 136])
-        failures = budget.verdict(baseline(), budget.aggregate(raw))
-        self.assertEqual(len(failures), 1)
-        self.assertEqual(failures[0]["statistic"], "p90_ms")
-        self.assertEqual(failures[0]["limit_ms"], 135)
+        for key in baseline()["metrics"]:
+            with self.subTest(key=key):
+                raw = summary()
+                replace_samples(raw, key, [9999, 100, 100, 100, 100, 136])
+                failures = budget.verdict(baseline(), budget.aggregate(raw))
+                self.assertEqual(len(failures), 1)
+                self.assertEqual(failures[0]["metric"], key)
+                self.assertEqual(failures[0]["statistic"], "p90_ms")
+                self.assertEqual(failures[0]["limit_ms"], 135)
 
     def test_relative_absolute_and_input_floor_boundaries_are_inclusive(self):
         for base, limit in ((100, 135), (20, 45), (0, 25)):
-            for key in ("source:tiny.md/open_first_ms", "source:novel-1200k.md/input_frame_ms",
-                        "live:tiny.md/scroll_frame_ms", "live:tiny.md/open_full_ms"):
+            for key in baseline()["metrics"]:
                 with self.subTest(base=base, key=key):
                     raw = summary(base)
                     replace_samples(raw, key, [9999, *([limit] * 5)])

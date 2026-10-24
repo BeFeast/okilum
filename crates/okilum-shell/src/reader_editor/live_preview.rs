@@ -469,6 +469,27 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn latency_fence_fixture_forces_raw_tail_after_local_remap_refuses() {
+        use okilum_core::{
+            source_classifier::{classify, RetainedPresentation},
+            source_projection::Snapshot,
+        };
+        let source = include_str!("../../../../scripts/perf/editor/raw-tail-60k.md");
+        assert_eq!(source.len(), 60 * 1024);
+        let original = Snapshot::new("raw-tail-latency", 1, source);
+        let retained = RetainedPresentation::new(&classify(&original));
+        let edited = Snapshot::new("raw-tail-latency", 2, format!("{source}\n"));
+        assert!(
+            retained.remap(&edited).is_none(),
+            "the latency workload must exercise the fallback, not a local remap"
+        );
+        assert!(
+            retained.remap_raw_tail(&edited).is_some(),
+            "Enter at EOF inside this unclosed fence must run remap_raw_tail"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn latency_diagnostics_require_opt_in_and_trace(cx: &mut TestAppContext) {

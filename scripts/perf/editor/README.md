@@ -6,12 +6,13 @@ The existing Reader scroll growth guard and its thresholds remain required.
 
 `fixtures.py` generates original prose, with pinned SHA-256 hashes: 3 KiB,
 130,000 bytes with 460 heading sections, exactly 1 MiB, and 1,200,000 characters.
-It needs no network or downloaded book. Each run uses a fresh, isolated vault,
+An additional 60 KiB fixture holds an unclosed fence through EOF. It needs no
+network or downloaded book. Each run uses a fresh, isolated vault,
 application state and recovery directory; installed applications are not used.
 
 ## What is measured
 
-Each Source scenario and the small Live Preview scenario has one warmup followed
+Each Source scenario and both Live Preview scenarios have one warmup followed
 by five independent launches. The report gives the median and nearest-rank p90
 of the five measured repetitions. With five observations p90 is their maximum.
 
@@ -30,6 +31,12 @@ of the five measured repetitions. With five observations p90 is their maximum.
   burst, using the existing trace fields. Software-rasterizer `present` cost
   is excluded. At least five redraws, changed window pixels and a nonzero
   editor scroll offset are mandatory.
+
+`live:raw-tail-60k.md` injects **Enter at EOF inside an unclosed fence** rather
+than a character at the start. A Rust regression uses the exact pinned fixture
+to prove `remap` refuses this edit and `remap_raw_tail` accepts it. Consequently
+the real keyboard-to-frame measurement covers the fallback scan accepted in
+the #1654 review, without changing or separately timing the core implementation.
 
 GPUI calls `on_next_frame` **before** rendering. The diagnostic nests two
 callbacks: the second runs after the intervening draw/present returned. It

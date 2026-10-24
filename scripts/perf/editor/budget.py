@@ -30,6 +30,7 @@ FRAME_METRICS = ("open_first_ms", "input_frame_ms", "scroll_frame_ms")
 SCENARIOS = {
     **{f"source:{name}": FRAME_METRICS for name in FIXTURES},
     "live:tiny.md": (*FRAME_METRICS, "open_full_ms"),
+    "live:raw-tail-60k.md": (*FRAME_METRICS, "open_full_ms"),
 }
 UNSUPPORTED = tuple(f"live:{name}" for name in FIXTURES[1:])
 METRIC_KEYS = frozenset(f"{scenario}/{metric}"

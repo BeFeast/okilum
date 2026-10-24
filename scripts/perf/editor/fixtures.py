@@ -7,10 +7,14 @@ sentences rotate by paragraph index, are cropped to length, and wrap at 96
 columns. ASCII text makes UTF-8 byte and character counts identical. Sections
 include the initial heading; each note has one opening ``edit-marker``.
 
-tiny.md is 3 KiB; sections-460.md is 130,000 bytes with exactly 460 sections;
-one-mib.md is exactly 1,048,576 bytes; novel-1200k.md is 1,200,000 characters.
+The four main Source workloads are tiny.md (3 KiB), sections-460.md (130,000
+bytes with exactly 460 sections), one-mib.md (exactly 1,048,576 bytes), and
+novel-1200k.md (1,200,000 characters). tiny.md also exercises full Live Preview.
+The separate Live Preview fallback scenario raw-tail-60k.md is exactly 60 KiB:
+an unclosed text fence runs almost the whole note. Ctrl+End then Return at EOF
+exercises remap_raw_tail after remap refuses (#1654), scanning the full raw tail.
 Run ``fixtures.py OUTDIR --check`` to refuse pinned-manifest drift before writing
-the four notes and manifest.json. Omitting --check permits intentional repinning.
+the five notes and manifest.json. Omitting --check permits intentional repinning.
 """
 
 import argparse
@@ -70,6 +74,13 @@ def _document(title: str, characters: int, sections: int) -> bytes:
     return "".join(chunks).encode("utf-8")
 
 
+def _raw_tail() -> bytes:
+    """Keep EOF inside one long unclosed fence, ending in ordinary content and LF."""
+    prefix = "# Raw tail performance\n\n" + OPENING.rstrip() + "\n\n```text\n"
+    body = _paragraph(0, 60 * 1024 - len(prefix) - 1)
+    return (prefix + body + "\n").encode("utf-8")
+
+
 def notes() -> dict[str, bytes]:
     """Return the complete, stable source bytes; no files or global state change."""
     return {
@@ -77,6 +88,7 @@ def notes() -> dict[str, bytes]:
         "sections-460.md": _document("The journal in 460 sections", 130_000, 460),
         "one-mib.md": _document("One mebibyte of field notes", 1_048_576, 1_024),
         "novel-1200k.md": _document("The river keeper: a generated novel", 1_200_000, 1_200),
+        "raw-tail-60k.md": _raw_tail(),
     }
 
 

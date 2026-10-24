@@ -84,6 +84,7 @@ def draw_samples(path, start_us, end_us):
 
 
 def run_once(binary, base, name, live, rep, deadline):
+    raw_tail = name == "raw-tail-60k.md"
     home = base / "home"
     state = home / "okilum"
     vault = base / "notes"
@@ -125,12 +126,12 @@ def run_once(binary, base, name, live, rep, deadline):
 
         win = wait_for(find_window, proc, deadline, "one visible app window")
         command("xdotool", "windowsize", win, "1366", "768", "windowfocus", win, env=env)
-        command("xdotool", "key", "ctrl+Home", env=env)
+        command("xdotool", "key", "ctrl+End" if raw_tail else "ctrl+Home", env=env)
         # Let the resize and focus frame complete before the sparse edit.
         time.sleep(.1)
         before_edit = window_pixels(win, env, base / "edit-before.xwd")
         sent_ns = time.monotonic_ns()
-        command("xdotool", "key", "x", env=env)
+        command("xdotool", "key", "Return" if raw_tail else "x", env=env)
         edited = wait_for(lambda: frame_event(log, "edit", sent_ns), proc, deadline,
                           "matching mutation/content frame")
         if (edited["document"] != opened["document"]
@@ -153,7 +154,8 @@ def run_once(binary, base, name, live, rep, deadline):
         def buffer_changed():
             copied = subprocess.run(["xclip", "-selection", "clipboard", "-out"], env=env,
                                     capture_output=True, timeout=2)
-            return copied.returncode == 0 and copied.stdout == b"x" + source
+            expected = source + b"\n" if raw_tail else b"x" + source
+            return copied.returncode == 0 and copied.stdout == expected
         wait_for(buffer_changed, proc, deadline, "injected edit in the actual copied buffer")
         command("xdotool", "key", "Left", "ctrl+Home", env=env)
         command("xdotool", "mousemove", "600", "400", env=env)
@@ -178,6 +180,7 @@ def run_once(binary, base, name, live, rep, deadline):
                  "opened": opened, "edited": edited, "scroll": scroll,
                  "scroll_start_ns": start_ns, "scroll_draws_ms": draws,
                  "pixels_changed": True, "buffer_verified": True,
+                 "input": "Enter at EOF inside unclosed fence" if raw_tail else "x at BOF",
                  "edit_pixel_check_ns": pixel_check_ns,
                  "edit_pixel_verified_ns": pixel_verified_ns}
         (base / "sample.json").write_text(json.dumps({"sample": sample, "evidence": proof}, indent=2))
@@ -204,12 +207,14 @@ def main():
     if fixtures.manifest() != json.loads((fixtures.HERE / "manifest.json").read_text()):
         raise NoEvidence("fixture manifest drift")
     summary = {"schema": 1, "boundary": "xvfb-software-post-frame", "samples": {},
-               "unsupported": [f"live:{name}" for name in fixtures.notes() if name != "tiny.md"],
+               "unsupported": [f"live:{name}" for name in
+                               ("sections-460.md", "one-mib.md", "novel-1200k.md")],
                "evidence": []}
     deadline = time.monotonic() + 295
     started = time.monotonic()
     try:
-        scenarios = [(name, False) for name in fixtures.notes()] + [("tiny.md", True)]
+        scenarios = [(name, False) for name in fixtures.notes() if name != "raw-tail-60k.md"]
+        scenarios += [("tiny.md", True), ("raw-tail-60k.md", True)]
         for name, live in scenarios:
             key = f"{'live' if live else 'source'}:{name}"
             summary["samples"][key] = {}
