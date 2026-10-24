@@ -9,6 +9,7 @@ use std::{
 };
 
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
+const FALLBACK_ENDPOINT: &str = "https://feedback.befeast.com/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
 const MAX_LOG: usize = 256 * 1024;
 /// Client-side cap for the optional "video" part. Matches pomoi's
@@ -207,10 +208,16 @@ impl Report {
 pub(super) struct Receipt {
     pub issue_number: u64,
     pub issue_url: String,
+    // Set from the successful local attempt; the server cannot supply this field.
+    #[serde(skip)]
+    pub delivery_endpoint: Option<String>,
 }
 
 pub(super) fn send(report: Report) -> Result<Receipt> {
-    send_to(ENDPOINT, &report)
+    send_using(ENDPOINT, FALLBACK_ENDPOINT, &report)
+}
+fn send_using(primary: &str, fallback: &str, report: &Report) -> Result<Receipt> {
+    okilum_http::primary_then_fallback(primary, fallback, |endpoint| send_to(endpoint, report))
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     use reqwest::blocking::multipart::{Form, Part};
@@ -222,11 +229,12 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         Duration::from_secs(45)
     };
     let failure = |error: anyhow::Error| {
-        crate::reader_diagnostics::network_failure("Feedback", &error);
+        crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
         let message = format!("{}. Your feedback is kept.", okilum_http::reason(&error));
         error.context(message)
     };
-    let client = okilum_http::client(endpoint, &report.meta.version, timeout).map_err(failure)?;
+    let client = okilum_http::client(endpoint, &report.meta.version, timeout)
+        .map_err(|error| failure(okilum_http::transport_failure(error)))?;
     let mut meta = serde_json::to_value(&report.meta)?;
     if super::sprint::enabled() {
         let context = super::sprint::context();
@@ -275,12 +283,27 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         .post(endpoint)
         .multipart(form)
         .send()
-        .map_err(|error| failure(error.into()))?;
+        .map_err(|error| {
+            // Body-read failures in a local video are not retryable network failures.
+            let error = if !error.is_body() {
+                okilum_http::transport_failure(error.into())
+            } else {
+                error.into()
+            };
+            failure(error)
+        })?;
     let status = response.status();
-    let bytes = bounded(response, 16 * 1024).map_err(failure)?;
+    let bytes = bounded(response, 16 * 1024).map_err(|error| {
+        // Never turn an HTTP rejection into a retry, even if its body stalls.
+        failure(if status == reqwest::StatusCode::CREATED {
+            okilum_http::transport_failure(error)
+        } else {
+            error
+        })
+    })?;
     if status != reqwest::StatusCode::CREATED {
         let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
-        crate::reader_diagnostics::network_failure("Feedback", &error);
+        crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
         if status.as_u16() == 407 {
             bail!("{}. Your feedback is kept.", okilum_http::http_reason(407));
         }
@@ -298,7 +321,7 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
             });
         bail!("{message} (HTTP {})", status.as_u16());
     }
-    let receipt: Receipt = serde_json::from_slice(&bytes)
+    let mut receipt: Receipt = serde_json::from_slice(&bytes)
         .context("Couldn't confirm the created issue. Your draft is kept.")?;
     ensure!(
         receipt.issue_number > 0
@@ -309,6 +332,8 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
                 ),
         "Unexpected feedback issue link. Your draft is kept."
     );
+    receipt.delivery_endpoint = Some(endpoint.to_owned());
+    crate::reader_diagnostics::feedback_delivery(endpoint);
     Ok(receipt)
 }
 fn bounded(reader: impl Read, maximum: usize) -> Result<Vec<u8>> {

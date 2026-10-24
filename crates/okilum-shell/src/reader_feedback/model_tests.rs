@@ -302,3 +302,98 @@ fn a_video_that_grew_past_the_cap_or_a_bare_413_keeps_the_draft_with_a_reason() 
         "{error}"
     );
 }
+
+#[test]
+fn fallback_rebuilds_the_same_report_after_transport_failure() {
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let primary = format!("http://{}/feedback", closed.local_addr().unwrap());
+    drop(closed);
+    let mut report = report();
+    report.screenshot = Some(Arc::new(image(image::ImageFormat::Png)));
+    report.log = Some("selected diagnostic attachment".into());
+    let before = report.copy_text();
+    let (fallback, received) = mock(201, RECEIPT);
+    let receipt = send_using(&primary, &fallback, &report).unwrap();
+    assert_eq!(receipt.issue_number, 123);
+    assert_eq!(
+        receipt.delivery_endpoint.as_deref(),
+        Some(fallback.as_str())
+    );
+    let wire = received.join().unwrap();
+    let text = String::from_utf8_lossy(&wire);
+    assert!(text.contains(&report.text));
+    assert!(text.contains("selected diagnostic attachment"));
+    assert!(wire.windows(8).any(|b| b == b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(report.copy_text(), before);
+}
+
+#[test]
+fn http_errors_and_invalid_receipts_do_not_try_fallback() {
+    for (status, body) in [
+        (400, "{}"),
+        (401, "{}"),
+        (403, "{}"),
+        (413, "{}"),
+        (429, "{}"),
+        (500, "{}"),
+        (201, "invalid JSON"),
+        (
+            201,
+            r#"{"issue_number":123,"issue_url":"https://example.com/123"}"#,
+        ),
+    ] {
+        let alternate = TcpListener::bind("127.0.0.1:0").unwrap();
+        alternate.set_nonblocking(true).unwrap();
+        let fallback = format!("http://{}/feedback", alternate.local_addr().unwrap());
+        let (primary, received) = mock(status, body);
+        assert!(send_using(&primary, &fallback, &report()).is_err());
+        received.join().unwrap();
+        assert!(
+            matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+}
+
+#[test]
+fn primary_delivery_wins_and_server_cannot_spoof_its_address() {
+    let (primary, received) = mock(
+        201,
+        r#"{"issue_number":123,"issue_url":"https://git.oklabs.uk/BeFeast/okilum/issues/123","delivery_endpoint":"https://untrusted.example"}"#,
+    );
+    let receipt = send_using(&primary, "http://must-not-be-contacted.invalid", &report()).unwrap();
+    received.join().unwrap();
+    assert_eq!(receipt.delivery_endpoint.as_deref(), Some(primary.as_str()));
+}
+
+#[test]
+fn interrupted_primary_upload_reopens_video_for_the_one_fallback() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let primary = format!("http://{}/feedback", listener.local_addr().unwrap());
+    let interrupted = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut first = [0; 8192];
+        assert!(socket.read(&mut first).unwrap() > 0);
+        socket.shutdown(std::net::Shutdown::Both).unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let video_path = dir.path().join("reopened.mp4");
+    let video_bytes = b"native fallback streaming attachment".repeat(2048);
+    std::fs::write(&video_path, &video_bytes).unwrap();
+    let mut report = report();
+    report.video = Some(video_file(&video_path).unwrap());
+    let (fallback, received) = mock(201, RECEIPT);
+    let receipt = send_using(&primary, &fallback, &report).unwrap();
+    interrupted.join().unwrap();
+    assert_eq!(
+        receipt.delivery_endpoint.as_deref(),
+        Some(fallback.as_str())
+    );
+    let wire = received.join().unwrap();
+    assert!(wire
+        .windows(video_bytes.len())
+        .any(|part| part == video_bytes));
+    assert_eq!(std::fs::read(video_path).unwrap(), video_bytes);
+}

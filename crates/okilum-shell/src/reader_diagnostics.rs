@@ -242,6 +242,17 @@ pub(crate) fn network_failure(operation: &str, error: &anyhow::Error) {
     );
 }
 
+pub(crate) fn feedback_delivery(endpoint: &str) {
+    append_report(
+        None,
+        None,
+        &serde_json::json!({
+            "time": timestamp(), "phase": "feedback_delivery",
+            "details": {"endpoint": endpoint},
+        }),
+    );
+}
+
 fn timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

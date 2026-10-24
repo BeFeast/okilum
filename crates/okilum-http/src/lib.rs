@@ -29,6 +29,66 @@ pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<Clien
     Ok(builder)
 }
 
+/// Classifies actual client/stream errors, never HTTP/application rejection.
+/// Mark only errors from network IO, not local payload/receipt validation.
+pub fn transport_failure(error: anyhow::Error) -> anyhow::Error {
+    let auth = format!("{error:#}")
+        .to_ascii_lowercase()
+        .contains("proxy authentication required");
+    let network = !auth
+        && error.chain().any(|cause| {
+            if let Some(error) = cause.downcast_ref::<reqwest::Error>() {
+                return error.status().is_none()
+                    && (error.is_connect()
+                        || error.is_timeout()
+                        || error.is_request()
+                        || error.is_body()
+                        || error.is_decode());
+            }
+            if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+                return matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::NotConnected
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                ) || matches!(
+                    error.raw_os_error(),
+                    Some(12002 | 12007 | 12029 | 12030 | 12175)
+                );
+            }
+            false
+        });
+    if network {
+        error.context(RetryableTransport)
+    } else {
+        error
+    }
+}
+
+#[derive(Debug)]
+struct RetryableTransport;
+impl std::fmt::Display for RetryableTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Network transport failed")
+    }
+}
+
+/// Exactly one alternate attempt, only after a marked transport failure.
+pub fn primary_then_fallback<T>(
+    primary: &str,
+    fallback: &str,
+    mut attempt: impl FnMut(&str) -> Result<T>,
+) -> Result<T> {
+    match attempt(primary) {
+        Err(error) if error.downcast_ref::<RetryableTransport>().is_some() => attempt(fallback),
+        result => result,
+    }
+}
+
 /// Short actionable reason for UI; the caller retains/logs the entire chain.
 pub fn reason(error: &anyhow::Error) -> String {
     for cause in error.chain() {

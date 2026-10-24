@@ -14,8 +14,14 @@ Integrated NTLM/Kerberos proxy authentication is not implemented; an authenticat
 challenge is reported rather than silently using the user's login.
 
 The UI reports a short certificate/proxy/timeout/HTTP cause and preserves the draft.
-The existing bounded diagnostic log records the full error chain. No fallback
-Feedback domain or infrastructure change is introduced.
+The existing bounded diagnostic log records the full error chain. After a DNS/TCP/TLS/timeout failure, the explicitly approved alternate endpoint
+`https://feedback.befeast.com/api/feedback/okilum` is attempted once. Any HTTP
+rejection, malformed receipt, invalid issue link or local payload error stops
+without fallback. Each attempt rebuilds multipart from the retained report;
+streaming attachments are reopened rather than replaying a consumed body. The
+same 201/issue-link validation applies to both addresses. Only the successful
+local attempt sets the UI delivery host and diagnostic delivery endpoint; these
+cannot be supplied by the server. No infrastructure change is made by the app.
 
 The tester subsequently updated successfully through About, so updater changes
 are deferred. Velopack 1.2.161 has no agent injection point in HttpSource, but its
@@ -27,7 +33,9 @@ current-user Root store, an inspecting proxy for the Feedback host, cleared prox
 environment variables and a controlled HTTP receipt. Negative controls remove
 trust or use the old bundled-root/environment-only policy. Positive controls prove
 static system proxy and PAC routing and capture the production client's User-Agent.
-Application before/after evidence must distinguish fixture delivery from the real
+Mocks cover primary success, transport fallback, HTTP errors without fallback,
+invalid receipts without fallback and the two-attempt maximum. No valid test
+payload is sent to either public endpoint. Application before/after evidence must distinguish fixture delivery from the real
 Feedback service and retain the source/artifact identity. Rollback removes the
 fixture, trust, proxy configuration and test application state. This document is
 a test plan and design record, not a claim of native acceptance.
