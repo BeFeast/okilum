@@ -38,7 +38,9 @@ def wait_for(predicate, process, log, seconds=90):
         if process.poll() not in (None, 0):
             raise AssertionError(f'Host exited {process.returncode}: {log.read_text()}')
         time.sleep(.1)
-    raise AssertionError(f'Timeout: {log.read_text()}')
+    trace = log.with_suffix('.trace')
+    callbacks = trace.read_text() if trace.exists() else '(no callback trace)'
+    raise AssertionError(f'Timeout: {log.read_text()}\nCallbacks:\n{callbacks}')
 
 
 def main():

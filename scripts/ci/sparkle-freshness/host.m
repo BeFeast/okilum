@@ -52,7 +52,11 @@ static void FinishComparison(void) {
     [super updater:updater didFindValidUpdate:item];
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
+    Trace([NSString stringWithFormat:@"cycle finished check=%ld error=%@/%ld replacement=%d session=%d", (long)check, error.domain ?: @"none", (long)error.code, TSRestartAfterCycle, updater.sessionInProgress]);
     [super updater:updater didFinishUpdateCycleForUpdateCheck:check error:error];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Trace([NSString stringWithFormat:@"after cycle replacement=%d session=%d", TSRestartAfterCycle, updater.sessionInProgress]);
+    });
     if (TSCompare) dispatch_async(dispatch_get_main_queue(), ^{ FinishComparison(); });
 }
 @end
@@ -69,6 +73,16 @@ static void FinishComparison(void) {
 - (void)dismissUpdateInstallation {
     Trace([@"dismiss " stringByAppendingString:self.item.versionString ?: @"none"]);
     [super dismissUpdateInstallation];
+    Trace(@"dismiss returned");
+}
+- (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
+    Trace([NSString stringWithFormat:@"cancel replacement error=%@/%ld", error.domain ?: @"none", (long)error.code]);
+    [super cancelForReplacement:reply error:error];
+    Trace(@"cancel reply returned");
+}
+- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {
+    Trace(@"foreground check started");
+    [super showUserInitiatedUpdateCheckWithCancellation:cancellation];
 }
 - (void)presentUpdate:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
     Trace([@"offer " stringByAppendingString:item.versionString]);
@@ -160,7 +174,7 @@ int main(void) {
                 [preferences setObject:@"4" forKey:@"SUSkippedMajorSubreleaseVersion"];
             }
         }
-        TSStart(bundle, [[TestDriver alloc] initWithHostBundle:bundle delegate:nil], TSCompare ? [TestUpdaterDelegate new] : nil);
+        TSStart(bundle, [[TestDriver alloc] initWithHostBundle:bundle delegate:nil], [TestUpdaterDelegate new]);
         if (TSUpdater.automaticallyDownloadsUpdates || !TSUpdater.automaticallyChecksForUpdates) return 32;
         if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];
         else if ([[bundle objectForInfoDictionaryKey:@"TSBackgroundInstall"] boolValue]) [TSUpdater checkForUpdatesInBackground];
