@@ -1424,14 +1424,7 @@ impl Render for Settings {
                                                 .child(section.label()),
                                         )
                                         .selected(self.section == section)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            #[cfg(target_os = "linux")]
-                                            if section == Section::Sync && this.sync.is_none() {
-                                                this.sync =
-                                                    Some(reader_settings_sync::shared(window, cx));
-                                            }
-                                            #[cfg(not(target_os = "linux"))]
-                                            let _ = window;
+                                        .on_click(cx.listener(move |this, _, _, cx| {
                                             this.select_section(section, cx);
                                         })),
                                 )
