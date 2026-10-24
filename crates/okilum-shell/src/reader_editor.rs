@@ -1,5 +1,6 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
 mod ime_guard;
+mod lists;
 mod live_preview;
 mod paste_jobs;
 use super::*;
@@ -79,6 +80,10 @@ pub(super) struct Editing {
     current_input: Entity<EditorState>,
     /// Snapshot for the editor's context menu, which cannot read the editor.
     menu_facts: reader_reminder::MenuFacts,
+    /// A Markdown note, not a code or text file: lists continue (#1635).
+    markdown: bool,
+    /// Backspace right after the last list continuation (#1635).
+    list_revert: Option<lists::PendingRevert>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -220,6 +225,8 @@ impl Editing {
             saved_at,
             current_input,
             menu_facts,
+            markdown,
+            list_revert,
             _subscriptions,
         } = self;
         (store, move |store| Self {
@@ -240,6 +247,8 @@ impl Editing {
             saved_at,
             current_input,
             menu_facts,
+            markdown,
+            list_revert,
             _subscriptions,
         })
     }
@@ -781,6 +790,8 @@ impl Reader {
             saved_at: None,
             current_input,
             menu_facts,
+            markdown: !plain_file,
+            list_revert: None,
             _subscriptions: vec![
                 changed,
                 blur,
@@ -1439,10 +1450,9 @@ impl Reader {
         }
         let editing = self.editing.as_ref().unwrap();
         let palette = brand::palette(cx);
-        v_flex()
-            .key_context("ReaderSource")
-            .size_full()
-            .min_w_0()
+        let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
+        // #1635: Enter, Tab and Backspace in lists, before the input.
+        self.list_actions(column, cx)
             // #1611: the paste commands beside Cmd+V, and files dropped onto
             // the note, through the same router.
             .on_action(cx.listener(

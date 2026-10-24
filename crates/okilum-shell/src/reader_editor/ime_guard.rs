@@ -20,7 +20,7 @@ pub(super) const IME_SETTLE: std::time::Duration = std::time::Duration::from_mil
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "constructed by #1635, #1636 and #1638")
+    allow(dead_code, reason = "Space is constructed by #1636 and #1638")
 )]
 pub(crate) enum Trigger {
     /// List continuation, completion accept.
@@ -45,10 +45,6 @@ pub(crate) fn allows(trigger: Trigger, composing: bool, settling: bool) -> bool 
 
 impl Reader {
     /// Whether `trigger` may run editor automation in the note editor now.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the gate for #1635, #1636 and #1638")
-    )]
     pub(crate) fn ime_allows(&self, trigger: Trigger, cx: &App) -> bool {
         let Some(editing) = &self.editing else {
             return false;
@@ -160,19 +156,19 @@ mod tests {
     }
 
     /// The Enter that confirmed a candidate inserts a plain newline: it does
-    /// not continue the list item's indentation. The same Enter after the
-    /// settle does (positive control), so the probe can see a continuation.
+    /// not continue the list (#1635). The same Enter after the settle does
+    /// (positive control), so the probe can see a continuation.
     #[gpui::test]
     fn enter_that_commits_a_composition_continues_no_list(cx: &mut TestAppContext) {
         let (reader, input, visual, _directory) = open(cx, "  - a\n");
         let line_end = "  - a".len();
 
-        // Positive control: no IME, Enter carries the item's indentation.
+        // Positive control: no IME, Enter continues the item.
         assert!(allowed(&reader, visual, Trigger::Enter));
         caret(&input, visual, line_end);
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        assert_eq!(value(&input, visual), "  - a\n  \n", "Enter continues");
+        assert_eq!(value(&input, visual), "  - a\n  - \n", "Enter continues");
         input.update_in(visual, |i, window, cx| i.set_value("  - a\n", window, cx));
         visual.run_until_parked();
 
@@ -200,7 +196,7 @@ mod tests {
         caret(&input, visual, "  - a漢".len());
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        assert_eq!(value(&input, visual), "  - a漢\n  \n\n");
+        assert_eq!(value(&input, visual), "  - a漢\n  - \n\n");
     }
 
     /// Only the settle window holds keys: just inside it Enter still waits,
