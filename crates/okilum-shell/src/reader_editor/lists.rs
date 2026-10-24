@@ -113,8 +113,20 @@ fn columns(indent: &str) -> usize {
 /// of an Enter in a very long note.
 pub(super) const SCAN_LINES: usize = 10_000;
 
+/// Bytes of the UTF-8 byte order mark the note starts with, if any: the
+/// first line starts after it.
+pub(super) fn bom(text: &str) -> usize {
+    if text.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    }
+}
+
 pub(super) fn line_start(text: &str, offset: usize) -> usize {
-    text[..offset].rfind('\n').map_or(0, |at| at + 1)
+    text[..offset]
+        .rfind('\n')
+        .map_or(bom(text).min(offset), |at| at + 1)
 }
 
 pub(super) fn line_end(text: &str, start: usize) -> usize {
@@ -132,7 +144,7 @@ pub(super) fn line_at(text: &str, offset: usize) -> Line {
 }
 
 fn previous_line(text: &str, line: &Line) -> Option<Line> {
-    (line.start > 0).then(|| line_at(text, line.start - 1))
+    (line.start > bom(text)).then(|| line_at(text, line.start - 1))
 }
 
 fn next_line(text: &str, line: &Line) -> Option<Line> {
@@ -242,8 +254,8 @@ fn newline(text: &str) -> &'static str {
 /// True when the line at `start` is inside a code fence or the front matter:
 /// no list there.
 pub(super) fn in_code(text: &str, start: usize) -> bool {
-    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut from = text.len() - body.len();
+    let mut from = bom(text);
+    let body = &text[from..];
     // Front matter: a `---` first line up to a closing `---` or `...`.
     if body.starts_with("---") && line_end(text, from) - from == 3 {
         let mut at = line_end(text, from);
@@ -264,7 +276,7 @@ pub(super) fn in_code(text: &str, start: usize) -> bool {
         }
     }
     let mut fence: Option<(char, usize)> = None;
-    for raw in text[from..start].split('\n') {
+    for raw in text[from.min(start)..start].split('\n') {
         let indent = raw.len() - raw.trim_start_matches(' ').len();
         let body = raw
             .trim_start_matches(' ')
@@ -1112,6 +1124,39 @@ mod tests {
         ] {
             assert_eq!(enter_at(before).as_deref(), Some(after), "{before:?}");
         }
+    }
+
+    /// A note that starts with a byte order mark: its first line is a list
+    /// item like any other, and the mark stays only at the start.
+    #[test]
+    fn the_first_line_of_a_note_with_a_bom() {
+        let bom = '\u{feff}';
+        assert_eq!(
+            enter_at(&format!("{bom}- a|")),
+            Some(format!("{bom}- a\n- |"))
+        );
+        assert_eq!(
+            enter_at(&format!("{bom}1. a\n2. |")),
+            Some(format!("{bom}1. a\n|"))
+        );
+        assert_eq!(
+            enter_at(&format!("{bom}- a\n  - b|")),
+            Some(format!("{bom}- a\n  - b\n  - |"))
+        );
+        assert_eq!(
+            tab(&format!("{bom}- a\n- b|"), false),
+            Some(format!("{bom}- a\n  - b|"))
+        );
+        assert_eq!(
+            tab(&format!("{bom}- a\n  - b|"), true),
+            Some(format!("{bom}- a\n- b|"))
+        );
+        assert_eq!(enter_at(&format!("{bom}```\n- a|")), None, "code");
+        assert_eq!(
+            enter_at(&format!("{bom}---\n- a|\n---\n")),
+            None,
+            "front matter"
+        );
     }
 
     #[test]

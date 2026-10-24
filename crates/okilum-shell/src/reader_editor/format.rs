@@ -157,7 +157,7 @@ fn paragraph(text: &str, selection: &Range<usize>) -> Range<usize> {
     let first = lists::line_start(text, selection.start);
     let mut start = first;
     for _ in 0..PARAGRAPH_LINES {
-        if start == 0 {
+        if start <= lists::bom(text) {
             break;
         }
         let above = lists::line_start(text, start - 1);
@@ -322,6 +322,7 @@ fn code_marks(content: &str) -> (String, String) {
 /// caret is in, or an empty pair at the caret. The selection stays on the
 /// same text.
 pub(crate) fn toggle(text: &str, selection: Range<usize>, kind: Inline) -> Option<ListEdit> {
+    let selection = past_bom(text, selection);
     if lists::in_code(text, lists::line_start(text, selection.start)) {
         return None;
     }
@@ -375,6 +376,12 @@ pub(crate) fn toggle(text: &str, selection: Range<usize>, kind: Inline) -> Optio
         selection,
         revert: None,
     })
+}
+
+/// `selection` moved past the note's byte order mark: marks go after it.
+fn past_bom(text: &str, selection: Range<usize>) -> Range<usize> {
+    let bom = lists::bom(text);
+    selection.start.max(bom)..selection.end.max(bom)
 }
 
 /// Cmd/Ctrl+1…6 (`level`) and Cmd/Ctrl+Alt+0 (0): every line of the
@@ -523,6 +530,7 @@ pub(crate) fn typed(
     ch: char,
     pairing: Pairing,
 ) -> Option<TypedEdit> {
+    let selection = past_bom(text, selection);
     if !may_format(ch, !selection.is_empty(), pairing)
         || lists::in_code(text, lists::line_start(text, selection.start))
     {
@@ -773,6 +781,47 @@ mod tests {
             text.replace_range(selection, &ch.to_string());
         }
         Some(show(lists::apply(&text, &edit.edits), edit.selection))
+    }
+
+    /// A note that starts with a byte order mark (common from Windows): the
+    /// first line is formatted after it, and nothing panics there.
+    #[test]
+    fn the_first_line_of_a_note_with_a_bom() {
+        let bom = '\u{feff}';
+        assert_eq!(
+            inline(&format!("{bom}a [word] b"), Inline::Bold),
+            Some(format!("{bom}a **[word]** b"))
+        );
+        assert_eq!(
+            inline(&format!("{bom}a wo|rd"), Inline::Italic),
+            Some(format!("{bom}a *wo|rd*"))
+        );
+        assert_eq!(
+            level(&format!("{bom}Title|\n\nbody"), 2),
+            Some(format!("{bom}## Title|\n\nbody"))
+        );
+        assert_eq!(
+            level(&format!("{bom}# Title|"), 0),
+            Some(format!("{bom}Title|"))
+        );
+        assert_eq!(
+            type_char(&format!("{bom}|"), '(', DEFAULT),
+            Some(format!("{bom}(|)"))
+        );
+        assert_eq!(
+            type_char(&format!("{bom}[x]"), '*', DEFAULT),
+            Some(format!("{bom}*[x]*"))
+        );
+        // Select All starts before the mark; the wrapper goes after it.
+        assert_eq!(
+            inline(&format!("[{bom}word]"), Inline::Bold),
+            Some(format!("{bom}**[word]**"))
+        );
+        assert_eq!(
+            inline(&format!("{bom}```\n[x]\n```"), Inline::Bold),
+            None,
+            "code"
+        );
     }
 
     #[test]
