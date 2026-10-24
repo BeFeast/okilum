@@ -246,6 +246,39 @@ fn leave_project_closes_the_popover_only_while_a_project_is_active(cx: &mut Test
     assert_eq!(*left.borrow(), 1);
 }
 
+/// #1475: «+ New project…» ends the switcher's list and the Projects page,
+/// without an active project too; the press is the host's to answer.
+#[gpui::test]
+fn new_project_is_at_the_foot_of_the_list(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+    });
+    for presentation in [Presentation::Popover, Presentation::Page] {
+        let asked = Rc::new(RefCell::new(0));
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let picker = cx.new(|cx| ProjectsPicker::new(catalog(), presentation, window, cx));
+            let asked = asked.clone();
+            cx.subscribe(&picker, move |_, _, _: &NewProject, _| {
+                *asked.borrow_mut() += 1
+            })
+            .detach();
+            let host = cx.new(|_| Host(picker));
+            Root::new(host, window, cx)
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let new = visual
+            .debug_bounds("projects-picker-new")
+            .expect("New project… at the foot of the list");
+        let results = visual.debug_bounds("projects-picker-results").unwrap();
+        assert!(new.top() >= results.bottom(), "below the list");
+        assert!(visual.debug_bounds("projects-picker-leave").is_none());
+        visual.simulate_click(new.center(), gpui::Modifiers::none());
+        assert_eq!(*asked.borrow(), 1, "{presentation:?}");
+    }
+}
+
 fn leak(selector: String) -> &'static str {
     Box::leak(selector.into_boxed_str())
 }

@@ -2,14 +2,14 @@
 use super::*;
 use okilum_shell::projects_picker::{
     picker::{ManagerObservation, PickerModel},
-    LeaveProject, Presentation, ProjectMenu, ProjectsPicker, Selected,
+    LeaveProject, NewProject, Presentation, ProjectMenu, ProjectsPicker, Selected,
 };
 use okilum_t3::projects::{
     icon::{Counterpart, ProjectIcon, Saved as IconSaved},
     Discovery, Project,
 };
 
-type Gateways = std::collections::BTreeMap<String, Arc<dyn okilum_t3::ManagerGateway>>;
+pub(super) type Gateways = std::collections::BTreeMap<String, Arc<dyn okilum_t3::ManagerGateway>>;
 
 /// A project's icon as shown before a save, put back if the save fails.
 struct ShownIcon {
@@ -49,7 +49,7 @@ fn paired_gateway(
 /// written when the Manager panel connects): the panel's T3 session for
 /// projects and icons, MCP with the keychain token for the rest. `None` once
 /// the Reader is gone.
-async fn t3_gateways(
+pub(super) async fn t3_gateways(
     this: &WeakEntity<Reader>,
     state: Option<PathBuf>,
     cx: &mut AsyncWindowContext,
@@ -329,7 +329,7 @@ impl Reader {
     }
 
     /// T3's word on these projects' icons replaces what was known of them.
-    fn merge_icon_links(
+    pub(super) fn merge_icon_links(
         &mut self,
         folders: Vec<PathBuf>,
         links: std::collections::BTreeMap<PathBuf, Counterpart>,
@@ -933,10 +933,15 @@ impl Reader {
             },
         )
         .detach();
+        // «+ New project…» asks for the folder (#1475).
+        cx.subscribe_in(&picker, window, |this, _, _: &NewProject, window, cx| {
+            this.open_new_project_dialog(None, window, cx);
+        })
+        .detach();
         picker
     }
 
-    fn sync_projects_picker(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_projects_picker(&mut self, cx: &mut Context<Self>) {
         let discovery = self.project_navigation.discovery.clone();
         for picker in self.pickers() {
             let discovery = discovery.clone();
