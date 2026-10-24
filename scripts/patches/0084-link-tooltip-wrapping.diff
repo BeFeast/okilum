@@ -1,0 +1,86 @@
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -1,25 +1,65 @@
+ use super::inline_geometry::{AlignedLayout, InlineGeometry};
+-use gpui::{AppContext, Corners, ParentElement, Styled};
++use gpui::{AppContext, Corners, InteractiveElement, ParentElement, Styled};
+
+ pub(super) struct LinkTooltip(pub(super) SharedString);
+ impl gpui::Render for LinkTooltip {
+-    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+-        crate::Tooltip::new("text-link-tooltip")
+-            .px_2()
+-            .py_1()
+-            .rounded_md()
+-            .bg(gpui::rgb(0x242424))
+-            .text_color(gpui::rgb(0xffffff))
+-            .max_w(gpui::px(420.))
+-            .flex()
+-            .flex_col()
+-            .child(self.0.lines().next().unwrap_or_default().to_owned())
+-            .children(self.0.lines().skip(1).map(|line| {
+-                gpui::div()
+-                    .text_size(gpui::px(12.))
+-                    .text_color(gpui::rgb(0xbdbdbd))
+-                    .child(line.to_owned())
+-            }))
++    fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
++        // GPUI measures tooltips as min-content roots. Give wrapped text a
++        // definite width before measuring height, retaining compact short tips.
++        let style = window.text_style();
++        let width = self
++            .0
++            .lines()
++            .enumerate()
++            .map(|(row, line)| {
++                let font_size = if row == 0 {
++                    style.font_size.to_pixels(window.rem_size())
++                } else {
++                    gpui::px(12.)
++                };
++                window
++                    .text_system()
++                    .shape_line(
++                        line.to_owned().into(),
++                        font_size,
++                        &[style.to_run(line.len())],
++                        None,
++                    )
++                    .width()
++                    + window.rem_size()
++            })
++            .fold(window.rem_size(), |width, line| width.max(line))
++            .min(gpui::px(420.))
++            .min((window.viewport_size().width - gpui::px(8.)).max(gpui::px(1.)));
++        crate::Tooltip::new("text-link-tooltip").child(
++            gpui::div()
++                .debug_selector(|| "text-link-tooltip-background".into())
++                .w(width)
++                .px_2()
++                .py_1()
++                .rounded_md()
++                .bg(gpui::rgb(0x242424))
++                .text_color(gpui::rgb(0xffffff))
++                .whitespace_normal()
++                .flex()
++                .flex_col()
++                .child(
++                    gpui::div()
++                        .debug_selector(|| "text-link-tooltip-heading".into())
++                        .w_full()
++                        .min_w_0()
++                        .child(self.0.lines().next().unwrap_or_default().to_owned()),
++                )
++                .children(self.0.lines().skip(1).enumerate().map(|(row, line)| {
++                    gpui::div()
++                        .debug_selector(move || format!("text-link-tooltip-detail-{row}"))
++                        .w_full()
++                        .min_w_0()
++                        .text_size(gpui::px(12.))
++                        .text_color(gpui::rgb(0xbdbdbd))
++                        .child(line.to_owned())
++                })),
++        )
+     }
+ }
+ use std::cell::OnceCell;
