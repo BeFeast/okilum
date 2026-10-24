@@ -781,6 +781,12 @@ mod tests {
             visual.simulate_mouse_move(marker.center(), None, Modifiers::default());
             visual.run_until_parked();
             visual.update(|window, cx| window.draw(cx).clear(cx));
+            // The marker uses GPUI's delayed tooltip, whose timer does not
+            // advance just by draining runnable tasks in the test executor.
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
             let background = visual
                 .debug_bounds("text-link-tooltip-background")
                 .expect("hover must produce the real tooltip");
