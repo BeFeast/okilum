@@ -152,6 +152,7 @@ static NSString *TSCycleFailure;
 static BOOL TSGuardRequested;
 static BOOL TSManualCheck;
 static BOOL TSInstallRequested;
+static BOOL TSCancelledCycle;
 static NSSet<NSString *> *TSChannels(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey]
         ? [NSSet setWithObjects:@"stable", @"beta", nil] : [NSSet setWithObject:@"stable"];
@@ -189,6 +190,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     // scheduler reserves a session for interval discovery, and a queued check
     // is ignored. This is cycle completion, never a user-driver reply.
     BOOL restart = TSRestartAfterCycle && !error;
+    TSCancelledCycle = NO;
     TSRestartAfterCycle = NO;
     if (TSCycleFailure) { TSSend(2, TSCycleFailure); TSCycleFailure = nil; }
     if (restart) {
@@ -200,6 +202,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     TSSend(0, nil);
 }
 - (void)updater:(SPUUpdater *)updater didAbortWithError:(NSError *)error {
+    if (TSCancelledCycle) return; // retain the explicit inline cancellation outcome
     // "No update" can also arrive as an error; it is not a failure.
     if ([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError) {
         TSSend(0, nil);
@@ -239,7 +242,8 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     TSSend(0, nil); acknowledgement();
 }
 - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
-    TSSend(2, error.localizedDescription); acknowledgement();
+    if (!TSCancelledCycle) TSSend(2, error.localizedDescription);
+    acknowledgement();
 }
 - (void)showInstallingUpdateWithApplicationTerminated:(BOOL)terminated retryTerminatingApplication:(void (^)(void))retry {
     TSSend(6, nil);
@@ -248,6 +252,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     void (^cancellation)(void) = self.cancellation;
     void (^ready)(SPUUserUpdateChoice) = self.restartReply;
     if (!cancellation && !ready) return;
+    TSCancelledCycle = YES;
     TSInstallRequested = NO;
     TSRestartAfterCycle = NO;
     self.replacing = NO;
