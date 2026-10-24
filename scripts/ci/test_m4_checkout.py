@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 JOBS = [('ci.yml', 'native-scope', False), ('ci.yml', 'macos-local', False),
         ('macos-release.yml', 'select', True), ('macos-release.yml', 'release', False),
         ('macos-release.yml', 'hosted-artifact', True),
+        ('macos-intel-qa.yml', 'build', False),
         ('release-publish.yml', 'publish', True)]
 
 
@@ -127,7 +128,8 @@ class M4Checkout(unittest.TestCase):
             (source / 'dist/index.js').write_text('// moving branch; wrong code\n')
             self.git(source, 'commit', '-qam', 'moving tip')
             for index, (workflow, job) in enumerate([('ci.yml', 'macos-local'),
-                                                    ('macos-release.yml', 'release')]):
+                                                    ('macos-release.yml', 'release'),
+                                                    ('macos-intel-qa.yml', 'build')]):
                 with self.subTest(workflow=workflow):
                     block = job_text(workflow, job)
                     step = block.split('      - name: Prepare the pinned upload action from the runner server\n', 1)[1]
@@ -167,13 +169,13 @@ class M4Checkout(unittest.TestCase):
                 for run in re.findall(r'        run: \|\n((?:          .*\n|\n)+)', block):
                     self.assertNotIn('${{', run)
                 uses = re.findall(r'uses: (\S+)', block)
-                self.assertEqual(uses, [local] if job in ['macos-local', 'release'] else [])
+                self.assertEqual(uses, [local] if job in ['macos-local', 'release', 'build'] else [])
                 if uses:
                     self.assertIn('ACTION_SERVER_URL: ${{ github.server_url }}', block)
                     self.assertIn('ACTION_SHA: ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5', block)
                     prepare = block.index('      - name: Prepare the pinned upload action')
                     self.assertLess(prepare, block.index('uses: ' + local))
-                    self.assertIn('if: always()' if job == 'macos-local'
+                    self.assertIn('if: always()' if job in ['macos-local', 'build']
                                   else "if: github.ref == 'refs/heads/main'", block[prepare:])
 
 
