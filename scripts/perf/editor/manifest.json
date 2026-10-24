@@ -1,0 +1,26 @@
+{
+  "novel-1200k.md": {
+    "bytes": 1200000,
+    "characters": 1200000,
+    "sections": 1200,
+    "sha256": "ad0634a242b9c6060e33145952179258ac377cf0c32a3bae6bddaa0bd59f8b14"
+  },
+  "one-mib.md": {
+    "bytes": 1048576,
+    "characters": 1048576,
+    "sections": 1024,
+    "sha256": "f73abed9e7b52882df505f31c4707ce3f4f5c39892e94471ad8334502bfa0602"
+  },
+  "sections-460.md": {
+    "bytes": 130000,
+    "characters": 130000,
+    "sections": 460,
+    "sha256": "9dd810454ed4a858ddbde82f08a41b72e0cbe7f305cabaee589405295063020c"
+  },
+  "tiny.md": {
+    "bytes": 3072,
+    "characters": 3072,
+    "sections": 4,
+    "sha256": "b1a9434c1ee7cbec6e18d1f3e6c94a57476e0814073ec49eb19571dda54f739f"
+  }
+}

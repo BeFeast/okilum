@@ -29,7 +29,7 @@ jobs:
             build-essential cmake pkg-config curl git mold zstd \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1 mesa-vulkan-drivers \
-            xvfb xdotool x11-apps dbus
+            xvfb xdotool x11-apps xclip dbus
       - name: Prepare pinned vendor
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -49,6 +49,24 @@ jobs:
             reader:big-head-320.md reader:big-24k.md
           python3 scripts/perf/scroll/analyze.py --md "$RUNNER_TEMP/run/reader-big-head-320" "$RUNNER_TEMP/run/reader-big-24k"
           python3 scripts/perf/scroll/budget.py "$RUNNER_TEMP/run/reader-big-head-320" "$RUNNER_TEMP/run/reader-big-24k"
+      - name: Check editor latency and the baseline ratchet
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/perf/editor -p 'test_*.py'
+          git fetch --no-tags origin main
+          if git cat-file -e origin/main:scripts/perf/editor/baseline.json 2>/dev/null; then
+            git show origin/main:scripts/perf/editor/baseline.json > "$RUNNER_TEMP/editor-main-baseline.json"
+            python3 scripts/perf/editor/budget.py ratchet \
+              "$RUNNER_TEMP/editor-main-baseline.json" scripts/perf/editor/baseline.json
+          else
+            echo 'Initial editor baseline: calibration evidence is required in the introducing PR (#1639).'
+          fi
+          export DISPLAY=:99
+          timeout --signal=TERM --kill-after=5s 300s dbus-run-session -- \
+            python3 scripts/perf/editor/probe.py "$RUNNER_TEMP/trace/okilum" "$RUNNER_TEMP/editor"
+          python3 scripts/perf/editor/budget.py check \
+            "$RUNNER_TEMP/editor/summary.json" scripts/perf/editor/baseline.json \
+            --report "$RUNNER_TEMP/editor/report.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -58,5 +76,6 @@ jobs:
             ${{ runner.temp }}/run/**/summary.txt
             ${{ runner.temp }}/run/**/wheel-*.txt
             ${{ runner.temp }}/run/**/app.log
+            ${{ runner.temp }}/editor/**
           retention-days: 7
           if-no-files-found: warn
