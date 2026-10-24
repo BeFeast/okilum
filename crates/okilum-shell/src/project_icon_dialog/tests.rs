@@ -138,3 +138,97 @@ fn the_dialog_opens_on_the_manual_icon_and_offers_reset(cx: &mut TestAppContext)
     click(visual, "icon-reset");
     assert_eq!(events.borrow().last(), Some(&IconDialogEvent::Reset));
 }
+
+/// A window that draws Root's dialog layer, as the Reader does.
+struct DialogHost;
+impl Render for DialogHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .children(Root::render_dialog_layer(window, cx))
+    }
+}
+
+/// #1627: Save in the real dialog reaches the host's handler with the
+/// window it was pressed in, for every kind, Reset and Cancel; the host
+/// closes the dialog from there.
+#[gpui::test]
+fn the_real_dialog_hands_each_choice_to_the_host_in_its_window(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt as _;
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+        crate::project_avatar::set_lucide_names(
+            ["bot", "folder", "rocket", "book-open"].map(str::to_owned),
+            cx,
+        );
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let host = cx.new(|_| DialogHost);
+        Root::new(host, window, cx)
+    });
+    let choices: Rc<RefCell<Vec<(IconDialogEvent, gpui::AnyWindowHandle)>>> = Default::default();
+    let open_dialog = |visual: &mut VisualTestContext, current: Option<ProjectIcon>| {
+        let seen = choices.clone();
+        visual.update(|window, cx| {
+            let dialog =
+                cx.new(|cx| ProjectIconDialog::new("ai-bills", current.as_ref(), window, cx));
+            dialog.update(cx, |dialog, _| {
+                dialog.on_choice(move |event, window, cx| {
+                    seen.borrow_mut()
+                        .push((event.clone(), window.window_handle()));
+                    window.close_dialog(cx);
+                })
+            });
+            window.open_dialog(cx, move |d, _, _| {
+                d.title(TITLE).width(gpui::px(520.)).child(dialog.clone())
+            });
+        });
+        visual.run_until_parked();
+    };
+    let this_window = visual.update(|window, _| window.window_handle());
+
+    open_dialog(visual, None);
+    click(visual, "icon-color-6");
+    click(visual, "icon-choice-3");
+    click(visual, "icon-save");
+    open_dialog(visual, None);
+    click(visual, "icon-tab-1");
+    click(visual, "emoji-choice-2");
+    click(visual, "icon-save");
+    open_dialog(visual, None);
+    click(visual, "icon-tab-2");
+    click(visual, "icon-save");
+    open_dialog(
+        visual,
+        Some(ProjectIcon::Emoji {
+            emoji: "🧠".into()
+        }),
+    );
+    click(visual, "icon-reset");
+    open_dialog(visual, None);
+    click(visual, "icon-cancel");
+
+    let seen = choices.borrow();
+    let events: Vec<_> = seen.iter().map(|(event, _)| event.clone()).collect();
+    assert_eq!(
+        events,
+        [
+            IconDialogEvent::Save(ProjectIcon::Lucide {
+                name: "rocket".into(),
+                color: IconColor::Green,
+            }),
+            IconDialogEvent::Save(ProjectIcon::Emoji {
+                emoji: "🚀".into()
+            }),
+            IconDialogEvent::Save(ProjectIcon::Monogram {
+                text: "AB".into(),
+                color: monogram_color("ai-bills"),
+            }),
+            IconDialogEvent::Reset,
+            IconDialogEvent::Cancel,
+        ]
+    );
+    assert!(seen.iter().all(|(_, window)| *window == this_window));
+    visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "the host closed it"));
+}

@@ -1,7 +1,9 @@
 //! «Choose project icon» (#1627), copied from T3 Code's dialog: Icons /
 //! Emoji / Monogram, T3's eighteen colours, a Lucide search, Cancel / Save
 //! icon, and Reset to automatic. The state is `IconDraft`; this view only
-//! draws it. The host stores what is chosen and closes the dialog.
+//! draws it. The host stores what is chosen and closes the dialog: its
+//! `on_choice` handler is called with the window the button was pressed
+//! in, so the choice never depends on which window last drew the host.
 use crate::project_avatar;
 use gpui::{
     div, prelude::*, px, rgb, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -17,6 +19,10 @@ use gpui_component::{
 use okilum_t3::projects::icon::{
     filter_icons, Avatar, IconColor, IconDraft, PickerTab, ProjectIcon, PROJECT_EMOJIS,
 };
+use std::rc::Rc;
+
+/// The host's answer to a button: store the icon, reset it, or just close.
+pub type ChoiceHandler = Rc<dyn Fn(&IconDialogEvent, &mut Window, &mut App)>;
 
 pub const TITLE: &str = "Choose project icon";
 pub const SUBTITLE: &str = "Choose an icon, emoji, or monogram.";
@@ -40,6 +46,7 @@ pub struct ProjectIconDialog {
     search: Entity<InputState>,
     paste: Entity<InputState>,
     letters: Entity<InputState>,
+    on_choice: Option<ChoiceHandler>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<IconDialogEvent> for ProjectIconDialog {}
@@ -99,7 +106,26 @@ impl ProjectIconDialog {
             search,
             paste,
             letters,
+            on_choice: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Called for Save icon, Reset to automatic and Cancel, after the
+    /// event is emitted, in the window of the press.
+    pub fn on_choice(
+        &mut self,
+        handler: impl Fn(&IconDialogEvent, &mut Window, &mut App) + 'static,
+    ) {
+        self.on_choice = Some(Rc::new(handler));
+    }
+
+    /// Emits `event` and hands it to the host's handler. The handler runs
+    /// deferred, outside this view's update, so it may close the dialog.
+    pub fn choose(&mut self, event: IconDialogEvent, window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(event.clone());
+        if let Some(handler) = self.on_choice.clone() {
+            window.defer(cx, move |window, cx| handler(&event, window, cx));
         }
     }
 
@@ -132,11 +158,11 @@ impl ProjectIconDialog {
         cx.notify();
     }
 
-    /// Save icon: emits the draft's icon; nothing while it is not usable.
-    pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Save icon: chooses the draft's icon; nothing while it is not usable.
+    pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         match self.draft.result() {
             Some(icon) => {
-                cx.emit(IconDialogEvent::Save(icon));
+                self.choose(IconDialogEvent::Save(icon), window, cx);
                 true
             }
             None => false,
@@ -421,7 +447,9 @@ impl Render for ProjectIconDialog {
                             .label("Reset to automatic")
                             .disabled(!self.has_manual)
                             .tooltip("Use the logo or the monogram")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(IconDialogEvent::Reset))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose(IconDialogEvent::Reset, window, cx)
+                            })),
                     )
                     .child(div().flex_1())
                     .child(
@@ -429,7 +457,9 @@ impl Render for ProjectIconDialog {
                             .debug_selector(|| "icon-cancel".into())
                             .outline()
                             .label("Cancel")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(IconDialogEvent::Cancel))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose(IconDialogEvent::Cancel, window, cx)
+                            })),
                     )
                     .child(
                         Button::new("icon-save")
@@ -437,8 +467,8 @@ impl Render for ProjectIconDialog {
                             .primary()
                             .label("Save icon")
                             .disabled(!can_save)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.save(cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save(window, cx);
                             })),
                     ),
             )

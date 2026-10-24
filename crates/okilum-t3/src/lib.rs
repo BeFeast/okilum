@@ -32,8 +32,8 @@ pub use mcp::McpGateway;
 pub use token::{StoredToken, TokenFreshness, EXPIRES_SOON_SECS};
 pub use types::{
     is_http_link, Capabilities, ModelInfo, ModelOption, ModelSelection, OutgoingMessage, Project,
-    ProviderCapability, SendMode, SendReceipt, ServerIdentity, ThreadConfiguration, ThreadDetail,
-    ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
+    ProviderCapability, RepositoryIdentity, SendMode, SendReceipt, ServerIdentity,
+    ThreadConfiguration, ThreadDetail, ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
 };
 
 /// Seconds since the Unix epoch, the clock tokens are compared against.

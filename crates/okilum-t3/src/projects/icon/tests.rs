@@ -146,7 +146,7 @@ fn t3_project_icon_round_trips_in_t3s_shape() {
 #[test]
 fn a_t3_project_record_carries_icon_and_favicon_and_survives_unknown_kinds() {
     let project: crate::Project = serde_json::from_value(json!({
-        "id": "44b5", "title": "Okilum", "workspaceRoot": "/home/god/src/okilum",
+        "id": "44b5", "title": "Okilum", "workspaceRoot": "/srv/t3-host/okilum",
         "defaultModelSelection": null,
         "faviconPath": "crates/okilum-shell/assets/brand/app-icon-light.svg",
         "projectIcon": {"kind": "monogram", "text": "Ok", "color": "teal"},
@@ -296,7 +296,7 @@ fn the_t3_counterpart_is_the_executor_project_or_the_same_vault_folder() {
         ),
         t3(
             "okilum",
-            "/home/god/src/okilum",
+            "/srv/t3-host/okilum",
             Some("crates/okilum-shell/assets/brand/app-icon-light.svg"),
         ),
     ];
@@ -483,4 +483,144 @@ fn icon_search_shows_popular_first_and_matches_dashed_names() {
         ["book-open", "bot", "folder", "rocket"]
     );
     assert!(filter_icons(&available, "nothing").is_empty());
+}
+
+fn repo_project(root: &str, favicon: &str, web: &str, provider: &str) -> crate::Project {
+    crate::Project {
+        id: "okilum".into(),
+        title: "Okilum".into(),
+        workspace_root: root.into(),
+        favicon_path: Some(favicon.into()),
+        repository_identity: Some(crate::RepositoryIdentity {
+            web_url: Some(web.into()),
+            provider: Some(provider.into()),
+            owner: Some("BeFeast".into()),
+            name: Some("okilum".into()),
+        }),
+        ..Default::default()
+    }
+}
+
+/// #1627: on the T3 host the repository's own checkout holds the logo.
+#[test]
+fn a_t3_logo_in_a_checkout_on_this_machine_is_drawn() {
+    let root = std::env::temp_dir().join(format!("okilum-checkout-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("crates/brand")).unwrap();
+    std::fs::write(root.join("crates/brand/icon.svg"), "<svg/>").unwrap();
+    let vault = std::env::temp_dir().join("okilum-no-vault");
+    let t3 = repo_project(
+        root.to_str().unwrap(),
+        "crates/brand/icon.svg",
+        "https://git.example/BeFeast/okilum",
+        "forgejo",
+    );
+    assert_eq!(
+        t3_logo(&vault.join("Dev/Areas/okilum"), "Dev/Areas/okilum", &t3),
+        Some(root.join("crates/brand/icon.svg"))
+    );
+    // An icon kind GPUI does not draw is no logo: the monogram shows.
+    let ico = crate::Project {
+        favicon_path: Some("favicon.ico".into()),
+        ..t3.clone()
+    };
+    std::fs::write(root.join("favicon.ico"), "ico").unwrap();
+    assert_eq!(t3_logo(&vault, "Dev/Areas/okilum", &ico), None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_remote_logo_is_read_from_the_repository_host() {
+    let forgejo = repo_project(
+        "/srv/t3-host/okilum",
+        "crates/okilum-shell/assets/brand/app icon.svg",
+        "https://git.oklabs.uk/BeFeast/okilum",
+        "forgejo",
+    );
+    assert_eq!(
+        remote_logo_url(&forgejo).as_deref(),
+        Some("https://git.oklabs.uk/api/v1/repos/BeFeast/okilum/raw/crates/okilum-shell/assets/brand/app%20icon.svg")
+    );
+    let github = repo_project(
+        "/srv/t3-host/okilum",
+        "/srv/t3-host/okilum/public/logo.png",
+        "https://github.com/BeFeast/okilum",
+        "github",
+    );
+    assert_eq!(
+        remote_logo_url(&github).as_deref(),
+        Some("https://raw.githubusercontent.com/BeFeast/okilum/HEAD/public/logo.png")
+    );
+    let unknown = repo_project("/r", "logo.svg", "https://example.com/a/b", "bitbucket");
+    assert_eq!(remote_logo_url(&unknown), None);
+    let escaping = repo_project("/r", "../logo.svg", "https://git.oklabs.uk/a/b", "forgejo");
+    assert_eq!(remote_logo_url(&escaping), None);
+}
+
+/// The repo logo reaches a machine without the checkout (the Mac): fetched
+/// once into the cache, then read from it; a manual icon needs no logo.
+#[test]
+fn a_counterpart_without_a_local_checkout_fetches_and_caches_its_logo() {
+    use crate::testing::{FakeServer, Response};
+    let server = FakeServer::start(|request| {
+        if request.path() == "/api/v1/repos/BeFeast/okilum/raw/crates/brand/icon.svg" {
+            Response {
+                status: 200,
+                headers: vec![("content-type".into(), "image/svg+xml".into())],
+                body: "<svg xmlns=\"http://www.w3.org/2000/svg\"/>".into(),
+            }
+        } else {
+            Response::empty(404)
+        }
+    });
+    let cache = std::env::temp_dir().join(format!("okilum-logos-{}", uuid::Uuid::new_v4()));
+    let t3 = repo_project(
+        "/srv/t3-host/okilum",
+        "crates/brand/icon.svg",
+        &format!("{}/BeFeast/okilum", server.origin),
+        "forgejo",
+    );
+    let first = cached_remote_logo(&cache, &t3).expect("fetched");
+    assert!(first.starts_with(&cache));
+    assert_eq!(first.extension().unwrap(), "svg");
+    assert!(std::fs::read_to_string(&first).unwrap().contains("<svg"));
+    assert_eq!(cached_remote_logo(&cache, &t3), Some(first.clone()));
+    assert_eq!(server.requests().len(), 1, "the second read is the cache");
+
+    let missing = crate::Project {
+        favicon_path: Some("nope.svg".into()),
+        ..t3.clone()
+    };
+    assert_eq!(cached_remote_logo(&cache, &missing), None);
+    assert_eq!(cached_remote_logo(&cache, &missing), None);
+    assert_eq!(
+        server.requests().len(),
+        2,
+        "a missing logo is not asked for again"
+    );
+
+    let vault = std::env::temp_dir().join("okilum-no-vault");
+    let folder = vault.join("Dev/Areas/okilum");
+    let link = Counterpart::new("maestro", &folder, "Dev/Areas/okilum", &t3, Some(&cache));
+    assert_eq!(link.logo, Some(first.clone()));
+    assert_eq!(
+        resolve(link.icon.as_ref(), link.logo.as_deref(), "Okilum"),
+        Avatar::Logo(first),
+        "the repo logo comes before the monogram"
+    );
+    let manual = crate::Project {
+        project_icon: Some(ProjectIcon::Emoji {
+            emoji: "🚀".into()
+        }),
+        ..t3.clone()
+    };
+    let link = Counterpart::new(
+        "maestro",
+        &folder,
+        "Dev/Areas/okilum",
+        &manual,
+        Some(&cache),
+    );
+    assert_eq!(link.logo, None, "a manual icon wins without a logo fetch");
+    assert_eq!(server.requests().len(), 2);
+    std::fs::remove_dir_all(cache).unwrap();
 }

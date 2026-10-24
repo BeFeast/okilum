@@ -120,6 +120,15 @@ pub enum ProjectIcon {
 }
 
 impl ProjectIcon {
+    /// T3's `kind`: `lucide`, `emoji` or `monogram`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Lucide { .. } => "lucide",
+            Self::Emoji { .. } => "emoji",
+            Self::Monogram { .. } => "monogram",
+        }
+    }
+
     /// The icon if every field is usable: a kebab-case Lucide name, a short
     /// emoji, 1–2 monogram characters.
     pub fn validated(self) -> Option<Self> {
@@ -343,17 +352,10 @@ pub fn t3_counterpart<'a>(
         })
 }
 
-/// T3's `faviconPath` as a file on this machine: only when the T3 project
-/// is rooted at this vault folder and the path stays inside it.
-pub fn t3_logo(
-    folder: &Path,
-    vault_relative: &str,
-    t3_project: &crate::Project,
-) -> Option<PathBuf> {
+/// T3's `faviconPath` relative to the workspace root, when it stays inside
+/// it and names an image this app draws.
+fn favicon_relative(t3_project: &crate::Project) -> Option<PathBuf> {
     let favicon = t3_project.favicon_path.as_deref()?;
-    if !same_folder(&t3_project.workspace_root, vault_relative) {
-        return None;
-    }
     // T3 writes some favicons as absolute paths under the workspace root.
     let favicon = favicon
         .strip_prefix(t3_project.workspace_root.trim_end_matches(['/', '\\']))
@@ -361,14 +363,176 @@ pub fn t3_logo(
         .map(|rest| rest.trim_start_matches(['/', '\\']))
         .unwrap_or(favicon);
     let relative = Path::new(favicon);
-    let inside = relative
+    let inside = relative.components().next().is_some()
+        && relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    let drawable = relative
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| LOGO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
+    (inside && drawable).then(|| relative.to_owned())
+}
+
+/// The image kinds a logo is drawn from (GPUI's image loader). T3 also
+/// accepts `.ico`, `.icns` and `.avif`; those show the monogram.
+const LOGO_EXTENSIONS: [&str; 6] = ["svg", "png", "jpg", "jpeg", "gif", "webp"];
+
+/// T3's `faviconPath` as a file on this machine: under the vault folder
+/// when the T3 project is rooted there, or under T3's workspace root when
+/// that checkout is on this machine (the T3 host itself).
+pub fn t3_logo(
+    folder: &Path,
+    vault_relative: &str,
+    t3_project: &crate::Project,
+) -> Option<PathBuf> {
+    let relative = favicon_relative(t3_project)?;
+    if same_folder(&t3_project.workspace_root, vault_relative) {
+        let path = folder.join(&relative);
+        if usable_logo(&path) {
+            return Some(path);
+        }
+    }
+    let root = Path::new(t3_project.workspace_root.trim());
+    if root.is_absolute() && root.is_dir() {
+        let path = root.join(&relative);
+        if usable_logo(&path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Where the repository host serves T3's `faviconPath` of the default
+/// branch: GitHub's raw host, or a Forgejo/Gitea API raw file. `None` for
+/// other hosts or without a repository identity.
+pub fn remote_logo_url(t3_project: &crate::Project) -> Option<String> {
+    let repo = t3_project.repository_identity.as_ref()?;
+    let relative = favicon_relative(t3_project)?;
+    let segments: Vec<String> = relative
         .components()
-        .all(|c| matches!(c, std::path::Component::Normal(_)));
-    if !inside {
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let provider = repo.provider.as_deref()?.to_ascii_lowercase();
+    let web = url::Url::parse(repo.web_url.as_deref()?).ok()?;
+    if !matches!(web.scheme(), "https" | "http") {
         return None;
     }
-    let path = folder.join(relative);
-    usable_logo(&path).then_some(path)
+    let path: Vec<String> = web
+        .path_segments()?
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let (owner, name) = match (repo.owner.as_deref(), repo.name.as_deref(), path.as_slice()) {
+        (Some(owner), Some(name), _) => (owner.to_owned(), name.to_owned()),
+        (_, _, [owner, name]) => (owner.clone(), name.clone()),
+        _ => return None,
+    };
+    let mut url = match provider.as_str() {
+        "github" => {
+            let mut url = url::Url::parse("https://raw.githubusercontent.com/").ok()?;
+            url.path_segments_mut().ok()?.pop_if_empty().extend([
+                owner.as_str(),
+                name.as_str(),
+                "HEAD",
+            ]);
+            url
+        }
+        "forgejo" | "gitea" => {
+            let mut url = web.clone();
+            url.set_query(None);
+            url.set_fragment(None);
+            url.path_segments_mut().ok()?.clear().extend([
+                "api",
+                "v1",
+                "repos",
+                owner.as_str(),
+                name.as_str(),
+                "raw",
+            ]);
+            url
+        }
+        _ => return None,
+    };
+    url.path_segments_mut().ok()?.extend(segments.iter());
+    Some(url.into())
+}
+
+/// A remote logo read again after this long; a missing one is not asked
+/// for again sooner.
+const LOGO_CACHE_SECS: u64 = 24 * 60 * 60;
+
+/// T3's logo for a repository whose checkout is not on this machine,
+/// fetched from the repository host once a day into `cache`. A failed
+/// fetch keeps the last copy. Blocks; run it off the UI thread.
+pub fn cached_remote_logo(cache: &Path, t3_project: &crate::Project) -> Option<PathBuf> {
+    use sha2::Digest as _;
+    let url = remote_logo_url(t3_project)?;
+    let extension = favicon_relative(t3_project)?
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let key: String = sha2::Sha256::digest(url.as_bytes())[..12]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = cache.join(format!("{key}.{extension}"));
+    let missing = cache.join(format!("{key}.missing"));
+    let fresh = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() < LOGO_CACHE_SECS)
+    };
+    let kept = || usable_logo(&path).then(|| path.clone());
+    if (usable_logo(&path) && fresh(&path)) || fresh(&missing) {
+        return kept();
+    }
+    match fetch_logo(&url) {
+        Ok(bytes) => {
+            std::fs::create_dir_all(cache).ok()?;
+            let temp = cache.join(format!(".{key}.{}.tmp", uuid::Uuid::new_v4()));
+            std::fs::write(&temp, &bytes).ok()?;
+            if std::fs::rename(&temp, &path).is_err() {
+                let _ = std::fs::remove_file(&temp);
+                return kept();
+            }
+            let _ = std::fs::remove_file(&missing);
+            Some(path)
+        }
+        Err(error) => {
+            eprintln!("Project logo: {url}: {error:#}");
+            if std::fs::create_dir_all(cache).is_ok() {
+                let _ = std::fs::write(&missing, b"");
+            }
+            kept()
+        }
+    }
+}
+
+fn fetch_logo(url: &str) -> Result<Vec<u8>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()?;
+    let response = client.get(url).send()?;
+    ensure!(response.status().is_success(), "HTTP {}", response.status());
+    ensure!(
+        response
+            .content_length()
+            .is_none_or(|length| length <= LOGO_MAX_BYTES),
+        "larger than a logo"
+    );
+    let bytes = response.bytes()?;
+    ensure!(
+        !bytes.is_empty() && bytes.len() as u64 <= LOGO_MAX_BYTES,
+        "not a logo ({} bytes)",
+        bytes.len()
+    );
+    Ok(bytes.to_vec())
 }
 
 /// A vault project's T3 counterpart, as last read from T3.
@@ -390,12 +554,19 @@ impl Counterpart {
         folder: &Path,
         vault_relative: &str,
         t3_project: &crate::Project,
+        logos: Option<&Path>,
     ) -> Self {
+        // A manual icon wins; the logo is only looked for without one.
+        let logo = match t3_project.project_icon {
+            Some(_) => None,
+            None => t3_logo(folder, vault_relative, t3_project)
+                .or_else(|| logos.and_then(|cache| cached_remote_logo(cache, t3_project))),
+        };
         Self {
             environment: environment.to_owned(),
             project_id: t3_project.id.clone(),
             icon: t3_project.project_icon.clone(),
-            logo: t3_logo(folder, vault_relative, t3_project),
+            logo,
         }
     }
 }
@@ -418,6 +589,17 @@ pub fn counterparts(
     projects: &[super::Project],
     gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
 ) -> std::collections::BTreeMap<PathBuf, Counterpart> {
+    counterparts_with_logos(vault, projects, gateways, None)
+}
+
+/// `counterparts`, with T3 logos whose checkout is elsewhere fetched from
+/// the repository host into `logos` (a cache folder).
+pub fn counterparts_with_logos(
+    vault: &Path,
+    projects: &[super::Project],
+    gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
+    logos: Option<&Path>,
+) -> std::collections::BTreeMap<PathBuf, Counterpart> {
     let mut listings = std::collections::BTreeMap::<String, Option<Vec<crate::Project>>>::new();
     let mut result = std::collections::BTreeMap::new();
     for project in projects {
@@ -438,7 +620,7 @@ pub fn counterparts(
         if let Some(t3_project) = t3_counterpart(project, &relative, listing) {
             result.insert(
                 project.folder.clone(),
-                Counterpart::new(alias, &project.folder, &relative, t3_project),
+                Counterpart::new(alias, &project.folder, &relative, t3_project, logos),
             );
         }
     }
@@ -465,6 +647,17 @@ pub fn save_icon(
     gateway: Option<&dyn crate::ManagerGateway>,
     icon: Option<&ProjectIcon>,
 ) -> Result<Saved> {
+    save_icon_with_logos(vault, project, gateway, icon, None)
+}
+
+/// `save_icon`; a reset reads the logo with `counterparts_with_logos`.
+pub fn save_icon_with_logos(
+    vault: &Path,
+    project: &super::Project,
+    gateway: Option<&dyn crate::ManagerGateway>,
+    icon: Option<&ProjectIcon>,
+    logos: Option<&Path>,
+) -> Result<Saved> {
     let relative =
         vault_relative(vault, &project.folder).context("Project is outside this vault")?;
     match (gateway, project.environment.as_deref()) {
@@ -475,13 +668,22 @@ pub fn save_icon(
             if let Some(t3_project) = t3_counterpart(project, &relative, &listing) {
                 let updated = gateway
                     .set_project_icon(&t3_project.id, icon)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(|e| anyhow::anyhow!("{e}; the icon was not changed"))?;
                 return Ok(Saved::T3(Counterpart::new(
                     alias,
                     &project.folder,
                     &relative,
                     &updated,
+                    logos,
                 )));
+            }
+            // A project bound to a T3 project T3 does not list is not
+            // given a project.yaml icon T3 would never show.
+            if let Some(id) = project.appearance.executor_project.as_deref() {
+                bail!(
+                    "T3 has no project {id} for {}; the icon was not changed",
+                    project.name
+                )
             }
         }
         _ if project.appearance.executor_project.is_some() => {
