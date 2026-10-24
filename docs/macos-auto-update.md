@@ -75,3 +75,5 @@ of the build you want from
 For the operator-only `scripts/open-verified-macos.sh`, supply the expected
 `OKILUM_SIGNING_TEAM_ID` and `OKILUM_SIGNING_IDENTITY` from trusted release
 configuration. These checks remain mandatory; never infer them from the download.
+
+PR previews are disabled by default (`OKILUM_MACOS_PR_PREVIEWS` must equal `true` to opt in); decision 2026-10-24: test new work in Sprint, Mac beta builds only from main (#1489).

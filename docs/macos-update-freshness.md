@@ -16,14 +16,15 @@ The production `TSUserDriver` in `crates/okilum-shell/src/updater/bridge.m` now:
    separate guarded FFI entry point consumes the install continuation. Ordinary
    Quit uses this same post-verification Rust protection/persistence boundary;
    only after it succeeds can AppKit accept termination without relaunching.
-3. Defers ordinary AppKit termination during download/extraction/verification,
+3. Cancels ordinary AppKit termination during download/extraction/verification,
    and rechecks a prepared update on ordinary Quit. This matters even with silent
    automatic installation disabled: Sparkle installs prepared interactive updates
    when the app exits. Other application delegate callbacks and existing
    termination refusal are forwarded unchanged.
 4. Cancels a superseded prepared installer using its public
    `SPUUserUpdateChoiceSkip` reply, waits for `didFinishUpdateCycleForUpdateCheck`,
-   then starts a new user-initiated Sparkle check. The explicit Install intent
+   then starts a new Sparkle check synchronously inside that completion callback,
+   preserving foreground/background context. The explicit Install intent
    continues for ordinary updates; informational, major and failed-feed-signature
    prompts are not automatically accepted. Ready-stage Skip cancels without
    recording a user version skip. An installer inherited from an older build
@@ -57,7 +58,7 @@ installation identity is necessary because probing the installation updater can
 resume retained N instead of fetching the feed.
 
 All Sparkle calls, reply blocks, continuation ownership and AppKit termination
-replies run on the main thread. Cancellation precedes a new cycle; callbacks from
+requests run on the main thread. Cancellation precedes a new cycle; callbacks from
 a dismissed driver are rejected by a generation token. Freshness is bounded to
 the last successful appcast fetch, not a guarantee about publication after it.
 
@@ -88,6 +89,66 @@ October 10 native-log examples in `1155/s/native-formats/macos-log-show.ndjson`
 are unrelated. Release logs prove publication, not the client-installed archive.
 Oleg's specific root cause remains a hypothesis supported by this source path;
 there is no claim of a reproduced incident on his Mac.
+
+## Hosted replacement stall after #1605
+
+The retained hosted run `40082795045` reached `prepared 2`, published the changed
+feed, fetched the appcast again, and reached `dismiss 2`. The installed bundle
+remained 1 with no relaunch receipt. This excludes absence of the GUI/download
+callbacks; it does not retrospectively verify the original client incident.
+
+Pinned Sparkle 2.10.0 `SPUUpdater.m` explains the deterministic scheduler conflict:
+
+- Its driver completion clears `_driver` and `sessionInProgress`, then calls
+  `didFinishUpdateCycleForUpdateCheck:error:` (lines 868–888).
+- After that delegate returns, it schedules the next automatic check unless the
+  delegate has already started a session. Interval discovery immediately sets
+  `sessionInProgress = YES` before its asynchronous installer-info probe
+  (lines 502–549).
+- Both public foreground and background check methods return without checking
+  when that flag is already set (lines 664–667 and 713–716).
+
+The bridge previously dispatched the replacement check onto the main queue from
+cycle completion. That dispatch ran after scheduling had reserved the session,
+so Sparkle ignored it. Start the replacement directly in the public completion
+callback instead: Sparkle has already finished driver cleanup, and its explicit
+post-delegate session check then suppresses the competing scheduler. Cancellation
+still uses Ready-stage Skip; no restart is initiated from its reply block.
+Automatic checks remain enabled. No timer delay or timeout increase is needed.
+
+The hosted delegate asserts that replacement has claimed a session before cycle
+completion returns, and traces that boundary. Existing signed archive, actual
+N→N+2 installation/relaunch, unchanged-feed, foreground/background eligibility
+and post-verification editor-guard cases remain mandatory. Static source evidence
+establishes the conflict; hosted CI on the fix head is still required to establish
+successful installation and detect any subsequent lifecycle failure.
+
+### Ordinary Quit modal-loop stall
+
+Hosted run `40084047136` on `1ed6e809` passed `newest`, `background-newest`,
+`background-phase-unchanged` and `restart-newest`, then timed out in `quit-newest`.
+The Quit trace reached `verified-ready 2`, published N+2, and reported verification
+starting, but made no subsequent appcast request and never reached the editor
+guard. Evidence is retained under `~/work/qa-evidence/1634/quit-newest/`.
+The installed-bundle snapshot was taken after the fixture terminated the timed-out
+process; its version 2 is not evidence that installation preceded the timeout.
+
+The fixture requests ordinary Quit from the real Sparkle callback on the main
+queue. Our delegate returned `NSTerminateLater` while requesting asynchronous
+freshness. Apple's [termination contract](https://developer.apple.com/documentation/appkit/nsapplication/terminatereply/terminatelater)
+states that this runs a nested `NSModalPanelRunLoopMode` loop until the app replies.
+It cannot drain pending blocks from the main queue whose callback is still inside
+`terminate:`. Verification and the default-mode editor-guard timer therefore
+cannot complete; this is independent of the replacement scheduling fix above.
+
+Return `NSTerminateCancel` for the first Quit instead, so the initiating callback
+can unwind. After fresh verification and the Rust editor guard succeed, reissue
+ordinary Quit with a one-use approval. The original application delegate still
+makes the final decision, including refusal or its own deferred reply. Guard
+refusal and supersession keep the app open without arming that approval. This
+does not use Sparkle's Restart/relaunch continuation. Hosted Quit cases assert
+that the first Quit returns, the guard precedes the original delegate's decision,
+and the real N+2 installation occurs without a relaunch receipt.
 
 ## Hosted regression
 
