@@ -315,6 +315,9 @@ struct Settings {
     /// Settings → T3 origin, made on first render of that section. Applied
     /// on Enter, and on blur when it changed: there is no Connect button.
     t3_origin: Option<(Entity<InputState>, Subscription)>,
+    /// What Settings itself put into that field (the panel's origin when it
+    /// was read), as opposed to what the user typed.
+    t3_seed: String,
 }
 impl Settings {
     fn new(reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) -> Self {
@@ -338,6 +341,7 @@ impl Settings {
             editor_command: None,
             map_from: None,
             t3_origin: None,
+            t3_seed: String::new(),
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -403,6 +407,13 @@ impl Settings {
         let project = reader.read(cx).project_navigation.active.clone()?;
         Some((reader, project))
     }
+    /// The open project's Manager panel origin, if it has one yet.
+    fn t3_panel_origin(&self, cx: &App) -> Option<String> {
+        self.t3_target(cx)
+            .and_then(|(reader, _)| reader.read(cx).project_navigation.manager_panel.clone())
+            .map(|panel| panel.read(cx).origin_value(cx))
+            .filter(|origin| !origin.trim().is_empty())
+    }
     fn t3_connect(&mut self, only_if_changed: bool, cx: &mut Context<Self>) {
         let (Some((reader, _)), Some((input, _))) = (self.t3_target(cx), self.t3_origin.as_ref())
         else {
@@ -412,10 +423,13 @@ impl Settings {
             return;
         };
         let origin = input.read(cx).value().trim().to_string();
-        if origin.is_empty() || only_if_changed && panel.read(cx).origin_value(cx).trim() == origin
+        let current = panel.read(cx).origin_value(cx);
+        if origin.is_empty()
+            || only_if_changed && !t3_blur_applies(&origin, &self.t3_seed, &current)
         {
             return;
         }
+        self.t3_seed = origin.clone();
         // The browser is a native child of the Reader's window: connect there.
         for handle in cx.windows() {
             let Some(root) = handle.downcast::<Root>() else {
@@ -1271,13 +1285,23 @@ impl Render for Settings {
                     InputState::new(window, cx).placeholder("Build path, e.g. /src/ordgw")
                 }));
         }
+        if self.section == Section::T3 {
+            // The panel reads its saved origin asynchronously: an untouched
+            // field follows it instead of keeping the fallback it showed first.
+            let input = self.t3_origin.as_ref().map(|(input, _)| input.clone());
+            if let (Some(input), Some(panel)) = (input, self.t3_panel_origin(cx)) {
+                let typed = input.read(cx).value().to_string();
+                if let Some(origin) = t3_resync(&typed, &self.t3_seed, &panel) {
+                    input.update(cx, |input, cx| input.set_value(origin.clone(), window, cx));
+                    self.t3_seed = origin;
+                }
+            }
+        }
         if self.section == Section::T3 && self.t3_origin.is_none() {
             let saved = self
-                .t3_target(cx)
-                .and_then(|(reader, _)| reader.read(cx).project_navigation.manager_panel.clone())
-                .map(|panel| panel.read(cx).origin_value(cx))
-                .filter(|origin| !origin.trim().is_empty())
+                .t3_panel_origin(cx)
                 .unwrap_or_else(|| reader_manager_panel::DEFAULT_T3_ORIGIN.into());
+            self.t3_seed = saved.clone();
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(reader_manager_panel::DEFAULT_T3_ORIGIN)
@@ -1472,10 +1496,46 @@ pub(crate) fn render_update_status(
     )
 }
 
+/// Blur applies the Settings › T3 field only when the user typed something
+/// (it differs from what Settings put there) that differs from the panel's
+/// current origin. Enter always applies.
+fn t3_blur_applies(typed: &str, seed: &str, current: &str) -> bool {
+    let typed = typed.trim();
+    typed != seed.trim() && typed != current.trim()
+}
+
+/// An untouched Settings › T3 field takes the panel's origin when that
+/// arrives or changes; a field the user edited is left alone.
+fn t3_resync(typed: &str, seed: &str, panel: &str) -> Option<String> {
+    (typed.trim() == seed.trim() && panel.trim() != seed.trim()).then(|| panel.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn t3_field_blur_applies_only_what_the_user_typed() {
+        let saved = "http://10.10.0.23:23110";
+        let default = reader_manager_panel::DEFAULT_T3_ORIGIN;
+        // Settings opened before the panel's saved origin loaded: the field
+        // still shows the fallback, which must not replace the saved origin.
+        assert!(!t3_blur_applies(default, default, saved));
+        // An edit that differs from the panel's origin applies on blur.
+        assert!(t3_blur_applies("http://192.168.1.5:23110", default, saved));
+        // Typing the panel's own origin is not a change.
+        assert!(!t3_blur_applies(&format!(" {saved} "), default, saved));
+    }
+
+    #[test]
+    fn untouched_t3_field_follows_the_panel_origin_and_edits_stay() {
+        let saved = "http://10.10.0.23:23110";
+        let default = reader_manager_panel::DEFAULT_T3_ORIGIN;
+        assert_eq!(t3_resync(default, default, saved).as_deref(), Some(saved));
+        assert_eq!(t3_resync(saved, saved, saved), None);
+        assert_eq!(t3_resync("http://192.168.1.5", default, saved), None);
+    }
 
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     #[gpui::test]
