@@ -653,7 +653,7 @@ fn owned_feedback_center_single_instance_escape_and_close_with_owner(cx: &mut Te
             assert!(!window.is_minimizable());
             window.window_handle()
         });
-        feedback.update(|window, cx| show(window, cx));
+        feedback.update(show);
         feedback.run_until_parked();
         assert_eq!(feedback.update(|window, _| window.window_handle()), handle);
         assert_eq!(feedback.update(|_, cx| cx.windows().len()), 2);
