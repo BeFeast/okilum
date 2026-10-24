@@ -57,7 +57,7 @@ probe remained unestablished; the native report stays BLOCKED and harness issue
 Merge requires existing required CI and review/disposition, plus production async
 client GET-only controls to `https://pomoi.co/healthz` and
 `https://feedback.befeast.com/healthz`, each exactly HTTP200 on hosted Linux,
-macOS and Windows. `.github/workflows/feedback-network.yml` retains exact-source
+macOS and Windows. The `okilum-http-health` dispatch of `.github/workflows/windows-native.yml` retains exact-source
 receipts and also runs the loopback-only production Feedback model regressions.
 The health probe never POSTs to a public endpoint. Windows exercises SChannel and
 system proxy policy; Linux/macOS exercise their unchanged production TLS policy.
