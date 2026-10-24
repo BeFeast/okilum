@@ -2,8 +2,8 @@
 //! only by an explicit CLI argument, never by updater environment or feed data.
 //! Commands drive real Reader, Settings and protected updater paths under Xvfb.
 use crate::*;
-use anyhow::{ensure, Context as _, Result};
-use serde_json::{json, Value};
+use anyhow::{Context as _, Result, ensure};
+use serde_json::{Value, json};
 use std::sync::OnceLock;
 
 static DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
@@ -67,7 +67,7 @@ fn snapshot(cx: &mut App) -> Result<Value> {
     Ok(json!({"identity": okilum_appimage::acceptance_identity(
         env!("OKILUM_BUILD_VERSION"), env!("OKILUM_SOURCE_COMMIT"))?,
         "windows": windows, "channel": updater::channel(),
-        "action": updater::action_label(), "status": updater::status_line(),
+        "action": updater::action_label(), "status": updater::status::text(&updater::status::get(), std::time::SystemTime::now()),
         "settings_section": reader_settings::acceptance_section(cx)}))
 }
 
@@ -85,7 +85,10 @@ fn command(request: &Value, directory: &std::path::Path, cx: &mut App) -> Result
             // identity first, while Target's no-hardlink precondition still holds.
             let mut state = snapshot(cx)?;
             reader_settings::acceptance_activate(cx)?;
-            state["status"] = json!(updater::status_line());
+            state["status"] = json!(updater::status::text(
+                &updater::status::get(),
+                std::time::SystemTime::now()
+            ));
             return Ok(state);
         }
         "open" => {
