@@ -819,12 +819,19 @@ fn indent_bytes(indent: &str, cols: usize) -> usize {
 /// on the caret line with its children, or every line of a multi-line
 /// selection, one level in or out.
 pub(crate) fn indent(text: &str, selection: Range<usize>, outdent: bool) -> Option<ListEdit> {
-    if selection.end > text.len() {
+    if selection.end > text.len()
+        || selection.start > selection.end
+        || !text.is_char_boundary(selection.start)
+        || !text.is_char_boundary(selection.end)
+    {
         return None;
     }
     let first = line_at(text, selection.start);
     let mut last_offset = selection.end;
-    if selection.end > selection.start && selection.end == line_start(text, selection.end) {
+    // A selection that ends right after a newline leaves that line alone.
+    // Only a newline counts: a selection of just the byte order mark also
+    // ends at a line start, and one byte back would be inside the mark.
+    if selection.end > selection.start && text[..selection.end].ends_with('\n') {
         last_offset -= 1;
     }
     let last = line_at(text, last_offset.max(first.start));
@@ -1151,6 +1158,13 @@ mod tests {
             tab(&format!("{bom}- a\n  - b|"), true),
             Some(format!("{bom}- a\n- b|"))
         );
+        // Tab with only the mark selected (Shift+Right from byte zero) used
+        // to step one byte back into the mark and panic; a range that starts
+        // or ends inside the mark is no list command either.
+        let text = format!("{bom}- a");
+        assert_eq!(indent(&text, 0..bom.len_utf8(), false), None);
+        assert_eq!(indent(&text, 0..1, false), None);
+        assert_eq!(indent(&text, 1..text.len(), true), None);
         assert_eq!(enter_at(&format!("{bom}```\n- a|")), None, "code");
         assert_eq!(
             enter_at(&format!("{bom}---\n- a|\n---\n")),
