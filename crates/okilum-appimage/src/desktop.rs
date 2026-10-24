@@ -150,6 +150,55 @@ mod tests {
         assert_eq!(fs::read(peer).unwrap(), b"distribution launcher");
     }
 
+    // Use the real desktop-entry parser and launcher, not our own encoder as
+    // the oracle. This runs only a disposable script in the hosted Linux gate.
+    #[test]
+    fn gio_launch_preserves_literal_executable_path() {
+        let home = tempfile::tempdir().unwrap();
+        let image = home.path().join("space \\\"`$HOME; & %.AppImage");
+        let receipt = home.path().join("launched");
+        fs::write(
+            &image,
+            b"#!/bin/sh\nprintf '%s\\n' \"$0\" \"$#\" > \"$OKILUM_DESKTOP_PROBE\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&image, fs::Permissions::from_mode(0o755)).unwrap();
+        install(home.path(), &image).unwrap();
+        let (desktop, _) = paths(home.path()).unwrap();
+        let result = std::process::Command::new("python3")
+            .args([
+                "-c",
+                r#"import ctypes, sys, time
+from pathlib import Path
+gio = ctypes.CDLL('libgio-2.0.so.0')
+gio.g_desktop_app_info_new_from_filename.argtypes = [ctypes.c_char_p]
+gio.g_desktop_app_info_new_from_filename.restype = ctypes.c_void_p
+gio.g_app_info_launch.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+gio.g_app_info_launch.restype = ctypes.c_int
+app = gio.g_desktop_app_info_new_from_filename(sys.argv[1].encode())
+assert app, 'GLib rejected the generated desktop entry'
+error = ctypes.c_void_p()
+assert gio.g_app_info_launch(app, None, None, ctypes.byref(error)), 'GIO launch failed'
+receipt = Path(sys.argv[2])
+deadline = time.monotonic() + 5
+while not receipt.exists() and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert receipt.read_text().splitlines() == [sys.argv[3], '0'], 'Executable path or argument count changed'
+"#,
+            ])
+            .arg(desktop)
+            .arg(&receipt)
+            .arg(&image)
+            .env("OKILUM_DESKTOP_PROBE", &receipt)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "GIO desktop launch: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     #[test]
     fn refuses_unowned_entry_and_invalid_exec() {
         let home = tempfile::tempdir().unwrap();
