@@ -1,5 +1,6 @@
 //! Read-only delimited tables; editing and recovery stay in FileEditor.
 use super::*;
+use gpui_base::ElementExt as _;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::delimited::{ReadLimits, Table};
 use std::cell::RefCell;
@@ -270,6 +271,7 @@ fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
             // hovered (their tooltip would replace this one) nor take the
             // wheel (the table would scroll underneath) (#946).
             .occlude()
+            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
             .w(px(width))
             .max_h(px(height))
             .overflow_y_scroll()

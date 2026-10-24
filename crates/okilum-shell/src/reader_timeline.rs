@@ -1,5 +1,6 @@
 //! Historical previews are separate from the live document and editor buffer.
 use super::*;
+use gpui_base::ElementExt as _;
 use gpui_component::{
     input::{Editor, EditorState},
     notification::Notification,
@@ -571,6 +572,7 @@ impl Reader {
                     v_flex()
                         .id("history-actions-overlay")
                         .occlude()
+                        .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .absolute()
                         .bottom_3()
