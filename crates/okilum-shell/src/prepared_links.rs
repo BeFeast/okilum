@@ -21,22 +21,23 @@ pub(crate) fn external_tooltip(url: &str) -> Option<String> {
     match parsed.scheme() {
         "http" | "https" | "ftp" | "mailto" | "tel" => {
             // Display only: link targets and open/copy actions keep authored bytes.
-            // Do not turn encoded controls into extra tooltip rows or tabs.
+            // Keep controls, invisible formatting (including bidi overrides),
+            // and Unicode line separators escaped in the displayed address.
             use std::fmt::Write as _;
-            let mut shown = String::new();
-            for ch in document_links::decode(url).chars() {
-                if ch.is_control() {
-                    let mut bytes = [0; 4];
-                    for byte in ch.encode_utf8(&mut bytes).as_bytes() {
-                        write!(shown, "%{byte:02X}").expect("writing a String cannot fail");
-                    }
-                } else {
-                    shown.push(ch);
+            static HIDDEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+                regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").unwrap()
+            });
+            let decoded = document_links::decode(url);
+            let shown = HIDDEN.replace_all(&decoded, |matched: &regex::Captures<'_>| {
+                let mut escaped = String::new();
+                for byte in matched[0].as_bytes() {
+                    write!(escaped, "%{byte:02X}").expect("writing a String cannot fail");
                 }
-            }
+                escaped
+            });
             Some(match parsed.host_str() {
                 Some(host) => format!("{host}\n{shown}"),
-                None => shown,
+                None => shown.into_owned(),
             })
         }
         _ => None,
@@ -704,6 +705,29 @@ mod tests {
         assert!(controls.ends_with("/%0A%0D%09%00"));
         assert!(
             matches!(document_links::destination(raw, false), document_links::Destination::External(target) if target == raw)
+        );
+    }
+
+    #[test]
+    fn external_tooltip_keeps_bidi_and_invisible_formatting_escaped() {
+        for escaped in [
+            "%D8%9C",                                        // Arabic letter mark
+            "%E2%80%8E%E2%80%8F",                            // directional marks
+            "%E2%80%AA%E2%80%AB%E2%80%AC%E2%80%AD%E2%80%AE", // embeddings/overrides
+            "%E2%81%A6%E2%81%A7%E2%81%A8%E2%81%A9",          // directional isolates
+            "%E2%80%8B%E2%80%8C%E2%80%8D%EF%BB%BF",          // zero-width formats/BOM
+            "%E2%80%A8%E2%80%A9",                            // line/paragraph separators
+        ] {
+            let raw = format!("https://example.com/safe{escaped}txt.exe");
+            assert_eq!(
+                external_tooltip(&raw).unwrap(),
+                format!("example.com\n{raw}")
+            );
+        }
+        assert_eq!(
+            external_tooltip("https://example.com/%D7%A9%D7%9C%D7%95%D7%9D").unwrap(),
+            "example.com\nhttps://example.com/שלום",
+            "ordinary RTL letters remain readable"
         );
     }
 
