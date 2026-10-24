@@ -22,3 +22,29 @@ pub extern "C" fn fixture_finish_verified_install() -> bool {
     )
     .is_ok()
 }
+
+// Use the same status/action projection as About, without a GPUI window.
+#[path = "../../../crates/okilum-shell/src/updater/status.rs"]
+mod status;
+
+#[no_mangle]
+pub extern "C" fn fixture_record_report(kind: i32) {
+    use status::CheckStatus;
+    match kind {
+        4 => status::set(CheckStatus::Preparing),
+        5 => status::set(CheckStatus::Ready),
+        6 => {
+            status::begin_restart();
+        }
+        7 => status::set(CheckStatus::Note("Update cancelled".into())),
+        10 => status::set(CheckStatus::RestartRetry(String::new())),
+        _ => {}
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn fixture_about_retry_enabled() -> bool {
+    let status = status::get();
+    matches!(status, status::CheckStatus::RestartRetry(_))
+        && status::progress(&status).is_some_and(|view| view.restart && view.percent == Some(100))
+}
