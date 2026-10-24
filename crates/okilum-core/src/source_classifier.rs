@@ -7,6 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 
+pub mod block_cache;
 pub mod decorations;
 mod retained;
 pub use retained::{RetainedPresentation, RevealSnapshot};
@@ -46,7 +47,7 @@ pub struct NoteLink {
 
 /// A reference link the full parse resolved from a document definition. A local
 /// reparse cannot see definitions; it may reuse only these exact labels.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Reference {
     label: String,
     url: String,
