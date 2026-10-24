@@ -444,10 +444,15 @@ impl Reader {
                 let limited = matching
                     .and_then(|e| e.live_preview.accepted.as_ref())
                     .is_none_or(|p| p.limited());
-                let outcome = if matching.is_some() && current == stamp {
+                let outcome = if matching.is_none() || current != stamp {
+                    "superseded"
+                } else if editor
+                    .range_to_bounds(&(editor.cursor()..editor.cursor()))
+                    .is_some()
+                {
                     "painted"
                 } else {
-                    "superseded"
+                    "unpainted"
                 };
                 trace.event("editor_latency_frame", serde_json::json!({
                     "purpose": purpose, "outcome": outcome,

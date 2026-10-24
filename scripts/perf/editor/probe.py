@@ -126,6 +126,7 @@ def run_once(binary, base, name, live, rep, deadline):
         command("xdotool", "key", "ctrl+Home", env=env)
         # Let the resize and focus frame complete before the sparse edit.
         time.sleep(.1)
+        before_edit = window_pixels(win, env)
         sent_ns = time.monotonic_ns()
         command("xdotool", "key", "x", env=env)
         edited = wait_for(lambda: frame_event(log, "edit", sent_ns), proc, deadline,
@@ -135,6 +136,8 @@ def run_once(binary, base, name, live, rep, deadline):
                 or edited["mutation_ns"] < sent_ns):
             raise NoEvidence("edit frame has a stale or foreign source identity")
         sample["input_frame_ms"] = (edited["monotonic_ns"] - sent_ns) / 1e6
+        if window_pixels(win, env) == before_edit:
+            raise NoEvidence("the edit frame left window pixels unchanged")
         # Assert the actual editor buffer changed; a caret redraw is insufficient.
         command("xdotool", "key", "ctrl+a", "ctrl+c", env=env)
         def buffer_changed():
