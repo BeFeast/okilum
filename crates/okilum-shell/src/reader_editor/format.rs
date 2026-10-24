@@ -584,7 +584,7 @@ pub(crate) fn typed(
     }
     if ch == '"' || ch == '\'' {
         // Inside a quote, the closing one types over.
-        if next == Some(ch) && before.matches(ch).count() % 2 == 1 {
+        if next == Some(ch) && quotes(before, next, ch) % 2 == 1 {
             return Some(over);
         }
         // An apostrophe in a word is not a quote.
@@ -595,6 +595,25 @@ pub(crate) fn typed(
     }
     let close = closer(ch)?;
     free.then(|| pair(close))
+}
+
+/// The quotes `ch` in `before` (the line up to the caret, `after` the
+/// character at it) that open or close a quotation. One inside a word is an
+/// apostrophe, a geresh or gershayim (it's, ג'ירפה, צה"ל): it pairs nothing.
+fn quotes(before: &str, after: Option<char>, ch: char) -> usize {
+    let chars: Vec<char> = before.chars().collect();
+    (0..chars.len())
+        .filter(|&ix| {
+            let in_word = ix > 0
+                && chars[ix - 1].is_alphanumeric()
+                && chars
+                    .get(ix + 1)
+                    .copied()
+                    .or(after)
+                    .is_some_and(char::is_alphanumeric);
+            chars[ix] == ch && !in_word
+        })
+        .count()
 }
 
 /// The typed-text hook of a Markdown note's editor.
@@ -917,6 +936,8 @@ mod tests {
             ("|", '"', Some("\"|\"")),
             ("\"a|\"", '"', Some("\"a\"|")),
             ("don|", '\'', None),
+            ("it's 'a|'", '\'', Some("it's 'a'|")),
+            ("צה\"ל \"א|\"", '"', Some("צה\"ל \"א\"|")),
             ("|", '«', Some("«|»")),
             ("«a|»", '»', Some("«a»|")),
         ] {
@@ -962,7 +983,14 @@ mod tests {
     /// closer a pair added is typed over.
     #[test]
     fn typing_through_pairs_gives_the_typed_text() {
-        for typed_text in ["[link](url) and (a [b] {c}) \"q\" «r»", "f(x) - [x] done"] {
+        for typed_text in [
+            "[link](url) and (a [b] {c}) \"q\" «r»",
+            "f(x) - [x] done",
+            // An apostrophe in a word before a quote: no stray closer.
+            "it's 'fine' and \"don't\" too",
+            // Hebrew geresh and gershayim inside words.
+            "צה\"ל אמר \"שלום\" ו-ג'ירפה 'כן'",
+        ] {
             let mut text = String::new();
             let mut at = 0;
             for ch in typed_text.chars() {
