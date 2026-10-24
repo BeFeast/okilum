@@ -2,6 +2,47 @@
 use super::*;
 use okilum_t3::projects::{Manager, Project};
 
+/// Used when no origin was saved for this T3 environment.
+pub(super) const DEFAULT_T3_ORIGIN: &str = "https://t3.oklabs.uk";
+
+/// Wait before the next automatic connection attempt. The Mac's network or
+/// VPN may come up after Okilum starts; never wait for a click to recover.
+fn retry_delay(failures: u32) -> std::time::Duration {
+    let seconds = match failures {
+        0 | 1 => 2,
+        2 => 5,
+        3 => 10,
+        _ => 30,
+    };
+    std::time::Duration::from_secs(seconds)
+}
+
+/// Quiet period after start or an address change: the network, VPN or T3
+/// itself may need a moment, so no error is shown until it has passed.
+const CONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The one status line for the panel and Settings › T3, or `None` while
+/// there is nothing worth saying (connecting within the grace period).
+fn status_line(
+    connected: bool,
+    error: bool,
+    retrying: bool,
+    loading: bool,
+    elapsed: std::time::Duration,
+) -> Option<&'static str> {
+    if connected {
+        return Some("Connected");
+    }
+    if error && !retrying {
+        // A malformed address does not heal by waiting.
+        return Some("T3 unavailable — check the address in Settings › T3");
+    }
+    if elapsed < CONNECT_GRACE {
+        return None;
+    }
+    (error || loading).then_some("T3 unavailable — reconnecting…")
+}
+
 pub(super) struct ManagerPanel {
     project: Project,
     state: Option<PathBuf>,
@@ -10,8 +51,17 @@ pub(super) struct ManagerPanel {
     previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
     error: Option<String>,
+    /// The last error is transient: another attempt is scheduled.
+    retrying: bool,
+    /// Consecutive failed attempts since the last success or address change.
+    failures: u32,
+    /// Set by `hide`: a released panel never reconnects.
+    closed: bool,
     loading: bool,
+    /// Start of the current grace period (panel creation or address change).
+    started: std::time::Instant,
     generation: u64,
+    _activation: Option<Subscription>,
     #[cfg(target_os = "macos")]
     focus_routing: Option<crate::reader_manager_focus::FocusRouting>,
     #[cfg(target_os = "macos")]
@@ -46,19 +96,30 @@ impl ManagerPanel {
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                match saved {
-                    Ok(Some(origin)) => {
-                        this.origin
-                            .update(cx, |input, cx| input.set_value(origin, window, cx));
-                        this.connect(window, cx);
+                let origin = match saved {
+                    Ok(Some(origin)) if !origin.trim().is_empty() => origin,
+                    Ok(_) => DEFAULT_T3_ORIGIN.into(),
+                    Err(e) => {
+                        this.log_failure(&format!("saved T3 origin unreadable: {e:#}"), cx);
+                        DEFAULT_T3_ORIGIN.into()
                     }
-                    Ok(None) => {}
-                    Err(e) => this.error = Some(format!("{e:#}")),
-                }
+                };
+                this.origin
+                    .update(cx, |input, cx| input.set_value(origin, window, cx));
+                // The app connects by itself; Linux shows the project view instead.
+                #[cfg(all(target_os = "macos", not(test)))]
+                this.connect(window, cx);
                 cx.notify();
             });
         })
         .detach();
+        Self::refresh_after_grace(window, cx);
+        // Coming back to the window (wake, VPN up, app switch) retries at once.
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.retry_now(window, cx);
+            }
+        });
         Self {
             project,
             state: saved_state,
@@ -67,8 +128,13 @@ impl ManagerPanel {
             previous_gpui_focus: None,
             origin,
             error: None,
+            retrying: false,
+            failures: 0,
+            closed: false,
             loading: false,
+            started: std::time::Instant::now(),
             generation: 0,
+            _activation: Some(activation),
             #[cfg(target_os = "macos")]
             focus_routing: None,
             #[cfg(target_os = "macos")]
@@ -126,6 +192,7 @@ impl ManagerPanel {
     }
 
     pub(super) fn hide(&mut self, cx: &mut Context<Self>) {
+        self.closed = true;
         self.generation = self.generation.wrapping_add(1);
         self.focused = false;
         #[cfg(target_os = "macos")]
@@ -137,17 +204,128 @@ impl ManagerPanel {
         let _ = cx;
     }
 
+    /// The T3 origin this panel uses (saved, or typed in Settings → T3).
+    pub(super) fn origin_value(&self, cx: &App) -> String {
+        self.origin.read(cx).value().to_string()
+    }
+
+    fn connected(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.webview.is_some();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    /// Re-render once the grace period ends so a still-failing connection
+    /// shows its quiet line without waiting for the next attempt.
+    fn refresh_after_grace(window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(CONNECT_GRACE).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// One short status line (panel and Settings → T3) and the full error,
+    /// shown only as a tooltip. No line and no error during the grace period.
+    pub(super) fn connection_status(&self) -> (Option<String>, Option<String>) {
+        let connected = self.connected();
+        let line = status_line(
+            connected,
+            self.error.is_some(),
+            self.retrying,
+            self.loading,
+            self.started.elapsed(),
+        );
+        let error = if connected || line.is_none() {
+            None
+        } else {
+            self.error.clone()
+        };
+        (line.map(Into::into), error)
+    }
+
+    /// Settings → T3 (#1507): replace the current browser with one for `origin`.
+    pub(super) fn connect_to(
+        &mut self,
+        origin: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.hide(cx);
+        self.closed = false;
+        self.loading = false;
+        self.failures = 0;
+        self.error = None;
+        self.retrying = false;
+        self.started = std::time::Instant::now();
+        Self::refresh_after_grace(window, cx);
+        self.origin
+            .update(cx, |input, cx| input.set_value(origin, window, cx));
+        self.connect(window, cx);
+    }
+
+    /// Window became active: skip the backoff wait if still disconnected.
+    fn retry_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed || self.loading || self.connected() || !self.retrying {
+            return;
+        }
+        self.failures = 0;
+        self.connect(window, cx);
+    }
+
+    fn log_failure(&self, error: &str, cx: &App) {
+        eprintln!(
+            "okilum: manager T3 connect failed (attempt {}): {error}",
+            self.failures
+        );
+        if let Some(trace) = reader_diagnostics::trace(cx) {
+            trace.event(
+                "manager_t3_connect",
+                serde_json::json!({"failures": self.failures, "error": error}),
+            );
+        }
+    }
+
+    /// A failed attempt: keep one quiet line and try again with backoff.
+    fn failed(&mut self, error: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.failures = self.failures.saturating_add(1);
+        self.log_failure(&error, cx);
+        self.error = Some(error);
+        self.retrying = true;
+        let generation = self.generation;
+        let delay = retry_delay(self.failures);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                // A newer attempt, an address change or `hide` supersedes this one.
+                if this.generation != generation || this.closed || this.loading || this.connected()
+                {
+                    return;
+                }
+                this.connect(window, cx);
+            });
+        })
+        .detach();
+    }
+
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Manager::Thread(thread) = self.project.manager.clone() else {
             return;
         };
+        if self.closed {
+            return;
+        }
         let env = match okilum_t3::Environment::new(
             self.project.environment.as_deref().unwrap_or("project"),
             &self.origin.read(cx).value(),
         ) {
             Ok(env) => env,
             Err(e) => {
+                // A malformed address does not heal by retrying.
                 self.error = Some(e.to_string());
+                self.retrying = false;
+                self.log_failure(&e.to_string(), cx);
                 cx.notify();
                 return;
             }
@@ -155,7 +333,7 @@ impl ManagerPanel {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.loading = true;
-        self.error = None;
+        // The previous error stays until this attempt ends: no flicker.
         let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -180,17 +358,24 @@ impl ManagerPanel {
                             Ok((view, routing)) => {
                                 this.focus_routing = Some(routing);
                                 this.webview = Some(view);
+                                this.error = None;
+                                this.retrying = false;
+                                this.failures = 0;
                             }
                             Err(e) => {
-                                this.error = Some(format!("Manager could not be opened: {e:#}"))
+                                let error = format!("Manager could not be opened: {e:#}");
+                                this.failed(error, window, cx);
                             }
                         }
                         #[cfg(not(target_os = "macos"))]
                         {
                             let _ = (url, window);
+                            this.error = None;
+                            this.retrying = false;
+                            this.failures = 0;
                         }
                     }
-                    Err(e) => this.error = Some(format!("T3 is unreachable: {e:#}")),
+                    Err(e) => this.failed(format!("T3 is unreachable: {e:#}"), window, cx),
                 }
                 cx.notify();
             });
@@ -222,6 +407,14 @@ impl ManagerPanel {
                     .update_in(cx, |this, window, cx| {
                         // An old browser's queued callbacks must not affect its successor.
                         if this.generation != generation {
+                            return;
+                        }
+                        if event.starts_with("page-load:") {
+                            if event == "page-load:finished" {
+                                if let Some(routing) = &this.focus_routing {
+                                    routing.document_loaded();
+                                }
+                            }
                             return;
                         }
                         let owns_native_focus =
@@ -272,6 +465,7 @@ impl ManagerPanel {
         let new_windows = link_send.clone();
         let t3 = url.clone();
         let store = crate::reader_manager_store::application_identifier();
+        let page_events = send.clone();
         let browser = wry::WebViewBuilder::new()
             .with_incognito(false)
             .with_data_store_identifier(store)
@@ -288,6 +482,19 @@ impl ManagerPanel {
                         window.ipc.postMessage('escape');
                     }
                 }, true);
+                // Preserve the approved c1dc8dc6 behavior: after page handlers,
+                // keep the active form focused until a pressed button can click.
+                // WebKit otherwise blurs to body and T3 collapses/unmounts the X.
+                window.addEventListener('mousedown', event => {
+                    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+                    const button = target?.closest('button, [role="button"]');
+                    const form = button?.closest('form');
+                    const active = document.activeElement;
+                    const keep = event.button === 0 && !event.defaultPrevented && !!form
+                        && !button.disabled && !button.closest('[draggable="true"]')
+                        && active !== button && form.contains(active);
+                    if (keep) event.preventDefault();
+                });
             "#,
             )
             .with_initialization_script(&crate::reader_manager_links::page_script(&url))
@@ -311,6 +518,13 @@ impl ManagerPanel {
                 }
                 wry::NewWindowResponse::Deny
             })
+            .with_on_page_load_handler(move |event, _url| {
+                let event = match event {
+                    wry::PageLoadEvent::Started => "page-load:started",
+                    wry::PageLoadEvent::Finished => "page-load:finished",
+                };
+                let _ = page_events.try_send(event.into());
+            })
             .with_navigation_handler(|url| {
                 url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
             })
@@ -327,38 +541,93 @@ impl ManagerPanel {
 
 impl Render for ManagerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut body = v_flex()
-            .size_full()
-            .min_h_0()
-            .gap_2()
-            .p_2()
-            .child(div().child(format!("{} · Manager", self.project.name)));
         if self.project.manager == Manager::NotStarted {
-            return body.child("Manager не запущен").into_any_element();
+            return div().p_2().child("Manager не запущен").into_any_element();
         }
-        body = body.child(
-            h_flex()
-                .gap_2()
-                .child(Input::new(&self.origin).flex_1())
-                .child(
-                    Button::new("manager-browser-connect")
-                        .ghost()
-                        .label("Connect")
-                        .disabled(self.loading)
-                        .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
-                ),
-        );
-        if self.loading {
-            body = body.child("Connecting to T3…");
-        }
-        if let Some(error) = &self.error {
-            body = body.child(div().text_color(cx.theme().danger).child(error.clone()));
-        }
+        // No Okilum header or project line above T3: T3's own thread header
+        // says where you are. Until connected, one quiet status line.
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.webview {
-            body = body.child(div().flex_1().min_h_0().child(view.clone()));
+            let native = view.read(cx).handle();
+            let view_state = view.clone();
+            let panel = cx.weak_entity();
+            return div()
+                .size_full()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .child(view.clone())
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |_, (), window, cx| {
+                            if !view_state.read(cx).visible() {
+                                return;
+                            }
+                            // Wry's element has already laid out the actual native
+                            // child. A sibling absolute canvas can have a different
+                            // static position: never use it to move/hide WebKit.
+                            let full = view_state.read(cx).bounds();
+                            let overlays = gpui_base::GlobalState::native_overlays(window, cx);
+                            let clear =
+                                crate::reader_manager_occlusion::uncovered_bounds(full, overlays);
+                            // All ordinary AND deferred overlays have completed
+                            // prepaint before this paint callback. Never use the
+                            // previous frame's popup geometry.
+                            let obscured = clear != Some(full);
+                            let _ = panel.update(cx, |panel, cx| {
+                                if obscured
+                                    && panel.focus_routing.as_ref().is_some_and(|r| r.focused())
+                                {
+                                    let _ = native.raw().focus_parent();
+                                    panel.focused = false;
+                                }
+                            });
+                            if let Some(bounds) = clear {
+                                let result = native.raw().set_bounds(wry::Rect {
+                                    position: wry::dpi::LogicalPosition::new(
+                                        f64::from(bounds.origin.x),
+                                        f64::from(bounds.origin.y),
+                                    )
+                                    .into(),
+                                    size: wry::dpi::LogicalSize::new(
+                                        f64::from(bounds.size.width),
+                                        f64::from(bounds.size.height),
+                                    )
+                                    .into(),
+                                });
+                                let _ = native.raw().set_visible(result.is_ok());
+                            } else {
+                                // A full-window modal backdrop leaves no free
+                                // rectangle. Do not let its native child cover it.
+                                let _ = native.raw().set_visible(false);
+                            }
+                            let _ = panel.update(cx, |panel, _| {
+                                if let Some(routing) = &panel.focus_routing {
+                                    routing.refresh();
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .into_any_element();
         }
-        body.into_any_element()
+        let (line, error) = self.connection_status();
+        div()
+            .id("manager-t3-status")
+            .px_3()
+            .py_2()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .children(line)
+            .when_some(error, |status, error| {
+                status.tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
+                })
+            })
+            .into_any_element()
     }
 }
 
@@ -402,6 +671,50 @@ impl Reader {
 }
 
 #[cfg(test)]
+mod status_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use std::time::Duration;
+
+    #[test]
+    fn retries_back_off_2_5_10_then_every_30_seconds() {
+        let delays: Vec<u64> = (1..=6).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(delays, [2, 5, 10, 30, 30, 30]);
+        assert_eq!(retry_delay(u32::MAX).as_secs(), 30);
+        assert!(CONNECT_GRACE > retry_delay(1) + retry_delay(2));
+    }
+
+    #[test]
+    fn no_status_before_grace_deadline_quiet_line_after() {
+        let before = CONNECT_GRACE - Duration::from_millis(1);
+        // First attempts, failing or still loading: nothing at all.
+        assert_eq!(status_line(false, false, false, true, Duration::ZERO), None);
+        assert_eq!(status_line(false, true, true, false, before), None);
+        assert_eq!(status_line(false, true, true, true, before), None);
+        // Grace over without success: one quiet line.
+        assert_eq!(
+            status_line(false, true, true, false, CONNECT_GRACE),
+            Some("T3 unavailable — reconnecting…")
+        );
+        assert_eq!(
+            status_line(false, false, false, true, CONNECT_GRACE),
+            Some("T3 unavailable — reconnecting…")
+        );
+        // Nothing attempted (Linux): still nothing to say.
+        assert_eq!(status_line(false, false, false, false, CONNECT_GRACE), None);
+        // A malformed address is reported at once.
+        assert_eq!(
+            status_line(false, true, false, false, Duration::ZERO),
+            Some("T3 unavailable — check the address in Settings › T3")
+        );
+        assert_eq!(
+            status_line(true, false, false, false, Duration::ZERO),
+            Some("Connected")
+        );
+    }
+}
+
+#[cfg(test)]
 mod native_focus_tests {
     use super::*;
     use ::core::prelude::v1::test;
@@ -417,6 +730,7 @@ mod native_focus_tests {
             environment: Some("test".into()),
             manager_project: Some("brain".into()),
             manager: Manager::Thread("mcp:test".into()),
+            appearance: Default::default(),
         };
         let (root, visual) = cx.add_window_view(|window, cx| {
             let panel = cx.new(|cx| ManagerPanel::new(project, None, window, cx));

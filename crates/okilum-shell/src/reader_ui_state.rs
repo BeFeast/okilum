@@ -120,6 +120,9 @@ struct Saved {
     font_size: f32,
     text_zoom: f32,
     reading_width: f32,
+    /// The note column spans the whole note pane instead of the reading
+    /// width; one app-wide toggle, kept with the reading width.
+    full_note_width: bool,
     find_case_sensitive: bool,
     typed_views: okilum_core::typed_view::Preferences,
     toolbar_labels: bool,
@@ -173,6 +176,7 @@ impl Default for Saved {
             font_size: BODY_FONT_SIZE,
             text_zoom: 1.,
             reading_width: READER_MAX_WIDTH,
+            full_note_width: false,
             find_case_sensitive: false,
             typed_views: Default::default(),
             toolbar_labels: false,
@@ -600,6 +604,7 @@ impl WriteJob {
         }
         if self.width_changed {
             latest.reading_width = self.saved.reading_width;
+            latest.full_note_width = self.saved.full_note_width;
         }
         if self.find_changed {
             latest.find_case_sensitive = self.saved.find_case_sensitive;
@@ -1680,8 +1685,32 @@ pub(crate) fn reading_width(cx: &App) -> f32 {
         state.saved.reading_width.clamp(560., 1200.)
     })
 }
-// Settings owns the production caller in the parallel #623 redesign.
-#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn full_note_width(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.full_note_width)
+}
+/// Maximum width of the note column: the reading width, or the whole pane
+/// when full note width is on (side padding stays inside the column).
+pub(crate) fn note_column_width(cx: &App) -> f32 {
+    if full_note_width(cx) {
+        100_000.
+    } else {
+        reading_width(cx)
+    }
+}
+pub(crate) fn set_full_note_width(value: bool, cx: &mut App) {
+    if !installed(cx) || full_note_width(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.full_note_width = value;
+    state.width_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+pub(crate) fn set_reading_width(width: f32, cx: &mut App) {
+    set_reading(base_font_size(cx), width, cx);
+}
 pub(crate) fn set_reading(font: f32, width: f32, cx: &mut App) {
     if !font.is_finite() || !width.is_finite() || !installed(cx) {
         return;
@@ -2173,6 +2202,43 @@ mod tests {
                 merged.font_size, 22.,
                 "unrelated global edits merge per field"
             );
+        });
+    }
+
+    /// Full note width is one app-wide toggle kept across relaunch; the note
+    /// column follows it, and the normal-width slider never stores the
+    /// zoomed font size as the base size.
+    #[gpui::test]
+    fn full_note_width_survives_relaunch_and_widens_the_note_column(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "normal width is the default");
+            assert_eq!(note_column_width(cx), READER_MAX_WIDTH);
+            set_text_zoom(1.5, cx);
+            let base = base_font_size(cx);
+            set_reading_width(900., cx);
+            assert_eq!(base_font_size(cx), base, "slider keeps the unzoomed font");
+            assert_eq!(note_column_width(cx), 900.);
+            set_reading_width(100., cx);
+            assert_eq!(reading_width(cx), 560., "normal width is at least 560 px");
+            set_reading_width(5000., cx);
+            assert_eq!(reading_width(cx), 1200., "normal width is at most 1200 px");
+            set_reading_width(900., cx);
+            set_full_note_width(true, cx);
+            assert!(full_note_width(cx));
+            assert!(note_column_width(cx) > 10_000., "full width spans the pane");
+            flush(cx);
+            install(&directory, cx);
+            assert!(full_note_width(cx), "full note width survives relaunch");
+            assert_eq!(reading_width(cx), 900.);
+            assert_eq!(base_font_size(cx), base);
+            set_full_note_width(false, cx);
+            assert_eq!(note_column_width(cx), 900.);
+            flush(cx);
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "turning it off is remembered too");
         });
     }
 

@@ -127,6 +127,15 @@ impl Reader {
         if show_find {
             spare -= 32.;
         }
+        // Normal or full note width, wherever the page is text.
+        let width_applies = self
+            .file_preview
+            .as_ref()
+            .is_none_or(|p| p.code.is_some() || p.text.is_some());
+        let show_width = width_applies && spare >= 32.;
+        if show_width {
+            spare -= 32.;
+        }
         // What the page shows now; Find from Live Preview shows Source until it
         // closes, and the mode toggle offers Live Preview meanwhile.
         #[cfg(any(unix, windows))]
@@ -299,6 +308,26 @@ impl Reader {
                 ));
             }
         }
+        if show_width {
+            let full = reader_ui_state::full_note_width(cx);
+            let icon = if full {
+                brand::NOTE_WIDTH_NORMAL_ICON
+            } else {
+                brand::NOTE_WIDTH_FULL_ICON
+            };
+            row = row.child(
+                reader_icon_button(
+                    "note-width",
+                    Icon::default().path(icon),
+                    reader_shortcuts::hint(note_width_label(cx), &ToggleNoteWidth, cx),
+                    cx,
+                )
+                .debug_selector(|| "note-width".into())
+                .selected(full)
+                .on_click(|_, _, cx| toggle_note_width(cx)),
+            );
+        }
+        let width_label = (width_applies && !show_width).then(|| note_width_label(cx));
         row.child(
             reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
                 .debug_selector(|| "document-more".into())
@@ -326,6 +355,9 @@ impl Reader {
                         )
                         .separator();
                     // The ⋯ menu holds what the toolbar does not show right now (#992).
+                    if let Some(label) = width_label {
+                        menu = menu.menu(label, Box::new(ToggleNoteWidth));
+                    }
                     if (!is_file || editing) && !show_find {
                         menu = menu.menu_with_icon(
                             "Find in note",

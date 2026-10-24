@@ -471,20 +471,25 @@ mod tests {
         });
         visual.run_until_parked();
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
+        // #1512: at 200 px the name gives way and only Reveal current and
+        // Show hidden move into ⋯; nothing clips past the panel.
         let menu = visual.debug_bounds("sidebar-actions").unwrap();
-        let folders = visual.debug_bounds("folders-actions").unwrap();
         assert!(
             menu.right() < panel.right(),
             "menu={menu:?}, panel={panel:?}"
         );
-        assert!(
-            folders.right() < panel.right(),
-            "Folders actions never clip at 200px"
-        );
-        assert!(
-            visual.debug_bounds("sidebar-new-note").is_none(),
-            "long vault name takes precedence over actions"
-        );
+        if cfg!(any(unix, windows)) {
+            let new_note = visual.debug_bounds("sidebar-new-note").unwrap();
+            let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+            assert!(
+                title.right() <= new_note.left(),
+                "the name never covers an action"
+            );
+        }
+        assert!(visual.debug_bounds("sidebar-collapse-all").is_some());
+        for spilled in ["sidebar-reveal-current", "sidebar-show-hidden"] {
+            assert!(visual.debug_bounds(spilled).is_none(), "{spilled} is in ⋯");
+        }
     }
 
     use super::*;

@@ -6,18 +6,18 @@ use gpui::{
     Window,
 };
 use gpui_component::{
-    button::{Button, ButtonGroup, ButtonVariants as _},
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     tooltip::Tooltip,
-    v_flex, ActiveTheme, Icon, IconName, Selectable, Sizable,
+    v_flex, ActiveTheme, Icon, IconName, Sizable,
 };
 use okilum_t3::projects::{
     picker::{
-        kind_label, Group, GroupKey, KindFilter, ManagerIndicator, ManagerObservation, PickerModel,
-        Problem, Row, RowKey,
+        Group, GroupKey, KindFilter, ManagerObservation, PickerModel, Problem, Row, RowKey,
+        RowStatus,
     },
-    Discovery, Project,
+    Discovery, Kind, Project,
 };
 use std::{
     collections::BTreeMap,
@@ -37,12 +37,54 @@ fn init(cx: &mut App) {
         return;
     }
     cx.set_global(KeysInstalled);
+    crate::project_avatar::init(cx);
     cx.bind_keys([
         KeyBinding::new("down", NextProject, Some("ProjectsPicker > Input")),
         KeyBinding::new("up", PreviousProject, Some("ProjectsPicker > Input")),
         KeyBinding::new("enter", AcceptProject, Some("ProjectsPicker > Input")),
         KeyBinding::new("escape", DismissProjects, Some("ProjectsPicker > Input")),
     ]);
+}
+
+/// The title-bar switcher outside a project (#1519).
+pub const PROJECTS_ICON: &str = "icons/projects.svg";
+pub const CODE_ICON: &str = "icons/project-code.svg";
+pub const KNOWLEDGE_ICON: &str = "icons/project-knowledge.svg";
+pub const HYBRID_ICON: &str = "icons/project-hybrid.svg";
+/// After a project's name while its manager agent works.
+pub const ACTIVITY_ICON: &str = "icons/activity.svg";
+/// The file tree's density: rows of 13 px text, no second line.
+const ROW_HEIGHT: f32 = 26.;
+const ICON_SLOT: f32 = 16.;
+
+/// The one picture in front of a project's name, here, in the title bar,
+/// the sidebar header and the Manager panel (#1627): its avatar, the icon
+/// T3 Code shows too.
+pub fn project_icon(project: &Project, cx: &App) -> gpui::AnyElement {
+    crate::project_avatar::project_avatar(project, ICON_SLOT, cx)
+}
+
+/// The project's kind, where a project is listed without its avatar (⌘K).
+pub fn kind_icon(project: &Project) -> Icon {
+    Icon::default().path(match project.kind {
+        Kind::Code => CODE_ICON,
+        Kind::Knowledge => KNOWLEDGE_ICON,
+        Kind::Hybrid => HYBRID_ICON,
+    })
+}
+
+/// A fixed 16 px slot, so names line up whether or not a picture is there.
+pub fn icon_slot(icon: Option<Icon>) -> gpui::Div {
+    avatar_slot(icon.map(|icon| icon.small()))
+}
+
+/// The same slot around any element, an avatar for one.
+pub fn avatar_slot(picture: Option<impl IntoElement>) -> gpui::Div {
+    h_flex()
+        .size(px(ICON_SLOT))
+        .flex_none()
+        .justify_center()
+        .children(picture)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,11 +103,20 @@ pub struct Selected(pub Project);
 /// Emitted by `record_opened` only after the host confirms successful activation.
 #[derive(Clone, Debug)]
 pub struct RecentsChanged(pub Vec<PathBuf>);
+/// «Leave project» at the foot of the title-bar switcher (#1519). Shown only
+/// in `Popover` while a project is active; the host leaves and dismisses.
+#[derive(Clone, Debug)]
+pub struct LeaveProject;
+/// A right-click on a project's row: the host offers «Change icon…» at the
+/// pointer (#1627).
+#[derive(Clone, Debug)]
+pub struct ProjectMenu(pub Project);
 
 #[derive(Clone)]
 enum Item {
     Header(Group),
-    Project(Row),
+    /// Boxed: a row carries its project, icon included (#1627).
+    Project(Box<Row>),
     Problem(Problem),
 }
 
@@ -83,6 +134,8 @@ pub struct ProjectsPicker {
 }
 impl EventEmitter<Selected> for ProjectsPicker {}
 impl EventEmitter<RecentsChanged> for ProjectsPicker {}
+impl EventEmitter<LeaveProject> for ProjectsPicker {}
+impl EventEmitter<ProjectMenu> for ProjectsPicker {}
 impl EventEmitter<DismissEvent> for ProjectsPicker {}
 impl Focusable for ProjectsPicker {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -207,7 +260,8 @@ impl ProjectsPicker {
             let rows = std::mem::take(&mut group.rows);
             let problems = std::mem::take(&mut group.problems);
             self.items.push(Item::Header(group));
-            self.items.extend(rows.into_iter().map(Item::Project));
+            self.items
+                .extend(rows.into_iter().map(|row| Item::Project(Box::new(row))));
             self.items.extend(problems.into_iter().map(Item::Problem));
         }
         if !self
@@ -275,118 +329,107 @@ impl ProjectsPicker {
     pub fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
-    fn render_header(
-        &self,
-        group: &Group,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let key = group.key.clone();
-        let muted = cx.theme().muted_foreground;
-        h_flex()
-            .id(("project-domain", index))
-            .debug_selector(move || format!("project-domain-{index}"))
+    /// A section label, not a row: small caps-style text over a hairline.
+    /// Domains carry their project count; sections never collapse.
+    fn render_header(&self, group: &Group, index: usize, cx: &App) -> impl IntoElement {
+        let theme = cx.theme();
+        let label = match group.key {
+            GroupKey::Recent => group.label.to_uppercase(),
+            GroupKey::Domain(_) => format!("{} · {}", group.label.to_uppercase(), group.count),
+        };
+        div()
+            .id(("project-section", index))
+            .debug_selector(move || format!("project-section-{index}"))
             .w_full()
+            .flex_none()
             .px_2()
-            .h(px(30.))
-            .gap_1()
+            .pt(px(if index == 0 { 4. } else { 10. }))
+            .pb(px(4.))
+            .when(index > 0, |d| {
+                d.mt_1().border_t_1().border_color(theme.border)
+            })
             .text_size(px(12.))
-            .text_color(muted)
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .when(matches!(key, GroupKey::Domain(_)), |header| {
-                header.cursor_pointer().child(
-                    Icon::new(if group.collapsed {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .small(),
-                )
-            })
-            .child(group.label.clone())
-            .child(div().flex_1())
-            .when(matches!(key, GroupKey::Domain(_)), |header| {
-                header.child(group.count.to_string()).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        if let GroupKey::Domain(domain) = &key {
-                            this.model.toggle_domain(domain);
-                            this.rebuild(cx);
-                        }
-                    },
-                ))
-            })
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(theme.muted_foreground)
+            .child(label)
+    }
+    /// ⚠ for a project.yaml problem, the activity glyph while the manager
+    /// works; the tooltip says which. Nothing otherwise.
+    fn render_status(status: RowStatus, index: usize, cx: &App) -> impl IntoElement {
+        let theme = cx.theme();
+        let (icon, color, tip) = match status {
+            RowStatus::Active(tip) => (Icon::default().path(ACTIVITY_ICON), theme.success, tip),
+            RowStatus::Problem(tip) => (Icon::new(IconName::TriangleAlert), theme.warning, tip),
+        };
+        let tip: gpui::SharedString = tip.into();
+        div()
+            .id(("project-status", index))
+            .debug_selector(move || format!("project-status-{index}"))
+            .flex_none()
+            .child(icon.xsmall().text_color(color))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
     }
     fn render_row(&self, row: &Row, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let key = row.key.clone();
         let hovered_key = key.clone();
+        let menu_project = row.project.clone();
         let theme = cx.theme();
         let selected = self.selected.as_ref() == Some(&row.key);
         let active = self.active.as_ref() == Some(&row.project.folder);
-        let recent = row.key.group == GroupKey::Recent;
-        let dot_color = match row.manager {
-            ManagerIndicator::Running => theme.success,
-            ManagerIndicator::Unreachable => theme.danger,
-            ManagerIndicator::Checking => theme.warning,
-            ManagerIndicator::Idle | ManagerIndicator::NotStarted => theme.muted_foreground,
-        };
-        let label: gpui::SharedString = match &row.manager_detail {
-            Some(detail) => format!("{} — {detail}", row.manager.label()).into(),
-            None => row.manager.label().into(),
-        };
+        // The domain is already the section's name, except in Recent and
+        // while searching, where rows from many domains meet.
+        let show_domain =
+            row.key.group == GroupKey::Recent || !self.model.query().trim().is_empty();
         let hover = theme.list_hover;
+        let muted = theme.muted_foreground;
         let location = row.location.clone();
+        let kind: gpui::SharedString = match row.project.kind {
+            Kind::Code => "Code project",
+            Kind::Knowledge => "Knowledge project",
+            Kind::Hybrid => "Hybrid project",
+        }
+        .into();
+        let avatar = project_icon(&row.project, cx);
         h_flex()
             .id(("project-choice", index))
             .debug_selector(move || format!("project-choice-{index}"))
             .w_full()
             .min_w_0()
-            .h(px(34.))
+            .h(px(ROW_HEIGHT))
+            .flex_none()
             .px_2()
             .gap_2()
-            .rounded_md()
+            .rounded(px(6.))
             .cursor_pointer()
             .when(selected, |r| r.bg(theme.list_active))
             .hover(move |r| r.bg(hover))
             .child(
                 div()
-                    .id(("project-manager-dot", index))
-                    .size(px(7.))
+                    .id(("project-icon", index))
+                    .debug_selector(move || format!("project-icon-{index}"))
                     .flex_none()
-                    .rounded_full()
-                    .bg(dot_color)
-                    .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx)),
+                    .text_color(muted)
+                    .child(avatar_slot(Some(avatar)))
+                    .tooltip(move |window, cx| Tooltip::new(kind.clone()).build(window, cx)),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(row.project.name.clone()),
+            .child(div().min_w_0().truncate().child(row.project.name.clone()))
+            .children(
+                row.status()
+                    .map(|status| Self::render_status(status, index, cx)),
             )
-            .when(recent, |r| {
+            .when(show_domain, |r| {
                 r.child(
                     div()
+                        .flex_none()
                         .text_size(px(12.))
-                        .text_color(theme.muted_foreground)
+                        .text_color(muted)
                         .child(row.domain.clone()),
                 )
             })
-            .child(
-                div()
-                    .px_1()
-                    .py_0p5()
-                    .rounded_sm()
-                    .text_size(px(12.))
-                    .bg(theme.muted)
-                    .text_color(theme.muted_foreground)
-                    .child(kind_label(row.project.kind)),
-            )
-            .child(
-                div()
-                    .w(px(14.))
-                    .flex_none()
-                    .when(active, |d| d.child(Icon::new(IconName::Check).small())),
-            )
+            .child(div().flex_1())
+            .when(active, |r| {
+                r.child(Icon::new(IconName::Check).small().text_color(muted))
+            })
             .tooltip(move |window, cx| Tooltip::new(location.clone()).build(window, cx))
             .on_mouse_move(cx.listener(move |this, _, _, cx| {
                 if this.selected.as_ref() != Some(&hovered_key) {
@@ -398,40 +441,77 @@ impl ProjectsPicker {
                 this.selected = Some(key.clone());
                 this.confirm(cx);
             }))
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(ProjectMenu(menu_project.clone()));
+                }),
+            )
     }
-    /// Per-project problem: a muted row with a small warning sign; the reason
-    /// is in the tooltip, never raw error text under the list.
+    /// A folder whose project.yaml cannot be read: a muted row with the
+    /// same ⚠ after its name; the reason is in the tooltip.
     fn render_problem(&self, problem: &Problem, index: usize, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
-        let detail: gpui::SharedString = problem.detail.clone().into();
         h_flex()
             .id(("project-problem", index))
             .debug_selector(move || format!("project-problem-{index}"))
             .w_full()
             .min_w_0()
-            .h(px(34.))
+            .h(px(ROW_HEIGHT))
+            .flex_none()
             .px_2()
             .gap_2()
             .text_color(theme.muted_foreground)
-            .child(
-                Icon::new(IconName::TriangleAlert)
-                    .xsmall()
-                    .text_color(theme.warning),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(problem.name.clone()),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .child("Project configuration problem"),
-            )
-            .child(div().w(px(14.)).flex_none())
-            .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+            .child(icon_slot(None))
+            .child(div().min_w_0().truncate().child(problem.name.clone()))
+            .child(Self::render_status(
+                RowStatus::Problem(format!("project.yaml cannot be read: {}", problem.detail)),
+                index,
+                cx,
+            ))
+    }
+    /// All / Code / Knowledge / Hybrid as one compact segmented control.
+    fn render_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (track, thumb) = (theme.muted, theme.background);
+        let (on, off) = (theme.foreground, theme.muted_foreground);
+        let current = self.model.filter();
+        h_flex().w_full().child(
+            h_flex()
+                .id("project-kind-filter")
+                .debug_selector(|| "project-kind-filter".into())
+                .flex_none()
+                .p(px(2.))
+                .gap(px(2.))
+                .rounded(px(7.))
+                .bg(track)
+                .children(KindFilter::ALL.into_iter().enumerate().map(|(i, filter)| {
+                    let selected = current == filter;
+                    div()
+                        .id(("project-kind", i))
+                        .debug_selector(move || format!("project-kind-{i}"))
+                        .h(px(22.))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .rounded(px(5.))
+                        .text_size(px(12.))
+                        .cursor_pointer()
+                        .text_color(if selected { on } else { off })
+                        .when(selected, |d| {
+                            d.bg(thumb)
+                                .shadow_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                        })
+                        .when(!selected, |d| d.hover(move |d| d.text_color(on)))
+                        .child(filter.label())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_filter(filter, cx);
+                            this.focus_input(window, cx);
+                        }))
+                })),
+        )
     }
 }
 impl Render for ProjectsPicker {
@@ -460,7 +540,7 @@ impl Render for ProjectsPicker {
             .key_context("ProjectsPicker")
             .when(popover, |d| {
                 d.occlude()
-                    .w(px(470.))
+                    .w(px(400.))
                     .max_w(window.viewport_size().width - px(24.))
                     .p_2()
                     .rounded_lg()
@@ -483,19 +563,7 @@ impl Render for ProjectsPicker {
                 )
             });
         if own_controls {
-            content = content.child(ButtonGroup::new("project-kind-filter").children(
-                KindFilter::ALL.into_iter().enumerate().map(|(i, filter)| {
-                    Button::new(("project-kind", i))
-                        .small()
-                        .ghost()
-                        .label(filter.label())
-                        .selected(self.model.filter() == filter)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_filter(filter, cx);
-                            this.focus_input(window, cx);
-                        }))
-                }),
-            ));
+            content = content.child(self.render_filter(cx));
         }
         let max_height = (window.viewport_size().height - px(160.))
             .max(px(100.))
@@ -535,6 +603,33 @@ impl Render for ProjectsPicker {
                     }
                 })),
         );
+        if popover && self.active.is_some() {
+            // The switcher's menu ends with Leave project; the title bar has
+            // no separate button for it (#1519).
+            content = content.child(
+                h_flex()
+                    .w_full()
+                    .pt_1()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("projects-picker-leave")
+                            .ghost()
+                            .small()
+                            .label("Leave project")
+                            .debug_selector(|| "projects-picker-leave".into())
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(LeaveProject))),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px_2()
+                            .text_size(px(12.))
+                            .text_color(muted)
+                            .child("↵ Open"),
+                    ),
+            );
+        }
         content
     }
 }

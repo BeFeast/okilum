@@ -40,6 +40,10 @@ and the visibility target remain unproven and cannot be silently substituted.
 adds vault-wide wiki resolution and Quick Open matching; declarations are plain
 property chips, with existing canonical-path precedence and explicit ambiguity.
 
+**Owned Settings/Feedback windows (2026-10-24, #1582):** [non-modal tools](owned-tool-windows.md)
+defines owner-relative positioning, lifecycle, singleton reuse and Esc, with native
+Windows ownership and explicit platform limitations.
+
 ## 1. What Okilum is
 
 **Project manager extension (2026-10-21, #1418 / #1415):**

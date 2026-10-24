@@ -19,10 +19,27 @@ thread_local! {
 pub(crate) fn external_tooltip(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     match parsed.scheme() {
-        "http" | "https" | "ftp" | "mailto" | "tel" => Some(match parsed.host_str() {
-            Some(host) => format!("{host}\n{url}"),
-            None => url.to_owned(),
-        }),
+        "http" | "https" | "ftp" | "mailto" | "tel" => {
+            // Display only: link targets and open/copy actions keep authored bytes.
+            // Keep controls, invisible formatting (including bidi overrides),
+            // and Unicode line separators escaped in the displayed address.
+            use std::fmt::Write as _;
+            static HIDDEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+                regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").unwrap()
+            });
+            let decoded = document_links::decode(url);
+            let shown = HIDDEN.replace_all(&decoded, |matched: &regex::Captures<'_>| {
+                let mut escaped = String::new();
+                for byte in matched[0].as_bytes() {
+                    write!(escaped, "%{byte:02X}").expect("writing a String cannot fail");
+                }
+                escaped
+            });
+            Some(match parsed.host_str() {
+                Some(host) => format!("{host}\n{shown}"),
+                None => shown.into_owned(),
+            })
+        }
         _ => None,
     }
 }
@@ -665,6 +682,157 @@ mod tests {
             assert!(v.prepared_links.is_empty() && v.link_presentations.is_empty());
         });
         PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
+    }
+
+    #[test]
+    fn external_tooltip_decodes_display_once_without_form_or_control_injection() {
+        let raw = "https://ru.wikipedia.org/wiki/%D0%9C%D0%B5%D1%82%D1%80%D0%BE?x=a+b%20c#%D0%A1%D0%B5%D1%82%D1%8C";
+        let shown = external_tooltip(raw).unwrap();
+        assert_eq!(
+            shown,
+            "ru.wikipedia.org\nhttps://ru.wikipedia.org/wiki/Метро?x=a+b c#Сеть"
+        );
+        assert_eq!(
+            external_tooltip("https://example.com/%25D0%259C").unwrap(),
+            "example.com\nhttps://example.com/%D0%9C"
+        );
+        assert_eq!(
+            external_tooltip("https://example.com/%FF").unwrap(),
+            "example.com\nhttps://example.com/%FF"
+        );
+        let controls = external_tooltip("https://example.com/%0A%0D%09%00").unwrap();
+        assert_eq!(controls.lines().count(), 2);
+        assert!(controls.ends_with("/%0A%0D%09%00"));
+        assert!(
+            matches!(document_links::destination(raw, false), document_links::Destination::External(target) if target == raw)
+        );
+    }
+
+    #[test]
+    fn external_tooltip_keeps_bidi_and_invisible_formatting_escaped() {
+        for escaped in [
+            "%D8%9C",                                        // Arabic letter mark
+            "%E2%80%8E%E2%80%8F",                            // directional marks
+            "%E2%80%AA%E2%80%AB%E2%80%AC%E2%80%AD%E2%80%AE", // embeddings/overrides
+            "%E2%81%A6%E2%81%A7%E2%81%A8%E2%81%A9",          // directional isolates
+            "%E2%80%8B%E2%80%8C%E2%80%8D%EF%BB%BF",          // zero-width formats/BOM
+            "%E2%80%A8%E2%80%A9",                            // line/paragraph separators
+        ] {
+            let raw = format!("https://example.com/safe{escaped}txt.exe");
+            assert_eq!(
+                external_tooltip(&raw).unwrap(),
+                format!("example.com\n{raw}")
+            );
+        }
+        assert_eq!(
+            external_tooltip("https://example.com/%D7%A9%D7%9C%D7%95%D7%9D").unwrap(),
+            "example.com\nhttps://example.com/שלום",
+            "ordinary RTL letters remain readable"
+        );
+    }
+
+    #[gpui::test]
+    fn long_cyrillic_link_tooltip_wraps_inside_background_and_keeps_raw_action(
+        cx: &mut TestAppContext,
+    ) {
+        struct Fixture {
+            text: Entity<TextViewState>,
+            calls: Arc<Mutex<Vec<String>>>,
+        }
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let calls = self.calls.clone();
+                div().w_full().whitespace_nowrap().child(
+                    TextView::new(&self.text)
+                        .link_presentation(|url| presentation(url, &BTreeMap::new()))
+                        .on_link_click(move |url, _, _, _| {
+                            calls.lock().unwrap().push(url.to_string())
+                        }),
+                )
+            }
+        }
+        cx.update(gpui_component::init);
+        let readable = format!(
+            "https://ru.wikipedia.org/wiki/{}",
+            "ОченьДлинноеНазваниеМетрополитена".repeat(12)
+        );
+        let raw = url::Url::parse(&readable).unwrap().to_string();
+        assert!(raw.contains("%D0"), "encoded URL positive control");
+        assert_eq!(
+            external_tooltip(&raw).unwrap().split_once('\n').unwrap().1,
+            readable
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let text = cx.new(|cx| TextViewState::markdown(&format!("[Metro]({raw})"), cx));
+            let view = cx.new(|_| Fixture {
+                text,
+                calls: calls.clone(),
+            });
+            Root::new(view, window, cx)
+        });
+        for width in [960., 320.] {
+            visual.simulate_resize(size(px(width), px(900.)));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let marker = visual
+                .debug_bounds("external-link-marker")
+                .expect("link must actually render");
+            visual.simulate_mouse_move(marker.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            // The marker uses GPUI's delayed tooltip, whose timer does not
+            // advance just by draining runnable tasks in the test executor.
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let background = visual
+                .debug_bounds("text-link-tooltip-background")
+                .expect("hover must produce the real tooltip");
+            let heading = visual.debug_bounds("text-link-tooltip-heading").unwrap();
+            let detail = visual.debug_bounds("text-link-tooltip-detail-0").unwrap();
+            assert!(background.size.width <= px(420.) && background.size.width < px(width));
+            for bounds in [heading, detail] {
+                assert!(bounds.left() >= background.left() - px(0.5));
+                assert!(bounds.right() <= background.right() + px(0.5));
+                assert!(bounds.top() >= background.top() - px(0.5));
+                assert!(
+                    bounds.bottom() <= background.bottom() + px(0.5),
+                    "content {bounds:?} escapes background {background:?}"
+                );
+            }
+            let rows = visual.update(|window, _| {
+                let style = window.text_style();
+                window
+                    .text_system()
+                    .shape_text(
+                        readable.clone().into(),
+                        px(12.),
+                        &[style.to_run(readable.len())],
+                        Some(detail.size.width),
+                        None,
+                    )
+                    .unwrap()
+                    .iter()
+                    .map(|line| line.wrap_boundaries().len() + 1)
+                    .sum::<usize>()
+            });
+            assert!(
+                rows >= 3,
+                "long unbroken Cyrillic target must actually wrap"
+            );
+            assert!(
+                detail.size.height + px(0.5) >= px(rows as f32 * 12.),
+                "all wrapped rows must contribute height: {rows} rows in {detail:?}"
+            );
+            visual.simulate_click(marker.center(), Modifiers::default());
+            assert_eq!(
+                calls.lock().unwrap().last(),
+                Some(&raw),
+                "display decoding must not change the action"
+            );
+        }
     }
 
     #[test]
