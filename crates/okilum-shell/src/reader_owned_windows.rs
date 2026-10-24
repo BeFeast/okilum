@@ -157,11 +157,24 @@ mod native {
         Ok(())
     }
 
+    unsafe fn get_long(window: HWND, index: i32) -> anyhow::Result<isize> {
+        // A zero style is valid; a stale LastError must not turn it into failure.
+        unsafe { SetLastError(0) };
+        let value = unsafe { GetWindowLongPtrW(window, index) };
+        let error = unsafe { GetLastError() };
+        anyhow::ensure!(
+            value != 0 || error == 0,
+            "GetWindowLongPtrW({index}): {error}"
+        );
+        Ok(value)
+    }
+
     unsafe fn attach_hwnd(owner: HWND, tool: HWND) -> anyhow::Result<()> {
+        // Read successfully before mutating either ownership or existing styles.
+        let style = unsafe { get_long(tool, GWL_EXSTYLE)? };
         unsafe {
             set_long(tool, GWLP_HWNDPARENT, owner as isize)?;
         }
-        let style = unsafe { GetWindowLongPtrW(tool, GWL_EXSTYLE) };
         unsafe {
             set_long(
                 tool,
@@ -211,7 +224,7 @@ mod native {
             // state. RAII destroys each test HWND even if an assertion panics.
             let handle = unsafe {
                 CreateWindowExW(
-                    WS_EX_APPWINDOW,
+                    WS_EX_APPWINDOW | WS_EX_CLIENTEDGE,
                     class.as_ptr(),
                     class.as_ptr(),
                     WS_OVERLAPPEDWINDOW,
@@ -228,6 +241,17 @@ mod native {
             assert!(!handle.is_null());
             NativeWindow(handle)
         }
+        #[test]
+        fn windows_owned_tool_style_read_distinguishes_zero_from_failure() {
+            let tool = native_window();
+            unsafe {
+                set_long(tool.0, GWL_EXSTYLE, 0).unwrap();
+                SetLastError(5); // A stale error from an earlier Win32 call.
+                assert_eq!(get_long(tool.0, GWL_EXSTYLE).unwrap(), 0);
+                assert!(get_long(std::ptr::null_mut(), GWL_EXSTYLE).is_err());
+            }
+        }
+
         #[test]
         fn windows_owned_tool_keeps_owner_enabled_and_follows_minimize_restore_destroy() {
             let owner = native_window();
@@ -251,6 +275,7 @@ mod native {
                 let style = GetWindowLongPtrW(tool.0, GWL_EXSTYLE) as u32;
                 assert_eq!(style & WS_EX_APPWINDOW, 0);
                 assert_ne!(style & WS_EX_TOOLWINDOW, 0);
+                assert_ne!(style & WS_EX_CLIENTEDGE, 0, "preserve unrelated styles");
                 ShowWindow(owner.0, SW_SHOW);
                 assert_ne!(SetWindowPlacement(tool.0, &initial), 0);
                 assert_ne!(
