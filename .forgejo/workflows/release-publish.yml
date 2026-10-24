@@ -32,7 +32,12 @@ jobs:
           CHECKOUT_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
-          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
           : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
           [ -d .git ] || git init -q .
           git remote remove origin 2>/dev/null || true
