@@ -529,7 +529,7 @@ bool okilum_updater_restart(void) {
 // Separate entry point: only Rust's post-verification editor/save guards may
 // consume the install continuation. Repeated UI clicks cannot bypass them.
 bool okilum_updater_finish_restart(void) {
-    NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
+    NSCAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
     if ((!TSDriver.restartReply && !TSDriver.retryTermination) || TSDriver.verifying || !TSDriver.verifiedRestart || !TSGuardRequested) return false;
     TSDriver.verifiedRestart = NO;
     TSGuardRequested = NO;
