@@ -252,6 +252,7 @@ fn broken_manifests_stay_visible_and_external_paths_never_become_rows() {
         environment: None,
         manager_project: None,
         manager: Manager::NotStarted,
+        appearance: Default::default(),
     });
     let mut model = PickerModel::new(vault.0.clone(), discovery, Vec::new());
     assert_eq!(model.errors().len(), 2);

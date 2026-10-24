@@ -22,7 +22,7 @@ fn setup() -> (Area, AreaBinding, LaunchContext, Draft) {
     let binding = AreaBinding::parse(MANIFEST).unwrap().unwrap();
     let model = binding.default_models.executor.clone();
     let context = LaunchContext {
-        project: Project { id: "poc-executors".into(), title: "Repo".into(), workspace_root: "/server/repo".into(), default_model_selection: Some(model) },
+        project: Project { id: "poc-executors".into(), title: "Repo".into(), workspace_root: "/server/repo".into(), default_model_selection: Some(model), ..Default::default() },
         catalog: serde_json::from_value(serde_json::json!({"runtimeMode":"full-access","providers":[
             {"providerInstanceId":"codex","driverKind":"codex","models":[{"id":"gpt-6.1-sol"},{"id":"alternative"}]}]})).unwrap(),
     };

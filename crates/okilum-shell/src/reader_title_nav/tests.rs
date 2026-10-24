@@ -13,6 +13,7 @@ fn the_switcher_names_projects_or_the_active_project() {
         environment: None,
         manager_project: None,
         manager: okilum_t3::projects::Manager::NotStarted,
+        appearance: Default::default(),
     };
     let (label, _, tip) = switcher_face(Some(&project));
     assert_eq!((label.as_ref(), tip), ("okilum", "Switch or leave project"));

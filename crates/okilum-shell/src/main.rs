@@ -3756,6 +3756,12 @@ impl Reader {
         } else {
             "On this page"
         };
+        // The Manager panel says whose manager it is with the avatar (#1627).
+        let avatar = self
+            .project_navigation
+            .active
+            .as_ref()
+            .map(|project| okilum_shell::project_avatar::project_avatar(project, 16., cx));
         h_flex()
             .h(px(READER_HEADER_HEIGHT))
             .flex_none()
@@ -3764,6 +3770,15 @@ impl Reader {
             .border_b_1()
             .border_color(brand::palette(cx).border_subtle)
             .text_size(px(brand::READER_CHROME_FONT_SIZE))
+            .when_some(avatar, |header, avatar| {
+                header.child(
+                    div()
+                        .debug_selector(|| "manager-project-avatar".into())
+                        .flex_none()
+                        .mr_1()
+                        .child(avatar),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -3782,6 +3797,7 @@ impl Reader {
         if self.project_navigation.active.is_some() {
             return vec![
                 SidebarNameItem::SwitchProject,
+                SidebarNameItem::ChangeProjectIcon,
                 SidebarNameItem::RevealProject,
                 SidebarNameItem::LeaveProject,
             ];
@@ -3814,14 +3830,24 @@ impl Reader {
             .is_none()
             .then(|| reader_ui_state::vault_color(&self.vault_root, cx))
             .flatten();
+        // In a project its avatar stands where the vault's dot does (#1627).
+        let avatar = project.as_ref().map(|project| {
+            okilum_shell::project_avatar::project_avatar(project, SIDEBAR_AVATAR, cx)
+        });
         let dot = if accent.is_some() { VAULT_DOT_SLOT } else { 0. };
+        // The avatar narrows the name, never the fixed action slots.
+        let lead = if avatar.is_some() {
+            SIDEBAR_AVATAR + 4. + SIDEBAR_NAME_GAP
+        } else {
+            0.
+        };
         let actions = SidebarAction::available();
         let room = width - 24. - dot - 2. * SIDEBAR_NAME_GAP;
         let name = toolbar_text_width(&title, FontWeight::SEMIBOLD, window) + SIDEBAR_NAME_CHROME;
         let visible = sidebar_visible_actions(room, name, actions);
         let overflow = visible < actions.len();
         let name_max =
-            (room - (visible + usize::from(overflow)) as f32 * SIDEBAR_ACTION_SLOT).max(0.);
+            (room - lead - (visible + usize::from(overflow)) as f32 * SIDEBAR_ACTION_SLOT).max(0.);
         let show_hidden = self.sidebar.show_hidden;
         let reader = cx.entity().downgrade();
         let name_items = self.sidebar_name_menu();
@@ -3872,6 +3898,15 @@ impl Reader {
                             menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
                                 let _ = reader
                                     .update(cx, |this, cx| this.leave_vault_project(window, cx));
+                            }))
+                        }
+                        SidebarNameItem::ChangeProjectIcon => {
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                let _ = reader.update(cx, |this, cx| {
+                                    if let Some(project) = this.project_navigation.active.clone() {
+                                        this.open_project_icon_dialog(project, window, cx)
+                                    }
+                                });
                             }))
                         }
                     }
@@ -3933,6 +3968,15 @@ impl Reader {
                         .ml_1()
                         .rounded_full()
                         .bg(color.color(cx)),
+                )
+            })
+            .when_some(avatar, |header, avatar| {
+                header.child(
+                    div()
+                        .debug_selector(|| "sidebar-project-avatar".into())
+                        .flex_none()
+                        .ml_1()
+                        .child(avatar),
                 )
             })
             .child(name_button)
@@ -6071,6 +6115,8 @@ fn toolbar_text_width(text: &str, weight: FontWeight, window: &Window) -> f32 {
 const VAULT_ACCENT_LINE: f32 = 2.;
 /// 8 px dot + 4 px margin + the header row's 4 px gap.
 const VAULT_DOT_SLOT: f32 = 16.;
+/// The project's avatar in the sidebar header (#1627).
+const SIDEBAR_AVATAR: f32 = 18.;
 
 /// Every sidebar tree row, inline create and rename rows included.
 const TREE_ROW_HEIGHT: f32 = 28.;
@@ -6220,6 +6266,7 @@ enum SidebarNameItem {
     RevealVault,
     VaultSettings,
     SwitchProject,
+    ChangeProjectIcon,
     RevealProject,
     LeaveProject,
 }
@@ -6232,6 +6279,7 @@ impl SidebarNameItem {
             Self::RevealVault => Os::CURRENT.reveal_named("vault").into(),
             Self::VaultSettings => "Vault settings".into(),
             Self::SwitchProject => "Switch project…".into(),
+            Self::ChangeProjectIcon => "Change icon…".into(),
             Self::RevealProject => Os::CURRENT.reveal_named("project").into(),
             Self::LeaveProject => "Leave project".into(),
         }
@@ -9501,6 +9549,7 @@ mod document_link_landing_tests {
                 environment: None,
                 manager_project: None,
                 manager: okilum_t3::projects::Manager::NotStarted,
+                appearance: Default::default(),
             });
             cx.notify();
         });
@@ -9521,6 +9570,7 @@ mod document_link_landing_tests {
                 v.sidebar_name_menu(),
                 [
                     SidebarNameItem::SwitchProject,
+                    SidebarNameItem::ChangeProjectIcon,
                     SidebarNameItem::RevealProject,
                     SidebarNameItem::LeaveProject,
                 ]
@@ -9533,6 +9583,11 @@ mod document_link_landing_tests {
             "a project keeps the vault's action slots"
         );
         let header = visual.debug_bounds("sidebar-header").unwrap();
+        // #1627: the project's avatar leads the header, as in T3.
+        let avatar = visual
+            .debug_bounds("sidebar-project-avatar")
+            .expect("the project's avatar in its header");
+        assert!(avatar.left() >= header.left() && avatar.right() < header.center().x);
         let body = visual.debug_bounds("sidebar-tree-body").expect("tree body");
         assert_eq!(
             body.top(),

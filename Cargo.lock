@@ -6101,6 +6101,7 @@ dependencies = [
  "csv",
  "dirs 6.0.0",
  "embed-resource",
+ "flate2",
  "fsevent-sys",
  "futures",
  "gpui-base",

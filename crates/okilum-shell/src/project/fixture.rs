@@ -49,6 +49,7 @@ impl ManagerGateway for Fake {
                 model: "gpt-6.1-sol".into(),
                 options: vec![],
             }),
+            ..Default::default()
         }])
     }
     fn list_threads(&self, _: &str) -> Result<Vec<ThreadSummary>> {
