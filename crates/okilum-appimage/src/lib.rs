@@ -849,6 +849,8 @@ mod tests {
             0
         );
         let fd = lock.as_raw_fd();
+        let log_path = stage.join("apply.log");
+        let log = File::create(&log_path).unwrap();
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", APPLY, "test", "2147483647"])
@@ -857,8 +859,8 @@ mod tests {
             .arg(sha(&stage.join("new.AppImage")).unwrap())
             .arg(sha(&target).unwrap())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log));
         unsafe {
             command.pre_exec(move || {
                 if libc::dup2(fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
@@ -875,10 +877,21 @@ mod tests {
                 assert!(status.success());
                 break;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "helper waited for entire GUI session"
-            );
+            if std::time::Instant::now() >= deadline {
+                let output = fs::read_to_string(&log_path).unwrap_or_default();
+                let started = stage.join("started").exists();
+                let completed = stage.join("completed").exists();
+                let _ = helper.kill();
+                let _ = helper.wait();
+                if let Ok(pid) = fs::read_to_string(stage.join("child-pid")) {
+                    if let Ok(pid) = pid.trim().parse::<i32>() {
+                        unsafe {
+                            libc::kill(pid, libc::SIGTERM);
+                        }
+                    }
+                }
+                panic!("helper did not finish within 10s; started={started}, completed={completed}; apply log: {output}");
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
         let pid: i32 = fs::read_to_string(stage.join("child-pid"))
