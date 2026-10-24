@@ -1,5 +1,6 @@
 //! Folder destinations from the loaded inventory; writes use the shared move pipeline.
 use super::*;
+use gpui_base::ElementExt as _;
 use gpui_component::WindowExt;
 use okilum_core::vault::EntryKind;
 
@@ -212,15 +213,98 @@ impl Reader {
         }
         let reader = cx.weak_entity();
         let root = self.vault_root.clone();
-        let picker = cx.new(|cx| FolderPicker::new(reader, root, from, folders, window, cx));
+        let picker = cx
+            .new(|cx| FolderPicker::new(reader, root, Purpose::Move(from), folders, 0, window, cx));
         self.move_picker.active = Some((picker, window.mouse_position()));
         cx.notify();
     }
+
+    /// «in: AI ▾» on the inline New note / New folder row (#1512): the
+    /// tree's root first («/», the vault or the project folder), then every
+    /// folder below it; typing filters, choosing one moves the row there.
+    pub(super) fn choose_creation_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(create) = self.creation.as_ref() else {
+            return;
+        };
+        if window.has_active_dialog(cx) || create.root != self.vault_root {
+            return;
+        }
+        let scope = self.tree.scope().to_owned();
+        let mut folders = vec![scope.clone()];
+        folders.extend(self.tree.folders().into_iter().filter(|folder| {
+            !create
+                .templates
+                .as_ref()
+                .is_some_and(|catalog| catalog.contains_target(Path::new(folder)))
+        }));
+        let selected = folders
+            .iter()
+            .position(|folder| *folder == create.folder)
+            .unwrap_or(0);
+        let reader = cx.weak_entity();
+        let root = self.vault_root.clone();
+        let picker = cx.new(|cx| {
+            FolderPicker::new(
+                reader,
+                root,
+                Purpose::Create { scope },
+                folders,
+                selected,
+                window,
+                cx,
+            )
+        });
+        self.move_picker.active = Some((picker, window.mouse_position()));
+        cx.notify();
+    }
+
+    /// Closes the destination list of an inline create row, if one is open.
+    pub(super) fn close_creation_folder_picker(&mut self, cx: &App) {
+        if self
+            .move_picker
+            .active
+            .as_ref()
+            .is_some_and(|(picker, _)| matches!(picker.read(cx).purpose, Purpose::Create { .. }))
+        {
+            self.move_picker.active = None;
+        }
+    }
 }
+
+/// What a chosen folder is for.
+enum Purpose {
+    /// Move this item into the folder.
+    Move(String),
+    /// Create the inline New note / New folder there; `scope` is the tree's
+    /// root, shown as «/».
+    Create { scope: String },
+}
+
+/// How the destination list names `folder`: the root is «/», the rest is
+/// relative to it.
+fn creation_folder_label(scope: &str, folder: &str) -> String {
+    if folder == scope {
+        return if scope.is_empty() {
+            "/  Vault root".into()
+        } else {
+            "/  Project root".into()
+        };
+    }
+    let relative = if scope.is_empty() {
+        folder
+    } else {
+        folder
+            .strip_prefix(scope)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(folder)
+    };
+    relative.replace('/', " › ")
+}
+
 struct FolderPicker {
     reader: WeakEntity<Reader>,
     root: PathBuf,
-    from: String,
+    purpose: Purpose,
     folders: Vec<String>,
     matches: Vec<String>,
     selected: usize,
@@ -234,8 +318,9 @@ impl FolderPicker {
     fn new(
         reader: WeakEntity<Reader>,
         root: PathBuf,
-        from: String,
+        purpose: Purpose,
         folders: Vec<String>,
+        selected: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -249,18 +334,28 @@ impl FolderPicker {
                 InputEvent::PressEnter { .. } => this.accept(window, cx),
                 _ => {}
             });
+        let matches: Vec<String> = folders.iter().take(100).cloned().collect();
+        let selected = selected.min(matches.len().saturating_sub(1));
+        let scroll = ScrollHandle::new();
+        scroll.scroll_to_item(selected);
         Self {
             reader,
             root,
-            from,
-            matches: folders.iter().take(100).cloned().collect(),
+            purpose,
+            matches,
             folders,
-            selected: 0,
-            scroll: ScrollHandle::new(),
+            selected,
+            scroll,
             focus_on_mount: true,
             input,
             error: None,
             _subscription: subscription,
+        }
+    }
+    fn label(&self, folder: &str) -> String {
+        match &self.purpose {
+            Purpose::Move(_) => folder_label(folder),
+            Purpose::Create { scope } => creation_folder_label(scope, folder),
         }
     }
     fn filter(&mut self, cx: &App) {
@@ -269,7 +364,7 @@ impl FolderPicker {
             .folders
             .iter()
             .filter(|f| {
-                f.to_lowercase().contains(&query) || folder_label(f).to_lowercase().contains(&query)
+                f.to_lowercase().contains(&query) || self.label(f).to_lowercase().contains(&query)
             })
             .take(100)
             .cloned()
@@ -289,10 +384,17 @@ impl FolderPicker {
         cx.notify();
     }
     fn close(&self, restore_focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let creating = matches!(self.purpose, Purpose::Create { .. });
         let _ = self.reader.update(cx, |reader, cx| {
             reader.move_picker.active = None;
             if restore_focus {
-                reader.focus_handle.focus(window, cx);
+                // Back to the name being typed, not away from the row.
+                if let Some(create) = reader.creation.as_ref().filter(|_| creating) {
+                    let input = create.input.clone();
+                    input.update(cx, |input, cx| input.focus(window, cx));
+                } else {
+                    reader.focus_handle.focus(window, cx);
+                }
             }
             cx.notify();
         });
@@ -302,8 +404,19 @@ impl FolderPicker {
         let Some(folder) = self.matches.get(self.selected) else {
             return;
         };
+        let from = match &self.purpose {
+            Purpose::Move(from) => from.clone(),
+            Purpose::Create { .. } => {
+                let folder = folder.clone();
+                let _ = self.reader.update(cx, |reader, cx| {
+                    reader.move_picker.active = None;
+                    reader.set_creation_folder(&folder, window, cx);
+                });
+                return;
+            }
+        };
         let result = self.reader.update(cx, |r, cx| {
-            r.move_to_folder(&self.root, &self.from, folder, window, cx)
+            r.move_to_folder(&self.root, &from, folder, window, cx)
         });
         match result {
             Ok(Ok(())) => {
@@ -340,11 +453,14 @@ impl Render for FolderPicker {
             });
         }
         let p = brand::palette(cx);
+        let creating = matches!(self.purpose, Purpose::Create { .. });
+        let labels: Vec<String> = self.matches.iter().map(|f| self.label(f)).collect();
         v_flex()
             .id("move-folder-popover")
             .debug_selector(|| "move-folder-popover".into())
             .occlude()
-            .w(px(360.))
+            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
+            .w(px(if creating { 280. } else { 360. }))
             .p_2()
             .rounded_lg()
             .shadow_lg()
@@ -372,19 +488,21 @@ impl Render for FolderPicker {
                     .when(self.matches.is_empty(), |d| {
                         d.child(div().py_2().text_color(p.text_muted).child("—"))
                     })
-                    .children(self.matches.iter().enumerate().map(|(i, folder)| {
+                    .children(labels.into_iter().enumerate().map(|(i, label)| {
                         h_flex()
                             .id(("move-folder", i))
                             .debug_selector(move || format!("move-folder-{i}"))
                             .px_2()
-                            .py_2()
+                            // The destination list is compact (#1512).
+                            .when(creating, |d| d.py_1())
+                            .when(!creating, |d| d.py_2())
                             .gap_2()
                             .rounded_md()
                             .cursor_pointer()
                             .when(i == self.selected, |d| d.bg(p.selected))
                             .hover(move |d| d.bg(p.selected))
                             .child(Icon::new(IconName::Folder).small())
-                            .child(div().flex_1().min_w_0().child(folder_label(folder)))
+                            .child(div().flex_1().min_w_0().text_ellipsis().child(label))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.selected = i;
                                 this.accept(window, cx);
@@ -567,8 +685,9 @@ mod tests {
                 FolderPicker::new(
                     reader.downgrade(),
                     root.clone(),
-                    "Source/Note.md".into(),
+                    Purpose::Move("Source/Note.md".into()),
                     vec!["Target".into(), "Target alternate".into()],
+                    0,
                     window,
                     cx,
                 )

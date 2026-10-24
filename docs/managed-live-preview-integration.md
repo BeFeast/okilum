@@ -32,11 +32,13 @@ The managed readonly state is set at authoritative freeze/release transitions us
 `!source_editable || source_loading || busy || editor_closing()`. Local protection
 alone does not prevent continued typing. Explicit resets still bypass readonly.
 
-Linux startup resolves an explicit verified named Wayland socket and supplies the
-accepted exact clipboard provider only to managed source. An inherited
-`WAYLAND_SOCKET` is left untouched; because that connection's compositor cannot be
-verified from the named endpoint, exact paste reports Unsupported. Missing provider
-or capability never uses GPUI's normalized clipboard text. Cancellation and typed
+Linux startup resolves an explicit verified named Wayland socket for the exact
+data-control reader; an inherited `WAYLAND_SOCKET` is left untouched. Since #1602
+the paste command reads in place, and where data-control cannot run (GPUI on X11,
+GNOME's Mutter, an inherited socket, several seats) the same command reads GPUI's
+own clipboard connection: unchanged bytes on X11, CRLF folded into LF on Wayland.
+A missing provider still reports Unsupported and never uses GPUI's clipboard
+text. Cancellation and typed
 provider errors appear beside the source controls. macOS uses a same-executable native pasteboard helper selected at startup. The
 helper exits before GUI/config/backend initialization and reads only declared
 `public.utf8-plain-text` bytes, with changeCount checked across the read. Its parent

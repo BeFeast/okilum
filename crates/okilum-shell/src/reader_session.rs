@@ -185,10 +185,10 @@ impl Reader {
             self.move_index = published.candidates;
             self.reminder_tick(cx);
         }
-        self.backlink_titles = published.titles.clone();
         self.set_backlinks(self.vault.backlinks(&self.current_rel), true);
         self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
         self.sync_tree();
+        self.backlink_titles = published.titles.clone();
         reader_drawing::invalidate(&self.vault_root, cx);
         self.invalidate_links();
         self.refresh_quick_open(cx);

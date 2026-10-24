@@ -350,6 +350,41 @@ impl ManagerGateway for McpGateway {
         self.paginate("t3_project_list", json!({}), "projects")
     }
 
+    fn read_project(&self, project_id: &str) -> GatewayResult<Project> {
+        self.call("t3_project_read", json!({ "projectId": project_id }))
+    }
+
+    fn set_project_icon(
+        &self,
+        project_id: &str,
+        icon: Option<&crate::projects::icon::ProjectIcon>,
+    ) -> GatewayResult<Project> {
+        // `null` clears the override; omitted fields stay as they are.
+        let args = json!({ "projectId": project_id, "projectIcon": icon });
+        self.call_value("t3_project_update", args)?;
+        let project = self.read_project(project_id)?;
+        if project.project_icon.as_ref() != icon {
+            return Err(GatewayError::Protocol(
+                "T3 did not keep the project icon".into(),
+            ));
+        }
+        Ok(project)
+    }
+
+    /// `t3_project_create`; the project is read back from T3's list by
+    /// its workspace root, so the tool's own result shape does not matter.
+    fn create_project(&self, title: &str, workspace_root: &str) -> GatewayResult<Project> {
+        let args = json!({ "title": title, "workspaceRoot": workspace_root });
+        self.call_value("t3_project_create", args)?;
+        let root = workspace_root.trim_end_matches('/');
+        self.list_projects()?
+            .into_iter()
+            .find(|project| project.workspace_root.trim_end_matches('/') == root)
+            .ok_or_else(|| {
+                GatewayError::Protocol(format!("T3 does not list a project at {workspace_root}"))
+            })
+    }
+
     fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>> {
         let args = json!({ "projectId": project_id, "includeSubagents": true });
         self.paginate("t3_thread_list", args, "threads")

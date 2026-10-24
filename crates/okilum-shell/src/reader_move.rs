@@ -1730,14 +1730,15 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(
-                !r.tree
+                r.tree
                     .rows
                     .iter()
                     .find(|row| row.path == "Folder")
                     .unwrap()
                     .expanded,
-                "a single folder click toggles (#1099)"
-            )
+                "a single folder click only selects (#1512)"
+            );
+            assert_eq!(r.tree.cursor.as_deref(), Some("Folder"));
         });
         visual.simulate_event(MouseDownEvent {
             position: point,
@@ -1761,9 +1762,27 @@ mod tests {
                     .find(|row| row.path == "Folder")
                     .unwrap()
                     .expanded,
-                "the second click of a double click does not toggle back"
+                "a double click collapses an expanded folder (#1512)"
             )
         });
+        // The chevron expands and collapses it again (#1512).
+        let folder_expanded = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |r, _| {
+                r.tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "Folder")
+                    .unwrap()
+                    .expanded
+            })
+        };
+        let chevron = visual.debug_bounds("folder-disclosure-Folder").unwrap();
+        visual.simulate_click(chevron.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(folder_expanded(visual), "the chevron expands the folder");
+        visual.simulate_click(chevron.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!folder_expanded(visual), "the chevron collapses the folder");
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         visual.simulate_input("Unsaved descendant");

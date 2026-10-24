@@ -775,6 +775,7 @@ fn project_statuses_share_a_live_listing_and_distinguish_missing_settled_and_idl
             environment: Some("test".into()),
             manager_project: Some("brain".into()),
             manager: Manager::Thread(format!("mcp:{name}")),
+            appearance: Default::default(),
         })
         .collect();
     let statuses =
@@ -794,4 +795,235 @@ fn project_statuses_share_a_live_listing_and_distinguish_missing_settled_and_idl
     assert!(disconnected
         .values()
         .all(|state| matches!(state, Status::Unreachable(_))));
+}
+
+fn t3_project(icon: Value) -> Value {
+    json!({
+        "id": "okilum", "title": "Okilum", "workspaceRoot": "/srv/t3-host/okilum",
+        "repositoryIdentity": null,
+        "faviconPath": "crates/okilum-shell/assets/brand/app-icon-light.svg",
+        "projectIcon": icon, "defaultModelSelection": null, "defaultThreadEnvMode": null,
+        "autoPull": false, "scripts": [], "createdAt": "2026-10-03T10:08:44.917Z",
+        "updatedAt": "2026-10-18T17:46:52.181Z", "deletedAt": null
+    })
+}
+
+#[test]
+fn project_icon_is_written_through_t3s_project_update_and_read_back() {
+    use crate::projects::icon::{IconColor, ProjectIcon};
+    let stored = Arc::new(std::sync::Mutex::new(Value::Null));
+    let server = {
+        let stored = stored.clone();
+        fake_t3(move |name, arguments| match name {
+            "t3_project_update" => {
+                assert_eq!(arguments["projectId"], "okilum");
+                *stored.lock().unwrap() = arguments["projectIcon"].clone();
+                structured(json!({ "sequence": 3 }))
+            }
+            "t3_project_read" => {
+                assert_eq!(arguments["projectId"], "okilum");
+                structured(t3_project(stored.lock().unwrap().clone()))
+            }
+            other => panic!("unexpected tool {other}"),
+        })
+    };
+    let gateway = gateway(&server, Some(token("good")));
+    let project = gateway.read_project("okilum").unwrap();
+    assert_eq!(project.project_icon, None);
+    assert_eq!(
+        project.favicon_path.as_deref(),
+        Some("crates/okilum-shell/assets/brand/app-icon-light.svg")
+    );
+    let icon = ProjectIcon::Lucide {
+        name: "rocket".into(),
+        color: IconColor::Violet,
+    };
+    let saved = gateway.set_project_icon("okilum", Some(&icon)).unwrap();
+    assert_eq!(saved.project_icon, Some(icon));
+    let cleared = gateway.set_project_icon("okilum", None).unwrap();
+    assert_eq!(cleared.project_icon, None);
+    let updates: Vec<_> = tool_calls(&server.requests())
+        .into_iter()
+        .filter(|call| call["name"] == "t3_project_update")
+        .map(|call| call["arguments"].clone())
+        .collect();
+    assert_eq!(
+        updates,
+        [
+            json!({"projectId": "okilum", "projectIcon": {"kind": "lucide", "name": "rocket", "color": "violet"}}),
+            // Reset sends an explicit null: omitted fields are preserved by T3.
+            json!({"projectId": "okilum", "projectIcon": null}),
+        ]
+    );
+}
+
+#[test]
+fn an_icon_t3_did_not_keep_is_not_reported_as_saved() {
+    use crate::projects::icon::ProjectIcon;
+    let server = fake_t3(|name, _| match name {
+        "t3_project_update" => structured(json!({ "sequence": 3 })),
+        "t3_project_read" => structured(t3_project(Value::Null)),
+        other => panic!("unexpected tool {other}"),
+    });
+    let icon = ProjectIcon::Emoji {
+        emoji: "🚀".into()
+    };
+    let error = gateway(&server, Some(token("good")))
+        .set_project_icon("okilum", Some(&icon))
+        .unwrap_err();
+    assert!(matches!(error, GatewayError::Protocol(_)), "{error:?}");
+}
+
+#[test]
+fn the_project_list_carries_icons_and_favicons() {
+    let server = fake_t3(|name, _| match name {
+        "t3_project_list" => structured(json!({
+            "projects": [t3_project(json!({"kind": "emoji", "emoji": "🧠"})), t3_project(json!({"kind": "future"}))],
+            "nextCursor": null
+        })),
+        other => panic!("unexpected tool {other}"),
+    });
+    let projects = gateway(&server, Some(token("good")))
+        .list_projects()
+        .unwrap();
+    assert_eq!(projects.len(), 2, "an unknown icon kind keeps the project");
+    assert!(matches!(
+        &projects[0].project_icon,
+        Some(crate::projects::icon::ProjectIcon::Emoji { emoji }) if emoji == "🧠"
+    ));
+    assert_eq!(projects[1].project_icon, None);
+}
+
+#[test]
+fn a_chosen_icon_goes_to_t3_for_a_t3_project_and_to_project_yaml_otherwise() {
+    use crate::projects::icon::{self, IconColor, ProjectIcon, Saved};
+    use crate::projects::Project as VaultProject;
+    let stored = Arc::new(std::sync::Mutex::new(Value::Null));
+    let server = {
+        let stored = stored.clone();
+        fake_t3(move |name, arguments| match name {
+            "t3_project_list" => structured(json!({
+                "projects": [t3_project(stored.lock().unwrap().clone())], "nextCursor": null
+            })),
+            "t3_project_update" => {
+                *stored.lock().unwrap() = arguments["projectIcon"].clone();
+                structured(json!({ "sequence": 1 }))
+            }
+            "t3_project_read" => structured(t3_project(stored.lock().unwrap().clone())),
+            other => panic!("unexpected tool {other}"),
+        })
+    };
+    let gateway: Arc<dyn ManagerGateway> = Arc::new(gateway(&server, Some(token("good"))));
+    let vault = std::env::temp_dir().join(format!("okilum-icon-save-{}", uuid::Uuid::new_v4()));
+    let write = |folder: &str, source: &str| {
+        let ops = vault.join(folder).join("ops");
+        std::fs::create_dir_all(&ops).unwrap();
+        std::fs::write(ops.join("project.yaml"), source).unwrap();
+        VaultProject::read(&vault.join(folder)).unwrap()
+    };
+    let okilum = write(
+        "Dev/Areas/okilum",
+        "name: Okilum\nt3:\n  environment: test\n  executor: {project_id: okilum}\n",
+    );
+    let notes = write("Life/Notes", "name: Notes\nt3:\n  environment: test\n");
+    let icon = ProjectIcon::Monogram {
+        text: "Ok".into(),
+        color: IconColor::Teal,
+    };
+
+    let saved = icon::save_icon(&vault, &okilum, Some(gateway.as_ref()), Some(&icon)).unwrap();
+    let Saved::T3(counterpart) = saved else {
+        panic!("a T3 project keeps its icon in T3: {saved:?}")
+    };
+    assert_eq!(counterpart.project_id, "okilum");
+    assert_eq!(counterpart.icon.as_ref(), Some(&icon));
+    // The repository lives on the server: T3's favicon is not a file here.
+    assert_eq!(counterpart.logo, None);
+    assert!(
+        !std::fs::read_to_string(vault.join("Dev/Areas/okilum/ops/project.yaml"))
+            .unwrap()
+            .contains("icon:"),
+        "project.yaml is untouched"
+    );
+    let links = icon::counterparts(
+        &vault,
+        &[okilum.clone(), notes.clone()],
+        &std::collections::BTreeMap::from([("test".into(), gateway.clone())]),
+    );
+    assert_eq!(links.len(), 1, "Notes has no T3 project");
+    assert_eq!(links[&okilum.folder].icon.as_ref(), Some(&icon));
+
+    let saved = icon::save_icon(&vault, &notes, Some(gateway.as_ref()), Some(&icon)).unwrap();
+    let Saved::Manifest(read_back) = saved else {
+        panic!("no T3 counterpart: project.yaml")
+    };
+    assert_eq!(read_back.appearance.icon.as_ref(), Some(&icon));
+
+    // Without a connection a T3 project's icon is not forked into the vault.
+    let error = icon::save_icon(&vault, &okilum, None, None).unwrap_err();
+    assert!(error.to_string().contains("Connect to T3"), "{error}");
+    let reset = icon::save_icon(&vault, &okilum, Some(gateway.as_ref()), None).unwrap();
+    assert!(matches!(reset, Saved::T3(c) if c.icon.is_none()));
+    std::fs::remove_dir_all(vault).unwrap();
+}
+
+/// #1627: every failure of Save is an error the app shows; nothing is
+/// written in place of what T3 refused.
+#[test]
+fn a_refused_or_unmatched_icon_save_is_an_error_and_writes_nothing() {
+    use crate::projects::icon::{self, IconColor, ProjectIcon};
+    use crate::projects::Project as VaultProject;
+    let server = fake_t3(|name, arguments| match name {
+        "t3_project_list" => structured(json!({
+            "projects": [t3_project(Value::Null)], "nextCursor": null
+        })),
+        "t3_project_update" => {
+            assert_eq!(
+                arguments["projectIcon"],
+                json!({"kind": "lucide", "name": "calculator", "color": "green"})
+            );
+            json!({"isError": true, "structuredContent": {
+                "code": "capability_denied",
+                "message": "Changing projects or environment settings needs a full-access client."
+            }})
+        }
+        other => panic!("unexpected tool {other}"),
+    });
+    let gateway: Arc<dyn ManagerGateway> = Arc::new(gateway(&server, Some(token("good"))));
+    let vault = std::env::temp_dir().join(format!("okilum-icon-refused-{}", uuid::Uuid::new_v4()));
+    let write = |folder: &str, source: &str| {
+        let ops = vault.join(folder).join("ops");
+        std::fs::create_dir_all(&ops).unwrap();
+        std::fs::write(ops.join("project.yaml"), source).unwrap();
+        VaultProject::read(&vault.join(folder)).unwrap()
+    };
+    let okilum = write(
+        "Dev/Areas/okilum",
+        "name: Okilum\nt3:\n  environment: test\n  executor: {project_id: okilum}\n",
+    );
+    let stale = write(
+        "Dev/Areas/stale",
+        "name: Stale\nt3:\n  environment: test\n  executor: {project_id: gone}\n",
+    );
+    let icon = ProjectIcon::Lucide {
+        name: "calculator".into(),
+        color: IconColor::Green,
+    };
+    let error = icon::save_icon(&vault, &okilum, Some(gateway.as_ref()), Some(&icon)).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("capability_denied"), "{message}");
+    assert!(message.contains("the icon was not changed"), "{message}");
+    let error = icon::save_icon(&vault, &stale, Some(gateway.as_ref()), Some(&icon)).unwrap_err();
+    assert!(
+        error.to_string().contains("T3 has no project gone"),
+        "{error}"
+    );
+    for folder in ["Dev/Areas/okilum", "Dev/Areas/stale"] {
+        let source = std::fs::read_to_string(vault.join(folder).join("ops/project.yaml")).unwrap();
+        assert!(
+            !source.contains("icon:"),
+            "{folder}: project.yaml untouched"
+        );
+    }
+    std::fs::remove_dir_all(vault).unwrap();
 }

@@ -120,11 +120,23 @@ struct Saved {
     font_size: f32,
     text_zoom: f32,
     reading_width: f32,
+    /// The note column spans the whole note pane instead of the reading
+    /// width; one app-wide toggle, kept with the reading width.
+    full_note_width: bool,
     find_case_sensitive: bool,
     typed_views: okilum_core::typed_view::Preferences,
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// Brackets and quotes close themselves as they are typed in a note
+    /// (#1636); on by default.
+    auto_pair_brackets: bool,
+    /// `*`, `_` and `` ` `` close themselves too (#1636); off by default,
+    /// as in Typora.
+    auto_pair_markdown: bool,
+    /// Pasting or dropping a file larger than this many MB asks before
+    /// copying it into the vault (#1611); 0 never asks.
+    paste_ask_above_mb: u32,
     /// JSON files show their raw text instead of a pretty-printed view (#1131).
     json_raw: bool,
     /// Where log source locations open (#1165): vscode, cursor, zed,
@@ -170,10 +182,14 @@ impl Default for Saved {
             font_size: BODY_FONT_SIZE,
             text_zoom: 1.,
             reading_width: READER_MAX_WIDTH,
+            full_note_width: false,
             find_case_sensitive: false,
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            auto_pair_brackets: true,
+            auto_pair_markdown: false,
+            paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             json_raw: false,
             log_editor: "vscode".into(),
             log_editor_command: String::new(),
@@ -208,6 +224,8 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    auto_pair_changed: bool,
+    paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -302,6 +320,8 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        auto_pair_changed: false,
+        paste_ask_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
         source_maps_changed: Default::default(),
@@ -526,6 +546,8 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    auto_pair_changed: bool,
+    paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -593,6 +615,7 @@ impl WriteJob {
         }
         if self.width_changed {
             latest.reading_width = self.saved.reading_width;
+            latest.full_note_width = self.saved.full_note_width;
         }
         if self.find_changed {
             latest.find_case_sensitive = self.saved.find_case_sensitive;
@@ -609,6 +632,13 @@ impl WriteJob {
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.auto_pair_changed {
+            latest.auto_pair_brackets = self.saved.auto_pair_brackets;
+            latest.auto_pair_markdown = self.saved.auto_pair_markdown;
+        }
+        if self.paste_ask_changed {
+            latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
         }
         if self.json_raw_changed {
             latest.json_raw = self.saved.json_raw;
@@ -728,6 +758,8 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
+            && !state.auto_pair_changed
+            && !state.paste_ask_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
             && state.source_maps_changed.is_empty()
@@ -760,6 +792,8 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        auto_pair_changed: state.auto_pair_changed,
+        paste_ask_changed: state.paste_ask_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
         source_maps_changed: state.source_maps_changed.clone(),
@@ -798,7 +832,7 @@ fn schedule(cx: &mut App) {
     });
     cx.global_mut::<Store>().pending = Some(task);
 }
-#[cfg(any(windows, target_os = "linux", test))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 pub(crate) fn prepare_for_restart(cx: &mut App) -> anyhow::Result<()> {
     let Some(store) = cx.try_global::<Store>() else {
         return Ok(());
@@ -1298,6 +1332,50 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Settings → Editor (#1636): whether brackets and quotes, and `*` `_` `` ` ``,
+/// close themselves as they are typed in a note. Without the store (tests,
+/// a failed install) the defaults hold.
+pub(crate) fn auto_pair(cx: &App) -> (bool, bool) {
+    cx.try_global::<Store>().map_or((true, false), |state| {
+        (
+            state.saved.auto_pair_brackets,
+            state.saved.auto_pair_markdown,
+        )
+    })
+}
+
+pub(crate) fn set_auto_pair(brackets: bool, markdown: bool, cx: &mut App) {
+    if !installed(cx) || auto_pair(cx) == (brackets, markdown) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.auto_pair_brackets = brackets;
+    state.saved.auto_pair_markdown = markdown;
+    state.auto_pair_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Settings → Editor (#1611): ask before copying a pasted or dropped file
+/// larger than this many MB into the vault; 0 never asks.
+pub(crate) fn paste_ask_above_mb(cx: &App) -> u32 {
+    cx.try_global::<Store>()
+        .map_or(crate::note_paste::files::DEFAULT_ASK_ABOVE_MB, |state| {
+            state.saved.paste_ask_above_mb
+        })
+}
+
+pub(crate) fn set_paste_ask_above_mb(value: u32, cx: &mut App) {
+    if !installed(cx) || paste_ask_above_mb(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.paste_ask_above_mb = value;
+    state.paste_ask_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Pretty-printed JSON is the default (#1131); this remembers Raw.
 pub(crate) fn json_raw(cx: &App) -> bool {
     cx.try_global::<Store>()
@@ -1648,8 +1726,42 @@ pub(crate) fn reading_width(cx: &App) -> f32 {
         state.saved.reading_width.clamp(560., 1200.)
     })
 }
-// Settings owns the production caller in the parallel #623 redesign.
-#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn full_note_width(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.full_note_width)
+}
+/// Maximum width of the note column: the reading width scaled by the note
+/// text zoom (#1652), or the whole pane when full note width is on (side
+/// padding stays inside the column). Callers lay the column out with
+/// `w_full().max_w(..)`, so a zoomed column never grows past its pane.
+pub(crate) fn note_column_width(cx: &App) -> f32 {
+    if full_note_width(cx) {
+        100_000.
+    } else {
+        reading_width(cx) * text_zoom(cx)
+    }
+}
+/// The note column for surfaces whose text does not follow the note zoom.
+pub(crate) fn unzoomed_note_column_width(cx: &App) -> f32 {
+    if full_note_width(cx) {
+        100_000.
+    } else {
+        reading_width(cx)
+    }
+}
+pub(crate) fn set_full_note_width(value: bool, cx: &mut App) {
+    if !installed(cx) || full_note_width(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.full_note_width = value;
+    state.width_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+pub(crate) fn set_reading_width(width: f32, cx: &mut App) {
+    set_reading(base_font_size(cx), width, cx);
+}
 pub(crate) fn set_reading(font: f32, width: f32, cx: &mut App) {
     if !font.is_finite() || !width.is_finite() || !installed(cx) {
         return;
@@ -1682,6 +1794,8 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.auto_pair_changed = false;
+        state.paste_ask_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
         state.source_maps_changed.clear();
@@ -2070,6 +2184,8 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                auto_pair_changed: false,
+                paste_ask_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
                 source_maps_changed: Default::default(),
@@ -2139,6 +2255,45 @@ mod tests {
                 merged.font_size, 22.,
                 "unrelated global edits merge per field"
             );
+        });
+    }
+
+    /// Full note width is one app-wide toggle kept across relaunch; the note
+    /// column follows it, and the normal-width slider never stores the
+    /// zoomed font size as the base size.
+    #[gpui::test]
+    fn full_note_width_survives_relaunch_and_widens_the_note_column(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "normal width is the default");
+            assert_eq!(note_column_width(cx), READER_MAX_WIDTH);
+            set_text_zoom(1.5, cx);
+            let base = base_font_size(cx);
+            set_reading_width(900., cx);
+            assert_eq!(base_font_size(cx), base, "slider keeps the unzoomed font");
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
+            // The note column scales with the note text zoom (#1652).
+            assert_eq!(note_column_width(cx), 900. * text_zoom(cx));
+            set_reading_width(100., cx);
+            assert_eq!(reading_width(cx), 560., "normal width is at least 560 px");
+            set_reading_width(5000., cx);
+            assert_eq!(reading_width(cx), 1200., "normal width is at most 1200 px");
+            set_reading_width(900., cx);
+            set_full_note_width(true, cx);
+            assert!(full_note_width(cx));
+            assert!(note_column_width(cx) > 10_000., "full width spans the pane");
+            flush(cx);
+            install(&directory, cx);
+            assert!(full_note_width(cx), "full note width survives relaunch");
+            assert_eq!(reading_width(cx), 900.);
+            assert_eq!(base_font_size(cx), base);
+            set_full_note_width(false, cx);
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
+            flush(cx);
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "turning it off is remembered too");
         });
     }
 
@@ -2466,9 +2621,11 @@ mod tests {
                 if live_preview {
                     let input = reader.editing.as_ref().unwrap().test_input();
                     assert!(input.read(cx).value().contains("Unsaved draft sentinel"));
-                    assert!(!std::fs::read_to_string(root.join("Folder/note.md"))
-                        .unwrap()
-                        .contains("Unsaved draft sentinel"));
+                    assert!(
+                        !std::fs::read_to_string(root.join("Folder/note.md"))
+                            .unwrap()
+                            .contains("Unsaved draft sentinel")
+                    );
                 } else {
                     assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
                 }

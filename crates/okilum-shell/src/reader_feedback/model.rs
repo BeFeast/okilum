@@ -11,6 +11,10 @@ use std::{
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
 const MAX_LOG: usize = 256 * 1024;
+/// Client-side cap for the optional "video" part. Matches pomoi's
+/// FEEDBACK_VIDEO_MAX_BYTES (90,000,000 bytes, below Cloudflare Free's 100 MB
+/// request limit). The server's 413 text wins when stricter.
+pub(super) const MAX_VIDEO: u64 = 90_000_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Metadata {
@@ -82,6 +86,72 @@ pub(super) struct Report {
     pub meta: Metadata,
     pub screenshot: Option<Arc<Vec<u8>>>,
     pub log: Option<String>,
+    pub video: Option<Video>,
+}
+
+/// A user-chosen screen recording. Only the path is kept; the file is
+/// streamed from disk on Send, so a 90 MB clip never sits in memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Video {
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub size: u64,
+    pub mime: &'static str,
+}
+impl Video {
+    pub fn size_label(&self) -> String {
+        human_size(self.size)
+    }
+}
+/// Decimal units, like the server limit: 90,000,000 bytes is "90 MB".
+pub(super) fn human_size(bytes: u64) -> String {
+    if bytes >= 1_000_000 {
+        let label = format!("{:.1}", bytes as f64 / 1_000_000.);
+        format!("{} MB", label.strip_suffix(".0").unwrap_or(&label))
+    } else {
+        format!("{} KB", bytes.div_ceil(1000))
+    }
+}
+/// Says how far over the limit a video is, in bytes when the rounded sizes
+/// would read the same ("90 MB; the limit is 90 MB").
+fn over_limit(bytes: u64) -> String {
+    let (size, limit) = (human_size(bytes), human_size(MAX_VIDEO));
+    if size == limit {
+        format!("{bytes} bytes; the limit is {MAX_VIDEO} bytes")
+    } else {
+        format!("{size}; the limit is {limit}")
+    }
+}
+/// MIME type for a supported video extension (mp4/m4v, mov, webm).
+pub(super) fn video_mime(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "m4v" => Some("video/mp4"),
+        "mov" | "qt" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        _ => None,
+    }
+}
+pub(super) fn video_file(path: &Path) -> Result<Video> {
+    let mime = video_mime(path).context("Choose an MP4, MOV or WebM video.")?;
+    let metadata = std::fs::metadata(path).context("Couldn't read the video file.")?;
+    ensure!(metadata.is_file(), "Choose an MP4, MOV or WebM video file.");
+    ensure!(metadata.len() > 0, "The video file is empty.");
+    ensure!(
+        metadata.len() <= MAX_VIDEO,
+        "Video is {}. Trim or compress it and attach again.",
+        over_limit(metadata.len())
+    );
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "video".into());
+    Ok(Video {
+        path: path.to_path_buf(),
+        name,
+        size: metadata.len(),
+        mime,
+    })
 }
 impl Report {
     fn validate(&self) -> Result<()> {
@@ -103,6 +173,10 @@ impl Report {
             self.log.as_ref().is_none_or(|s| s.len() <= MAX_LOG),
             "Log must be at most 256 KB."
         );
+        if let Some(video) = &self.video {
+            // Re-check on Send: the file may have changed since it was attached.
+            video_file(&video.path)?;
+        }
         Ok(())
     }
     pub fn copy_text(&self) -> String {
@@ -114,6 +188,13 @@ impl Report {
         );
         if self.screenshot.is_some() {
             text.push_str("\nScreenshot attached in the feedback draft.");
+        }
+        if let Some(video) = &self.video {
+            text.push_str(&format!(
+                "\nVideo attached in the feedback draft: {} ({}).",
+                video.name,
+                video.size_label()
+            ));
         }
         if let Some(log) = &self.log {
             text.push_str("\n\nDiagnostic log:\n");
@@ -137,9 +218,15 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         Client,
     };
     report.validate()?;
+    // A large video needs far longer than the text-only 45 s budget.
+    let timeout = if report.video.is_some() {
+        Duration::from_secs(15 * 60)
+    } else {
+        Duration::from_secs(45)
+    };
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(45))
+        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let mut meta = serde_json::to_value(&report.meta)?;
@@ -170,6 +257,22 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     if let Some(log) = &report.log {
         form = form.text("log", log.clone());
     }
+    if let Some(video) = &report.video {
+        let file = std::fs::File::open(&video.path)
+            .context("Couldn't open the attached video. Your draft is kept.")?;
+        let length = file.metadata()?.len();
+        ensure!(
+            length <= MAX_VIDEO,
+            "Video is {}. Trim or compress it and attach again.",
+            over_limit(length)
+        );
+        form = form.part(
+            "video",
+            Part::reader_with_length(file.take(length), length)
+                .file_name(video.name.clone())
+                .mime_str(video.mime)?,
+        );
+    }
     let response = client
         .post(endpoint)
         .multipart(form)
@@ -185,7 +288,11 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
                     .and_then(|s| s.as_str())
                     .map(|s| s.chars().take(512).collect::<String>())
             })
-            .unwrap_or_else(|| "Feedback couldn't be sent. Your draft is kept.".into());
+            .unwrap_or_else(|| match status.as_u16() {
+                413 => "Attachments exceed the server's size limit. Your draft is kept.".into(),
+                415 => "The server doesn't accept this attachment type. Your draft is kept.".into(),
+                _ => "Feedback couldn't be sent. Your draft is kept.".into(),
+            });
         bail!("{message} (HTTP {})", status.as_u16());
     }
     let receipt: Receipt = serde_json::from_slice(&bytes)

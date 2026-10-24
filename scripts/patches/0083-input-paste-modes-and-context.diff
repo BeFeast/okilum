@@ -1,0 +1,114 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index ca78d5aa..1d9deba1 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2774,8 +2774,20 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
++        self.paste_with_mode(super::clipboard::PasteMode::Smart, window, cx);
++    }
++
++    /// Run one paste command: Paste, Paste as Plain Text or Paste as Titled
++    /// Link. An exact clipboard provider receives the mode with the source
++    /// and selection; without one every mode pastes the clipboard's text.
++    pub fn paste_with_mode(
++        &mut self,
++        mode: super::clipboard::PasteMode,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
+         if self.exact_clipboard.enabled || self.projection.enabled {
+-            self.paste_exact(window, cx);
++            self.paste_exact(mode, window, cx);
+             return;
+         }
+         if let Some(clipboard) = cx.read_from_clipboard() {
+@@ -2787,7 +2799,12 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+     }
+ 
+-    fn paste_exact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++    fn paste_exact(
++        &mut self,
++        mode: super::clipboard::PasteMode,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
+         // Key and menu commands only reach the key window, so window activity is
+         // not checked here: GPUI records an activation one executor turn after
+         // AppKit, and a paste posted right after another app hands focus back
+@@ -2808,7 +2825,12 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 return;
+             }
+         };
+-        if let Some(result) = provider.read_text_now(cx) {
++        let context = super::clipboard::PasteContext {
++            mode,
++            source: self.value(),
++            selection: self.selected_range(),
++        };
++        if let Some(result) = provider.read_paste_now(&context, cx) {
+             // Read inside the paste command: the request completes before
+             // anything else can run, so it applies to the state it was made in.
+             if self.exact_clipboard.complete(nonce, revision) {
+@@ -3081,6 +3103,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.index_for_mouse_hit(position, false)
+     }
+ 
++    /// The source byte offset under a window position, for a drop onto the
++    /// editor; `None` before the first layout.
++    pub fn source_offset_for_point(&self, position: Point<Pixels>) -> Option<usize> {
++        self.index_for_mouse_position(position)
++            .map(|(offset, _, _)| offset)
++    }
++
+     /// Like [`Self::index_for_mouse_position`], for the moving end of a selection: at a
+     /// bidi run boundary it keeps the offset whose cell the selection covers (#879).
+     pub(crate) fn index_for_mouse_extension(
+diff --git a/crates/base/src/input/clipboard.rs b/crates/base/src/input/clipboard.rs
+index fdb6d22e..2230b0d4 100644
+--- a/crates/base/src/input/clipboard.rs
++++ b/crates/base/src/input/clipboard.rs
+@@ -54,6 +54,41 @@ pub trait ExactClipboardProvider: Send + Sync {
+         let _ = cx;
+         None
+     }
++
++    /// Like [`Self::read_text_now`], with what the paste is for: the command
++    /// (smart, plain text, titled link) and the source and selection it lands
++    /// in, so a provider can shape its text for the caret (a fenced code
++    /// block, a list item). The returned text replaces the selection.
++    fn read_paste_now(
++        &self,
++        context: &PasteContext,
++        cx: &App,
++    ) -> Option<Result<Option<String>, ClipboardReadError>> {
++        let _ = context;
++        self.read_text_now(cx)
++    }
++}
++
++/// Which paste command is running.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
++pub enum PasteMode {
++    /// Cmd+V / Ctrl+V and the Paste menu item.
++    #[default]
++    Smart,
++    /// Paste as Plain Text: the clipboard's plain text, nothing converted.
++    Plain,
++    /// Paste as Titled Link: a URL becomes `[title](url)`.
++    TitledLink,
++}
++
++/// The editor's state when a paste command runs.
++#[derive(Clone, Debug)]
++pub struct PasteContext {
++    pub mode: PasteMode,
++    /// The whole source text at the time of the command.
++    pub source: gpui::SharedString,
++    /// The selected source byte range (`start <= end`); a caret is empty.
++    pub selection: std::ops::Range<usize>,
+ }
+ 
+ #[derive(Default)]

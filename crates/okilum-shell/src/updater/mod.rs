@@ -92,9 +92,11 @@ pub(crate) fn install(_cx: &mut App) {
     {
         windows::start();
         // An Okilum left open for days still learns of a new release (#683).
-        _cx.spawn(async move |cx| loop {
-            cx.background_executor().timer(RECHECK_EVERY).await;
-            windows::check(false);
+        _cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor().timer(RECHECK_EVERY).await;
+                windows::check(false);
+            }
         })
         .detach();
         _cx.spawn(async move |cx| {
@@ -124,7 +126,10 @@ pub(crate) fn install(_cx: &mut App) {
                 .await;
             if status::generation() != checked {
                 checked = status::generation();
-                cx.update(|cx| cx.refresh_windows());
+                cx.update(|cx| {
+                    macos::finish_requested_restart(cx);
+                    cx.refresh_windows();
+                });
             }
         }
     })
@@ -215,9 +220,26 @@ pub(crate) fn channel() -> &'static str {
 
 /// Shares Sparkle's persisted channel preference with Settings and the menu.
 pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
+    #[cfg(any(target_os = "macos", windows))]
+    if status::in_flight() {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, cx| {
+                crate::reader_toast::error(
+                    "Finish the current update before changing channels.",
+                    window,
+                    cx,
+                )
+            });
+        }
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
+        let changed = macos::beta() != enabled;
         macos::set_beta(enabled);
+        if changed {
+            macos::check();
+        }
         #[cfg(feature = "brain")]
         crate::brain::app_quit::set_menus(cx);
         #[cfg(not(feature = "brain"))]
@@ -226,7 +248,11 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
     }
     #[cfg(windows)]
     {
+        let previous = windows::beta();
         windows::set_beta(enabled);
+        if windows::beta() != previous {
+            windows::check(true);
+        }
         cx.refresh_windows();
     }
     #[cfg(target_os = "linux")]
@@ -246,12 +272,26 @@ pub(crate) fn action_label() -> &'static str {
     if appimage::ready() {
         return "Restart to update";
     }
+    #[cfg(target_os = "macos")]
+    if macos::ready() {
+        return "Restart now";
+    }
     #[cfg(windows)]
     if windows::ready() {
-        return "Restart to update";
+        return "Restart now";
     }
     "Check for Updates…"
 }
+pub(crate) fn restart_now(cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    appimage::restart(cx);
+    #[cfg(windows)]
+    windows::restart(None, cx);
+    #[cfg(target_os = "macos")]
+    macos::restart(cx);
+    let _ = cx;
+}
+
 pub(crate) fn activate(cx: &mut App) {
     #[cfg(target_os = "linux")]
     if appimage::ready() {
@@ -261,6 +301,11 @@ pub(crate) fn activate(cx: &mut App) {
     #[cfg(windows)]
     if windows::ready() {
         windows::restart(None, cx);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if macos::ready() {
+        macos::restart(cx);
         return;
     }
     let _ = cx;
@@ -274,11 +319,6 @@ pub(crate) fn install_update() {
     macos::install();
 }
 
-/// The inline result line for About and Settings, if a check has run.
-pub(crate) fn status_line() -> Option<String> {
-    status::text(&status::get(), std::time::SystemTime::now())
-}
-
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     #[cfg(target_os = "linux")]
     if window.is_window_active() && appimage::take_announcement() {
@@ -289,6 +329,16 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     if window.is_window_active() {
         if let Some(id) = windows::take_announcement() {
             show_ready_notice(window, cx, move |cx| windows::restart(Some(&id), cx));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static ANNOUNCED: AtomicBool = AtomicBool::new(false);
+        if !macos::ready() {
+            ANNOUNCED.store(false, Ordering::Relaxed);
+        } else if window.is_window_active() && !ANNOUNCED.swap(true, Ordering::Relaxed) {
+            show_ready_notice(window, cx, macos::restart);
         }
     }
     #[cfg(all(target_os = "linux", feature = "updater-ui-harness"))]
@@ -307,7 +357,7 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
 /// «Update ready» with Restart (#683). It stays until the user closes it or
 /// restarts: a downloaded update must not pass unnoticed. Closed, it does not
 /// return for the same package until the next launch.
-#[cfg(any(windows, test, target_os = "linux"))]
+#[cfg(any(windows, test, target_os = "linux", target_os = "macos"))]
 fn show_ready_notice(
     window: &mut gpui::Window,
     cx: &mut App,
@@ -315,7 +365,7 @@ fn show_ready_notice(
 ) {
     use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
-    use gpui_component::{notification::Notification, Sizable, WindowExt};
+    use gpui_component::{Sizable, WindowExt, notification::Notification};
     use std::rc::Rc;
     struct UpdateNotice;
     let restart = Rc::new(restart);
@@ -331,7 +381,7 @@ fn show_ready_notice(
                     Button::new("restart-update")
                         .debug_selector(|| "restart-update".into())
                         .small()
-                        .label("Restart")
+                        .label("Restart now")
                         .on_click(move |_, _, cx| restart(cx))
                 }),
             cx,
@@ -399,3 +449,9 @@ mod tests {
         assert!(restarted.get(), "Restart runs the restart");
     }
 }
+
+#[cfg(test)]
+mod progress_ui_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use macos::protect_verified_install;

@@ -100,6 +100,8 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 <key>SUFeedURL</key><string>https://updates.befeast.com/okilum/appcast.xml</string>
 <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_ED_KEY</string>
 <key>SUEnableAutomaticChecks</key><true/>
+<!-- #1603: retain checks; every download/install uses the user-driver freshness hook. -->
+<key>SUAllowsAutomaticUpdates</key><false/>
 <key>SUScheduledCheckInterval</key><integer>3600</integer>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

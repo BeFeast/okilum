@@ -312,3 +312,27 @@ Signed AppImage build 6606 from source `0c58` has already been delivered to Dima
 no additional publication is needed for this revision. The parent owns subsequent
 publication and Stable GO after the required acceptance. This change performs no
 live publish and grants no new Stable GO.
+
+### Artifact transport failures and recovery limits (#1571)
+
+Artifact GETs retry HTTP 429/502/503/504 three times total with 1s/2s backoff.
+Exhaustion raises `APPIMAGE_INFRA_UNAVAILABLE` and fails acceptance. Other HTTP,
+identity, digest, provenance and signing failures remain failures.
+
+The disposable-key CI harness still downloads, hashes and unpacks the actual
+hosted archive, compares all four members with the same-job producer files, then
+reuses those verified extracted bytes for signing/install checks. It performs one
+archive GET per harness invocation; there is no redundant download to remove.
+Local files, checksums and provenance alone cannot replace hosted archive identity.
+No further egress reduction is claimed without an already verified archive.
+
+Attempts above 1 remain unsupported in both CI and publication. Producer-controlled
+logs, including fabricated transport tracebacks, cannot authorize recovery.
+Platform step/job conclusions authenticate outcomes, but do not independently
+identify an HTTP transport failure or its pre-signing request. A safe same-SHA
+recovery exception needs an independently trusted consumer to record typed transport
+failure evidence bound to repository/workflow/run/attempt/SHA/artifact/request and
+pre-key-import phase, with complete attempt histories. This workflow has no such
+boundary. A newly edited workflow also cannot retrofit it into an older SHA's run.
+Bounded in-attempt retry is supported; cross-attempt recovery is explicitly blocked
+rather than inferred from logs. No gate waiver or attempt relabeling is permitted.

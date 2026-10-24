@@ -192,6 +192,93 @@ fn picker_and_native_file_drop_attach_images_and_invalid_replacement_keeps_the_p
 }
 
 #[gpui::test]
+fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_it(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("screenshot.png");
+    std::fs::write(&image, png()).unwrap();
+    let video = dir.path().join("recording.MOV");
+    std::fs::write(&video, b"moov").unwrap();
+    let second = dir.path().join("second.webm");
+    std::fs::write(&second, b"webm").unwrap();
+    with_reader(cx, |visual| {
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let visual = &mut feedback;
+        assert!(visual.debug_bounds("feedback-video-hint").is_some());
+        let center = visual.debug_bounds("feedback-form").unwrap().center();
+        visual.simulate_event(FileDropEvent::Entered {
+            position: center,
+            paths: ExternalPaths([video.clone(), image.clone()].into_iter().collect()),
+        });
+        visual.simulate_event(FileDropEvent::Submit { position: center });
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            let report = view.report(cx).unwrap();
+            let attached = report.video.expect("dropped video is attached");
+            assert_eq!(attached.mime, "video/quicktime");
+            assert_eq!(attached.path, video);
+            assert!(
+                report.screenshot.is_some(),
+                "the PNG still goes to the screenshot"
+            );
+            assert!(view.video_error.is_none() && view.image_error.is_none());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("feedback-video").is_some());
+
+        // Two videos at once are refused and the attached one stays.
+        view.update(visual, |view, cx| {
+            view.attach_paths(&[second.clone(), video.clone()], cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_some());
+            assert_eq!(view.video.as_ref().unwrap().path, video);
+        });
+        // A rejected replacement keeps the previous video.
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.video_error.is_some());
+            assert_eq!(view.video.as_ref().unwrap().path, video);
+        });
+
+        // The next good drop clears both stale reasons (review: 1630).
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&video), cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_none() && view.video_error.is_none());
+        });
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&image), cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(
+                view.video_error.is_none(),
+                "screenshot drop clears the old video reason"
+            );
+            assert!(view.image.is_some() && view.video.is_some());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        let remove = visual.debug_bounds("feedback-remove-video").unwrap();
+        visual.simulate_click(remove.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            assert!(view.report(cx).unwrap().video.is_none());
+            assert!(view.video_error.is_none());
+        });
+    });
+}
+
+#[gpui::test]
 fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
     cx: &mut TestAppContext,
 ) {
@@ -461,5 +548,219 @@ fn one_click_sprint_send_reuses_the_non_modal_feedback_draft(cx: &mut TestAppCon
             assert!(matches!(view.state, SendState::Sent(_)))
         });
         reader.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+    });
+}
+
+// Use the geometry actually painted by the input, including its scroll offset.
+// Focus alone would miss a caret below the clipped viewport (#1574).
+fn feedback_caret_in_view(view: &Entity<FeedbackView>, visual: &mut VisualTestContext) {
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        let text = view.read(cx).text.read(cx);
+        assert!(
+            text.focus_handle(cx).is_focused(window),
+            "typing keeps focus"
+        );
+        assert_eq!(
+            text.painted_cursor(),
+            Some(text.cursor()),
+            "painted caret follows the edit"
+        );
+        let (mut caret, _) = text
+            .cursor_layout()
+            .expect("laid-out caret positive control");
+        caret.origin.y += text.scroll_offset().y;
+        let bounds = text.input_bounds();
+        assert!(
+            caret.top() >= bounds.top() && caret.bottom() <= bounds.bottom(),
+            "caret must be fully visible: {caret:?} in {bounds:?}, scroll {:?}",
+            text.scroll_offset()
+        );
+    });
+}
+
+#[gpui::test]
+fn feedback_textarea_grows_from_three_rows_then_scrolls_and_survives_remount(
+    cx: &mut TestAppContext,
+) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        feedback_caret_in_view(&view, &mut feedback);
+        let (initial, line_height) = view.read_with(&feedback, |view, cx| {
+            let text = view.text.read(cx);
+            (
+                text.input_bounds().size.height,
+                text.cursor_layout().unwrap().1,
+            )
+        });
+        assert!(
+            initial >= 3. * line_height - px(1.),
+            "three visible rows initially: {initial:?}"
+        );
+        feedback.simulate_input("one\ntwo\nthree\nfour\nfive\nsix");
+        feedback_caret_in_view(&view, &mut feedback);
+        let grown = view.read_with(&feedback, |view, cx| {
+            view.text.read(cx).input_bounds().size.height
+        });
+        assert!(
+            grown > initial + 2. * line_height,
+            "field grows with multiline text"
+        );
+        feedback.simulate_input(&"\nnext".repeat(20));
+        feedback_caret_in_view(&view, &mut feedback);
+        let capped = view.read_with(&feedback, |view, cx| {
+            let text = view.text.read(cx);
+            assert!(
+                text.scroll_offset().y < -line_height,
+                "positive control: long draft actually scrolls"
+            );
+            text.input_bounds().size.height
+        });
+        assert!(
+            capped <= 8. * line_height + px(1.),
+            "sensible eight-row cap: {capped:?}"
+        );
+        feedback.simulate_input(&"\nmore".repeat(10));
+        feedback_caret_in_view(&view, &mut feedback);
+        assert_eq!(
+            view.read_with(&feedback, |view, cx| view
+                .text
+                .read(cx)
+                .input_bounds()
+                .size
+                .height),
+            capped
+        );
+        // Reopening uses a fresh field and must preserve both its draft and sizing policy.
+        let draft = view.read_with(&feedback, |view, cx| view.text.read(cx).value());
+        feedback.simulate_keystrokes("secondary-w");
+        reader.run_until_parked();
+        reader.update(|window, _| window.activate_window());
+        reader.dispatch_action(SendFeedback);
+        reader.run_until_parked();
+        feedback = feedback_context(reader);
+        feedback_caret_in_view(&view, &mut feedback);
+        view.read_with(&feedback, |view, cx| {
+            let text = view.text.read(cx);
+            assert_eq!(text.value(), draft);
+            assert_eq!(text.input_bounds().size.height, capped);
+        });
+    });
+}
+
+#[gpui::test]
+fn feedback_backspace_to_empty_keeps_caret_and_next_line_visible(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        // Cover the tester's last-character deletion and a previously scrolled draft.
+        for source in [
+            "x".to_string(),
+            "writing a feedback\nsecond row of feedback".into(),
+            "line\n".repeat(12) + "last",
+        ] {
+            feedback.simulate_input(&source);
+            feedback_caret_in_view(&view, &mut feedback);
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(view.text.read(cx).value(), source)
+            });
+            for remaining in (0..source.len()).rev() {
+                feedback.simulate_keystrokes("backspace");
+                feedback_caret_in_view(&view, &mut feedback);
+                view.read_with(&feedback, |view, cx| {
+                    let text = view.text.read(cx);
+                    assert_eq!(text.value(), &source[..remaining]);
+                    assert_eq!(text.cursor(), remaining);
+                });
+            }
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(
+                    view.text.read(cx).scroll_offset().y,
+                    px(0.),
+                    "empty field returns to the first line"
+                );
+            });
+            feedback.simulate_keystrokes("enter");
+            feedback.simulate_input("visible next line");
+            feedback_caret_in_view(&view, &mut feedback);
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(view.text.read(cx).value(), "\nvisible next line")
+            });
+            feedback.simulate_keystrokes("secondary-a backspace");
+            feedback_caret_in_view(&view, &mut feedback);
+        }
+    });
+}
+
+#[test]
+fn sprint_default_text_is_a_placeholder_and_the_empty_send_fallback() {
+    // #1597: the Sprint line was the starting value with the caret before it.
+    assert_eq!(placeholder(true), "Sprint test report");
+    assert_ne!(placeholder(false), "Sprint test report");
+    assert_eq!(report_text("", true).as_deref(), Some("Sprint test report"));
+    assert_eq!(
+        report_text("  \n", true).as_deref(),
+        Some("Sprint test report")
+    );
+    assert_eq!(report_text("", false), None, "release Send stays disabled");
+    assert_eq!(report_text("ываы", true).as_deref(), Some("ываы"));
+    assert_eq!(report_text("Typed", false).as_deref(), Some("Typed"));
+}
+
+#[gpui::test]
+fn feedback_field_starts_empty_and_typing_is_the_whole_value(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "", "no prefilled text (#1597)");
+            assert_eq!(
+                view.text.read(cx).presentation().placeholder().as_ref(),
+                placeholder(sprint::enabled())
+            );
+        });
+        feedback.simulate_input("ываы");
+        feedback.run_until_parked();
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "ываы");
+            assert_eq!(view.report(cx).unwrap().text, "ываы");
+        });
+    });
+}
+
+#[gpui::test]
+fn owned_feedback_center_single_instance_escape_and_close_with_owner(cx: &mut TestAppContext) {
+    with_reader(cx, |owner| {
+        let (draft, mut feedback) = open_from_button(owner);
+        let handle = feedback.update(|window, cx| {
+            let owner_handle = reader_owned_windows::owner(window.window_handle(), cx);
+            let expected = owner_handle
+                .update(cx, |_, owner, _| owner.bounds().center())
+                .unwrap();
+            assert_eq!(window.bounds().center(), expected);
+            assert!(!window.is_minimizable());
+            window.window_handle()
+        });
+        feedback.update(show);
+        feedback.run_until_parked();
+        assert_eq!(feedback.update(|window, _| window.window_handle()), handle);
+        assert_eq!(feedback.update(|_, cx| cx.windows().len()), 2);
+        feedback.simulate_keystrokes("escape");
+        feedback.run_until_parked();
+        assert!(!draft.read_with(owner, |draft, _| draft.visible));
+        owner.update(|window, cx| {
+            assert_eq!(cx.windows().len(), 1);
+            show(window, cx);
+        });
+        owner.run_until_parked();
+        let reopened = owner.update(|window, cx| {
+            cx.global::<Drafts>().0[&window.window_handle().window_id()].window
+        });
+        owner.update(|window, _| window.remove_window());
+        owner.run_until_parked();
+        assert!(!owner.read(|cx| cx.windows().contains(&reopened.into())));
+        assert!(
+            !draft.read_with(owner, |draft, _| draft.visible),
+            "closed content releases visible state"
+        );
     });
 }

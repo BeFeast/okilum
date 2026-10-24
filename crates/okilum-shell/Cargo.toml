@@ -24,6 +24,8 @@ project-ui-harness = []
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 okilum-core = { workspace = true, default-features = false }
 okilum-t3 = { path = "../okilum-t3" }
+# Smart paste converters (#1611): HTML/RTF to Markdown, TSV, code fences, titles.
+okilum-paste = { path = "../okilum-paste" }
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-base = { path = "../../vendor/gpui-component/crates/base" }
@@ -32,15 +34,18 @@ gpui-kit-assets.workspace = true
 # The Windows HLSL profile uses debug assertions; icons must still be portable.
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 anyhow = "1"
+raw-window-handle = { version = "0.6", features = ["std"] }
 # Named in GPUI's Platform trait signatures, wrapped for #1121 and #1312; already locked through gpui.
 futures = "0.3"
 smallvec = "1"
 async-channel = "2"
 notify = "7"
 url = "2"
+# Names of downloaded pasted images (#1611); already locked through url.
+percent-encoding = "2"
 regex = "1"
 resvg = "=0.45.1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 # Inline PDF pages (#477). Exact pin: 0.x breaks often; an upgrade is a reviewed change.
 hayro = "=0.8.0"
 # Public release notes and explicit feedback use bounded HTTPS clients.
@@ -62,6 +67,8 @@ time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
 unicode-segmentation = "1.12.0"
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
+# Unpacks the bundled Lucide icon set (#1627); already in Cargo.lock via zip.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
 # Builds ZIP fixtures for the archive viewer tests (#1149); okilum-core already uses it.
@@ -91,16 +98,15 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
 wry = { package = "lb-wry", version = "=0.53.3" }
-raw-window-handle = { version = "0.6", features = ["std"] }
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSTextList"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue"] }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 dirs = "6"
 velopack = "=1.2.161"
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading"] }
 
 [build-dependencies]
 embed-resource = "=3.0.11"

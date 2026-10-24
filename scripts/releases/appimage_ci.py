@@ -41,18 +41,22 @@ def rejected(action, exceptions=(ValueError, subprocess.CalledProcessError)):
     raise AssertionError('Negative control was accepted')
 
 
-def handoff(root):
+def handoff(root, directory):
     artifact = publisher.artifact
     source = os.environ['GITHUB_SHA']
     api = artifact.transport.GitHub(os.environ['GH_TOKEN'])
     run = api.request('actions/runs/' + os.environ['GITHUB_RUN_ID'])
     assert run['id'] == int(os.environ['GITHUB_RUN_ID'])
     assert run['run_number'] == int(os.environ['GITHUB_RUN_NUMBER'])
-    assert run['run_attempt'] == int(os.environ['GITHUB_RUN_ATTEMPT']) == 1
+    # Platform step outcomes cannot distinguish transport from signing failures.
+    # Producer log text is never authority for relaxing this boundary.
+    if run.get('run_attempt') != 1 or os.environ['GITHUB_RUN_ATTEMPT'] != '1':
+        raise ValueError('CI recovery beyond original attempt is unsupported')
     item = api.request('actions/artifacts/' + os.environ['APPIMAGE_ARTIFACT_ID'])
     artifact.artifact_identity(item, run, source)
     data = artifact.download(os.environ['GH_TOKEN'], item['id'])
-    assert item['digest'] == 'sha256:' + publisher.digest(data)
+    if item['digest'] != 'sha256:' + publisher.digest(data):
+        raise ValueError('Hosted archive digest mismatch')
     # The workflow cannot be completed while this test is running. Only completion
     # statuses/job gates are fixtures. Source/run/attempt/artifact/digest are real.
     # This receipt stays in temporary test storage and MUST NOT authorize publication.
@@ -68,6 +72,11 @@ def handoff(root):
     payload = root / 'payload'
     receipt = artifact.unpack(stage, payload, source)
     publisher.validate(payload, source, receipt)  # Before importing any signing key.
+    # Reuse only bytes from the actual digest-verified hosted archive. Locally
+    # self-consistent producer files cannot substitute for that archive identity.
+    for name in [artifact.IMAGE, 'provenance.json', 'SHA256SUMS', 'bundled-libraries.txt']:
+        if (payload / name).read_bytes() != (directory / name).read_bytes():
+            raise ValueError('Hosted archive differs from same-job producer files')
     for field, value in [('head_sha', '0' * 40), ('run_attempt', 2)]:
         broken = copy.deepcopy(receipt); broken['run'][field] = value
         (stage / 'acceptance.json').write_text(json.dumps(broken))
@@ -85,6 +94,7 @@ def handoff(root):
     rejected(lambda: artifact.unpack(stage, root / 'bad', '0' * 40))
     (stage / 'artifact.zip').write_bytes(data + b'tampered')
     rejected(lambda: artifact.unpack(stage, root / 'bad', source))
+    (stage / 'artifact.zip').write_bytes(data)
     print(f"APPIMAGE_HANDOFF_PASS: source={source} run={run['id']} attempt=1 "
           f"artifact={item['id']} digest={item['digest']}; completion statuses are test fixtures")
     return payload, source, receipt
@@ -93,10 +103,7 @@ def handoff(root):
 def main(directory):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        payload, source, receipt = handoff(root)
-        # The downloaded archive must preserve the actual producer bytes.
-        for name in [publisher.artifact.IMAGE, 'provenance.json', 'SHA256SUMS', 'bundled-libraries.txt']:
-            assert (payload / name).read_bytes() == (directory / name).read_bytes()
+        payload, source, receipt = handoff(root, directory)
         home = root / 'key'; home.mkdir(mode=0o700)
         verifier = root / 'verifier'; verifier.mkdir(mode=0o700)
         subprocess.run(['gpg', '--homedir', str(home), '--batch', '--passphrase', '',

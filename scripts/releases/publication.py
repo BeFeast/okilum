@@ -18,6 +18,8 @@ from release import Forgejo, R2
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prepare
 import release_notes
+from coalesce import MACOS_BETA_UNTIL
+from datetime import datetime
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
@@ -27,8 +29,47 @@ ARTIFACTS = {'macos': {'macos-publication': 'macos'},
              'windows': {'okilum-windows-velopack': 'windows', 'windows-portable': 'portable'}}
 
 
-def eligible(run, platform, head):
-    if (run['workflow_id'] != WORKFLOWS[platform] or run['prettyref'] != 'main'
+def preview_inputs(run):
+    payload = run.get('event_payload') or {}
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    return payload.get('inputs', {})
+
+
+def validate_preview(client, platform, run):
+    """The only exception to trusted-main publication: an exact Mac PR preview.
+
+    Rechecked on the protected publisher, never accepted from artifact metadata.
+    A notarization begun inside the approved window may finish after its expiry.
+    """
+    inputs = preview_inputs(run)
+    number, source = inputs.get('preview_pr', ''), inputs.get('preview_head', '')
+    if (platform != 'macos' or run['workflow_id'] != WORKFLOWS['macos']
+            or run['trigger_event'] != 'workflow_dispatch' or run['is_fork_pull_request']
+            or not re.fullmatch('[1-9][0-9]*', str(number))
+            or not re.fullmatch('[0-9a-f]{40}', source)
+            or source != run['commit_sha'] or run['prettyref'] == 'main'
+            or inputs.get('beta_tick') or inputs.get('source')):
+        raise ValueError('Publication requires the exact trusted macOS PR-preview path')
+    created = datetime.fromisoformat(run['created'].replace('Z', '+00:00'))
+    if created >= MACOS_BETA_UNTIL:
+        raise ValueError('Mac PR-preview run was created after the approved window')
+    pr = client.call('GET', '/pulls/' + str(number))
+    if (pr['number'] != int(number) or pr['state'] != 'open' or pr['merged'] or pr['draft']
+            or (pr['head']['repo'] or {}).get('full_name') != 'BeFeast/okilum'
+            or pr['base']['repo']['full_name'] != 'BeFeast/okilum' or pr['base']['ref'] != 'main'
+            or pr['head']['sha'] != source or pr['head']['ref'] != run['prettyref']):
+        raise ValueError('Mac PR-preview source is closed, draft, untrusted or superseded')
+    status = client.call('GET', '/commits/' + source + '/status')
+    macos = [s for s in status['statuses'] if s['context'] == 'ci / macos (pull_request)']
+    if status['sha'] != source or len(macos) != 1 or macos[0]['status'] != 'success':
+        raise ValueError('Mac PR-preview source has no exact-head macOS success')
+    return pr
+
+
+def eligible(run, platform, head, preview=None):
+    if (run['workflow_id'] != WORKFLOWS[platform]
+            or (run['prettyref'] != 'main' and not (platform == 'macos' and preview))
             or run['is_fork_pull_request'] or run['trigger_event'] not in ['push', 'workflow_dispatch', 'schedule']):
         raise ValueError('Publication requires a trusted main release build')
     return run['status'] == 'success' and (snapshot_run(run, platform) or run['commit_sha'] == head)
@@ -118,7 +159,14 @@ def publish(client, platform, run_id):
                 or (not snapshot_run(run, platform) and run['commit_sha'] != head)):
             print('Cancelled, failed or superseded build: nothing published')
             return
-        if eligible(run, platform, head):
+        is_preview = bool(preview_inputs(run).get('preview_pr'))
+        if is_preview and run['status'] != 'success':
+            # Publication is dispatched just before the source run finishes.
+            # PR/head checks are needed at publication, not on every wait tick.
+            time.sleep(5)
+            continue
+        preview = validate_preview(client, platform, run) if is_preview else None
+        if eligible(run, platform, head, preview):
             break
         time.sleep(5)
     else:
@@ -153,11 +201,14 @@ def publish(client, platform, run_id):
                 and not snapshot_run(run, platform)):
             print('Superseded during artifact transfer: nothing published')
             return
+        if preview:
+            preview = validate_preview(client, platform, run)
         env = {**os.environ, 'GITHUB_SHA': run['commit_sha'],
                'GITHUB_RUN_NUMBER': str(run['index_in_repo'])}
         # Capture the same-platform beta predecessor before ANY publisher writes.
         # Sidecars never alter descriptor, artifact, signing or promotion contracts.
-        notes = release_notes.prepare(R2(), client, platform, build, source)
+        notes = (release_notes.prepare_preview(R2(), preview, build, source) if preview
+                 else release_notes.prepare(R2(), client, platform, build, source))
         if platform == 'macos':
             notes_file = root / 'notes.json'
             notes_file.write_text(json.dumps(notes))
@@ -177,7 +228,8 @@ def publish(client, platform, run_id):
         print(f'Published {platform} build {build} from completed run {run_id}, source {source}'
               + (' (archive only)' if archive_only else ''))
     # The last missing build of a requested promotion (#1040) starts it.
-    prepare.complete(R2(), client, source)
+    if not preview:
+        prepare.complete(R2(), client, source)
 
 
 if __name__ == '__main__':

@@ -89,6 +89,12 @@ def set_description(item, notes, build, source, channel):
     if (notes['build'] != build or notes['source'] != source
             or notes['platform'] != 'macos' or notes['channel'] != channel):
         raise ValueError('Release notes do not belong to this appcast item')
+    if 'preview' in notes:
+        number = notes['preview']['pr']
+        if (channel != 'beta' or type(number) is not int or number < 1
+                or len(notes['items']) != 1 or notes['items'][0]['pr'] != number):
+            raise ValueError('Preview appcast item requires one Mac beta PR note')
+        item.find('title').text = f'PR #{number} · {source[:8]}'
     description = item.find('description')
     if description is None:
         description = ET.SubElement(item, 'description')

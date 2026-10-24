@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import re
+import time
+import urllib.error
 import urllib.request
 import io
 import zipfile
@@ -57,12 +59,31 @@ class DownloadRedirect(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
+class ArtifactTransportUnavailable(RuntimeError):
+    """Infrastructure unavailable; never an accepted artifact or gate waiver."""
+
+
 def download(token, artifact_id):
     request = urllib.request.Request(
         f'https://api.github.com/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip',
         headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'})
-    with urllib.request.build_opener(DownloadRedirect()).open(request, timeout=300) as response:
-        return response.read()
+    # Retry only transient HTTP transport responses, never identity, digest,
+    # authentication or acceptance failures. Restart the whole transfer each time.
+    opener = urllib.request.build_opener(DownloadRedirect())
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=300) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            code = error.code
+            error.close()
+            if code not in (429, 502, 503, 504):
+                raise
+            if attempt == 2:
+                raise ArtifactTransportUnavailable(
+                    f'APPIMAGE_INFRA_UNAVAILABLE: artifact={artifact_id} HTTP={code}; '
+                    'three transport attempts exhausted; acceptance remains failed') from error
+            time.sleep(2 ** attempt)
 
 
 def stage(api, source, directory, fetch):

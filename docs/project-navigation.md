@@ -77,3 +77,33 @@ The bridge uses public AppKit APIs and lives outside GPUI core and the vendored
 webview. Hosted selector tests cover native edit command mapping. Oleg's Mac beta
 acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
 T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
+
+### Native editing follow-up (#1510, #1551)
+
+The focused Manager webview owns Cmd+C/V/X/A/Z and Cmd+Shift+Z. Commands resolve
+an explicit WebKit responder, then use the guarded page helper only if native
+handling produced no edit. Non-Latin keyboard layouts use physical editing-key
+positions while Latin mappings and modifier guards remain intact. Each return
+from GPUI refreshes page context; navigation, focus changes and intervening input
+cancel queued edits. Copy/cut excludes password and CSS-masked secure fields.
+
+The page helper uses document/target identities and revision guards. Clipboard
+content and key events are not logged. `page_keys.js` is canonical; regenerate its
+Objective-C string with `python3 scripts/dev/generate-manager-page-keys.py`.
+Required macOS CI runs pure page-guard and native dispatch unit regressions.
+The real-NSApp fixture remains ignored/manual-only (`OKILUM_NATIVE_GUI=1`) because
+hosted runners cannot establish an active/key application.
+
+Native WebKit geometry comes from the actual Wry element. GPUI overlay bounds
+are frame-scoped; the webview shrinks to uncovered space and restores when clear.
+No GPUI core patch is used.
+
+Oleg approved T3 visibility and Cmd+C/V in Sprint cfceebcc. This acceptance does
+not establish image paste, IME, undo/redo, or all overlay scenarios. Sprint runner,
+signing, reporting and self-check tooling are separate from this product change.
+
+Oleg also approved attached-image removal in Sprint c1dc8dc6. Its init listener
+preserves focus in an already active form while a button is pressed, after page
+handlers run, so WebKit does not blur the composer and unmount the image X before
+mouseup. Disabled/draggable buttons, other forms and cancelled events retain
+normal behavior. Pointer diagnostics are not included.
