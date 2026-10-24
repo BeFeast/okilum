@@ -2205,6 +2205,43 @@ mod tests {
         });
     }
 
+    /// Full note width is one app-wide toggle kept across relaunch; the note
+    /// column follows it, and the normal-width slider never stores the
+    /// zoomed font size as the base size.
+    #[gpui::test]
+    fn full_note_width_survives_relaunch_and_widens_the_note_column(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "normal width is the default");
+            assert_eq!(note_column_width(cx), READER_MAX_WIDTH);
+            set_text_zoom(1.5, cx);
+            let base = base_font_size(cx);
+            set_reading_width(900., cx);
+            assert_eq!(base_font_size(cx), base, "slider keeps the unzoomed font");
+            assert_eq!(note_column_width(cx), 900.);
+            set_reading_width(100., cx);
+            assert_eq!(reading_width(cx), 560., "normal width is at least 560 px");
+            set_reading_width(5000., cx);
+            assert_eq!(reading_width(cx), 1200., "normal width is at most 1200 px");
+            set_reading_width(900., cx);
+            set_full_note_width(true, cx);
+            assert!(full_note_width(cx));
+            assert!(note_column_width(cx) > 10_000., "full width spans the pane");
+            flush(cx);
+            install(&directory, cx);
+            assert!(full_note_width(cx), "full note width survives relaunch");
+            assert_eq!(reading_width(cx), 900.);
+            assert_eq!(base_font_size(cx), base);
+            set_full_note_width(false, cx);
+            assert_eq!(note_column_width(cx), 900.);
+            flush(cx);
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "turning it off is remembered too");
+        });
+    }
+
     #[gpui::test]
     fn removed_vault_does_not_block_other_preferences(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
