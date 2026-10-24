@@ -259,6 +259,13 @@ impl Render for FeedbackWindow {
             .child(div().flex_1().min_h_0().p_5().child(self.view.clone()))
     }
 }
+/// The video slot's hint; the size is the client cap (pomoi's limit).
+fn video_hint() -> String {
+    format!(
+        "Video: MP4, MOV or WebM up to {}. Drop it here or use Attach video…",
+        model::human_size(model::MAX_VIDEO)
+    )
+}
 fn screenshot_hint() -> &'static str {
     if cfg!(target_os = "macos") {
         "Screenshot a window: ⇧⌘4, then Space. Paste or drop the image here."
@@ -768,10 +775,13 @@ impl Render for FeedbackView {
                     .text_color(p.text_muted)
                     .child(screenshot_hint()),
             )
-            .child(div().text_sm().text_color(p.text_muted).child(format!(
-                "Video: MP4, MOV or WebM up to {}. Drop it here or use Attach video…",
-                model::human_size(model::MAX_VIDEO)
-            )));
+            .child(
+                div()
+                    .debug_selector(|| "feedback-video-hint".into())
+                    .text_sm()
+                    .text_color(p.text_muted)
+                    .child(video_hint()),
+            );
         if let Some(image) = &self.image {
             body = body.child(
                 div()

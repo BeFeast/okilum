@@ -11,9 +11,10 @@ use std::{
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
 const MAX_LOG: usize = 256 * 1024;
-/// Client-side cap for the optional "video" part; mirrors the server's
-/// FEEDBACK_VIDEO_MAX_BYTES default. The server's 413 text wins when stricter.
-pub(super) const MAX_VIDEO: u64 = 100 * 1024 * 1024;
+/// Client-side cap for the optional "video" part. Matches pomoi's
+/// FEEDBACK_VIDEO_MAX_BYTES (90,000,000 bytes, below Cloudflare Free's 100 MB
+/// request limit). The server's 413 text wins when stricter.
+pub(super) const MAX_VIDEO: u64 = 90_000_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Metadata {
@@ -89,7 +90,7 @@ pub(super) struct Report {
 }
 
 /// A user-chosen screen recording. Only the path is kept; the file is
-/// streamed from disk on Send, so a 100 MB clip never sits in memory.
+/// streamed from disk on Send, so a 90 MB clip never sits in memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Video {
     pub path: std::path::PathBuf,
@@ -102,11 +103,23 @@ impl Video {
         human_size(self.size)
     }
 }
+/// Decimal units, like the server limit: 90,000,000 bytes is "90 MB".
 pub(super) fn human_size(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024. * 1024.))
+    if bytes >= 1_000_000 {
+        let label = format!("{:.1}", bytes as f64 / 1_000_000.);
+        format!("{} MB", label.strip_suffix(".0").unwrap_or(&label))
     } else {
-        format!("{} KB", bytes.div_ceil(1024))
+        format!("{} KB", bytes.div_ceil(1000))
+    }
+}
+/// Says how far over the limit a video is, in bytes when the rounded sizes
+/// would read the same ("90 MB; the limit is 90 MB").
+fn over_limit(bytes: u64) -> String {
+    let (size, limit) = (human_size(bytes), human_size(MAX_VIDEO));
+    if size == limit {
+        format!("{bytes} bytes; the limit is {MAX_VIDEO} bytes")
+    } else {
+        format!("{size}; the limit is {limit}")
     }
 }
 /// MIME type for a supported video extension (mp4/m4v, mov, webm).
@@ -126,9 +139,8 @@ pub(super) fn video_file(path: &Path) -> Result<Video> {
     ensure!(metadata.len() > 0, "The video file is empty.");
     ensure!(
         metadata.len() <= MAX_VIDEO,
-        "Video is {}; the limit is {}. Trim or compress it and attach again.",
-        human_size(metadata.len()),
-        human_size(MAX_VIDEO)
+        "Video is {}. Trim or compress it and attach again.",
+        over_limit(metadata.len())
     );
     let name = path
         .file_name()
