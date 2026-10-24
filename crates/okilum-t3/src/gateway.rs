@@ -105,6 +105,16 @@ pub trait ManagerGateway: Send + Sync {
         ))
     }
 
+    /// Registers `workspace_root` (a directory on the T3 host) as a new T3
+    /// project named `title` (#1475): T3's own `project.create`. The root
+    /// must exist; T3 refuses a root it already has. Returns the project.
+    fn create_project(&self, title: &str, workspace_root: &str) -> GatewayResult<Project> {
+        let _ = (title, workspace_root);
+        Err(GatewayError::Protocol(
+            "This T3 connection cannot create projects".into(),
+        ))
+    }
+
     /// All threads of a project, subagents included.
     fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>>;
 

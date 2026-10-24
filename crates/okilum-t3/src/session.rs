@@ -354,6 +354,34 @@ impl ManagerGateway for SessionGateway {
         Ok(project)
     }
 
+    /// T3's web app's own «Add project»: `project.create` with a new
+    /// project id. T3 answers with the project it registered.
+    fn create_project(&self, title: &str, workspace_root: &str) -> GatewayResult<Project> {
+        let project_id = uuid::Uuid::new_v4().to_string();
+        let command = json!({
+            "type": "project.create",
+            "commandId": uuid::Uuid::new_v4().to_string(),
+            "projectId": project_id,
+            "title": title,
+            "workspaceRoot": workspace_root,
+        });
+        let url = self.env.endpoint("/api/projects/mutate");
+        let value = self.send(|_| {
+            self.http
+                .post(url.clone())
+                .header(CONTENT_TYPE, "application/json")
+                .body(command.to_string())
+        })?;
+        let project: Project = serde_json::from_value(value)
+            .map_err(|error| GatewayError::Protocol(format!("/api/projects/mutate: {error}")))?;
+        if project.id != project_id {
+            return Err(GatewayError::Protocol(
+                "T3 answered the new project with another project".into(),
+            ));
+        }
+        Ok(project)
+    }
+
     fn list_threads(&self, _: &str) -> GatewayResult<Vec<ThreadSummary>> {
         unsupported("list threads")
     }
@@ -449,6 +477,13 @@ impl ManagerGateway for PairedGateway {
         self.projects_call(
             |s| s.set_project_icon(project_id, icon),
             |m| m.set_project_icon(project_id, icon),
+        )
+    }
+
+    fn create_project(&self, title: &str, workspace_root: &str) -> GatewayResult<Project> {
+        self.projects_call(
+            |s| s.create_project(title, workspace_root),
+            |m| m.create_project(title, workspace_root),
         )
     }
 

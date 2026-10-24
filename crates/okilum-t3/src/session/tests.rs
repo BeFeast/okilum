@@ -456,3 +456,71 @@ fn without_a_paired_session_an_mcp_token_still_serves_icons() {
     ));
     assert_eq!(connected.icons.load(Ordering::SeqCst), 1);
 }
+
+/// #1475: «Create the project in T3» is T3's web app's own `project.create`
+/// over the paired session; T3's refusal reaches the user in T3's words.
+#[test]
+fn a_new_project_is_t3s_project_create_with_the_panels_session() {
+    let server = FakeServer::start(|request| {
+        let signed_in = request
+            .header("cookie")
+            .is_some_and(|cookie| cookie.split("; ").any(|part| part == GOOD));
+        match (request.method.as_str(), request.path()) {
+            ("GET", "/api/auth/session") => {
+                Response::json(200, json!({ "authenticated": signed_in }))
+            }
+            ("POST", "/api/projects/mutate") if signed_in => {
+                let command = request.json();
+                if command["workspaceRoot"] == "/srv/missing" {
+                    return Response::json(
+                        400,
+                        json!({ "_tag": "ProjectMutationError", "code": "workspace_root_not_found",
+                                "message": "Workspace root /srv/missing does not exist" }),
+                    );
+                }
+                let mut project = t3_project("x", Value::Null, false);
+                project["id"] = command["projectId"].clone();
+                project["title"] = command["title"].clone();
+                project["workspaceRoot"] = command["workspaceRoot"].clone();
+                Response::json(200, project)
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    });
+    let t3 = gateway(&server, Store::holding(&[("t3_session_abc", "live")]));
+    let project = t3.create_project("HomeLab", "/srv/vault/HomeLab").unwrap();
+    assert_eq!(project.title, "HomeLab");
+    assert_eq!(project.workspace_root, "/srv/vault/HomeLab");
+
+    let requests = server.requests();
+    let [create] = mutations(&requests)[..] else {
+        panic!("one project.create: {requests:?}")
+    };
+    assert_eq!(create.header("cookie"), Some(GOOD));
+    let command = create.json();
+    assert_eq!(command["type"], "project.create");
+    assert_eq!(command["title"], "HomeLab");
+    assert_eq!(command["workspaceRoot"], "/srv/vault/HomeLab");
+    assert_eq!(command["projectId"], project.id.as_str());
+    assert!(command["projectId"]
+        .as_str()
+        .is_some_and(|id| id.len() == 36));
+    assert!(command["commandId"]
+        .as_str()
+        .is_some_and(|id| id.len() == 36));
+    assert_ne!(command["projectId"], command["commandId"]);
+    assert_eq!(
+        command.as_object().unwrap().len(),
+        5,
+        "T3's create payload, nothing more: {command}"
+    );
+
+    let error = t3.create_project("Gone", "/srv/missing").unwrap_err();
+    assert_eq!(
+        error,
+        GatewayError::Tool {
+            code: "workspace_root_not_found".into(),
+            message: "Workspace root /srv/missing does not exist".into()
+        }
+    );
+}

@@ -84,6 +84,7 @@ mod reader_open_windows;
 mod reader_owned_windows;
 mod reader_pdf;
 mod reader_plain_text;
+mod reader_project_create;
 mod reader_project_navigation;
 mod reader_properties;
 mod reader_reading_controls;
@@ -4629,12 +4630,35 @@ impl Reader {
                             }
                             let folder = row.path.clone();
                             d.context_menu(move |menu, window, cx| {
+                                // A folder that is not a project yet can
+                                // become one (#1475).
+                                let make_project = entity
+                                    .upgrade()
+                                    .is_some_and(|view| view.read(cx).can_make_project(&folder));
                                 let menu = if let Some(view) = entity.upgrade() {
                                     reader_item_menu(menu, &view, folder.clone(), window, cx)
                                         .separator()
                                 } else {
                                     menu
                                 };
+                                let menu = menu.when(make_project, |menu| {
+                                    let entity = entity.clone();
+                                    let act = act.clone();
+                                    let folder = folder.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(reader_project_create::MAKE_PROJECT)
+                                            .on_click(move |_, window, cx| {
+                                                act(&entity, window, cx, &|this, window, cx| {
+                                                    this.open_new_project_dialog(
+                                                        Some(folder.clone()),
+                                                        window,
+                                                        cx,
+                                                    )
+                                                })
+                                            }),
+                                    )
+                                    .separator()
+                                });
                                 let subtree = |label: &'static str, expand: bool| {
                                     let entity = entity.clone();
                                     let act = act.clone();

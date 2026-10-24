@@ -111,6 +111,10 @@ pub struct LeaveProject;
 /// pointer (#1627).
 #[derive(Clone, Debug)]
 pub struct ProjectMenu(pub Project);
+/// «+ New project…» at the foot of the list (#1475): the host asks for the
+/// folder, starting with the one selected in the tree.
+#[derive(Clone, Debug)]
+pub struct NewProject;
 
 #[derive(Clone)]
 enum Item {
@@ -136,6 +140,7 @@ impl EventEmitter<Selected> for ProjectsPicker {}
 impl EventEmitter<RecentsChanged> for ProjectsPicker {}
 impl EventEmitter<LeaveProject> for ProjectsPicker {}
 impl EventEmitter<ProjectMenu> for ProjectsPicker {}
+impl EventEmitter<NewProject> for ProjectsPicker {}
 impl EventEmitter<DismissEvent> for ProjectsPicker {}
 impl Focusable for ProjectsPicker {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -603,9 +608,10 @@ impl Render for ProjectsPicker {
                     }
                 })),
         );
-        if popover && self.active.is_some() {
-            // The switcher's menu ends with Leave project; the title bar has
-            // no separate button for it (#1519).
+        if own_controls {
+            // The list ends with «+ New project…» (#1475); the switcher's
+            // menu also with Leave project (#1519).
+            let leave = popover && self.active.is_some();
             content = content.child(
                 h_flex()
                     .w_full()
@@ -613,21 +619,34 @@ impl Render for ProjectsPicker {
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child(
-                        Button::new("projects-picker-leave")
+                        Button::new("projects-picker-new")
                             .ghost()
                             .small()
-                            .label("Leave project")
-                            .debug_selector(|| "projects-picker-leave".into())
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(LeaveProject))),
+                            .icon(IconName::Plus)
+                            .label("New project…")
+                            .debug_selector(|| "projects-picker-new".into())
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(NewProject))),
                     )
+                    .when(leave, |d| {
+                        d.child(
+                            Button::new("projects-picker-leave")
+                                .ghost()
+                                .small()
+                                .label("Leave project")
+                                .debug_selector(|| "projects-picker-leave".into())
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(LeaveProject))),
+                        )
+                    })
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .px_2()
-                            .text_size(px(12.))
-                            .text_color(muted)
-                            .child("↵ Open"),
-                    ),
+                    .when(popover, |d| {
+                        d.child(
+                            div()
+                                .px_2()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .child("↵ Open"),
+                        )
+                    }),
             );
         }
         content

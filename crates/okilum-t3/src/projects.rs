@@ -1,5 +1,6 @@
 //! Vault-wide project discovery. Manifests and role registries remain canonical;
 //! discovery never creates a thread or writes to the vault.
+pub mod create;
 pub mod icon;
 pub mod picker;
 
