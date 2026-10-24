@@ -80,7 +80,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             '-F', FRAMEWORK, '-framework', 'Sparkle', '-framework', 'AppKit',
             '-Wl,-rpath,@executable_path/../Frameworks',
             ROOT / 'scripts/ci/sparkle-freshness/host.m', guard, '-liconv', '-o', executable)
-        for scenario in ('discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        for scenario in ('termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
@@ -115,6 +115,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'SUEnableAutomaticChecks': True, 'SUAllowsAutomaticUpdates': False,
                 'SUVerifyUpdateBeforeExtraction': True, 'SURequireSignedFeed': True,
                 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
+                'TSTerminationRetry': 'delay' if scenario == 'termination-delayed-retry' else 'refuse' if scenario.startswith('termination-') else '',
+                'TSRetryGuardRefuse': scenario == 'termination-retry-guard-refusal',
                 'TSCancel': scenario.removeprefix('cancel-') if scenario.startswith('cancel-') else '',
                 'TSTrace': str(trace), 'TSReceipt': str(receipt),
                 'TSPendingFeed': str(case / 'pending.xml'), 'TSFeedPath': str(case / 'appcast.xml'),
@@ -201,6 +203,17 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 process = subprocess.Popen([str(app / 'Contents/MacOS/Freshness')], stdout=log_file, stderr=log_file, env=environment)
                 try:
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
+                    if scenario == 'termination-retry-guard-refusal':
+                        wait_for(lambda: 'retry editor guard refused' in trace.read_text(), process, output)
+                        time.sleep(3)
+                        assert process.poll() is None, trace.read_text()
+                        assert not receipt.exists()
+                        assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
+                        assert trace.read_text().count('termination requested') == 1, trace.read_text()
+                        assert 'About retry enabled after original delegate decision' in trace.read_text()
+                        assert (case / 'protected-editor').read_text() == 'edited after verification'
+                        print('PASS retry editor refusal preserves app and About action', flush=True)
+                        continue
                     if scenario == 'discovery':
                         wait_for(lambda: process.poll() is not None, process, output)
                         assert process.returncode == 0, trace.read_text()
@@ -251,7 +264,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         installed = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion']
                         assert installed == expected, (installed, trace.read_text())
                         assert 'final editor guard boundary' in trace.read_text()
-                        assert (case / 'protected-editor').read_text() == 'edited after verification', trace.read_text()
+                        expected_revision = 'edited after retry verification' if scenario.startswith('termination-') else 'edited after verification'
+                        assert (case / 'protected-editor').read_text() == expected_revision, trace.read_text()
                         assert trace.read_text().index('editor changed after verification') < trace.read_text().index('protect current editor after verification'), trace.read_text()
                         if scenario != 'quit-during-download':
                             assert f'verified-ready {expected}' in trace.read_text()
@@ -262,6 +276,18 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                             assert any(f'GET /{expected}.zip' in r for r in requests), requests
                         if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged', 'restart-newest', 'quit-newest'):
                             assert 'verified-ready 2' not in trace.read_text(), trace.read_text()
+                    if scenario.startswith('termination-'):
+                        callbacks = trace.read_text()
+                        decision = ('original delegate resolved delayed termination NO' if scenario == 'termination-delayed-retry'
+                                    else 'original delegate refused first termination')
+                        assert callbacks.index(decision) < callbacks.index('About retry enabled after original delegate decision')
+                        assert callbacks.index('deliberate About retry requested') < callbacks.index('retry editor guard committed')
+                        assert callbacks.index('retry editor guard committed') < callbacks.index('original delegate accepted deliberate retry')
+                        assert callbacks.count('termination requested') == 2, callbacks
+                        assert callbacks.count('final editor guard boundary') == 2, callbacks
+                        assert callbacks.count('protect current editor after verification') == 2, callbacks
+                        assert callbacks.count('persist UI after editor protection') == 2, callbacks
+                        assert sum('GET /appcast.xml' in r for r in requests) >= 5, requests
                     if scenario in ('guard-refusal', 'quit-guard-refusal'):
                         assert 'editor changed after verification' in trace.read_text()
                         assert 'protect current editor after verification' in trace.read_text()

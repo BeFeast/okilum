@@ -12,7 +12,14 @@ static void Trace(NSString *event) {
     [file writeData:[[event stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding]];
     [file closeFile];
 }
+extern void fixture_record_report(int kind);
+extern bool fixture_about_retry_enabled(void);
+static BOOL TSFirstTerminationResolved;
+static BOOL TSRetryClicked;
 static void Report(int kind, const char *text) {
+    fixture_record_report(kind);
+    if (kind == 7 && (TSDriver.retryTermination || okilum_updater_ready()
+        || okilum_updater_guard_requested() || TSTermination.verifiedQuit)) exit(50);
     Trace([NSString stringWithFormat:@"report %d %s", kind, text ?: ""]);
     if (kind == 7) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         Trace(@"ordinary quit after cancellation");
@@ -22,7 +29,8 @@ static void Report(int kind, const char *text) {
 extern bool fixture_finish_verified_install(void);
 bool fixture_protect_current_editor(void) {
     Trace(@"protect current editor after verification");
-    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]) return false;
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]
+        || (TSRetryClicked && [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRetryGuardRefuse"] boolValue])) return false;
     NSString *editor = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSEditor"];
     NSData *current = [NSData dataWithContentsOfFile:editor];
     NSString *protected = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSProtectedEditor"];
@@ -181,6 +189,7 @@ static void FinishComparison(void) {
 }
 @end
 @interface TestApplication : NSObject <NSApplicationDelegate>
+@property(nonatomic) NSUInteger terminationAttempts;
 @end
 @implementation TestApplication
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -189,6 +198,30 @@ static void FinishComparison(void) {
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     Trace(@"termination requested");
+    self.terminationAttempts++;
+    NSString *mode = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSTerminationRetry"];
+    if (mode.length && self.terminationAttempts == 1) {
+        if ([mode isEqualToString:@"delay"]) {
+            Trace(@"original delegate delayed first termination");
+            NSTimer *decision = [NSTimer timerWithTimeInterval:0.2 repeats:NO block:^(NSTimer *timer) {
+                Trace(@"original delegate resolved delayed termination NO");
+                TSFirstTerminationResolved = YES;
+                [sender replyToApplicationShouldTerminate:NO];
+            }];
+            // AppKit owns the deferred decision. Its modal run loop must be
+            // able to deliver it without needing the blocked main queue.
+            [NSRunLoop.mainRunLoop addTimer:decision forMode:NSDefaultRunLoopMode];
+            [NSRunLoop.mainRunLoop addTimer:decision forMode:NSModalPanelRunLoopMode];
+            return NSTerminateLater;
+        }
+        Trace(@"original delegate refused first termination");
+        TSFirstTerminationResolved = YES;
+        return NSTerminateCancel;
+    }
+    if (mode.length) {
+        if (!TSRetryClicked || !TSFirstTerminationResolved) exit(51);
+        Trace(@"original delegate accepted deliberate retry");
+    }
     return NSTerminateNow;
 }
 @end
@@ -235,15 +268,31 @@ int main(void) {
         else if ([[bundle objectForInfoDictionaryKey:@"TSBackgroundInstall"] boolValue]) [TSUpdater checkForUpdatesInBackground];
         else [TSUpdater checkForUpdates];
         [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *timer) {
+            if (TSFirstTerminationResolved && !TSRetryClicked && TSDriver.retryTermination) {
+                if (!fixture_about_retry_enabled() || !okilum_updater_ready()) exit(52);
+                Trace(@"About retry enabled after original delegate decision");
+                // No synthetic Sparkle callback: click the production About action.
+                TSRetryClicked = YES;
+                if (!okilum_updater_restart()) exit(53);
+                if (okilum_updater_restart()) exit(54); // no second attempt during verification
+                Trace(@"deliberate About retry requested");
+            }
             if (okilum_updater_guard_requested()) {
                 Trace(@"final editor guard boundary");
                 // A user edit made AFTER the successful fetch must be the
                 // revision protected by the production Rust coordinator.
                 NSString *editor = [bundle objectForInfoDictionaryKey:@"TSEditor"];
-                if (![@"edited after verification" writeToFile:editor atomically:YES encoding:NSUTF8StringEncoding error:NULL]) exit(45);
+                NSString *revision = TSRetryClicked ? @"edited after retry verification" : @"edited after verification";
+                if (![revision writeToFile:editor atomically:YES encoding:NSUTF8StringEncoding error:NULL]) exit(45);
                 Trace(@"editor changed after verification");
                 bool completed = fixture_finish_verified_install();
-                if (completed == [[bundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]) exit(33);
+                BOOL refusal = [[bundle objectForInfoDictionaryKey:@"TSRefuse"] boolValue]
+                    || (TSRetryClicked && [[bundle objectForInfoDictionaryKey:@"TSRetryGuardRefuse"] boolValue]);
+                if (completed == refusal) exit(33);
+                if (TSRetryClicked) {
+                    Trace(completed ? @"retry editor guard committed" : @"retry editor guard refused");
+                    if (!completed && (!fixture_about_retry_enabled() || !okilum_updater_ready())) exit(55);
+                }
             }
         }];
         [NSApp run];

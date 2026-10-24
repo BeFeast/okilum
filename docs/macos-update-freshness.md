@@ -228,3 +228,35 @@ and automatic-discovery-without-download controls. Existing real N→N+2 Restart
 Quit, unchanged feed, bad signature, eligibility and post-verification editor
 refusal scenarios remain required. These are authored regressions; hosted CI
 must prove runtime behavior on the new head before merge.
+
+
+### Refused or delayed termination (#1651 review)
+
+After consuming Ready/Install, Sparkle can report that the application is still
+running and provide `retryTerminatingApplication`. The custom driver copies that
+public reusable callback and reports an actionable retry state to About with the
+completed preparation progress intact. It never retries automatically. A new
+Restart now click rechecks signed freshness and runs the current Rust editor/save
+and UI persistence guards before invoking Sparkle's callback. A single approval
+then reaches the original AppKit delegate, whose refusal or deferred reply still
+owns the final decision. Ordinary Quit while retry is available takes the same
+verification/guard path. Freshness or editor refusal keeps About actionable with
+the error and revokes any pending Quit intent.
+
+Dismissal, safe-stage Cancel and application termination clear retained callbacks,
+pending guards and one-use termination approval. Once Install has been consumed,
+Sparkle exposes a retry callback but no cancellation continuation; About does not
+claim a cancellation it cannot perform. Existing pre-install cancellation controls
+continue to require no install after subsequent Quit.
+
+Hosted regressions add real signed newest-archive installations where the original
+application delegate first returns `NSTerminateCancel` or `NSTerminateLater` with
+an eventual NO reply, then accepts an explicit About retry. Assertions cover the
+shared Rust About action projection, a second fresh feed check and protection of
+an edit made after retry verification, exactly two original-delegate decisions,
+relaunch at N+2, and the existing no-window detector with its standard-driver
+positive control. A retry-specific editor-refusal control must leave version 1
+running with About retry still enabled. The existing cancellation cases additionally
+assert no retained retry, readiness, guard request or termination approval after
+Cancel. A GPUI regression draws and clicks the actual restored About action.
+These checks require normal hosted CI; they were not executed locally.

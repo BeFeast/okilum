@@ -212,12 +212,19 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 }
 @end
 
+@interface TSTerminationDelegate : NSObject <NSApplicationDelegate>
+@property(nonatomic, strong) id<NSApplicationDelegate> original;
+@property(nonatomic) BOOL verifiedQuit;
+@end
+static TSTerminationDelegate *TSTermination;
+
 // Public continuations only: About is the sole owner of progress and choices.
 @interface TSUserDriver : TSMetadataDriver
 @property(nonatomic, copy) void (^cancellation)(void);
 @property(nonatomic) uint64_t expected;
 @property(nonatomic) uint64_t received;
 @property(nonatomic, copy) void (^restartReply)(SPUUserUpdateChoice);
+@property(nonatomic, copy) void (^retryTermination)(void);
 @property(nonatomic, strong) SUAppcastItem *item;
 @property(nonatomic) BOOL verifying;
 @property(nonatomic) BOOL verifiedRestart;
@@ -246,9 +253,14 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     acknowledgement();
 }
 - (void)showInstallingUpdateWithApplicationTerminated:(BOOL)terminated retryTerminatingApplication:(void (^)(void))retry {
-    TSSend(6, nil);
+    NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
+    // Sparkle explicitly permits repeated use; each attempt still needs a new
+    // user action, signed freshness and the final Rust editor guard.
+    self.retryTermination = terminated ? nil : retry;
+    TSSend(terminated ? 6 : 10, nil);
 }
 - (void)cancel {
+    NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
     void (^cancellation)(void) = self.cancellation;
     void (^ready)(SPUUserUpdateChoice) = self.restartReply;
     if (!cancellation && !ready) return;
@@ -288,6 +300,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 }
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
     self.restartReply = nil;
+    self.retryTermination = nil;
     self.verifiedRestart = NO;
     TSGuardRequested = NO;
     if (self.quitReply) { void (^quit)(BOOL) = self.quitReply; self.quitReply = nil; quit(NO); }
@@ -351,7 +364,8 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     // Rust About retains the Ready state; Restart now calls requestRestart.
 }
 - (void)requestRestart {
-    if (!self.restartReply || self.verifying) return;
+    NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
+    if ((!self.restartReply && !self.retryTermination) || self.verifying || TSGuardRequested) return;
     self.verifying = YES;
     self.verifiedRestart = NO;
     TSGuardRequested = NO;
@@ -362,8 +376,15 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
         TSUserDriver *driver = weakSelf;
         if (!driver || driver.generation != generation) return;
         driver.verifying = NO;
-        if (!driver.restartReply) return;
-        if (!current) { [driver cancelForReplacement:driver.restartReply error:error]; return; }
+        if (!driver.restartReply && !driver.retryTermination) return;
+        if (!current) {
+            if (driver.restartReply) [driver cancelForReplacement:driver.restartReply error:error];
+            else {
+                if (driver.quitReply) { void (^quit)(BOOL) = driver.quitReply; driver.quitReply = nil; quit(NO); }
+                TSSend(10, error.localizedDescription ?: @"The feed changed. This installation cannot restart until its freshness is verified.");
+            }
+            return;
+        }
         driver.verifiedRestart = YES;
         TSGuardRequested = YES;
         // Rust reruns editor protection/UI persistence after the async check,
@@ -375,14 +396,18 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     self.quitReply = reply;
     // A check already running after download/restart also covers this quit.
     // Its completion must reply to AppKit, never install ahead of verification.
-    if (self.restartReply && !self.verifying) [self requestRestart];
+    if ((self.restartReply || self.retryTermination) && !self.verifying) [self requestRestart];
 }
 - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
+    [self dismissUpdateInstallation];
     if (relaunched) TSSend(8, nil);
     acknowledgement();
 }
 - (void)dismissUpdateInstallation {
+    NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
     self.cancellation = nil;
+    self.retryTermination = nil;
+    TSTermination.verifiedQuit = NO;
     TSInstallRequested = NO;
     self.generation += 1;
     self.preparing = NO;
@@ -399,10 +424,6 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 // editor guard. NSTerminateLater enters AppKit's modal run loop, which cannot
 // complete verification queued on the main dispatch queue that requested Quit.
 // Forward every other delegate callback unchanged; no GPUI/source patch.
-@interface TSTerminationDelegate : NSObject <NSApplicationDelegate>
-@property(nonatomic, strong) id<NSApplicationDelegate> original;
-@property(nonatomic) BOOL verifiedQuit;
-@end
 @implementation TSTerminationDelegate
 - (BOOL)respondsToSelector:(SEL)selector {
     return [super respondsToSelector:selector] || [self.original respondsToSelector:selector];
@@ -412,11 +433,12 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     // GPUI reads its original delegate's native ivar after NSApp.run returns.
     // Restore that exact object before forwarding shutdown; never impersonate
     // or copy GPUI's private native state into this adapter.
+    [TSDriver dismissUpdateInstallation];
     NSApp.delegate = self.original;
     if ([self.original respondsToSelector:_cmd]) [self.original applicationWillTerminate:notification];
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
-    if (self.verifiedQuit || (!TSDriver.restartReply && !TSDriver.preparing)) {
+    if (self.verifiedQuit || (!TSDriver.restartReply && !TSDriver.retryTermination && !TSDriver.preparing)) {
         // Consume approval once, even if the original delegate refuses Quit.
         // Its own NSTerminateLater/reply contract remains its responsibility.
         self.verifiedQuit = NO;
@@ -432,7 +454,6 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     return NSTerminateCancel;
 }
 @end
-static TSTerminationDelegate *TSTermination;
 static TSUpdaterDelegate *TSDelegate;
 
 static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *delegate) {
@@ -501,14 +522,15 @@ void okilum_updater_forget_beta(void) {
 
 // Called on main only after the Rust save/recovery guards succeed.
 bool okilum_updater_restart(void) {
-    if (!TSDriver.restartReply || TSDriver.verifying) return false;
+    if ((!TSDriver.restartReply && !TSDriver.retryTermination) || TSDriver.verifying) return false;
     if (!TSGuardRequested) [TSDriver requestRestart];
     return true;
 }
 // Separate entry point: only Rust's post-verification editor/save guards may
 // consume the install continuation. Repeated UI clicks cannot bypass them.
 bool okilum_updater_finish_restart(void) {
-    if (!TSDriver.restartReply || TSDriver.verifying || !TSDriver.verifiedRestart || !TSGuardRequested) return false;
+    NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
+    if ((!TSDriver.restartReply && !TSDriver.retryTermination) || TSDriver.verifying || !TSDriver.verifiedRestart || !TSGuardRequested) return false;
     TSDriver.verifiedRestart = NO;
     TSGuardRequested = NO;
     if (TSDriver.quitReply) {
@@ -521,16 +543,28 @@ bool okilum_updater_finish_restart(void) {
         dispatch_async(dispatch_get_main_queue(), ^{ quit(YES); });
         return true;
     }
+    if (TSDriver.retryTermination) {
+        void (^retry)(void) = TSDriver.retryTermination;
+        TSTermination.verifiedQuit = YES; // one original-delegate decision per guarded attempt
+        TSSend(6, nil);
+        NSUInteger generation = TSDriver.generation;
+        retry(); // public Sparkle continuation, never NSApp terminate directly
+        // The callback is reusable and need not be delivered again after a
+        // refused quit. Keep About actionable while the application is alive.
+        if (TSDriver.generation == generation && TSDriver.retryTermination) TSSend(10, nil);
+        return true;
+    }
     TSDriver.preparing = NO;
     void (^continuation)(SPUUserUpdateChoice) = TSDriver.restartReply;
     TSDriver.restartReply = nil;
     // Clear retained handlers before consuming the verified continuation.
     [TSDriver dismissUpdateInstallation];
+    TSTermination.verifiedQuit = YES;
     TSSend(6, nil);
     continuation(SPUUserUpdateChoiceInstall);
     return true;
 }
-bool okilum_updater_ready(void) { return TSDriver.restartReply != nil; }
+bool okilum_updater_ready(void) { return TSDriver.restartReply != nil || TSDriver.retryTermination != nil; }
 
 // Polled on the GPUI main thread; the guard runs only after freshness succeeds.
 bool okilum_updater_guard_requested(void) { return TSGuardRequested; }
@@ -539,5 +573,9 @@ void okilum_updater_refuse_restart(void) {
     if (TSDriver.restartReply) {
         NSError *error = [NSError errorWithDomain:@"OkilumUpdate" code:4 userInfo:@{NSLocalizedDescriptionKey:@"Your edits could not be protected. Nothing was installed."}];
         [TSDriver cancelForReplacement:TSDriver.restartReply error:error];
+    } else if (TSDriver.retryTermination) {
+        TSDriver.verifiedRestart = NO;
+        if (TSDriver.quitReply) { void (^quit)(BOOL) = TSDriver.quitReply; TSDriver.quitReply = nil; quit(NO); }
+        TSSend(10, @"Your latest edits could not be protected. Okilum will stay open. Try Restart now again after resolving the error.");
     }
 }

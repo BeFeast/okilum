@@ -48,6 +48,7 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
         6 => CheckStatus::Restarting,
         7 => CheckStatus::Note("Update cancelled. Nothing was installed.".into()),
         9 => CheckStatus::Checking,
+        10 => CheckStatus::RestartRetry(text),
         _ => CheckStatus::Failed(text),
     });
 }
