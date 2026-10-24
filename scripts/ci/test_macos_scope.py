@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 import os
+import re
 import subprocess
 
 spec = importlib.util.spec_from_file_location('scope', Path(__file__).with_name('macos-scope.py'))
@@ -39,20 +40,23 @@ class ScopeTests(unittest.TestCase):
 
     def test_required_gate_fails_closed(self):
         workflow = Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml'
-        gate = workflow.read_text().split(
-            '      - name: Require shared code and applicable macOS checks', 1)[1]
+        gate = re.search(r'^  check:\n(.*?)(?=^  [\w-]+:|\Z)',
+                         workflow.read_text(), re.M | re.S)[1]
         script = '\n'.join(line[10:] for line in gate.split('        run: |\n', 1)[1].splitlines())
         for event in ['pull_request', 'push']:
             for shared in ['success', 'failure', 'cancelled', 'skipped']:
                 for needed in ['true', 'false', '']:
                     for native in ['success', 'failure', 'cancelled', 'skipped']:
-                        expected = shared == 'success' and (event == 'push' or native == 'success')
-                        with self.subTest(event=event, shared=shared, needed=needed, native=native):
-                            result = subprocess.run(['bash', '-c', script], capture_output=True,
-                                env=dict(os.environ, EVENT=event, SHARED_RESULT=shared,
-                                         MACOS_REQUIRED=needed, MACOS_RESULT=native,
-                                         WINDOWS_RESULT=native, PERF_RESULT=native))
-                            self.assertEqual(result.returncode == 0, expected)
+                        for perf in ['success', 'skipped', 'failure', 'cancelled', '']:
+                            expected = (shared == 'success' and perf in ['success', 'skipped']
+                                        and (event == 'push' or native == 'success'))
+                            with self.subTest(event=event, shared=shared, needed=needed,
+                                              native=native, perf=perf):
+                                result = subprocess.run(['bash', '-c', script], capture_output=True,
+                                    env=dict(os.environ, EVENT=event, SHARED_RESULT=shared,
+                                             MACOS_REQUIRED=needed, MACOS_RESULT=native,
+                                             WINDOWS_RESULT=native, PERF_RESULT=perf))
+                                self.assertEqual(result.returncode == 0, expected)
 
 
 if __name__ == '__main__':
