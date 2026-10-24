@@ -328,9 +328,12 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
     let bytes = bounded_response(response, 16 * 1024)
         .await
         .map_err(|error| {
-            // Never turn an HTTP rejection into a retry, even if its body stalls.
+            // A received HTTP status is authoritative. In particular, 201 may
+            // already have created an issue: never retry an unreadable receipt.
             if status == reqwest::StatusCode::CREATED {
-                failure(okilum_http::transport_failure(error))
+                let error = error.context("Feedback returned HTTP 201 with an unreadable receipt");
+                crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
+                error.context("The server accepted your feedback, but its issue link could not be confirmed. Your draft is kept.")
             } else {
                 let error = error.context(format!(
                     "Feedback returned HTTP {} with an unreadable body",

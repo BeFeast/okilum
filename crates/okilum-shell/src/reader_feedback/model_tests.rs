@@ -495,3 +495,31 @@ fn early_http_rejection_during_video_upload_never_retries() {
         matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
 }
+
+#[test]
+fn truncated_created_receipt_never_resends_an_accepted_report() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let primary = format!("http://{}/feedback", listener.local_addr().unwrap());
+    let accepted = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let _request = read_mock_request(&mut socket);
+        socket
+            .write_all(
+                b"HTTP/1.1 201 Created\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{",
+            )
+            .unwrap();
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    let alternate = TcpListener::bind("127.0.0.1:0").unwrap();
+    alternate.set_nonblocking(true).unwrap();
+    let fallback = format!("http://{}/feedback", alternate.local_addr().unwrap());
+    let error = send_using(&primary, &fallback, &report()).unwrap_err();
+    accepted.join().unwrap();
+    assert!(error.to_string().contains("server accepted"), "{error:#}");
+    assert!(
+        matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}

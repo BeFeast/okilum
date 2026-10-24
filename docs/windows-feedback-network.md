@@ -19,7 +19,9 @@ The UI reports a short certificate/proxy/timeout/HTTP cause and preserves the dr
 The existing bounded diagnostic log records the full error chain. After a DNS/TCP/TLS/timeout failure, the explicitly approved alternate endpoint
 `https://feedback.befeast.com/api/feedback/okilum` is attempted once. Any HTTP
 rejection, malformed receipt, invalid issue link or local payload error stops
-without fallback. Each attempt rebuilds multipart from the retained report;
+without fallback. A received HTTP 201 also stops automatic retries when its
+receipt body is interrupted, because the server may already have created the
+issue; the UI states that acceptance could not be confirmed. Each attempt rebuilds multipart from the retained report;
 streaming attachments are reopened rather than replaying a consumed body. Async
 reqwest runs inside the existing background send operation so an early HTTP
 rejection remains authoritative while a video is uploading; video bytes are
