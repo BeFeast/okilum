@@ -13,6 +13,18 @@ pub(super) struct LivePreview {
     colors: Cell<Option<ProjectionColors>>,
 }
 
+#[cfg(test)]
+impl LivePreview {
+    /// The note as Live Preview draws it with nothing revealed, once it is
+    /// classified: a test's proof that some Markdown really is concealed.
+    pub(super) fn concealed_text(&self) -> Option<String> {
+        use gpui_component::input::projection::{ActiveSource, ProjectionProvider as _};
+        let provider = self.accepted.as_ref()?;
+        let display = provider.compose(provider.source(), &ActiveSource::default())?;
+        Some(display.text().to_string())
+    }
+}
+
 fn projection_colors(cx: &App) -> ProjectionColors {
     let palette = brand::palette(cx);
     ProjectionColors {

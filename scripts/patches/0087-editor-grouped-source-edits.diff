@@ -1,0 +1,187 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 6f71b135..73965bae 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -1421,6 +1421,82 @@ impl<M: InputModeKind> InputBaseState<M> {
+         true
+     }
+ 
++    /// Replace several exact source ranges as one undoable user edit and put
++    /// the selection at `selection` (source offsets after the edit). `edits`
++    /// hold ranges of the current text, sorted and not overlapping; each is
++    /// applied as its own minimal change, last first, so Undo restores every
++    /// byte and the selection before the edit in one step. Returns false,
++    /// changing nothing, when the editor is not editable or a range is out of
++    /// order or off a character boundary. Used for list continuation with
++    /// renumbering (#1635).
++    pub fn replace_source_edits(
++        &mut self,
++        edits: &[(std::ops::Range<usize>, String)],
++        selection: std::ops::Range<usize>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        let value = self.text.to_string();
++        let mut end = 0;
++        for (range, _) in edits {
++            if range.start < end
++                || range.start > range.end
++                || !value.is_char_boundary(range.start)
++                || !value.is_char_boundary(range.end)
++            {
++                return false;
++            }
++            end = range.end;
++        }
++        let length = value.len() as isize
++            + edits
++                .iter()
++                .map(|(range, text)| text.len() as isize - range.len() as isize)
++                .sum::<isize>();
++        if !self.is_editable()
++            || edits.is_empty()
++            || selection.start > selection.end
++            || selection.end as isize > length
++        {
++            return false;
++        }
++        let after: Selection = selection.into();
++        self.undo_manager.begin_group();
++        self.exact_replacement = true;
++        for (ix, (range, text)) in edits.iter().enumerate().rev() {
++            self.undo_manager.pending_intent = Some(EditIntent::Atomic);
++            // Redo ends on the last change it replays: the first range.
++            if ix == 0 {
++                self.pending_selection_after = Some(after);
++            }
++            let range_utf16 = self.range_to_utf16(range);
++            self.replace_text_in_range_silent(Some(range_utf16), text, window, cx);
++        }
++        self.exact_replacement = false;
++        self.pending_selection_after = None;
++        self.undo_manager.end_group();
++        let text = self.text.to_string();
++        let clip = |offset: usize| {
++            let mut offset = offset.min(text.len());
++            while !text.is_char_boundary(offset) {
++                offset -= 1;
++            }
++            offset
++        };
++        self.selected_range = (clip(after.start)..clip(after.end)).into();
++        self.selection_reversed = false;
++        self.update_preferred_column();
++        self.sync_projection_active();
++        cx.notify();
++        true
++    }
++
++    /// True while a completion menu is open or an inline completion is
++    /// shown: Enter and Tab belong to it, not to editing (#1635).
++    pub fn completion_active(&self, cx: &App) -> bool {
++        M::is_context_menu_open(self, cx) || M::has_inline_completion(self)
++    }
++
+     /// Insert text at the current cursor position.
+     ///
+     /// And the cursor will be moved to the end of inserted text.
+diff --git a/crates/base/src/input/base/undo_manager.rs b/crates/base/src/input/base/undo_manager.rs
+index 15d89ed8..f6e00fdc 100644
+--- a/crates/base/src/input/base/undo_manager.rs
++++ b/crates/base/src/input/base/undo_manager.rs
+@@ -33,6 +33,10 @@ pub(crate) struct UndoManager {
+     pending_change: Option<Change>,
+     pub(crate) pending_intent: Option<EditIntent>,
+     coalescing_boundary: bool,
++    /// Changes of one logical edit made at several places (a list
++    /// continuation that also renumbers the items below). They become one
++    /// transaction when the group ends: one Undo step.
++    group: Option<Vec<Change>>,
+ }
+ 
+ impl UndoManager {
+@@ -45,9 +49,38 @@ impl UndoManager {
+             pending_change: None,
+             pending_intent: None,
+             coalescing_boundary: false,
++            group: None,
+         }
+     }
+ 
++    /// Collect every change until [`Self::end_group`] into one transaction.
++    pub(super) fn begin_group(&mut self) {
++        self.commit_transaction();
++        if self.group.is_none() {
++            self.group = Some(Vec::new());
++        }
++    }
++
++    /// Push the changes collected since [`Self::begin_group`] as one atomic
++    /// transaction, applied in order and undone in reverse.
++    pub(super) fn end_group(&mut self) {
++        let Some(changes) = self.group.take() else {
++            return;
++        };
++        if changes.is_empty() {
++            return;
++        }
++        self.redo_transactions.clear();
++        if self.undo_transactions.len() >= MAX_UNDO_TRANSACTIONS {
++            self.undo_transactions.remove(0);
++        }
++        self.undo_transactions.push(UndoTransaction {
++            intent: EditIntent::Atomic,
++            changes,
++        });
++        self.coalescing_boundary = true;
++    }
++
+     pub(super) fn record_transaction(&mut self, change: Change, intent: EditIntent) {
+         if self.ignoring {
+             return;
+@@ -91,6 +124,10 @@ impl UndoManager {
+     }
+ 
+     fn push_transaction(&mut self, change: Change, intent: EditIntent) {
++        if let Some(group) = self.group.as_mut() {
++            group.push(change);
++            return;
++        }
+         self.redo_transactions.clear();
+         let can_coalesce = !self.coalescing_boundary
+             && intent != EditIntent::Atomic
+@@ -145,6 +182,7 @@ impl UndoManager {
+         self.pending_change = None;
+         self.pending_intent = None;
+         self.coalescing_boundary = false;
++        self.group = None;
+     }
+ 
+     pub(super) fn undo(&mut self) -> Option<Vec<Change>> {
+@@ -234,6 +272,26 @@ mod tests {
+         assert_eq!(transaction[0].new_text, "ab");
+     }
+ 
++    #[test]
++    fn a_group_is_one_undo_step_undone_in_reverse() {
++        let mut manager = UndoManager::new();
++        manager.record_transaction(typing_change(0, "a"), EditIntent::Typing);
++        manager.begin_group();
++        manager.record_transaction(typing_change(1, "\n- "), EditIntent::Atomic);
++        manager.record_transaction(typing_change(9, "3"), EditIntent::Atomic);
++        manager.end_group();
++        manager.record_transaction(typing_change(4, "b"), EditIntent::Typing);
++
++        assert_eq!(manager.undo().unwrap().len(), 1, "typing after the group");
++        let group = manager.undo().unwrap();
++        assert_eq!(group.len(), 2);
++        assert_eq!(group[0].new_text, "3", "the last change is undone first");
++        assert_eq!(manager.undo().unwrap().len(), 1, "typing before the group");
++        assert!(manager.undo().is_none());
++        assert_eq!(manager.redo().unwrap().len(), 1);
++        assert_eq!(manager.redo().unwrap().len(), 2, "redo replays the group");
++    }
++
+     #[test]
+     fn limits_the_number_of_retained_transactions() {
+         let mut manager = UndoManager::new();
