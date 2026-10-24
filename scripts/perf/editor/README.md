@@ -1,8 +1,10 @@
 # Linux editor latency guard (#1639)
 
 The existing `perf-linux` job reuses its trace binary and Xvfb display. The
-editor collector has a 300-second deadline and adds no runner or second build.
-The existing Reader scroll growth guard and its thresholds remain required.
+editor gate has a 300-second deadline including its one permitted retry, and
+adds no runner or second build. The legacy Reader scroll growth measurements
+are informational; their outcome is always shown in the job summary. Only the
+new editor gate blocks the perf job (manager policy, 2026-10-24).
 
 `fixtures.py` generates original prose, with pinned SHA-256 hashes: 3 KiB,
 130,000 bytes with 460 heading sections, exactly 1 MiB, and 1,200,000 characters.
@@ -77,6 +79,33 @@ python3 scripts/perf/editor/budget.py ratchet scripts/perf/editor/baseline.json 
 the output. It never silently removes a metric or changes the policy. Review
 the raw traces and the calibration host before accepting a tighter baseline.
 No environment variable overrides these limits.
+
+## Noise protection and calibration
+
+`gate.py` runs the complete collector once. A valid budget failure permits
+exactly one fresh measurement of the **same binary**. Only two consecutive
+budget failures make the job red. Both attempts and their median/p90 values
+are retained in `result.json`, raw artifacts and `GITHUB_STEP_SUMMARY`.
+Missing evidence, malformed data, a changed executable or a timeout fails
+immediately; those failures never receive a retry or a false green.
+
+Ordinary PR runs perform one gate invocation, with at most two measurements
+within the shared 300-second deadline. For one-off calibration the same
+workflow can be dispatched with `calibration_runs` between one and five.
+These are independent complete gate invocations on one unchanged executable;
+the first failed invocation ends the calibration sequence. This longer manual
+calibration does not change the runtime of ordinary PR jobs.
+
+The optional `artifact_run_id` reuses the trace executable from a successful
+run of the **same exact commit**. The producer's head/conclusion, build receipt
+and SHA-256 must agree before reuse. A different commit requires a new build.
+This uses the existing job and runner, and makes repeated calibration possible
+without rebuilding the executable for each observation.
+
+The required aggregate is enabled only in the final PR commit, after at least
+five consecutive green gate invocations on unchanged code and a red job on an
+artificially slowed commit. Until those observations exist, perf remains
+supplementary. Draft native checks remain red by the existing repository rule.
 
 Exit status: 0 passes; 1 is a budget regression or rejected relaxation;
 2 is invalid/missing evidence. The job uploads raw frame traces, application
