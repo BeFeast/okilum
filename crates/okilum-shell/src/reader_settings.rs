@@ -31,6 +31,12 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
     let active = cx.active_window();
     // Menu dispatch can still hold the active Reader's update borrow.
     cx.defer(move |cx| {
+        let owner = reader
+            .as_ref()
+            .and_then(|reader| reader.upgrade())
+            .map(|reader| reader.read(cx).reader_window)
+            .or(active)
+            .map(|owner| reader_owned_windows::owner(owner, cx));
         let reader = reader.or_else(|| {
             let root = active?.downcast::<Root>()?;
             let reader = root
@@ -63,16 +69,15 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                 return;
             }
         }
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
-                size(px(780.), px(520.)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(700.), px(440.))),
-            ..TitleBar::window_options()
-        };
+        let options = reader_owned_windows::options(
+            owner,
+            size(px(780.), px(520.)),
+            size(px(700.), px(440.)),
+            cx,
+        );
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Okilum Settings");
+            reader_owned_windows::attach(owner, window, cx);
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(reader, cx);
                 if let Some(section) = section {
@@ -83,7 +88,10 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
             settings.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(settings, window, cx))
         }) {
-            Ok(handle) => cx.set_global(SettingsWindow(Some(handle))),
+            Ok(handle) => {
+                reader_owned_windows::register(owner, handle.into(), cx);
+                cx.set_global(SettingsWindow(Some(handle)));
+            }
             Err(error) => eprintln!("Could not open Settings: {error}"),
         }
     });
@@ -2185,6 +2193,78 @@ mod tests {
         visual.run_until_parked();
         visual.update(|_, cx| {
             assert_eq!(cx.global::<SettingsWindow>().0.unwrap().window_id(), first)
+        });
+    }
+
+    #[gpui::test]
+    fn owned_settings_center_reuse_escape_and_close_with_owner(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+        });
+        let (main, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            Root::new(reader, window, cx)
+        });
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        visual.update(|window, cx| {
+            window.activate_window();
+            show(None, cx);
+        });
+        visual.run_until_parked();
+        let handle = visual.update(|owner, cx| {
+            let handle = cx.global::<SettingsWindow>().0.unwrap();
+            assert_eq!(
+                reader_owned_windows::owner(handle.into(), cx),
+                owner.window_handle()
+            );
+            let center = owner.bounds().center();
+            handle
+                .update(cx, |_, window, _| {
+                    assert_eq!(
+                        window.bounds().center(),
+                        center,
+                        "center over the actual owner"
+                    );
+                    assert!(!window.is_minimizable());
+                })
+                .unwrap();
+            handle
+        });
+        let mut settings = VisualTestContext::from_window(handle.into(), cx);
+        settings.update(|window, cx| {
+            window.activate_window();
+            show(None, cx);
+        });
+        settings.run_until_parked();
+        settings.update(|_, cx| {
+            assert_eq!(cx.global::<SettingsWindow>().0.unwrap(), handle);
+            assert_eq!(cx.windows().len(), 2, "reopen must focus the same window");
+        });
+        settings.simulate_keystrokes("escape");
+        settings.run_until_parked();
+        assert!(
+            cx.read(|cx| cx.windows().contains(&main.into())),
+            "Escape leaves owner usable"
+        );
+        visual.update(|window, cx| {
+            window.activate_window();
+            show(None, cx);
+        });
+        visual.run_until_parked();
+        let reopened = visual.update(|_, cx| cx.global::<SettingsWindow>().0.unwrap());
+        let unrelated = cx.add_window(|_, cx| Settings::new(None, cx));
+        visual.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(
+                !cx.windows().contains(&reopened.into()),
+                "owner closure closes Settings"
+            );
+            assert!(
+                cx.windows().contains(&unrelated.into()),
+                "unrelated windows stay open"
+            );
         });
     }
 }

@@ -639,3 +639,41 @@ fn feedback_field_starts_empty_and_typing_is_the_whole_value(cx: &mut TestAppCon
         });
     });
 }
+
+#[gpui::test]
+fn owned_feedback_center_single_instance_escape_and_close_with_owner(cx: &mut TestAppContext) {
+    with_reader(cx, |owner| {
+        let (draft, mut feedback) = open_from_button(owner);
+        let handle = feedback.update(|window, cx| {
+            let owner_handle = reader_owned_windows::owner(window.window_handle(), cx);
+            let expected = owner_handle
+                .update(cx, |_, owner, _| owner.bounds().center())
+                .unwrap();
+            assert_eq!(window.bounds().center(), expected);
+            assert!(!window.is_minimizable());
+            window.window_handle()
+        });
+        feedback.update(|window, cx| show(window, cx));
+        feedback.run_until_parked();
+        assert_eq!(feedback.update(|window, _| window.window_handle()), handle);
+        assert_eq!(feedback.update(|_, cx| cx.windows().len()), 2);
+        feedback.simulate_keystrokes("escape");
+        feedback.run_until_parked();
+        assert!(!draft.read_with(owner, |draft, _| draft.visible));
+        owner.update(|window, cx| {
+            assert_eq!(cx.windows().len(), 1);
+            show(window, cx);
+        });
+        owner.run_until_parked();
+        let reopened = owner.update(|window, cx| {
+            cx.global::<Drafts>().0[&window.window_handle().window_id()].window
+        });
+        owner.update(|window, _| window.remove_window());
+        owner.run_until_parked();
+        assert!(!owner.read(|cx| cx.windows().contains(&reopened.into())));
+        assert!(
+            !draft.read_with(owner, |draft, _| draft.visible),
+            "closed content releases visible state"
+        );
+    });
+}

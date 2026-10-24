@@ -100,3 +100,16 @@ jobs:
         $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
         cargo test --locked -p okilum-shell --bin okilum updater:: -- --nocapture --test-threads=1
         exit $LASTEXITCODE
+
+    - name: Run owned non-modal tool regressions
+      shell: pwsh
+      run: |
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        $list = & cargo test --locked -p okilum-shell --bin okilum owned_ -- --list
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $list
+        if (-not ($list | Select-String 'windows_owned_tool_.*: test$')) {
+          Write-Error 'Native HWND ownership regression did not match'; exit 1
+        }
+        cargo test --locked -p okilum-shell --bin okilum owned_ -- --nocapture --test-threads=1
+        exit $LASTEXITCODE
