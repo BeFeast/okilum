@@ -1,0 +1,123 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index d358374b..6f71b135 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -428,6 +428,12 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) selection_reversed: bool,
+     /// The marked range is the temporary insert text on IME typing.
+     pub(super) ime_marked_range: Option<Selection>,
++    /// When the last IME composition ended (commit or unmark), on the
++    /// executor clock so tests can advance it.
++    pub(super) ime_committed_at: Option<std::time::Instant>,
++    /// How long after a commit Enter and Tab still count as part of the
++    /// composition: they carry no indentation and accept no completion.
++    pub(super) ime_settle: Duration,
+     pub(super) last_layout: Option<LastLayout>,
+     // Previous painted geometry for anchoring only; never used for hit testing.
+     pub(super) projection_anchor_layout: Option<LastLayout>,
+@@ -816,6 +822,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+             selected_word_range: None,
+             selection_reversed: false,
+             ime_marked_range: None,
++            ime_committed_at: None,
++            ime_settle: Duration::ZERO,
+             input_bounds: Bounds::default(),
+             selecting: false,
+             drag_anchors: Vec::new(),
+@@ -1632,6 +1640,33 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx.notify();
+     }
+ 
++    /// Set how long after an IME commit Enter and Tab still belong to the
++    /// composition. Some input methods deliver the key that confirmed a
++    /// candidate after the commit itself; within this window it inserts a
++    /// plain newline or tab and never accepts a completion. Default is zero:
++    /// only an active composition is guarded.
++    pub fn set_ime_settle(&mut self, settle: Duration) {
++        self.ime_settle = settle;
++    }
++
++    /// True while an IME composition (marked text) is active.
++    pub fn ime_composing(&self) -> bool {
++        self.ime_marked_range.is_some()
++    }
++
++    /// True while composing and for the settle window after a commit
++    /// (see [`Self::set_ime_settle`]).
++    pub fn ime_settling(&self, cx: &App) -> bool {
++        self.ime_composing()
++            || self.ime_committed_at.is_some_and(|at| {
++                cx.background_executor().now().saturating_duration_since(at) < self.ime_settle
++            })
++    }
++
++    fn note_ime_commit(&mut self, cx: &App) {
++        self.ime_committed_at = Some(cx.background_executor().now());
++    }
++
+     /// Set whether to show whitespace characters.
+     #[doc(hidden)]
+     pub fn show_whitespaces(mut self, show: bool) -> Self {
+@@ -2229,7 +2264,12 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     pub(super) fn enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+-        if M::handle_context_menu_action(self, Box::new(action.clone()), window, cx) {
++        // The Enter that confirmed an IME candidate is not a choice in a
++        // completion menu, and it continues no indentation.
++        let settling = self.ime_settling(cx);
++        if settling {
++            M::hide_context_menu(self, cx);
++        } else if M::handle_context_menu_action(self, Box::new(action.clone()), window, cx) {
+             return;
+         }
+ 
+@@ -2246,7 +2286,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+         if insert_newline {
+             // Get current line indent
+-            let indent = if self.is_code_editor() {
++            let indent = if self.is_code_editor() && !settling {
+                 self.indent_of_next_line()
+             } else {
+                 "".to_string()
+@@ -3971,8 +4011,10 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+             .map(|range| self.range_to_utf16(&range.into()))
+     }
+ 
+-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+-        self.ime_marked_range = None;
++    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
++        if self.ime_marked_range.take().is_some() {
++            self.note_ime_commit(cx);
++        }
+         self.sync_projection_active();
+         self.undo_manager.commit_transaction();
+     }
+@@ -4130,7 +4172,9 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         M::refresh_language_features(self, window, cx);
+         self.selected_range = (new_offset..new_offset).into();
+         self.cursor_bidi_affinity = Affinity::After;
+-        self.ime_marked_range.take();
++        if self.ime_marked_range.take().is_some() {
++            self.note_ime_commit(cx);
++        }
+         self.update_preferred_column();
+         self.update_search(cx);
+         if self.is_multi_line() {
+diff --git a/crates/base/src/input/editor/indent.rs b/crates/base/src/input/editor/indent.rs
+index aff732f2..ced22b25 100644
+--- a/crates/base/src/input/editor/indent.rs
++++ b/crates/base/src/input/editor/indent.rs
+@@ -201,8 +201,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
+-        // First, try to accept inline completion if present
+-        if M::accept_inline_completion(self, window, cx) {
++        // First, try to accept inline completion if present; never with the
++        // Tab that confirmed an IME candidate.
++        if !self.ime_settling(cx) && M::accept_inline_completion(self, window, cx) {
+             return;
+         }
+         self.indent(false, window, cx);

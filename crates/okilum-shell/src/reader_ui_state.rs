@@ -128,6 +128,12 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// Brackets and quotes close themselves as they are typed in a note
+    /// (#1636); on by default.
+    auto_pair_brackets: bool,
+    /// `*`, `_` and `` ` `` close themselves too (#1636); off by default,
+    /// as in Typora.
+    auto_pair_markdown: bool,
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
@@ -181,6 +187,8 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            auto_pair_brackets: true,
+            auto_pair_markdown: false,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             json_raw: false,
             log_editor: "vscode".into(),
@@ -216,6 +224,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    auto_pair_changed: bool,
     paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
@@ -311,6 +320,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        auto_pair_changed: false,
         paste_ask_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
@@ -536,6 +546,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    auto_pair_changed: bool,
     paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
@@ -621,6 +632,10 @@ impl WriteJob {
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.auto_pair_changed {
+            latest.auto_pair_brackets = self.saved.auto_pair_brackets;
+            latest.auto_pair_markdown = self.saved.auto_pair_markdown;
         }
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
@@ -743,6 +758,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
+            && !state.auto_pair_changed
             && !state.paste_ask_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
@@ -776,6 +792,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        auto_pair_changed: state.auto_pair_changed,
         paste_ask_changed: state.paste_ask_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
@@ -1315,6 +1332,30 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Settings → Editor (#1636): whether brackets and quotes, and `*` `_` `` ` ``,
+/// close themselves as they are typed in a note. Without the store (tests,
+/// a failed install) the defaults hold.
+pub(crate) fn auto_pair(cx: &App) -> (bool, bool) {
+    cx.try_global::<Store>().map_or((true, false), |state| {
+        (
+            state.saved.auto_pair_brackets,
+            state.saved.auto_pair_markdown,
+        )
+    })
+}
+
+pub(crate) fn set_auto_pair(brackets: bool, markdown: bool, cx: &mut App) {
+    if !installed(cx) || auto_pair(cx) == (brackets, markdown) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.auto_pair_brackets = brackets;
+    state.saved.auto_pair_markdown = markdown;
+    state.auto_pair_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Settings → Editor (#1611): ask before copying a pasted or dropped file
 /// larger than this many MB into the vault; 0 never asks.
 pub(crate) fn paste_ask_above_mb(cx: &App) -> u32 {
@@ -1753,6 +1794,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.auto_pair_changed = false;
         state.paste_ask_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
@@ -2142,6 +2184,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                auto_pair_changed: false,
                 paste_ask_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
