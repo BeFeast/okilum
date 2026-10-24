@@ -9,6 +9,8 @@ extern "C" {
     fn okilum_updater_available() -> bool;
     fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
+    fn okilum_updater_can_cancel() -> bool;
+    fn okilum_updater_cancel();
     fn okilum_updater_restart() -> bool;
     fn okilum_updater_finish_restart() -> bool;
     fn okilum_updater_ready() -> bool;
@@ -44,7 +46,9 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
         4 => CheckStatus::Preparing,
         5 => CheckStatus::Ready,
         6 => CheckStatus::Restarting,
-        7 => CheckStatus::Idle,
+        7 => CheckStatus::Note("Update cancelled. Nothing was installed.".into()),
+        9 => CheckStatus::Checking,
+        10 => CheckStatus::RestartRetry(text),
         _ => CheckStatus::Failed(text),
     });
 }
@@ -155,4 +159,11 @@ pub(crate) fn protect_verified_install(
         |_| commit(),
         |_| refuse(),
     )
+}
+
+pub(super) fn can_cancel() -> bool {
+    unsafe { okilum_updater_can_cancel() }
+}
+pub(super) fn cancel() {
+    unsafe { okilum_updater_cancel() }
 }

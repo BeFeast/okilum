@@ -836,7 +836,32 @@ mod tests {
         executable(&target, b"original");
         fs::hard_link(&target, stage.join("previous.AppImage")).unwrap();
         let payload = b"#!/bin/sh\necho $$ > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/child-pid\"\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\nexec sleep 30\n";
+        let payload = [
+            b"#!/bin/sh\nif [ \"$1\" = --probe-exec ]; then exit 0; fi\n".as_slice(),
+            &payload[b"#!/bin/sh\n".len()..],
+        ]
+        .concat();
+        let payload = payload.as_slice();
         executable(&stage.join("new.AppImage"), payload);
+        let clock = std::time::Instant::now();
+        let probe = Command::new(stage.join("new.AppImage"))
+            .arg("--probe-exec")
+            .output()
+            .expect("fixture executable spawn failed (check path, mode, noexec/sandbox)");
+        assert!(
+            probe.status.success(),
+            "fixture executable preflight: {:?}",
+            probe
+        );
+        eprintln!(
+            "helper trace: executable preflight PASS at {:?}; path={:?}, mode={:o}",
+            clock.elapsed(),
+            stage.join("new.AppImage"),
+            fs::metadata(stage.join("new.AppImage"))
+                .unwrap()
+                .permissions()
+                .mode()
+        );
         let lockpath = dir.path().join("lock");
         let lock = OpenOptions::new()
             .read(true)
@@ -851,9 +876,60 @@ mod tests {
         let fd = lock.as_raw_fd();
         let log_path = stage.join("apply.log");
         let log = File::create(&log_path).unwrap();
+        // Instrument only this existing regression; production APPLY is unchanged.
+        let mut traced = String::from(
+            r#"
+trace_stage() { stage_name=$1; printf 'helper trace %s stage=%s pid=%s\n' "$(date -u +%s.%N)" "$stage_name" "$$" >&2; }
+trap 'rc=$?; printf "helper exit rc=%s stage=%s\n" "$rc" "${stage_name:-shell-start}" >&2' 0
+trace_stage shell-start
+"#,
+        );
+        let mut body = APPLY.to_string();
+        for (before, after) in [
+            (
+                "n=0\nwhile kill",
+                "trace_stage shutdown-wait\nn=0\nwhile kill",
+            ),
+            (
+                "# Revalidate both",
+                "trace_stage shutdown-complete\n# Revalidate both",
+            ),
+            (
+                "actual=$(sha256sum < \"$stage/previous.AppImage\")",
+                "trace_stage hash-original\nactual=$(sha256sum < \"$stage/previous.AppImage\")",
+            ),
+            (
+                "actual=$(sha256sum < \"$stage/new.AppImage\")",
+                "trace_stage hash-new\nactual=$(sha256sum < \"$stage/new.AppImage\")",
+            ),
+            (
+                "mv -f -- \"$stage/new.AppImage\" \"$target\"",
+                "trace_stage rename\nmv -f -- \"$stage/new.AppImage\" \"$target\"",
+            ),
+            (
+                "sync -f \"$target\"",
+                "trace_stage sync-target\nsync -f \"$target\"\ntrace_stage sync-target-complete",
+            ),
+            (
+                "echo 'Applied;",
+                "trace_stage post-rename-message\necho 'Applied;",
+            ),
+            (
+                "OKILUM_APPIMAGE_UPDATE_RECEIPT=",
+                "trace_stage child-spawn\nOKILUM_APPIMAGE_UPDATE_RECEIPT=",
+            ),
+            (
+                "if test -f \"$stage/started\"; then",
+                "trace_stage startup-wait-complete\nif test -f \"$stage/started\"; then",
+            ),
+        ] {
+            assert!(body.contains(before), "trace stage disappeared: {before}");
+            body = body.replace(before, after);
+        }
+        traced.push_str(&body);
         let mut command = Command::new("/bin/sh");
         command
-            .args(["-c", APPLY, "test", "2147483647"])
+            .args(["-c", traced.as_str(), "test", "2147483647"])
             .arg(&target)
             .arg(&stage)
             .arg(sha(&stage.join("new.AppImage")).unwrap())
@@ -869,12 +945,25 @@ mod tests {
                 Ok(())
             });
         }
-        let mut helper = command.spawn().unwrap();
+        let mut helper = command
+            .spawn()
+            .expect("/bin/sh helper spawn/pre_exec failed");
+        eprintln!(
+            "helper trace: spawn PASS pid={} at {:?}; lock_fd={fd}; log={:?}",
+            helper.id(),
+            clock.elapsed(),
+            log_path
+        );
         drop(lock);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(status) = helper.try_wait().unwrap() {
-                assert!(status.success());
+                let output = fs::read_to_string(&log_path).unwrap_or_default();
+                eprintln!(
+                    "helper trace: exit {status} at {:?}\n{output}",
+                    clock.elapsed()
+                );
+                assert!(status.success(), "helper exit {status}: {output}");
                 break;
             }
             if std::time::Instant::now() >= deadline {

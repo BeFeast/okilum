@@ -967,6 +967,84 @@ mod tests {
     }
 
     #[gpui::test]
+    fn exact_zoom_while_editing_restores_caret_and_subsequent_input(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let (reader, visual) = open_note(cx, &temp, 1400.);
+        let editor = source_mode(&reader, visual);
+        editor.update(visual, |state, cx| state.set_selected_range(6..6, cx));
+        visual.simulate_input("before-");
+        frame(visual);
+        let mut expected = editor.read_with(visual, |state, _| state.text().to_string());
+        assert!(
+            expected.starts_with("Alpha before-bravo"),
+            "typing positive control"
+        );
+        visual.simulate_keystrokes("secondary-=");
+        frame(visual);
+        zoom_is(visual, 1.1);
+
+        for (key, value, zoom, suffix) in [
+            ("enter", "137", 1.37, "after-enter-"),
+            ("escape", "222", 1.37, "after-escape-"),
+        ] {
+            let caret = editor.read_with(visual, |state, _| state.selected_range());
+            assert_eq!(caret.start, caret.end, "collapsed editor caret");
+            let value_button = visual.debug_bounds("note-zoom-hud-value").unwrap();
+            visual.simulate_click(value_button.center(), Modifiers::default());
+            frame(visual);
+            let exact = reader.read_with(visual, |reader, _| {
+                reader.zoom_hud.exact.as_ref().unwrap().input.clone()
+            });
+            visual.update(|window, cx| {
+                assert!(exact.read(cx).focus_handle(cx).is_focused(window));
+                assert!(!editor.read(cx).focus_handle(cx).is_focused(window));
+            });
+            // Route real text input through the focused HUD, not set_value.
+            visual.simulate_input(value);
+            frame(visual);
+            exact.read_with(visual, |state, _| assert_eq!(state.value().as_ref(), value));
+            editor.read_with(visual, |state, _| {
+                assert_eq!(
+                    state.text().to_string(),
+                    expected,
+                    "HUD input is not note text"
+                );
+                assert_eq!(state.selected_range(), caret, "HUD preserves the caret");
+            });
+            visual.simulate_keystrokes(key);
+            frame(visual);
+            zoom_is(visual, zoom);
+            assert!(visual.debug_bounds("note-zoom-hud-input").is_none());
+            visual.update(|window, cx| {
+                assert!(
+                    editor.read(cx).focus_handle(cx).is_focused(window),
+                    "{key} restores editor focus"
+                );
+                assert_eq!(
+                    editor.read(cx).selected_range(),
+                    caret,
+                    "{key} restores caret"
+                );
+            });
+            // No explicit refocus: continued typing must reach the same caret.
+            visual.simulate_input(suffix);
+            frame(visual);
+            expected.insert_str(caret.start, suffix);
+            editor.read_with(visual, |state, _| {
+                assert_eq!(
+                    state.text().to_string(),
+                    expected,
+                    "typing after {key} is retained"
+                );
+                assert_eq!(
+                    state.selected_range(),
+                    caret.start + suffix.len()..caret.start + suffix.len()
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
     fn view_menu_items_zoom_note_text(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
         let (reader, visual) = open_note(cx, &temp, 1400.);
