@@ -213,10 +213,7 @@ pub(super) fn send(report: Report) -> Result<Receipt> {
     send_to(ENDPOINT, &report)
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
-    use reqwest::blocking::{
-        multipart::{Form, Part},
-        Client,
-    };
+    use reqwest::blocking::multipart::{Form, Part};
     report.validate()?;
     // A large video needs far longer than the text-only 45 s budget.
     let timeout = if report.video.is_some() {
@@ -224,11 +221,12 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     } else {
         Duration::from_secs(45)
     };
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let failure = |error: anyhow::Error| {
+        crate::reader_diagnostics::network_failure("Feedback", &error);
+        let message = format!("{}. Your feedback is kept.", okilum_http::reason(&error));
+        error.context(message)
+    };
+    let client = okilum_http::client(endpoint, &report.meta.version, timeout).map_err(&failure)?;
     let mut meta = serde_json::to_value(&report.meta)?;
     if super::sprint::enabled() {
         let context = super::sprint::context();
@@ -277,10 +275,15 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         .post(endpoint)
         .multipart(form)
         .send()
-        .context("Couldn't confirm delivery. Your feedback is kept.")?;
+        .map_err(|error| failure(error.into()))?;
     let status = response.status();
-    let bytes = bounded(response, 16 * 1024)?;
+    let bytes = bounded(response, 16 * 1024).map_err(&failure)?;
     if status != reqwest::StatusCode::CREATED {
+        let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
+        crate::reader_diagnostics::network_failure("Feedback", &error);
+        if status.as_u16() == 407 {
+            bail!("{}. Your feedback is kept.", okilum_http::http_reason(407));
+        }
         let message = serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
             .and_then(|v| {

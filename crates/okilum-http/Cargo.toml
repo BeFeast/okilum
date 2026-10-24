@@ -1,0 +1,19 @@
+[package]
+name = "okilum-http"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart"] }
+serde_json = "1"
+url = "2"
+velopack = { version = "=1.2.161", features = ["public-utils"] }
+
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "system-proxy"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+
+[dev-dependencies]
+tempfile = "3"

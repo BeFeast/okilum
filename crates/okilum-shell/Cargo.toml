@@ -23,6 +23,7 @@ project-ui-harness = []
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 okilum-core = { workspace = true, default-features = false }
 okilum-t3 = { path = "../okilum-t3" }
+okilum-http = { path = "../okilum-http" }
 # Smart paste converters (#1611): HTML/RTF to Markdown, TSV, code fences, titles.
 okilum-paste = { path = "../okilum-paste" }
 gpui.workspace = true
