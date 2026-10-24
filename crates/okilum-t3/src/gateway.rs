@@ -27,6 +27,10 @@ pub enum GatewayStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GatewayError {
     NotConnected,
+    /// No T3 session from the Manager panel's sign-in for this server.
+    NotPaired {
+        origin: String,
+    },
     Expired,
     Revoked,
     Unreachable(String),
@@ -44,6 +48,10 @@ impl std::fmt::Display for GatewayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GatewayError::NotConnected => write!(f, "not connected to T3"),
+            GatewayError::NotPaired { origin } => write!(
+                f,
+                "Okilum is not signed in to T3 at {origin}: open the Manager panel and sign in there"
+            ),
             GatewayError::Expired => write!(f, "the T3 token has expired; reconnect"),
             GatewayError::Revoked => write!(f, "T3 refused the token; it was revoked"),
             GatewayError::Unreachable(detail) => write!(f, "T3 is unreachable: {detail}"),

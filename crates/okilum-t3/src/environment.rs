@@ -42,6 +42,16 @@ impl Environment {
         self.origin.origin().ascii_serialization()
     }
 
+    /// The host name or IP literal (without brackets), as cookies name it.
+    pub fn host(&self) -> String {
+        self.origin
+            .host_str()
+            .unwrap_or_default()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_ascii_lowercase()
+    }
+
     /// The MCP endpoint, which is also the OAuth `resource` indicator.
     pub fn mcp_url(&self) -> Url {
         self.endpoint("/mcp")

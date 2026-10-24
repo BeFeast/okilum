@@ -202,3 +202,46 @@ bool okilum_manager_store_matches(void *view, const unsigned char *uuid) {
     // Older macOS has only a persistent bundle-scoped default store.
     return true;
 }
+
+typedef void (*OkilumManagerCookies)(void *, const char *);
+
+// #1627: the Manager web view's cookies for `host`, read from its persistent
+// store without a web view, as a JSON array of {name, value}. `done` runs once
+// on the main queue; the caller waits off the main thread with a timeout.
+void okilum_manager_store_cookies(const unsigned char *uuid, const char *host, void *context,
+    OkilumManagerCookies done) {
+    if (!done) return;
+    NSData *identifier = uuid ? [NSData dataWithBytes:uuid length:16] : nil;
+    NSString *wanted = host ? [[NSString stringWithUTF8String:host] lowercaseString] : @"";
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebsiteDataStore *store = nil;
+        if (@available(macOS 14.0, *)) {
+            if (identifier) {
+                NSUUID *expected = [[NSUUID alloc] initWithUUIDBytes:identifier.bytes];
+                store = [WKWebsiteDataStore dataStoreForIdentifier:expected];
+            }
+        } else {
+            store = [WKWebsiteDataStore defaultDataStore];
+        }
+        if (!store) {
+            done(context, "[]");
+            return;
+        }
+        WKWebsiteDataStore *keep = store;
+        [store.httpCookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+            (void)keep;
+            NSMutableArray *found = [NSMutableArray array];
+            for (NSHTTPCookie *cookie in cookies) {
+                NSString *domain = cookie.domain.lowercaseString ?: @"";
+                if ([domain hasPrefix:@"."]) domain = [domain substringFromIndex:1];
+                BOOL matches = [wanted isEqualToString:domain]
+                    || (domain.length > 0 && [wanted hasSuffix:[@"." stringByAppendingString:domain]]);
+                if (!matches || !cookie.name || !cookie.value) continue;
+                [found addObject:@{@"name": cookie.name, @"value": cookie.value}];
+            }
+            NSData *json = [NSJSONSerialization dataWithJSONObject:found options:0 error:nil];
+            NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : nil;
+            done(context, text ? text.UTF8String : "[]");
+        }];
+    });
+}

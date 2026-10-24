@@ -17,8 +17,38 @@ struct ShownIcon {
     manifest: Option<ProjectIcon>,
 }
 
-/// One MCP gateway per T3 connection saved on this machine, with its token
-/// from the keychain. `None` once the Reader is gone.
+/// Where the Manager panel's T3 sign-in lives (#1627): its web view's store.
+#[cfg(target_os = "macos")]
+fn manager_session() -> Arc<dyn okilum_t3::SessionSource> {
+    Arc::new(crate::reader_manager_store::ManagerCookies)
+}
+
+/// No Manager web view here: icons use an MCP token if one is connected.
+#[cfg(not(target_os = "macos"))]
+fn manager_session() -> Arc<dyn okilum_t3::SessionSource> {
+    Arc::new(okilum_t3::NoSessionSource)
+}
+
+/// The paired gateway of one saved T3 connection: projects and icons with
+/// the Manager panel's T3 session (connected on the first call, within
+/// `okilum_t3::CONNECT_TIMEOUT`), threads over MCP with the keychain token.
+fn paired_gateway(
+    env: okilum_t3::Environment,
+    token: Option<okilum_t3::StoredToken>,
+    session: Arc<dyn okilum_t3::SessionSource>,
+) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
+    let mcp = okilum_t3::McpGateway::new(env.clone(), token)?;
+    let session = okilum_t3::SessionGateway::new(env, session)?;
+    Ok(Arc::new(okilum_t3::PairedGateway::new(
+        session,
+        Arc::new(mcp),
+    )))
+}
+
+/// One gateway per T3 connection saved on this machine (t3-connections.json,
+/// written when the Manager panel connects): the panel's T3 session for
+/// projects and icons, MCP with the keychain token for the rest. `None` once
+/// the Reader is gone.
 async fn t3_gateways(
     this: &WeakEntity<Reader>,
     state: Option<PathBuf>,
@@ -52,10 +82,13 @@ async fn t3_gateways(
             };
             let gateway = cx
                 .background_executor()
-                .spawn(async move { okilum_t3::McpGateway::new(env, token) })
+                .spawn(async move { paired_gateway(env, token, manager_session()) })
                 .await;
-            if let Ok(gateway) = gateway {
-                gateways.insert(alias, Arc::new(gateway));
+            match gateway {
+                Ok(gateway) => {
+                    gateways.insert(alias, gateway);
+                }
+                Err(error) => eprintln!("okilum: T3 connection {alias} unusable: {error:#}"),
             }
         }
     }
