@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 6e2caee8..a1b3ad6b 100644
+index 6e2caee8..bdd25998 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -821,8 +821,16 @@ impl<M: InputModeKind> TextElement<M> {
@@ -98,7 +98,7 @@ index 6e2caee8..a1b3ad6b 100644
          self.state.update(cx, |state, cx| {
              let changed = state.last_layout.as_ref().is_none_or(|last| {
                  last.font != font
-@@ -2128,9 +2177,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2128,9 +2177,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
              state
                  .display_map
                  .set_hang_room(state.hang_room());
@@ -107,14 +107,17 @@ index 6e2caee8..a1b3ad6b 100644
 +            let reshaped_lines = state
                  .display_map
                  .install_projection(state.projection.pin(), &state.text, window, cx);
-+            reshape = (reshape_start.elapsed(), reshaped_lines);
++            // An edit that dropped the projection already laid the note out
++            // as source when it was typed: count that wrap as this frame's.
++            let (edit_time, edit_lines) = state.display_map.take_edit_reshape();
++            reshape = (reshape_start.elapsed() + edit_time, reshaped_lines + edit_lines);
 +            frame_raw = state.projection.enabled
 +                && state.projection.provider.is_some()
 +                && state.projection.current.is_none();
              let rows = Self::row_metrics(state, window.line_height());
              // A block above the viewport grew or shrank when it was measured:
              // scroll by the same amount with the new rows, so the view holds.
-@@ -2146,6 +2200,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2146,6 +2203,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  state.deferred_scroll_offset = Some(scroll);
              }
              state.zoom_anchor = None;
@@ -122,7 +125,7 @@ index 6e2caee8..a1b3ad6b 100644
              if let Some((offset, old_y, affinity)) = source_anchor {
                  let row = state.display_map.offset_to_wrap_display_point_with_affinity(
                      offset, affinity).row;
-@@ -2452,6 +2507,20 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2452,6 +2510,20 @@ impl<M: InputModeKind> Element for TextElement<M> {
          let (cursor_bounds, cursor_scroll_offset, current_row) =
              self.layout_cursor(&last_layout, &mut bounds, scroll_size, window, cx);
          last_layout.cursor_bounds = cursor_bounds;
@@ -267,13 +270,57 @@ index d48b2c36..d358374b 100644
              assert!(state.projection_anchor_layout.is_none(), "document resets must not inherit geometry");
          }));
 diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
-index 413f2e0b..edb7d02d 100644
+index 413f2e0b..e0896780 100644
 --- a/crates/base/src/input/editor/display_map/display_map.rs
 +++ b/crates/base/src/input/editor/display_map/display_map.rs
-@@ -357,22 +357,25 @@ impl DisplayMap {
+@@ -33,6 +33,10 @@ pub struct DisplayMap {
+     source_text: Rope,
+     projection: Option<PinnedProjection>,
+     hang_room: Pixels,
++    /// Wrap time and lines wrapped again by edits since the last
++    /// [`Self::take_edit_reshape`] (#1621). An edit that drops the projection
++    /// lays the whole note out as source here, before any prepaint runs.
++    edit_reshape: (std::time::Duration, usize),
+ }
+ 
+ impl DisplayMap {
+@@ -43,6 +47,7 @@ impl DisplayMap {
+             source_text: Rope::new(),
+             projection: None,
+             hang_room: Pixels::default(),
++            edit_reshape: Default::default(),
+         }
+     }
+ 
+@@ -309,12 +314,17 @@ impl DisplayMap {
+         new_text: &Rope,
+         cx: &mut App,
+     ) {
+-        if self.projection.take().is_some() {
++        let start = std::time::Instant::now();
++        let lines = if self.projection.take().is_some() {
+             self.wrap_map.restore_source(changed_text, cx);
++            changed_text.lines_len()
+         } else {
+             self.wrap_map
+                 .on_text_changed(changed_text, range, new_text, cx);
+-        }
++            new_text.lines_len()
++        };
++        self.edit_reshape.0 += start.elapsed();
++        self.edit_reshape.1 += lines;
+         self.source_text = changed_text.clone();
+         self.rebuild_fold_projection();
+     }
+@@ -357,22 +367,30 @@ impl DisplayMap {
          self.rebuild_fold_projection();
      }
  
++    /// Wrap time and lines wrapped again by edits since the last call (#1621).
++    pub(crate) fn take_edit_reshape(&mut self) -> (std::time::Duration, usize) {
++        std::mem::take(&mut self.edit_reshape)
++    }
++
 +    /// Returns how many lines were wrapped again (#1621): every line of the
 +    /// new projection, or of the source when it returns to source; 0 when the
 +    /// installed projection is already current.
@@ -299,7 +346,7 @@ index 413f2e0b..edb7d02d 100644
              Some(pinned) => {
                  self.wrap_map.set_projected(
                      pinned.projection.as_ref(),
-@@ -380,12 +383,18 @@ impl DisplayMap {
+@@ -380,12 +398,18 @@ impl DisplayMap {
                      self.hang_room,
                      window,
                  );
