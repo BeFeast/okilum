@@ -1083,7 +1083,7 @@ fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, c
                 remember: false,
                 focus: cx.focus_handle(),
             });
-            view.read(cx).focus.focus(window, cx);
+            view.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(view, window, cx))
         },
     );
