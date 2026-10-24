@@ -6675,9 +6675,8 @@ impl Render for Reader {
             .map(|panel| {
                 let left = panel == reader_layout::Panel::Notes;
                 let resize_view = cx.entity().downgrade();
-                let header = (left || !manager_headerless).then(|| {
-                    self.render_panel_header(panel, panel_widths.get(panel), window, cx)
-                });
+                let header = (left || !manager_headerless)
+                    .then(|| self.render_panel_header(panel, panel_widths.get(panel), window, cx));
                 v_flex()
                     .id(if left {
                         "reader-notes-panel"
