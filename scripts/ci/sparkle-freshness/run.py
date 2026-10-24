@@ -231,6 +231,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                             assert f'verified-ready {expected}' in trace.read_text()
                         assert trace.read_text().count('original delegate restored for shutdown') == 1, trace.read_text()
                         if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged'):
+                            assert 'replacement session started before scheduling' in trace.read_text(), trace.read_text()
                             assert trace.read_text().index('dismiss 2') < trace.read_text().index(f'offer {expected}'), trace.read_text()
                             assert any(f'GET /{expected}.zip' in r for r in requests), requests
                         if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged', 'restart-newest', 'quit-newest'):

@@ -23,7 +23,8 @@ The production `TSUserDriver` in `crates/okilum-shell/src/updater/bridge.m` now:
    termination refusal are forwarded unchanged.
 4. Cancels a superseded prepared installer using its public
    `SPUUserUpdateChoiceSkip` reply, waits for `didFinishUpdateCycleForUpdateCheck`,
-   then starts a new user-initiated Sparkle check. The explicit Install intent
+   then starts a new Sparkle check synchronously inside that completion callback,
+   preserving foreground/background context. The explicit Install intent
    continues for ordinary updates; informational, major and failed-feed-signature
    prompts are not automatically accepted. Ready-stage Skip cancels without
    recording a user version skip. An installer inherited from an older build
@@ -88,6 +89,39 @@ October 10 native-log examples in `1155/s/native-formats/macos-log-show.ndjson`
 are unrelated. Release logs prove publication, not the client-installed archive.
 Oleg's specific root cause remains a hypothesis supported by this source path;
 there is no claim of a reproduced incident on his Mac.
+
+## Hosted replacement stall after #1605
+
+The retained hosted run `40082795045` reached `prepared 2`, published the changed
+feed, fetched the appcast again, and reached `dismiss 2`. The installed bundle
+remained 1 with no relaunch receipt. This excludes absence of the GUI/download
+callbacks; it does not retrospectively verify the original client incident.
+
+Pinned Sparkle 2.10.0 `SPUUpdater.m` explains the deterministic scheduler conflict:
+
+- Its driver completion clears `_driver` and `sessionInProgress`, then calls
+  `didFinishUpdateCycleForUpdateCheck:error:` (lines 868–888).
+- After that delegate returns, it schedules the next automatic check unless the
+  delegate has already started a session. Interval discovery immediately sets
+  `sessionInProgress = YES` before its asynchronous installer-info probe
+  (lines 502–549).
+- Both public foreground and background check methods return without checking
+  when that flag is already set (lines 664–667 and 713–716).
+
+The bridge previously dispatched the replacement check onto the main queue from
+cycle completion. That dispatch ran after scheduling had reserved the session,
+so Sparkle ignored it. Start the replacement directly in the public completion
+callback instead: Sparkle has already finished driver cleanup, and its explicit
+post-delegate session check then suppresses the competing scheduler. Cancellation
+still uses Ready-stage Skip; no restart is initiated from its reply block.
+Automatic checks remain enabled. No timer delay or timeout increase is needed.
+
+The hosted delegate asserts that replacement has claimed a session before cycle
+completion returns, and traces that boundary. Existing signed archive, actual
+N→N+2 installation/relaunch, unchanged-feed, foreground/background eligibility
+and post-verification editor-guard cases remain mandatory. Static source evidence
+establishes the conflict; hosted CI on the fix head is still required to establish
+successful installation and detect any subsequent lifecycle failure.
 
 ## Hosted regression
 

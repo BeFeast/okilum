@@ -171,15 +171,17 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     TSSend(1, item.displayVersionString);
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
-    // Sparkle has released its old driver and completed cancellation before we
-    // start another cycle. Never check reentrantly from a user-driver reply.
+    // Sparkle has released its old driver and cleared sessionInProgress here.
+    // Start the replacement before returning: otherwise Sparkle's automatic
+    // scheduler reserves a session for interval discovery, and a queued check
+    // is ignored. This is cycle completion, never a user-driver reply.
     BOOL restart = TSRestartAfterCycle && !error;
     TSRestartAfterCycle = NO;
     if (TSCycleFailure) { TSSend(2, TSCycleFailure); TSCycleFailure = nil; }
-    if (restart) dispatch_async(dispatch_get_main_queue(), ^{
-        if (TSReplacementForeground) [TSUpdater checkForUpdates];
-        else [TSUpdater checkForUpdatesInBackground];
-    });
+    if (restart) {
+        if (TSReplacementForeground) [updater checkForUpdates];
+        else [updater checkForUpdatesInBackground];
+    }
 }
 - (void)updaterDidNotFindUpdate:(SPUUpdater *)updater {
     TSSend(0, nil);

@@ -53,7 +53,14 @@ static void FinishComparison(void) {
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cycle finished check=%ld error=%@/%ld replacement=%d session=%d", (long)check, error.domain ?: @"none", (long)error.code, TSRestartAfterCycle, updater.sessionInProgress]);
+    BOOL replacement = TSRestartAfterCycle && !error;
     [super updater:updater didFinishUpdateCycleForUpdateCheck:check error:error];
+    if (replacement) {
+        // The next session must be claimed inside completion, before Sparkle's
+        // enabled automatic scheduler reserves it for interval discovery.
+        if (!updater.sessionInProgress) exit(47);
+        Trace(@"replacement session started before scheduling");
+    }
     if (TSCompare) dispatch_async(dispatch_get_main_queue(), ^{ FinishComparison(); });
 }
 @end
