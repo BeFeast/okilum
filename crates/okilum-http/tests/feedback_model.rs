@@ -23,3 +23,12 @@ mod sprint {
         "isolated mock".into()
     }
 }
+
+// The UI-owned label is asserted against the real function by the shell suite.
+// This shim only satisfies that one UI reference in the reused model tests.
+fn video_hint() -> String {
+    format!(
+        "UI-owned video hint: up to {}",
+        model::human_size(model::MAX_VIDEO)
+    )
+}
