@@ -153,10 +153,16 @@ fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
         .iter()
         .find_map(|(owner, draft)| (draft.window.window_id() == id).then_some(*owner))
         .unwrap_or(id);
+    let owner = cx
+        .windows()
+        .into_iter()
+        .find(|handle| handle.window_id() == owner)
+        .map(|handle| reader_owned_windows::owner(handle, cx))
+        .unwrap_or_else(|| window.window_handle());
     let meta = metadata(window);
     // Menu/button dispatch may still borrow the caller's window. Opening or
     // activating another window happens only after that borrow is released.
-    cx.defer(move |cx| show_for(owner, meta, send_immediately, cx));
+    cx.defer(move |cx| show_for(owner.window_id(), meta, send_immediately, cx));
 }
 
 fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut App) {
@@ -191,17 +197,20 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         .get(&owner)
         .map(|draft| draft.view.clone())
         .filter(|view| !matches!(view.read(cx).state, SendState::Sent(_)));
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
-            size(px(560.), px(700.)),
-            cx,
-        ))),
-        window_min_size: Some(size(px(400.), px(360.))),
-        ..TitleBar::window_options()
-    };
+    let owner_window = cx
+        .windows()
+        .into_iter()
+        .find(|handle| handle.window_id() == owner);
+    let options = reader_owned_windows::options(
+        owner_window,
+        size(px(560.), px(700.)),
+        size(px(400.), px(360.)),
+        cx,
+    );
     let mut opened = None;
     let result = cx.open_window(options, |window, cx| {
         window.set_window_title("Send feedback — Okilum");
+        reader_owned_windows::attach(owner_window, window, cx);
         let view = if let Some(view) = previous {
             // Input focus subscriptions belong to the window that created them.
             // Rebuild the field on reopen, keeping text and all draft attachments.
@@ -218,11 +227,18 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         });
         Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
         opened = Some(view.clone());
-        let content = cx.new(|_| FeedbackWindow { view });
+        let content = cx.new(|cx| {
+            cx.on_release(|this: &mut FeedbackWindow, cx| {
+                this.view.update(cx, |view, _| view.visible = false);
+            })
+            .detach();
+            FeedbackWindow { view }
+        });
         cx.new(|cx| Root::new(content, window, cx))
     });
     match result {
         Ok(window) => {
+            reader_owned_windows::register(owner_window, window.into(), cx);
             let view = opened.unwrap();
             cx.global_mut::<Drafts>().0.insert(
                 owner,

@@ -33,6 +33,7 @@ gpui-kit-assets.workspace = true
 # The Windows HLSL profile uses debug assertions; icons must still be portable.
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 anyhow = "1"
+raw-window-handle = { version = "0.6", features = ["std"] }
 # Named in GPUI's Platform trait signatures, wrapped for #1121 and #1312; already locked through gpui.
 futures = "0.3"
 smallvec = "1"
@@ -93,7 +94,6 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
 wry = { package = "lb-wry", version = "=0.53.3" }
-raw-window-handle = { version = "0.6", features = ["std"] }
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSTextList"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue"] }
@@ -102,7 +102,7 @@ rustix = { version = "=1.1.4", features = ["fs", "process"] }
 [target.'cfg(windows)'.dependencies]
 dirs = "6"
 velopack = "=1.2.161"
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading"] }
 
 [build-dependencies]
 embed-resource = "=3.0.11"

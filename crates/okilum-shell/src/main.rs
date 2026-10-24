@@ -79,6 +79,7 @@ mod reader_navigation;
 mod reader_obsidian;
 mod reader_open;
 mod reader_open_windows;
+mod reader_owned_windows;
 mod reader_pdf;
 mod reader_plain_text;
 mod reader_project_navigation;
