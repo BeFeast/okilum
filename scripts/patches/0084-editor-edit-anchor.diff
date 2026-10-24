@@ -1,0 +1,323 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 6e2caee8..a1b3ad6b 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -821,8 +821,16 @@ impl<M: InputModeKind> TextElement<M> {
+             ))
+         };
+ 
++        // A source anchor has already moved the scroll handle to where the
++        // rows above hold still; caret-follow above started from there. Keep
++        // its result when the selection changed: an Enter on the bottom row
++        // must still bring the new caret row into view, or the caret drifts
++        // below the viewport one row per key (#1621).
++        let follows_anchor = state.projection_anchored && selection_changed && !is_selected_all;
+         if let Some(deferred_scroll_offset) = state.deferred_scroll_offset {
+-            scroll_offset = deferred_scroll_offset;
++            if !follows_anchor {
++                scroll_offset = deferred_scroll_offset;
++            }
+         }
+         scroll_offset.y = clamp_auto_grow_vertical_scroll_offset(
+             &state.mode,
+@@ -1978,8 +1986,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Self::PrepaintState {
++        let prepaint_start = std::time::Instant::now();
+         let initial = self.state.read(cx);
+         let mut trace = TraceSpan::new("editor_prepaint", TraceIdentity::new(initial.source_stamp(), initial.presentation_epoch(), initial.projection.current.is_some()));
++        let scroll_before = initial.scroll_handle.offset();
++        let painted = initial.last_layout.as_ref().or(initial.projection_anchor_layout.as_ref())
++            .map(|last| (last.source_stamp, last.presentation_epoch));
++        let frame_edit = painted.is_none_or(|(stamp, _)| stamp != initial.source_stamp());
++        let new_frame = painted != Some((initial.source_stamp(), initial.presentation_epoch()));
++        let mut anchor_kind = if initial.zoom_anchor.is_some() { "zoom" } else { "none" };
+         // Read the old shaped geometry before installing a new projection. The
+         // anchor is canonical source, not a display-row index that rewrap moves.
+         let source_anchor = initial.zoom_anchor.or_else(|| {
+@@ -1992,6 +2007,36 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             }
+             let previous = last.source_for_anchor(initial.source_stamp())?;
+             let current_text = initial.text.to_string();
++            // An edit holds the row where it starts: the rows above it keep
++            // their place whatever changed height there while the edit was
++            // laid out (a block drawn raw, a heading's scale), and the caret
++            // moves on from that row as it would in Source. Holding the caret
++            // instead scrolled the note by a row on every Enter (#1096), and
++            // without any anchor an Enter below a tall block jumped (#1621).
++            if previous.as_ref() != current_text.as_str() {
++                let mut start = previous.bytes().zip(current_text.bytes())
++                    .take_while(|(a, b)| a == b).count();
++                while !previous.is_char_boundary(start) || !current_text.is_char_boundary(start) {
++                    start -= 1;
++                }
++                if let Some(offset) = last.project(start, ConcealBias::Left) {
++                    let mut y = last.visible_top;
++                    for (line, line_start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++                        if offset >= *line_start {
++                            if let Some(pos) = line.position_for_index(offset - line_start, last, false) {
++                                let content_y = y + pos.y;
++                                let screen_y = content_y + initial.scroll_handle.offset().y;
++                                if screen_y >= px(0.) && screen_y < bounds.size.height {
++                                    anchor_kind = "edit";
++                                    return Some((start, content_y, false));
++                                }
++                                break;
++                            }
++                        }
++                        y += line.size(&last.rows).height;
++                    }
++                }
++            }
+             let current_offset = initial.cursor();
+             let old_offset = previous_source_anchor(&previous, &current_text, current_offset)?;
+             let offset = last.project(old_offset, ConcealBias::Right)?;
+@@ -2002,6 +2047,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                         let content_y = y + pos.y;
+                         let screen_y = content_y + initial.scroll_handle.offset().y;
+                         if screen_y >= px(0.) && screen_y < bounds.size.height {
++                            anchor_kind = "caret";
+                             return Some((current_offset, content_y, initial.cursor_line_end_affinity));
+                         }
+                         break;
+@@ -2021,6 +2067,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     if screen_y >= px(0.) && screen_y < bounds.size.height {
+                         let old = last.source(projected, ConcealBias::Right)?;
+                         let current = previous_source_anchor(&current_text, &previous, old)?;
++                        anchor_kind = "row";
+                         return Some((current, y, false));
+                     }
+                     projected += row.len;
+@@ -2095,6 +2142,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+ 
+         // Rows of this frame, built once after the projection is installed.
+         let mut frame_rows = None;
++        let mut reshape = (std::time::Duration::ZERO, 0);
++        let mut frame_raw = false;
+         self.state.update(cx, |state, cx| {
+             let changed = state.last_layout.as_ref().is_none_or(|last| {
+                 last.font != font
+@@ -2128,9 +2177,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             state
+                 .display_map
+                 .set_hang_room(state.hang_room());
+-            state
++            let reshape_start = std::time::Instant::now();
++            let reshaped_lines = state
+                 .display_map
+                 .install_projection(state.projection.pin(), &state.text, window, cx);
++            reshape = (reshape_start.elapsed(), reshaped_lines);
++            frame_raw = state.projection.enabled
++                && state.projection.provider.is_some()
++                && state.projection.current.is_none();
+             let rows = Self::row_metrics(state, window.line_height());
+             // A block above the viewport grew or shrank when it was measured:
+             // scroll by the same amount with the new rows, so the view holds.
+@@ -2146,6 +2200,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 state.deferred_scroll_offset = Some(scroll);
+             }
+             state.zoom_anchor = None;
++            state.projection_anchored = source_anchor.is_some();
+             if let Some((offset, old_y, affinity)) = source_anchor {
+                 let row = state.display_map.offset_to_wrap_display_point_with_affinity(
+                     offset, affinity).row;
+@@ -2452,6 +2507,20 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let (cursor_bounds, cursor_scroll_offset, current_row) =
+             self.layout_cursor(&last_layout, &mut bounds, scroll_size, window, cx);
+         last_layout.cursor_bounds = cursor_bounds;
++        if new_frame {
++            let state = self.state.read(cx);
++            state.record_layout_frame(|| super::state::LayoutFrame {
++                generation: state.source_stamp().generation,
++                presentation_epoch: state.presentation_epoch(),
++                edit: frame_edit,
++                raw: frame_raw,
++                prepaint_ms: prepaint_start.elapsed().as_secs_f32() * 1000.,
++                reshape_ms: reshape.0.as_secs_f32() * 1000.,
++                reshaped_lines: reshape.1,
++                scroll_delta: f32::from(cursor_scroll_offset.y - scroll_before.y),
++                anchor: anchor_kind,
++            });
++        }
+ 
+         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
+         let selection_path = self.layout_selections(&last_layout, &mut bounds, window, cx);
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index d48b2c36..d358374b 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -12,6 +12,36 @@ pub struct LayoutDiagnostics {
+     pub active_changes: u64,
+ }
+ 
++/// One prepaint that laid out a new source revision or a new presentation of
++/// it (#1621): what the layout cost and how far it moved the view. Recorded
++/// only while layout diagnostics are enabled; see
++/// [`InputBaseState::take_layout_frames`].
++#[derive(Clone, Debug, PartialEq)]
++pub struct LayoutFrame {
++    pub generation: u64,
++    pub presentation_epoch: u64,
++    /// The source changed since the painted layout (a keystroke, a paste, an
++    /// undo), not only its presentation (a caret move, an adoption).
++    pub edit: bool,
++    /// Live Preview had no projection for this revision: the whole note was
++    /// laid out as source.
++    pub raw: bool,
++    pub prepaint_ms: f32,
++    /// Time spent re-wrapping the document for a new projection or for source.
++    pub reshape_ms: f32,
++    /// Lines that re-wrap shaped; 0 when the projection did not change.
++    pub reshaped_lines: usize,
++    /// Change of the vertical scroll offset in this frame, in pixels.
++    /// Negative: the view moved towards the end of the note.
++    pub scroll_delta: f32,
++    /// What held the view: "edit" (the row where the change starts), "caret",
++    /// "row" (the first visible row), "zoom", or "none".
++    pub anchor: &'static str,
++}
++
++/// Frames kept until the next [`InputBaseState::take_layout_frames`].
++const MAX_LAYOUT_FRAMES: usize = 512;
++
+ use crate::input::attribution::{Identity as TraceIdentity, Span as TraceSpan};
+ use super::clipboard::{
+     ClipboardPasteEvent, ClipboardReadError, ClipboardSession, ExactClipboardProvider,
+@@ -386,6 +416,7 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) cursor_surrounding_lines: Option<usize>,
+     pub(super) blink_cursor: Entity<BlinkCursor>,
+     layout_diagnostics: Option<Cell<LayoutDiagnostics>>,
++    layout_frames: std::cell::RefCell<std::collections::VecDeque<LayoutFrame>>,
+     pub(super) loading: bool,
+     /// Range in UTF-8 length for the selected text.
+     ///
+@@ -403,6 +434,9 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) zoom_anchor: Option<(usize, Pixels, bool)>,
+     // Temporary scroll extent required by a presentation anchor, never source rows.
+     pub(super) projection_anchor_tail: Pixels,
++    /// This frame's prepaint held the view with a source anchor. The caret
++    /// may still follow a selection change from there (#1621).
++    pub(super) projection_anchored: bool,
+     pub(super) last_cursor: Option<usize>,
+     /// The input container bounds
+     pub(super) input_bounds: Bounds<Pixels>,
+@@ -776,6 +810,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             cursor_surrounding_lines: None,
+             blink_cursor,
+             layout_diagnostics: None,
++            layout_frames: Default::default(),
+             undo_manager,
+             selected_range: Selection::default(),
+             selected_word_range: None,
+@@ -802,6 +837,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             projection_anchor_layout: None,
+             zoom_anchor: None,
+             projection_anchor_tail: px(0.),
++            projection_anchored: false,
+             last_bounds: None,
+             last_selected_range: None,
+             last_cursor: None,
+@@ -1136,6 +1172,23 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.layout_diagnostics.as_ref().map(Cell::get)
+     }
+ 
++    /// The frames laid out since the last call, oldest first (#1621). Empty
++    /// unless layout diagnostics are enabled.
++    pub fn take_layout_frames(&self) -> Vec<LayoutFrame> {
++        self.layout_frames.borrow_mut().drain(..).collect()
++    }
++
++    pub(super) fn record_layout_frame(&self, frame: impl FnOnce() -> LayoutFrame) {
++        if self.layout_diagnostics.is_none() {
++            return;
++        }
++        let mut frames = self.layout_frames.borrow_mut();
++        if frames.len() == MAX_LAYOUT_FRAMES {
++            frames.pop_front();
++        }
++        frames.push_back(frame());
++    }
++
+     pub(super) fn record_layout_diagnostic(&self, update: impl FnOnce(&mut LayoutDiagnostics)) {
+         if let Some(cell) = &self.layout_diagnostics {
+             let mut value = cell.get();
+@@ -1215,7 +1268,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+         drop(trace);
+         if self.projection.enabled {
+             let painted = self.last_layout.take();
+-            if matches!(reason, SourceMutationReason::Reset | SourceMutationReason::Silent) {
++            // Only a reset is a new document. Enter, Backspace, paste, cut
++            // and undo are silent edits of this one: without the painted
++            // layout they had no anchor, so rows above that changed height
++            // while the edit drew raw moved the view (#1621).
++            if matches!(reason, SourceMutationReason::Reset) {
+                 self.projection_anchor_layout = None;
+             } else if painted.is_some() {
+                 self.projection_anchor_layout = painted;
+@@ -5217,6 +5274,10 @@ mod tests {
+             assert!(state.last_layout.is_none());
+             assert_eq!(state.projection_anchor_layout.as_ref().unwrap().source_stamp, painted,
+                 "a second mutation before paint must retain the displayed revision");
++            // Enter, Backspace, paste and undo are silent edits: they keep it
++            // too, or rows changing height above them move the view (#1621).
++            state.record_source_mutation(SourceMutationReason::Silent, cx);
++            assert_eq!(state.projection_anchor_layout.as_ref().unwrap().source_stamp, painted);
+             state.record_source_mutation(SourceMutationReason::Reset, cx);
+             assert!(state.projection_anchor_layout.is_none(), "document resets must not inherit geometry");
+         }));
+diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
+index 413f2e0b..edb7d02d 100644
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -357,22 +357,25 @@ impl DisplayMap {
+         self.rebuild_fold_projection();
+     }
+ 
++    /// Returns how many lines were wrapped again (#1621): every line of the
++    /// new projection, or of the source when it returns to source; 0 when the
++    /// installed projection is already current.
+     pub(crate) fn install_projection(
+         &mut self,
+         projection: Option<PinnedProjection>,
+         source: &Rope,
+         window: &gpui::Window,
+         cx: &mut App,
+-    ) {
++    ) -> usize {
+         if projection
+             .as_ref()
+             .zip(self.projection.as_ref())
+             .is_some_and(|(next, old)| next.stamp == old.stamp)
+         {
+-            return;
++            return 0;
+         }
+         self.source_text = source.clone();
+-        match projection {
++        let lines = match projection {
+             Some(pinned) => {
+                 self.wrap_map.set_projected(
+                     pinned.projection.as_ref(),
+@@ -380,12 +383,18 @@ impl DisplayMap {
+                     self.hang_room,
+                     window,
+                 );
++                let lines = pinned.projection.text().split('\n').count();
+                 self.projection = Some(pinned);
++                lines
+             }
+-            None if self.projection.take().is_some() => self.wrap_map.restore_source(source, cx),
+-            None => {}
+-        }
++            None if self.projection.take().is_some() => {
++                self.wrap_map.restore_source(source, cx);
++                source.lines_len()
++            }
++            None => 0,
++        };
+         self.rebuild_fold_projection();
++        lines
+     }
+ 
+     /// Exact source API endpoints can be inside a grapheme and outside the old

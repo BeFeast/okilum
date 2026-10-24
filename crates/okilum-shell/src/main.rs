@@ -104,6 +104,8 @@ mod reader_link_navigation;
 mod reader_navigation;
 use reader_link_navigation::handle_link;
 #[cfg(test)]
+mod input_anchor_tests;
+#[cfg(test)]
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
