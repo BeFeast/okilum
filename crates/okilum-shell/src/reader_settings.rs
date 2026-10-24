@@ -910,6 +910,38 @@ impl Settings {
                     paste_size_stepper(cx),
                     cx,
                 ))
+                .child(setting_row(
+                    "Close brackets and quotes",
+                    "Typing ( [ { \" ' or « adds the closing one; typing it again steps over it.",
+                    div()
+                        .debug_selector(|| "settings-auto-pair-brackets-control".into())
+                        .child(
+                            Switch::new("settings-auto-pair-brackets")
+                                .accessibility_label("Close brackets and quotes")
+                                .checked(reader_ui_state::auto_pair(cx).0)
+                                .on_click(|value, _, cx| {
+                                    let (_, markdown) = reader_ui_state::auto_pair(cx);
+                                    reader_ui_state::set_auto_pair(*value, markdown, cx)
+                                }),
+                        ),
+                    cx,
+                ))
+                .child(setting_row(
+                    "Close Markdown marks",
+                    "Typing * _ or ` adds the closing one. Typing any of them, or ~ and =, around a selection wraps it either way.",
+                    div()
+                        .debug_selector(|| "settings-auto-pair-markdown-control".into())
+                        .child(
+                            Switch::new("settings-auto-pair-markdown")
+                                .accessibility_label("Close Markdown marks")
+                                .checked(reader_ui_state::auto_pair(cx).1)
+                                .on_click(|value, _, cx| {
+                                    let (brackets, _) = reader_ui_state::auto_pair(cx);
+                                    reader_ui_state::set_auto_pair(brackets, *value, cx)
+                                }),
+                        ),
+                    cx,
+                ))
                 .into_any_element(),
             Section::Vault => {
                 if let Some(reader) = self.vault(cx) {
@@ -1495,6 +1527,16 @@ pub(crate) fn render_update_status(
                             .on_click(move |_, _, cx| restart(cx)),
                     )
                 })
+            })
+            .when(updater::can_cancel_update(), |row| {
+                row.child(
+                    Button::new(SharedString::from(format!("{id}-cancel-update")))
+                        .debug_selector(move || format!("{id}-cancel-update"))
+                        .ghost()
+                        .small()
+                        .label("Cancel update")
+                        .on_click(|_, _, _| updater::cancel_update()),
+                )
             })
             .when(available, |row| {
                 row.child(

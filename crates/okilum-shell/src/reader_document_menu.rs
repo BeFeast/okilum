@@ -358,6 +358,15 @@ impl Reader {
                     if let Some(label) = width_label {
                         menu = menu.menu(label, Box::new(ToggleNoteWidth));
                     }
+                    // Linux and Windows have no menu bar: View zoom lives here
+                    // too, with its shortcuts (#1652).
+                    if width_applies {
+                        menu = menu
+                            .menu("Zoom In", Box::new(reader_text_zoom::ZoomIn))
+                            .menu("Zoom Out", Box::new(reader_text_zoom::ZoomOut))
+                            .menu("Actual Size", Box::new(reader_text_zoom::Reset))
+                            .separator();
+                    }
                     if (!is_file || editing) && !show_find {
                         menu = menu.menu_with_icon(
                             "Find in note",

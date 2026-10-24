@@ -365,8 +365,14 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
     Menu {
         name: "View".into(),
         disabled: false,
-        items: vec![MenuItem::action("Full Note Width", ToggleNoteWidth)
-            .checked(reader_ui_state::full_note_width(cx))],
+        items: vec![
+            MenuItem::action("Zoom In", reader_text_zoom::ZoomIn),
+            MenuItem::action("Zoom Out", reader_text_zoom::ZoomOut),
+            MenuItem::action("Actual Size", reader_text_zoom::Reset),
+            MenuItem::separator(),
+            MenuItem::action("Full Note Width", ToggleNoteWidth)
+                .checked(reader_ui_state::full_note_width(cx)),
+        ],
     }
 }
 
@@ -390,6 +396,7 @@ const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
     reader_text_zoom::bind_keys(cx);
+    reader_editor::format::bind_keys(cx);
     reader_title_nav::bind_menu_keys(cx);
     quick_open::bind_palette_keys(cx);
     #[cfg(any(unix, windows))]
@@ -1517,6 +1524,8 @@ struct Reader {
     recent_switcher: reader_recent::Switcher,
     quick_open: quick_open::Palette,
     shortcut_sheet: reader_shortcuts::Sheet,
+    /// Transient "− 110% + Reset" overlay after a note text zoom (#1652).
+    zoom_hud: reader_text_zoom::Hud,
     content: Entity<TextViewState>,
     _content_sub: Subscription,
     current_rel: String,
@@ -1785,6 +1794,7 @@ impl Reader {
             recent_switcher: Default::default(),
             quick_open,
             shortcut_sheet,
+            zoom_hud: Default::default(),
             content,
             editing: None,
             retained_edit: None,
@@ -6556,7 +6566,8 @@ impl Render for Reader {
                     })
                     .child(self.render_document_surface(window, cx)),
             )
-            .when(self.find_open, |s| s.child(self.render_find_bar(cx)));
+            .when(self.find_open, |s| s.child(self.render_find_bar(cx)))
+            .children(reader_text_zoom::hud(self, cx));
         let mut panel_bodies =
             [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
                 self.panels.visible(panel, available).then(|| {
