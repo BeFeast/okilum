@@ -245,6 +245,25 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
             assert_eq!(view.video.as_ref().unwrap().path, video);
         });
 
+        // The next good drop clears both stale reasons (review: 1630).
+        view.update(visual, |view, cx| view.attach_paths(&[video.clone()], cx));
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_none() && view.video_error.is_none());
+        });
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.update(visual, |view, cx| view.attach_paths(&[image.clone()], cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(
+                view.video_error.is_none(),
+                "screenshot drop clears the old video reason"
+            );
+            assert!(view.image.is_some() && view.video.is_some());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
         let remove = visual.debug_bounds("feedback-remove-video").unwrap();
         visual.simulate_click(remove.center(), Modifiers::default());
         visual.run_until_parked();

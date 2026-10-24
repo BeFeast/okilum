@@ -548,6 +548,10 @@ impl FeedbackView {
             cx.notify();
             return;
         }
+        // A new attempt replaces the reasons from the last one, also for the
+        // slot this drop does not touch.
+        self.image_error = None;
+        self.video_error = None;
         if let Some(video) = videos.first() {
             self.attach_video(video, cx);
         }
