@@ -42,10 +42,32 @@ jobs:
       lane: ${{ steps.route.outputs.lane }}
       source: ${{ steps.route.outputs.source }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+      - name: Check out the exact source from the runner server
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
       - name: Select unpublished main or dispatch a source-pinned run
         id: select
         env:
@@ -81,10 +103,28 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-          github-server-url: ${{ vars.FORGEJO_CHECKOUT_URL || github.server_url }}
+      - name: Check out the exact source from the runner server
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
+          git fetch -q --no-tags --depth 1 origin "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
 
       - name: Build, sign and notarize
         shell: bash
@@ -148,7 +188,25 @@ jobs:
           SIGNATURE="$(printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - -p "$ARCHIVE")"
           export SIGNATURE
           python3 scripts/releases/macos-artifact.py stage "$RUNNER_TEMP/publish"
-      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+      - name: Prepare the pinned upload action from the runner server
+        if: github.ref == 'refs/heads/main' || needs.select.outputs.preview == 'true'
+        shell: bash
+        env:
+          ACTION_SERVER_URL: ${{ github.server_url }}
+          ACTION_SHA: ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+        run: |
+          set -euo pipefail
+          : "${ACTION_SERVER_URL:?}"
+          # Fixed local uses is supported; dynamic expressions in uses are not needed.
+          [ ! -L .forgejo-local-actions ]
+          action_dir=.forgejo-local-actions/upload-artifact
+          rm -rf "$action_dir"
+          mkdir -p "$action_dir"
+          git init -q "$action_dir"
+          git -C "$action_dir" fetch -q --no-tags --depth 1 "${ACTION_SERVER_URL%/}/BeFeast/actions-upload-artifact.git" "$ACTION_SHA"
+          git -C "$action_dir" checkout -q -f --detach "$ACTION_SHA"
+          test "$(git -C "$action_dir" rev-parse HEAD)" = "$ACTION_SHA"
+      - uses: ./.forgejo-local-actions/upload-artifact # verified upstream v3 (MIT)
         if: github.ref == 'refs/heads/main' || needs.select.outputs.preview == 'true'
         with:
           name: macos-publication
@@ -168,11 +226,32 @@ jobs:
     runs-on: bridge
     timeout-minutes: 105
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Check out the exact source from the runner server
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
       - name: Produce a source-pinned hosted shipping artifact
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
