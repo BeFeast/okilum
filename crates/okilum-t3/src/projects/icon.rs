@@ -858,63 +858,91 @@ pub const PROJECT_EMOJIS: [(&str, &str); 30] = [
     ("🌱", "Seedling"),
 ];
 
-/// T3's popular icons first when the search is empty; those this build
-/// does not carry are skipped.
+/// T3 Code's popular icons, the grid with an empty search (T3's
+/// `POPULAR_PROJECT_ICONS`, Lucide names and aliases).
 pub const POPULAR_ICONS: [&str; 24] = [
     "folder-code",
-    "code-xml",
-    "square-terminal",
-    "globe",
+    "code-2",
+    "terminal",
+    "globe-2",
     "server",
-    "hard-drive",
+    "database",
     "bot",
-    "cpu",
+    "sparkles",
+    "smartphone",
     "monitor",
-    "network",
+    "cloud-cog",
+    "package",
     "book-open",
-    "file-text",
-    "map",
-    "inbox",
-    "calendar",
-    "building-2",
-    "chart-pie",
-    "palette",
-    "heart",
-    "star",
-    "bell",
-    "layout-dashboard",
-    "folder",
-    "settings",
+    "flask-conical",
+    "shield-check",
+    "rocket",
+    "gamepad-2",
+    "music",
+    "image",
+    "shopping-bag",
+    "git-branch",
+    "workflow",
+    "wrench",
+    "layers-3",
 ];
 
-/// The icon names a search shows: popular first, then the rest by name;
-/// with a query, every name containing it (spaces read as `-`).
+/// At most this many icons answer a search, as in T3.
+pub const ICON_SEARCH_LIMIT: usize = 60;
+
+/// `search_icons` without Lucide tags.
 pub fn filter_icons(available: &[String], query: &str) -> Vec<String> {
-    let normalized = query
-        .trim()
+    search_icons(available, |_| &[], query)
+}
+
+/// The icon names a search shows, as T3 Code's picker: with an empty
+/// search T3's popular icons (those `available`); with a query every name
+/// containing it (spaces read as `-`), in name order, then the icons whose
+/// Lucide tags contain it, up to `ICON_SEARCH_LIMIT`.
+pub fn search_icons<'a>(
+    available: &[String],
+    tags: impl Fn(&str) -> &'a [String],
+    query: &str,
+) -> Vec<String> {
+    let normalized = dashed(query);
+    if normalized.is_empty() {
+        return POPULAR_ICONS
+            .iter()
+            .filter(|name| available.iter().any(|a| a == *name))
+            .map(|name| (*name).to_owned())
+            .collect();
+    }
+    let mut sorted: Vec<&String> = available.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    let mut names: Vec<String> = sorted
+        .iter()
+        .filter(|name| name.contains(&normalized))
+        .take(ICON_SEARCH_LIMIT)
+        .map(|name| (*name).clone())
+        .collect();
+    for name in sorted {
+        if names.len() >= ICON_SEARCH_LIMIT {
+            break;
+        }
+        if !name.contains(&normalized)
+            && tags(name)
+                .iter()
+                .any(|tag| dashed(tag).contains(&normalized))
+        {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
+/// Lower case, words joined by `-`, as Lucide names are.
+fn dashed(text: &str) -> String {
+    text.trim()
         .to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join("-");
-    let mut names: Vec<String> = Vec::new();
-    if normalized.is_empty() {
-        names.extend(
-            POPULAR_ICONS
-                .iter()
-                .filter(|name| available.iter().any(|a| a == *name))
-                .map(|name| (*name).to_owned()),
-        );
-    }
-    let mut rest: Vec<String> = available
-        .iter()
-        .filter(|name| !names.contains(name))
-        .filter(|name| normalized.is_empty() || name.contains(&normalized))
-        .cloned()
-        .collect();
-    rest.sort();
-    rest.dedup();
-    names.extend(rest);
-    names
+        .join("-")
 }
 
 /// The first emoji of pasted text, joiners, variation selectors, skin

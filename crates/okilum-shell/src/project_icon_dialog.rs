@@ -17,7 +17,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
 use okilum_t3::projects::icon::{
-    filter_icons, Avatar, IconColor, IconDraft, PickerTab, ProjectIcon, PROJECT_EMOJIS,
+    search_icons, Avatar, IconColor, IconDraft, PickerTab, ProjectIcon, PROJECT_EMOJIS,
 };
 use std::rc::Rc;
 
@@ -171,7 +171,11 @@ impl ProjectIconDialog {
 
     /// The icons the grid shows for the current search.
     pub fn visible_icons(&self, cx: &App) -> Vec<String> {
-        filter_icons(&self.available, &self.search.read(cx).value())
+        search_icons(
+            &self.available,
+            crate::lucide::tags,
+            &self.search.read(cx).value(),
+        )
     }
 
     fn preview(&self) -> Avatar {

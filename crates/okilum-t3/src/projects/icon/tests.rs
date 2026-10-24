@@ -468,21 +468,52 @@ fn first_emoji_takes_whole_sequences_only() {
 }
 
 #[test]
-fn icon_search_shows_popular_first_and_matches_dashed_names() {
-    let available: Vec<String> = ["zap", "bot", "folder", "book-open", "file-text", "rocket"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+fn icon_search_is_t3s_popular_icons_then_names_then_lucide_tags() {
+    let available: Vec<String> = [
+        "zap",
+        "bot",
+        "folder",
+        "book-open",
+        "file-text",
+        "rocket",
+        "music",
+        "music-2",
+        "file-music",
+        "headphones",
+        "list-music",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    // An empty search shows T3's popular icons only, in T3's order.
     assert_eq!(
         filter_icons(&available, ""),
-        ["bot", "book-open", "file-text", "folder", "rocket", "zap"]
+        ["bot", "book-open", "rocket", "music"]
     );
     assert_eq!(filter_icons(&available, "Book Op"), ["book-open"]);
     assert_eq!(
         filter_icons(&available, "o"),
-        ["book-open", "bot", "folder", "rocket"]
+        ["book-open", "bot", "folder", "headphones", "rocket"]
     );
     assert!(filter_icons(&available, "nothing").is_empty());
+    // T3 finds "mus" in names; Lucide tags add the icons that only say it there.
+    let tags: std::collections::BTreeMap<String, Vec<String>> = [
+        ("headphones", vec!["music".to_owned(), "audio".to_owned()]),
+        ("music", vec!["note".to_owned(), "eighth note".to_owned()]),
+        ("zap", vec!["flash".to_owned()]),
+    ]
+    .into_iter()
+    .map(|(name, tags)| (name.to_owned(), tags))
+    .collect();
+    let tags_of = |name: &str| tags.get(name).map_or(&[][..], Vec::as_slice);
+    assert_eq!(
+        search_icons(&available, tags_of, "mus"),
+        ["file-music", "list-music", "music", "music-2", "headphones"]
+    );
+    assert_eq!(search_icons(&available, tags_of, "Eighth Note"), ["music"]);
+    assert_eq!(search_icons(&available, tags_of, "flash"), ["zap"]);
+    let many: Vec<String> = (0..100).map(|i| format!("icon-{i:03}")).collect();
+    assert_eq!(filter_icons(&many, "icon").len(), ICON_SEARCH_LIMIT);
 }
 
 fn repo_project(root: &str, favicon: &str, web: &str, provider: &str) -> crate::Project {

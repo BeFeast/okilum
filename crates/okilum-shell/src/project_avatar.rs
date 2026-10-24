@@ -53,51 +53,18 @@ pub fn avatar(project: &Project, cx: &App) -> Avatar {
     icon::resolve(manual, logo, &project.name)
 }
 
-/// Icon files that are not Lucide icons, though they sit among them.
-const NOT_LUCIDE: [&str; 20] = [
-    "close",
-    "dash",
-    "delete",
-    "inspector",
-    "resize-corner",
-    "sort-ascending",
-    "sort-descending",
-    "star-fill",
-    "window-close",
-    "window-maximize",
-    "window-minimize",
-    "window-restore",
-    "projects",
-    "project-active",
-    "project-code",
-    "project-hybrid",
-    "project-knowledge",
-    "project-planned",
-    "channel-beta",
-    "channel-stable",
-];
-
 struct LucideNames(Arc<BTreeSet<String>>);
 impl Global for LucideNames {}
 
-fn scan(cx: &App) -> BTreeSet<String> {
-    cx.asset_source()
-        .list("icons/")
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|path| {
-            let name = path.strip_prefix("icons/")?.strip_suffix(".svg")?;
-            (!name.contains('/') && !NOT_LUCIDE.contains(&name)).then(|| name.to_owned())
-        })
-        .collect()
+fn bundled() -> BTreeSet<String> {
+    crate::lucide::names().iter().cloned().collect()
 }
 
 /// Reads the icon set once per app; the Projects picker and the icon
 /// dialog call it as they open.
 pub fn init(cx: &mut App) {
     if !cx.has_global::<LucideNames>() {
-        let names = scan(cx);
-        cx.set_global(LucideNames(Arc::new(names)));
+        cx.set_global(LucideNames(Arc::new(bundled())));
     }
 }
 
@@ -107,22 +74,23 @@ pub fn set_lucide_names(names: impl IntoIterator<Item = String>, cx: &mut App) {
     cx.set_global(LucideNames(Arc::new(names.into_iter().collect())));
 }
 
-/// The Lucide icons this build carries (gpui-component's set and Okilum's
-/// own), by Lucide name. T3 can name any Lucide icon; the rest fall back.
+/// Every Lucide icon T3 Code offers (the whole bundled set, aliases
+/// included), by Lucide name.
 pub fn lucide_names(cx: &App) -> Arc<BTreeSet<String>> {
     match cx.try_global::<LucideNames>() {
         Some(names) => names.0.clone(),
-        None => Arc::new(scan(cx)),
+        None => Arc::new(bundled()),
     }
 }
 
-/// A Lucide icon by name, or the folder when this build does not carry it.
+/// A Lucide icon by name, or the folder for a name Lucide does not have.
 pub fn lucide(name: &str, cx: &App) -> Icon {
-    let known = cx
-        .try_global::<LucideNames>()
-        .is_none_or(|names| names.0.contains(name));
+    let known = match cx.try_global::<LucideNames>() {
+        Some(names) => names.0.contains(name),
+        None => crate::lucide::contains(name),
+    };
     let name = if known { name } else { icon::DEFAULT_LUCIDE };
-    Icon::default().path(SharedString::from(format!("icons/{name}.svg")))
+    Icon::default().path(SharedString::from(crate::lucide::asset_path(name)))
 }
 
 /// One avatar, `size` px square.

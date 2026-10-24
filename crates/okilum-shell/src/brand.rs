@@ -169,6 +169,10 @@ impl AssetSource for Assets {
         if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
+        // The full Lucide set for project icons (#1627), unpacked on first use.
+        if path.starts_with(okilum_shell::lucide::ASSET_PREFIX) {
+            return Ok(okilum_shell::lucide::load(path).map(Cow::Owned));
+        }
         gpui_kit_assets::Assets.load(path)
     }
 

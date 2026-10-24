@@ -71,7 +71,8 @@ fn the_dialog_saves_the_tab_that_is_shown(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("icon-color-17").is_some(), "18 colours");
     assert!(visual.debug_bounds("icon-color-18").is_none());
     let names = dialog.read_with(visual, |d, cx| d.visible_icons(cx));
-    assert_eq!(names, ["bot", "book-open", "folder", "rocket"]);
+    // An empty search shows T3's popular icons, in T3's order (#1627).
+    assert_eq!(names, ["bot", "book-open", "rocket"]);
     dialog.read_with(visual, |d, _| {
         assert_eq!(d.draft().tab, PickerTab::Icons);
         assert_eq!(d.draft().lucide, DEFAULT_LUCIDE);
@@ -83,7 +84,7 @@ fn the_dialog_saves_the_tab_that_is_shown(cx: &mut TestAppContext) {
     assert!(events.borrow().is_empty());
 
     click(visual, "icon-color-3");
-    click(visual, "icon-choice-3");
+    click(visual, "icon-choice-2");
     click(visual, "icon-save");
     assert_eq!(
         events.borrow().last(),
@@ -190,7 +191,7 @@ fn the_real_dialog_hands_each_choice_to_the_host_in_its_window(cx: &mut TestAppC
 
     open_dialog(visual, None);
     click(visual, "icon-color-6");
-    click(visual, "icon-choice-3");
+    click(visual, "icon-choice-2");
     click(visual, "icon-save");
     open_dialog(visual, None);
     click(visual, "icon-tab-1");
@@ -231,4 +232,64 @@ fn the_real_dialog_hands_each_choice_to_the_host_in_its_window(cx: &mut TestAppC
     );
     assert!(seen.iter().all(|(_, window)| *window == this_window));
     visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "the host closed it"));
+}
+
+/// #1627 (Oleg): T3 finds seven music icons for "mus"; so does Okilum, from
+/// the whole bundled Lucide set, and the icons T3 projects use are drawable.
+#[gpui::test]
+fn the_search_covers_the_whole_lucide_set_like_t3(cx: &mut TestAppContext) {
+    let (dialog, visual, _) = open(cx, None);
+    visual.update(|_, cx| {
+        crate::project_avatar::set_lucide_names(crate::lucide::names().iter().cloned(), cx)
+    });
+    let dialog_view = dialog.clone();
+    visual.update(|window, cx| {
+        dialog_view.update(cx, |d, cx| {
+            d.available = crate::project_avatar::lucide_names(cx)
+                .iter()
+                .cloned()
+                .collect();
+            d.search
+                .update(cx, |input, cx| input.set_value("mus", window, cx));
+        })
+    });
+    visual.run_until_parked();
+    let names = dialog.read_with(visual, |d, cx| d.visible_icons(cx));
+    assert_eq!(
+        names[..7],
+        [
+            "file-music",
+            "keyboard-music",
+            "list-music",
+            "music",
+            "music-2",
+            "music-3",
+            "music-4"
+        ]
+    );
+    assert!(names.len() > 7, "Lucide tags add more: {names:?}");
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(visual.debug_bounds("icon-choice-6").is_some());
+    click(visual, "icon-choice-4");
+    dialog.read_with(visual, |d, _| assert_eq!(d.draft().lucide, "music-2"));
+    visual.update(|_, cx| {
+        for name in [
+            "palette",
+            "brain-cog",
+            "globe-2",
+            "music",
+            "music-2",
+            "sparkles",
+            "video",
+            "briefcase-medical",
+            "wallet-minimal",
+            "calculator",
+        ] {
+            assert!(
+                crate::project_avatar::lucide_names(cx).contains(name),
+                "{name}"
+            );
+            assert!(crate::lucide::svg(name).is_some(), "{name}");
+        }
+    });
 }
