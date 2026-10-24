@@ -1,10 +1,9 @@
-//! Shared public HTTP policy for Feedback and Windows update downloads.
+//! Public Feedback HTTP policy with Windows OS trust and system proxy support.
 //! Windows uses SChannel's OS trust policy, never a verification bypass.
 use anyhow::{Context, Result};
 use reqwest::blocking::{Client, ClientBuilder};
 use std::time::Duration;
 
-pub mod updates;
 #[cfg(any(windows, test))]
 mod windows_proxy;
 
@@ -43,10 +42,16 @@ pub fn reason(error: &anyhow::Error) -> String {
         }
     }
     let detail = format!("{error:#}").to_ascii_lowercase();
+    if detail.contains("proxy authentication required") || detail.contains("http 407") {
+        return http_reason(407);
+    }
     if detail.contains("certificate")
         || detail.contains("unknownissuer")
         || detail.contains("untrustedroot")
         || detail.contains("0x80090325")
+        || detail.contains("0x800b0109")
+        || detail.contains("tls")
+        || detail.contains("ssl")
     {
         "The TLS certificate is not trusted by this computer".into()
     } else if detail.contains("proxy") || detail.contains("autoconfig") {

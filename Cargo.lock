@@ -6132,10 +6132,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "reqwest",
- "serde_json",
- "tempfile",
  "url",
- "velopack",
  "windows-sys 0.61.2",
 ]
 

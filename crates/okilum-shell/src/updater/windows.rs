@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex, OnceLock,
 };
-use velopack::{UpdateCheck, UpdateManager, UpdateOptions};
+use velopack::{sources::HttpSource, HttpOptions, UpdateCheck, UpdateManager, UpdateOptions};
 
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
 static BETA: AtomicBool = AtomicBool::new(false);
@@ -207,8 +207,13 @@ fn manager() -> Result<UpdateManager, velopack::Error> {
 fn manager_for(beta: bool) -> Result<UpdateManager, velopack::Error> {
     let (url, channel) = super::windows_feed::endpoint(beta);
     UpdateManager::new(
-        okilum_http::updates::Source::new(url, env!("OKILUM_RELEASE_VERSION"))
-            .map_err(|error| velopack::Error::Other(format!("{error:#}")))?,
+        HttpSource::new_with_options(
+            url,
+            HttpOptions {
+                TimeoutMilliseconds: 300_000,
+                ..Default::default()
+            },
+        ),
         Some(UpdateOptions {
             ExplicitChannel: Some(channel.into()),
             MaximumDeltasBeforeFallback: 10,
@@ -290,13 +295,10 @@ pub(super) fn check(_manual: bool) {
             Ok(_) if ready() => CheckStatus::Ready,
             Ok(UP_TO_DATE) => CheckStatus::UpToDate(std::time::SystemTime::now()),
             Ok(note) => CheckStatus::Note(note.into()),
-            Err(error) => {
-                crate::reader_diagnostics::network_failure("Windows update", &error);
-                CheckStatus::Failed(format!(
-                    "{}. Your current version is unchanged.",
-                    okilum_http::reason(&error)
-                ))
-            }
+            Err(error) => CheckStatus::Failed(format!(
+                "{}. Your current version is unchanged.",
+                error.to_string().trim_end_matches('.')
+            )),
         });
         BUSY.store(false, Ordering::Release);
     });
