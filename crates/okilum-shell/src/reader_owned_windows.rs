@@ -219,15 +219,18 @@ mod native {
             }
         }
         fn native_window() -> NativeWindow {
+            native_window_with_styles(WS_OVERLAPPEDWINDOW, WS_EX_APPWINDOW | WS_EX_CLIENTEDGE)
+        }
+        fn native_window_with_styles(style: u32, extended_style: u32) -> NativeWindow {
             let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
             // SAFETY: built-in window class, no callback pointers or borrowed
             // state. RAII destroys each test HWND even if an assertion panics.
             let handle = unsafe {
                 CreateWindowExW(
-                    WS_EX_APPWINDOW | WS_EX_CLIENTEDGE,
+                    extended_style,
                     class.as_ptr(),
                     class.as_ptr(),
-                    WS_OVERLAPPEDWINDOW,
+                    style,
                     0,
                     0,
                     300,
@@ -243,9 +246,10 @@ mod native {
         }
         #[test]
         fn windows_owned_tool_style_read_distinguishes_zero_from_failure() {
-            let tool = native_window();
+            // A framed WS_OVERLAPPEDWINDOW retains WS_EX_WINDOWEDGE even after
+            // clearing extended styles. Use a borderless HWND for the zero case.
+            let tool = native_window_with_styles(WS_POPUP, 0);
             unsafe {
-                set_long(tool.0, GWL_EXSTYLE, 0).unwrap();
                 SetLastError(5); // A stale error from an earlier Win32 call.
                 assert_eq!(get_long(tool.0, GWL_EXSTYLE).unwrap(), 0);
                 assert!(get_long(std::ptr::null_mut(), GWL_EXSTYLE).is_err());
