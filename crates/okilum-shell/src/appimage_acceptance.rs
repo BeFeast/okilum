@@ -2,8 +2,8 @@
 //! only by an explicit CLI argument, never by updater environment or feed data.
 //! Commands drive real Reader, Settings and protected updater paths under Xvfb.
 use crate::*;
-use anyhow::{Context as _, Result, ensure};
-use serde_json::{Value, json};
+use anyhow::{ensure, Context as _, Result};
+use serde_json::{json, Value};
 use std::sync::OnceLock;
 
 static DIRECTORY: OnceLock<PathBuf> = OnceLock::new();

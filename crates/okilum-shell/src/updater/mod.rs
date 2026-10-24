@@ -92,11 +92,9 @@ pub(crate) fn install(_cx: &mut App) {
     {
         windows::start();
         // An Okilum left open for days still learns of a new release (#683).
-        _cx.spawn(async move |cx| {
-            loop {
-                cx.background_executor().timer(RECHECK_EVERY).await;
-                windows::check(false);
-            }
+        _cx.spawn(async move |cx| loop {
+            cx.background_executor().timer(RECHECK_EVERY).await;
+            windows::check(false);
         })
         .detach();
         _cx.spawn(async move |cx| {
@@ -365,7 +363,7 @@ fn show_ready_notice(
 ) {
     use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
-    use gpui_component::{Sizable, WindowExt, notification::Notification};
+    use gpui_component::{notification::Notification, Sizable, WindowExt};
     use std::rc::Rc;
     struct UpdateNotice;
     let restart = Rc::new(restart);

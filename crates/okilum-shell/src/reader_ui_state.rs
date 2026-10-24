@@ -2621,11 +2621,9 @@ mod tests {
                 if live_preview {
                     let input = reader.editing.as_ref().unwrap().test_input();
                     assert!(input.read(cx).value().contains("Unsaved draft sentinel"));
-                    assert!(
-                        !std::fs::read_to_string(root.join("Folder/note.md"))
-                            .unwrap()
-                            .contains("Unsaved draft sentinel")
-                    );
+                    assert!(!std::fs::read_to_string(root.join("Folder/note.md"))
+                        .unwrap()
+                        .contains("Unsaved draft sentinel"));
                 } else {
                     assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
                 }
