@@ -263,8 +263,8 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         let length = file.metadata()?.len();
         ensure!(
             length <= MAX_VIDEO,
-            "Video exceeds the {} limit.",
-            human_size(MAX_VIDEO)
+            "Video is {}. Trim or compress it and attach again.",
+            over_limit(length)
         );
         form = form.part(
             "video",
