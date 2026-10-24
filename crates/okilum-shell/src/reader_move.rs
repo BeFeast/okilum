@@ -1730,13 +1730,13 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(
-                !r.tree
+                r.tree
                     .rows
                     .iter()
                     .find(|row| row.path == "Folder")
                     .unwrap()
                     .expanded,
-                "a single folder click toggles (#1099)"
+                "a folder name click never collapses it (#1512)"
             )
         });
         visual.simulate_event(MouseDownEvent {
@@ -1755,13 +1755,28 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(
+                r.tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "Folder")
+                    .unwrap()
+                    .expanded,
+                "a double click on the name does not collapse either"
+            )
+        });
+        // Only the chevron collapses a folder (#1512).
+        let chevron = visual.debug_bounds("folder-disclosure-Folder").unwrap();
+        visual.simulate_click(chevron.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
                 !r.tree
                     .rows
                     .iter()
                     .find(|row| row.path == "Folder")
                     .unwrap()
                     .expanded,
-                "the second click of a double click does not toggle back"
+                "the chevron collapses the folder"
             )
         });
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));

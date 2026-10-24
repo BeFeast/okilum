@@ -9698,8 +9698,14 @@ mod document_link_landing_tests {
             want(index, "Areas/apertune", "Areas/apertune")
         );
 
-        // Keyboard: ←/→ only collapse and expand; Enter is the name click
-        // (here an index spelled `_Index.md`), never a collapse.
+        // Keyboard: ←/→ only collapse and expand; Open (⌘↓, Ctrl+↓ elsewhere)
+        // is the name click (here an index spelled `_Index.md`), never a
+        // collapse. Enter stays Rename on a row (#1099).
+        let open = if cfg!(target_os = "macos") {
+            "cmd-down"
+        } else {
+            "ctrl-down"
+        };
         click(visual, "tree-row-Areas/plain");
         assert_eq!(state(visual).1, some("Areas/plain"));
         // Reveal current folded «Areas/other» away again.
@@ -9719,19 +9725,19 @@ mod document_link_landing_tests {
             want(index, "Areas/other", "Areas/apertune"),
             "arrows open nothing"
         );
-        visual.simulate_keystrokes("enter");
+        visual.simulate_keystrokes(open);
         visual.run_until_parked();
         assert!(row(visual, "Areas/other").unwrap().expanded);
         let other = "Areas/other/_Index.md";
         assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
-        visual.simulate_keystrokes("enter");
+        visual.simulate_keystrokes(open);
         visual.run_until_parked();
         assert!(
             row(visual, "Areas/other").unwrap().expanded,
-            "Enter never collapses"
+            "Open never collapses"
         );
         assert_eq!(state(visual).1, some("Areas/other"));
-        // Enter on a collapsed folder expands it and opens its index.
+        // Open on a collapsed folder expands it and opens its index.
         visual.simulate_keystrokes("left");
         visual.run_until_parked();
         assert!(!row(visual, "Areas/other").unwrap().expanded);
@@ -9743,7 +9749,7 @@ mod document_link_landing_tests {
             v.tree.cursor = some("Areas/other");
             v.tree_focus.focus(window, cx);
         });
-        visual.simulate_keystrokes("enter");
+        visual.simulate_keystrokes(open);
         visual.run_until_parked();
         assert!(row(visual, "Areas/other").unwrap().expanded);
         assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
