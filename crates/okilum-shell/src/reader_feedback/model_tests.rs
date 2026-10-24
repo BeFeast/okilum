@@ -26,6 +26,7 @@ fn report() -> Report {
         meta: meta(),
         screenshot: None,
         log: None,
+        video: None,
     }
 }
 fn image(format: image::ImageFormat) -> Vec<u8> {
@@ -196,4 +197,108 @@ fn log_attachment_is_bounded_to_250_lines_and_256_kib_without_broken_utf8() {
     let tail = log_tail(&path).unwrap();
     assert_eq!(tail, "marker");
     assert!(tail.len() <= MAX_LOG);
+}
+fn sized_file(dir: &Path, name: &str, len: u64) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::File::create(&path).unwrap().set_len(len).unwrap();
+    path
+}
+#[test]
+fn video_cap_is_pomois_90_mb_in_decimal_units() {
+    // pomoi FEEDBACK_VIDEO_MAX_BYTES; Cloudflare Free rejects 100 MB requests.
+    assert_eq!(MAX_VIDEO, 90_000_000);
+    assert_eq!(human_size(MAX_VIDEO), "90 MB");
+    assert_eq!(human_size(95_300_000), "95.3 MB");
+    assert_eq!(human_size(1_500), "2 KB");
+    assert!(super::super::video_hint().contains("up to 90 MB"));
+}
+#[test]
+fn video_files_are_checked_by_type_emptiness_and_the_exact_byte_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, mime) in [
+        ("a.mp4", "video/mp4"),
+        ("b.M4V", "video/mp4"),
+        ("c.MOV", "video/quicktime"),
+        ("d.webm", "video/webm"),
+    ] {
+        assert_eq!(video_mime(Path::new(name)), Some(mime), "{name}");
+    }
+    assert_eq!(video_mime(Path::new("e.png")), None);
+    assert_eq!(video_mime(Path::new("noext")), None);
+
+    let at_cap = video_file(&sized_file(dir.path(), "cap.mp4", MAX_VIDEO)).unwrap();
+    assert_eq!(
+        (at_cap.name.as_str(), at_cap.size, at_cap.mime),
+        ("cap.mp4", MAX_VIDEO, "video/mp4")
+    );
+    let over = video_file(&sized_file(dir.path(), "over.mov", MAX_VIDEO + 1))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        over.contains("90000001 bytes; the limit is 90000000 bytes"),
+        "{over}"
+    );
+    let far_over = video_file(&sized_file(dir.path(), "far.webm", 95_300_000))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        far_over.contains("95.3 MB; the limit is 90 MB"),
+        "{far_over}"
+    );
+    assert!(video_file(&sized_file(dir.path(), "empty.mp4", 0)).is_err());
+    assert!(video_file(&sized_file(dir.path(), "clip.avi", 10)).is_err());
+    assert!(video_file(&dir.path().join("missing.mp4")).is_err());
+}
+#[test]
+fn video_is_streamed_as_its_own_multipart_part_with_type_and_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.webm");
+    let body: &[u8] = b"\x1aE\xdf\xa3 webm body";
+    std::fs::write(&path, body).unwrap();
+    let mut report = report();
+    report.video = Some(video_file(&path).unwrap());
+    assert!(report
+        .copy_text()
+        .contains("Video attached in the feedback draft: clip.webm (1 KB)."));
+    let (url, server) = mock(201, RECEIPT);
+    assert_eq!(send_to(&url, &report).unwrap().issue_number, 123);
+    let wire = server.join().unwrap();
+    let text = String::from_utf8_lossy(&wire);
+    assert!(
+        text.contains("name=\"video\"; filename=\"clip.webm\""),
+        "{text}"
+    );
+    assert!(text
+        .to_ascii_lowercase()
+        .contains("content-type: video/webm"));
+    assert!(wire.windows(body.len()).any(|b| b == body));
+    assert!(!text.contains("name=\"screenshot\""));
+}
+#[test]
+fn a_video_that_grew_past_the_cap_or_a_bare_413_keeps_the_draft_with_a_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = sized_file(dir.path(), "grow.mp4", 1_000);
+    let mut report = report();
+    report.video = Some(video_file(&path).unwrap());
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(MAX_VIDEO + 1)
+        .unwrap();
+    // Validation fails before any connection is made.
+    assert!(send_to("http://127.0.0.1:9/feedback", &report)
+        .unwrap_err()
+        .to_string()
+        .contains("the limit is"));
+    let mut report = self::report();
+    report.video = Some(video_file(&sized_file(dir.path(), "ok.mp4", 10)).unwrap());
+    let (url, server) = mock(413, "{}");
+    let error = send_to(&url, &report).unwrap_err().to_string();
+    server.join().unwrap();
+    assert!(
+        error
+            .contains("Attachments exceed the server's size limit. Your draft is kept. (HTTP 413)"),
+        "{error}"
+    );
 }

@@ -192,6 +192,93 @@ fn picker_and_native_file_drop_attach_images_and_invalid_replacement_keeps_the_p
 }
 
 #[gpui::test]
+fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_it(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("screenshot.png");
+    std::fs::write(&image, png()).unwrap();
+    let video = dir.path().join("recording.MOV");
+    std::fs::write(&video, b"moov").unwrap();
+    let second = dir.path().join("second.webm");
+    std::fs::write(&second, b"webm").unwrap();
+    with_reader(cx, |visual| {
+        let reader = visual;
+        let (view, mut feedback) = open_from_button(reader);
+        let visual = &mut feedback;
+        assert!(visual.debug_bounds("feedback-video-hint").is_some());
+        let center = visual.debug_bounds("feedback-form").unwrap().center();
+        visual.simulate_event(FileDropEvent::Entered {
+            position: center,
+            paths: ExternalPaths([video.clone(), image.clone()].into_iter().collect()),
+        });
+        visual.simulate_event(FileDropEvent::Submit { position: center });
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            let report = view.report(cx).unwrap();
+            let attached = report.video.expect("dropped video is attached");
+            assert_eq!(attached.mime, "video/quicktime");
+            assert_eq!(attached.path, video);
+            assert!(
+                report.screenshot.is_some(),
+                "the PNG still goes to the screenshot"
+            );
+            assert!(view.video_error.is_none() && view.image_error.is_none());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("feedback-video").is_some());
+
+        // Two videos at once are refused and the attached one stays.
+        view.update(visual, |view, cx| {
+            view.attach_paths(&[second.clone(), video.clone()], cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_some());
+            assert_eq!(view.video.as_ref().unwrap().path, video);
+        });
+        // A rejected replacement keeps the previous video.
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.video_error.is_some());
+            assert_eq!(view.video.as_ref().unwrap().path, video);
+        });
+
+        // The next good drop clears both stale reasons (review: 1630).
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&video), cx)
+        });
+        view.read_with(visual, |view, _| {
+            assert!(view.image_error.is_none() && view.video_error.is_none());
+        });
+        view.update(visual, |view, cx| {
+            view.attach_video(&dir.path().join("missing.mp4"), cx)
+        });
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&image), cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(
+                view.video_error.is_none(),
+                "screenshot drop clears the old video reason"
+            );
+            assert!(view.image.is_some() && view.video.is_some());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        let remove = visual.debug_bounds("feedback-remove-video").unwrap();
+        visual.simulate_click(remove.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            assert!(view.report(cx).unwrap().video.is_none());
+            assert!(view.video_error.is_none());
+        });
+    });
+}
+
+#[gpui::test]
 fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
     cx: &mut TestAppContext,
 ) {
