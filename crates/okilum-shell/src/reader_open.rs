@@ -1093,7 +1093,19 @@ fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, c
 }
 
 impl VaultDestination {
+    fn source_is_open(&self, cx: &App) -> bool {
+        self.source
+            .upgrade()
+            .is_some_and(|reader| cx.windows().contains(&reader.read(cx).reader_window))
+    }
+
     fn answer(&self, current: bool, window: &mut Window, cx: &mut App) {
+        // A pending choice must survive its originating window. Keep the
+        // destination explicit instead of silently choosing another window.
+        if current && !self.source_is_open(cx) {
+            cx.refresh_windows();
+            return;
+        }
         if self.remember {
             super::reader_ui_state::set_vault_open(if current { "current" } else { "new" }, cx);
         }
@@ -1107,6 +1119,7 @@ impl VaultDestination {
 }
 impl Render for VaultDestination {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let source_is_open = self.source_is_open(cx);
         v_flex()
             .p_4()
             .gap_3()
@@ -1117,6 +1130,11 @@ impl Render for VaultDestination {
                 }
             }))
             .child(TitleBar::new().child("Open another vault"))
+            .when(!source_is_open, |view| {
+                view.child(
+                    "The original window was closed. Open this vault in a new window, or cancel.",
+                )
+            })
             .child(format!(
                 "Where should {} open?",
                 self.opts
@@ -1146,6 +1164,7 @@ impl Render for VaultDestination {
                     .child(
                         Button::new("vault-destination-current")
                             .label("In this window")
+                            .disabled(!source_is_open)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.answer(true, window, cx)),
                             ),
@@ -1967,6 +1986,108 @@ mod entry_tests {
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(readers(cx).len(), 3, "New Window bypasses Ask"));
         cx.update(|cx| {
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn pending_vault_choice_survives_its_source_window_closing(cx: &mut TestAppContext) {
+        use super::super::{reader_ui_state, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let roots: Vec<_> = ["first", "requested"]
+            .into_iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("note.md"), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            reader_ui_state::install(&fixture.path().join("state"), cx);
+            finish_open(
+                Ok(Opts {
+                    vault: Some(roots[0].clone()),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let source = cx.update(|cx| readers(cx)[0].clone());
+        let original = cx.update(|cx| source.read(cx).reader_window);
+        cx.update(|cx| {
+            finish_open_from(
+                Ok(Opts {
+                    vault: Some(roots[1].clone()),
+                    ..Default::default()
+                }),
+                Some(source.downgrade()),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let prompt = cx.windows().into_iter().find(|w| *w != original).unwrap();
+        cx.update(|cx| {
+            original
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap()
+        });
+        cx.run_until_parked();
+        // Keep the Reader entity alive: native-window liveness matters too.
+        cx.update(|cx| {
+            prompt
+                .downcast::<Root>()
+                .unwrap()
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .view()
+                        .clone()
+                        .downcast::<VaultDestination>()
+                        .ok()
+                        .unwrap();
+                    view.update(cx, |this, cx| {
+                        this.remember = true;
+                        assert!(!this.source_is_open(cx));
+                        this.answer(true, window, cx);
+                        assert_eq!(
+                            reader_ui_state::vault_open(cx),
+                            "ask",
+                            "unavailable choice is not remembered"
+                        );
+                    });
+                })
+                .unwrap()
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.windows().contains(&prompt),
+            "request remains available for an explicit new-window choice"
+        );
+        cx.update(|cx| {
+            prompt
+                .downcast::<Root>()
+                .unwrap()
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .view()
+                        .clone()
+                        .downcast::<VaultDestination>()
+                        .ok()
+                        .unwrap();
+                    view.update(cx, |this, cx| this.answer(false, window, cx));
+                })
+                .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(reader_ui_state::vault_open(cx), "new");
+            assert!(reader_of(&roots[1], cx).is_some());
+            assert!(!cx.windows().contains(&prompt));
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             }
