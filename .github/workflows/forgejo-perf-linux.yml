@@ -98,7 +98,7 @@ jobs:
         env:
           LEGACY_RESULT: ${{ steps.legacy-scroll.outcome }}
         run: |
-          echo "Legacy Reader scroll probe: **${LEGACY_RESULT:-skipped}** (informational; the editor latency gate blocks merges)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Legacy Reader scroll probe: **${LEGACY_RESULT:-skipped}** (informational; editor latency determines this supplementary perf job)." >> "$GITHUB_STEP_SUMMARY"
       - name: Check editor latency and the baseline ratchet
         env:
           CALIBRATION_RUNS: ${{ inputs.calibration_runs || '1' }}

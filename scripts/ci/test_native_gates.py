@@ -55,21 +55,13 @@ class NativeGates(unittest.TestCase):
             for scope in ('true', 'false'):
                 self.assertFalse(gate('macos', SCOPE_RESULT=status, MACOS_REQUIRED=scope))
 
-    def test_linux_and_windows_never_block_mac_or_check(self):
+    def test_linux_windows_and_perf_never_block_mac_or_check(self):
         for status in ('failure', 'cancelled', 'skipped', ''):
             for scope in ('true', 'false'):
                 values = dict(LINUX_RESULT=status, WINDOWS_RESULT=status,
-                              MACOS_REQUIRED=scope)
+                              PERF_RESULT=status, MACOS_REQUIRED=scope)
                 self.assertTrue(gate('macos', **values))
                 self.assertTrue(gate('check', **values))
-
-    def test_editor_perf_blocks_check_but_not_the_mac_aggregate(self):
-        for status in ('failure', 'cancelled', ''):
-            self.assertTrue(gate('macos', PERF_RESULT=status))
-            self.assertFalse(gate('check', PERF_RESULT=status))
-        for status in ('success', 'skipped'):
-            self.assertTrue(gate('check', PERF_RESULT=status))
-        self.assertTrue(gate('check', PERF_RESULT='skipped', MACOS_REQUIRED='false'))
 
     def test_selected_native_failure_and_fork_skip_fail(self):
         for status in ('failure', 'cancelled', 'skipped', ''):
@@ -91,7 +83,6 @@ class NativeGates(unittest.TestCase):
 
     def test_main_requires_shared_without_pr_native_scope(self):
         self.assertTrue(gate('check', EVENT='push', MACOS_RESULT='skipped'))
-        self.assertTrue(gate('check', EVENT='push', MACOS_RESULT='skipped', PERF_RESULT='skipped'))
         self.assertFalse(gate('check', EVENT='push', SHARED_RESULT='failure'))
 
     def test_blocking_dependency_graph_is_independent_of_platform_lanes(self):
@@ -99,7 +90,7 @@ class NativeGates(unittest.TestCase):
             block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:|\Z)', WORKFLOW, re.M | re.S)[1]
             value = re.search(r'^    needs: (.*)$', block, re.M)
             return set(value[1].strip('[]').split(', ')) if value else set()
-        self.assertEqual(needs('check'), {'shared', 'macos', 'perf-linux'})
+        self.assertEqual(needs('check'), {'shared', 'macos'})
         self.assertEqual(needs('macos'), {'native-scope', 'macos-github', 'macos-local'})
         self.assertEqual(needs('shared'), set())
         for job in ('macos-github', 'macos-local'):

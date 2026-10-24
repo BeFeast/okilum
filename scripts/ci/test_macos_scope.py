@@ -48,7 +48,7 @@ class ScopeTests(unittest.TestCase):
                 for needed in ['true', 'false', '']:
                     for native in ['success', 'failure', 'cancelled', 'skipped']:
                         for perf in ['success', 'skipped', 'failure', 'cancelled', '']:
-                            expected = (shared == 'success' and perf in ['success', 'skipped']
+                            expected = (shared == 'success'
                                         and (event == 'push' or native == 'success'))
                             with self.subTest(event=event, shared=shared, needed=needed,
                                               native=native, perf=perf):

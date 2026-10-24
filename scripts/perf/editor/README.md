@@ -4,7 +4,9 @@ The existing `perf-linux` job reuses its trace binary and Xvfb display. The
 editor gate has a 300-second deadline including its one permitted retry, and
 adds no runner or second build. The legacy Reader scroll growth measurements
 are informational; their outcome is always shown in the job summary. Only the
-new editor gate blocks the perf job (manager policy, 2026-10-24).
+new editor gate determines the perf job result. The entire `perf-linux` job is
+supplementary: it is not a dependency of required `ci / check` (manager
+disposition, 2026-10-24). Budgets and failures remain visible on each scoped PR.
 
 `fixtures.py` generates original prose, with pinned SHA-256 hashes: 3 KiB,
 130,000 bytes with 460 heading sections, exactly 1 MiB, and 1,200,000 characters.
@@ -102,10 +104,17 @@ and SHA-256 must agree before reuse. A different commit requires a new build.
 This uses the existing job and runner, and makes repeated calibration possible
 without rebuilding the executable for each observation.
 
-The required aggregate is enabled only in the final PR commit, after at least
-five consecutive green gate invocations on unchanged code and a red job on an
-artificially slowed commit. Until those observations exist, perf remains
-supplementary. Draft native checks remain red by the existing repository rule.
+Five consecutive green gate invocations and a forced regression were proven,
+but a later run on unchanged application/benchmark code exceeded the input
+budgets on both measurements. The single retry does not establish sufficient
+noise protection across hosted runners. Baselines have not been relaxed.
+
+Required activation is deferred to [same-runner A/B #1662](https://git.oklabs.uk/BeFeast/okilum/issues/1662),
+owned by Editing after #1640: measure main
+and PR binaries in one job on the same runner, report CPU model/vCPU count, and
+use a relative delta plus an absolute ceiling. Activation requires at least
+five green unchanged-code runs and a forced-red commit in that A/B mode.
+Draft native checks remain red by the existing repository rule.
 
 Exit status: 0 passes; 1 is a budget regression or rejected relaxation;
 2 is invalid/missing evidence. The job uploads raw frame traces, application
