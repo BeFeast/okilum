@@ -764,7 +764,7 @@ mod tests {
         );
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let text = cx.new(|cx| TextViewState::markdown(format!("[Metro]({raw})"), cx));
+            let text = cx.new(|cx| TextViewState::markdown(&format!("[Metro]({raw})"), cx));
             let view = cx.new(|_| Fixture {
                 text,
                 calls: calls.clone(),
