@@ -11,6 +11,8 @@ pub(super) struct LivePreview {
     queued: bool,
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
+    #[cfg(target_os = "linux")]
+    latency_subscriptions: Option<(Subscription, Subscription)>,
 }
 
 fn projection_colors(cx: &App) -> ProjectionColors {
@@ -188,6 +190,12 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "linux")]
+        self.install_editor_latency_diagnostics(
+            std::env::var("OKILUM_EDITOR_LATENCY_DIAGNOSTICS").as_deref() == Ok("1"),
+            window,
+            cx,
+        );
         if let Some(editing) = &mut self.editing {
             editing.live_preview.restore_after_find = false;
             if editing.live_preview.enabled != enabled {
@@ -306,8 +314,271 @@ impl Reader {
     }
 }
 
+// Linux CI only. CLOCK_MONOTONIC is shared with Python's monotonic_ns; diagnostic
+// writer latency and wall-clock adjustments are excluded from the samples.
+#[cfg(target_os = "linux")]
+fn latency_now_ns() -> u64 {
+    let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: clock_gettime initializes the correctly sized writable timespec.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) };
+    assert_eq!(result, 0, "editor diagnostic monotonic clock failed");
+    // SAFETY: successful clock_gettime initialized time.
+    let time = unsafe { time.assume_init() };
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
+#[cfg(target_os = "linux")]
+impl Reader {
+    fn install_editor_latency_diagnostics(
+        &mut self,
+        requested: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !requested {
+            return;
+        }
+        let Some(trace) = self
+            .loading
+            .as_ref()
+            .and_then(|l| l.opts.diagnostics.clone())
+        else {
+            return;
+        };
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if editing.live_preview.latency_subscriptions.is_some() {
+            return;
+        }
+        let input = editing.input.clone();
+        let edit_trace = trace.clone();
+        let changed = cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, event: &SourceMutation, window, cx| {
+                let mutation_ns = latency_now_ns();
+                this.trace_editor_latency_frame(
+                    input.clone(),
+                    event.stamp,
+                    "edit",
+                    mutation_ns,
+                    edit_trace.clone(),
+                    window,
+                    cx,
+                );
+            },
+        );
+        let last = Rc::new(Cell::new(None));
+        let live_trace = trace.clone();
+        let classified = cx.observe_in(&input, window, move |this, input, window, cx| {
+            let Some(editing) = this.editing.as_ref().filter(|e| e.input == *input) else {
+                return;
+            };
+            if !editing.live_preview.enabled {
+                return;
+            }
+            let editor = input.read(cx);
+            let stamp = editor.source_stamp();
+            let oversize = editor.text().len() > okilum_core::source_classifier::MAX_BYTES;
+            let accepted = editing
+                .live_preview
+                .accepted
+                .as_ref()
+                .filter(|provider| provider.source().stamp == stamp);
+            if !oversize && accepted.is_none() {
+                return;
+            }
+            let limited = oversize || accepted.is_some_and(|provider| provider.limited());
+            let identity = (stamp, editor.presentation_epoch(), limited);
+            if last.replace(Some(identity)) == Some(identity) {
+                return;
+            }
+            live_trace.event(
+                if limited {
+                    "live_preview_limited"
+                } else {
+                    "live_preview_accepted"
+                },
+                serde_json::json!({"document": stamp.document, "generation": stamp.generation,
+                    "presentation_epoch": editor.presentation_epoch(), "limited": limited,
+                    "monotonic_ns": latency_now_ns()}),
+            );
+            if !limited {
+                this.trace_editor_latency_frame(
+                    input.clone(),
+                    stamp,
+                    "live",
+                    0,
+                    live_trace.clone(),
+                    window,
+                    cx,
+                );
+            }
+        });
+        editing.live_preview.latency_subscriptions = Some((changed, classified));
+        let stamp = input.read(cx).source_stamp();
+        self.trace_editor_latency_frame(input, stamp, "open", 0, trace, window, cx);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn trace_editor_latency_frame(
+        &self,
+        input: Entity<EditorState>,
+        stamp: gpui_component::input::projection::SourceStamp,
+        purpose: &'static str,
+        mutation_ns: u64,
+        trace: reader_diagnostics::Trace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // GPUI invokes next-frame callbacks BEFORE draw/present. The nested
+        // callback is after that draw/present returned, before a later frame.
+        // This is a conservative software post-frame boundary, never scanout.
+        cx.on_next_frame(window, move |_, window, cx| {
+            cx.on_next_frame(window, move |this, _, cx| {
+                let matching = this.editing.as_ref().filter(|e| e.input == input);
+                let editor = input.read(cx);
+                let current = editor.source_stamp();
+                let live = matching.is_some_and(|e| e.live_preview.enabled);
+                let limited = matching
+                    .and_then(|e| e.live_preview.accepted.as_ref())
+                    .is_none_or(|p| p.limited());
+                let outcome = if matching.is_some() && current == stamp {
+                    "painted"
+                } else {
+                    "superseded"
+                };
+                trace.event("editor_latency_frame", serde_json::json!({
+                    "purpose": purpose, "outcome": outcome,
+                    "document": stamp.document, "generation": stamp.generation,
+                    "current_document": current.document, "current_generation": current.generation,
+                    "presentation_epoch": editor.presentation_epoch(),
+                    "mutation_ns": mutation_ns, "monotonic_ns": latency_now_ns(),
+                    "live": live, "limited": limited,
+                }));
+            });
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn latency_diagnostics_require_opt_in_and_trace(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let vault = fixture.path().join("notes");
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("Note.md"), "# Note\n\nBody\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+            cx.set_global(reader_history::TestSessionDirectory(
+                fixture.path().join("history"),
+            ));
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("Note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            reader.loading.as_mut().unwrap().opts.diagnostics = None;
+            reader.install_editor_latency_diagnostics(true, window, cx);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .latency_subscriptions
+                .is_none());
+            reader.loading.as_mut().unwrap().opts.diagnostics = Some(
+                reader_diagnostics::Trace::new(Some(state.clone()), Some(vault.clone())),
+            );
+            reader.install_editor_latency_diagnostics(false, window, cx);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .latency_subscriptions
+                .is_none());
+        });
+        visual.simulate_keystrokes("x");
+        visual.run_until_parked();
+        assert!(
+            !std::fs::read_to_string(state.join("reader-diagnostic.log"))
+                .unwrap_or_default()
+                .contains("editor_latency_frame")
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.install_editor_latency_diagnostics(true, window, cx);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .latency_subscriptions
+                .is_some());
+        });
+        visual.simulate_keystrokes("y");
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        // Diagnostics are asynchronous; wait only for the writer, outside the
+        // measured path. A positive control proves the disabled assertion above.
+        let log = state.join("reader-diagnostic.log");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let events: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            if events.iter().any(|event| {
+                event["phase"] == "editor_latency_frame"
+                    && event["details"]["purpose"] == "edit"
+                    && event["details"]["outcome"] == "painted"
+            }) {
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| event["phase"] == "editor_latency_frame"
+                            && event["details"]["outcome"] == "superseded"),
+                    "the older open generation must not become a latency sample"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "enabled frame event missing"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[cfg(unix)]
     #[gpui::test]
     fn mode_segments_follow_labels_preference_and_switch_editor_presentation(
