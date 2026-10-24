@@ -118,7 +118,7 @@ fn catalog() -> Vec<Entry> {
         entry::<quick_open::PaletteFiles>("Go to Files in quick open", Search),
         entry::<reader_text_zoom::ZoomIn>("Zoom in note text", View),
         entry::<reader_text_zoom::ZoomOut>("Zoom out note text", View),
-        entry::<reader_text_zoom::Reset>("Reset note text zoom", View),
+        entry::<reader_text_zoom::Reset>("Actual size (reset note text zoom)", View),
         entry::<PdfZoomIn>("Zoom in PDF", View),
         entry::<PdfZoomOut>("Zoom out PDF", View),
         entry::<PdfZoomFit>("Fit PDF to width", View),

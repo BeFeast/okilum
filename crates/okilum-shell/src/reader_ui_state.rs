@@ -1689,9 +1689,19 @@ pub(crate) fn full_note_width(cx: &App) -> bool {
     cx.try_global::<Store>()
         .is_some_and(|state| state.saved.full_note_width)
 }
-/// Maximum width of the note column: the reading width, or the whole pane
-/// when full note width is on (side padding stays inside the column).
+/// Maximum width of the note column: the reading width scaled by the note
+/// text zoom (#1652), or the whole pane when full note width is on (side
+/// padding stays inside the column). Callers lay the column out with
+/// `w_full().max_w(..)`, so a zoomed column never grows past its pane.
 pub(crate) fn note_column_width(cx: &App) -> f32 {
+    if full_note_width(cx) {
+        100_000.
+    } else {
+        reading_width(cx) * text_zoom(cx)
+    }
+}
+/// The note column for surfaces whose text does not follow the note zoom.
+pub(crate) fn unzoomed_note_column_width(cx: &App) -> f32 {
     if full_note_width(cx) {
         100_000.
     } else {
@@ -2220,7 +2230,9 @@ mod tests {
             let base = base_font_size(cx);
             set_reading_width(900., cx);
             assert_eq!(base_font_size(cx), base, "slider keeps the unzoomed font");
-            assert_eq!(note_column_width(cx), 900.);
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
+            // The note column scales with the note text zoom (#1652).
+            assert_eq!(note_column_width(cx), 900. * text_zoom(cx));
             set_reading_width(100., cx);
             assert_eq!(reading_width(cx), 560., "normal width is at least 560 px");
             set_reading_width(5000., cx);
@@ -2235,7 +2247,7 @@ mod tests {
             assert_eq!(reading_width(cx), 900.);
             assert_eq!(base_font_size(cx), base);
             set_full_note_width(false, cx);
-            assert_eq!(note_column_width(cx), 900.);
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
             flush(cx);
             install(&directory, cx);
             assert!(!full_note_width(cx), "turning it off is remembered too");
