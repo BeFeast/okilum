@@ -128,16 +128,13 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
-<<<<<<< HEAD
     settings_section: String,
-=======
     /// Brackets and quotes close themselves as they are typed in a note
     /// (#1636); on by default.
     auto_pair_brackets: bool,
     /// `*`, `_` and `` ` `` close themselves too (#1636); off by default,
     /// as in Typora.
     auto_pair_markdown: bool,
->>>>>>> origin/main
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
@@ -191,12 +188,9 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
-<<<<<<< HEAD
             settings_section: String::new(),
-=======
             auto_pair_brackets: true,
             auto_pair_markdown: false,
->>>>>>> origin/main
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             json_raw: false,
             log_editor: "vscode".into(),
@@ -232,11 +226,8 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
-<<<<<<< HEAD
     settings_section_changed: bool,
-=======
     auto_pair_changed: bool,
->>>>>>> origin/main
     paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
@@ -332,11 +323,8 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
-<<<<<<< HEAD
         settings_section_changed: false,
-=======
         auto_pair_changed: false,
->>>>>>> origin/main
         paste_ask_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
@@ -562,11 +550,8 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
-<<<<<<< HEAD
     settings_section_changed: bool,
-=======
     auto_pair_changed: bool,
->>>>>>> origin/main
     paste_ask_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
@@ -816,11 +801,8 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
-<<<<<<< HEAD
         settings_section_changed: state.settings_section_changed,
-=======
         auto_pair_changed: state.auto_pair_changed,
->>>>>>> origin/main
         paste_ask_changed: state.paste_ask_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
@@ -1822,11 +1804,8 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
-<<<<<<< HEAD
         state.settings_section_changed = false;
-=======
         state.auto_pair_changed = false;
->>>>>>> origin/main
         state.paste_ask_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
@@ -2216,11 +2195,8 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
-<<<<<<< HEAD
                 settings_section_changed: false,
-=======
                 auto_pair_changed: false,
->>>>>>> origin/main
                 paste_ask_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
