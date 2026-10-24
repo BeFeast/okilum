@@ -128,6 +128,7 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    vault_open: String,
     /// Brackets and quotes close themselves as they are typed in a note
     /// (#1636); on by default.
     auto_pair_brackets: bool,
@@ -187,6 +188,7 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            vault_open: String::new(),
             auto_pair_brackets: true,
             auto_pair_markdown: false,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
@@ -224,6 +226,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    vault_open_changed: bool,
     auto_pair_changed: bool,
     paste_ask_changed: bool,
     json_raw_changed: bool,
@@ -320,6 +323,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        vault_open_changed: false,
         auto_pair_changed: false,
         paste_ask_changed: false,
         json_raw_changed: false,
@@ -546,6 +550,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    vault_open_changed: bool,
     auto_pair_changed: bool,
     paste_ask_changed: bool,
     json_raw_changed: bool,
@@ -629,6 +634,9 @@ impl WriteJob {
         }
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
+        }
+        if self.vault_open_changed {
+            latest.vault_open = self.saved.vault_open.clone();
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
@@ -757,6 +765,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.find_changed
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
+            && !state.vault_open_changed
             && !state.code_soft_wrap_changed
             && !state.auto_pair_changed
             && !state.paste_ask_changed
@@ -792,6 +801,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        vault_open_changed: state.vault_open_changed,
         auto_pair_changed: state.auto_pair_changed,
         paste_ask_changed: state.paste_ask_changed,
         json_raw_changed: state.json_raw_changed,
@@ -1794,6 +1804,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.vault_open_changed = false;
         state.auto_pair_changed = false;
         state.paste_ask_changed = false;
         state.json_raw_changed = false;
@@ -2130,6 +2141,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn vault_destination_defaults_reload_and_independent_merges(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(temp.path(), cx);
+            assert_eq!(vault_open(cx), "ask");
+            for value in ["current", "new", "ask"] {
+                set_vault_open(value, cx);
+                flush(cx);
+                install(temp.path(), cx);
+                assert_eq!(vault_open(cx), value);
+            }
+            set_vault_open("current", cx);
+            let pending = job(cx).unwrap();
+            let mut independent = read(&pending.path).unwrap();
+            independent.toolbar_labels = true;
+            std::fs::write(&pending.path, serde_json::to_vec(&independent).unwrap()).unwrap();
+            pending.run().unwrap();
+            let saved = read(&pending.path).unwrap();
+            assert!(
+                saved.toolbar_labels,
+                "preference write preserves unrelated changes"
+            );
+            assert_eq!(saved.vault_open, "current");
+            cx.global_mut::<Store>().saved.vault_open = "future-value".into();
+            assert_eq!(vault_open(cx), "ask");
+        });
+    }
+
+    #[gpui::test]
     fn stale_writer_cannot_undo_a_newer_snapshot_and_other_vaults_are_merged(
         cx: &mut TestAppContext,
     ) {
@@ -2184,6 +2224,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                vault_open_changed: false,
                 auto_pair_changed: false,
                 paste_ask_changed: false,
                 json_raw_changed: false,
@@ -2771,4 +2812,26 @@ pub(crate) fn typed_views(cx: &App) -> okilum_core::typed_view::Preferences {
     cx.try_global::<Store>()
         .map(|store| store.saved.typed_views.clone())
         .unwrap_or_default()
+}
+
+/// Unknown/future preference values safely ask rather than replacing a vault.
+pub(crate) fn vault_open(cx: &App) -> &'static str {
+    match cx
+        .try_global::<Store>()
+        .map(|s| s.saved.vault_open.as_str())
+    {
+        Some("current") => "current",
+        Some("new") => "new",
+        _ => "ask",
+    }
+}
+pub(crate) fn set_vault_open(value: &str, cx: &mut App) {
+    if !installed(cx) || vault_open(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.vault_open = value.into();
+    state.vault_open_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
 }
