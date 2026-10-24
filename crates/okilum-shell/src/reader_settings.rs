@@ -2206,6 +2206,8 @@ mod tests {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
         });
+        // Own the visual context so the parent context can drive other windows.
+        let mut visual = visual.clone();
         visual.simulate_resize(size(px(1200.), px(900.)));
         let main = visual.update(|window, cx| {
             window.activate_window();
