@@ -172,6 +172,9 @@ jobs:
       - name: Check every shared suite and summarize failures
         run: |
           set -euo pipefail
+          printf 'nofile before: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
+          ulimit -n "$(ulimit -Hn)"
+          printf 'nofile for tests: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
           # The native container has tail as PID 1. Reap orphaned fixtures
           # throughout the suites without changing Stopped certification (#1541).
           tini -s -- bash scripts/ci/check-shared.sh
@@ -270,7 +273,12 @@ jobs:
           key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
 
       - name: Run full Linux gate
-        run: bash scripts/ci/check-linux.sh
+        run: |
+          set -euo pipefail
+          printf 'nofile before: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
+          ulimit -n "$(ulimit -Hn)"
+          printf 'nofile for tests: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
+          bash scripts/ci/check-linux.sh
 
       - name: sccache stats
         if: always()
