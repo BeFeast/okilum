@@ -246,14 +246,18 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
         });
 
         // The next good drop clears both stale reasons (review: 1630).
-        view.update(visual, |view, cx| view.attach_paths(&[video.clone()], cx));
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&video), cx)
+        });
         view.read_with(visual, |view, _| {
             assert!(view.image_error.is_none() && view.video_error.is_none());
         });
         view.update(visual, |view, cx| {
             view.attach_video(&dir.path().join("missing.mp4"), cx)
         });
-        view.update(visual, |view, cx| view.attach_paths(&[image.clone()], cx));
+        view.update(visual, |view, cx| {
+            view.attach_paths(std::slice::from_ref(&image), cx)
+        });
         visual.run_until_parked();
         view.read_with(visual, |view, _| {
             assert!(
