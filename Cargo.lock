@@ -6131,7 +6131,11 @@ name = "okilum-http"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "url",
  "windows-sys 0.61.2",
 ]
