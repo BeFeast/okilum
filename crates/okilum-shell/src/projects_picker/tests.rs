@@ -154,8 +154,10 @@ fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestA
             folder: root.join(format!("Dev/Areas/Project{i:02}")),
             name: format!("Project{i:02}"),
             kind: Kind::Code,
-            environment: None,
-            manager_project: None,
+            // A complete T3 pointer: without it the row shows the ⚠
+            // manifest problem instead of the live activity glyph.
+            environment: Some("maestro".into()),
+            manager_project: Some(format!("project-{i}")),
             manager: Manager::Thread(format!("mcp:manager-{i}")),
         })
         .collect();
@@ -201,6 +203,154 @@ fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestA
     picker.read_with(visual,|p,_| {
         assert_eq!(p.scroll.offset(),before.0);
         assert_eq!(p.selected,before.1);
-        assert!(p.items.iter().any(|i| matches!(i,Item::Project(row) if row.project.name=="Project00" && row.manager==ManagerIndicator::Running)));
+        assert!(p.items.iter().any(|i| matches!(i,Item::Project(row) if row.project.name=="Project00" && matches!(row.status(), Some(RowStatus::Active(_))))));
     });
+}
+
+#[gpui::test]
+fn leave_project_closes_the_popover_only_while_a_project_is_active(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+    });
+    let left = Rc::new(RefCell::new(0));
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| ProjectsPicker::new(catalog(), Presentation::Popover, window, cx));
+        let left = left.clone();
+        cx.subscribe(&picker, move |_, _, _: &LeaveProject, _| {
+            *left.borrow_mut() += 1
+        })
+        .detach();
+        entity = Some(picker.clone());
+        let host = cx.new(|_| Host(picker));
+        Root::new(host, window, cx)
+    });
+    let picker = entity.unwrap();
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(visual.debug_bounds("projects-picker").is_some());
+    assert!(visual.debug_bounds("projects-picker-leave").is_none());
+    picker.update_in(visual, |p, _, cx| {
+        p.set_active(Some(PathBuf::from("vault/Dev/Areas/Editor")), cx)
+    });
+    visual.run_until_parked();
+    let leave = visual
+        .debug_bounds("projects-picker-leave")
+        .expect("Leave project at the foot of the switcher");
+    let results = visual.debug_bounds("projects-picker-results").unwrap();
+    assert!(leave.top() >= results.bottom(), "below the list");
+    visual.simulate_click(leave.center(), gpui::Modifiers::none());
+    assert_eq!(*left.borrow(), 1);
+}
+
+fn leak(selector: String) -> &'static str {
+    Box::leak(selector.into_boxed_str())
+}
+
+/// #1520: a dense list in sections. Recent first, then one labelled section
+/// per domain with its count; every row has the icon slot on the left and no
+/// status dot; the segmented filter narrows the list.
+#[gpui::test]
+fn sections_icon_slots_no_dots_and_the_segmented_filter(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        gpui_component::init(cx);
+    });
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| ProjectsPicker::new(catalog(), Presentation::Popover, window, cx));
+        entity = Some(picker.clone());
+        let host = cx.new(|_| Host(picker));
+        Root::new(host, window, cx)
+    });
+    let picker = entity.unwrap();
+    visual.run_until_parked();
+    picker.update_in(visual, |p, _, cx| {
+        p.record_opened(Path::new("vault/Music/Areas/Studio"), cx)
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Items: RECENT, Studio, DEV · 1, Editor, MUSIC · 2, Album, Studio.
+    let headers = picker.read_with(visual, |p, _| {
+        p.items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| match item {
+                Item::Header(g) => Some((i, g.label.clone(), g.count)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        headers,
+        [
+            (0, "Recent".to_owned(), 1),
+            (2, "Dev".to_owned(), 1),
+            (4, "Music".to_owned(), 2)
+        ]
+    );
+    let mut previous = None;
+    for (index, _, _) in &headers {
+        let bounds = visual
+            .debug_bounds(leak(format!("project-section-{index}")))
+            .expect("section label rendered");
+        if let Some(top) = previous {
+            assert!(bounds.top() > top, "sections in order");
+        }
+        previous = Some(bounds.top());
+    }
+    for index in [1, 3, 5, 6] {
+        let row = visual
+            .debug_bounds(leak(format!("project-choice-{index}")))
+            .expect("row rendered");
+        let icon = visual
+            .debug_bounds(leak(format!("project-icon-{index}")))
+            .expect("every row has the icon slot");
+        assert!(icon.left() - row.left() < px(12.), "icon slot on the left");
+        assert_eq!(icon.size.width, px(16.), "fixed 16 px slot");
+        assert!(row.size.height <= px(28.), "dense rows: {row:?}");
+        assert!(
+            visual
+                .debug_bounds(leak(format!("project-manager-dot-{index}")))
+                .is_none(),
+            "no status dots"
+        );
+        assert!(
+            visual
+                .debug_bounds(leak(format!("project-status-{index}")))
+                .is_none(),
+            "nothing to say about these projects"
+        );
+    }
+
+    // Code narrows to Editor alone; All brings everything back.
+    let code = visual
+        .debug_bounds("project-kind-1")
+        .expect("segmented filter");
+    let results = visual.debug_bounds("projects-picker-results").unwrap();
+    assert!(
+        code.bottom() <= results.top(),
+        "the filter sits above the list"
+    );
+    visual.simulate_click(code.center(), gpui::Modifiers::none());
+    visual.run_until_parked();
+    picker.read_with(visual, |p, _| {
+        assert_eq!(p.model.filter(), KindFilter::Code);
+        let names: Vec<_> = p
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Project(r) => Some(r.project.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["Editor"]);
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let all = visual.debug_bounds("project-kind-0").unwrap();
+    visual.simulate_click(all.center(), gpui::Modifiers::none());
+    visual.run_until_parked();
+    picker.read_with(visual, |p, _| assert_eq!(p.model.filter(), KindFilter::All));
 }

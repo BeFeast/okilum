@@ -59,6 +59,7 @@ mod reader_image;
 mod reader_incremental;
 mod reader_instance;
 mod reader_layout;
+mod reader_link_navigation;
 mod reader_loading;
 mod reader_log;
 #[cfg(target_os = "macos")]
@@ -76,6 +77,7 @@ mod reader_mermaid;
 mod reader_move;
 #[cfg(any(unix, windows))]
 mod reader_move_picker;
+mod reader_navigation;
 mod reader_obsidian;
 mod reader_open;
 mod reader_open_windows;
@@ -97,13 +99,11 @@ mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
+mod reader_title_nav;
 #[cfg(windows)]
 mod url_protocol;
 mod vault_name;
 mod version_info;
-use reader_sidebar::SectionAction;
-mod reader_link_navigation;
-mod reader_navigation;
 use reader_link_navigation::handle_link;
 #[cfg(test)]
 mod input_navigation_tests;
@@ -325,8 +325,6 @@ actions!(
         TreeOpen,
         TreeExpandSubtree,
         TreeCollapseSubtree,
-        CollapseSidebarSections,
-        ExpandSidebarSections,
         CollapseFolders,
         FocusCurrentFolder,
         PdfZoomIn,
@@ -342,10 +340,6 @@ actions!(
 const TREE_KEYS: &str = "ReaderTree && !Input";
 const TREE_EXPAND_SUBTREE_KEY: &str = "alt-right";
 const TREE_COLLAPSE_SUBTREE_KEY: &str = "alt-left";
-#[cfg(target_os = "macos")]
-const COLLAPSE_SECTIONS_KEY: &str = "cmd-shift-left";
-#[cfg(not(target_os = "macos"))]
-const COLLAPSE_SECTIONS_KEY: &str = "ctrl-shift-left";
 
 /// ⌘⇧E / Ctrl+Shift+E (#916). Letters keep shift on macOS (only shifted
 /// punctuation is rewritten, see HIDDEN_FILES_KEY_MAC), so one string fits.
@@ -360,6 +354,8 @@ const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
     reader_text_zoom::bind_keys(cx);
+    reader_title_nav::bind_menu_keys(cx);
+    quick_open::bind_palette_keys(cx);
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
@@ -529,16 +525,6 @@ fn bind_keys(cx: &mut App) {
             TREE_COLLAPSE_SUBTREE_KEY,
             TreeCollapseSubtree,
             Some(TREE_KEYS),
-        ),
-        KeyBinding::new(
-            COLLAPSE_SECTIONS_KEY,
-            CollapseSidebarSections,
-            Some("Reader && !Input"),
-        ),
-        KeyBinding::new(
-            "secondary-shift-right",
-            ExpandSidebarSections,
-            Some("Reader && !Input"),
         ),
         KeyBinding::new(HIDDEN_FILES_KEYS[0], ToggleHiddenFiles, ctx),
         KeyBinding::new(HIDDEN_FILES_KEYS[1], ToggleHiddenFiles, ctx),
@@ -1391,6 +1377,8 @@ struct Reader {
     project: Option<Entity<project::ProjectView>>,
     project_open: bool,
     project_navigation: reader_project_navigation::State,
+    /// Title-bar switcher and Recent/Pinned menus (#1508).
+    title_nav: reader_title_nav::State,
     project_request: u64,
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
@@ -1550,12 +1538,14 @@ struct Reader {
     tree: reader_tree::Tree,
     tree_source: Option<Arc<Vault>>,
     tree_revealed: String,
+    /// A folder's index note opened from its own tree row (#1512): the file
+    /// row, not the folder, then stands for it in the tree.
+    tree_index_entry: Option<String>,
     tree_focus: FocusHandle,
     typed_navigation: reader_typed_view::Navigation,
     tree_scroll: UniformListScrollHandle,
-    section_scroll: [UniformListScrollHandle; 4],
-    scroll_sections: reader_sidebar::ScrollSections,
-    /// Recent / Pinned / collapsed sections for this root (#369), app state.
+    /// Recent / Pinned stores and the tree's collapse for this root (#369,
+    /// #1508), app state.
     sidebar: reader_sidebar::State,
     sidebar_path: Option<PathBuf>,
     inbox: Vec<reader_sidebar::InboxItem>,
@@ -1830,6 +1820,7 @@ impl Reader {
             tree: reader_tree::Tree::default(),
             tree_source: None,
             tree_revealed: String::new(),
+            tree_index_entry: None,
             hover_preview: Default::default(),
             file_preview: None,
             tree_preview: Default::default(),
@@ -1837,14 +1828,13 @@ impl Reader {
             project: None,
             project_open: false,
             project_navigation: Default::default(),
+            title_nav: Default::default(),
             project_request: 0,
             project_views: Default::default(),
             file_menu: None,
             tree_focus: cx.focus_handle(),
             typed_navigation: Default::default(),
             tree_scroll: UniformListScrollHandle::new(),
-            section_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
-            scroll_sections: Default::default(),
             sidebar: reader_sidebar::State::default(),
             sidebar_path: None,
             inbox: Vec::new(),
@@ -2451,6 +2441,10 @@ impl Reader {
     /// Escape clears or dismisses local transient UI; it never toggles panels (#483).
     /// A non-empty focused search field is cleared and keeps focus; an empty one closes.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.title_nav.menu.is_some() {
+            self.close_nav_menu(window, cx);
+            return;
+        }
         if self.recent_switcher.open() {
             self.recent_switcher.cancel();
             cx.notify();
@@ -2531,6 +2525,12 @@ impl Reader {
         }
         if self.find_open {
             self.close_find(window, cx);
+            return;
+        }
+        // Esc in the tree with nothing else to close deselects, so the next
+        // New note / New folder goes to the root (#1512).
+        if self.tree_focus.is_focused(window) && self.tree.cursor.is_some() {
+            self.clear_tree_selection(cx);
             return;
         }
         #[cfg(any(unix, windows))]
@@ -2673,13 +2673,6 @@ impl Reader {
     }
 
     fn scroll_tree_to(&self, ix: usize) {
-        if self
-            .sidebar
-            .collapsed
-            .contains(&reader_sidebar::Section::Folders)
-        {
-            return;
-        }
         self.tree_scroll.scroll_to_item(ix, ScrollStrategy::Center);
     }
 
@@ -2687,8 +2680,7 @@ impl Reader {
         let Some(path) = self.sidebar_path.clone() else {
             return;
         };
-        let mut state = self.sidebar.clone();
-        state.scroll_revealed = self.scroll_sections.revealed.clone();
+        let state = self.sidebar.clone();
         let latest = self.sidebar_save_sequence.clone();
         let sequence = latest.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         cx.background_executor()
@@ -2745,8 +2737,6 @@ impl Reader {
                 }
             }
         }
-        self.scroll_sections = reader_sidebar::ScrollSections::from_state(&state);
-        self.section_scroll = std::array::from_fn(|_| UniformListScrollHandle::new());
         self.sidebar = state;
         self.sidebar_path = path;
         self.inbox.clear();
@@ -2771,27 +2761,7 @@ impl Reader {
     }
 
     fn toggle_section(&mut self, section: reader_sidebar::Section, cx: &mut Context<Self>) {
-        if section != reader_sidebar::Section::Properties {
-            self.sidebar.folders_only_restore = None;
-        }
-        if self
-            .scroll_sections
-            .closed(section, &self.sidebar.collapsed)
-            && self.scroll_sections.compact
-            && matches!(
-                section,
-                reader_sidebar::Section::Recent
-                    | reader_sidebar::Section::Pinned
-                    | reader_sidebar::Section::Inbox
-            )
-        {
-            self.scroll_sections.reveal(section);
-            // A manual expansion is a user preference; automatic folding is not.
-            self.sidebar.collapsed.remove(&section);
-        } else {
-            self.scroll_sections.revealed.remove(&section);
-            self.sidebar.toggle_section(section);
-        }
+        self.sidebar.toggle_section(section);
         self.save_sidebar(cx);
         cx.notify();
     }
@@ -2973,138 +2943,65 @@ impl Reader {
         self.sidebar_items_named(&vault_name::folder_name(&self.vault_root))
     }
 
-    /// `vault` is what the vault is called in Inbox locations (#1327).
+    /// The left sidebar is the folder tree only (#1508): root folders and
+    /// files sit directly under the sidebar header, with no Folders row that
+    /// could fold the whole root away (#1512, #1474). Recent / Pinned live in
+    /// the title bar. `vault` is what the vault is called in Inbox locations
+    /// (#1327).
     fn sidebar_items_named(&self, _vault: &str) -> Vec<SideItem> {
-        use reader_sidebar::Section;
         if self.single_file {
-            let mut items = vec![SideItem::Header(
-                Section::Folders,
-                reader_sidebar::section_count(self.vault.entries.len()),
-            )];
-            if !self
-                .scroll_sections
-                .closed(Section::Folders, &self.sidebar.collapsed)
-            {
-                items.extend(self.tree.rows.iter().cloned().map(SideItem::Tree));
-            }
-            return items;
+            return self.tree.rows.iter().cloned().map(SideItem::Tree).collect();
         }
-        let now = reader_sidebar::now();
-        let open = |section| {
-            !self
-                .scroll_sections
-                .closed(section, &self.sidebar.collapsed)
-        };
-        // Hidden notes follow Show hidden files here as in the tree (#635).
-        let shown = |path: &str| !self.tree.hidden_by_preference(path);
-        let recent: Vec<_> = self
-            .sidebar
-            .recent
-            .iter()
-            .filter(|(path, _)| shown(path))
-            .collect();
-        let pinned: Vec<_> = self.sidebar.pinned.iter().filter(|p| shown(p)).collect();
-        // One short line per empty section, all in the same words (#1350). A
-        // vault without notes shows none: the page says how to start, and
-        // there is nothing to open, pin or file yet.
+        // A vault without notes shows no hint: the page says how to start (#1350).
         let hints = !self.vault.notes.is_empty();
         let mut items = Vec::new();
-        items.push(SideItem::Header(
-            Section::Recent,
-            reader_sidebar::section_count(recent.len()),
-        ));
-        if open(Section::Recent) {
-            let visible = if self.recent_expanded {
-                recent.len()
-            } else {
-                recent.len().min(reader_sidebar::RECENT_SHOWN)
-            };
-            if hints && recent.is_empty() {
-                items.push(SideItem::Empty("Notes you open appear here."));
-            }
-            for (path, at) in &recent[..visible] {
-                items.push(SideItem::Entry {
-                    section: Section::Recent,
-                    path: path.clone(),
-                    label: self.note_label(path),
-                    meta: Some(reader_sidebar::age_label(*at, now)),
-                    location: None,
-                    folder: false,
-                });
-            }
-            if visible < recent.len() {
-                items.push(SideItem::More(recent.len() - visible));
-            }
+        #[cfg(any(unix, windows))]
+        let creation = self.creation.as_ref();
+        #[cfg(any(unix, windows))]
+        let scope = self.tree.scope();
+        // The tree's root (the vault root, or a project's folder) has no
+        // row: its inline create row comes first (#1512).
+        #[cfg(any(unix, windows))]
+        if let Some(create) = creation.filter(|c| c.folder.is_empty() || c.folder == scope) {
+            append_creation_rows(&mut items, create, 0, scope);
         }
-        items.push(SideItem::Header(
-            Section::Pinned,
-            reader_sidebar::section_count(pinned.len()),
-        ));
-        if open(Section::Pinned) {
-            if hints && pinned.is_empty() {
-                items.push(SideItem::Empty("Notes you pin appear here."));
-            }
-            for path in pinned {
-                items.push(SideItem::Entry {
-                    section: Section::Pinned,
-                    path: path.clone(),
-                    label: self.note_label(path),
-                    meta: None,
-                    location: None,
-                    folder: self.tree.is_directory(path),
-                });
-            }
+        if hints && self.tree.rows.is_empty() {
+            items.push(SideItem::Empty("Notes and folders appear here."));
         }
-        items.push(SideItem::Header(Section::Folders, None));
-        if open(Section::Folders) {
+        for row in self.tree.rows.iter() {
             #[cfg(any(unix, windows))]
-            let creation = self.creation.as_ref();
-            #[cfg(any(unix, windows))]
-            if let Some(create) = creation.filter(|c| c.folder.is_empty()) {
-                append_creation_rows(&mut items, create, 0);
-            }
-            if hints && self.tree.rows.is_empty() {
-                items.push(SideItem::Empty("Notes and folders appear here."));
-            }
-            for row in self.tree.rows.iter() {
-                #[cfg(any(unix, windows))]
-                if let Some(rename) = self
-                    .renaming
-                    .as_ref()
-                    .filter(|r| !r.in_header && r.path == row.path)
-                {
-                    items.push(SideItem::Rename(
-                        rename.input.clone(),
-                        row.depth,
-                        row.kind == okilum_core::vault::EntryKind::Directory,
-                    ));
-                    if let Some(error) = &rename.error {
-                        let mut line = String::new();
-                        for word in error.split_whitespace() {
-                            if !line.is_empty()
-                                && line.chars().count() + word.chars().count() + 1 > 28
-                            {
-                                items.push(SideItem::CreateError(
-                                    std::mem::take(&mut line),
-                                    row.depth,
-                                ));
-                            }
-                            if !line.is_empty() {
-                                line.push(' ');
-                            }
-                            line.push_str(word);
+            if let Some(rename) = self
+                .renaming
+                .as_ref()
+                .filter(|r| !r.in_header && r.path == row.path)
+            {
+                items.push(SideItem::Rename(
+                    rename.input.clone(),
+                    row.depth,
+                    row.kind == okilum_core::vault::EntryKind::Directory,
+                ));
+                if let Some(error) = &rename.error {
+                    let mut line = String::new();
+                    for word in error.split_whitespace() {
+                        if !line.is_empty() && line.chars().count() + word.chars().count() + 1 > 28
+                        {
+                            items.push(SideItem::CreateError(std::mem::take(&mut line), row.depth));
                         }
                         if !line.is_empty() {
-                            items.push(SideItem::CreateError(line, row.depth));
+                            line.push(' ');
                         }
+                        line.push_str(word);
                     }
-                    continue;
+                    if !line.is_empty() {
+                        items.push(SideItem::CreateError(line, row.depth));
+                    }
                 }
-                items.push(SideItem::Tree(row.clone()));
-                #[cfg(any(unix, windows))]
-                if let Some(create) = creation.filter(|c| c.folder == row.path) {
-                    append_creation_rows(&mut items, create, row.depth + 1);
-                }
+                continue;
+            }
+            items.push(SideItem::Tree(row.clone()));
+            #[cfg(any(unix, windows))]
+            if let Some(create) = creation.filter(|c| c.folder == row.path) {
+                append_creation_rows(&mut items, create, row.depth + 1, scope);
             }
         }
         items
@@ -3170,10 +3067,58 @@ impl Reader {
             .as_ref()
             .map_or(selected, |rename| rename.path.clone());
         if self.tree_revealed != selected {
+            // Another note is open: the index row's explicit entry is over.
+            if self
+                .tree_index_entry
+                .as_ref()
+                .is_some_and(|entry| *entry == self.tree_revealed && entry != self.selected_file())
+            {
+                self.tree_index_entry = None;
+            }
+            // An inline rename edits the row itself, whatever stands for it.
+            let note = selected == self.selected_file();
+            #[cfg(any(unix, windows))]
+            let note = note && self.renaming.is_none();
             self.tree_revealed = selected.clone();
-            if let Some(ix) = self.tree.reveal(&selected) {
+            let ix = self.tree.reveal(&selected);
+            let ix = if note {
+                self.select_index_folder(&selected, ix)
+            } else {
+                ix
+            };
+            if let Some(ix) = ix {
                 self.scroll_tree_to(ix);
             }
+        }
+    }
+
+    /// The folder row that stands for `note` in the tree (#1512): `note` is
+    /// that folder's index note and was not opened from its own row. The
+    /// root and a project's own folder have no row; their index stays itself.
+    fn tree_index_folder(&self, note: &str) -> Option<String> {
+        if self.tree_index_entry.as_deref() == Some(note) {
+            return None;
+        }
+        let (folder, _) = note.rsplit_once('/')?;
+        (folder != self.tree.scope() && self.tree.is_index_note(note)).then(|| folder.to_owned())
+    }
+
+    /// The tree row highlighted as the open note (#1512).
+    fn tree_current(&self) -> String {
+        let current = self.selected_file();
+        self.tree_index_folder(current)
+            .unwrap_or_else(|| current.to_owned())
+    }
+
+    /// After revealing `note` (row `ix`), select its folder instead when the
+    /// folder stands for it (#1512).
+    fn select_index_folder(&mut self, note: &str, ix: Option<usize>) -> Option<usize> {
+        match (ix, self.tree_index_folder(note)) {
+            (Some(_), Some(folder)) => {
+                self.tree.cursor = Some(folder);
+                self.tree.cursor_index()
+            }
+            _ => ix,
         }
     }
 
@@ -3213,13 +3158,6 @@ impl Reader {
     }
 
     fn tree_key(&mut self, key: TreeKey, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .sidebar
-            .collapsed
-            .contains(&reader_sidebar::Section::Folders)
-        {
-            return;
-        }
         let lazy_folder =
             if self.single_file && matches!(key, TreeKey::Right | TreeKey::ExpandSubtree) {
                 self.tree.cursor_folder()
@@ -3275,64 +3213,34 @@ impl Reader {
         cx.notify();
     }
 
-    fn set_sidebar_sections(&mut self, mode: SectionAction, cx: &mut Context<Self>) {
-        // Capture the visible state, including automatic folding while scrolling.
-        if self.sidebar.folders_only_restore.is_none()
-            && matches!(
-                mode,
-                SectionAction::FoldersOnly | SectionAction::ToggleFoldersOnly
-            )
-        {
-            self.sidebar.folders_only_restore = Some(
-                reader_sidebar::LEFT_SECTIONS
-                    .map(|s| self.scroll_sections.closed(s, &self.sidebar.collapsed)),
-            );
-            // Toggle must enter Folders-only rather than consume the new snapshot.
-            self.sidebar.folders_only(false);
-        } else {
-            match mode {
-                SectionAction::FoldersOnly => self.sidebar.folders_only(false),
-                SectionAction::ExpandAll => self.sidebar.all_sections(false),
-                SectionAction::ToggleFoldersOnly => self.sidebar.folders_only(true),
-                SectionAction::CollapseAll => self.sidebar.all_sections(true),
-            }
-        }
-        self.scroll_sections.honor_expanded(&self.sidebar.collapsed);
-        self.save_sidebar(cx);
-        cx.notify();
+    /// Whether `position` is in the tree's empty space under its `rows`.
+    fn tree_space_below_rows(&self, position: Point<Pixels>, rows: usize) -> bool {
+        let scroll = self.tree_scroll.0.borrow();
+        let bounds = scroll.base_handle.bounds();
+        let end = bounds.top() + scroll.base_handle.offset().y + px(TREE_ROW_HEIGHT * rows as f32);
+        bounds.contains(&position) && position.y >= end
     }
 
-    /// Every top-level sidebar section is closed, including automatic folding
-    /// while scrolling; the header toggle then offers «Expand all sections».
-    fn sidebar_sections_closed(&self) -> bool {
-        use reader_sidebar::Section;
-        // A single file shows only Folders; hidden sections must not keep the
-        // button on «Collapse» after the visible one is closed.
-        if self.single_file {
-            return self
-                .scroll_sections
-                .closed(Section::Folders, &self.sidebar.collapsed);
+    /// Nothing selected in the tree: New note / New folder then create in
+    /// the root (Esc in the tree, a click on its empty space; #1512). The
+    /// open note keeps its highlight.
+    fn clear_tree_selection(&mut self, cx: &mut Context<Self>) {
+        if self.tree.cursor.take().is_some() {
+            self.tree_revealed = self.selected_file().to_owned();
+            cx.notify();
         }
-        reader_sidebar::LEFT_SECTIONS
-            .into_iter()
-            .all(|s| self.scroll_sections.closed(s, &self.sidebar.collapsed))
     }
 
-    /// Folders header «Collapse all» (#410).
+    /// Sidebar header «Collapse all» (#410): folds every folder; the root
+    /// entries stay listed (#1512).
     fn collapse_folders(&mut self, cx: &mut Context<Self>) {
-        if self.single_file {
-            // Folder browsing is a flat file list, not an expanded vault tree.
-            if !self.sidebar.is_collapsed(reader_sidebar::Section::Folders) {
-                self.toggle_section(reader_sidebar::Section::Folders, cx);
-            }
-        } else {
-            self.tree.collapse_all();
-        }
+        self.tree.collapse_all();
         cx.notify();
     }
 
-    /// Folders header «Focus current» (#410): only the path to the
-    /// open note stays expanded, and the note is selected.
+    /// Sidebar header «Reveal current» (#410): only the path to the
+    /// open note stays expanded, and the note is selected; a folder's index
+    /// note selects its folder unless it was opened from its own row (#1512).
     fn focus_current_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() {
             return;
@@ -3348,7 +3256,8 @@ impl Reader {
         }
         self.sync_tree();
         let current = self.selected_file().to_owned();
-        if let Some(ix) = self.tree.focus(&current) {
+        let ix = self.tree.focus(&current);
+        if let Some(ix) = self.select_index_folder(&current, ix) {
             self.scroll_tree_to(ix);
         }
         self.tree_focus.focus(window, cx);
@@ -3367,31 +3276,53 @@ impl Reader {
         tree.cursor = Some(row.path.clone());
         match row.kind {
             EntryKind::Directory => {
-                self.toggle_tree_folder(row, window, cx);
-                // Expanding a folder with an index note opens it, like
-                // clicking the note (#1099); the chevron only toggles.
-                // Collapsing never opens: revealing the index would expand
-                // the folder again.
-                let index = if row.expanded {
-                    reader_tree::FolderIndex::None
+                // A double click or Enter on a folder row (#1099, #1512): a
+                // collapsed folder expands and opens its index note, an
+                // expanded one collapses and its index stays open. The
+                // selection stays on the folder either way. One click only
+                // selects; the chevron only toggles.
+                let expanded = self
+                    .tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == row.path)
+                    .map_or(row.expanded, |r| r.expanded);
+                if expanded {
+                    self.expand_tree_folder(&row.path, false, cx);
+                    // An index row hidden by the collapse hands the
+                    // highlight to its folder.
+                    let inside = format!("{}/", row.path);
+                    if self
+                        .tree_index_entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.starts_with(&inside))
+                    {
+                        self.tree_index_entry = None;
+                    }
                 } else {
-                    reader_tree::folder_index(&row.path, &self.vault.entries)
-                };
-                match index {
-                    reader_tree::FolderIndex::One(index) => {
-                        if self.current_rel != index {
-                            self.open_note(&index, None, window, cx);
+                    self.expand_tree_folder(&row.path, true, cx);
+                    match reader_tree::folder_index(&row.path, &self.vault.entries) {
+                        reader_tree::FolderIndex::One(index) => {
+                            self.tree_index_entry = None;
+                            if self.selected_file() != index {
+                                self.open_note(&index, None, window, cx);
+                            }
                         }
+                        reader_tree::FolderIndex::Several => {
+                            self.link_notice = Some(
+                                "This folder has more than one _index note, so none was opened."
+                                    .into(),
+                            );
+                        }
+                        reader_tree::FolderIndex::None => {}
                     }
-                    reader_tree::FolderIndex::Several => {
-                        self.link_notice = Some(
-                            "This folder has more than one _index note, so none was opened.".into(),
-                        );
-                    }
-                    reader_tree::FolderIndex::None => {}
                 }
+                self.tree.cursor = Some(row.path.clone());
             }
             EntryKind::Markdown => {
+                // The index row itself: that row, not its folder, stays
+                // selected for this open (#1512).
+                self.tree_index_entry = row.index.then(|| row.path.clone());
                 self.open_note(&row.path, None, window, cx);
             }
             EntryKind::Attachment => {
@@ -3407,8 +3338,10 @@ impl Reader {
         cx.notify();
     }
 
-    /// Expand or collapse a folder row, nothing else (the chevron, #1099).
-    fn toggle_tree_folder(
+    /// One click on a folder row, its name or its icon (#1512): select the
+    /// folder and nothing else. It does not expand, collapse or open the
+    /// folder's index; a double click does that (`activate_tree_row`).
+    fn select_tree_folder(
         &mut self,
         row: &reader_tree::Row,
         window: &mut Window,
@@ -3416,12 +3349,29 @@ impl Reader {
     ) {
         self.tree_preview.close();
         self.tree.cursor = Some(row.path.clone());
-        self.tree.toggle(&row.path);
-        if self.single_file && !row.expanded {
-            self.load_quick_folder(row.path.clone(), cx);
-        }
         self.tree_focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Expand or collapse a folder row, nothing else (the chevron, #1099):
+    /// no note opens and the selection stays where it is (#1512).
+    fn toggle_tree_folder(
+        &mut self,
+        row: &reader_tree::Row,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tree_preview.close();
+        self.expand_tree_folder(&row.path, !row.expanded, cx);
+        self.tree_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn expand_tree_folder(&mut self, path: &str, expand: bool, cx: &mut Context<Self>) {
+        self.tree.set_expanded(path, expand);
+        if self.single_file && expand {
+            self.load_quick_folder(path.to_owned(), cx);
+        }
     }
 
     fn history_move(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -3502,11 +3452,14 @@ impl Reader {
                             reader_shortcuts::hint("Notes", &ToggleNotes, cx),
                             cx,
                         )
+                        .debug_selector(|| "reader-notes".into())
                         .selected(notes_open)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_panel(reader_layout::Panel::Notes, window, cx)
                         })),
                     ))
+                    // Variant A (#1508): switcher, Recent ▾, Pinned ▾, then search.
+                    .child(self.render_title_nav(available, cx))
                     .child(
                         div()
                             .id("sidebar-search")
@@ -3533,16 +3486,6 @@ impl Reader {
                     ),
             )
             .child(div().flex_1().min_w_0())
-            .when_some(self.project_navigation.active.as_ref(), |row, project| {
-                row.child(
-                    Button::new("leave-vault-project")
-                        .ghost()
-                        .label(format!("{} · Leave project", project.name))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.leave_vault_project(window, cx)),
-                        ),
-                )
-            })
             .child(
                 header_controls()
                     .flex_shrink(1.)
@@ -3759,7 +3702,7 @@ impl Reader {
         )
     }
 
-    /// Vault identity keeps its width before actions spill into the menu.
+    /// The right panel's header: its title only.
     fn render_panel_header(
         &self,
         panel: reader_layout::Panel,
@@ -3767,47 +3710,180 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        use gpui_component::menu::DropdownMenu as _;
-        let left = panel == reader_layout::Panel::Notes;
-        let title = if left {
-            vault_name::shown(&self.vault_root, cx)
-        } else if self.project_navigation.active.is_some() {
-            "Manager".into()
+        if panel == reader_layout::Panel::Notes {
+            return self.render_sidebar_header(width, window, cx);
+        }
+        let title = if self.project_navigation.active.is_some() {
+            "Manager"
         } else if self.active_timeline().is_some() {
-            "Note history".into()
+            "Note history"
         } else {
-            "On this page".into()
+            "On this page"
         };
-        let name_width = toolbar_text_width(&title, FontWeight::SEMIBOLD, window);
-        let total_actions = if cfg!(any(unix, windows)) { 3 } else { 1 };
-        let actions = toolbar_visible_actions(width - 24., name_width + 16., total_actions);
-        let name_tip = title.clone();
-        let reader = cx.entity().downgrade();
-        let sections_reader = reader.clone();
-        // One click gives a compact sidebar; the folder tree keeps its own
-        // «Collapse all folders» on the Folders header (#983).
-        let all_closed = self.sidebar_sections_closed();
-        let (sections_label, sections_icon) = if all_closed {
-            ("Expand all sections", brand::READER_EXPAND_ICON)
-        } else {
-            ("Collapse all sections", brand::READER_COLLAPSE_ICON)
-        };
-        let sections_action = move || {
-            if all_closed {
-                SectionAction::ExpandAll
-            } else {
-                SectionAction::CollapseAll
-            }
-        };
-        let accent = left
-            .then(|| reader_ui_state::vault_color(&self.vault_root, cx))
-            .flatten();
-        let dot = if accent.is_some() { VAULT_DOT_SLOT } else { 0. };
-        let vault_root = self.vault_root.clone();
         h_flex()
             .h(px(READER_HEADER_HEIGHT))
             .flex_none()
             .gap_1()
+            .px_3()
+            .border_b_1()
+            .border_color(brand::palette(cx).border_subtle)
+            .text_size(px(brand::READER_CHROME_FONT_SIZE))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .into_any_element()
+    }
+
+    /// What the sidebar name's menu offers (#1512): the vault's own menu, or
+    /// the project's inside a project. Vault settings needs a vault.
+    fn sidebar_name_menu(&self) -> Vec<SidebarNameItem> {
+        if self.project_navigation.active.is_some() {
+            return vec![
+                SidebarNameItem::SwitchProject,
+                SidebarNameItem::RevealProject,
+                SidebarNameItem::LeaveProject,
+            ];
+        }
+        let mut items = vec![SidebarNameItem::SwitchVault, SidebarNameItem::RevealVault];
+        if !self.single_file {
+            items.push(SidebarNameItem::VaultSettings);
+        }
+        items
+    }
+
+    /// The sidebar's one header row (#1512, #1474): the vault or project
+    /// name on the left opens its menu, the sidebar actions sit in fixed
+    /// slots on the right, always in the same order. Hover never reveals,
+    /// hides or moves an action; only a narrow sidebar sends the trailing
+    /// ones into ⋯. The tree starts directly under this row.
+    fn render_sidebar_header(
+        &self,
+        width: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let project = self.project_navigation.active.clone();
+        let title: SharedString = match &project {
+            Some(project) => project.name.clone().into(),
+            None => vault_name::shown(&self.vault_root, cx).into(),
+        };
+        let accent = project
+            .is_none()
+            .then(|| reader_ui_state::vault_color(&self.vault_root, cx))
+            .flatten();
+        let dot = if accent.is_some() { VAULT_DOT_SLOT } else { 0. };
+        let actions = SidebarAction::available();
+        let room = width - 24. - dot - 2. * SIDEBAR_NAME_GAP;
+        let name = toolbar_text_width(&title, FontWeight::SEMIBOLD, window) + SIDEBAR_NAME_CHROME;
+        let visible = sidebar_visible_actions(room, name, actions);
+        let overflow = visible < actions.len();
+        let name_max =
+            (room - (visible + usize::from(overflow)) as f32 * SIDEBAR_ACTION_SLOT).max(0.);
+        let show_hidden = self.sidebar.show_hidden;
+        let reader = cx.entity().downgrade();
+        let name_items = self.sidebar_name_menu();
+        let menu_root = project
+            .as_ref()
+            .map_or_else(|| self.vault_root.clone(), |p| p.folder.clone());
+        let menu_reader = reader.clone();
+        let name_button = Button::new("sidebar-vault-title")
+            .ghost()
+            .label(title.clone())
+            .dropdown_caret(true)
+            .h(px(28.))
+            .px_1p5()
+            .min_w_0()
+            .max_w(px(name_max))
+            .overflow_hidden()
+            .rounded(px(6.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .tooltip(title)
+            .debug_selector(|| "sidebar-vault-title".into())
+            .dropdown_menu(move |menu, _, _| {
+                name_items.iter().fold(menu, |menu, item| {
+                    let label = item.label();
+                    let root = menu_root.clone();
+                    let reader = menu_reader.clone();
+                    match *item {
+                        SidebarNameItem::SwitchVault => {
+                            menu.menu(label, Box::new(reader_open::OpenFolder))
+                        }
+                        SidebarNameItem::RevealVault | SidebarNameItem::RevealProject => {
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                reader_files::reveal(&root, window, cx)
+                            }))
+                        }
+                        SidebarNameItem::VaultSettings => {
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                reader_settings::show_vault(Some(reader.clone()), cx)
+                            }))
+                        }
+                        SidebarNameItem::SwitchProject => {
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                let _ = reader.update(cx, |this, cx| {
+                                    this.toggle_project_switcher(window, cx)
+                                });
+                            }))
+                        }
+                        SidebarNameItem::LeaveProject => {
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                let _ = reader
+                                    .update(cx, |this, cx| this.leave_vault_project(window, cx));
+                            }))
+                        }
+                    }
+                })
+            });
+        let mut slots = header_controls().debug_selector(|| "sidebar-header-actions".into());
+        for &action in &actions[..visible] {
+            let toggled = action == SidebarAction::ShowHidden && show_hidden;
+            slots = slots.child(
+                reader_icon_button(
+                    action.id(),
+                    action.icon(show_hidden),
+                    action.tooltip(cx),
+                    cx,
+                )
+                .selected(toggled)
+                .debug_selector(move || action.id().into())
+                .on_click(sidebar_action_click(reader.clone(), action)),
+            );
+        }
+        if overflow {
+            let spilled: Vec<SidebarAction> = actions[visible..].to_vec();
+            let menu_reader = reader.clone();
+            slots = slots.child(
+                reader_icon_button("sidebar-actions", IconName::Ellipsis, "More actions", cx)
+                    .debug_selector(|| "sidebar-actions".into())
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                        spilled.iter().fold(menu, |menu, &action| {
+                            menu.item(
+                                PopupMenuItem::new(action.label())
+                                    .checked(action == SidebarAction::ShowHidden && show_hidden)
+                                    .action(action.action())
+                                    .on_click(sidebar_action_click(menu_reader.clone(), action)),
+                            )
+                        })
+                    }),
+            );
+        }
+        let in_vault = project.is_none();
+        #[cfg(any(unix, windows))]
+        let drop_root = self.vault_root.clone();
+        let header_reader = reader.clone();
+        h_flex()
+            .id("sidebar-header")
+            .debug_selector(|| "sidebar-header".into())
+            .h(px(READER_HEADER_HEIGHT))
+            .flex_none()
+            .gap(px(SIDEBAR_NAME_GAP))
             .px_3()
             .border_b_1()
             .border_color(brand::palette(cx).border_subtle)
@@ -3823,157 +3899,41 @@ impl Reader {
                         .bg(color.color(cx)),
                 )
             })
-            .child(if left {
-                Button::new("sidebar-vault-title")
-                    .ghost()
-                    .small()
-                    .label(title)
-                    .w(px((width
-                        - 24.
-                        - dot
-                        - 32.
-                            * (actions + usize::from(actions < total_actions))
-                                as f32)
-                        .max(0.)))
-                    .flex_none()
-                    .justify_start()
-                    .px_1()
-                    .overflow_hidden()
-                    .min_w_0()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .tooltip(name_tip)
-                    .debug_selector(|| "sidebar-vault-title".into())
-                    .dropdown_menu(move |menu, window, cx| {
-                        let root = vault_root.clone();
-                        menu.item(
-                            gpui_component::menu::PopupMenuItem::new(
-                                "Folders only / Restore sections",
-                            )
-                            .on_click({
-                                let reader = reader.clone();
-                                move |_, _, cx| {
-                                    let _ = reader.update(cx, |this, cx| {
-                                        this.set_sidebar_sections(
-                                            SectionAction::ToggleFoldersOnly,
-                                            cx,
-                                        )
-                                    });
-                                }
-                            }),
-                        )
-                        .submenu("Vault colour", window, cx, move |menu, _, cx| {
-                            vault_color_menu(menu, &root, cx)
-                        })
-                        .item(
-                            gpui_component::menu::PopupMenuItem::new("Rename vault…").on_click({
-                                let root = vault_root.clone();
-                                move |_, window, cx| {
-                                    vault_name::open_rename(root.clone(), window, cx)
-                                }
-                            }),
-                        )
-                        .separator()
-                        .menu("Open folder…", Box::new(reader_open::OpenFolder))
-                        .menu("Open file…", Box::new(reader_open::OpenFile))
-                        .menu("New window", Box::new(reader_open::NewWindow))
-                    })
-                    .into_any_element()
-            } else {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title)
-                    .into_any_element()
-            })
-            .when(left, |mut header| {
+            .child(name_button)
+            .child(div().flex_1().min_w_0())
+            .child(slots)
+            // The row stands where the Folders header used to: dropping a
+            // note on it still moves the note to the vault root.
+            .map(|row| {
                 #[cfg(any(unix, windows))]
-                {
-                    if actions >= 1 {
-                        header = header.child(
-                            reader_icon_button(
-                                "sidebar-new-note",
-                                Icon::default().path("icons/square-pen.svg"),
-                                reader_shortcuts::hint("New note", &NewNote, cx),
-                                cx,
-                            )
-                            .debug_selector(|| "sidebar-new-note".into())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.new_note(None, window, cx)),
-                            ),
-                        );
-                    }
-                    if actions >= 2 {
-                        header =
-                            header.child(
-                                reader_icon_button(
-                                    "sidebar-new-folder",
-                                    Icon::default().path("icons/folder-plus.svg"),
-                                    reader_shortcuts::hint("New folder", &NewFolder, cx),
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| this.new_folder(None, window, cx),
-                                )),
-                            );
-                    }
-                }
-                if actions == total_actions {
-                    header = header.child(
-                        reader_icon_button(
-                            "sidebar-sections-toggle",
-                            Icon::default().path(sections_icon),
-                            if all_closed {
-                                reader_shortcuts::hint(sections_label, &ExpandSidebarSections, cx)
-                            } else {
-                                sections_label.into()
-                            },
-                            cx,
-                        )
-                        .debug_selector(|| "sidebar-sections-toggle".into())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_sidebar_sections(sections_action(), cx)
-                        })),
-                    );
+                let row = if in_vault {
+                    reader_move_picker::drop_target(row, reader.clone(), drop_root, String::new())
                 } else {
-                    let reader = sections_reader.clone();
-                    header = header.child(
-                        reader_icon_button(
-                            "sidebar-actions",
-                            IconName::Ellipsis,
-                            "Vault actions",
-                            cx,
-                        )
-                        .debug_selector(|| "sidebar-actions".into())
-                        .dropdown_menu_with_anchor(
-                            Anchor::TopRight,
-                            move |mut menu, _, _| {
-                                if cfg!(any(unix, windows)) {
-                                    if actions < 1 {
-                                        menu = menu.menu("New note", Box::new(NewNote));
-                                    }
-                                    if actions < 2 {
-                                        menu = menu.menu("New folder", Box::new(NewFolder));
-                                    }
-                                }
-                                menu.item(
-                                    gpui_component::menu::PopupMenuItem::new(sections_label)
-                                        .on_click({
-                                            let reader = reader.clone();
-                                            move |_, _, cx| {
-                                                let _ = reader.update(cx, |this, cx| {
-                                                    this.set_sidebar_sections(sections_action(), cx)
-                                                });
-                                            }
-                                        }),
-                                )
-                            },
-                        ),
-                    );
+                    row
+                };
+                row
+            })
+            .context_menu(move |menu, _, _| {
+                if !in_vault || !cfg!(any(unix, windows)) {
+                    return menu;
                 }
-                header
+                let item = |label: &'static str, directory: bool| {
+                    let reader = header_reader.clone();
+                    PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            #[cfg(any(unix, windows))]
+                            if directory {
+                                this.new_folder(Some(""), window, cx);
+                            } else {
+                                this.new_note(Some(""), window, cx);
+                            }
+                            #[cfg(not(any(unix, windows)))]
+                            let _ = (this, directory, window, cx);
+                        });
+                    })
+                };
+                menu.item(item("New note in vault root", false))
+                    .item(item("New folder in vault root", true))
             })
             .into_any_element()
     }
@@ -4072,8 +4032,8 @@ impl Reader {
         self.render_tree(window, cx)
     }
 
-    /// docs/design/reader.md §Sidebar: Recent, Pinned, Inbox and the real
-    /// folder hierarchy (#335, #369), with a quick-open entry point (#433).
+    /// docs/design/reader.md §Sidebar: the real folder hierarchy only
+    /// (#335, #1508); Recent and Pinned live in the title bar.
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::menu::DropdownMenu as _;
         use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
@@ -4086,24 +4046,13 @@ impl Reader {
         let items = self.sidebar_items_named(&vault_name::shown(&self.vault_root, cx));
         let pinned: Rc<std::collections::BTreeSet<String>> =
             Rc::new(self.sidebar.pinned.iter().cloned().collect());
-        let collapsed: std::collections::BTreeSet<_> = reader_sidebar::LEFT_SECTIONS
-            .into_iter()
-            .filter(|section| {
-                self.scroll_sections
-                    .closed(*section, &self.sidebar.collapsed)
-            })
-            .collect();
-        let folder_actions_overflow = self.panel_widths.notes
-            < toolbar_text_width("Folders", FontWeight::SEMIBOLD, window)
-                + 44.
-                + if cfg!(any(unix, windows)) { 5. } else { 3. } * 28.;
-        let show_hidden = self.sidebar.show_hidden;
         let current = self.selected_file().to_owned();
-        let cursor = self
-            .tree_focus
-            .is_focused(window)
-            .then(|| tree.cursor.clone())
-            .flatten();
+        // A folder's index note opened through the folder lights the folder.
+        let tree_current = self.tree_current();
+        // The selection stays visible when the tree loses focus: New note /
+        // New folder go next to it, so it must never be invisible (#1512).
+        let tree_focused = self.tree_focus.is_focused(window);
+        let cursor = tree.cursor.clone();
         let published_root = self.vault_root.clone();
         let published_generation = self.watcher_generation;
         // Every row action is bound to the inventory it was rendered from.
@@ -4183,7 +4132,10 @@ impl Reader {
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
                 #[cfg(any(unix, windows))]
-                SideItem::Create(input, depth, directory, templates, selected) => {
+                SideItem::Create(input, depth, directory, templates, selected, destination) => {
+                    let (destination, destination_tip) = destination;
+                    let destination_entity = entity.clone();
+                    let destination_act = act.clone();
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
@@ -4262,6 +4214,27 @@ impl Reader {
                                     ),
                             )
                         })
+                        // Where it will be created, changeable before Enter
+                        // (#1512): «in: /» is the vault (or project) root.
+                        .child(
+                            Button::new("create-destination")
+                                .ghost()
+                                .small()
+                                .label(destination)
+                                .dropdown_caret(true)
+                                .tooltip(destination_tip)
+                                .debug_selector(|| "create-destination".into())
+                                .on_click(move |_, window, cx| {
+                                    destination_act(
+                                        &destination_entity,
+                                        window,
+                                        cx,
+                                        &|this, window, cx| {
+                                            this.choose_creation_folder(window, cx);
+                                        },
+                                    )
+                                }),
+                        )
                         .into_any_element()
                 }
                 #[cfg(any(unix, windows))]
@@ -4276,304 +4249,6 @@ impl Reader {
                         })
                         .into_any_element()
                 }
-                SideItem::Header(section, count) => {
-                    let closed = collapsed.contains(&section);
-                    let icon = match section {
-                        Section::Recent => Icon::default().path(brand::READER_CLOCK_ICON),
-                        Section::Pinned => Icon::default().path(brand::READER_PIN_ICON),
-                        Section::Inbox => Icon::new(IconName::Inbox),
-                        Section::Projects => Icon::new(IconName::Folder),
-                        Section::Folders => Icon::new(IconName::Folder),
-                        Section::Properties => Icon::default().path(READER_SLIDERS_ICON),
-                    };
-                    row_base(SharedString::from(format!(
-                        "side-section-{}",
-                        section.label()
-                    )))
-                    .pl(px(6.))
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(tokens.text_faint)
-                    .cursor_pointer()
-                    .hover(move |d| d.text_color(p.text_muted))
-                    .child(
-                        Icon::new(if closed {
-                            IconName::ChevronRight
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .xsmall(),
-                    )
-                    .child(icon.xsmall())
-                    .child(
-                        div().id(SharedString::from(format!("section-label-{}", section.label())))
-                            .debug_selector(move || format!("section-label-{}", section.label()))
-                            .flex_1().child(section.label())
-                    .tooltip(|window, cx| {
-                        gpui_component::tooltip::Tooltip::new(if cfg!(target_os = "macos") {
-                            "Option-click to collapse or expand all sections"
-                        } else {
-                            "Alt-click to collapse or expand all sections"
-                        }).build(window, cx)
-                    })
-                    )
-                    .when(section == Section::Folders, |row| {
-                        if folder_actions_overflow {
-                            return row.child(
-                                Button::new("folders-actions").ghost().icon(IconName::Ellipsis)
-                                    .tooltip("Folder actions").w(px(28.)).h(px(28.)).rounded(px(6.))
-                                    .debug_selector(|| "folders-actions".into())
-                                    .on_click(|_, _, cx| cx.stop_propagation())
-                                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                                        menu.when(cfg!(any(unix, windows)), |menu| {
-                                            menu.menu("New note", Box::new(NewNote))
-                                                .menu("New folder", Box::new(NewFolder))
-                                        })
-                                        .menu("Collapse all folders", Box::new(CollapseFolders))
-                                        .menu("Reveal current note", Box::new(FocusCurrentFolder))
-                                        .item(PopupMenuItem::new(HIDDEN_FILES_MENU)
-                                            .checked(show_hidden).action(Box::new(ToggleHiddenFiles)))
-                                    }),
-                            );
-                        }
-                        let entity = entity.clone();
-                        let act = act.clone();
-                        // Collapse all / Focus current appear on
-                        // hover of the header (#410).
-                        let action = |id: &'static str,
-                                                  icon: &'static str,
-                                                  tooltip: fn(&App) -> SharedString,
-                                                  f: fn(
-                                        &mut Reader,
-                                        &mut Window,
-                                        &mut Context<Reader>,
-                                    )| {
-                                        let entity = entity.clone();
-                                        let act = act.clone();
-                                        div()
-                                            .id(id)
-                                            .flex_none()
-                                            .px_1()
-                                            .opacity(if id == "folders-collapse-all" { 1. } else { 0. })
-                                            .debug_selector(move || id.into())
-                                            .group_hover(FOLDERS_HEADER_GROUP, |s| s.opacity(1.))
-                                            .text_color(p.text_muted)
-                                            .hover(move |s| s.text_color(p.text))
-                                            .tooltip(move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(tooltip(cx))
-                                                    .build(window, cx)
-                                            })
-                                            .child(Icon::default().path(icon).small())
-                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                cx.stop_propagation()
-                                            })
-                                            .on_click(move |_, window, cx| {
-                                                cx.stop_propagation();
-                                                act(&entity, window, cx, &|this, window, cx| {
-                                                    f(this, window, cx)
-                                                })
-                                            })
-                                    };
-                        row.group(FOLDERS_HEADER_GROUP)
-                            .when(cfg!(any(unix, windows)), |row| {
-                                row.child(action(
-                                    "folders-new-note",
-                                    "icons/file-plus.svg",
-                                    |cx| reader_shortcuts::hint("New File", &NewNote, cx),
-                                    |this, window, cx| {
-                                        let folder = this
-                                            .tree
-                                            .rows
-                                            .iter()
-                                            .find(|row| {
-                                                Some(&row.path) == this.tree.cursor.as_ref()
-                                            })
-                                            .map(|row| {
-                                                if row.kind
-                                                    == okilum_core::vault::EntryKind::Directory
-                                                {
-                                                    row.path.clone()
-                                                } else {
-                                                    Path::new(&row.path)
-                                                        .parent()
-                                                        .unwrap_or(Path::new(""))
-                                                        .to_string_lossy()
-                                                        .into_owned()
-                                                }
-                                            });
-                                        this.new_note(folder.as_deref(), window, cx);
-                                    },
-                                ))
-                                .child(action(
-                                    "folders-new-folder",
-                                    "icons/folder-plus.svg",
-                                    |_| "New Folder".into(),
-                                    |this, window, cx| {
-                                        let folder = this
-                                            .tree
-                                            .rows
-                                            .iter()
-                                            .find(|row| {
-                                                Some(&row.path) == this.tree.cursor.as_ref()
-                                            })
-                                            .map(|row| {
-                                                if row.kind
-                                                    == okilum_core::vault::EntryKind::Directory
-                                                {
-                                                    row.path.clone()
-                                                } else {
-                                                    Path::new(&row.path)
-                                                        .parent()
-                                                        .unwrap_or(Path::new(""))
-                                                        .to_string_lossy()
-                                                        .into_owned()
-                                                }
-                                            });
-                                        this.new_folder(folder.as_deref(), window, cx);
-                                    },
-                                ))
-                            })
-                            .child(action(
-                                "folders-collapse-all",
-                                brand::READER_COLLAPSE_ICON,
-                                |cx| {
-                                    reader_shortcuts::hint(
-                                        "Collapse all folders",
-                                        &CollapseFolders,
-                                        cx,
-                                    )
-                                },
-                                |this, _, cx| this.collapse_folders(cx),
-                            ))
-                            .child(action(
-                                "folders-focus-current",
-                                brand::READER_FOCUS_ICON,
-                                |cx| {
-                                    reader_shortcuts::hint(
-                                        "Focus current note",
-                                        &FocusCurrentFolder,
-                                        cx,
-                                    )
-                                },
-                                |this, window, cx| this.focus_current_folder(window, cx),
-                            ))
-                            .child(
-                                div()
-                                    .id("toggle-hidden-files")
-                                    .debug_selector(|| "toggle-hidden-files".into())
-                                    .flex_none()
-                                    .px_1()
-                                    .text_color(if show_hidden { p.accent } else { p.text_muted })
-                                    .tooltip(|window, cx| {
-                                        gpui_component::tooltip::Tooltip::new(
-                                            reader_shortcuts::hint(
-                                                HIDDEN_FILES_MENU,
-                                                &ToggleHiddenFiles,
-                                                cx,
-                                            ),
-                                        )
-                                        .build(window, cx)
-                                    })
-                                    .child(
-                                        Icon::new(if show_hidden {
-                                            IconName::Eye
-                                        } else {
-                                            IconName::EyeOff
-                                        })
-                                        .small(),
-                                    )
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        cx.stop_propagation();
-                                        act(&entity, window, cx, &|this, _, cx| {
-                                            this.toggle_hidden_files(cx)
-                                        })
-                                    }),
-                            )
-                    })
-                    .map(|d| {
-                        #[cfg(any(unix, windows))]
-                        let d = if section == Section::Folders {
-                            reader_move_picker::drop_target(
-                                d,
-                                entity.clone(),
-                                drag_root.clone(),
-                                String::new(),
-                            )
-                        } else {
-                            d
-                        };
-                        d
-                    })
-                    .when_some(count, |d, count| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("section-count-{}", section.label())))
-                                .debug_selector(move || format!("section-count-{}", section.label()))
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .on_click(|_, _, cx| cx.stop_propagation())
-                                .px_1p5()
-                                .rounded_full()
-                                .bg(p.tile)
-                                .text_color(p.link)
-                                .child(count.to_string()),
-                        )
-                    })
-                    .on_click({
-                        let entity = entity.clone();
-                        let act = act.clone();
-                        move |event, window, cx| {
-                            act(&entity, window, cx, &|this, _, cx| {
-                                if event.modifiers().alt {
-                                    this.set_sidebar_sections(if closed { SectionAction::ExpandAll } else { SectionAction::CollapseAll }, cx);
-                                } else {
-                                    this.toggle_section(section, cx);
-                                }
-                            })
-                        }
-                    })
-                    .context_menu({
-                        let entity = entity.clone();
-                        let act = act.clone();
-                        move |menu, _, _| {
-                            if section != Section::Folders || !cfg!(any(unix, windows)) {
-                                return menu;
-                            }
-                            let item = |label: &'static str, directory: bool| {
-                                let entity = entity.clone();
-                                let act = act.clone();
-                                PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                                    act(&entity, window, cx, &|this, window, cx| {
-                                        if directory {
-                                            this.new_folder(Some(""), window, cx);
-                                        } else {
-                                            this.new_note(Some(""), window, cx);
-                                        }
-                                    });
-                                })
-                            };
-                            menu.item(item("New File in vault root", false))
-                                .item(item("New Folder in vault root", true))
-                        }
-                    })
-                    .into_any_element()
-                }
-                SideItem::More(more) => row_base(SharedString::from("side-recent-more"))
-                    .pl(px(30.))
-                    .text_xs()
-                    .text_color(tokens.text_faint)
-                    .cursor_pointer()
-                    .hover(move |d| d.text_color(p.text_muted))
-                    .child(format!("{more} more"))
-                    .on_click(move |_, window, cx| {
-                        act(&entity, window, cx, &|this, _, cx| {
-                            this.recent_expanded = true;
-                            cx.notify();
-                        })
-                    })
-                    .into_any_element(),
                 SideItem::Empty(text) => row_base(SharedString::from(format!("side-empty-{ix}")))
                     .pl(px(30.))
                     .text_xs()
@@ -4666,13 +4341,15 @@ impl Reader {
                 }
                 SideItem::Tree(row) => {
                     let directory = row.kind == EntryKind::Directory;
-                    let is_current = row.path == current;
+                    let is_current = row.path == tree_current;
                     let is_cursor = cursor.as_ref() == Some(&row.path);
                     let label = row.label.clone();
                     let icon = match row.kind {
                         EntryKind::Directory if row.depth == 0 => None,
                         EntryKind::Directory if row.expanded => Some(IconName::FolderOpen),
                         EntryKind::Directory => Some(IconName::Folder),
+                        // The folder's index note has its own glyph (#1512).
+                        EntryKind::Markdown if row.index => Some(IconName::BookOpen),
                         EntryKind::Markdown => Some(IconName::FileText),
                         EntryKind::Attachment => Some(IconName::File),
                     };
@@ -4727,7 +4404,12 @@ impl Reader {
                             d.bg(p.selected).font_weight(FontWeight::MEDIUM)
                         })
                         .when(!is_current, |d| d.hover(move |d| d.bg(tokens.hover)))
-                        .when(is_cursor, |d| d.border_1().border_color(p.focus))
+                        .when(is_cursor && tree_focused, |d| {
+                            d.border_1().border_color(p.focus)
+                        })
+                        .when(is_cursor && !tree_focused && !is_current, |d| {
+                            d.bg(p.selected.opacity(0.5))
+                        })
                         .when(directory && row.depth == 0, |d| {
                             d.font_weight(FontWeight::SEMIBOLD)
                         })
@@ -4736,6 +4418,8 @@ impl Reader {
                         .when((row.archived || row.hidden) && !is_current, |d| {
                             d.text_color(p.text_muted).opacity(0.75)
                         })
+                        // The index note recedes under its folder (#1512).
+                        .when(row.index && !is_current, |d| d.text_color(p.text_muted))
                         .child(if directory {
                             let toggle_entity = entity.clone();
                             let toggle_row = row.clone();
@@ -4744,6 +4428,10 @@ impl Reader {
                                     "folder-disclosure-{}",
                                     row.path
                                 )))
+                                .debug_selector({
+                                    let path = row.path.clone();
+                                    move || format!("folder-disclosure-{path}")
+                                })
                                 .on_click(move |event, window, cx| {
                                     cx.stop_propagation();
                                     if event.click_count() != 1 {
@@ -4795,9 +4483,15 @@ impl Reader {
                                             window,
                                             cx,
                                         )
-                                    } else if directory && event.click_count() > 1 {
-                                        // The first click already toggled and
-                                        // opened; a double click must not undo it.
+                                    } else if directory {
+                                        // One click selects at once; the second
+                                        // click of a double click expands and
+                                        // opens, or collapses (#1512).
+                                        match event.click_count() {
+                                            1 => this.select_tree_folder(&row, window, cx),
+                                            2 => this.activate_tree_row(&row, window, cx),
+                                            _ => {}
+                                        }
                                     } else {
                                         this.activate_tree_row(&row, window, cx)
                                     }
@@ -4896,60 +4590,12 @@ impl Reader {
                 }
             }
         });
-        // Headers never enter a scrollable list. Upper bodies have a bounded
-        // viewport so large Inbox/Pinned collections cannot displace Folders.
-        let mut sections: Vec<(reader_sidebar::Section, SideItem, Vec<SideItem>)> = Vec::new();
-        for item in items {
-            if let SideItem::Header(section, _) = &item {
-                sections.push((*section, item, Vec::new()));
-            } else if let Some((_, _, rows)) = sections.last_mut() {
-                rows.push(item);
-            }
-        }
-        // A section showing only its empty hint takes that one row, not a
-        // share of the space (#1350).
-        let hint_only = |rows: &Vec<SideItem>| {
-            rows.len() == 1 && matches!(rows.first(), Some(SideItem::Empty(_)))
-        };
-        let hinted = sections
-            .iter()
-            .filter(|(s, _, rows)| *s != Section::Folders && hint_only(rows))
-            .count();
-        let expanded = sections
-            .iter()
-            .filter(|(s, _, rows)| *s != Section::Folders && !rows.is_empty() && !hint_only(rows))
-            .count()
-            .max(1);
-        let upper_budget = (f32::from(self.body_bounds.size.height)
-            - READER_HEADER_HEIGHT
-            - sections.len() as f32 * 28.
-            - hinted as f32 * 28.
-            - 8.
-            - 140.)
-            .max(0.);
-        let per_section = upper_budget / expanded as f32;
+        // The tree starts directly under the sidebar header: root folders
+        // and files, no Folders row in between (#1512, #1474).
         let mut section_views = Vec::new();
-        for (index, (section, header, rows)) in sections.into_iter().enumerate() {
-            section_views.push(
-                div()
-                    .h(px(28.))
-                    .flex_none()
-                    .debug_selector(move || format!("sidebar-header-{}", section.label()))
-                    .child(render_row(header, 0))
-                    .into_any_element(),
-            );
-            if rows.is_empty() {
-                continue;
-            }
+        let rows: Vec<SideItem> = items;
+        if !rows.is_empty() {
             let count = rows.len();
-            let row_height = if section == Section::Inbox
-                && matches!(rows.first(), Some(SideItem::Entry { .. }))
-            {
-                44.
-            } else {
-                28.
-            };
-            let hint = hint_only(&rows);
             let sticky_source: Vec<_> = rows
                 .iter()
                 .map(|item| match item {
@@ -4959,7 +4605,7 @@ impl Reader {
                 .collect();
             let render = render_row.clone();
             let list = uniform_list(
-                SharedString::from(format!("sidebar-body-{}", section.label())),
+                SharedString::from("sidebar-body-Folders"),
                 count,
                 move |range: std::ops::Range<usize>, _, _| {
                     range
@@ -4967,109 +4613,86 @@ impl Reader {
                         .collect::<Vec<_>>()
                 },
             );
-            if section == Section::Folders {
-                let observer = cx.entity().downgrade();
-                let observed_root = self.vault_root.clone();
-                let observed_generation = self.watcher_generation;
-                section_views.push(
-                    div()
-                        .id("reader-tree")
-                        .relative()
-                        .debug_selector(|| "sidebar-tree-body".into())
-                        .key_context("ReaderTree")
-                        .track_focus(&self.tree_focus)
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_hidden()
-                        .on_scroll_wheel(cx.listener(|_, event: &ScrollWheelEvent, window, cx| {
-                            if event.delta.pixel_delta(px(28.)).y > px(0.) {
-                                cx.defer_in(window, |this, _, cx| {
-                                    if this.tree_scroll.0.borrow().base_handle.offset().y
-                                        >= px(-0.5)
-                                        && this.scroll_sections.restore()
-                                    {
-                                        this.save_sidebar(cx);
-                                        cx.notify();
-                                    }
-                                });
+            let observer = cx.entity().downgrade();
+            let observed_root = self.vault_root.clone();
+            let observed_generation = self.watcher_generation;
+            section_views.push(
+                div()
+                    .id("reader-tree")
+                    .relative()
+                    .debug_selector(|| "sidebar-tree-body".into())
+                    .key_context("ReaderTree")
+                    .track_focus(&self.tree_focus)
+                    // A click below the last row clears the selection, so
+                    // the next New note goes to the root (#1512).
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            if this.tree_space_below_rows(event.position, count) {
+                                this.clear_tree_selection(cx);
                             }
-                        }))
-                        .child(list.track_scroll(&self.tree_scroll).size_full())
-                        .child(
-                            v_flex()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .w_full()
-                                .bg(brand::palette(cx).sidebar)
-                                .occlude()
-                                .debug_selector(|| "tree-sticky-ancestors".into())
-                                .children(
-                                    self.tree_sticky
-                                        .iter()
-                                        .cloned()
-                                        .enumerate()
-                                        .map(|(index, row)| render_row(SideItem::Tree(row), index)),
-                                ),
-                        )
-                        .child(
-                            canvas(
-                                |_, _, _| (),
-                                move |_, _, _, cx| {
-                                    let observer = observer.clone();
-                                    let observed_root = observed_root.clone();
-                                    let sticky_source = sticky_source.clone();
-                                    cx.defer(move |cx| {
-                                        let _ = observer.update(cx, |this, cx| {
-                                            if this.vault_root != observed_root
-                                                || this.watcher_generation != observed_generation
-                                            {
-                                                return;
-                                            }
-                                            let offset = f32::from(
-                                                this.tree_scroll.0.borrow().base_handle.offset().y,
-                                            );
-                                            let sticky = reader_tree::sticky_ancestors(
-                                                &sticky_source,
-                                                ((-offset / 28.).floor().max(0.)) as usize,
-                                            );
-                                            if this
-                                                .tree_sticky
-                                                .iter()
-                                                .map(|r| &r.path)
-                                                .ne(sticky.iter().map(|r| &r.path))
-                                            {
-                                                this.tree_sticky = sticky;
-                                                cx.notify();
-                                            }
-                                            if this.scroll_sections.observe(offset) {
-                                                this.save_sidebar(cx);
-                                                cx.notify();
-                                            }
-                                        });
-                                    });
-                                },
-                            )
+                        }),
+                    )
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(list.track_scroll(&self.tree_scroll).size_full())
+                    .child(
+                        v_flex()
                             .absolute()
-                            .size_0(),
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .bg(brand::palette(cx).sidebar)
+                            .occlude()
+                            .debug_selector(|| "tree-sticky-ancestors".into())
+                            .children(
+                                self.tree_sticky
+                                    .iter()
+                                    .cloned()
+                                    .enumerate()
+                                    .map(|(index, row)| render_row(SideItem::Tree(row), index)),
+                            ),
+                    )
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, _, _, cx| {
+                                let observer = observer.clone();
+                                let observed_root = observed_root.clone();
+                                let sticky_source = sticky_source.clone();
+                                cx.defer(move |cx| {
+                                    let _ = observer.update(cx, |this, cx| {
+                                        if this.vault_root != observed_root
+                                            || this.watcher_generation != observed_generation
+                                        {
+                                            return;
+                                        }
+                                        let offset = f32::from(
+                                            this.tree_scroll.0.borrow().base_handle.offset().y,
+                                        );
+                                        let sticky = reader_tree::sticky_ancestors(
+                                            &sticky_source,
+                                            ((-offset / 28.).floor().max(0.)) as usize,
+                                        );
+                                        if this
+                                            .tree_sticky
+                                            .iter()
+                                            .map(|r| &r.path)
+                                            .ne(sticky.iter().map(|r| &r.path))
+                                        {
+                                            this.tree_sticky = sticky;
+                                            cx.notify();
+                                        }
+                                    });
+                                });
+                            },
                         )
-                        .into_any_element(),
-                );
-            } else {
-                section_views.push(
-                    div()
-                        .h(px(if hint {
-                            row_height
-                        } else {
-                            (count as f32 * row_height).min(per_section)
-                        }))
-                        .flex_none()
-                        .overflow_hidden()
-                        .debug_selector(move || format!("sidebar-body-{}", section.label()))
-                        .child(list.track_scroll(&self.section_scroll[index]).size_full())
-                        .into_any_element(),
-                );
-            }
+                        .absolute()
+                        .size_0(),
+                    )
+                    .into_any_element(),
+            );
         }
 
         v_flex()
@@ -6303,7 +5926,10 @@ fn display_title_bytes(head: &[u8]) -> Option<String> {
 /// One row of the browsing sidebar (#369).
 #[derive(Clone)]
 enum SideItem {
-    Header(reader_sidebar::Section, Option<usize>),
+    /// Recent / Pinned rows. The sidebar stopped emitting them when those
+    /// lists moved to the title bar (#1508); the row renderer is kept until
+    /// the tree-row work of #1594 lands, then removed with it.
+    #[allow(dead_code)]
     Entry {
         section: reader_sidebar::Section,
         path: String,
@@ -6312,11 +5938,19 @@ enum SideItem {
         location: Option<String>,
         folder: bool,
     },
-    More(usize),
     Empty(&'static str),
     Tree(reader_tree::Row),
+    /// Input, depth, folder?, templates, chosen template, and where the
+    /// item lands as «in: …» label and tooltip (#1512).
     #[cfg(any(unix, windows))]
-    Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
+    Create(
+        Entity<InputState>,
+        usize,
+        bool,
+        Vec<String>,
+        Option<String>,
+        (SharedString, SharedString),
+    ),
     #[cfg(any(unix, windows))]
     CreateError(String, usize),
     #[cfg(any(unix, windows))]
@@ -6324,7 +5958,12 @@ enum SideItem {
 }
 
 #[cfg(any(unix, windows))]
-fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creation, depth: usize) {
+fn append_creation_rows(
+    items: &mut Vec<SideItem>,
+    create: &reader_create::Creation,
+    depth: usize,
+    scope: &str,
+) {
     items.push(SideItem::Create(
         create.input.clone(),
         depth,
@@ -6334,7 +5973,29 @@ fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creat
             .as_ref()
             .map_or_else(Vec::new, |c| c.files.clone()),
         create.selected_template.clone(),
+        creation_destination(scope, &create.folder),
     ));
+}
+
+/// The inline create row's «in: …» (#1512): the tree's root is «/» (the
+/// vault root, or the project's folder inside a project), any other folder
+/// its name; the tooltip says it in full.
+#[cfg(any(unix, windows))]
+fn creation_destination(scope: &str, folder: &str) -> (SharedString, SharedString) {
+    if folder == scope || folder.is_empty() {
+        let tooltip = if scope.is_empty() || folder.is_empty() {
+            "Vault root"
+        } else {
+            "Project root"
+        };
+        return ("in: /".into(), tooltip.into());
+    }
+    let name = folder.rsplit('/').next().unwrap_or(folder);
+    let mut label: String = name.chars().take(12).collect();
+    if name.chars().count() > 12 {
+        label.push('…');
+    }
+    (format!("in: {label}").into(), folder.to_owned().into())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -6371,43 +6032,176 @@ fn toolbar_text_width(text: &str, weight: FontWeight, window: &Window) -> f32 {
         .as_f32()
 }
 
-/// Keep the full title before actions, reserving one control for overflow.
-fn toolbar_visible_actions(available: f32, title: f32, total: usize) -> usize {
-    (0..=total)
-        .rev()
-        .find(|&visible| title + (visible + usize::from(visible < total)) as f32 * 32. <= available)
-        .unwrap_or(0)
-}
-
 /// #774: the accent line height and the space the name dot takes.
 const VAULT_ACCENT_LINE: f32 = 2.;
 /// 8 px dot + 4 px margin + the header row's 4 px gap.
 const VAULT_DOT_SLOT: f32 = 16.;
 
-/// «None» plus the presets, current one checked. Shared by the vault name
-/// menu; Settings uses swatches with the same store call.
-fn vault_color_menu(
-    menu: gpui_component::menu::PopupMenu,
-    root: &Path,
-    cx: &App,
-) -> gpui_component::menu::PopupMenu {
-    use gpui_component::menu::PopupMenuItem;
-    let current = reader_ui_state::vault_color(root, cx);
-    let item = |label: &'static str, color: Option<brand::VaultColor>| {
-        let root = root.to_owned();
-        PopupMenuItem::new(label)
-            .checked(current == color)
-            .on_click(move |_, _, cx| reader_ui_state::set_vault_color(&root, color, cx))
-    };
-    brand::VaultColor::ALL
-        .into_iter()
-        .fold(menu.item(item("None", None)).separator(), |menu, color| {
-            menu.item(item(color.label(), Some(color)))
-        })
+/// Every sidebar tree row, inline create and rename rows included.
+const TREE_ROW_HEIGHT: f32 = 28.;
+const HIDDEN_FILES_MENU: &str = "Show hidden files";
+/// One sidebar header action (#1512): a 28 px button and its 2 px gap.
+const SIDEBAR_ACTION_SLOT: f32 = 30.;
+/// Gap between the name, the spacer and the action group.
+const SIDEBAR_NAME_GAP: f32 = 4.;
+/// The name button's padding and its ▾ caret around the text.
+const SIDEBAR_NAME_CHROME: f32 = 30.;
+/// The name keeps at least this much, caret included, before an action
+/// moves into ⋯; a longer name is cut with an ellipsis first (#1512). At the
+/// default 280 px width all five actions fit, vault colour dot included.
+const SIDEBAR_NAME_MIN: f32 = 80.;
+
+/// The sidebar header's actions, in their fixed order (#1512). The order is
+/// also their priority: a narrow sidebar sends the trailing ones into ⋯.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidebarAction {
+    NewNote,
+    NewFolder,
+    CollapseAll,
+    RevealCurrent,
+    ShowHidden,
 }
 
-const HIDDEN_FILES_MENU: &str = "Show hidden files";
-const FOLDERS_HEADER_GROUP: &str = "folders-header";
+impl SidebarAction {
+    const ALL: [Self; 5] = [
+        Self::NewNote,
+        Self::NewFolder,
+        Self::CollapseAll,
+        Self::RevealCurrent,
+        Self::ShowHidden,
+    ];
+
+    /// Only these leave the row for ⋯ on a narrow sidebar; they trail the
+    /// fixed ones, so the spilled tail is always a run of them.
+    fn spills(self) -> bool {
+        matches!(self, Self::RevealCurrent | Self::ShowHidden)
+    }
+
+    /// Creating files needs the platform file layer.
+    fn available() -> &'static [Self] {
+        const WITHOUT_FILES: [SidebarAction; 3] = [
+            SidebarAction::CollapseAll,
+            SidebarAction::RevealCurrent,
+            SidebarAction::ShowHidden,
+        ];
+        if cfg!(any(unix, windows)) {
+            &Self::ALL
+        } else {
+            &WITHOUT_FILES
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::NewNote => "sidebar-new-note",
+            Self::NewFolder => "sidebar-new-folder",
+            Self::CollapseAll => "sidebar-collapse-all",
+            Self::RevealCurrent => "sidebar-reveal-current",
+            Self::ShowHidden => "sidebar-show-hidden",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NewNote => "New note",
+            Self::NewFolder => "New folder",
+            Self::CollapseAll => "Collapse all folders",
+            Self::RevealCurrent => "Reveal current note",
+            Self::ShowHidden => HIDDEN_FILES_MENU,
+        }
+    }
+
+    fn action(self) -> Box<dyn Action> {
+        match self {
+            Self::NewNote => Box::new(NewNote),
+            Self::NewFolder => Box::new(NewFolder),
+            Self::CollapseAll => Box::new(CollapseFolders),
+            Self::RevealCurrent => Box::new(FocusCurrentFolder),
+            Self::ShowHidden => Box::new(ToggleHiddenFiles),
+        }
+    }
+
+    fn tooltip(self, cx: &App) -> SharedString {
+        reader_shortcuts::hint(self.label(), self.action().as_ref(), cx)
+    }
+
+    /// Show hidden is a toggle: its icon says whether hidden files show.
+    fn icon(self, show_hidden: bool) -> Icon {
+        match self {
+            Self::NewNote => Icon::default().path("icons/square-pen.svg"),
+            Self::NewFolder => Icon::default().path("icons/folder-plus.svg"),
+            Self::CollapseAll => Icon::default().path(brand::READER_COLLAPSE_ICON),
+            Self::RevealCurrent => Icon::default().path(brand::READER_FOCUS_ICON),
+            Self::ShowHidden if show_hidden => Icon::new(IconName::Eye),
+            Self::ShowHidden => Icon::new(IconName::EyeOff),
+        }
+    }
+
+    fn run(self, reader: &mut Reader, window: &mut Window, cx: &mut Context<Reader>) {
+        match self {
+            #[cfg(any(unix, windows))]
+            Self::NewNote => reader.new_note(None, window, cx),
+            #[cfg(any(unix, windows))]
+            Self::NewFolder => reader.new_folder(None, window, cx),
+            Self::CollapseAll => reader.collapse_folders(cx),
+            Self::RevealCurrent => reader.focus_current_folder(window, cx),
+            Self::ShowHidden => reader.toggle_hidden_files(cx),
+            #[cfg(not(any(unix, windows)))]
+            Self::NewNote | Self::NewFolder => {}
+        }
+    }
+}
+
+fn sidebar_action_click(
+    reader: WeakEntity<Reader>,
+    action: SidebarAction,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, window, cx| {
+        let _ = reader.update(cx, |this, cx| action.run(this, window, cx));
+    }
+}
+
+/// How many header actions fit beside the name (#1512). New note, New
+/// folder and Collapse all always stay; only Reveal current and Show hidden
+/// move into ⋯, which then takes a slot of its own. The name gives way
+/// first, down to its minimum; below that it is cut with an ellipsis.
+fn sidebar_visible_actions(available: f32, name: f32, actions: &[SidebarAction]) -> usize {
+    let total = actions.len();
+    let fixed = actions.iter().filter(|action| !action.spills()).count();
+    let name = name.min(SIDEBAR_NAME_MIN);
+    (fixed..=total)
+        .rev()
+        .find(|&visible| {
+            name + (visible + usize::from(visible < total)) as f32 * SIDEBAR_ACTION_SLOT
+                <= available
+        })
+        .unwrap_or(fixed)
+}
+
+/// The sidebar name's menu (#1512).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidebarNameItem {
+    SwitchVault,
+    RevealVault,
+    VaultSettings,
+    SwitchProject,
+    RevealProject,
+    LeaveProject,
+}
+
+impl SidebarNameItem {
+    fn label(self) -> SharedString {
+        use platform::labels::Os;
+        match self {
+            Self::SwitchVault => "Switch vault…".into(),
+            Self::RevealVault => Os::CURRENT.reveal_named("vault").into(),
+            Self::VaultSettings => "Vault settings".into(),
+            Self::SwitchProject => "Switch project…".into(),
+            Self::RevealProject => Os::CURRENT.reveal_named("project").into(),
+            Self::LeaveProject => "Leave project".into(),
+        }
+    }
+}
 
 /// Reader window title bar: the native traffic lights are vertically centred
 /// on the 46px Reader header (#365). The toolkit default centres them on its
@@ -6538,8 +6332,6 @@ fn reader_more_menu(
                     }),
             )
             .separator()
-            .menu("Folders only", Box::new(CollapseSidebarSections))
-            .menu("Expand all sections", Box::new(ExpandSidebarSections))
             .menu("Collapse all folders", Box::new(CollapseFolders))
             .separator()
             .label("Appearance")
@@ -6664,12 +6456,23 @@ impl Render for Reader {
                     }
                 })
             });
+        // The Manager panel has no Okilum header: T3 starts at the top of the
+        // panel and its own thread header says where you are.
+        let manager_headerless = cfg!(target_os = "macos")
+            && self.project_navigation.manager_panel.is_some()
+            && self
+                .project_navigation
+                .active
+                .as_ref()
+                .is_some_and(|p| p.manager != okilum_t3::projects::Manager::NotStarted);
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
             .filter(|panel| self.panels.visible(*panel, available))
             .map(|panel| {
                 let left = panel == reader_layout::Panel::Notes;
                 let resize_view = cx.entity().downgrade();
+                let header = (left || !manager_headerless)
+                    .then(|| self.render_panel_header(panel, panel_widths.get(panel), window, cx));
                 v_flex()
                     .id(if left {
                         "reader-notes-panel"
@@ -6698,7 +6501,7 @@ impl Render for Reader {
                     })
                     .border_color(brand::palette(cx).border_subtle)
                     .when(overlay, |p| p.shadow_lg())
-                    .child(self.render_panel_header(panel, panel_widths.get(panel), window, cx))
+                    .children(header)
                     .child(
                         div()
                             .flex_1()
@@ -6913,12 +6716,6 @@ impl Render for Reader {
             }))
             .on_action(cx.listener(|this, _: &TreeCollapseSubtree, w, cx| {
                 this.tree_key(TreeKey::CollapseSubtree, w, cx)
-            }))
-            .on_action(cx.listener(|this, _: &CollapseSidebarSections, _, cx| {
-                this.set_sidebar_sections(SectionAction::FoldersOnly, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ExpandSidebarSections, _, cx| {
-                this.set_sidebar_sections(SectionAction::ExpandAll, cx)
             }))
             .on_action(cx.listener(|this, _: &CollapseFolders, _, cx| this.collapse_folders(cx)))
             .on_action(
@@ -7205,6 +7002,7 @@ impl Render for Reader {
                     .as_ref()
                     .map(|(menu, position)| anchored().position(*position).child(menu.clone())),
             )
+            .children(self.render_title_nav_overlay(cx))
     }
 }
 
@@ -7518,8 +7316,8 @@ fn main() {
 #[cfg(test)]
 mod hidden_files_shortcut_tests {
     use super::{
-        COLLAPSE_SECTIONS_KEY, HIDDEN_FILES_KEYS, HIDDEN_FILES_KEY_MAC, LIVE_PREVIEW_KEY,
-        TREE_COLLAPSE_SUBTREE_KEY, TREE_EXPAND_SUBTREE_KEY,
+        HIDDEN_FILES_KEYS, HIDDEN_FILES_KEY_MAC, LIVE_PREVIEW_KEY, TREE_COLLAPSE_SUBTREE_KEY,
+        TREE_EXPAND_SUBTREE_KEY,
     };
     use gpui::{KeybindingKeystroke, Keystroke, Modifiers};
 
@@ -7599,18 +7397,6 @@ mod hidden_files_shortcut_tests {
             }
         )
         .should_match(&focus));
-        #[cfg(target_os = "macos")]
-        assert_eq!(COLLAPSE_SECTIONS_KEY, "cmd-shift-left");
-        #[cfg(not(target_os = "macos"))]
-        assert!(mac_arrow(
-            "left",
-            Modifiers {
-                control: true,
-                shift: true,
-                ..Default::default()
-            }
-        )
-        .should_match(&binding(COLLAPSE_SECTIONS_KEY)));
     }
 
     #[test]
@@ -8939,9 +8725,10 @@ mod document_link_landing_tests {
         }
     }
 
+    /// #1508: the sidebar is the folder tree only. Recent and Pinned keep their
+    /// stores (the title bar reads them) but never come back as sidebar rows.
     #[gpui::test]
-    fn empty_sidebar_sections_show_no_zero_count(cx: &mut gpui::TestAppContext) {
-        use reader_sidebar::Section;
+    fn sidebar_is_the_folder_tree_only_even_with_recent_and_pins(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -8954,53 +8741,46 @@ mod document_link_landing_tests {
         });
         let view = reader.unwrap();
         visual.run_until_parked();
-        let counts = |v: &Reader| -> Vec<(Section, Option<usize>)> {
+        // #1512: no Folders row either; every sidebar item is a tree row.
+        let not_tree = |v: &Reader| {
             v.sidebar_items()
-                .into_iter()
-                .filter_map(|item| match item {
-                    SideItem::Header(section, count) => Some((section, count)),
-                    _ => None,
-                })
-                .collect()
+                .iter()
+                .filter(|item| !matches!(item, SideItem::Tree(_)))
+                .count()
+        };
+        let entries = |v: &Reader| {
+            v.sidebar_items()
+                .iter()
+                .filter(|item| matches!(item, SideItem::Entry { .. }))
+                .count()
         };
         view.update(visual, |v, _| {
             v.loading = None;
             v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
+            v.sync_tree();
             v.sidebar.recent.clear();
             v.sidebar.pinned.clear();
-            v.inbox.clear();
-            assert_eq!(
-                counts(v),
-                [
-                    (Section::Recent, None),
-                    (Section::Pinned, None),
-                    (Section::Folders, None),
-                ]
-            );
-            // Positive control: a filled section still carries its count.
-            v.sidebar.recent.push(("Work/Plan.md".into(), 0));
-            v.sidebar.pinned.push("Work/Plan.md".into());
-            v.inbox.push(reader_sidebar::InboxItem {
-                path: "Work/Plan.md".into(),
-                created: 0,
-                reason: reader_sidebar::InboxReason::NoIncomingLinks,
-                domain: None,
-            });
-            assert_eq!(
-                counts(v),
-                [
-                    (Section::Recent, Some(1)),
-                    (Section::Pinned, Some(1)),
-                    (Section::Folders, None),
-                ]
-            );
+            assert_eq!(not_tree(v), 0);
+            // Filled stores still add nothing to the sidebar.
+            v.sidebar.record_open("Work/Plan.md", 0);
+            v.sidebar.toggle_pin("Work/Plan.md");
+            v.sidebar.toggle_pin("Work");
+            assert_eq!(not_tree(v), 0);
+            assert_eq!(entries(v), 0);
+            assert_eq!(v.sidebar.pinned, ["Work/Plan.md", "Work"]);
+            assert_eq!(v.sidebar.recent.len(), 1);
+            // Positive control: the tree rows are there.
+            assert!(v
+                .sidebar_items()
+                .iter()
+                .any(|item| matches!(item, SideItem::Tree(row) if row.path == "Work")));
         });
     }
 
-    /// #1350: the empty sections speak alike, and an empty vault shows no
-    /// hints at all.
+    /// #1350: an empty tree says so in the sidebar's one hint; an empty vault
+    /// shows no hint at all.
     #[gpui::test]
-    fn empty_sidebar_sections_read_as_one_set(cx: &mut gpui::TestAppContext) {
+    fn empty_sidebar_tree_hint(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9026,22 +8806,13 @@ mod document_link_landing_tests {
             v.loading = None;
             v.sidebar.recent.clear();
             v.sidebar.pinned.clear();
-            v.inbox.clear();
             v.vault = Arc::new(Vault::from_note_paths(Vec::<String>::new()));
             assert!(hints(v).is_empty(), "an empty vault shows no hints");
             v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
-            let shown = hints(v);
-            assert_eq!(
-                &shown[..2],
-                ["Notes you open appear here.", "Notes you pin appear here.",]
-            );
-            assert!(
-                shown.iter().all(|hint| hint.ends_with("appear here.")),
-                "{shown:?}"
-            );
-            // Positive control: a filled section drops its hint.
-            v.sidebar.pinned.push("Work/Plan.md".into());
-            assert!(!hints(v).contains(&"Notes you pin appear here."));
+            assert_eq!(hints(v), ["Notes and folders appear here."]);
+            // Positive control: a populated tree drops its hint.
+            v.sync_tree();
+            assert!(hints(v).is_empty());
         });
     }
 
@@ -9111,7 +8882,7 @@ mod document_link_landing_tests {
         view.read_with(visual, |v, _| {
             assert_eq!(v.tree_scroll.0.borrow().base_handle.offset().y, px(0.));
         });
-        // Focus current restores a collapsed Folders section.
+        // Reveal current also clears a Folders fold saved by an older build.
         view.update_in(visual, |v, window, cx| {
             v.sidebar.collapsed.insert(reader_sidebar::Section::Folders);
             v.focus_current_folder(window, cx);
@@ -9120,107 +8891,6 @@ mod document_link_landing_tests {
                 .sidebar
                 .collapsed
                 .contains(&reader_sidebar::Section::Folders));
-        });
-    }
-
-    #[gpui::test]
-    fn sections_follow_show_hidden_files_live(cx: &mut gpui::TestAppContext) {
-        use reader_sidebar::{InboxItem, InboxReason, Section};
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            bind_keys(cx);
-        });
-        let mut reader = None;
-        let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| Reader::new(Opts::default(), window, cx));
-            reader = Some(view.clone());
-            Root::new(view, window, cx)
-        });
-        let view = reader.unwrap();
-        visual.run_until_parked();
-        let notes = ["Visible.md", ".Dot note.md", "_Hidden/Inside.md"];
-        let section_paths = |v: &Reader, section: Section| -> Vec<String> {
-            v.sidebar_items()
-                .into_iter()
-                .filter_map(|item| match item {
-                    SideItem::Entry {
-                        section: s, path, ..
-                    } if s == section => Some(path),
-                    _ => None,
-                })
-                .collect()
-        };
-        let header_count = |v: &Reader, section: Section| {
-            v.sidebar_items().into_iter().find_map(|item| match item {
-                SideItem::Header(s, count) if s == section => count,
-                _ => None,
-            })
-        };
-        view.update(visual, |v, cx| {
-            v.loading = None;
-            v.vault = Arc::new(Vault::from_note_paths(notes.map(String::from)));
-            v.sync_tree();
-            v.sidebar.show_hidden = true;
-            v.tree.set_show_hidden(true);
-            for (at, path) in notes.iter().enumerate() {
-                v.sidebar.record_open(path, at as u64);
-                v.sidebar.toggle_pin(path);
-            }
-            v.sidebar.toggle_pin("_Hidden");
-            v.inbox = notes
-                .iter()
-                .map(|path| InboxItem {
-                    path: path.to_string(),
-                    created: reader_sidebar::now(),
-                    reason: InboxReason::VaultRoot,
-                    domain: None,
-                })
-                .collect();
-            // Positive control: with Show hidden files on, every section lists
-            // the hidden notes, so their absence below is the filter's doing.
-            for section in [Section::Recent, Section::Pinned] {
-                let paths = section_paths(v, section);
-                assert!(
-                    paths.iter().any(|p| p == ".Dot note.md")
-                        && paths.iter().any(|p| p == "_Hidden/Inside.md"),
-                    "{section:?} with hidden files shown: {paths:?}"
-                );
-            }
-            assert!(section_paths(v, Section::Pinned).contains(&"_Hidden".to_string()));
-            // Switching it off hides them everywhere at once, as in the tree.
-            v.toggle_hidden_files(cx);
-            assert!(!v
-                .tree
-                .rows
-                .iter()
-                .any(|row| row.path.starts_with(['.', '_'])));
-            for section in [Section::Recent, Section::Pinned] {
-                assert_eq!(
-                    section_paths(v, section),
-                    ["Visible.md"],
-                    "{section:?} with hidden files off"
-                );
-                assert_eq!(header_count(v, section), Some(1), "{section:?} count");
-            }
-            // And back on without a rescan or recomputation.
-            v.toggle_hidden_files(cx);
-            assert!(section_paths(v, Section::Inbox).is_empty());
-            assert_eq!(header_count(v, Section::Pinned), Some(notes.len() + 1));
-            // Hidden-only collections are empty on screen: their headers stay
-            // present, but #687 must not show either zero or the raw hidden count.
-            v.sidebar.recent.retain(|(path, _)| path != "Visible.md");
-            v.sidebar.pinned.retain(|path| path != "Visible.md");
-            v.inbox.retain(|item| item.path != "Visible.md");
-            v.toggle_hidden_files(cx);
-            for section in [Section::Recent, Section::Pinned] {
-                assert!(section_paths(v, section).is_empty());
-                assert!(
-                    v.sidebar_items()
-                        .iter()
-                        .any(|item| { matches!(item, SideItem::Header(s, None) if *s == section) }),
-                    "{section:?} header remains without a count"
-                );
-            }
         });
     }
 
@@ -9267,6 +8937,7 @@ mod document_link_landing_tests {
             assert!(visual.debug_bounds("sidebar-vault-dot").is_none());
         }
         let title_before = first.debug_bounds("sidebar-vault-title").unwrap();
+        let actions_before = first.debug_bounds("sidebar-header-actions").unwrap();
         first.update(|_, cx| {
             reader_ui_state::set_vault_color(&root, Some(brand::VaultColor::Teal), cx)
         });
@@ -9288,9 +8959,14 @@ mod document_link_landing_tests {
             "the line is drawn over the header, not above it"
         );
         assert_eq!(
-            title_after.right(),
-            title_before.right(),
-            "the dot takes exactly its slot; header actions do not shift"
+            title_after.left() - title_before.left(),
+            px(VAULT_DOT_SLOT),
+            "the dot takes exactly its slot before the name"
+        );
+        assert_eq!(
+            first.debug_bounds("sidebar-header-actions").unwrap(),
+            actions_before,
+            "header actions do not shift"
         );
         assert!(
             unrelated.debug_bounds("vault-accent-line").is_none(),
@@ -9302,8 +8978,10 @@ mod document_link_landing_tests {
         assert!(first.debug_bounds("sidebar-vault-dot").is_none());
     }
 
+    /// #1474/#1508: the sidebar is a header plus the tree. Hundreds of pins
+    /// add no section, and scrolling never changes the sidebar's geometry.
     #[gpui::test]
-    fn sidebar_scroll_preserves_height_and_section_bodies(cx: &mut gpui::TestAppContext) {
+    fn sidebar_scroll_preserves_height_and_has_no_other_sections(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9330,21 +9008,25 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         let geometry = |visual: &mut gpui::VisualTestContext| {
-            [
-                "reader-notes-panel",
-                "sidebar-body-Pinned",
-                "sidebar-body-Recent",
-                "sidebar-tree-body",
-            ]
-            .map(|selector| visual.debug_bounds(selector).expect(selector))
+            ["reader-notes-panel", "sidebar-header", "sidebar-tree-body"]
+                .map(|selector| visual.debug_bounds(selector).expect(selector))
         };
         let before = geometry(visual);
-        assert!(
-            before[1].size.height > px(28.),
-            "Pinned body positive control"
-        );
-        assert!(visual.debug_bounds("sidebar-header-Inbox").is_none());
-        assert!(visual.debug_bounds("sidebar-header-Projects").is_none());
+        for gone in [
+            "sidebar-header-Folders",
+            "sidebar-header-Recent",
+            "sidebar-header-Pinned",
+            "sidebar-header-Inbox",
+            "sidebar-header-Projects",
+            "sidebar-body-Recent",
+            "sidebar-body-Pinned",
+            "sidebar-sections-toggle",
+        ] {
+            assert!(visual.debug_bounds(gone).is_none(), "{gone} is retired");
+        }
+        // The tree takes everything below its header.
+        assert_eq!(before[2].top(), before[1].bottom());
+        assert!(before[2].bottom() >= before[0].bottom() - px(16.));
         view.update(visual, |v, cx| {
             v.tree_scroll
                 .scroll_to_item_strict(150, ScrollStrategy::Top);
@@ -9366,11 +9048,14 @@ mod document_link_landing_tests {
         assert_eq!(geometry(visual), before);
     }
 
+    /// Pins and recents survive a relaunch; nothing of the retired section
+    /// state comes back (#1508). A Folders fold saved by an older build hides
+    /// nothing: the root entries are always listed (#1512).
     #[gpui::test]
-    fn sidebar_explicit_sections_survive_save_close_launch_with_scrolled_tree(
+    fn sidebar_pins_survive_relaunch_and_a_saved_folders_fold_hides_nothing(
         cx: &mut gpui::TestAppContext,
     ) {
-        use reader_sidebar::LEFT_SECTIONS;
+        use reader_sidebar::Section;
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9378,7 +9063,7 @@ mod document_link_landing_tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
         std::fs::create_dir(&root).unwrap();
-        for i in 0..100 {
+        for i in 0..20 {
             std::fs::write(root.join(format!("Note {i:03}.md")), "# Note").unwrap();
         }
         for launch in 0..2 {
@@ -9388,7 +9073,7 @@ mod document_link_landing_tests {
                     Reader::new(
                         Opts {
                             vault: Some(root.clone()),
-                            note: Some("Note 090.md".into()),
+                            note: Some("Note 010.md".into()),
                             index_dir: Some(fixture.path().join("cache")),
                             session_directory: Some(fixture.path().join("state")),
                             panel_settings_override: Some(fixture.path().join("panels.json")),
@@ -9404,43 +9089,36 @@ mod document_link_landing_tests {
             let view = entity.unwrap();
             visual.simulate_resize(size(px(1400.), px(960.)));
             visual.run_until_parked();
-            view.update(visual, |v, cx| {
-                v.panels.open(reader_layout::Panel::Notes);
-                v.tree_revealed.clear();
-                cx.notify();
-            });
-            visual.run_until_parked();
             if launch == 0 {
                 view.update(visual, |v, cx| {
                     v.panels.open(reader_layout::Panel::Notes);
-                    v.sidebar.pinned = vec!["Note 001.md".into()];
-                    v.tree_scroll.scroll_to_item_strict(80, ScrollStrategy::Top);
-                    cx.notify();
-                });
-                visual.run_until_parked();
-                view.update(visual, |v, cx| {
-                    v.set_sidebar_sections(SectionAction::ExpandAll, cx)
+                    v.toggle_pin("Note 001.md", cx);
+                    v.toggle_section(Section::Folders, cx);
                 });
                 visual.run_until_parked();
             }
             view.read_with(visual, |v, _| {
+                assert!(v.sidebar.is_pinned("Note 001.md"), "launch {launch}");
                 assert!(
-                    v.tree_scroll.0.borrow().base_handle.offset().y < px(-100.),
-                    "scrolled positive control on launch {launch}"
+                    v.sidebar.recent.iter().any(|(p, _)| p == "Note 010.md"),
+                    "launch {launch}"
                 );
-                for section in LEFT_SECTIONS {
-                    let closed = v.scroll_sections.closed(section, &v.sidebar.collapsed);
-                    assert!(!closed, "{section:?} closed on launch {launch}");
-                }
+                assert!(
+                    v.sidebar_items().iter().any(
+                        |item| matches!(item, SideItem::Tree(row) if row.path == "Note 001.md")
+                    ),
+                    "launch {launch}: the root entries stay listed"
+                );
             });
             view.update_in(visual, |_, window, _| window.remove_window());
             visual.run_until_parked();
         }
     }
 
+    /// A folder opened without a vault (#1512): the same one-row header, no
+    /// Folders row or count, and Collapse all never hides the file list.
     #[gpui::test]
-    fn folder_view_count_collapse_and_tooltip_targets(cx: &mut gpui::TestAppContext) {
-        use reader_sidebar::Section;
+    fn folder_view_header_actions_and_collapse_keep_the_file_list(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9472,6 +9150,7 @@ mod document_link_landing_tests {
         view.update(visual, |v, cx| {
             assert!(v.single_file, "exercise the non-vault launch path");
             v.panels.open(reader_layout::Panel::Notes);
+            v.panel_widths.set(reader_layout::Panel::Notes, 320.);
             v.load_quick_folder(String::new(), cx);
             cx.notify();
         });
@@ -9484,47 +9163,48 @@ mod document_link_landing_tests {
             })
         };
         assert!(visible(visual), "positive control: populated file list");
-        let count = visual.debug_bounds("section-count-Folders").unwrap();
-        visual.simulate_click(count.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert!(visible(visual), "count clicks must leave files visible");
-        let label = visual.debug_bounds("section-label-Folders").unwrap();
-        for id in [
-            "folders-new-note",
-            "folders-new-folder",
-            "folders-collapse-all",
-            "folders-focus-current",
-            "toggle-hidden-files",
+        for gone in [
+            "sidebar-header-Folders",
+            "section-label-Folders",
+            "section-count-Folders",
         ] {
-            let action = visual
-                .debug_bounds(id)
-                .unwrap_or_else(|| panic!("missing action {id}"));
+            assert!(visual.debug_bounds(gone).is_none(), "{gone} is retired");
+        }
+        view.read_with(visual, |v, _| {
+            assert_eq!(
+                v.sidebar_name_menu(),
+                [SidebarNameItem::SwitchVault, SidebarNameItem::RevealVault],
+                "no vault, so no Vault settings"
+            );
+        });
+        let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+        for action in SidebarAction::available() {
+            let bounds = visual
+                .debug_bounds(action.id())
+                .unwrap_or_else(|| panic!("missing action {action:?}"));
             assert!(
-                !label.contains(&action.center()),
-                "section tooltip must not cover {id}"
+                title.right() <= bounds.left(),
+                "the name never covers {action:?}"
             );
         }
-        let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
+        let collapse = visual.debug_bounds("sidebar-collapse-all").unwrap();
         visual.simulate_click(collapse.center(), Modifiers::default());
         visual.run_until_parked();
-        assert!(!visible(visual), "collapse must hide even a flat file list");
+        assert!(visible(visual), "Collapse all keeps the file list");
         view.read_with(visual, |v, _| {
-            assert!(v.sidebar.is_collapsed(Section::Folders))
+            assert!(!v.sidebar.is_collapsed(reader_sidebar::Section::Folders))
         });
-        // Positive control: the header still toggles the section independently.
-        let label = visual.debug_bounds("section-label-Folders").unwrap();
-        visual.simulate_click(label.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert!(visible(visual), "header reopens files after collapse");
-        let label = visual.debug_bounds("section-label-Folders").unwrap();
-        visual.simulate_click(label.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert!(!visible(visual), "header click still collapses files");
     }
 
+    /// #1512, #1474: the sidebar has one header row. The vault name sits on
+    /// the left and opens the vault menu; New note, New folder, Collapse all,
+    /// Reveal current and Show hidden keep fixed slots on the right, idle and
+    /// hovered. There is no Folders row: root entries follow the header.
     #[gpui::test]
-    fn sidebar_bulk_controls_restore_alt_click_and_shortcuts(cx: &mut gpui::TestAppContext) {
-        use reader_sidebar::{Section, LEFT_SECTIONS};
+    fn sidebar_header_is_one_row_with_fixed_actions_and_no_folders_row(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use reader_sidebar::Section;
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9555,128 +9235,288 @@ mod document_link_landing_tests {
         let view = entity.unwrap();
         visual.run_until_parked();
         visual.simulate_resize(size(px(1400.), px(960.)));
-        visual.run_until_parked();
         view.update(visual, |v, cx| {
             v.panels.open(reader_layout::Panel::Notes);
-            v.sidebar.toggle_section(Section::Pinned);
-            v.scroll_sections.honor_expanded(&v.sidebar.collapsed);
+            v.panel_widths.set(reader_layout::Panel::Notes, 320.);
             cx.notify();
         });
         visual.run_until_parked();
-        let before = view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed))
-        });
-        // The vault menu retains the Folders-only toggle; its old toolbar slot
-        // is now reserved for Collapse all folders (#767).
-        view.update(visual, |v, cx| {
-            v.set_sidebar_sections(SectionAction::ToggleFoldersOnly, cx)
-        });
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert_eq!(
-                LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)),
-                [true, true, false]
-            )
-        });
-        view.update(visual, |v, cx| {
-            v.set_sidebar_sections(SectionAction::ToggleFoldersOnly, cx)
-        });
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert_eq!(
-                LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)),
-                before
-            )
-        });
-        let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
-        // Click the chevron area, not the neighbouring folder actions.
-        visual.simulate_click(
-            point(folders.left() + px(10.), folders.center().y),
-            Modifiers {
-                alt: true,
-                ..Default::default()
-            },
+        let ids: &[&str] = if cfg!(any(unix, windows)) {
+            &[
+                "sidebar-new-note",
+                "sidebar-new-folder",
+                "sidebar-collapse-all",
+                "sidebar-reveal-current",
+                "sidebar-show-hidden",
+            ]
+        } else {
+            &[
+                "sidebar-collapse-all",
+                "sidebar-reveal-current",
+                "sidebar-show-hidden",
+            ]
+        };
+        assert_eq!(
+            SidebarAction::available()
+                .iter()
+                .map(|action| action.id())
+                .collect::<Vec<_>>(),
+            ids
         );
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert!(LEFT_SECTIONS
-                .into_iter()
-                .all(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)))
-        });
-        let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
-        visual.simulate_click(
-            point(folders.left() + px(10.), folders.center().y),
-            Modifiers {
-                alt: true,
-                ..Default::default()
-            },
+        let slots = |visual: &mut gpui::VisualTestContext| {
+            ids.iter()
+                .map(|id| {
+                    visual
+                        .debug_bounds(id)
+                        .unwrap_or_else(|| panic!("missing action {id}"))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            visual.debug_bounds("sidebar-actions").is_none(),
+            "no ⋯ at 320 px"
         );
+        // Move the pointer well away from the sidebar first.
+        visual.simulate_mouse_move(point(px(1000.), px(600.)), None, Modifiers::default());
         visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert!(LEFT_SECTIONS
-                .into_iter()
-                .all(|s| !v.scroll_sections.closed(s, &v.sidebar.collapsed)))
+        let idle = slots(visual);
+        for pair in idle.windows(2) {
+            assert!(pair[0].right() <= pair[1].left(), "fixed order: {idle:?}");
+            assert_eq!(pair[0].size, pair[1].size, "equal slots: {idle:?}");
+            assert_eq!(pair[0].center().y, pair[1].center().y, "one row: {idle:?}");
+        }
+        assert_eq!(idle[0].size.width, px(28.));
+        // One row: the name on the left, the actions on the right, all of
+        // it inside the header strip.
+        let header = visual.debug_bounds("sidebar-header").unwrap();
+        let panel = visual.debug_bounds("reader-notes-panel").unwrap();
+        let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+        assert_eq!(header.size.height, px(READER_HEADER_HEIGHT));
+        assert_eq!(header.top(), panel.top());
+        assert!(
+            title.left() <= header.left() + px(16.),
+            "name is left-aligned"
+        );
+        assert!(title.right() <= idle[0].left());
+        assert!(idle.last().unwrap().right() <= header.right());
+        for bounds in idle.iter().chain([&title]) {
+            assert!(bounds.top() >= header.top() && bounds.bottom() <= header.bottom());
+        }
+        view.read_with(visual, |v, _| {
+            assert_eq!(
+                v.sidebar_name_menu(),
+                [
+                    SidebarNameItem::SwitchVault,
+                    SidebarNameItem::RevealVault,
+                    SidebarNameItem::VaultSettings,
+                ]
+            );
         });
+        assert_eq!(
+            SidebarNameItem::SwitchVault.label().as_ref(),
+            "Switch vault…"
+        );
+        assert_eq!(
+            SidebarNameItem::RevealVault.label().as_ref(),
+            platform::labels::Os::CURRENT.reveal_named("vault")
+        );
+        // No Folders row: the first root entry sits right under the header.
+        for gone in [
+            "sidebar-header-Folders",
+            "section-label-Folders",
+            "folders-collapse-all",
+            "toggle-hidden-files",
+        ] {
+            assert!(visual.debug_bounds(gone).is_none(), "{gone} is retired");
+        }
+        view.read_with(visual, |v, _| {
+            assert!(matches!(
+                v.sidebar_items().first(),
+                Some(SideItem::Tree(row)) if row.path == "Folder" && row.depth == 0
+            ));
+        });
+        let first = visual.debug_bounds("tree-row-Folder").unwrap();
+        assert!(first.top() >= header.bottom() && first.top() < header.bottom() + px(4.));
+        visual.simulate_mouse_move(title.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(slots(visual), idle, "hovering the name moves nothing");
+        visual.simulate_mouse_move(idle[2].center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(slots(visual), idle, "hovering an action moves nothing");
+        // Collapse all folds the tree; the root entries stay listed.
+        let collapse = visual.debug_bounds("sidebar-collapse-all").unwrap();
+        visual.simulate_click(collapse.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(!v.tree.rows.iter().any(|row| row.path == "Folder/Note.md"));
+            assert!(v.tree.rows.iter().any(|row| row.path == "Folder"));
+        });
+        assert!(visual.debug_bounds("sidebar-tree-body").is_some());
+        // Show hidden is a toggle that keeps its slot.
+        let hidden = visual.debug_bounds("sidebar-show-hidden").unwrap();
+        visual.simulate_click(hidden.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert!(v.sidebar.show_hidden));
+        assert_eq!(slots(visual), idle, "toggling Show hidden moves nothing");
+        visual.simulate_click(hidden.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert!(!v.sidebar.show_hidden));
+        // The retired «Folders only» key does nothing to the sidebar now.
         view.update_in(visual, |v, window, cx| {
             v.content.read(cx).focus_handle().clone().focus(window, cx);
         });
-        visual.simulate_keystrokes(COLLAPSE_SECTIONS_KEY);
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert_eq!(
-                LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed)),
-                [true, true, false]
-            )
-        });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-            "cmd-shift-right"
+            "cmd-shift-left"
         } else {
-            "ctrl-shift-right"
+            "ctrl-shift-left"
         });
         visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert!(LEFT_SECTIONS
-                .into_iter()
-                .all(|s| !v.scroll_sections.closed(s, &v.sidebar.collapsed)))
+        view.read_with(visual, |v, _| {
+            assert!(!v.sidebar.is_collapsed(Section::Folders))
         });
-        let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
-        visual.simulate_click(collapse.center(), Modifiers::default());
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert!(!v.sidebar.is_collapsed(Section::Folders));
-            assert!(!v.tree.rows.iter().any(|row| row.path == "Folder/Note.md"));
-            // Collapse all folders leaves the vault-root folders visible.
-            assert!(v.tree.rows.iter().any(|row| row.path == "Folder"));
-        });
-        // The vault header toggles every top-level section, Folders included (#983).
-        let closed =
-            |v: &Reader| LEFT_SECTIONS.map(|s| v.scroll_sections.closed(s, &v.sidebar.collapsed));
-        let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
-        visual.simulate_click(header.center(), Modifiers::default());
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert_eq!(closed(v), [true; 3]);
-        });
-        let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
-        visual.simulate_click(header.center(), Modifiers::default());
-        visual.run_until_parked();
-        view.update(visual, |v, _| {
-            v.scroll_sections.observe(-120.);
-            assert_eq!(closed(v), [false; 3]);
-        });
+        assert!(visual.debug_bounds("sidebar-sections-toggle").is_none());
         assert_eq!(
             std::fs::read_to_string(root.join("Folder/Note.md")).unwrap(),
             "# Note"
         );
+    }
+
+    /// #1512: a narrow sidebar sends only Reveal current and Show hidden
+    /// into ⋯; the others never leave the row, and the name gives way first.
+    #[test]
+    fn narrow_sidebar_spills_only_reveal_and_show_hidden() {
+        let all = &SidebarAction::ALL;
+        let min = SIDEBAR_NAME_MIN;
+        let slot = SIDEBAR_ACTION_SLOT;
+        assert_eq!(sidebar_visible_actions(400., 120., all), 5);
+        // The name gives way down to its minimum before anything spills.
+        assert_eq!(sidebar_visible_actions(min + 5. * slot, 300., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot - 1., 300., all), 3);
+        assert_eq!(
+            sidebar_visible_actions(min + 4. * slot + 1., min, all),
+            3,
+            "four in the row plus ⋯ does not fit beside the name"
+        );
+        // At the narrowest the three fixed ones stay.
+        assert_eq!(sidebar_visible_actions(60., min, all), 3);
+        assert!(all[3..].iter().all(|action| action.spills()));
+        assert!(!all[..3].iter().any(|action| action.spills()));
+        // Default width (280 px, 12 px padding, two gaps), with and without
+        // the vault colour dot: every action stays in the row.
+        for dot in [0., VAULT_DOT_SLOT] {
+            let room = 280. - 24. - dot - 2. * SIDEBAR_NAME_GAP;
+            assert_eq!(sidebar_visible_actions(room, 200., all), 5, "dot {dot}");
+        }
+    }
+
+    /// #1508, #1512: inside a project the header row names the project and
+    /// keeps the same action slots; the project's tree follows directly and
+    /// cannot be stranded folded away.
+    #[gpui::test]
+    fn project_sidebar_header_names_the_project_and_the_tree_follows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use reader_sidebar::Section;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Work/Proj/docs")).unwrap();
+        std::fs::write(root.join("Work/Proj/Plan.md"), "# Plan").unwrap();
+        std::fs::write(root.join("Work/Proj/docs/Spec.md"), "# Spec").unwrap();
+        std::fs::write(root.join("Other.md"), "# Other").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Work/Proj/Plan.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let vault_actions = visual.debug_bounds("sidebar-header-actions").unwrap();
+        view.update(visual, |v, cx| {
+            // A Folders fold saved by an older build hides nothing.
+            v.toggle_section(Section::Folders, cx);
+            v.tree.scope_to("Work/Proj");
+            v.project_navigation.active = Some(okilum_t3::projects::Project {
+                folder: v.vault_root.join("Work/Proj"),
+                name: "Proj".into(),
+                kind: okilum_t3::projects::Kind::Code,
+                environment: None,
+                manager_project: None,
+                manager: okilum_t3::projects::Manager::NotStarted,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            let items = v.sidebar_items();
+            assert!(
+                items.iter().all(|item| matches!(item, SideItem::Tree(_))),
+                "only tree rows in a project"
+            );
+            assert!(items.iter().any(
+                |item| matches!(item, SideItem::Tree(row) if row.path == "Work/Proj/Plan.md")
+            ));
+            assert!(!items
+                .iter()
+                .any(|item| matches!(item, SideItem::Tree(row) if row.path == "Other.md")));
+            assert_eq!(
+                v.sidebar_name_menu(),
+                [
+                    SidebarNameItem::SwitchProject,
+                    SidebarNameItem::RevealProject,
+                    SidebarNameItem::LeaveProject,
+                ]
+            );
+        });
+        assert!(visual.debug_bounds("sidebar-header-Folders").is_none());
+        assert_eq!(
+            visual.debug_bounds("sidebar-header-actions").unwrap(),
+            vault_actions,
+            "a project keeps the vault's action slots"
+        );
+        let header = visual.debug_bounds("sidebar-header").unwrap();
+        let body = visual.debug_bounds("sidebar-tree-body").expect("tree body");
+        assert_eq!(
+            body.top(),
+            header.bottom(),
+            "the tree follows the header row"
+        );
+        // Leaving restores the vault, still with every root entry listed.
+        view.update(visual, |v, cx| {
+            v.project_navigation.active = None;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(v
+                .sidebar_items()
+                .iter()
+                .any(|item| matches!(item, SideItem::Tree(_))));
+        });
+        assert!(visual.debug_bounds("sidebar-tree-body").is_some());
     }
 
     #[gpui::test]
@@ -9725,32 +9565,20 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            let headers: Vec<_> = v
-                .sidebar_items()
-                .into_iter()
-                .filter_map(|item| match item {
-                    SideItem::Header(section, _) => Some(section),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(headers, reader_sidebar::LEFT_SECTIONS);
             assert_eq!(
                 v.projects.rows().len(),
                 2,
                 "typed project inventory positive control"
             );
-            assert!(v.sidebar_items().iter().all(|item| !matches!(
-                item,
-                SideItem::Header(
-                    reader_sidebar::Section::Projects | reader_sidebar::Section::Inbox,
-                    _
-                )
-            )));
+            assert!(v
+                .sidebar_items()
+                .iter()
+                .all(|item| matches!(item, SideItem::Tree(_))));
         });
     }
 
     #[gpui::test]
-    fn folder_click_opens_its_index_note_and_the_chevron_only_toggles(
+    fn folder_click_selects_double_click_and_open_key_open_its_index_and_the_chevron_only_toggles(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -9759,12 +9587,13 @@ mod document_link_landing_tests {
         });
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
-        for dir in ["Areas/apertune", "Areas/plain", "Areas/other"] {
+        for dir in ["Areas/apertune/specs", "Areas/plain", "Areas/other"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
         std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
-        std::fs::write(root.join("Areas/apertune/Plan.md"), "# Plan\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/specs/Spec.md"), "# Spec\n").unwrap();
         std::fs::write(root.join("Areas/plain/Note.md"), "# Note\n").unwrap();
         std::fs::write(root.join("Areas/other/_Index.md"), "# Other\n").unwrap();
         let mut reader = None;
@@ -9775,6 +9604,8 @@ mod document_link_landing_tests {
                         vault: Some(root.clone()),
                         note: Some("Start.md".into()),
                         index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
                         ..Opts::default()
                     },
                     window,
@@ -9787,77 +9618,418 @@ mod document_link_landing_tests {
         let view = reader.unwrap();
         visual.simulate_resize(size(px(1400.), px(860.)));
         visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
         let row = |visual: &mut gpui::VisualTestContext, path: &str| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                v.tree.rows.iter().find(|r| r.path == path).cloned()
+            })
+        };
+        // (open note, tree selection, highlighted row), after the tree has
+        // caught up with the open note.
+        let state = |visual: &mut gpui::VisualTestContext| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                (
+                    v.current_rel.clone(),
+                    v.tree.cursor.clone(),
+                    v.tree_current(),
+                )
+            })
+        };
+        let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"));
+            visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+            visual.run_until_parked();
+        };
+        // A real double click: a first click, then a second with click_count 2.
+        let double_click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            let at = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"))
+                .center();
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+            });
+            visual.run_until_parked();
+        };
+        let some = |path: &str| Some(path.to_owned());
+        let want =
+            |note: &str, cursor: &str, lit: &str| (note.to_owned(), some(cursor), lit.to_owned());
+
+        // One click on a folder only selects it: no expand, nothing opens.
+        click(visual, "tree-row-Areas");
+        assert!(
+            !row(visual, "Areas").unwrap().expanded,
+            "one click never expands"
+        );
+        assert_eq!(state(visual), want("Start.md", "Areas", "Start.md"));
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
+        });
+
+        // A double click on a folder without an index note only expands it.
+        double_click(visual, "tree-row-Areas");
+        assert!(row(visual, "Areas").unwrap().expanded);
+        assert_eq!(state(visual), want("Start.md", "Areas", "Start.md"));
+
+        // One click on a folder with an index: selected, still collapsed,
+        // the index not opened.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want("Start.md", "Areas/apertune", "Start.md")
+        );
+
+        // A double click on it: expands, opens the index, and the folder
+        // keeps the selection, the highlight and keyboard focus.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        let index = "Areas/apertune/_index.md";
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
+        });
+
+        // The index row stays listed without Show hidden files: first in its
+        // folder (above the subfolder), flagged for its muted style and icon.
+        view.read_with(visual, |v, _| {
+            assert!(!v.tree.show_hidden());
+            let paths: Vec<_> = v.tree.rows.iter().map(|r| r.path.as_str()).collect();
+            let folder = paths.iter().position(|p| *p == "Areas/apertune").unwrap();
+            assert_eq!(
+                paths[folder + 1..folder + 4],
+                [index, "Areas/apertune/specs", "Areas/apertune/Alpha.md"]
+            );
+            let rows: Vec<_> = v.tree.rows.iter().filter(|r| r.index).collect();
+            assert_eq!(rows.len(), 1, "only the open folder's index is listed");
+            assert_eq!(rows[0].path, index);
+            assert!(!rows[0].hidden);
+            // Positive control: an ordinary note is not an index row.
+            assert!(
+                !v.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == "Areas/apertune/Alpha.md")
+                    .unwrap()
+                    .index
+            );
+        });
+
+        // One click on an expanded folder neither collapses it nor opens
+        // its index.
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "tree-row-Areas/apertune");
+        assert!(
+            row(visual, "Areas/apertune").unwrap().expanded,
+            "one click never collapses"
+        );
+        assert_eq!(
+            state(visual),
+            want("Start.md", "Areas/apertune", "Start.md")
+        );
+        // A double click on the expanded folder collapses it and opens
+        // nothing; the next one expands it and opens the index.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want("Start.md", "Areas/apertune", "Start.md")
+        );
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+
+        // The chevron only toggles: nothing opens, the selection stays.
+        view.update(visual, |v, _| v.tree.cursor = some("Areas/plain"));
+        click(visual, "folder-disclosure-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        click(visual, "folder-disclosure-Areas/other");
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(index, "Areas/plain", "Areas/apertune"));
+        click(visual, "folder-disclosure-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(state(visual).1, some("Areas/plain"));
+
+        // Reveal current with the index opened through its folder: the folder.
+        view.update_in(visual, |v, window, cx| v.focus_current_folder(window, cx));
+        visual.run_until_parked();
+        assert_eq!(state(visual).1, some("Areas/apertune"));
+
+        // Clicking the index row itself selects and highlights that row, and
+        // Reveal current keeps it.
+        click(visual, "tree-row-Areas/apertune/_index.md");
+        assert_eq!(state(visual), want(index, index, index));
+        view.update_in(visual, |v, window, cx| v.focus_current_folder(window, cx));
+        visual.run_until_parked();
+        assert_eq!(state(visual), want(index, index, index));
+        // One click on the folder moves only the selection; the open index
+        // row keeps the highlight.
+        click(visual, "tree-row-Areas/apertune");
+        assert_eq!(state(visual), want(index, "Areas/apertune", index));
+        // A double click collapses the folder: the index stays open and the
+        // folder takes the highlight from the hidden index row.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+        // An index opened any other way (here a link-style open after
+        // another note) stands on its folder too.
+        click(visual, "tree-row-Areas/apertune/_index.md");
+        assert_eq!(state(visual).1, some(index));
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(state(visual).0, "Start.md");
+        view.update_in(visual, |v, window, cx| v.open_note(index, None, window, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+
+        // Keyboard: ←/→ only collapse and expand; Open (⌘↓, Ctrl+↓ elsewhere)
+        // is the double click (here an index spelled `_Index.md`). Enter
+        // stays Rename on a row (#1099).
+        let open = if cfg!(target_os = "macos") {
+            "cmd-down"
+        } else {
+            "ctrl-down"
+        };
+        click(visual, "tree-row-Areas/plain");
+        assert_eq!(state(visual).1, some("Areas/plain"));
+        assert!(!row(visual, "Areas/plain").unwrap().expanded);
+        // Reveal current folded «Areas/other» away again.
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        view.update(visual, |v, _| v.tree.cursor = some("Areas/other"));
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/other", "Areas/apertune"),
+            "arrows open nothing"
+        );
+        // Open on an expanded folder collapses it and opens nothing.
+        visual.simulate_keystrokes(open);
+        visual.run_until_parked();
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(index, "Areas/other", "Areas/apertune"));
+        // Open on a collapsed one expands it and opens its index.
+        visual.simulate_keystrokes(open);
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        let other = "Areas/other/_Index.md";
+        assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+        // Open again collapses it; the index stays open.
+        visual.simulate_keystrokes(open);
+        visual.run_until_parked();
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+        // From another open note, Open on the collapsed folder expands it
+        // and opens its index.
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |v, window, cx| {
+            v.tree.cursor = some("Areas/other");
+            v.tree_focus.focus(window, cx);
+        });
+        visual.simulate_keystrokes(open);
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+    }
+
+    /// #1512 (Oleg): a double click on a folder row toggles it. A collapsed
+    /// folder expands and opens its index; an expanded one collapses, its
+    /// index stays open and the folder selected. One click only selects:
+    /// the first click of a double click does not wait for the second.
+    #[gpui::test]
+    fn double_click_on_a_folder_name_toggles_the_folder(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Areas/apertune/specs")).unwrap();
+        std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(860.)));
+        visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let expanded = |visual: &mut gpui::VisualTestContext, path: &str| {
             view.update_in(visual, |v, _, _| {
                 v.sync_tree();
                 v.tree
                     .rows
                     .iter()
                     .find(|r| r.path == path)
-                    .cloned()
-                    .unwrap()
+                    .unwrap_or_else(|| panic!("{path} is listed"))
+                    .expanded
             })
         };
-        // Expand «Areas» to reach its folders.
-        let areas = row(visual, "Areas");
-        view.update_in(visual, |v, window, cx| {
-            v.toggle_tree_folder(&areas, window, cx)
-        });
-        visual.run_until_parked();
-
-        // Click on a folder with an index: expands and opens the index.
-        let apertune = row(visual, "Areas/apertune");
-        assert!(!apertune.expanded);
-        view.update_in(visual, |v, window, cx| {
-            v.activate_tree_row(&apertune, window, cx)
-        });
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
-        });
-        assert!(row(visual, "Areas/apertune").expanded);
-
-        // Positive control: a folder without an index only toggles.
-        let plain = row(visual, "Areas/plain");
-        view.update_in(visual, |v, window, cx| {
-            v.activate_tree_row(&plain, window, cx)
-        });
-        visual.run_until_parked();
-        assert!(row(visual, "Areas/plain").expanded);
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
-        });
-
-        // The chevron toggles a folder with an index and opens nothing.
-        let other = row(visual, "Areas/other");
-        view.update_in(visual, |v, window, cx| {
-            v.toggle_tree_folder(&other, window, cx)
-        });
-        visual.run_until_parked();
-        assert!(row(visual, "Areas/other").expanded);
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
-        });
-
-        // Enter behaves like the click: collapsing only collapses ...
-        let enter = |visual: &mut gpui::VisualTestContext| {
-            view.update_in(visual, |v, window, cx| {
-                v.tree.cursor = Some("Areas/other".into());
-                v.tree_key(TreeKey::Open, window, cx)
+        let state = |visual: &mut gpui::VisualTestContext| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                (v.current_rel.clone(), v.tree.cursor.clone())
+            })
+        };
+        let bounds = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"))
+                .center()
+        };
+        let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = bounds(visual, selector);
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+        };
+        // A real double click: a first click, then a second with click_count 2.
+        let double_click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = bounds(visual, selector);
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
             });
             visual.run_until_parked();
         };
-        enter(visual);
-        assert!(!row(visual, "Areas/other").expanded, "Enter collapsed it");
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
+        let folder = "Areas/apertune";
+        let index = "Areas/apertune/_index.md";
+        let opened = || (index.to_owned(), Some(folder.to_owned()));
+        double_click(visual, "tree-row-Areas");
+        assert!(expanded(visual, "Areas"));
+        assert!(!expanded(visual, folder));
+
+        // One click selects at once and does nothing else.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(!expanded(visual, folder), "one click never expands");
+        assert_eq!(
+            state(visual),
+            ("Start.md".to_owned(), Some(folder.to_owned()))
+        );
+
+        // Collapsed: a double click expands and opens the index.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder), "a collapsed folder expands");
+        assert_eq!(state(visual), opened());
+
+        // Expanded: a double click collapses; the index stays open and the
+        // selection stays on the folder.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!expanded(visual, folder), "an expanded folder collapses");
+        assert_eq!(state(visual), opened());
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
         });
-        // ... and expanding opens the index, here spelled `_Index.md`.
-        enter(visual);
-        assert!(row(visual, "Areas/other").expanded);
-        view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Areas/other/_Index.md")
-        });
+
+        // And back again.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder));
+        assert_eq!(state(visual), opened());
+
+        // One click on the expanded folder still never collapses it.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder), "a single click never collapses");
+        assert_eq!(state(visual), opened());
+
+        // A folder without an index toggles the same way and opens nothing.
+        double_click(visual, "tree-row-Areas");
+        assert!(!expanded(visual, "Areas"));
+        assert_eq!(state(visual), (index.to_owned(), Some("Areas".to_owned())));
+        double_click(visual, "tree-row-Areas");
+        assert!(expanded(visual, "Areas"));
     }
 
     #[gpui::test]
@@ -10136,10 +10308,7 @@ mod document_link_landing_tests {
                 .recent
                 .iter()
                 .any(|(p, _)| p == "Work/Projects/Cafe/Menu.md"));
-            assert!(matches!(
-                v.sidebar_items().first(),
-                Some(SideItem::Header(reader_sidebar::Section::Recent, _))
-            ));
+            assert!(matches!(v.sidebar_items().first(), Some(SideItem::Tree(_))));
             v.toggle_pin("Work/Projects", cx);
             assert!(v.sidebar.is_pinned("Work/Projects"));
             let inbox: Vec<_> = v
@@ -10154,8 +10323,9 @@ mod document_link_landing_tests {
                 )),
                 "fresh unlinked note in Inbox: {inbox:?}"
             );
+            // A Folders fold saved by an older build hides nothing (#1512).
             v.toggle_section(reader_sidebar::Section::Folders, cx);
-            assert!(!v
+            assert!(v
                 .sidebar_items()
                 .iter()
                 .any(|item| matches!(item, SideItem::Tree(..))));

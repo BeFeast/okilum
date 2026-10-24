@@ -377,15 +377,39 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
         "left-aligned, not centered: {picker:?} in {section:?}"
     );
     for selector in [
-        "project-domain-0",
+        "project-section-0",
         "project-choice-1",
         "project-choice-2",
-        "project-domain-3",
+        "project-section-3",
         "project-problem-4",
     ] {
         assert!(visual.debug_bounds(selector).is_some(), "{selector}");
     }
     assert!(visual.debug_bounds("project-choice-5").is_none());
+    // The page has the switcher's rows (#1520): an icon slot before every
+    // name, ⚠ only where project.yaml needs fixing (grisaille names a
+    // manager thread without its T3 environment; Broken cannot be read).
+    for index in [1, 2] {
+        let icon = visual
+            .debug_bounds(leak_selector(format!("project-icon-{index}")))
+            .expect("icon slot");
+        let row = visual
+            .debug_bounds(leak_selector(format!("project-choice-{index}")))
+            .unwrap();
+        assert!(icon.left() - row.left() < px(12.), "icon on the left");
+    }
+    assert!(
+        visual.debug_bounds("project-status-1").is_none(),
+        "App: quiet"
+    );
+    assert!(
+        visual.debug_bounds("project-status-2").is_some(),
+        "grisaille: ⚠"
+    );
+    assert!(
+        visual.debug_bounds("project-status-4").is_some(),
+        "Broken: ⚠"
+    );
     let entity = reader.read_with(visual, |view, _| {
         view.project_navigation.picker.clone().unwrap()
     });
@@ -883,4 +907,8 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
         );
         assert_eq!(v.compose.read(cx).value().as_ref(), "Keep manager draft");
     });
+}
+
+fn leak_selector(selector: String) -> &'static str {
+    Box::leak(selector.into_boxed_str())
 }
