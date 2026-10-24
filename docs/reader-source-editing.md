@@ -19,6 +19,33 @@ Unicode, BOM and line endings. Empty text is distinct from unavailable or denied
 clipboard data; changed offers and malformed text are refused. HTML/RTF are not
 parsed as fallback, and no lossy platform reader is substituted.
 
+Linux reads the clipboard inside the paste command (#1602), so no activation,
+focus or selection change can cancel it. On a named Wayland compositor with
+data-control (wlroots compositors such as Hyprland and Sway, KDE) it reads the
+regular selection's exact UTF-8 text, within two seconds and 8 MiB. GPUI on X11,
+GNOME's Mutter (no wlr data-control), an inherited `WAYLAND_SOCKET`, several seats
+and Okilum's own copy go through GPUI's clipboard connection instead: X11 text
+arrives byte for byte; GPUI's Wayland reader folds CRLF into LF, as the editor's
+document newlines (#848) do to pasted text anyway. Shift+Insert pastes like
+Ctrl+V: Linux clipboard managers and dictation tools send it. A paste that inserts
+nothing says why.
+
+Smart paste (#1611) decides by the clipboard and the caret, first match wins:
+inside a fenced code block the plain text (with the fence's quote or list
+prefix); files, copied into the attachment folder in the background and
+embedded (vault files are linked in place; above Settings > Editor's threshold a
+Copy / Link to Original / Cancel prompt); image data, saved and embedded; IDE
+code (VS Code editor data, or all-monospace HTML/RTF over several lines) as a
+fence with its language; a selection plus one URL as `[selection](url)`;
+HTML or RTF converted to Markdown by `okilum-paste`, remote images downloaded
+in the background; TSV as a table; plain text. Paste as Plain Text is
+Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
+Cmd+Alt+V / Ctrl+Alt+V. Files dropped onto the editor take the files path.
+Background results land only in the editing session of the note they were
+pasted into; otherwise a toast names the saved file. The rich-text, image and
+file readers are macOS-only for now; Linux (#1618) and Windows (#1619) paste
+text as described above.
+
 A byte comparison with the opened base guards every changed save. An external
 change blocks navigation and app-owned Quit until Reload or Keep mine resolves
 it. Compare shows the current disk source above the editable draft. Keep mine is

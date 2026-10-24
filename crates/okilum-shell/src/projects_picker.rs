@@ -15,7 +15,7 @@ use gpui_component::{
 use okilum_t3::projects::{
     picker::{
         kind_label, Group, GroupKey, KindFilter, ManagerIndicator, ManagerObservation, PickerModel,
-        Row, RowKey,
+        Problem, Row, RowKey,
     },
     Discovery, Project,
 };
@@ -51,6 +51,9 @@ pub enum Presentation {
     Popover,
     /// Palette owns search/focus. Feed `set_query` and route navigation methods.
     Embedded,
+    /// The Projects section: own search/filter, left-aligned, fills its host.
+    /// Esc only clears the search; there is nothing to dismiss.
+    Page,
 }
 /// The host must revalidate and activate this project through its existing pipeline.
 #[derive(Clone, Debug)]
@@ -63,6 +66,7 @@ pub struct RecentsChanged(pub Vec<PathBuf>);
 enum Item {
     Header(Group),
     Project(Row),
+    Problem(Problem),
 }
 
 pub struct ProjectsPicker {
@@ -123,12 +127,16 @@ impl ProjectsPicker {
             selected: None,
             active: None,
             scroll: ScrollHandle::new(),
-            focus_on_mount: presentation == Presentation::Popover,
+            focus_on_mount: presentation != Presentation::Embedded,
             loading: false,
             _input_subscription: subscription,
         };
         picker.rebuild(cx);
         picker
+    }
+    /// Read-only view for hosts and host-level tests.
+    pub fn model(&self) -> &PickerModel {
+        &self.model
     }
     pub fn set_query(
         &mut self,
@@ -166,8 +174,10 @@ impl ProjectsPicker {
         for item in &mut self.items {
             if let Item::Project(row) = item {
                 if let Some(indicator) = self.model.manager_indicator(&row.project.folder) {
-                    changed |= row.manager != indicator;
+                    let detail = self.model.manager_detail(&row.project.folder);
+                    changed |= row.manager != indicator || row.manager_detail != detail;
                     row.manager = indicator;
+                    row.manager_detail = detail;
                 }
             }
         }
@@ -195,8 +205,10 @@ impl ProjectsPicker {
         self.items.clear();
         for mut group in self.model.groups() {
             let rows = std::mem::take(&mut group.rows);
+            let problems = std::mem::take(&mut group.problems);
             self.items.push(Item::Header(group));
             self.items.extend(rows.into_iter().map(Item::Project));
+            self.items.extend(problems.into_iter().map(Item::Problem));
         }
         if !self
             .items
@@ -253,7 +265,9 @@ impl ProjectsPicker {
     /// Esc clears an active search first, then dismisses the popover.
     pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.query().is_empty() {
-            cx.emit(DismissEvent);
+            if self.presentation != Presentation::Page {
+                cx.emit(DismissEvent);
+            }
         } else {
             self.set_query(String::new(), window, cx);
         }
@@ -315,7 +329,10 @@ impl ProjectsPicker {
             ManagerIndicator::Checking => theme.warning,
             ManagerIndicator::Idle | ManagerIndicator::NotStarted => theme.muted_foreground,
         };
-        let label = row.manager.label();
+        let label: gpui::SharedString = match &row.manager_detail {
+            Some(detail) => format!("{} — {detail}", row.manager.label()).into(),
+            None => row.manager.label().into(),
+        };
         let hover = theme.list_hover;
         let location = row.location.clone();
         h_flex()
@@ -337,7 +354,7 @@ impl ProjectsPicker {
                     .flex_none()
                     .rounded_full()
                     .bg(dot_color)
-                    .tooltip(move |window, cx| Tooltip::new(label).build(window, cx)),
+                    .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx)),
             )
             .child(
                 div()
@@ -382,6 +399,40 @@ impl ProjectsPicker {
                 this.confirm(cx);
             }))
     }
+    /// Per-project problem: a muted row with a small warning sign; the reason
+    /// is in the tooltip, never raw error text under the list.
+    fn render_problem(&self, problem: &Problem, index: usize, cx: &App) -> impl IntoElement {
+        let theme = cx.theme();
+        let detail: gpui::SharedString = problem.detail.clone().into();
+        h_flex()
+            .id(("project-problem", index))
+            .debug_selector(move || format!("project-problem-{index}"))
+            .w_full()
+            .min_w_0()
+            .h(px(34.))
+            .px_2()
+            .gap_2()
+            .text_color(theme.muted_foreground)
+            .child(
+                Icon::new(IconName::TriangleAlert)
+                    .xsmall()
+                    .text_color(theme.warning),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(problem.name.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .child("Project configuration problem"),
+            )
+            .child(div().w(px(14.)).flex_none())
+            .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+    }
 }
 impl Render for ProjectsPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -396,6 +447,8 @@ impl Render for ProjectsPicker {
         let foreground = theme.popover_foreground;
         let muted = theme.muted_foreground;
         let popover = self.presentation == Presentation::Popover;
+        let page = self.presentation == Presentation::Page;
+        let own_controls = popover || page;
         let mut content = v_flex()
             .id("projects-picker")
             .debug_selector(|| "projects-picker".into())
@@ -414,21 +467,22 @@ impl Render for ProjectsPicker {
                     .shadow_lg()
                     .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
             })
-            .when(!popover, |d| d.w_full())
+            .when(self.presentation == Presentation::Embedded, |d| d.w_full())
+            .when(page, |d| d.size_full().max_w(px(760.)))
             .on_action(cx.listener(|this, _: &NextProject, _, cx| this.move_selection(1, cx)))
             .on_action(cx.listener(|this, _: &PreviousProject, _, cx| this.move_selection(-1, cx)))
             .on_action(cx.listener(|this, _: &AcceptProject, _, cx| {
                 this.confirm(cx);
             }))
             .on_action(cx.listener(|this, _: &DismissProjects, window, cx| this.escape(window, cx)))
-            .when(popover, |d| {
+            .when(own_controls, |d| {
                 d.child(
                     Input::new(&self.input)
                         .cleanable(true)
                         .prefix(Icon::new(IconName::Search).small()),
                 )
             });
-        if popover {
+        if own_controls {
             content = content.child(ButtonGroup::new("project-kind-filter").children(
                 KindFilter::ALL.into_iter().enumerate().map(|(i, filter)| {
                     Button::new(("project-kind", i))
@@ -449,8 +503,11 @@ impl Render for ProjectsPicker {
         content = content.child(
             v_flex()
                 .id("projects-picker-results")
+                .debug_selector(|| "projects-picker-results".into())
                 .track_scroll(&self.scroll)
-                .max_h(max_height)
+                .w_full()
+                .when(page, |d| d.flex_1().min_h_0())
+                .when(!page, |d| d.max_h(max_height))
                 .overflow_y_scroll()
                 .when(self.loading, |d| {
                     d.child(
@@ -473,21 +530,11 @@ impl Render for ProjectsPicker {
                 .children(self.items.iter().enumerate().map(|(i, item)| match item {
                     Item::Header(group) => self.render_header(group, i, cx).into_any_element(),
                     Item::Project(row) => self.render_row(row, i, cx).into_any_element(),
+                    Item::Problem(problem) => {
+                        self.render_problem(problem, i, cx).into_any_element()
+                    }
                 })),
         );
-        for (i, (path, error)) in self.model.errors().iter().enumerate() {
-            let error = error.clone();
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            content = content.child(
-                div()
-                    .id(("project-discovery-error", i))
-                    .px_2()
-                    .text_size(px(12.))
-                    .text_color(muted)
-                    .child(format!("{name} — Cannot read this project"))
-                    .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx)),
-            );
-        }
         content
     }
 }

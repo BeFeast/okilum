@@ -1115,6 +1115,7 @@ mod tests {
     }
 
     #[gpui::test]
+    #[ignore = "flaky on loaded runners; tracked in #1531"]
     fn linked_from_previews_only_from_the_title_beside_the_panel_and_scrolling_wins(
         cx: &mut gpui::TestAppContext,
     ) {

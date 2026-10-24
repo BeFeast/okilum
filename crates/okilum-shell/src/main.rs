@@ -21,6 +21,7 @@ mod desktop_app_menu;
 mod export;
 #[cfg(windows)]
 mod markdown_handler;
+mod note_paste;
 mod open_in;
 mod pdf_engine;
 mod platform;
@@ -461,6 +462,26 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(LIVE_PREVIEW_KEY, OpenLivePreview, Some("Reader > Input")),
         // Obsidian's «Toggle checkbox status» key (#1051).
         KeyBinding::new("secondary-l", ToggleTask, Some("Reader > Input")),
+        // #1611: Paste as Plain Text / as Titled Link, in the note editor.
+        // Plain Text is macOS's own "Paste and Match Style" key, Option+Shift+Cmd+V:
+        // Cmd+Shift+V is commonly a global clipboard-history hotkey (Raycast).
+        #[cfg(target_os = "macos")]
+        KeyBinding::new(
+            "cmd-alt-shift-v",
+            note_paste::PasteAsPlainText,
+            Some("ReaderSource > Input"),
+        ),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new(
+            "ctrl-shift-v",
+            note_paste::PasteAsPlainText,
+            Some("ReaderSource > Input"),
+        ),
+        KeyBinding::new(
+            "secondary-alt-v",
+            note_paste::PasteAsTitledLink,
+            Some("ReaderSource > Input"),
+        ),
         KeyBinding::new("secondary-s", SaveSource, Some("Reader > Input")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, ctx),
@@ -7360,6 +7381,11 @@ fn main() {
         }
         drop(recovery_phase);
         cx.set_global(platform::ManagedClipboard(clipboard));
+        // Notes take images and rich text where the platform can read them (#1602).
+        if let Some(clipboard) = note_paste::platform_note_clipboard() {
+            cx.set_global(note_paste::ManagedNoteClipboard(clipboard));
+        }
+        note_paste::install_menu(cx);
         let components_phase = diagnostics.phase("components_init");
         gpui_component::init(cx);
         reader_mermaid::register();

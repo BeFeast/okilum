@@ -1,0 +1,19 @@
+[package]
+name = "okilum-paste"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Okilum's pure clipboard converters: HTML/RTF-HTML to Markdown, TSV tables, code fences, links and titles (#1611). No GPUI, no platform, no I/O."
+
+# Every dependency is already in Cargo.lock: html5ever 0.27 + markup5ever_rcdom
+# are what gpui-component's base crate parses HTML with, url/encoding_rs come
+# with reqwest, aho-corasick with regex. Nothing new is downloaded or
+# compiled for the app.
+[dependencies]
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+url = "2"
+percent-encoding = "2"
+encoding_rs = "0.8"
+aho-corasick = "1"
+serde_json.workspace = true

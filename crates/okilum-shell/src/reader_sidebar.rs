@@ -91,6 +91,9 @@ pub struct State {
     /// «Don't ask for this vault»: no offer to add Okilum's lines to `.stignore` (#1248).
     #[serde(default)]
     pub stignore_declined: bool,
+    /// Projects entered successfully, most recent first, vault-relative (#1520).
+    #[serde(default)]
+    pub recent_projects: Vec<String>,
 }
 
 fn write_collapsed<S: serde::Serializer>(
