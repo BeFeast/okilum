@@ -20,7 +20,9 @@ of the five measured repetitions. With five observations p90 is their maximum.
 - `input_frame_ms`: immediately before injecting the sparse key to the
   post-frame diagnostic for its exact document and source generation. This
   includes injection and OS queue delay. A changed clipboard buffer and window
-  pixels independently prove the input was exercised.
+  pixels independently prove the input was exercised. Pixel verification may
+  wait up to two seconds for X11 to receive the software-rendered image; that
+  untimed verification does not move the post-frame measurement endpoint.
 - `open_full_ms`: small fixture only, process launch to a frame after the
   matching complete Live Preview provider was accepted. A limited provider is
   never a successful sample. Fixtures have no asynchronous media.

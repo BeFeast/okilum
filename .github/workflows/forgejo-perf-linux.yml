@@ -78,5 +78,7 @@ jobs:
             ${{ runner.temp }}/run/**/wheel-*.txt
             ${{ runner.temp }}/run/**/app.log
             ${{ runner.temp }}/editor/**
+            ${{ runner.temp }}/trace/okilum
+            ${{ runner.temp }}/trace/BUILD.txt
           retention-days: 7
           if-no-files-found: warn

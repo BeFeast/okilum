@@ -61,10 +61,12 @@ def frame_event(log, purpose, after_ns=0):
                  and row["details"].get("outcome") == "painted"), None)
 
 
-def window_pixels(win, env):
+def window_pixels(win, env, snapshot=None):
     data = command("xwd", "-silent", "-id", win, env=env)
     if len(data) < 256:
         raise NoEvidence("empty window capture")
+    if snapshot is not None:
+        snapshot.write_bytes(data)
     return hashlib.sha256(data).hexdigest()
 
 
@@ -126,7 +128,7 @@ def run_once(binary, base, name, live, rep, deadline):
         command("xdotool", "key", "ctrl+Home", env=env)
         # Let the resize and focus frame complete before the sparse edit.
         time.sleep(.1)
-        before_edit = window_pixels(win, env)
+        before_edit = window_pixels(win, env, base / "edit-before.xwd")
         sent_ns = time.monotonic_ns()
         command("xdotool", "key", "x", env=env)
         edited = wait_for(lambda: frame_event(log, "edit", sent_ns), proc, deadline,
@@ -136,8 +138,16 @@ def run_once(binary, base, name, live, rep, deadline):
                 or edited["mutation_ns"] < sent_ns):
             raise NoEvidence("edit frame has a stale or foreign source identity")
         sample["input_frame_ms"] = (edited["monotonic_ns"] - sent_ns) / 1e6
-        if window_pixels(win, env) == before_edit:
-            raise NoEvidence("the edit frame left window pixels unchanged")
+        # Submission return is not GPU completion, even with software rendering.
+        # Verify pixels separately, OUTSIDE the timestamped latency interval.
+        # A permanently stale surface still fails; a delayed X11 update does not
+        # turn a valid submission sample into a false failure.
+        pixel_check_ns = time.monotonic_ns()
+        if window_pixels(win, env, base / "edit-after.xwd") == before_edit:
+            wait_for(lambda: window_pixels(win, env) != before_edit, proc,
+                     min(deadline, time.monotonic() + 2), "changed edit pixels after submission")
+            window_pixels(win, env, base / "edit-after.xwd")
+        pixel_verified_ns = time.monotonic_ns()
         # Assert the actual editor buffer changed; a caret redraw is insufficient.
         command("xdotool", "key", "ctrl+a", "ctrl+c", env=env)
         def buffer_changed():
@@ -167,7 +177,9 @@ def run_once(binary, base, name, live, rep, deadline):
         proof = {"scenario": f"{'live' if live else 'source'}:{name}", "rep": rep,
                  "opened": opened, "edited": edited, "scroll": scroll,
                  "scroll_start_ns": start_ns, "scroll_draws_ms": draws,
-                 "pixels_changed": True, "buffer_verified": True}
+                 "pixels_changed": True, "buffer_verified": True,
+                 "edit_pixel_check_ns": pixel_check_ns,
+                 "edit_pixel_verified_ns": pixel_verified_ns}
         (base / "sample.json").write_text(json.dumps({"sample": sample, "evidence": proof}, indent=2))
         return sample, proof
     finally:
