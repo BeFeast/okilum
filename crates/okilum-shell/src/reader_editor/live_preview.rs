@@ -372,7 +372,7 @@ impl Reader {
         let last = Rc::new(Cell::new(None));
         let live_trace = trace.clone();
         let classified = cx.observe_in(&input, window, move |this, input, window, cx| {
-            let Some(editing) = this.editing.as_ref().filter(|e| e.input == *input) else {
+            let Some(editing) = this.editing.as_ref().filter(|e| e.input == input) else {
                 return;
             };
             if !editing.live_preview.enabled {

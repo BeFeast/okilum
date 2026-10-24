@@ -36,6 +36,8 @@ jobs:
           rustc -Vv
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
+      - name: Validate editor collector and budgets
+        run: python3 -m unittest discover -s scripts/perf/editor -p 'test_*.py'
       - name: Run the scroll frame-cost guard
         run: |
           set -euo pipefail
@@ -52,7 +54,6 @@ jobs:
       - name: Check editor latency and the baseline ratchet
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s scripts/perf/editor -p 'test_*.py'
           git fetch --no-tags origin main
           if git cat-file -e origin/main:scripts/perf/editor/baseline.json 2>/dev/null; then
             git show origin/main:scripts/perf/editor/baseline.json > "$RUNNER_TEMP/editor-main-baseline.json"
