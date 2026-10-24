@@ -80,7 +80,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             '-F', FRAMEWORK, '-framework', 'Sparkle', '-framework', 'AppKit',
             '-Wl,-rpath,@executable_path/../Frameworks',
             ROOT / 'scripts/ci/sparkle-freshness/host.m', guard, '-liconv', '-o', executable)
-        for scenario in ('newest', 'background-newest', 'background-phase-unchanged', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        for scenario in ('discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
@@ -115,12 +115,14 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'SUEnableAutomaticChecks': True, 'SUAllowsAutomaticUpdates': False,
                 'SUVerifyUpdateBeforeExtraction': True, 'SURequireSignedFeed': True,
                 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
+                'TSCancel': scenario.removeprefix('cancel-') if scenario.startswith('cancel-') else '',
                 'TSTrace': str(trace), 'TSReceipt': str(receipt),
                 'TSPendingFeed': str(case / 'pending.xml'), 'TSFeedPath': str(case / 'appcast.xml'),
                 'TSBeta': scenario != 'stable', 'TSRefuse': scenario in ('guard-refusal', 'quit-guard-refusal'),
                 'TSEditor': str(case / 'editor'), 'TSProtectedEditor': str(case / 'protected-editor'),
                 'TSCompareEligibility': compare, 'TSForeground': foreground,
-                'TSBackgroundInstall': scenario.startswith('background-'),
+                'TSBackgroundInstall': scenario.startswith('background-') or scenario == 'discovery',
+                'TSDiscovery': scenario == 'discovery',
                 'TSQuit': scenario.startswith('quit-'),
                 'TSQuitDuringDownload': scenario == 'quit-during-download',
             }
@@ -199,6 +201,26 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 process = subprocess.Popen([str(app / 'Contents/MacOS/Freshness')], stdout=log_file, stderr=log_file, env=environment)
                 try:
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
+                    if scenario == 'discovery':
+                        wait_for(lambda: process.poll() is not None, process, output)
+                        assert process.returncode == 0, trace.read_text()
+                        assert 'report 1 ' in trace.read_text(), trace.read_text()
+                        assert not any('.zip' in r for r in requests), requests
+                        assert not receipt.exists()
+                        assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
+                        print('PASS automatic discovery requires About Install intent', flush=True)
+                        continue
+                    if scenario.startswith('cancel-'):
+                        wait_for(lambda: process.poll() is not None, process, output)
+                        time.sleep(3)  # allow any mistakenly retained installer to run
+                        assert process.returncode == 0, trace.read_text()
+                        assert 'report 7 ' in trace.read_text(), trace.read_text()
+                        assert 'ordinary quit after cancellation' in trace.read_text(), trace.read_text()
+                        assert not receipt.exists(), trace.read_text()
+                        assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
+                        assert 'final editor guard boundary' not in trace.read_text()
+                        print(f'PASS Sparkle cancellation: {scenario}', flush=True)
+                        continue
                     if compare:
                         wait_for(receipt.exists, process, output)
                         assert receipt.read_text() == 'eligibility matched', trace.read_text()
@@ -278,6 +300,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     if compare:
                         subprocess.run(['defaults', 'delete', identifier + '.updates'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     shutil.rmtree(case)
+                    assert 'window probe positive control detected standard Sparkle check' in trace.read_text(), trace.read_text()
+                    assert 'unexpected updater window' not in trace.read_text(), trace.read_text()
 
 
 if __name__ == '__main__':

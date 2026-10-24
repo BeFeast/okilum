@@ -198,3 +198,33 @@ This reduces redundant downloads/relaunches and signing-runner pressure, at the
 cost of up to 30 minutes of ordinary delivery latency. It does not replace the
 freshness fix. No cadence/workflow policy change is implemented here; manager
 direction is still required for that separate proposal.
+
+
+## UI ownership (#1649)
+
+Both the installation updater and isolated freshness probe implement the public
+Sparkle 2.10 `SPUUserDriver` protocol without inheriting from the standard driver.
+Sparkle owns eligibility, signature verification, extraction and installation;
+Okilum's existing Rust About status row owns presentation and user intent.
+Automatic checks continue, but do not authorize downloads. About Install grants
+one download intent, carried forward only for a freshness-driven replacement.
+Progress, preparation, Ready/Restart now, cancellation and errors stay inline.
+Information-only/major upgrades and failed signing status fail closed with an
+inline explanation rather than falling back to a standard window.
+
+Cancel uses Sparkle's check/download cancellation or Ready `Skip` continuation.
+Before consuming it, the driver invalidates asynchronous verification generations,
+clears restart/replacement/quit authorization and revokes the Rust guard request.
+Extraction has no public cancellation continuation: Cancel is unavailable until
+Ready. Ready cancellation also works while freshness is pending and prevents
+implicit installation on later Quit. The #1634 cycle-completion replacement
+ordering and nonmodal ordinary Quit handoff remain unchanged.
+
+The hosted Mac fixture now intercepts public AppKit window ordering throughout
+all real update/probe lifecycles. Before arming it, a real standard Sparkle check
+must open a detectable window; a missing positive control fails the run. It adds
+check/download/Ready/in-flight-freshness cancellation followed by ordinary Quit,
+and automatic-discovery-without-download controls. Existing real N→N+2 Restart,
+Quit, unchanged feed, bad signature, eligibility and post-verification editor
+refusal scenarios remain required. These are authored regressions; hosted CI
+must prove runtime behavior on the new head before merge.

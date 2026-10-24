@@ -260,8 +260,7 @@ pub(crate) fn activate(cx: &mut App) {
     check();
 }
 
-/// The status row's «Install Update…» for a found update: Sparkle's own window
-/// downloads, installs and relaunches.
+/// Explicit download intent from About. Progress stays in the same status row.
 pub(crate) fn install_update() {
     #[cfg(target_os = "macos")]
     macos::install();
@@ -404,3 +403,16 @@ mod progress_ui_tests;
 
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) use macos::protect_verified_install;
+
+pub(crate) fn can_cancel_update() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::can_cancel();
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+pub(crate) fn cancel_update() {
+    #[cfg(target_os = "macos")]
+    macos::cancel();
+}

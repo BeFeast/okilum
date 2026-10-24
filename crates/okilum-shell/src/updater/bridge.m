@@ -1,6 +1,5 @@
-// Stock Sparkle 2: standard updater controller, public API only. A manual
-// check only probes the feed and reports the outcome to Rust, shown inline
-// (#995); Sparkle's own UI appears only to install a found update.
+// Sparkle owns selection, validation and installation. Okilum owns all update
+// presentation through Rust About; neither updater creates standard windows.
 #import <AppKit/AppKit.h>
 #import <Sparkle/Sparkle.h>
 #include <stdbool.h>
@@ -24,15 +23,28 @@ static void TSSend(int kind, NSString *text) {
 
 // Foreground metadata checks must use Sparkle's foreground selector, not its
 // always-background information probe. This driver never accepts a download.
-@interface TSMetadataDriver : SPUStandardUserDriver
+@interface TSMetadataDriver : NSObject <SPUUserDriver>
 @end
 @implementation TSMetadataDriver
-- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {}
-- (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
-    reply(SPUUserUpdateChoiceDismiss);
+- (void)showUpdatePermissionRequest:(SPUUpdatePermissionRequest *)request reply:(void (^)(SUUpdatePermissionResponse *))reply {
+    // The app already configures automatic checks. Never opt into downloads.
+    reply([[SUUpdatePermissionResponse alloc] initWithAutomaticUpdateChecks:YES automaticUpdateDownloading:@NO sendSystemProfile:NO]);
 }
+- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {}
+- (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply { reply(SPUUserUpdateChoiceDismiss); }
+- (void)showUpdateReleaseNotesWithDownloadData:(SPUDownloadData *)data {}
+- (void)showUpdateReleaseNotesFailedToDownloadWithError:(NSError *)error {}
 - (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement { acknowledgement(); }
 - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement { acknowledgement(); }
+- (void)showDownloadInitiatedWithCancellation:(void (^)(void))cancellation { cancellation(); }
+- (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)length {}
+- (void)showDownloadDidReceiveDataOfLength:(uint64_t)length {}
+- (void)showDownloadDidStartExtractingUpdate {}
+- (void)showExtractionReceivedProgress:(double)progress {}
+- (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply { reply(SPUUserUpdateChoiceSkip); }
+- (void)showInstallingUpdateWithApplicationTerminated:(BOOL)terminated retryTerminatingApplication:(void (^)(void))retry {}
+- (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement { acknowledgement(); }
+- (void)dismissUpdateInstallation {}
 @end
 
 // A probe must have its own host identity: probing the installation updater
@@ -92,7 +104,7 @@ static void TSSend(int kind, NSString *text) {
         }
     }
     NSBundle *bundle = [NSBundle bundleWithURL:[self.directory URLByAppendingPathComponent:@"Freshness.bundle"]];
-    TSMetadataDriver *driver = [[TSMetadataDriver alloc] initWithHostBundle:bundle delegate:nil];
+    TSMetadataDriver *driver = [TSMetadataDriver new];
     self.updater = [[SPUUpdater alloc] initWithHostBundle:bundle
         applicationBundle:source.hostBundle userDriver:driver delegate:self];
     self.updater.httpHeaders = source.httpHeaders;
@@ -139,6 +151,7 @@ static BOOL TSReplacementForeground;
 static NSString *TSCycleFailure;
 static BOOL TSGuardRequested;
 static BOOL TSManualCheck;
+static BOOL TSInstallRequested;
 static NSSet<NSString *> *TSChannels(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey]
         ? [NSSet setWithObjects:@"stable", @"beta", nil] : [NSSet setWithObject:@"stable"];
@@ -196,9 +209,9 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 }
 @end
 
-// Keep Sparkle's standard UI and own only its public freshness/cancellation
-// continuations. Sparkle still validates and installs every archive.
-@interface TSUserDriver : SPUStandardUserDriver
+// Public continuations only: About is the sole owner of progress and choices.
+@interface TSUserDriver : TSMetadataDriver
+@property(nonatomic, copy) void (^cancellation)(void);
 @property(nonatomic) uint64_t expected;
 @property(nonatomic) uint64_t received;
 @property(nonatomic, copy) void (^restartReply)(SPUUserUpdateChoice);
@@ -210,6 +223,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 @property(nonatomic) BOOL foreground;
 @property(nonatomic) NSUInteger generation;
 @property(nonatomic, copy) void (^quitReply)(BOOL);
+- (void)cancel;
 - (void)verifyQuit:(void (^)(BOOL))reply;
 - (void)requestRestart;
 - (void)presentReady:(void (^)(SPUUserUpdateChoice))reply;
@@ -217,7 +231,33 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error;
 @end
 @implementation TSUserDriver
+- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {
+    self.cancellation = cancellation;
+    TSSend(9, nil);
+}
+- (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+    TSSend(0, nil); acknowledgement();
+}
+- (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+    TSSend(2, error.localizedDescription); acknowledgement();
+}
+- (void)showInstallingUpdateWithApplicationTerminated:(BOOL)terminated retryTerminatingApplication:(void (^)(void))retry {
+    TSSend(6, nil);
+}
+- (void)cancel {
+    void (^cancellation)(void) = self.cancellation;
+    void (^ready)(SPUUserUpdateChoice) = self.restartReply;
+    if (!cancellation && !ready) return;
+    TSInstallRequested = NO;
+    TSRestartAfterCycle = NO;
+    self.replacing = NO;
+    [self dismissUpdateInstallation]; // invalidate in-flight freshness first
+    if (ready) ready(SPUUserUpdateChoiceSkip);
+    else cancellation();
+    TSSend(7, nil);
+}
 - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
+    self.cancellation = nil;
     self.item = item;
     self.foreground = state.userInitiated;
     // A pre-existing installer (from a previous build) also enters the hook.
@@ -228,13 +268,17 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 }
 - (void)presentUpdate:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
     // An explicit Install intent survives supersession, not a user cancellation.
-    if (self.replacing && !item.informationOnlyUpdate && !item.majorUpgrade
+    if ((self.replacing || TSInstallRequested) && !item.informationOnlyUpdate && !item.majorUpgrade
         && item.signingValidationStatus != SPUAppcastSigningValidationStatusFailed) {
         self.replacing = NO;
+        TSInstallRequested = NO;
         reply(SPUUserUpdateChoiceInstall);
     } else {
         self.replacing = NO;
-        [super showUpdateFoundWithAppcastItem:item state:state reply:reply];
+        TSInstallRequested = NO;
+        if (item.informationOnlyUpdate || item.majorUpgrade || item.signingValidationStatus == SPUAppcastSigningValidationStatusFailed)
+            TSSend(2, @"This update requires a separate upgrade or cannot be verified. Nothing was installed.");
+        reply(SPUUserUpdateChoiceDismiss);
     }
 }
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
@@ -254,21 +298,19 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     self.preparing = YES;
     self.expected = 0; self.received = 0;
     TSSend(3, @"");
-    [super showDownloadInitiatedWithCancellation:cancellation];
+    self.cancellation = cancellation;
 }
 - (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)length {
     self.expected = length;
-    [super showDownloadDidReceiveExpectedContentLength:length];
 }
 - (void)showDownloadDidReceiveDataOfLength:(uint64_t)length {
     self.received += length;
     if (self.expected) TSSend(3, [NSString stringWithFormat:@"%u", (unsigned)MIN(100.0, 100.0 * self.received / self.expected)]);
-    [super showDownloadDidReceiveDataOfLength:length];
 }
 - (void)showDownloadDidStartExtractingUpdate {
     self.preparing = YES;
     TSSend(4, nil);
-    [super showDownloadDidStartExtractingUpdate];
+    self.cancellation = nil;
 }
 - (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
     self.restartReply = reply;
@@ -301,7 +343,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     });
 }
 - (void)presentReady:(void (^)(SPUUserUpdateChoice))reply {
-    [super showReadyToInstallAndRelaunch:reply];
+    // Rust About retains the Ready state; Restart now calls requestRestart.
 }
 - (void)requestRestart {
     if (!self.restartReply || self.verifying) return;
@@ -320,7 +362,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
         driver.verifiedRestart = YES;
         TSGuardRequested = YES;
         // Rust reruns editor protection/UI persistence after the async check,
-        // for both Sparkle's dialog and Okilum's Restart action.
+        // for both ordinary Quit and Okilum's Restart action.
         TSSend(5, nil);
     });
 }
@@ -332,9 +374,11 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 }
 - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
     if (relaunched) TSSend(8, nil);
-    [super showUpdateInstalledAndRelaunched:relaunched acknowledgement:acknowledgement];
+    acknowledgement();
 }
 - (void)dismissUpdateInstallation {
+    self.cancellation = nil;
+    TSInstallRequested = NO;
     self.generation += 1;
     self.preparing = NO;
     self.verifying = NO;
@@ -403,7 +447,7 @@ void okilum_updater_start(void) {
     TSRegisterChannelDefault();
     // A bare `cargo run` binary has no bundle feed; Sparkle would only report errors.
     if (TSUpdater || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;
-    TSStart(NSBundle.mainBundle, [[TSUserDriver alloc] initWithHostBundle:NSBundle.mainBundle delegate:nil], nil);
+    TSStart(NSBundle.mainBundle, [TSUserDriver new], nil);
 }
 
 bool okilum_updater_available(void) { return TSUpdater != nil; }
@@ -427,8 +471,14 @@ bool okilum_updater_check(void) {
     return true;
 }
 
-// Sparkle's standard UI downloads, installs and relaunches.
-void okilum_updater_install(void) { [TSUpdater checkForUpdates]; }
+// Only the explicit About Install action authorizes an initial download.
+void okilum_updater_install(void) {
+    if (TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return;
+    TSInstallRequested = YES;
+    [TSUpdater checkForUpdates];
+}
+bool okilum_updater_can_cancel(void) { return TSDriver.cancellation != nil || TSDriver.restartReply != nil; }
+void okilum_updater_cancel(void) { [TSDriver cancel]; }
 
 bool okilum_updater_beta(void) {
     TSRegisterChannelDefault();
@@ -469,8 +519,7 @@ bool okilum_updater_finish_restart(void) {
     TSDriver.preparing = NO;
     void (^continuation)(SPUUserUpdateChoice) = TSDriver.restartReply;
     TSDriver.restartReply = nil;
-    // Close the standard driver UI and clear its stored handlers before consuming
-    // our retained continuation. This public cleanup does not cancel installation.
+    // Clear retained handlers before consuming the verified continuation.
     [TSDriver dismissUpdateInstallation];
     TSSend(6, nil);
     continuation(SPUUserUpdateChoiceInstall);
