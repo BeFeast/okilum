@@ -8174,6 +8174,112 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
+    fn table_overlay_occludes_manager_bounds_and_restores_them(cx: &mut gpui::TestAppContext) {
+        use std::cell::{Cell, RefCell};
+        // Exercise the real Reader overlay and shared paint-time registry on
+        // every platform; no WKWebView or production T3 connection is needed.
+        struct Probe {
+            reader: Entity<Reader>,
+            clear: Rc<Cell<Option<Bounds<Pixels>>>>,
+            regions: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+        }
+        let manager = Bounds::new(point(px(1000.), px(100.)), size(px(350.), px(650.)));
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clear = self.clear.clone();
+                let regions = self.regions.clone();
+                let manager = Bounds::new(point(px(1000.), px(100.)), size(px(350.), px(650.)));
+                div()
+                    .size_full()
+                    .relative()
+                    .child(self.reader.clone())
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, (), window, cx| {
+                                let overlays = gpui_base::GlobalState::native_overlays(window, cx);
+                                *regions.borrow_mut() = overlays.to_vec();
+                                clear.set(reader_manager_occlusion::uncovered_bounds(
+                                    manager, overlays,
+                                ));
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+            }
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let clear = Rc::new(Cell::new(None));
+        let regions = Rc::new(RefCell::new(Vec::new()));
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root),
+                        note: Some("a.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            let probe = cx.new(|_| Probe {
+                reader: view,
+                clear: clear.clone(),
+                regions: regions.clone(),
+            });
+            Root::new(probe, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            clear.get(),
+            Some(manager),
+            "positive control: Manager area is initially available"
+        );
+        view.update_in(visual, |v, window, cx| {
+            v.open_table_overlay("| x | y |\n|---|---|\n|1|2|\n", window, cx)
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            regions
+                .borrow()
+                .iter()
+                .any(|r| r.intersect(&manager) == manager),
+            "real Table scrim must register over the Manager area"
+        );
+        assert_eq!(
+            clear.get(),
+            None,
+            "Manager native view must hide beneath Table"
+        );
+        view.update_in(visual, |v, window, cx| v.close_table_overlay(window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            clear.get(),
+            Some(manager),
+            "closing Table restores Manager on the next paint"
+        );
+    }
+
+    #[gpui::test]
     fn reader_table_overlay_opens_closes_and_leaves_on_navigation(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
