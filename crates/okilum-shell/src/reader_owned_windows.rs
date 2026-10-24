@@ -298,7 +298,7 @@ mod native {
             let level: isize = msg_send![&*owner, level];
             let _: () = msg_send![&*tool, setLevel: level];
             let _: () = msg_send![&*tool, setExcludedFromWindowsMenu: Bool::YES];
-            let _: () = msg_send![&*owner, addChildWindow: &*tool ordered: 1_isize];
+            let _: () = msg_send![&*owner, addChildWindow: &*tool, ordered: 1_isize];
         }
         Ok(())
     }
