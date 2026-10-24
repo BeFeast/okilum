@@ -1,4 +1,5 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
+mod ime_guard;
 mod live_preview;
 mod paste_jobs;
 use super::*;
@@ -511,6 +512,8 @@ impl Reader {
                 // keep one alignment (S6c, #1034).
                 .paragraph_direction(!plain_file);
             input.set_search_query("", !reader_ui_state::find_case_sensitive(cx), cx);
+            // The key that confirmed an IME candidate runs no automation (#1637).
+            input.set_ime_settle(ime_guard::IME_SETTLE);
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
