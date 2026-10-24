@@ -221,6 +221,23 @@ fn send_using(primary: &str, fallback: &str, report: &Report) -> Result<Receipt>
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     use reqwest::blocking::multipart::{Form, Part};
+    // reqwest's body error also covers a receiver disappearing mid-upload.
+    // Track the selected file's own Read failures rather than guessing by kind.
+    struct VideoReader {
+        file: std::io::Take<std::fs::File>,
+        error: Arc<std::sync::Mutex<Option<String>>>,
+    }
+    impl Read for VideoReader {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            let result = self.file.read(bytes);
+            if let Err(error) = &result {
+                *self.error.lock().unwrap_or_else(|error| error.into_inner()) =
+                    Some(error.to_string());
+            }
+            result
+        }
+    }
+    let attachment_error = Arc::new(std::sync::Mutex::new(None::<String>));
     report.validate()?;
     // A large video needs far longer than the text-only 45 s budget.
     let timeout = if report.video.is_some() {
@@ -274,9 +291,15 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         );
         form = form.part(
             "video",
-            Part::reader_with_length(file.take(length), length)
-                .file_name(video.name.clone())
-                .mime_str(video.mime)?,
+            Part::reader_with_length(
+                VideoReader {
+                    file: file.take(length),
+                    error: attachment_error.clone(),
+                },
+                length,
+            )
+            .file_name(video.name.clone())
+            .mime_str(video.mime)?,
         );
     }
     let response = client
@@ -284,13 +307,21 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         .multipart(form)
         .send()
         .map_err(|error| {
-            // Body-read failures in a local video are not retryable network failures.
-            let error = if !error.is_body() {
-                okilum_http::transport_failure(error.into())
+            let local = attachment_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            if let Some(local) = local {
+                let error =
+                    anyhow::Error::new(error).context(format!("Read the attached video: {local}"));
+                crate::reader_diagnostics::network_failure(
+                    &format!("Feedback via {endpoint}"),
+                    &error,
+                );
+                error.context("Couldn't read the attached video. Your feedback is kept.")
             } else {
-                error.into()
-            };
-            failure(error)
+                failure(okilum_http::transport_failure(error.into()))
+            }
         })?;
     let status = response.status();
     let bytes = bounded(response, 16 * 1024).map_err(|error| {

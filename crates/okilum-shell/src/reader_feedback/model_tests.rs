@@ -430,3 +430,28 @@ fn truncated_http_rejection_keeps_its_status_and_never_retries() {
         matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
 }
+
+#[test]
+fn missing_local_attachment_does_not_contact_either_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = sized_file(dir.path(), "removed.mp4", 10);
+    let mut report = report();
+    report.video = Some(video_file(&path).unwrap());
+    std::fs::remove_file(path).unwrap();
+    let primary = TcpListener::bind("127.0.0.1:0").unwrap();
+    let alternate = TcpListener::bind("127.0.0.1:0").unwrap();
+    primary.set_nonblocking(true).unwrap();
+    alternate.set_nonblocking(true).unwrap();
+    let error = send_using(
+        &format!("http://{}/feedback", primary.local_addr().unwrap()),
+        &format!("http://{}/feedback", alternate.local_addr().unwrap()),
+        &report,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("attached video"), "{error:#}");
+    for listener in [primary, alternate] {
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind()==std::io::ErrorKind::WouldBlock)
+        );
+    }
+}
