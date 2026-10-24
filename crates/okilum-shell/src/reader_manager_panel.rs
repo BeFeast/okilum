@@ -372,6 +372,7 @@ impl ManagerPanel {
                             let _ = (url, window);
                             this.error = None;
                             this.retrying = false;
+                            this.failures = 0;
                         }
                     }
                     Err(e) => this.failed(format!("T3 is unreachable: {e:#}"), window, cx),
