@@ -40,6 +40,28 @@ fn image(format: image::ImageFormat) -> Vec<u8> {
     .unwrap();
     out.into_inner()
 }
+fn read_mock_request(socket: &mut std::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = socket.read(&mut buffer).unwrap();
+        assert!(count > 0);
+        request.extend_from_slice(&buffer[..count]);
+        if let Some(end) = request.windows(4).position(|b| b == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+            let length = headers
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            if request.len() >= end + 4 + length {
+                break;
+            }
+        }
+    }
+    request
+}
 fn mock(status: u16, response: &str) -> (String, std::thread::JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/feedback", listener.local_addr().unwrap());
@@ -49,25 +71,7 @@ fn mock(status: u16, response: &str) -> (String, std::thread::JoinHandle<Vec<u8>
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut request = Vec::new();
-        let mut buffer = [0u8; 8192];
-        loop {
-            let count = socket.read(&mut buffer).unwrap();
-            assert!(count > 0);
-            request.extend_from_slice(&buffer[..count]);
-            if let Some(end) = request.windows(4).position(|b| b == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
-                let length = headers
-                    .lines()
-                    .find_map(|l| l.strip_prefix("content-length: "))
-                    .unwrap()
-                    .parse::<usize>()
-                    .unwrap();
-                if request.len() >= end + 4 + length {
-                    break;
-                }
-            }
-        }
+        let request = read_mock_request(&mut socket);
         write!(socket, "HTTP/1.1 {status} Result\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
         request
     });
@@ -407,8 +411,7 @@ fn truncated_http_rejection_keeps_its_status_and_never_retries() {
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut first = [0; 8192];
-        assert!(socket.read(&mut first).unwrap() > 0);
+        let _request = read_mock_request(&mut socket);
         socket
             .write_all(
                 b"HTTP/1.1 403 Forbidden\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort",
