@@ -226,7 +226,7 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         let message = format!("{}. Your feedback is kept.", okilum_http::reason(&error));
         error.context(message)
     };
-    let client = okilum_http::client(endpoint, &report.meta.version, timeout).map_err(&failure)?;
+    let client = okilum_http::client(endpoint, &report.meta.version, timeout).map_err(failure)?;
     let mut meta = serde_json::to_value(&report.meta)?;
     if super::sprint::enabled() {
         let context = super::sprint::context();
@@ -277,7 +277,7 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         .send()
         .map_err(|error| failure(error.into()))?;
     let status = response.status();
-    let bytes = bounded(response, 16 * 1024).map_err(&failure)?;
+    let bytes = bounded(response, 16 * 1024).map_err(failure)?;
     if status != reqwest::StatusCode::CREATED {
         let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
         crate::reader_diagnostics::network_failure("Feedback", &error);
