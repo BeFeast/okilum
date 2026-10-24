@@ -1959,6 +1959,7 @@ impl Reader {
             cx.notify();
             this.record_ui_state(window.is_window_active(), cx);
             if window.is_window_active() {
+                reader_open::focused(cx.entity().downgrade(), cx);
                 reader_open_windows::focused(window.window_handle(), cx);
             }
         })

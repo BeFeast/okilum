@@ -987,19 +987,25 @@ pub(crate) fn finish_open(resolved: Result<super::Opts>, cx: &mut App) {
     finish_open_from(resolved, None, cx);
 }
 
+#[derive(Default)]
+struct LastReader(Option<WeakEntity<super::Reader>>);
+impl Global for LastReader {}
+
+pub(crate) fn focused(reader: WeakEntity<super::Reader>, cx: &mut App) {
+    cx.default_global::<LastReader>().0 = Some(reader);
+}
+
 fn opening_source(cx: &App) -> Option<WeakEntity<super::Reader>> {
     let readers = readers(cx);
     readers
         .iter()
         .rev()
         .find(|r| Some(r.read(cx).reader_window) == cx.active_window())
-        .or_else(|| {
-            readers
-                .iter()
-                .rev()
-                .find(|r| r.read(cx).ui_state.was_active())
-        })
         .map(Entity::downgrade)
+        .or_else(|| {
+            cx.try_global::<LastReader>()
+                .and_then(|last| last.0.clone())
+        })
 }
 
 fn finish_open_from(
@@ -1951,6 +1957,15 @@ mod entry_tests {
             assert_eq!(readers(cx).len(), 2);
             assert_eq!(source.upgrade().unwrap().read(cx).vault_root, roots[1]);
         });
+        cx.update(|cx| {
+            reader_ui_state::set_vault_open("ask", cx);
+            original
+                .update(cx, |_, window, _| window.activate_window())
+                .unwrap();
+            new_window(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(readers(cx).len(), 3, "New Window bypasses Ask"));
         cx.update(|cx| {
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
