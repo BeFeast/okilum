@@ -583,6 +583,14 @@ mod status_tests {
     use std::time::Duration;
 
     #[test]
+    fn retries_back_off_2_5_10_then_every_30_seconds() {
+        let delays: Vec<u64> = (1..=6).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(delays, [2, 5, 10, 30, 30, 30]);
+        assert_eq!(retry_delay(u32::MAX).as_secs(), 30);
+        assert!(CONNECT_GRACE > retry_delay(1) + retry_delay(2));
+    }
+
+    #[test]
     fn no_status_before_grace_deadline_quiet_line_after() {
         let before = CONNECT_GRACE - Duration::from_millis(1);
         // First attempts, failing or still loading: nothing at all.
