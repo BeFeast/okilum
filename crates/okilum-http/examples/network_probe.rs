@@ -1,6 +1,6 @@
 //! Native regression companion: calls the production Feedback client policy.
 //! Targets only the explicit fixture URL; never sends automatic product feedback.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::{path::PathBuf, time::Duration};
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
