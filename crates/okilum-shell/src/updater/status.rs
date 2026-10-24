@@ -13,6 +13,8 @@ pub(crate) enum CheckStatus {
     Downloading(Option<u8>),
     Preparing,
     Restarting,
+    /// Sparkle is waiting for application termination; another guarded attempt is available.
+    RestartRetry(String),
     Relaunched,
     UpToDate(SystemTime),
     /// A newer version on the selected channel; installing is a separate action.
@@ -41,7 +43,10 @@ impl UpdateState {
         self.status = status;
     }
     pub fn begin_restart(&mut self) -> bool {
-        if self.status != CheckStatus::Ready {
+        if !matches!(
+            self.status,
+            CheckStatus::Ready | CheckStatus::RestartRetry(_)
+        ) {
             return false;
         }
         self.set(CheckStatus::Restarting);
@@ -88,6 +93,13 @@ pub(crate) fn text(status: &CheckStatus, now: SystemTime) -> Option<String> {
         CheckStatus::Downloading(None) => "Downloading update…".into(),
         CheckStatus::Preparing => "Preparing update…".into(),
         CheckStatus::Restarting => "Restarting to install update…".into(),
+        CheckStatus::RestartRetry(reason) => {
+            if reason.is_empty() {
+                "Waiting for Okilum to quit. You can try Restart now again.".into()
+            } else {
+                reason.clone()
+            }
+        }
         CheckStatus::Relaunched => "Update installed".into(),
         CheckStatus::Ready => "Update ready to install".into(),
         CheckStatus::Note(note) => note.clone(),
@@ -123,7 +135,7 @@ pub(crate) fn progress(status: &CheckStatus) -> Option<ProgressView> {
                 restart: false,
             })
         }
-        CheckStatus::Ready => Some(ProgressView {
+        CheckStatus::Ready | CheckStatus::RestartRetry(_) => Some(ProgressView {
             percent: Some(100),
             restart: true,
         }),
@@ -196,6 +208,36 @@ mod tests {
 #[cfg(test)]
 mod progress_tests {
     use super::*;
+    #[test]
+    fn refused_restart_restores_progress_and_requires_another_explicit_action() {
+        let mut state = UpdateState::new();
+        state.set(CheckStatus::Ready);
+        assert!(state.begin_restart());
+        state.set(CheckStatus::RestartRetry(String::new()));
+        assert_eq!(
+            progress(&state.status),
+            Some(ProgressView {
+                percent: Some(100),
+                restart: true
+            })
+        );
+        assert!(text(&state.status, SystemTime::now())
+            .unwrap()
+            .contains("try Restart now again"));
+        assert!(
+            !state.relaunched(),
+            "remaining open is not a completed installation"
+        );
+        assert!(state.begin_restart());
+        assert!(
+            !state.begin_restart(),
+            "a double click cannot authorize another attempt"
+        );
+        state.set(CheckStatus::Note("Update cancelled".into()));
+        assert!(!state.begin_restart());
+        assert_eq!(progress(&state.status), None);
+    }
+
     #[test]
     fn idle_download_prepare_ready_restart_and_relaunch_projection() {
         let mut state = UpdateState::new();

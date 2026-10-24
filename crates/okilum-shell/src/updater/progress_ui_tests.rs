@@ -42,7 +42,12 @@ fn settings_download_progress_becomes_an_adjacent_explicit_restart(cx: &mut Test
         CheckStatus::Downloading(Some(25)),
         CheckStatus::Preparing,
         CheckStatus::Ready,
+        CheckStatus::Restarting,
+        CheckStatus::RestartRetry(String::new()),
+        CheckStatus::RestartRetry("Your latest edits could not be protected.".into()),
     ] {
+        restarted.set(false);
+        let actionable = matches!(status, CheckStatus::Ready | CheckStatus::RestartRetry(_));
         controls.update(visual, |controls, cx| {
             controls.status = status;
             cx.notify();
@@ -61,8 +66,15 @@ fn settings_download_progress_becomes_an_adjacent_explicit_restart(cx: &mut Test
                 !restarted.get(),
                 "ready does not restart without user input"
             );
+            assert!(actionable);
             visual.simulate_click(button.center(), gpui::Modifiers::default());
+        } else {
+            assert!(
+                !actionable,
+                "a refused/delayed restart must restore About's action"
+            );
         }
+        assert_eq!(restarted.get(), actionable);
     }
     assert!(
         restarted.get(),

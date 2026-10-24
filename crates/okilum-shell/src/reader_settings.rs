@@ -1569,6 +1569,16 @@ pub(crate) fn render_update_status(
                     )
                 })
             })
+            .when(updater::can_cancel_update(), |row| {
+                row.child(
+                    Button::new(SharedString::from(format!("{id}-cancel-update")))
+                        .debug_selector(move || format!("{id}-cancel-update"))
+                        .ghost()
+                        .small()
+                        .label("Cancel update")
+                        .on_click(|_, _, _| updater::cancel_update()),
+                )
+            })
             .when(available, |row| {
                 row.child(
                     Button::new(SharedString::from(format!("{id}-install-update")))
