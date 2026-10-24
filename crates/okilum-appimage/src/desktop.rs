@@ -88,7 +88,11 @@ pub fn install(home: &Path, image: &Path) -> Result<()> {
             "Refusing to overwrite an unowned desktop icon"
         );
     }
-    let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nComment=Read and search your Markdown vault\nExec={} %u\nIcon=okilum-appimage\nTerminal=false\nCategories=Office;Utility;\nMimeType=text/markdown;x-scheme-handler/okilum;\nStartupNotify=true\nStartupWMClass=okilum\n{MARKER}", exec_path(image)?);
+    // GLib validates argv[0] before expanding desktop field codes. A literal
+    // percent in the image path is encoded as %% and fails that early lookup.
+    // env is the fixed executable; the image stays one quoted argument and is
+    // exec'd directly after field expansion, without a shell or PATH lookup.
+    let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nComment=Read and search your Markdown vault\nExec=/usr/bin/env -- {} %u\nIcon=okilum-appimage\nTerminal=false\nCategories=Office;Utility;\nMimeType=text/markdown;x-scheme-handler/okilum;\nStartupNotify=true\nStartupWMClass=okilum\n{MARKER}", exec_path(image)?);
     // Install the icon first so a published launcher always has its payload.
     atomic_write(&icon, ICON)?;
     atomic_write(&desktop, entry.as_bytes())
