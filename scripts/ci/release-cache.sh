@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Source from the build user's shell. Cache failures must not prevent compilation.
 # Missing credentials (including fork PRs) use the normal compiler.
+# Parallel Mac jobs opt in with OKILUM_SCCACHE_ISOLATED=1 before sourcing.
+# Each source invocation reserves its own UDS; S3 cache objects remain shared.
 # Never inherit a stale wrapper from a previous runner environment.
 unset RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR
 _enable_release_cache() {
@@ -32,11 +34,19 @@ _enable_release_cache() {
   fi
   export PATH="$cache_dir:$PATH"
   export SCCACHE_SERVER_UDS="$cache_dir/server.sock"
+  if [[ ${OKILUM_SCCACHE_ISOLATED:-0} == 1 ]]; then
+    # Reserve a short, unique Unix pathname atomically, without port allocation
+    # races or collisions between workflows, retries, jobs or checkouts.
+    local cache_socket_dir
+    cache_socket_dir=$(mktemp -d /tmp/okilum-sc.XXXXXXXX) || return 1
+    export SCCACHE_SERVER_UDS="$cache_socket_dir/server.sock"
+    # Do not remove a live daemon's directory. The server idles out below;
+    # /tmp owns cleanup of the small empty directory after it exits.
+  fi
   export SCCACHE_IDLE_TIMEOUT=300
   export SCCACHE_IGNORE_SERVER_IO_ERROR=1
   if [[ $cache_target == aarch64-apple-darwin ]]; then
-    # Job-local only. Restart the selected daemon so it inherits this shell's
-    # descriptor limit, rather than reusing the runner's low-limit daemon.
+    # The isolated daemon starts after this shell raises its descriptor limit.
     if ! { ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null; }; then
       echo '::warning::Cannot raise macOS descriptor limit; building without sccache'
       return 1
@@ -48,12 +58,13 @@ _enable_release_cache() {
       return 1
     fi
     echo "macOS compiler cache descriptor limit: $cache_nofile"
-    python3 - "$cache_dir/sccache" <<'PYRESTART' || return 1
+    python3 - "$cache_dir/sccache" "${OKILUM_SCCACHE_ISOLATED:-0}" <<'PYRESTART' || return 1
 import subprocess, sys
 try:
-    # Stop failure is harmless when no server was running.
-    subprocess.run([sys.argv[1], '--stop-server'], timeout=3,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Legacy callers retain their behavior. Isolated jobs never stop any server.
+    if sys.argv[2] != '1':
+        subprocess.run([sys.argv[1], '--stop-server'], timeout=3,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     result = subprocess.run([sys.argv[1], '--start-server'], timeout=3,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     sys.exit(result.returncode)

@@ -68,13 +68,15 @@ const CREATION_TOAST_LIFETIME: std::time::Duration = std::time::Duration::from_s
 struct CreationToast;
 
 pub(super) struct Creation {
-    root: PathBuf,
+    pub(super) root: PathBuf,
     pub folder: String,
     pub directory: bool,
     pub input: Entity<InputState>,
     pub error: Option<String>,
     pub templates: Option<okilum_core::note_templates::Catalog>,
     pub selected_template: Option<String>,
+    /// The tree selection before the row opened; Cancel puts it back.
+    previous_cursor: Option<String>,
     _subscription: Subscription,
 }
 
@@ -289,16 +291,19 @@ impl Reader {
             return;
         }
         self.renaming = None;
+        self.close_creation_folder_picker(cx);
+        let previous_cursor = self
+            .creation
+            .take()
+            .map_or_else(|| self.tree.cursor.clone(), |c| c.previous_cursor);
+        // Next to the tree selection (a selected note: its folder); with
+        // nothing selected, in the tree's root: the vault root, or the
+        // project's folder (#1512). Never a folder nobody selected.
+        let root = self.tree.scope().to_owned();
         let mut folder = folder
             .map(str::to_owned)
             .or_else(|| self.tree.selected_creation_folder())
-            .unwrap_or_else(|| {
-                Path::new(&self.current_rel)
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .to_string_lossy()
-                    .into_owned()
-            });
+            .unwrap_or_else(|| root.clone());
         let templates = self.creation_templates();
         // A template opened for inspection must not turn Cmd-N into a write
         // inside the templates collection.
@@ -306,7 +311,7 @@ impl Reader {
             .as_ref()
             .is_ok_and(|catalog| catalog.contains_target(Path::new(&folder)))
         {
-            folder.clear();
+            folder = root;
         }
         folder = existing_creation_folder(&self.vault_root, &folder);
         let error = templates.as_ref().err().map(|e| format!("{e:#}"));
@@ -332,15 +337,7 @@ impl Reader {
                 _ => {}
             });
         input.update(cx, |input, cx| input.focus(window, cx));
-        let insertion = if folder.is_empty() {
-            0
-        } else {
-            self.tree
-                .rows
-                .iter()
-                .position(|r| r.path == folder)
-                .map_or(0, |i| i + 1)
-        };
+        let insertion = self.creation_row_index(&folder);
         self.creation = Some(Creation {
             root: self.vault_root.clone(),
             folder,
@@ -349,6 +346,7 @@ impl Reader {
             error: if directory { None } else { error },
             templates,
             selected_template,
+            previous_cursor,
             _subscription: subscription,
         });
         if let Some(error) = self.creation.as_ref().and_then(|c| c.error.clone()) {
@@ -370,8 +368,62 @@ impl Reader {
             cx.notify();
         }
     }
+    /// Where the inline row for `folder` sits in the tree: under the
+    /// folder's row, or first for the tree's root.
+    fn creation_row_index(&self, folder: &str) -> usize {
+        if folder.is_empty() || folder == self.tree.scope() {
+            return 0;
+        }
+        self.tree
+            .rows
+            .iter()
+            .position(|r| r.path == folder)
+            .map_or(0, |i| i + 1)
+    }
+
+    /// The inline row's destination changed (its «in: …» list, #1512).
+    pub(super) fn set_creation_folder(
+        &mut self,
+        folder: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(create) = self.creation.as_ref() else {
+            return;
+        };
+        if create.root != self.vault_root {
+            return;
+        }
+        let folder = existing_creation_folder(&self.vault_root, folder);
+        if create
+            .templates
+            .as_ref()
+            .is_some_and(|catalog| catalog.contains_target(Path::new(&folder)))
+        {
+            return;
+        }
+        let input = create.input.clone();
+        if let Some(create) = self.creation.as_mut() {
+            create.folder = folder.clone();
+            create.error = None;
+        }
+        self.reveal_in_tree(&folder, window, cx);
+        input.update(cx, |input, cx| input.focus(window, cx));
+        let insertion = self.creation_row_index(&folder);
+        self.scroll_tree_to(insertion);
+        cx.notify();
+    }
+
     pub(super) fn cancel_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.creation = None;
+        self.close_creation_folder_picker(cx);
+        if let Some(create) = self.creation.take() {
+            // The row moved the tree selection to its folder; Cancel puts
+            // back what was selected, or nothing (#1512).
+            self.tree.cursor = create
+                .previous_cursor
+                .filter(|path| self.tree.rows.iter().any(|row| &row.path == path));
+            self.tree_revealed = self.selected_file().to_owned();
+        }
         self.tree_focus.focus(window, cx);
         cx.notify();
     }
@@ -428,6 +480,7 @@ impl Reader {
             Ok((rel, Some(source))) => {
                 let created = rel.clone();
                 self.creation = None;
+                self.close_creation_folder_picker(cx);
                 Arc::make_mut(&mut self.vault).register_created_note(&rel);
                 // Publish the successful create before the watcher catches up.
                 // Its ancestors must exist in the tree for an immediate Cmd-N
@@ -493,6 +546,7 @@ impl Reader {
             }
             Ok((rel, None)) => {
                 self.creation = None;
+                self.close_creation_folder_picker(cx);
                 // Watcher refreshes the inventory; reveal an empty new folder now.
                 self.tree
                     .entry_created(&rel, okilum_core::vault::EntryKind::Directory);
@@ -685,10 +739,9 @@ mod tests {
             }
             visual.run_until_parked();
             reader.read_with(visual, |r, _| {
-                assert_eq!(
-                    r.creation.as_ref().unwrap().folder,
-                    if nested { "Parent" } else { "" }
-                );
+                // The deleted folder took the selection with it: nothing is
+                // selected, so the root (#1512).
+                assert_eq!(r.creation.as_ref().unwrap().folder, "");
             });
             visual.simulate_input("Created");
             visual.simulate_keystrokes("enter");
@@ -696,8 +749,6 @@ mod tests {
         visual.run_until_parked();
         let destination = if operation == "quick_open" || operation == "sidebar" {
             "start.md"
-        } else if nested {
-            "Parent/Created.md"
         } else {
             "Created.md"
         };
@@ -744,7 +795,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn deleted_folder_header_creation_uses_surviving_ancestor(cx: &mut TestAppContext) {
+    fn deleted_nested_folder_header_creation_goes_to_root(cx: &mut TestAppContext) {
         deleted_folder_operation(cx, "header", true);
     }
 
@@ -1093,8 +1144,10 @@ mod tests {
         );
     }
 
+    /// #1512: next to the tree selection; nothing selected is the vault
+    /// root, never the open note's folder or the first folder.
     #[gpui::test]
-    fn creation_prefers_tree_selection_then_open_note(cx: &mut TestAppContext) {
+    fn creation_uses_tree_selection_else_root(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -1131,8 +1184,8 @@ mod tests {
                 (Some("Selected/Nested"), None, "Selected/Nested"),
                 (Some("Selected/Other.md"), None, "Selected"),
                 (Some("Root.md"), None, ""),
-                (None, None, "Open"),
-                (Some("No longer exists.md"), None, "Open"),
+                (None, None, ""),
+                (Some("No longer exists.md"), None, ""),
                 (Some("Selected/Nested"), Some(""), ""),
             ] {
                 reader.update_in(visual, |r, window, cx| {
@@ -1607,8 +1660,9 @@ mod tests {
         std::fs::create_dir_all(&templates).unwrap();
         std::fs::write(templates.join("Meeting.md"), "# {{title}}\n\nTemplate body").unwrap();
         reader.update_in(visual, |reader, window, cx| {
-            // No tree selection: template creation follows the open note.
-            reader.tree.cursor = None;
+            // The open note is the tree selection: template creation goes
+            // next to it.
+            reader.tree.cursor = Some(reader.current_rel.clone());
             reader.new_from_template(window, cx)
         });
         visual.run_until_parked();
@@ -1707,5 +1761,224 @@ mod tests {
             reader.cancel_creation(window, cx);
         });
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn click(visual: &mut VisualTestContext, selector: &'static str) {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is shown"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    fn destination(reader: &Reader) -> Option<(String, String)> {
+        reader
+            .sidebar_items()
+            .into_iter()
+            .find_map(|item| match item {
+                SideItem::Create(.., (label, tip)) => Some((label.to_string(), tip.to_string())),
+                _ => None,
+            })
+    }
+
+    /// #1512: New note / New folder go next to the tree selection (a
+    /// selected note: its folder); with nothing selected, to the vault root,
+    /// never the first folder («AI»). The inline row says where («in: …»)
+    /// and its list changes that before Enter; Esc or a click on the tree's
+    /// empty space deselects. Inside a project «/» is the project's folder.
+    #[gpui::test]
+    fn creation_destination_is_shown_and_changeable(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("AI")).unwrap();
+        std::fs::create_dir_all(root.join("Work/Projects")).unwrap();
+        std::fs::write(root.join("AI/Prompt.md"), "# Prompt\n").unwrap();
+        std::fs::write(root.join("Work/Plan.md"), "# Plan\n").unwrap();
+        std::fs::write(root.join("Root.md"), "# Root\n").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Work/Plan.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1400.), px(900.)));
+        reader.update(visual, |r, cx| {
+            r.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        // The open note is the selection: New note goes to its folder.
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.tree.cursor.as_deref(), Some("Work/Plan.md"));
+        });
+        click(visual, "sidebar-new-note");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.creation.as_ref().unwrap().folder, "Work");
+            assert_eq!(destination(r), Some(("in: Work".into(), "Work".into())));
+        });
+        assert!(visual.debug_bounds("create-destination").is_some());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.creation.is_none());
+            assert_eq!(
+                r.tree.cursor.as_deref(),
+                Some("Work/Plan.md"),
+                "Cancel keeps the selection"
+            );
+        });
+
+        // Esc in the tree deselects: New folder then goes to the root, first.
+        reader.update_in(visual, |r, window, cx| r.tree_focus.focus(window, cx));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_eq!(r.tree.cursor, None));
+        click(visual, "sidebar-new-folder");
+        reader.read_with(visual, |r, _| {
+            let create = r.creation.as_ref().unwrap();
+            assert!(create.directory);
+            assert_eq!(create.folder, "", "nothing selected: the vault root");
+            assert!(matches!(
+                r.sidebar_items().first(),
+                Some(SideItem::Create(..))
+            ));
+            assert_eq!(destination(r), Some(("in: /".into(), "Vault root".into())));
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.creation.is_none());
+            assert_eq!(r.tree.cursor, None, "Cancel selects nothing new");
+        });
+
+        // A selected note in AI, then «/» from the row's list, then Enter.
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("AI/Prompt.md", window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "sidebar-new-note");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.creation.as_ref().unwrap().folder, "AI");
+            assert_eq!(destination(r), Some(("in: AI".into(), "AI".into())));
+        });
+        click(visual, "create-destination");
+        assert!(visual.debug_bounds("move-folder-popover").is_some());
+        click(visual, "move-folder-0");
+        assert!(visual.debug_bounds("move-folder-popover").is_none());
+        reader.update_in(visual, |r, window, cx| {
+            let create = r.creation.as_ref().unwrap();
+            assert_eq!(create.folder, "", "the root is first in the list");
+            assert!(create.input.read(cx).focus_handle(cx).is_focused(window));
+        });
+        assert_eq!(
+            reader.read_with(visual, |r, _| destination(r)),
+            Some(("in: /".into(), "Vault root".into()))
+        );
+        visual.simulate_input("Top");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(root.join("Top.md").is_file());
+        assert!(!root.join("AI/Top.md").exists());
+
+        // Typing filters the list; Enter takes the match.
+        reader.update_in(visual, |r, window, cx| {
+            r.tree.cursor = None;
+            r.new_folder(None, window, cx);
+        });
+        visual.run_until_parked();
+        click(visual, "create-destination");
+        visual.simulate_input("proj");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.creation.as_ref().unwrap().folder, "Work/Projects");
+            assert!(r.sidebar_items().windows(2).any(|rows| matches!(
+                &rows[0],
+                SideItem::Tree(row) if row.path == "Work/Projects"
+            ) && matches!(
+                &rows[1],
+                SideItem::Create(..)
+            )));
+            r.cancel_creation(window, cx);
+        });
+
+        // A click under the last row deselects too.
+        reader.update_in(visual, |r, window, cx| r.reveal_in_tree("AI", window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.tree.cursor.as_deref(), Some("AI"))
+        });
+        let body = visual.debug_bounds("sidebar-tree-body").unwrap();
+        visual.simulate_click(
+            point(body.center().x, body.bottom() - px(8.)),
+            gpui::Modifiers::default(),
+        );
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.tree.cursor, None);
+            r.new_note(None, window, cx);
+            assert_eq!(r.creation.as_ref().unwrap().folder, "");
+            r.cancel_creation(window, cx);
+        });
+
+        // Inside a project «/» is the project's folder.
+        reader.update(visual, |r, cx| {
+            r.tree.scope_to("Work");
+            r.project_navigation.active = Some(okilum_t3::projects::Project {
+                folder: r.vault_root.join("Work"),
+                name: "Work".into(),
+                kind: okilum_t3::projects::Kind::Code,
+                environment: None,
+                manager_project: None,
+                manager: okilum_t3::projects::Manager::NotStarted,
+                appearance: Default::default(),
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.tree.cursor = None;
+            r.new_note(None, window, cx);
+            assert_eq!(r.creation.as_ref().unwrap().folder, "Work");
+            assert!(matches!(
+                r.sidebar_items().first(),
+                Some(SideItem::Create(..))
+            ));
+            assert_eq!(
+                destination(r),
+                Some(("in: /".into(), "Project root".into()))
+            );
+        });
+        visual.run_until_parked();
+        click(visual, "create-destination");
+        assert!(visual.debug_bounds("move-folder-1").is_some());
+        assert!(
+            visual.debug_bounds("move-folder-2").is_none(),
+            "only the project's root and its folders"
+        );
+        click(visual, "move-folder-1");
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.creation.as_ref().unwrap().folder, "Work/Projects");
+            r.cancel_creation(window, cx);
+        });
     }
 }

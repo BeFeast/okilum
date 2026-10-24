@@ -18,6 +18,10 @@ pub struct Row {
     /// A `_`/`.` item shown only because hidden files are on or because it
     /// leads to the current note (#395): rendered muted with a marker.
     pub hidden: bool,
+    /// The folder's index note (`_index.md`, #1512): listed first in its
+    /// folder, muted, with its own icon, and shown without Show hidden
+    /// files. Otherwise an ordinary note row.
+    pub index: bool,
 }
 
 /// Ancestors already scrolled out above the first visible row. Paths retain
@@ -213,6 +217,11 @@ impl Tree {
     fn sort_children(&mut self) {
         let titles = &self.titles;
         for children in self.children.values_mut() {
+            // The folder's index note leads its folder, above subfolders (#1512).
+            let index = match index_among(children.iter()) {
+                FolderIndex::One(path) => Some(path),
+                _ => None,
+            };
             children.sort_by_cached_key(|entry| {
                 let label = if entry.kind == EntryKind::Markdown {
                     titles
@@ -228,6 +237,7 @@ impl Tree {
                         .to_owned()
                 };
                 (
+                    index.as_deref() != Some(entry.path.as_str()),
                     entry.kind != EntryKind::Directory,
                     label,
                     entry.path.clone(),
@@ -239,6 +249,32 @@ impl Tree {
     pub(crate) fn scope_to(&mut self, path: &str) {
         self.scope = path.to_owned();
         self.flatten();
+    }
+
+    /// The folder the tree lists: the vault root («»), or a project's folder.
+    /// New note / New folder with nothing selected land here (#1512).
+    pub(crate) fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// Every folder below the tree's root in path order, hidden ones only
+    /// while Show hidden is on: the inline create row's destinations (#1512).
+    #[cfg(any(unix, windows))]
+    pub(crate) fn folders(&self) -> Vec<String> {
+        let prefix = if self.scope.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", self.scope)
+        };
+        self.kinds
+            .range(prefix.clone()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .filter(|(path, kind)| {
+                **kind == EntryKind::Directory
+                    && (self.show_hidden || !hidden(&path[prefix.len()..]))
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     fn flatten(&mut self) {
@@ -254,8 +290,12 @@ impl Tree {
             }
             if path != self.scope {
                 let kind = self.kinds[&path];
+                let index = self.is_index_note(&path);
                 rows.push(Row {
-                    hidden: hidden(&path) && !self.template_branch(&path),
+                    hidden: hidden(&path)
+                        && !self.template_branch(&path)
+                        && !self.shown_index(&path),
+                    index,
                     label: if kind == EntryKind::Markdown {
                         self.titles
                             .get(&path)
@@ -300,6 +340,7 @@ impl Tree {
         self.show_hidden
             || self.template_branch(path)
             || !hidden(path)
+            || self.shown_index(path)
             || self
                 .revealed_hidden
                 .as_deref()
@@ -312,6 +353,27 @@ impl Tree {
             && (path == self.templates_folder
                 || self.templates_folder.starts_with(&format!("{path}/"))
                 || path.starts_with(&format!("{}/", self.templates_folder)))
+    }
+
+    /// `folder`'s index note, read from the tree inventory (no I/O): the
+    /// same rule as [`folder_index`] (#1099).
+    pub(crate) fn index_of(&self, folder: &str) -> FolderIndex {
+        self.children
+            .get(folder)
+            .map_or(FolderIndex::None, |children| index_among(children.iter()))
+    }
+
+    /// Whether `path` is its folder's (only) index note.
+    pub(crate) fn is_index_note(&self, path: &str) -> bool {
+        index_name(path)
+            && self.kinds.get(path) == Some(&EntryKind::Markdown)
+            && self.index_of(parent(path).unwrap_or("")) == FolderIndex::One(path.to_owned())
+    }
+
+    /// An index note is listed whenever its folder is (#1512): its own `_`
+    /// does not hide it, a hidden folder above it still does.
+    fn shown_index(&self, path: &str) -> bool {
+        parent(path).is_none_or(|folder| !hidden(folder)) && self.is_index_note(path)
     }
 
     #[cfg(any(unix, windows))]
@@ -328,7 +390,7 @@ impl Tree {
 
     /// Whether Show hidden files being off hides `path`. Recent, Pinned and
     /// Inbox use this so they list what the tree lists (#635); a navigation
-    /// reveal applies to the tree only.
+    /// reveal and a folder's index row (#1512) apply to the tree only.
     pub fn hidden_by_preference(&self, path: &str) -> bool {
         !self.show_hidden && hidden(path) && !self.template_branch(path)
     }
@@ -342,7 +404,8 @@ impl Tree {
 
     pub fn reveal(&mut self, path: &str) -> Option<usize> {
         // A previously revealed hidden branch goes away again (#395).
-        self.revealed_hidden = (hidden(path) && !self.show_hidden).then(|| path.to_owned());
+        self.revealed_hidden =
+            (hidden(path) && !self.show_hidden && !self.shown_index(path)).then(|| path.to_owned());
         if !self.kinds.contains_key(path) {
             // Not in this inventory: select nothing rather than a neighbour.
             self.cursor = None;
@@ -386,6 +449,28 @@ impl Tree {
         self.cursor = Some(path.to_string());
         if !self.expanded.remove(path) {
             self.expanded.insert(path.to_string());
+        }
+        self.flatten();
+    }
+
+    /// The chevron (#1512): open or close `path` and leave the selection
+    /// where it is; a selection inside a closed folder moves up to it rather
+    /// than disappearing.
+    pub fn set_expanded(&mut self, path: &str, expand: bool) {
+        if self.kinds.get(path) != Some(&EntryKind::Directory) {
+            return;
+        }
+        if expand {
+            self.expanded.insert(path.to_owned());
+        } else {
+            self.expanded.remove(path);
+            if self
+                .cursor
+                .as_ref()
+                .is_some_and(|c| c.starts_with(&format!("{path}/")))
+            {
+                self.cursor = Some(path.to_owned());
+            }
         }
         self.flatten();
     }
@@ -509,15 +594,23 @@ pub enum FolderIndex {
 }
 
 pub fn folder_index(folder: &str, entries: &[VaultEntry]) -> FolderIndex {
-    let mut found = entries.iter().filter(|entry| {
-        entry.kind == EntryKind::Markdown
-            && parent(&entry.path).unwrap_or("") == folder
-            && entry
-                .path
-                .rsplit('/')
-                .next()
-                .is_some_and(|name| name.eq_ignore_ascii_case("_index.md"))
-    });
+    index_among(
+        entries
+            .iter()
+            .filter(|entry| parent(&entry.path).unwrap_or("") == folder),
+    )
+}
+
+fn index_name(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("_index.md"))
+}
+
+/// The index note among one folder's direct children.
+fn index_among<'a>(children: impl Iterator<Item = &'a VaultEntry>) -> FolderIndex {
+    let mut found =
+        children.filter(|entry| entry.kind == EntryKind::Markdown && index_name(&entry.path));
     match (found.next(), found.next()) {
         (None, _) => FolderIndex::None,
         (Some(entry), None) => FolderIndex::One(entry.path.clone()),
@@ -545,7 +638,6 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::*;
-        use reader_sidebar::Section;
         cx.update(gpui_component::init);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
@@ -583,17 +675,31 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |reader, cx| {
             reader.panels.open(reader_layout::Panel::Notes);
-            assert_eq!(reader.backlink_titles.get("24q4.md").map(String::as_str), Some("Quarterly plans"), "reconciled title positive control");
-            reader.sidebar.pinned = vec!["24q4.md".into(), "Upper.MD".into()];
-            reader.sidebar.recent = vec![("legacy.md".into(), reader_sidebar::now())];
-            let rows = reader.sidebar_items();
-            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Pinned, path, label, ..} if path == "24q4.md" && label == "Quarterly plans")));
-            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Pinned, path, label, folder: false, ..} if path == "Upper.MD" && label == "Upper title")));
-            assert!(rows.iter().any(|row| matches!(row, SideItem::Entry {section: Section::Recent, path, label, ..} if path == "legacy.md" && label == "Legacy title")));
-            assert_eq!(reader.tree.rows.iter().map(|r| (r.path.as_str(), r.label.as_str())).collect::<Vec<_>>(), [
-                ("legacy.md", "Legacy title"), ("24q4.md", "Quarterly plans"),
-                ("duplicate.md", "Quarterly plans"), ("Upper.MD", "Upper title"), ("plain.md", "plain"),
-            ]);
+            assert_eq!(
+                reader.backlink_titles.get("24q4.md").map(String::as_str),
+                Some("Quarterly plans"),
+                "reconciled title positive control"
+            );
+            // Recent and Pinned (title bar, #1508) label notes the same way.
+            assert_eq!(reader.note_label("24q4.md"), "Quarterly plans");
+            assert_eq!(reader.note_label("Upper.MD"), "Upper title");
+            assert!(!reader.tree.is_directory("Upper.MD"));
+            assert_eq!(reader.note_label("legacy.md"), "Legacy title");
+            assert_eq!(
+                reader
+                    .tree
+                    .rows
+                    .iter()
+                    .map(|r| (r.path.as_str(), r.label.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("legacy.md", "Legacy title"),
+                    ("24q4.md", "Quarterly plans"),
+                    ("duplicate.md", "Quarterly plans"),
+                    ("Upper.MD", "Upper title"),
+                    ("plain.md", "plain"),
+                ]
+            );
             cx.notify();
         });
         visual.run_until_parked();
@@ -771,6 +877,85 @@ mod tests {
             folder_index("", &entries),
             FolderIndex::One("_Index.md".into())
         );
+    }
+
+    #[test]
+    fn index_rows_lead_their_folder_stay_listed_and_the_chevron_keeps_the_selection() {
+        use EntryKind::{Directory, Markdown};
+        let entries = [
+            entry("Area", Directory),
+            entry("Area/Alpha.md", Markdown),
+            entry("Area/sub", Directory),
+            entry("Area/sub/deep.md", Markdown),
+            entry("Area/_index.md", Markdown),
+            entry("Area/_draft.md", Markdown),
+            entry("Twice", Directory),
+            entry("Twice/_index.md", Markdown),
+            entry("Twice/_Index.md", Markdown),
+            entry("_System", Directory),
+            entry("_System/_index.md", Markdown),
+        ];
+        let mut t = Tree::default();
+        t.refresh(Path::new("/v"), &entries);
+        // The title would sort it after «Alpha»; the index still leads.
+        t.set_titles(Arc::new(HashMap::from([(
+            "Area/_index.md".into(),
+            "Zeta".into(),
+        )])));
+        t.set_expanded("Area", true);
+        t.set_expanded("Twice", true);
+        assert_eq!(
+            paths(&t),
+            [
+                "Area",
+                "Area/_index.md",
+                "Area/sub",
+                "Area/Alpha.md",
+                "Twice"
+            ],
+            "index first and listed without Show hidden; `_draft` and the ambiguous pair stay hidden"
+        );
+        let index = &t.rows[1];
+        assert!(index.index && !index.hidden && index.label == "Zeta");
+        assert!(t.rows.iter().filter(|r| r.index).count() == 1);
+        assert!(t.is_index_note("Area/_index.md"));
+        assert!(!t.is_index_note("Twice/_index.md"), "two spellings: none");
+        // Recent and Pinned keep following Show hidden files for it.
+        assert!(t.hidden_by_preference("Area/_index.md"));
+        assert_eq!(
+            t.index_of("Area"),
+            FolderIndex::One("Area/_index.md".into())
+        );
+        assert_eq!(t.index_of("Area/sub"), FolderIndex::None);
+        // Revealing the index does not count as a hidden-branch reveal.
+        assert_eq!(t.reveal("Area/_index.md"), Some(1));
+        assert!(t.revealed_hidden.is_none());
+        // With Show hidden on, the index of a hidden folder is still flagged.
+        t.set_show_hidden(true);
+        t.set_expanded("_System", true);
+        let system = t
+            .rows
+            .iter()
+            .find(|r| r.path == "_System/_index.md")
+            .unwrap();
+        assert!(system.index && system.hidden);
+        t.set_show_hidden(false);
+
+        // The chevron: the selection does not follow the toggled folder ...
+        t.cursor = Some("Twice".into());
+        t.set_expanded("Area/sub", true);
+        assert_eq!(t.cursor.as_deref(), Some("Twice"));
+        t.set_expanded("Area/sub", false);
+        assert_eq!(t.cursor.as_deref(), Some("Twice"));
+        // ... unless it would vanish inside the folder being closed.
+        t.set_expanded("Area/sub", true);
+        t.cursor = Some("Area/sub/deep.md".into());
+        t.set_expanded("Area", false);
+        assert_eq!(t.cursor.as_deref(), Some("Area"));
+        assert_eq!(paths(&t), ["Area", "Twice"]);
+        // Notes are not folders.
+        t.set_expanded("Area/Alpha.md", true);
+        assert_eq!(paths(&t), ["Area", "Twice"]);
     }
 
     #[test]

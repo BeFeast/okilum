@@ -4,14 +4,17 @@ set -Eeuo pipefail
 [[ $(uname -s) = Darwin && $(uname -m) = arm64 ]]
 # Exercise optional signing arrays with macOS /bin/bash 3.2 before any Cargo work.
 python3 scripts/ci/test_supervisor_bundle.py
+# Pure page guard units; no GUI/NSApp activation and no production browser data.
+node scripts/ci/test-manager-page-keys.mjs
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-# Same toolchain/profile/cache as main releases; the single runner serializes jobs.
+# Same toolchain/profile/cache as main releases; Cargo locks the shared target.
 export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
 export CARGO_INCREMENTAL=0
 rustc --version
 rustup target add aarch64-apple-darwin
+export OKILUM_SCCACHE_ISOLATED=1
 source scripts/ci/release-cache.sh
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
@@ -19,6 +22,11 @@ archive="${RUNNER_TEMP:?}/Sparkle-2.10.0.tar.xz"
 python3 scripts/updater/sparkle.py fetch "$archive"
 python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
 export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
+# #1603: only the hosted lane runs the isolated signed update/relaunch fixture.
+# Local/corporate runners must not execute it.
+if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
+    python3 scripts/ci/sparkle-freshness/run.py "$archive"
+fi
 cargo_args=(test --release --locked --target aarch64-apple-darwin)
 # Compile the production binary too: cargo test alone only builds the shell
 # with cfg(test), because this crate has no integration-test targets.
@@ -66,6 +74,9 @@ run_tests okilum-core --lib syncthing_ignore::
 run_tests okilum-shell --bins reader_stignore::
 run_tests okilum-shell --bins reader_settings::tests::settings_files_shows_the_syncthing_ignore_state_and_its_button --exact
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
+# #1510: dispatch unit tests run on hosted macOS; the real-NSApp fixture is
+# ignored because hosted runners cannot establish an active/key application.
+run_tests okilum-shell --bins reader_manager_focus::tests
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 # #1462: use the platform NewNote shortcut after an external folder deletion.
@@ -102,3 +113,12 @@ run_tests okilum-shell --bins reader_thumbnail::native_tests
 run_tests okilum-shell --bins updater::macos::tests::channel_defaults_to_stable_and_keeps_an_explicit_choice --exact
 
 release_cache_stats
+
+# #1583: Settings progress/ready/restart controls and the shared update state machine.
+run_tests okilum-shell --bins updater::status::
+run_tests okilum-shell --bins updater::progress_ui_tests::
+
+# Real GPUI editor protection at the same final boundary used by both Quit and Restart.
+if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
+    run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
+fi

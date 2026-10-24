@@ -6077,6 +6077,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-paste"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "encoding_rs",
+ "html5ever 0.27.0",
+ "markup5ever_rcdom",
+ "percent-encoding",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "okilum-shell"
 version = "0.1.0"
 dependencies = [
@@ -6088,6 +6101,7 @@ dependencies = [
  "csv",
  "dirs 6.0.0",
  "embed-resource",
+ "flate2",
  "fsevent-sys",
  "futures",
  "gpui-base",
@@ -6106,8 +6120,10 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "okilum-core",
+ "okilum-paste",
  "okilum-sync-controller",
  "okilum-t3",
+ "percent-encoding",
  "raw-window-handle",
  "regex",
  "reqwest",

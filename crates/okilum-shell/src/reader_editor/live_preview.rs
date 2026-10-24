@@ -13,6 +13,18 @@ pub(super) struct LivePreview {
     colors: Cell<Option<ProjectionColors>>,
 }
 
+#[cfg(test)]
+impl LivePreview {
+    /// The note as Live Preview draws it with nothing revealed, once it is
+    /// classified: a test's proof that some Markdown really is concealed.
+    pub(super) fn concealed_text(&self) -> Option<String> {
+        use gpui_component::input::projection::{ActiveSource, ProjectionProvider as _};
+        let provider = self.accepted.as_ref()?;
+        let display = provider.compose(provider.source(), &ActiveSource::default())?;
+        Some(display.text().to_string())
+    }
+}
+
 fn projection_colors(cx: &App) -> ProjectionColors {
     let palette = brand::palette(cx);
     ProjectionColors {
@@ -24,12 +36,17 @@ fn projection_colors(cx: &App) -> ProjectionColors {
 
 impl Reader {
     /// Opt-in, cross-platform diagnostics. Sampling reads state only: no notify/draw.
+    /// `OKILUM_EDITOR_LAYOUT_DIAGNOSTICS=1` logs a sample every second. It and
+    /// every Sprint build also log one `editor_frame_layout` line per laid-out
+    /// keystroke or caret move: what the layout cost and how far the view
+    /// moved (#1621), so a Feedback log carries the numbers.
     pub(super) fn start_editor_layout_diagnostics(
         &self,
         input: Entity<EditorState>,
         cx: &mut Context<Self>,
     ) {
-        if std::env::var("OKILUM_EDITOR_LAYOUT_DIAGNOSTICS").as_deref() != Ok("1") {
+        let samples = std::env::var("OKILUM_EDITOR_LAYOUT_DIAGNOSTICS").as_deref() == Ok("1");
+        if !samples && !crate::reader_feedback::sprint::enabled() {
             return;
         }
         let Some(trace) = self
@@ -49,6 +66,23 @@ impl Reader {
                     };
                     let editor = input.read(cx);
                     let Some(counts) = editor.layout_diagnostics() else { return false; };
+                    for frame in editor.take_layout_frames() {
+                        trace.event("editor_frame_layout", serde_json::json!({
+                            "generation": frame.generation,
+                            "presentation_epoch": frame.presentation_epoch,
+                            "edit": frame.edit,
+                            "raw": frame.raw,
+                            "prepaint_ms": frame.prepaint_ms,
+                            "reshape_ms": frame.reshape_ms,
+                            "reshaped_lines": frame.reshaped_lines,
+                            "scroll_delta": frame.scroll_delta,
+                            "anchor": frame.anchor,
+                            "live": editing.live_preview.enabled,
+                        }));
+                    }
+                    if !samples {
+                        return true;
+                    }
                     let scroll = editor.scroll_offset();
                     let bounds = editor.input_bounds();
                     trace.event("editor_layout_sample", serde_json::json!({
@@ -449,20 +483,25 @@ mod tests {
         });
         visual.run_until_parked();
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
+        // #1512: at 200 px the name gives way and only Reveal current and
+        // Show hidden move into ⋯; nothing clips past the panel.
         let menu = visual.debug_bounds("sidebar-actions").unwrap();
-        let folders = visual.debug_bounds("folders-actions").unwrap();
         assert!(
             menu.right() < panel.right(),
             "menu={menu:?}, panel={panel:?}"
         );
-        assert!(
-            folders.right() < panel.right(),
-            "Folders actions never clip at 200px"
-        );
-        assert!(
-            visual.debug_bounds("sidebar-new-note").is_none(),
-            "long vault name takes precedence over actions"
-        );
+        if cfg!(any(unix, windows)) {
+            let new_note = visual.debug_bounds("sidebar-new-note").unwrap();
+            let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+            assert!(
+                title.right() <= new_note.left(),
+                "the name never covers an action"
+            );
+        }
+        assert!(visual.debug_bounds("sidebar-collapse-all").is_some());
+        for spilled in ["sidebar-reveal-current", "sidebar-show-hidden"] {
+            assert!(visual.debug_bounds(spilled).is_none(), "{spilled} is in ⋯");
+        }
     }
 
     use super::*;
@@ -553,6 +592,87 @@ mod tests {
             visual.debug_bounds("reader-callout-body-0").is_some(),
             "the first callout unfolds, rendered"
         );
+    }
+
+    /// #1621: Enter on the blank lines after a long CSS fence at the end of a
+    /// note, below a heading, a long link, a table and a callout. Each edit
+    /// frame is drawn before the background classification returns, as on a
+    /// slow machine. That frame drew the whole note as source with no anchor:
+    /// the rows above changed height and the view jumped on every Enter.
+    #[gpui::test]
+    fn enter_after_a_fence_below_rendered_blocks_keeps_the_view(cx: &mut TestAppContext) {
+        use crate::input_anchor_tests::{assert_held, draw};
+        let css: String = (0..60)
+            .map(|i| format!("  .rule-{i} {{ padding: {i}px; }}\n"))
+            .collect();
+        let note = format!(
+            "# Days Gone\n\n## Section\n\n[a long link label](https://example.com/{})\n\n\
+             | a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n> [!note] Callout\n> body\n\n\
+             ```css\n{css}```\n\n",
+            "x".repeat(300)
+        );
+        let (reader, visual, _directory) = fixture(cx, &note);
+        visual.simulate_resize(size(px(1000.), px(600.)));
+        reader.update_in(visual, |r, window, cx| {
+            if !r.editing.as_ref().unwrap().live_preview.enabled {
+                r.toggle_live_preview(window, cx);
+            }
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        input.update(visual, |input, cx| {
+            input.set_selected_range(note.len()..note.len(), cx)
+        });
+        let bounds = input.read_with(visual, |input, _| input.input_bounds());
+        visual.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        // The closing fence line, a few rows above the caret.
+        let reference = note.rfind("```").unwrap();
+        draw(&input, reference, visual);
+        visual.run_until_parked();
+        let mut before = draw(&input, reference, visual);
+        input.read_with(visual, |input, _| {
+            assert!(
+                input.scroll_offset().y < px(-200.),
+                "positive control: the editor is scrolled"
+            );
+            assert!(input.value().starts_with("# Days Gone"));
+        });
+        assert!(before.caret.is_some() && before.reference.is_some());
+        for key in 1..=8 {
+            visual.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse("enter").unwrap(), cx);
+            });
+            let edit = draw(&input, reference, visual);
+            input.read_with(visual, |input, _| {
+                assert_eq!(
+                    input.value().len(),
+                    note.len() + key,
+                    "Enter {key} reached the editor"
+                )
+            });
+            assert_held(
+                &before,
+                &edit,
+                &format!("Enter {key}, before classification"),
+            );
+            visual.run_until_parked();
+            let adopted = draw(&input, reference, visual);
+            assert_held(
+                &edit,
+                &adopted,
+                &format!("Enter {key}, classification adopted"),
+            );
+            // Blocks measured in that frame take their height in the next one.
+            visual.run_until_parked();
+            let settled = draw(&input, reference, visual);
+            assert_held(&adopted, &settled, &format!("Enter {key}, settled"));
+            before = settled;
+        }
     }
 
     #[gpui::test]

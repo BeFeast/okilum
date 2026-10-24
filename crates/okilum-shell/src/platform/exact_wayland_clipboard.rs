@@ -1,11 +1,13 @@
-//! Exact regular-selection text for the isolated Linux Wayland editor candidate.
+//! Linux clipboard text for the note editor's paste: the regular selection's
+//! exact bytes over the compositor's data-control where it has one, read in
+//! the paste command itself (#1602); otherwise GPUI's own clipboard connection.
 //! No clipboard ownership changes, core hooks, or external helper executable.
 use gpui::{App, Task};
 use gpui_component::input::clipboard::{
     ClipboardReadError as Error, ClipboardReadRequest, ExactClipboardProvider,
 };
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -44,6 +46,60 @@ impl ExactClipboardProvider for WaylandClipboard {
             }
         })
     }
+
+    /// The editor's paste reads here, inside the user's Ctrl+V or Paste
+    /// command, and applies the text before the command returns (#1602). The
+    /// asynchronous read above landed turns later, and an activation, focus,
+    /// selection or layout change in between cancelled it without a word;
+    /// with GPUI on X11, on GNOME's Mutter (no wlr data-control) or on an
+    /// inherited socket it refused every paste as Unsupported.
+    fn read_text_now(&self, cx: &App) -> Option<Result<Option<String>, Error>> {
+        let exact = match &self.socket {
+            #[cfg(target_os = "linux")]
+            Some(socket) => linux::read_in_command(socket, self.seat.clone()),
+            _ => Err(Error::Unsupported),
+        };
+        Some(settle(exact, || platform_text(cx)))
+    }
+}
+
+/// What the compositor's data-control holds for an in-command read.
+#[derive(Debug, PartialEq)]
+enum Exact {
+    /// The selection's exact text; `None` when there is no selection.
+    Text(Option<String>),
+    /// Okilum's own copy. Its bytes come from this UI thread, which is busy
+    /// with the paste, so a pipe read would wait out the whole deadline.
+    Own,
+}
+
+/// Exact text when data-control has it. Where that path cannot run (GPUI on
+/// X11, GNOME's Mutter, an inherited socket, several seats, no connection) and
+/// for Okilum's own copy, the text GPUI's clipboard connection reads: the same
+/// bytes on X11; on Wayland GPUI folds CRLF into LF, which the note editor's
+/// document newlines (#848) do to pasted text anyway. What the exact read
+/// found wrong with the clipboard itself stands.
+fn settle(
+    exact: Result<Exact, Error>,
+    platform: impl FnOnce() -> Result<Option<String>, Error>,
+) -> Result<Option<String>, Error> {
+    match exact {
+        Ok(Exact::Text(text)) => Ok(text),
+        Ok(Exact::Own) | Err(Error::Unsupported | Error::AmbiguousSeat | Error::Io) => platform(),
+        Err(error) => Err(error),
+    }
+}
+
+/// Text from GPUI's own clipboard connection, on the calling thread. An image
+/// without text is no text (`None`); the editor says so.
+fn platform_text(cx: &App) -> Result<Option<String>, Error> {
+    Ok(cx.read_from_clipboard().and_then(|item| item.text()))
+}
+
+/// GPUI offers this type with every selection it sets (its `self_mime`).
+#[cfg(target_os = "linux")]
+fn own_mime() -> String {
+    format!("pid/{}", std::process::id())
 }
 
 #[cfg(target_os = "linux")]
@@ -219,7 +275,7 @@ mod linux {
         })
     }
     fn connect(
-        path: &PathBuf,
+        path: &Path,
         deadline: Instant,
         request: &ClipboardReadRequest,
     ) -> Result<Connection, Error> {
@@ -379,14 +435,44 @@ mod linux {
         request: ClipboardReadRequest,
         deadline: Instant,
     ) -> Result<Option<String>, Error> {
-        let connection = connect(&path, deadline, &request)?;
+        // Off the UI thread GPUI answers for Okilum's own copy, so no own
+        // type is checked here and the pipe read covers it.
+        match read_offer(&path, requested_seat, &request, deadline, None)? {
+            Exact::Text(text) => Ok(text),
+            Exact::Own => Err(Error::Unavailable),
+        }
+    }
+
+    /// The same read on the UI thread, inside the paste command (#1602).
+    /// Nothing can cancel it there; its own deadline still bounds it.
+    pub(super) fn read_in_command(
+        path: &Path,
+        requested_seat: Option<String>,
+    ) -> Result<Exact, Error> {
+        read_offer(
+            path,
+            requested_seat,
+            &ClipboardReadRequest::default(),
+            Instant::now() + TIMEOUT,
+            Some(&own_mime()),
+        )
+    }
+
+    fn read_offer(
+        path: &Path,
+        requested_seat: Option<String>,
+        request: &ClipboardReadRequest,
+        deadline: Instant,
+        own: Option<&str>,
+    ) -> Result<Exact, Error> {
+        let connection = connect(path, deadline, request)?;
         let mut queue = connection.new_event_queue::<State>();
         let qh = queue.handle();
         let mut state = State::default();
         let _registry = connection.display().get_registry(&qh, ());
-        barrier(&connection, &mut queue, &mut state, deadline, &request)?;
+        barrier(&connection, &mut queue, &mut state, deadline, request)?;
         // Seat name events follow bindings requested during the first barrier.
-        barrier(&connection, &mut queue, &mut state, deadline, &request)?;
+        barrier(&connection, &mut queue, &mut state, deadline, request)?;
         let manager = state.manager.as_ref().ok_or(Error::Unsupported)?.1.clone();
         let eligible: Vec<_> = state
             .seats
@@ -404,11 +490,14 @@ mod linux {
         };
         state.selected_seat = Some(seat.global);
         let _device = manager.get_data_device(&seat.proxy, &qh, ());
-        barrier(&connection, &mut queue, &mut state, deadline, &request)?;
+        barrier(&connection, &mut queue, &mut state, deadline, request)?;
         let Some(offer) = state.selection.clone() else {
-            return Ok(None);
+            return Ok(Exact::Text(None));
         };
         let mimes = state.offers.get(&offer.id()).ok_or(Error::Unavailable)?;
+        if own.is_some_and(|own| mimes.iter().any(|mime| mime == own)) {
+            return Ok(Exact::Own);
+        }
         let mime = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"]
             .into_iter()
             .find(|mime| mimes.iter().any(|value| value == mime))
@@ -426,13 +515,13 @@ mod linux {
             Some(&input),
             &mut bytes,
             deadline,
-            &request,
+            request,
         )? {}
         // EOF alone does not prove the selection stayed current. Complete a
         // protocol barrier after draining queued changes on this connection.
-        barrier(&connection, &mut queue, &mut state, deadline, &request)?;
-        remaining(deadline, &request)?;
-        decode(bytes)
+        barrier(&connection, &mut queue, &mut state, deadline, request)?;
+        remaining(deadline, request)?;
+        decode(bytes).map(Exact::Text)
     }
 
     #[cfg(test)]
@@ -560,4 +649,142 @@ pub fn bind_compositor() -> Option<std::path::PathBuf> {
     std::env::remove_var("WAYLAND_SOCKET");
     std::env::set_var("WAYLAND_DISPLAY", &path);
     Some(path)
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    use gpui::{
+        div, AppContext, ClipboardItem, Context, Entity, Focusable, Image, ImageFormat,
+        IntoElement, Keystroke, ParentElement, Render, Styled, TestAppContext, Window,
+    };
+    use gpui_component::input::{clipboard::ClipboardPasteEvent, Editor, EditorState};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    /// #1602: where data-control cannot run, and for Okilum's own copy, GPUI's
+    /// clipboard answers; what the exact read found wrong stands.
+    #[test]
+    fn in_command_read_falls_back_only_where_the_exact_path_cannot_run() {
+        assert_eq!(
+            settle(Ok(Exact::Text(Some("a\r\nb".into()))), || panic!("exact")),
+            Ok(Some("a\r\nb".into()))
+        );
+        assert_eq!(settle(Ok(Exact::Text(None)), || panic!("none")), Ok(None));
+        for exact in [
+            Ok(Exact::Own),
+            Err(Error::Unsupported),
+            Err(Error::AmbiguousSeat),
+            Err(Error::Io),
+        ] {
+            let text = settle(exact, || Ok(Some("platform".to_owned())));
+            assert_eq!(text, Ok(Some("platform".into())));
+        }
+        for error in [
+            Error::Unavailable,
+            Error::Busy,
+            Error::Cancelled,
+            Error::Timeout,
+            Error::TooLarge,
+            Error::InvalidUtf8,
+            Error::ChangedOffer,
+        ] {
+            let text = settle(Err(error.clone()), || panic!("{error:?} stands"));
+            assert_eq!(text, Err(error));
+        }
+    }
+
+    struct Fixture(Entity<EditorState>);
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(Editor::new(&self.0))
+        }
+    }
+
+    /// #1602: with GPUI on X11 there is no compositor socket, and every Ctrl+V
+    /// into a note was refused as Unsupported, silently. The text now lands
+    /// inside the key command itself, before GPUI has recorded the window's
+    /// activation, as one Undo step, and Shift+Insert pastes too. An empty
+    /// clipboard or an image inserts nothing and reports Unavailable.
+    #[gpui::test]
+    fn x11_ctrl_v_lands_inside_the_command(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+        });
+        let image = Image::from_bytes(ImageFormat::Png, b"\x89PNG\r\n\x1a\n".to_vec());
+        // The test platform starts with an empty clipboard; nothing clears it.
+        for (clipboard, expected) in [
+            (None, "ac\n"),
+            (Some(ClipboardItem::new_image(&image)), "ac\n"),
+            (
+                Some(ClipboardItem::new_string("first\r\n🧠 b\u{301}".into())),
+                "afirst\n🧠 b\u{301}c\n",
+            ),
+        ] {
+            let mut editor = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let state = cx.new(|cx| {
+                    let mut state = EditorState::new(window, cx).document_newlines(true);
+                    let provider = WaylandClipboard::new(None, None);
+                    state.set_exact_clipboard_provider(Some(Arc::new(provider)), cx);
+                    state.set_value("ac\n", window, cx);
+                    state.set_selected_range(1..1, cx);
+                    state.focus_handle(cx).focus(window, cx);
+                    window.activate_window();
+                    state
+                });
+                editor = Some(state.clone());
+                let fixture = cx.new(|_| Fixture(state));
+                gpui_component::Root::new(fixture, window, cx)
+            });
+            let editor = editor.unwrap();
+            let outcomes = Rc::new(RefCell::new(Vec::new()));
+            let _subscription = visual.update(|_, cx| {
+                let outcomes = outcomes.clone();
+                cx.subscribe(&editor, move |_, event: &ClipboardPasteEvent, _| {
+                    outcomes.borrow_mut().push(event.clone())
+                })
+            });
+            visual.run_until_parked();
+            if let Some(item) = clipboard.clone() {
+                visual.update(|_, cx| cx.write_to_clipboard(item));
+            }
+            visual.deactivate_window();
+            visual.update(|window, cx| {
+                assert!(
+                    !window.is_window_active(),
+                    "positive control: GPUI flag is off"
+                );
+                window.dispatch_keystroke(Keystroke::parse("ctrl-v").unwrap(), cx);
+                // Applied before the command returns, not on a later turn.
+                assert_eq!(editor.read(cx).value().as_ref(), expected, "{clipboard:?}");
+            });
+            visual.run_until_parked();
+            let outcome = outcomes.borrow().last().cloned();
+            if expected == "ac\n" {
+                assert_eq!(
+                    outcome,
+                    Some(ClipboardPasteEvent::Failed(Error::Unavailable)),
+                    "{clipboard:?}"
+                );
+                continue;
+            }
+            assert_eq!(
+                outcome,
+                Some(ClipboardPasteEvent::Applied {
+                    request: 1,
+                    bytes: "first\n🧠 b\u{301}".len(),
+                })
+            );
+            visual.simulate_keystrokes("ctrl-z");
+            visual.update(|window, cx| {
+                assert_eq!(editor.read(cx).value().as_ref(), "ac\n");
+                editor.update(cx, |state, cx| state.set_selected_range(1..1, cx));
+                // Clipboard managers and dictation (Omarchy, voxtype) paste
+                // with Shift+Insert, which pasted nothing before.
+                window.dispatch_keystroke(Keystroke::parse("shift-insert").unwrap(), cx);
+                assert_eq!(editor.read(cx).value().as_ref(), expected);
+            });
+        }
+    }
 }

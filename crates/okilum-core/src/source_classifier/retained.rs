@@ -1,5 +1,8 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
-use super::{decorations::Marker, Classification, Reference, Style, StyleSpan, MAX_BYTES};
+use super::{
+    decorations::{Kind, Marker},
+    Classification, Reference, Style, StyleSpan, MAX_BYTES,
+};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
 
@@ -200,6 +203,153 @@ impl RetainedPresentation {
     pub fn remap(&self, current: &Snapshot) -> Option<Self> {
         self.remap_inline(current)
             .or_else(|| self.reclassify_local_block(current))
+    }
+
+    /// The last resort while `current` waits for its classification (#1621):
+    /// keep every block above the edited one as classified, and show the
+    /// edited block and the rest of the note below it as source. Without it,
+    /// an edit that neither the inline nor the local reparse can prove (Enter
+    /// after a fenced block at the end of a note) drew the whole note raw.
+    /// Rendered tables, images and headings above the caret then lost their
+    /// height for a frame.
+    ///
+    /// Text below the cut cannot change how the text above it parses: the
+    /// cut lies in no block, container or decoration, and a blank line or the
+    /// closing line of a fenced code block is right above it. A container
+    /// stays open across blank lines, so one ending in whitespace above the
+    /// cut is cut with it. Reference definitions resolve links anywhere: the
+    /// rest of the note must keep exactly the definitions it had.
+    pub fn remap_raw_tail(&self, current: &Snapshot) -> Option<Self> {
+        if self.snapshot.document() != current.document()
+            || current.generation() <= self.snapshot.generation()
+            || current.source().len() > MAX_BYTES
+            || self.base.is_err()
+        {
+            return None;
+        }
+        let old = self.snapshot.source();
+        let new = current.source();
+        let mut start = old
+            .bytes()
+            .zip(new.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        let line_start = |at: usize| old[..at].rfind('\n').map_or(0, |i| i + 1);
+        let bounds: Vec<Range<usize>> = self
+            .plan
+            .regions()
+            .iter()
+            .map(|r| r.block().clone())
+            .chain(self.contexts.iter().cloned())
+            .chain(
+                self.decorations
+                    .iter()
+                    .flat_map(|m| [m.range.clone(), m.scope.clone()]),
+            )
+            .chain(self.marker_scopes.iter().map(|(_, scope)| scope.clone()))
+            .collect();
+        // The last line of a fenced code block that a matching fence closes.
+        let closed_fence = |line: Range<usize>| {
+            self.decorations.iter().any(|m| {
+                if m.kind != Kind::CodeBlock
+                    || m.range.end != line.end
+                    || m.range.start >= line.start
+                {
+                    return false;
+                }
+                let opener = old[m.range.start..]
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim_start();
+                let Some(fence) = opener.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+                    return false;
+                };
+                let width = opener.chars().take_while(|&c| c == fence).count();
+                let closer = old[line.clone()].trim();
+                width >= 3 && closer.len() >= width && closer.chars().all(|c| c == fence)
+            })
+        };
+        let mut cut = line_start(start);
+        while cut > 0 {
+            if let Some(first) = bounds
+                .iter()
+                .filter(|r| r.start < cut && cut <= r.end)
+                .map(|r| r.start)
+                .min()
+                .or_else(|| {
+                    self.contexts
+                        .iter()
+                        .filter(|c| {
+                            c.start < cut && c.end <= cut && old[c.end..cut].trim().is_empty()
+                        })
+                        .map(|c| c.start)
+                        .min()
+                })
+            {
+                cut = line_start(first);
+                continue;
+            }
+            let above = line_start(cut - 1);
+            let line = old[above..cut].trim_end_matches(['\n', '\r']);
+            if line.trim().is_empty() || closed_fence(above..above + line.len()) {
+                break;
+            }
+            cut = above;
+        }
+        if cut == 0 {
+            return None;
+        }
+        fn definitions(text: &str) -> Vec<&str> {
+            let mut rows: Vec<&str> = text
+                .lines()
+                .map(|line| container_content(line).trim_end())
+                .filter(|line| super::definition_row(line))
+                .collect();
+            rows.sort_unstable();
+            rows
+        }
+        if definitions(&old[cut..]) != definitions(&new[cut..]) {
+            return None;
+        }
+        let above = |r: &Range<usize>| r.end <= cut;
+        let regions = self
+            .plan
+            .regions()
+            .iter()
+            .filter(|r| above(r.block()))
+            .cloned()
+            .collect();
+        let plan = Plan::new(current, regions);
+        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
+        Some(Self {
+            snapshot: current.clone(),
+            base: Ok(Arc::new(base)),
+            plan,
+            styles: self
+                .styles
+                .iter()
+                .filter(|s| above(&s.range))
+                .cloned()
+                .collect(),
+            marker_scopes: self
+                .marker_scopes
+                .iter()
+                .filter(|(m, s)| above(m) && above(s))
+                .cloned()
+                .collect(),
+            decorations: self
+                .decorations
+                .iter()
+                .filter(|m| above(&m.range) && above(&m.scope))
+                .cloned()
+                .collect(),
+            contexts: self.contexts.iter().filter(|c| above(c)).cloned().collect(),
+            references: self.references.clone(),
+        })
     }
 
     /// Reclassify a bounded run of accepted top-level blocks and whitespace gaps.
@@ -1874,5 +2024,83 @@ mod tests {
             .is_none());
         assert!(retained.remap(&snapshot(1, "TOP text!")).is_none());
         assert!(retained.remap(&snapshot(2, "TOP text!")).is_none());
+    }
+
+    /// #1621: an edit neither reparse can prove keeps the blocks above the
+    /// edited one as classified; only the rest of the note goes raw. Enter
+    /// after a fenced block at the end of a note drew the whole note raw, and
+    /// the heading, image and table above lost their height for a frame.
+    #[test]
+    fn unprovable_edits_keep_the_blocks_above_until_adoption() {
+        let head = "# Days Gone\n\n![[cover.png]]\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n";
+        let fence = "```css\n.x { color: red; }\n\n[hidden] { display: none; }\n```";
+        let kinds = |r: &RetainedPresentation| {
+            r.decorations()
+                .iter()
+                .map(|m| m.kind.clone())
+                .collect::<Vec<_>>()
+        };
+        let heading =
+            |r: &RetainedPresentation| r.styles().iter().any(|s| s.style == Style::Heading(1));
+        // Enter on the blank lines after the fence: everything stays, the
+        // closed fence included; the projection is the fresh one.
+        let mut text = format!("{head}{fence}\n\n");
+        let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &text)));
+        let classified = kinds(&retained);
+        assert!(classified.contains(&Kind::Table) && classified.contains(&Kind::CodeBlock));
+        for generation in 2..8 {
+            text.push('\n');
+            let current = snapshot(generation, &text);
+            assert!(
+                retained.remap(&current).is_none(),
+                "positive control: the local reparse refuses this edit"
+            );
+            retained = retained
+                .remap_raw_tail(&current)
+                .expect("blocks above kept");
+            assert_eq!(kinds(&retained), classified);
+            assert!(heading(&retained));
+            assert_eq!(
+                retained.project(&Active::default()).unwrap().display(),
+                RetainedPresentation::new(&classify(&current))
+                    .project(&Active::default())
+                    .unwrap()
+                    .display()
+            );
+        }
+        // Enter on the closing fence line, and inside the table: that block
+        // goes raw, the blocks above it stay.
+        for (text, edited, kept) in [
+            (format!("{head}{fence}"), Kind::CodeBlock, Kind::Table),
+            (
+                "# Days Gone\n\n![[cover.png]]\n\n| a | b |\n|---|---|\n| 1 | 2 |".to_owned(),
+                Kind::Table,
+                Kind::Image,
+            ),
+        ] {
+            let retained = RetainedPresentation::new(&classify(&snapshot(1, &text)));
+            let current = snapshot(2, &format!("{text}\n"));
+            let tail = retained
+                .remap_raw_tail(&current)
+                .expect("blocks above kept");
+            assert!(!kinds(&tail).contains(&edited), "{text:?}");
+            assert!(kinds(&tail).contains(&kept), "{text:?}");
+            assert!(heading(&tail));
+            let display = tail
+                .project(&Active::default())
+                .unwrap()
+                .display()
+                .to_owned();
+            assert!(display.starts_with("Days Gone\n"), "{display:?}");
+        }
+        // A new reference definition below can resolve links above: refused.
+        let text = format!("[label] top\n\n{fence}\n");
+        let retained = RetainedPresentation::new(&classify(&snapshot(1, &text)));
+        assert!(retained
+            .remap_raw_tail(&snapshot(2, &format!("{text}\n[label]: https://x.test\n")))
+            .is_none());
+        // An edit in the first block keeps nothing: that is the whole note raw.
+        let retained = RetainedPresentation::new(&classify(&snapshot(1, "# A\nb")));
+        assert!(retained.remap_raw_tail(&snapshot(2, "# A\n\nb")).is_none());
     }
 }
