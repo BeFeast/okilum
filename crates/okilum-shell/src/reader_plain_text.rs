@@ -97,7 +97,15 @@ impl Render for PlainTextPreview {
         let font_size = px(reader_ui_state::font_size(cx));
         // Monospace text uses the code size, not the reading size (#998).
         let code_size = reader_code_file::text_size(cx);
-        let view = v_flex().w_full().flex_1().min_h_0().px_6().pb_6().gap_3();
+        let view = v_flex()
+            .w_full()
+            .max_w(px(reader_ui_state::note_column_width(cx)))
+            .mx_auto()
+            .flex_1()
+            .min_h_0()
+            .px(px(READER_SIDE_PADDING))
+            .pb_6()
+            .gap_3();
         match &self.state {
             State::Loading => view.child(
                 div()

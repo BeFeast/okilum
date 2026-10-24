@@ -879,7 +879,7 @@ impl Settings {
                         ),
                         cx,
                     ))
-                    .child(reader_reading_controls::render(cx))
+                    .child(reader_reading_controls::render(window, cx))
                     .child(setting_row(
                         "Show labels on toolbar buttons",
                         "Show names beside icons when there is room.",
@@ -1648,11 +1648,21 @@ mod tests {
         visual.simulate_click(labels.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.update(|_, cx| reader_ui_state::toolbar_labels(cx)));
+        // The normal-width slider renders (its range used to panic: min > max)
+        // and shows the stored width.
+        assert!(
+            visual.debug_bounds("reading-width").is_some(),
+            "normal note width slider visible"
+        );
+        visual.update(|_, cx| reader_ui_state::set_reading_width(900., cx));
+        visual.run_until_parked();
+        visual.update(|_, cx| assert_eq!(reader_ui_state::reading_width(cx), 900.));
+        visual.update(|_, cx| reader_ui_state::set_reading_width(READER_MAX_WIDTH, cx));
+        visual.run_until_parked();
         let original = visual.update(|_, cx| reader_ui_state::font_size(cx));
         for (selector, font, width) in [
             ("reading-larger", original + 1., READER_MAX_WIDTH),
-            ("reading-wide", original + 1., 960.),
-            ("reading-smaller", original, 960.),
+            ("reading-smaller", original, READER_MAX_WIDTH),
         ] {
             let bounds = visual
                 .debug_bounds(selector)

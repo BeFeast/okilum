@@ -1,9 +1,10 @@
 //! Reading preferences presentation; persistence belongs to reader_ui_state.
 use super::*;
-use gpui_component::button::ButtonGroup;
+use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use reader_settings::setting_row;
 
-pub(crate) fn render(cx: &App) -> impl IntoElement {
+pub(crate) fn render(window: &mut Window, cx: &mut App) -> AnyElement {
+    let width_slider = reading_width_slider(window, cx);
     v_flex()
         .gap_4()
         .child(setting_row(
@@ -52,31 +53,46 @@ pub(crate) fn render(cx: &App) -> impl IntoElement {
             cx,
         ))
         .child(setting_row(
-            "Reading width",
-            "Space for your note’s content.",
-            ButtonGroup::new("reading-width").flex_none().children(
-                [
-                    ("reading-narrow", "Narrow", 620.),
-                    ("reading-comfort", "Comfort", 740.),
-                    ("reading-wide", "Wide", 960.),
-                ]
-                .map(|(id, label, width)| {
-                    let selected = (reader_ui_state::reading_width(cx) - width).abs() < 1.;
-                    Button::new(id)
-                        .debug_selector(move || id.into())
-                        .ghost()
-                        .label(label)
-                        .selected(selected)
-                        .when(selected, |button| button.primary())
-                        .on_click(move |_, _, cx| {
-                            reader_ui_state::set_reading(
-                                reader_ui_state::base_font_size(cx),
-                                width,
-                                cx,
-                            )
-                        })
-                }),
-            ),
+            "Normal note width",
+            "Width of the note column when full note width is off.",
+            width_slider,
             cx,
         ))
+        .into_any_element()
+}
+
+/// 560–1200 px in 10 px steps; the value applies while dragging.
+fn reading_width_slider(window: &mut Window, cx: &mut App) -> AnyElement {
+    let width = reader_ui_state::reading_width(cx);
+    let state = window.use_keyed_state("reading-width-slider", cx, |_, cx| {
+        cx.subscribe_self(|_, event: &SliderEvent, cx| {
+            let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+            reader_ui_state::set_reading_width(value.start(), cx);
+        })
+        .detach();
+        // `max` before `min`: SliderState starts at 0..100 and every setter
+        // clamps the value against the current range, so `.min(560.)` first
+        // panics in f32::clamp (min > max) and aborts the app.
+        SliderState::new()
+            .max(1200.)
+            .min(560.)
+            .step(10.)
+            .default_value(width)
+    });
+    h_flex()
+        .gap_3()
+        .items_center()
+        .child(
+            div()
+                .debug_selector(|| "reading-width".into())
+                .w(px(200.))
+                .child(Slider::new(&state).horizontal()),
+        )
+        .child(
+            div()
+                .w(px(64.))
+                .text_right()
+                .child(format!("{width:.0} px")),
+        )
+        .into_any_element()
 }

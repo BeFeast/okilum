@@ -385,9 +385,11 @@ impl Render for CodePreview {
             .key_context(KEY_CONTEXT)
             .debug_selector(|| "reader-code-file".into())
             .w_full()
+            .max_w(px(reader_ui_state::note_column_width(cx)))
+            .mx_auto()
             .flex_1()
             .min_h_0()
-            .px_6()
+            .px(px(READER_SIDE_PADDING))
             .pb_6();
         match &self.state {
             State::Loading => view.child(
