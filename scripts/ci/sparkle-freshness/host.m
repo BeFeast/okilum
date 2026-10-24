@@ -48,15 +48,12 @@ static void FinishComparison(void) {
 @end
 @implementation TestUpdaterDelegate
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
-    TSActualSelection = item;
+    if (TSCompare) TSActualSelection = item;
     [super updater:updater didFindValidUpdate:item];
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cycle finished check=%ld error=%@/%ld replacement=%d session=%d", (long)check, error.domain ?: @"none", (long)error.code, TSRestartAfterCycle, updater.sessionInProgress]);
     [super updater:updater didFinishUpdateCycleForUpdateCheck:check error:error];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        Trace([NSString stringWithFormat:@"after cycle replacement=%d session=%d", TSRestartAfterCycle, updater.sessionInProgress]);
-    });
     if (TSCompare) dispatch_async(dispatch_get_main_queue(), ^{ FinishComparison(); });
 }
 @end
