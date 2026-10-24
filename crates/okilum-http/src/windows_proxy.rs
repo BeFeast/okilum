@@ -87,7 +87,7 @@ pub(super) fn configure(
             std::io::Error::last_os_error()
         );
         let mut options = WINHTTP_AUTOPROXY_OPTIONS {
-            fAutoLogonIfChallenged: 1,
+            fAutoLogonIfChallenged: 0,
             ..Default::default()
         };
         if !pac.is_empty() {

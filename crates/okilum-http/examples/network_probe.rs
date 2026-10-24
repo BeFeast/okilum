@@ -13,9 +13,11 @@ fn main() -> Result<()> {
     let output = PathBuf::from(&args[3]);
     let result = (|| -> Result<String> {
         let client = if mode == "legacy" {
-            // Exact pre-fix policy: bundled roots and environment-only proxy discovery.
+            // Bundled roots; fixture clears proxy env vars. Disable the new global
+            // system-proxy feature to reproduce the old no-environment case.
             reqwest::blocking::Client::builder()
                 .use_rustls_tls()
+                .no_proxy()
                 .timeout(Duration::from_secs(15))
                 .build()?
         } else {
