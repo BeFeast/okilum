@@ -1,0 +1,40 @@
+name: Feedback public network controls
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: feedback-network-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  health:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+      - run: bash scripts/vendor-setup.sh
+      - name: Test production Feedback model and GET public health endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p network-receipt
+          printf 'source=%s\nrunner=%s\n' "$GITHUB_SHA" "$RUNNER_OS" > network-receipt/identity.txt
+          cargo test --locked -p okilum-http -- --test-threads=1
+          cargo run --locked -p okilum-http --example network_probe -- health https://pomoi.co/healthz network-receipt/pomoi.txt
+          cargo run --locked -p okilum-http --example network_probe -- health https://feedback.befeast.com/healthz network-receipt/alternate.txt
+          cat network-receipt/*.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feedback-network-${{ matrix.os }}-${{ github.sha }}
+          path: network-receipt/
+          retention-days: 7

@@ -46,3 +46,21 @@ payload is sent to either public endpoint. Application before/after evidence mus
 Feedback service and retain the source/artifact identity. Rollback removes the
 fixture, trust, proxy configuration and test application state. This document is
 a test plan and design record, not a claim of native acceptance.
+
+## Merge acceptance disposition (2026-10-25)
+
+Manager583de9ee removed the isolated corporate native repro as a premerge
+condition because this PR changes only Feedback, not install/update. Its first
+probe remained unestablished; the native report stays BLOCKED and harness issue
+#1673 follows #1663 during daytime. No further overnight VM attempt is authorized.
+
+Merge requires existing required CI and review/disposition, plus production async
+client GET-only controls to `https://pomoi.co/healthz` and
+`https://feedback.befeast.com/healthz`, each exactly HTTP200 on hosted Linux,
+macOS and Windows. `.github/workflows/feedback-network.yml` retains exact-source
+receipts and also runs the loopback-only production Feedback model regressions.
+The health probe never POSTs to a public endpoint. Windows exercises SChannel and
+system proxy policy; Linux/macOS exercise their unchanged production TLS policy.
+This proves public reachability on those runners, not corporate TLS inspection.
+After merge, real corporate acceptance belongs to the Windows tester via Oleg;
+Oleg uses ordinary Feedback on his Mac. No agent message to testers is implied.
