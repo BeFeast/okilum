@@ -2202,14 +2202,15 @@ mod tests {
             gpui_component::init(cx);
             install(cx);
         });
-        let (main, visual) = cx.add_window_view(|window, cx| {
+        let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
         });
         visual.simulate_resize(size(px(1200.), px(900.)));
-        visual.update(|window, cx| {
+        let main = visual.update(|window, cx| {
             window.activate_window();
             show(None, cx);
+            window.window_handle()
         });
         visual.run_until_parked();
         let handle = visual.update(|owner, cx| {
@@ -2244,7 +2245,7 @@ mod tests {
         settings.simulate_keystrokes("escape");
         settings.run_until_parked();
         assert!(
-            cx.read(|cx| cx.windows().contains(&main.into())),
+            cx.read(|cx| cx.windows().contains(&main)),
             "Escape leaves owner usable"
         );
         visual.update(|window, cx| {

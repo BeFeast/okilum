@@ -192,6 +192,7 @@ mod native {
     mod tests {
         use super::*;
         use ::core::prelude::v1::test;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 
         struct NativeWindow(HWND);
         impl Drop for NativeWindow {
