@@ -154,8 +154,10 @@ fn live_status_changes_do_not_scroll_back_to_the_selected_project(cx: &mut TestA
             folder: root.join(format!("Dev/Areas/Project{i:02}")),
             name: format!("Project{i:02}"),
             kind: Kind::Code,
-            environment: None,
-            manager_project: None,
+            // A complete T3 pointer: without it the row shows the ⚠
+            // manifest problem instead of the live activity glyph.
+            environment: Some("maestro".into()),
+            manager_project: Some(format!("project-{i}")),
             manager: Manager::Thread(format!("mcp:manager-{i}")),
         })
         .collect();
