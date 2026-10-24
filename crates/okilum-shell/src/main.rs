@@ -3273,25 +3273,46 @@ impl Reader {
         tree.cursor = Some(row.path.clone());
         match row.kind {
             EntryKind::Directory => {
-                // The folder's name (#1099, #1512): expand, never collapse,
-                // and open its index note while the selection stays on the
-                // folder. The chevron only toggles.
-                self.tree_index_entry = None;
-                if !row.expanded {
+                // A double click or Enter on a folder row (#1099, #1512): a
+                // collapsed folder expands and opens its index note, an
+                // expanded one collapses and its index stays open. The
+                // selection stays on the folder either way. One click only
+                // selects; the chevron only toggles.
+                let expanded = self
+                    .tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == row.path)
+                    .map_or(row.expanded, |r| r.expanded);
+                if expanded {
+                    self.expand_tree_folder(&row.path, false, cx);
+                    // An index row hidden by the collapse hands the
+                    // highlight to its folder.
+                    let inside = format!("{}/", row.path);
+                    if self
+                        .tree_index_entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.starts_with(&inside))
+                    {
+                        self.tree_index_entry = None;
+                    }
+                } else {
                     self.expand_tree_folder(&row.path, true, cx);
-                }
-                match reader_tree::folder_index(&row.path, &self.vault.entries) {
-                    reader_tree::FolderIndex::One(index) => {
-                        if self.selected_file() != index {
-                            self.open_note(&index, None, window, cx);
+                    match reader_tree::folder_index(&row.path, &self.vault.entries) {
+                        reader_tree::FolderIndex::One(index) => {
+                            self.tree_index_entry = None;
+                            if self.selected_file() != index {
+                                self.open_note(&index, None, window, cx);
+                            }
                         }
+                        reader_tree::FolderIndex::Several => {
+                            self.link_notice = Some(
+                                "This folder has more than one _index note, so none was opened."
+                                    .into(),
+                            );
+                        }
+                        reader_tree::FolderIndex::None => {}
                     }
-                    reader_tree::FolderIndex::Several => {
-                        self.link_notice = Some(
-                            "This folder has more than one _index note, so none was opened.".into(),
-                        );
-                    }
-                    reader_tree::FolderIndex::None => {}
                 }
                 self.tree.cursor = Some(row.path.clone());
             }
@@ -3311,6 +3332,21 @@ impl Reader {
         if row.kind != EntryKind::Directory {
             self.dismiss_sidebar_after_selection(window, cx);
         }
+        cx.notify();
+    }
+
+    /// One click on a folder row, its name or its icon (#1512): select the
+    /// folder and nothing else. It does not expand, collapse or open the
+    /// folder's index; a double click does that (`activate_tree_row`).
+    fn select_tree_folder(
+        &mut self,
+        row: &reader_tree::Row,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tree_preview.close();
+        self.tree.cursor = Some(row.path.clone());
+        self.tree_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -4488,9 +4524,15 @@ impl Reader {
                                             window,
                                             cx,
                                         )
-                                    } else if directory && event.click_count() > 1 {
-                                        // The first click already expanded and
-                                        // opened; a double click adds nothing.
+                                    } else if directory {
+                                        // One click selects at once; the second
+                                        // click of a double click expands and
+                                        // opens, or collapses (#1512).
+                                        match event.click_count() {
+                                            1 => this.select_tree_folder(&row, window, cx),
+                                            2 => this.activate_tree_row(&row, window, cx),
+                                            _ => {}
+                                        }
                                     } else {
                                         this.activate_tree_row(&row, window, cx)
                                     }
@@ -9576,7 +9618,7 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
-    fn folder_name_opens_its_index_keeping_the_folder_selected_and_the_chevron_only_toggles(
+    fn folder_click_selects_double_click_and_open_key_open_its_index_and_the_chevron_only_toggles(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -9649,18 +9691,64 @@ mod document_link_landing_tests {
             visual.simulate_click(bounds.center(), gpui::Modifiers::default());
             visual.run_until_parked();
         };
+        // A real double click: a first click, then a second with click_count 2.
+        let double_click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            let at = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"))
+                .center();
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+            });
+            visual.run_until_parked();
+        };
         let some = |path: &str| Some(path.to_owned());
         let want =
             |note: &str, cursor: &str, lit: &str| (note.to_owned(), some(cursor), lit.to_owned());
 
-        // A folder without an index note: its name only expands it.
+        // One click on a folder only selects it: no expand, nothing opens.
         click(visual, "tree-row-Areas");
+        assert!(
+            !row(visual, "Areas").unwrap().expanded,
+            "one click never expands"
+        );
+        assert_eq!(state(visual), want("Start.md", "Areas", "Start.md"));
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
+        });
+
+        // A double click on a folder without an index note only expands it.
+        double_click(visual, "tree-row-Areas");
         assert!(row(visual, "Areas").unwrap().expanded);
         assert_eq!(state(visual), want("Start.md", "Areas", "Start.md"));
 
-        // The name of a folder with an index: expands, opens the index, and
-        // the folder keeps the selection, the highlight and keyboard focus.
+        // One click on a folder with an index: selected, still collapsed,
+        // the index not opened.
         click(visual, "tree-row-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want("Start.md", "Areas/apertune", "Start.md")
+        );
+
+        // A double click on it: expands, opens the index, and the folder
+        // keeps the selection, the highlight and keyboard focus.
+        double_click(visual, "tree-row-Areas/apertune");
         assert!(row(visual, "Areas/apertune").unwrap().expanded);
         let index = "Areas/apertune/_index.md";
         assert_eq!(
@@ -9696,12 +9784,30 @@ mod document_link_landing_tests {
             );
         });
 
-        // The name of an expanded folder re-opens its index and never collapses.
+        // One click on an expanded folder neither collapses it nor opens
+        // its index.
         view.update_in(visual, |v, window, cx| {
             v.open_note("Start.md", None, window, cx)
         });
         visual.run_until_parked();
         click(visual, "tree-row-Areas/apertune");
+        assert!(
+            row(visual, "Areas/apertune").unwrap().expanded,
+            "one click never collapses"
+        );
+        assert_eq!(
+            state(visual),
+            want("Start.md", "Areas/apertune", "Start.md")
+        );
+        // A double click on the expanded folder collapses it and opens
+        // nothing; the next one expands it and opens the index.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want("Start.md", "Areas/apertune", "Start.md")
+        );
+        double_click(visual, "tree-row-Areas/apertune");
         assert!(row(visual, "Areas/apertune").unwrap().expanded);
         assert_eq!(
             state(visual),
@@ -9731,8 +9837,20 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, cx| v.focus_current_folder(window, cx));
         visual.run_until_parked();
         assert_eq!(state(visual), want(index, index, index));
-        // The folder name moves both back to the folder.
+        // One click on the folder moves only the selection; the open index
+        // row keeps the highlight.
         click(visual, "tree-row-Areas/apertune");
+        assert_eq!(state(visual), want(index, "Areas/apertune", index));
+        // A double click collapses the folder: the index stays open and the
+        // folder takes the highlight from the hidden index row.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!row(visual, "Areas/apertune").unwrap().expanded);
+        assert_eq!(
+            state(visual),
+            want(index, "Areas/apertune", "Areas/apertune")
+        );
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(row(visual, "Areas/apertune").unwrap().expanded);
         assert_eq!(
             state(visual),
             want(index, "Areas/apertune", "Areas/apertune")
@@ -9754,8 +9872,8 @@ mod document_link_landing_tests {
         );
 
         // Keyboard: ←/→ only collapse and expand; Open (⌘↓, Ctrl+↓ elsewhere)
-        // is the name click (here an index spelled `_Index.md`), never a
-        // collapse. Enter stays Rename on a row (#1099).
+        // is the double click (here an index spelled `_Index.md`). Enter
+        // stays Rename on a row (#1099).
         let open = if cfg!(target_os = "macos") {
             "cmd-down"
         } else {
@@ -9763,6 +9881,7 @@ mod document_link_landing_tests {
         };
         click(visual, "tree-row-Areas/plain");
         assert_eq!(state(visual).1, some("Areas/plain"));
+        assert!(!row(visual, "Areas/plain").unwrap().expanded);
         // Reveal current folded «Areas/other» away again.
         assert!(!row(visual, "Areas/other").unwrap().expanded);
         view.update(visual, |v, _| v.tree.cursor = some("Areas/other"));
@@ -9780,22 +9899,24 @@ mod document_link_landing_tests {
             want(index, "Areas/other", "Areas/apertune"),
             "arrows open nothing"
         );
+        // Open on an expanded folder collapses it and opens nothing.
+        visual.simulate_keystrokes(open);
+        visual.run_until_parked();
+        assert!(!row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(index, "Areas/other", "Areas/apertune"));
+        // Open on a collapsed one expands it and opens its index.
         visual.simulate_keystrokes(open);
         visual.run_until_parked();
         assert!(row(visual, "Areas/other").unwrap().expanded);
         let other = "Areas/other/_Index.md";
         assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+        // Open again collapses it; the index stays open.
         visual.simulate_keystrokes(open);
         visual.run_until_parked();
-        assert!(
-            row(visual, "Areas/other").unwrap().expanded,
-            "Open never collapses"
-        );
-        assert_eq!(state(visual).1, some("Areas/other"));
-        // Open on a collapsed folder expands it and opens its index.
-        visual.simulate_keystrokes("left");
-        visual.run_until_parked();
         assert!(!row(visual, "Areas/other").unwrap().expanded);
+        assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+        // From another open note, Open on the collapsed folder expands it
+        // and opens its index.
         view.update_in(visual, |v, window, cx| {
             v.open_note("Start.md", None, window, cx)
         });
@@ -9808,6 +9929,147 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         assert!(row(visual, "Areas/other").unwrap().expanded);
         assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
+    }
+
+    /// #1512 (Oleg): a double click on a folder row toggles it. A collapsed
+    /// folder expands and opens its index; an expanded one collapses, its
+    /// index stays open and the folder selected. One click only selects:
+    /// the first click of a double click does not wait for the second.
+    #[gpui::test]
+    fn double_click_on_a_folder_name_toggles_the_folder(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Areas/apertune/specs")).unwrap();
+        std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(860.)));
+        visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let expanded = |visual: &mut gpui::VisualTestContext, path: &str| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                v.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == path)
+                    .unwrap_or_else(|| panic!("{path} is listed"))
+                    .expanded
+            })
+        };
+        let state = |visual: &mut gpui::VisualTestContext| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                (v.current_rel.clone(), v.tree.cursor.clone())
+            })
+        };
+        let bounds = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            view.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"))
+                .center()
+        };
+        let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = bounds(visual, selector);
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+        };
+        // A real double click: a first click, then a second with click_count 2.
+        let double_click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = bounds(visual, selector);
+            visual.simulate_click(at, gpui::Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                modifiers: gpui::Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 2,
+            });
+            visual.run_until_parked();
+        };
+        let folder = "Areas/apertune";
+        let index = "Areas/apertune/_index.md";
+        let opened = || (index.to_owned(), Some(folder.to_owned()));
+        double_click(visual, "tree-row-Areas");
+        assert!(expanded(visual, "Areas"));
+        assert!(!expanded(visual, folder));
+
+        // One click selects at once and does nothing else.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(!expanded(visual, folder), "one click never expands");
+        assert_eq!(
+            state(visual),
+            ("Start.md".to_owned(), Some(folder.to_owned()))
+        );
+
+        // Collapsed: a double click expands and opens the index.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder), "a collapsed folder expands");
+        assert_eq!(state(visual), opened());
+
+        // Expanded: a double click collapses; the index stays open and the
+        // selection stays on the folder.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(!expanded(visual, folder), "an expanded folder collapses");
+        assert_eq!(state(visual), opened());
+        view.update_in(visual, |v, window, _| {
+            assert!(v.tree_focus.is_focused(window))
+        });
+
+        // And back again.
+        double_click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder));
+        assert_eq!(state(visual), opened());
+
+        // One click on the expanded folder still never collapses it.
+        click(visual, "tree-row-Areas/apertune");
+        assert!(expanded(visual, folder), "a single click never collapses");
+        assert_eq!(state(visual), opened());
+
+        // A folder without an index toggles the same way and opens nothing.
+        double_click(visual, "tree-row-Areas");
+        assert!(!expanded(visual, "Areas"));
+        assert_eq!(state(visual), (index.to_owned(), Some("Areas".to_owned())));
+        double_click(visual, "tree-row-Areas");
+        assert!(expanded(visual, "Areas"));
     }
 
     #[gpui::test]
