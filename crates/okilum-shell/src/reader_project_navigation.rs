@@ -2,7 +2,7 @@
 use super::*;
 use okilum_shell::projects_picker::{
     picker::{ManagerObservation, PickerModel},
-    Presentation, ProjectsPicker, Selected,
+    LeaveProject, Presentation, ProjectsPicker, Selected,
 };
 use okilum_t3::projects::{Discovery, Project};
 
@@ -22,12 +22,17 @@ pub(super) struct State {
     pub status_managers: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Manager>,
     pub statuses: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Status>,
     pub loading: bool,
+    /// `discovery` holds this vault's scan, possibly empty (#1518).
+    pub discovered: bool,
     pub generation: u64,
     pub active: Option<Project>,
     saved: Option<Saved>,
     pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
     /// The shared #1520 picker is the Projects section surface.
     pub picker: Option<Entity<ProjectsPicker>>,
+    /// The same picker as the title-bar switcher's popover (#1519), fed by
+    /// the same discovery and status sync.
+    pub switcher: Option<Entity<ProjectsPicker>>,
 }
 
 struct Saved {
@@ -43,6 +48,7 @@ impl Reader {
             panel.update(cx, |panel, cx| panel.hide(cx));
         }
         self.close_project(window, cx);
+        self.title_nav.close();
         let generation = self.project_navigation.generation.wrapping_add(1);
         self.project_navigation = State {
             generation,
@@ -79,26 +85,111 @@ impl Reader {
                     picker.focus_input(window, cx);
                 });
             }
-            let vault = self.vault_root.clone();
-            cx.spawn_in(window, async move |this, cx| {
-                let discovery = cx
-                    .background_executor()
-                    .spawn(async move { okilum_t3::projects::discover(&vault) })
-                    .await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    if generation != this.project_navigation.generation {
-                        return;
-                    }
-                    this.project_navigation.discovery = discovery;
-                    this.project_navigation.loading = false;
-                    this.sync_projects_picker(cx);
-                    this.refresh_project_statuses(window, cx);
-                    cx.notify();
-                });
-            })
-            .detach();
+            self.discover_projects(generation, window, cx);
         }
         cx.notify();
+    }
+
+    /// Rescan manifests off the UI thread and feed every mounted picker.
+    fn discover_projects(&mut self, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let vault = self.vault_root.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let discovery = cx
+                .background_executor()
+                .spawn(async move { okilum_t3::projects::discover(&vault) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if generation != this.project_navigation.generation {
+                    return;
+                }
+                this.project_navigation.discovery = discovery;
+                this.project_navigation.discovered = true;
+                this.project_navigation.loading = false;
+                this.sync_projects_picker(cx);
+                this.refresh_project_statuses(window, cx);
+                this.refresh_palette_sections(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// «<project> ▾» opens the shared picker below the switcher (#1519).
+    /// Opening does not cancel an entry in flight: no generation bump.
+    pub(super) fn show_project_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picker = self.ensure_switcher_picker(window, cx);
+        let navigation = &self.project_navigation;
+        let active = navigation.active.as_ref().map(|p| p.folder.clone());
+        let empty =
+            navigation.discovery.projects.is_empty() && navigation.discovery.errors.is_empty();
+        picker.update(cx, |picker, cx| {
+            picker.set_query(String::new(), window, cx);
+            picker.set_loading(empty, cx);
+            picker.set_active(active, cx);
+            picker.focus_input(window, cx);
+        });
+        let generation = self.project_navigation.generation;
+        self.discover_projects(generation, window, cx);
+    }
+
+    /// ⌘K lists projects too (#1518). The first open in a vault scans the
+    /// manifests once, without the manager status sweep the switcher runs;
+    /// the switcher and the Projects section rescan as before.
+    pub(super) fn ensure_palette_projects(&mut self, cx: &mut Context<Self>) {
+        if self.single_file || self.project_navigation.discovered || !self.vault_root.is_dir() {
+            return;
+        }
+        let generation = self.project_navigation.generation;
+        let vault = self.vault_root.clone();
+        cx.spawn(async move |this, cx| {
+            let scan = vault.clone();
+            let discovery = cx
+                .background_executor()
+                .spawn(async move { okilum_t3::projects::discover(&scan) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let navigation = &mut this.project_navigation;
+                if this.vault_root != vault
+                    || navigation.generation != generation
+                    || navigation.discovered
+                {
+                    return;
+                }
+                navigation.discovery = discovery;
+                navigation.discovered = true;
+                this.sync_projects_picker(cx);
+                this.refresh_palette_sections(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The palette's Projects section: the shared #1520 picker model's rows
+    /// for `query` (recent projects first, then by domain), each project
+    /// once. «All projects…» opens the full switcher with the same text.
+    pub(super) fn palette_projects(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Vec<okilum_shell::projects_picker::picker::Row> {
+        let navigation = &self.project_navigation;
+        if navigation.discovery.projects.is_empty() {
+            return Vec::new();
+        }
+        let mut model = PickerModel::new(
+            self.vault_root.clone(),
+            navigation.discovery.clone(),
+            self.recent_project_folders(),
+        );
+        model.set_query(query);
+        let mut seen = std::collections::BTreeSet::new();
+        model
+            .groups()
+            .into_iter()
+            .flat_map(|group| group.rows)
+            .filter(|row| seen.insert(row.project.folder.clone()))
+            .take(limit)
+            .collect()
     }
 
     fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -164,6 +255,17 @@ impl Reader {
             });
         })
         .detach();
+    }
+
+    /// Every mounted picker: the Projects section and the title-bar switcher.
+    fn pickers(&self) -> Vec<Entity<ProjectsPicker>> {
+        let navigation = &self.project_navigation;
+        navigation
+            .picker
+            .iter()
+            .chain(navigation.switcher.iter())
+            .cloned()
+            .collect()
     }
 
     pub(super) fn enter_vault_project(
@@ -282,7 +384,7 @@ impl Reader {
         self.close_project(window, cx);
         self.project_navigation.active = None;
         self.project_navigation.section = Section::Reader;
-        if let Some(picker) = &self.project_navigation.picker {
+        for picker in self.pickers() {
             picker.update(cx, |picker, cx| picker.set_active(None, cx));
         }
         if let Some(saved) = self.project_navigation.saved.take() {
@@ -303,14 +405,10 @@ impl Reader {
     }
 
     /// The hidden picker's search must not keep keyboard focus from the note.
-    fn release_picker_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focused = self
-            .project_navigation
-            .picker
-            .as_ref()
-            .is_some_and(|picker| {
-                gpui::Focusable::focus_handle(picker.read(cx), cx).contains_focused(window, cx)
-            });
+    pub(super) fn release_picker_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.pickers().iter().any(|picker| {
+            gpui::Focusable::focus_handle(picker.read(cx), cx).contains_focused(window, cx)
+        });
         if focused {
             self.restore_document_focus(window, cx);
         }
@@ -329,34 +427,78 @@ impl Reader {
         if self.project_navigation.picker.is_some() {
             return;
         }
+        let picker = self.new_projects_picker(Presentation::Page, window, cx);
+        self.project_navigation.picker = Some(picker);
+    }
+
+    /// The switcher's popover: the same component, discovery and recents.
+    fn ensure_switcher_picker(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ProjectsPicker> {
+        if let Some(picker) = &self.project_navigation.switcher {
+            return picker.clone();
+        }
+        let picker = self.new_projects_picker(Presentation::Popover, window, cx);
+        self.sync_picker_statuses(&picker, cx);
+        cx.subscribe_in(&picker, window, |this, _, _: &DismissEvent, window, cx| {
+            // Esc closes. A press on the switcher itself is its own toggle
+            // click, so the outside-press dismissal leaves it to that click.
+            if window.last_input_was_keyboard()
+                || !this.title_nav.on_switcher(window.mouse_position())
+            {
+                this.close_project_switcher(window, cx);
+            }
+        })
+        .detach();
+        cx.subscribe_in(&picker, window, |this, _, _: &LeaveProject, window, cx| {
+            this.close_project_switcher(window, cx);
+            this.leave_vault_project(window, cx);
+        })
+        .detach();
+        self.project_navigation.switcher = Some(picker.clone());
+        picker
+    }
+
+    fn new_projects_picker(
+        &mut self,
+        presentation: Presentation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ProjectsPicker> {
         let model = PickerModel::new(
             self.vault_root.clone(),
             self.project_navigation.discovery.clone(),
             self.recent_project_folders(),
         );
-        let picker = cx.new(|cx| ProjectsPicker::new(model, Presentation::Page, window, cx));
+        let picker = cx.new(|cx| ProjectsPicker::new(model, presentation, window, cx));
         cx.subscribe_in(&picker, window, |this, _, event: &Selected, window, cx| {
+            this.close_project_switcher(window, cx);
             // Same revalidating activation pipeline as before; recents are
             // recorded only after a successful entry.
             this.enter_vault_project(event.0.clone(), window, cx);
         })
         .detach();
-        self.project_navigation.picker = Some(picker);
+        picker
     }
 
     fn sync_projects_picker(&mut self, cx: &mut Context<Self>) {
-        let Some(picker) = self.project_navigation.picker.clone() else {
-            return;
-        };
         let discovery = self.project_navigation.discovery.clone();
-        picker.update(cx, |picker, cx| picker.update_discovery(discovery, cx));
+        for picker in self.pickers() {
+            let discovery = discovery.clone();
+            picker.update(cx, |picker, cx| picker.update_discovery(discovery, cx));
+        }
         self.sync_projects_picker_statuses(cx);
     }
 
     fn sync_projects_picker_statuses(&mut self, cx: &mut Context<Self>) {
-        let Some(picker) = self.project_navigation.picker.clone() else {
-            return;
-        };
+        for picker in self.pickers() {
+            self.sync_picker_statuses(&picker, cx);
+        }
+    }
+
+    fn sync_picker_statuses(&self, picker: &Entity<ProjectsPicker>, cx: &mut Context<Self>) {
         let navigation = &self.project_navigation;
         let observations = navigation
             .statuses
@@ -387,7 +529,7 @@ impl Reader {
             recent.truncate(32);
             self.save_sidebar(cx);
         }
-        if let Some(picker) = &self.project_navigation.picker {
+        for picker in self.pickers() {
             let folder = folder.to_owned();
             picker.update(cx, |picker, cx| {
                 picker.record_opened(&folder, cx);

@@ -63,6 +63,32 @@ impl ManagerIndicator {
         }
     }
 }
+/// What a row shows after the project's name (#1520). Only what needs
+/// attention or explains activity; an idle, unstarted or still-checking
+/// manager, and a T3 that is merely not connected, show nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowStatus {
+    /// The manager agent is working right now. The text is the tooltip.
+    Active(String),
+    /// `ops/project.yaml` needs fixing. The text is the tooltip.
+    Problem(String),
+}
+/// A manager thread without the T3 environment or project that owns it can
+/// never be reached: the manifest itself is incomplete.
+pub fn manifest_problem(project: &Project) -> Option<String> {
+    if !matches!(project.manager, Manager::Thread(_)) {
+        return None;
+    }
+    let missing = match (&project.environment, &project.manager_project) {
+        (Some(_), Some(_)) => return None,
+        (None, Some(_)) => "t3.environment",
+        (Some(_), None) => "the manager's project_id",
+        (None, None) => "t3.environment and the manager's project_id",
+    };
+    Some(format!(
+        "project.yaml names a manager thread but not {missing}"
+    ))
+}
 /// A status is valid only for the manager pointer used by that live listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagerObservation {
@@ -88,8 +114,21 @@ pub struct Row {
     /// Human breadcrumbs distinguish identical names without exposing absolute paths.
     pub location: String,
     pub manager: ManagerIndicator,
-    /// Live reason behind a non-green dot (for the dot's tooltip), if any.
+    /// Live reason behind the manager state, if the listing gave one.
     pub manager_detail: Option<String>,
+}
+impl Row {
+    pub fn status(&self) -> Option<RowStatus> {
+        if let Some(problem) = manifest_problem(&self.project) {
+            return Some(RowStatus::Problem(problem));
+        }
+        (self.manager == ManagerIndicator::Running).then(|| {
+            RowStatus::Active(match &self.manager_detail {
+                Some(detail) => format!("Manager agent is working · {detail}"),
+                None => "Manager agent is working".into(),
+            })
+        })
+    }
 }
 /// A folder with a manifest that cannot be read. It is shown as a muted row
 /// in its own domain; the full reason lives in the row's tooltip.
@@ -197,7 +236,9 @@ impl PickerModel {
             .get(folder)
             .filter(|o| o.manager == project.manager)?;
         match &observation.status {
-            Status::Unreachable(reason) | Status::NotRunning(reason) => Some(reason.clone()),
+            Status::Unreachable(reason) | Status::NotRunning(reason) | Status::Running(reason) => {
+                Some(reason.clone())
+            }
             _ => None,
         }
     }
