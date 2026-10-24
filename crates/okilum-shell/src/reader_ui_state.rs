@@ -2230,7 +2230,9 @@ mod tests {
             let base = base_font_size(cx);
             set_reading_width(900., cx);
             assert_eq!(base_font_size(cx), base, "slider keeps the unzoomed font");
-            assert_eq!(note_column_width(cx), 900.);
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
+            // The note column scales with the note text zoom (#1652).
+            assert_eq!(note_column_width(cx), 900. * text_zoom(cx));
             set_reading_width(100., cx);
             assert_eq!(reading_width(cx), 560., "normal width is at least 560 px");
             set_reading_width(5000., cx);
@@ -2245,7 +2247,7 @@ mod tests {
             assert_eq!(reading_width(cx), 900.);
             assert_eq!(base_font_size(cx), base);
             set_full_note_width(false, cx);
-            assert_eq!(note_column_width(cx), 900.);
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
             flush(cx);
             install(&directory, cx);
             assert!(!full_note_width(cx), "turning it off is remembered too");
