@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+updates = ["dep:velopack"]
+
 [dependencies]
+velopack = { version = "=1.2.161", optional = true, features = ["public-utils"] }
+serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"

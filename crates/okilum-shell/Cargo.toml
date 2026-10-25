@@ -120,3 +120,7 @@ version = "4.1"
 
 [target.'cfg(target_os = "macos")'.dependencies.core-foundation-sys]
 version = "0.8"
+
+[target.'cfg(windows)'.dependencies.okilum-http]
+path = "../okilum-http"
+features = ["updates"]

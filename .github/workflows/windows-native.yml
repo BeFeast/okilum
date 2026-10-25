@@ -46,6 +46,30 @@ jobs:
           path: target/debug/examples/network_probe.exe
           retention-days: 3
 
+      - name: Native updater transport inspection controls
+        if: inputs.package == 'okilum-http' && contains(inputs.features, 'updates')
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p okilum-http --features updates --example updater_probe
+          cd scripts/qa/windows-network
+          export MSYS_NO_PATHCONV=1
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout root.key -out root.pem -days 1 -subj '/CN=Okilum hosted updater root' -addext 'basicConstraints=critical,CA:TRUE'
+          openssl req -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr -subj '/CN=updater.okilum.test'
+          printf 'subjectAltName=DNS:updater.okilum.test,DNS:localhost\nextendedKeyUsage=serverAuth\n' > leaf.ext
+          openssl x509 -req -in leaf.csr -CA root.pem -CAkey root.key -CAcreateserial -out leaf.pem -days 1 -extfile leaf.ext
+          openssl x509 -in root.pem -outform DER -out root.cer
+      - name: Run Windows OS trust and system proxy positive controls
+        if: inputs.package == 'okilum-http' && contains(inputs.features, 'updates')
+        shell: pwsh
+        run: ./scripts/qa/windows-network/controls.ps1
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.package == 'okilum-http' && contains(inputs.features, 'updates')
+        with:
+          name: updater-network-${{ github.sha }}
+          path: updater-network-receipt/
+          retention-days: 7
+
   health:
     if: inputs.package == 'okilum-http-health'
     strategy:
