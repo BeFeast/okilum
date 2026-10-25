@@ -777,10 +777,7 @@ fn close_keys_preserve_compose_drafts_and_close_the_unfocused_sent_screen(cx: &m
             feedback.simulate_keystrokes(key);
             reader.run_until_parked();
             reader.update(|_, cx| {
-                assert!(
-                    !cx.windows().contains(&handle.into()),
-                    "{key} closes compose"
-                );
+                assert!(!cx.windows().contains(&handle), "{key} closes compose");
                 assert_eq!(view.read(cx).text.read(cx).value(), "Keep this draft");
             });
             reader.update(|window, _| window.activate_window());
@@ -805,7 +802,7 @@ fn close_keys_preserve_compose_drafts_and_close_the_unfocused_sent_screen(cx: &m
             feedback.simulate_keystrokes(key);
             reader.run_until_parked();
             reader.update(|_, cx| {
-                assert!(!cx.windows().contains(&handle.into()), "{key} closes sent");
+                assert!(!cx.windows().contains(&handle), "{key} closes sent");
             });
             reader.update(|window, _| window.activate_window());
         }
@@ -826,10 +823,7 @@ fn close_keys_wait_while_feedback_is_sending(cx: &mut TestAppContext) {
             feedback.simulate_keystrokes(key);
             reader.run_until_parked();
             reader.update(|_, cx| {
-                assert!(
-                    cx.windows().contains(&handle.into()),
-                    "{key} waits for send"
-                );
+                assert!(cx.windows().contains(&handle), "{key} waits for send");
                 assert!(view.read(cx).visible);
                 assert!(matches!(view.read(cx).state, SendState::Sending));
             });
