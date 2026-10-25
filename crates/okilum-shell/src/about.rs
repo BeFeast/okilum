@@ -34,7 +34,13 @@ fn about_channel() -> String {
 
 /// Where Linux updates come from (#1036): the pacman repository by name.
 #[cfg(target_os = "linux")]
-fn linux_update_source() -> &'static str {
+fn linux_update_source() -> String {
+    if let Some(image) = std::env::var_os("APPIMAGE") {
+        return format!(
+            "This AppImage updates itself on the selected channel. Path: {:?}",
+            std::path::PathBuf::from(image)
+        );
+    }
     use updater::linux_repo::{current, Source};
     match current() {
         Source::Beta => "Updates come from the okilum-beta pacman repository.",
@@ -44,6 +50,7 @@ fn linux_update_source() -> &'static str {
         }
         Source::Unknown => "Updates come from your package manager.",
     }
+    .into()
 }
 
 /// The generation whose "Copied" label is showing; 0 when none (#1097).
@@ -207,7 +214,7 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            ""
+                            String::new()
                         }
                     }),
             )

@@ -9,6 +9,8 @@
 
 mod about;
 mod app_footprint;
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+mod appimage_acceptance;
 #[cfg(all(unix, feature = "brain"))]
 mod brain;
 mod brand;
@@ -7154,6 +7156,19 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+    if let Some(result) = okilum_appimage::acceptance_entry(
+        env!("OKILUM_BUILD_VERSION"),
+        env!("OKILUM_SOURCE_COMMIT"),
+    ) {
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("AppImage acceptance: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     // The clipboard reader must not initialize the updater, application state,
     // background services or a second GUI instance.
     #[cfg(windows)]
@@ -7208,7 +7223,11 @@ fn main() {
         index_dir: std::env::var_os("OKILUM_INDEX_DIR").map(PathBuf::from),
         ..Opts::default()
     };
-    let opts = match reader_open::parse_args(std::env::args_os().skip(1), defaults) {
+    #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+    let arguments = appimage_acceptance::arguments();
+    #[cfg(not(all(target_os = "linux", feature = "appimage-acceptance-harness")))]
+    let arguments = std::env::args_os().skip(1);
+    let opts = match reader_open::parse_args(arguments, defaults) {
         Ok(reader_open::Command::Help) => {
             print!("{USAGE}");
             return;
@@ -7327,6 +7346,8 @@ fn main() {
             brain::source_trace::install(cx);
         }
         updater::install(cx);
+        #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+        appimage_acceptance::install(cx);
         version_info::install(cx);
         #[cfg(all(unix, feature = "brain"))]
         brain::app_quit::install(cx);

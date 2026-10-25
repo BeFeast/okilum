@@ -11,7 +11,13 @@ export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
 scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
 python3 scripts/brand-assets.py verify
-cargo build --release --locked -p okilum-shell
+# Only PR artifacts expose an explicit local-fixture QA entry. Main/release
+# artifacts cannot accept fixture trust, even with the QA CLI arguments.
+build_features=()
+if [[ "${GITHUB_REF_NAME:-}" == forgejo-linux-pr/* ]]; then
+    build_features=(--features appimage-acceptance-harness)
+fi
+cargo build --release --locked -p okilum-shell "${build_features[@]}"
 mkdir -p dist/appimage/evidence
 python3 scripts/appimage/check-elf.py target/release/okilum \
     2>&1 | tee dist/appimage/evidence/elf-before-deploy.log
@@ -41,6 +47,7 @@ echo 'APPIMAGE_STATIC_RUNTIME_PASS (dynamic shell positive control passed)'
 # Extraction mode avoids any FUSE requirement on the build runner.
 export APPIMAGE_EXTRACT_AND_RUN=1
 ./tools/linuxdeploy --appdir AppDir --executable ../../target/release/okilum \
+    --executable /usr/bin/gpgv \
     --desktop-file ../../scripts/arch/okilum.desktop \
     --icon-file ../../crates/okilum-shell/assets/brand/app-icon-light.svg \
     --icon-filename okilum

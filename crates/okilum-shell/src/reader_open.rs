@@ -3257,7 +3257,7 @@ mod entry_tests {
     /// third vault as one; the recorded set lists the vault twice. Night QA
     /// saw A+A → A on Linux and Windows.
     #[gpui::test]
-    fn two_windows_of_one_vault_come_back_as_two(cx: &mut TestAppContext) {
+    fn restore_multiple_vaults_ignores_ask_policy(cx: &mut TestAppContext) {
         use super::super::{
             reader_history::TestSessionDirectory, reader_open_windows, reader_startup, Opts,
         };
@@ -3326,6 +3326,14 @@ mod entry_tests {
         let mut recorded = reader_open_windows::load(&state);
         recorded.sort();
         assert_eq!(recorded, expected, "the recorded set lists Amber twice");
+        cx.update(|cx| {
+            assert!(
+                update_restart_args(cx).unwrap().is_empty(),
+                "update restart restores the recorded set"
+            );
+            super::super::reader_ui_state::set_vault_open("ask", cx);
+            super::super::reader_ui_state::flush(cx);
+        });
         cx.update(reader_open_windows::quit);
         cx.update(|cx| {
             for window in cx.windows() {
@@ -3335,6 +3343,8 @@ mod entry_tests {
         cx.run_until_parked();
         cx.update(|cx| {
             cx.set_global(reader_startup::Startup::default());
+            super::super::reader_ui_state::install(&state, cx);
+            assert_eq!(super::super::reader_ui_state::vault_open(cx), "ask");
             reader_startup::launch(base.clone(), cx);
         });
         settle(cx);
@@ -4371,7 +4381,7 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
 }
 
 /// Reopen the actual current document, not the process's original CLI target.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsString>> {
     let readers: Vec<_> = cx
         .try_global::<Readers>()
