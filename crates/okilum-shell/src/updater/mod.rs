@@ -62,6 +62,16 @@ pub(crate) fn installed_package() -> Option<String> {
 #[cfg(windows)]
 const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
+// Startup confirmation requires a constructed GUI window, not keyboard focus.
+// A restored/background Linux window (including Xvfb without a window manager)
+// may never become active; that must not prevent committing an applied update.
+#[cfg(any(target_os = "linux", test))]
+fn with_startup_window(cx: &App, confirm: impl FnOnce()) {
+    if !cx.windows().is_empty() {
+        confirm();
+    }
+}
+
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
@@ -75,9 +85,7 @@ pub(crate) fn install(_cx: &mut App) {
                     .timer(std::time::Duration::from_millis(300))
                     .await;
                 cx.update(|cx| {
-                    if cx.active_window().is_some() {
-                        appimage::confirm_startup();
-                    }
+                    with_startup_window(cx, appimage::confirm_startup);
                 });
                 if status::generation() != checked {
                     checked = status::generation();
@@ -406,6 +414,36 @@ mod tests {
                 .size_full()
                 .children(Root::render_notification_layer(window, cx))
         }
+    }
+
+    #[gpui::test]
+    fn gui_startup_invokes_receipt_writer_after_window_creation(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("started");
+        cx.update(|cx| {
+            with_startup_window(cx, || {
+                std::fs::write(&receipt, b"startup confirmed\n").unwrap()
+            });
+            assert!(
+                !receipt.exists(),
+                "headless startup cannot confirm an update"
+            );
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Empty);
+            Root::new(view, window, cx)
+        });
+        // Exercise the same ordinary GUI startup boundary; no focus or native
+        // activation event is supplied. The real receipt writer's permissions,
+        // uid/path and compiled identity are covered by the producer roundtrip.
+        visual.update(|_, cx| {
+            with_startup_window(cx, || {
+                std::fs::write(&receipt, b"startup confirmed\n").unwrap()
+            });
+        });
+        assert_eq!(std::fs::read(receipt).unwrap(), b"startup confirmed\n");
     }
 
     /// #683: the notice used to vanish after 4 s, so an update downloaded while

@@ -152,7 +152,7 @@ pub(super) fn restart(cx: &mut gpui::App) {
     BUSY.store(false, Ordering::SeqCst);
 }
 
-/// Called after GPUI has an active window, outside rendering/network I/O.
+/// Called after GPUI has a window, without requiring focus, outside rendering.
 pub(super) fn confirm_startup() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none()
