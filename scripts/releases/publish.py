@@ -244,9 +244,11 @@ def preflight_linux_macos(store, release):
     preflight_macos(store, release)
 
 
-def preflight_macos(store, release):
+def preflight_macos(store, release, tree=None):
+    if tree is None:
+        tree = ET.ElementTree(ET.fromstring(store.call('GET', 'okilum/appcast.xml')))
     found = False
-    for item in ET.fromstring(store.call('GET', 'okilum/appcast.xml')).findall('./channel/item'):
+    for item in tree.findall('./channel/item'):
         if int(item.findtext(appcast.s('version'))) == release['build']:
             mac = release['platforms']['macos']['assets'][0]
             enclosure = item.find('enclosure')
@@ -301,7 +303,7 @@ def promote_mac_only(store, build, supersede_pending=False):
         raise ValueError('Mac catalog changed during interrupted promotion')
     if previous and previous['build'] > build:
         raise ValueError('Refusing Mac release rollback')
-    preflight_macos(store, release)
+    preflight_macos(store, release, tree)
     files = {}
     for asset in descriptor['assets']:
         name = asset['name']

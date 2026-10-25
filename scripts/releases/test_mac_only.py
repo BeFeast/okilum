@@ -53,6 +53,24 @@ class MacOnlyTests(unittest.TestCase):
         self.assertEqual(item.findtext('description'), 'Existing release notes')
         self.assertEqual(item.find('enclosure').get(p.appcast.s('edSignature')), 'signed-mac')
 
+    def test_preflight_validates_the_exact_appcast_snapshot_written(self):
+        store = prepared()
+        original_call = store.call
+        reads = []
+
+        def call(method, key):
+            if key == 'okilum/appcast.xml':
+                reads.append(key)
+                if len(reads) > 1:
+                    raise AssertionError('preflight re-fetched a different appcast snapshot')
+            return original_call(method, key)
+
+        store.call = call
+        p.promote_mac_only(store, 700)
+        self.assertEqual(len(reads), 1)
+        item = p.ET.fromstring(store.data['okilum/appcast.xml']).find('./channel/item')
+        self.assertEqual(item.findtext(p.appcast.s('channel')), 'stable')
+
     def test_corrupt_payload_or_wrong_provenance_fails_before_writes(self):
         for defect in ('checksum', 'source', 'signature', 'rollback'):
             with self.subTest(defect=defect):
