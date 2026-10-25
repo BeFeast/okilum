@@ -26,13 +26,15 @@ pub fn markdown_path<'a>(vault: &Vault, path: &'a str) -> Option<Cow<'a, str>> {
         let mut paths = vault.graph_os_paths.lock().unwrap();
         return paths
             .entry(path.to_owned())
-            .or_insert_with(|| match input.canonicalize() {
-                Ok(real) => real
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|relative| format!("/{}", crate::vault::note_path(relative))),
-                Err(_) => Some(path.to_owned()),
-            })
+            .or_insert_with(
+                || match crate::open_diagnostics::fs(|| input.canonicalize()) {
+                    Ok(real) => real
+                        .strip_prefix(root)
+                        .ok()
+                        .map(|relative| format!("/{}", crate::vault::note_path(relative))),
+                    Err(_) => Some(path.to_owned()),
+                },
+            )
             .clone()
             .map(Cow::Owned);
     }
@@ -44,11 +46,9 @@ pub fn markdown_path<'a>(vault: &Vault, path: &'a str) -> Option<Cow<'a, str>> {
             .ok()
             .map(|relative| Cow::Owned(format!("/{}", relative.to_string_lossy())));
     }
-    let root = vault
-        .root
-        .canonicalize()
+    let root = crate::open_diagnostics::fs(|| vault.root.canonicalize())
         .unwrap_or_else(|_| vault.root.clone());
-    if let Ok(real) = input.canonicalize() {
+    if let Ok(real) = crate::open_diagnostics::fs(|| input.canonicalize()) {
         if let Ok(relative) = real.strip_prefix(&root) {
             return Some(Cow::Owned(format!("/{}", relative.to_string_lossy())));
         }
@@ -173,6 +173,7 @@ pub fn parse_in_vault(source: &str, vault: &Vault, from: &str) -> Vec<ParsedLink
     let mut links = parse(source);
     let fallback = fallback_after_strict(source, vault, from, &links);
     links.extend(fallback.into_iter().map(|(link, _)| link));
+    crate::open_diagnostics::count("parsed_links", links.len());
     links.sort_by_key(|link| link.range.start);
     links
 }

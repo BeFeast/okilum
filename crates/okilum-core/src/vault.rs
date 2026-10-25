@@ -280,7 +280,10 @@ pub(crate) fn cloud_placeholder(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         const SF_DATALESS: u32 = 0x4000_0000;
-        if rustix::fs::stat(path).is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0) {
+        let _phase = crate::open_diagnostics::phase("macos_placeholder_stat");
+        if crate::open_diagnostics::fs(|| rustix::fs::stat(path))
+            .is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0)
+        {
             return true;
         }
     }
@@ -944,7 +947,8 @@ impl Vault {
 
     pub fn read_note(&self, rel: &str) -> Result<String> {
         anyhow::ensure!(!service_path(Path::new(rel)), "Service files are not notes");
-        read_source(&self.root.join(rel)).with_context(|| format!("read {rel}"))
+        crate::open_diagnostics::fs(|| read_source(&self.root.join(rel)))
+            .with_context(|| format!("read {rel}"))
     }
 
     /// Resolve a wikilink target ("Note", "Dir/Note", "Note#Heading", with any
@@ -981,6 +985,7 @@ impl Vault {
 
     /// Same identity rules as `resolve_from`, with borrowed candidate storage.
     pub fn resolve_from_ref(&self, target: &str, from_note: &str) -> ResolutionRef<'_> {
+        let _phase = crate::open_diagnostics::phase("wiki_index_lookup");
         let t = target.split(['#', '^']).next().unwrap_or("").trim();
         let key = t.to_lowercase();
         let key = key.trim_end_matches(".md").trim_matches('/');
@@ -1047,6 +1052,7 @@ impl Vault {
     /// Ordinary Markdown is relative-first; existing but unreadable/invalid
     /// local entries must never redirect to a root or suffix namesake.
     pub fn resolve_markdown(&self, path: &str, from: &str) -> Resolution {
+        let _phase = crate::open_diagnostics::phase("markdown_index_lookup");
         let Some(path) = crate::document_links::markdown_path(self, path) else {
             return Resolution::Unresolved;
         };
@@ -1085,8 +1091,10 @@ impl Vault {
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
             {
-                if let Ok(canonical) = candidate.canonicalize() {
-                    if canonical.is_file() && canonical.starts_with(&self.root) {
+                if let Ok(canonical) = crate::open_diagnostics::fs(|| candidate.canonicalize()) {
+                    if crate::open_diagnostics::fs(|| canonical.is_file())
+                        && canonical.starts_with(&self.root)
+                    {
                         return Resolution::Resolved {
                             path: note_path(canonical.strip_prefix(&self.root).unwrap()),
                         };
@@ -1121,7 +1129,7 @@ impl Vault {
                 .root
                 .join(Path::new(from).parent().unwrap_or(Path::new("")))
                 .join(path);
-            !matches!(std::fs::symlink_metadata(candidate), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            !matches!(crate::open_diagnostics::fs(|| std::fs::symlink_metadata(candidate)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         };
         if local_occupied {
             return Resolution::Unresolved;
@@ -1136,7 +1144,7 @@ impl Vault {
         let root_occupied = if self.graph_root.is_some() {
             self.indexed_occupied(&format!("{key}.md"))
         } else {
-            !matches!(std::fs::symlink_metadata(self.root.join(path)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            !matches!(crate::open_diagnostics::fs(|| std::fs::symlink_metadata(self.root.join(path))), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         };
         if root_occupied {
             return Resolution::Unresolved;
