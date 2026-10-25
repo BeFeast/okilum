@@ -103,6 +103,7 @@ mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
+mod reader_t3_settings;
 mod reader_title_nav;
 #[cfg(windows)]
 mod url_protocol;

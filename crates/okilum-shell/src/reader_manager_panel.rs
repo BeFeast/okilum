@@ -2,9 +2,6 @@
 use super::*;
 use okilum_t3::projects::{Manager, Project};
 
-/// Used when no origin was saved for this T3 environment.
-pub(super) const DEFAULT_T3_ORIGIN: &str = "https://t3.oklabs.uk";
-
 /// Wait before the next automatic connection attempt. The Mac's network or
 /// VPN may come up after Okilum starts; never wait for a click to recover.
 fn retry_delay(failures: u32) -> std::time::Duration {
@@ -45,11 +42,12 @@ fn status_line(
 
 pub(super) struct ManagerPanel {
     project: Project,
-    state: Option<PathBuf>,
     pub(super) focused: bool,
     #[cfg(any(target_os = "macos", test))]
     previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
+    project_override: bool,
+    _connection: Subscription,
     error: Option<String>,
     /// The last error is transient: another attempt is scheduled.
     retrying: bool,
@@ -75,40 +73,79 @@ impl ManagerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let origin = cx.new(|cx| InputState::new(window, cx).placeholder("T3 server (https://…)"));
-        let alias = project.environment.clone();
-        let saved_state = state.clone();
+        let origin = cx
+            .new(|cx| InputState::new(window, cx).placeholder("t3.oklabs.uk or 10.10.0.23:23110"));
+        let weak = cx.weak_entity();
+        let connection =
+            window.observe_global::<reader_t3_settings::Connection>(cx, move |window, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    if this.project_override {
+                        return;
+                    }
+                    if let Some(origin) = cx
+                        .try_global::<reader_t3_settings::Connection>()
+                        .and_then(|c| c.origin.clone())
+                    {
+                        this.connect_to(origin, window, cx);
+                    }
+                });
+            });
+        let app_origin = cx
+            .try_global::<reader_t3_settings::Connection>()
+            .and_then(|c| c.origin.clone());
+        let alias = project
+            .environment
+            .clone()
+            .unwrap_or_else(|| "project".into());
+        let area = project.folder.clone();
         cx.spawn_in(window, async move |this, cx| {
             let saved = cx
                 .background_executor()
                 .spawn(async move {
-                    let Some(state) = state else {
-                        return Ok(None);
+                    let override_origin =
+                        project::project_browser_origin(&area, &alias, state.as_deref())?;
+                    let is_override = override_origin.is_some();
+                    let origin = match override_origin.or(app_origin) {
+                        Some(origin) => Some(origin),
+                        None => project::prefill_app_browser_origin(state.as_deref())?,
                     };
-                    let bytes = match std::fs::read(state.join("t3-connections.json")) {
-                        Ok(bytes) => bytes,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                        Err(e) => return Err(anyhow::Error::from(e)),
-                    };
-                    let saved: std::collections::BTreeMap<String, String> =
-                        serde_json::from_slice(&bytes)?;
-                    Ok(alias.and_then(|alias| saved.get(&alias).cloned()))
+                    Ok::<_, anyhow::Error>((origin, is_override))
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                let origin = match saved {
-                    Ok(Some(origin)) if !origin.trim().is_empty() => origin,
-                    Ok(_) => DEFAULT_T3_ORIGIN.into(),
-                    Err(e) => {
-                        this.log_failure(&format!("saved T3 origin unreadable: {e:#}"), cx);
-                        DEFAULT_T3_ORIGIN.into()
+                // A delayed disk read must never replace typing or a manual connection.
+                if this.generation != 0 || this.closed {
+                    return;
+                }
+                match saved {
+                    Ok((Some(origin), project_override)) => {
+                        this.project_override = project_override;
+                        let origin = if project_override {
+                            origin
+                        } else {
+                            cx.try_global::<reader_t3_settings::Connection>()
+                                .and_then(|c| c.origin.clone())
+                                .unwrap_or(origin)
+                        };
+                        this.origin
+                            .update(cx, |input, cx| input.set_value(origin, window, cx));
+                        #[cfg(all(target_os = "macos", not(test)))]
+                        this.connect(window, cx);
                     }
-                };
-                this.origin
-                    .update(cx, |input, cx| input.set_value(origin, window, cx));
-                // The app connects by itself; Linux shows the project view instead.
-                #[cfg(all(target_os = "macos", not(test)))]
-                this.connect(window, cx);
+                    Ok((None, project_override)) => {
+                        this.project_override = project_override;
+                        if let Some(origin) = cx
+                            .try_global::<reader_t3_settings::Connection>()
+                            .and_then(|c| c.origin.clone())
+                        {
+                            this.origin
+                                .update(cx, |input, cx| input.set_value(origin, window, cx));
+                            #[cfg(all(target_os = "macos", not(test)))]
+                            this.connect(window, cx);
+                        }
+                    }
+                    Err(e) => this.error = Some(format!("{e:#}")),
+                }
                 cx.notify();
             });
         })
@@ -122,11 +159,13 @@ impl ManagerPanel {
         });
         Self {
             project,
-            state: saved_state,
             focused: false,
             #[cfg(any(target_os = "macos", test))]
             previous_gpui_focus: None,
             origin,
+            // Ignore global changes until manifest/registry precedence is known.
+            project_override: true,
+            _connection: connection,
             error: None,
             retrying: false,
             failures: 0,
@@ -202,11 +241,6 @@ impl ManagerPanel {
             view.update(cx, |view, _| view.hide());
         }
         let _ = cx;
-    }
-
-    /// The T3 origin this panel uses (saved, or typed in Settings → T3).
-    pub(super) fn origin_value(&self, cx: &App) -> String {
-        self.origin.read(cx).value().to_string()
     }
 
     fn connected(&self) -> bool {
@@ -310,13 +344,16 @@ impl ManagerPanel {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
         let Manager::Thread(thread) = self.project.manager.clone() else {
             return;
         };
         if self.closed {
             return;
         }
-        let env = match okilum_t3::Environment::new(
+        let env = match okilum_t3::Environment::from_input(
             self.project.environment.as_deref().unwrap_or("project"),
             &self.origin.read(cx).value(),
         ) {
@@ -330,20 +367,19 @@ impl ManagerPanel {
                 return;
             }
         };
+        self.origin
+            .update(cx, |input, cx| input.set_value(env.origin(), window, cx));
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.loading = true;
         // The previous error stays until this attempt ends: no flicker.
-        let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let identity = okilum_t3::projects::browser_identity(&env)?;
-                    if let Some(state) = &state {
-                        project::save_browser_environment(state, &env)?;
-                    }
-                    okilum_t3::projects::manager_url(&env, &identity, &thread)
+                    let url = okilum_t3::projects::manager_url(&env, &identity, &thread)?;
+                    Ok::<_, anyhow::Error>(url)
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -526,7 +562,15 @@ impl ManagerPanel {
                 let _ = page_events.try_send(event.into());
             })
             .with_navigation_handler(|url| {
-                url::Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "https" | "http"))
+                url::Url::parse(&url).is_ok_and(|url| {
+                    url.username().is_empty()
+                        && url.password().is_none()
+                        && okilum_t3::Environment::new(
+                            "navigation",
+                            &url.origin().ascii_serialization(),
+                        )
+                        .is_ok()
+                })
             })
             .build_as_child(&handle)?;
         crate::reader_manager_store::verify(&browser, &store)?;
@@ -539,10 +583,25 @@ impl ManagerPanel {
     }
 }
 
+fn t3_settings_button() -> Button {
+    Button::new("manager-open-t3-settings")
+        .ghost()
+        .small()
+        .h(px(28.))
+        .rounded(px(brand::CONTROL_RADIUS))
+        .label("Open T3 settings")
+        .on_click(|_, _, cx| reader_settings::show_t3(cx))
+}
+
 impl Render for ManagerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.project.manager == Manager::NotStarted {
-            return div().p_2().child("Manager не запущен").into_any_element();
+            return v_flex()
+                .p_2()
+                .gap_2()
+                .child("Manager не запущен")
+                .child(t3_settings_button())
+                .into_any_element();
         }
         // No Okilum header or project line above T3: T3's own thread header
         // says where you are. Until connected, one quiet status line.
@@ -615,13 +674,16 @@ impl Render for ManagerPanel {
                 .into_any_element();
         }
         let (line, error) = self.connection_status();
-        div()
+        let line = line.or_else(|| (!self.loading).then(|| "T3 not connected".into()));
+        v_flex()
+            .gap_2()
             .id("manager-t3-status")
             .px_3()
             .py_2()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .children(line)
+            .child(t3_settings_button())
             .when_some(error, |status, error| {
                 status.tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
@@ -675,6 +737,57 @@ mod status_tests {
     use super::*;
     use ::core::prelude::v1::test;
     use std::time::Duration;
+
+    #[gpui::test]
+    fn shared_connection_refreshes_only_panels_without_project_overrides(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let project = Project {
+            folder: temp.path().into(),
+            name: "Fixture".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("fixture".into()),
+            manager_project: None,
+            // No network path: this fixture has no thread to connect.
+            manager: Manager::NotStarted,
+            appearance: Default::default(),
+        };
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let panel = cx
+                .new(|cx| ManagerPanel::new(project, Some(temp.path().join("state")), window, cx));
+            Root::new(panel, window, cx)
+        });
+        visual.run_until_parked();
+        let panel = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ManagerPanel>().unwrap()
+        });
+        panel.read_with(visual, |panel, _| assert!(!panel.project_override));
+        visual.update(|_, cx| {
+            cx.set_global(reader_t3_settings::Connection {
+                origin: Some("https://shared.example".into()),
+            })
+        });
+        visual.run_until_parked();
+        panel.update_in(visual, |panel, _, cx| {
+            assert_eq!(
+                panel.origin.read(cx).value().as_str(),
+                "https://shared.example"
+            );
+            panel.project_override = true;
+        });
+        visual.update(|_, cx| {
+            cx.set_global(reader_t3_settings::Connection {
+                origin: Some("https://changed.example".into()),
+            })
+        });
+        visual.run_until_parked();
+        panel.read_with(visual, |panel, cx| {
+            assert_eq!(
+                panel.origin.read(cx).value().as_str(),
+                "https://shared.example"
+            )
+        });
+    }
 
     #[test]
     fn retries_back_off_2_5_10_then_every_30_seconds() {

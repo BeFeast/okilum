@@ -18,7 +18,29 @@ pub(super) fn save_browser_environment(
     state: &Path,
     environment: &Environment,
 ) -> anyhow::Result<()> {
-    connections::save(state, environment)
+    // This is the shared app default, not a project/environment override.
+    // Named registry entries belong to explicit project connections.
+    connections::save_last_origin(state, environment)
+}
+
+pub(super) fn prefill_app_browser_origin(state: Option<&Path>) -> anyhow::Result<Option<String>> {
+    connections::last_origin(state)
+}
+
+pub(super) fn project_browser_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    connections::project_origin(area, alias, state)
+}
+
+pub(super) fn prefill_browser_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    connections::prefill_origin(area, alias, state)
 }
 
 pub(crate) struct ProjectView {
