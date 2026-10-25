@@ -496,7 +496,7 @@ jobs:
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
-  # #1290: a frame of the scroll must not grow with the note (scripts/perf/scroll/budget.py).
+  # #1639: supplementary editor latency; same-runner A/B is required before blocking merges.
   perf-linux:
     needs: native-scope
     if: >-
@@ -512,7 +512,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Run the exact PR head's scroll frame-cost guard on GitHub Linux
+      - name: Run the exact PR head's editor latency gate on GitHub Linux
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -128,6 +128,7 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    settings_section: String,
     /// Brackets and quotes close themselves as they are typed in a note
     /// (#1636); on by default.
     auto_pair_brackets: bool,
@@ -187,6 +188,7 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            settings_section: String::new(),
             auto_pair_brackets: true,
             auto_pair_markdown: false,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
@@ -224,6 +226,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    settings_section_changed: bool,
     auto_pair_changed: bool,
     paste_ask_changed: bool,
     json_raw_changed: bool,
@@ -320,6 +323,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        settings_section_changed: false,
         auto_pair_changed: false,
         paste_ask_changed: false,
         json_raw_changed: false,
@@ -546,6 +550,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    settings_section_changed: bool,
     auto_pair_changed: bool,
     paste_ask_changed: bool,
     json_raw_changed: bool,
@@ -629,6 +634,9 @@ impl WriteJob {
         }
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
+        }
+        if self.settings_section_changed {
+            latest.settings_section = self.saved.settings_section.clone();
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
@@ -757,6 +765,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.find_changed
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
+            && !state.settings_section_changed
             && !state.code_soft_wrap_changed
             && !state.auto_pair_changed
             && !state.paste_ask_changed
@@ -792,6 +801,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        settings_section_changed: state.settings_section_changed,
         auto_pair_changed: state.auto_pair_changed,
         paste_ask_changed: state.paste_ask_changed,
         json_raw_changed: state.json_raw_changed,
@@ -1794,6 +1804,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.settings_section_changed = false;
         state.auto_pair_changed = false;
         state.paste_ask_changed = false;
         state.json_raw_changed = false;
@@ -2184,6 +2195,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                settings_section_changed: false,
                 auto_pair_changed: false,
                 paste_ask_changed: false,
                 json_raw_changed: false,
@@ -2771,4 +2783,20 @@ pub(crate) fn typed_views(cx: &App) -> okilum_core::typed_view::Preferences {
     cx.try_global::<Store>()
         .map(|store| store.saved.typed_views.clone())
         .unwrap_or_default()
+}
+
+/// Last explicitly visited Settings pane, shared by every window in this profile.
+pub(crate) fn settings_section(cx: &App) -> Option<&str> {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.settings_section.as_str())
+}
+
+pub(crate) fn set_settings_section(value: &str, cx: &mut App) {
+    if !installed(cx) || settings_section(cx) == Some(value) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.settings_section = value.into();
+    state.settings_section_changed = true;
+    schedule(cx);
 }

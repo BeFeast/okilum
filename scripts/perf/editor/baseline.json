@@ -1,0 +1,91 @@
+{
+  "boundary": "xvfb-software-post-frame",
+  "metrics": {
+    "live:raw-tail-60k.md/input_frame_ms": {
+      "median_ms": 54.871943,
+      "p90_ms": 113.514028
+    },
+    "live:raw-tail-60k.md/open_first_ms": {
+      "median_ms": 807.457463,
+      "p90_ms": 809.750407
+    },
+    "live:raw-tail-60k.md/open_full_ms": {
+      "median_ms": 855.36428,
+      "p90_ms": 857.807574
+    },
+    "live:raw-tail-60k.md/scroll_frame_ms": {
+      "median_ms": 3.21,
+      "p90_ms": 16.002
+    },
+    "live:tiny.md/input_frame_ms": {
+      "median_ms": 44.559718,
+      "p90_ms": 54.354612
+    },
+    "live:tiny.md/open_first_ms": {
+      "median_ms": 807.58766,
+      "p90_ms": 823.651091
+    },
+    "live:tiny.md/open_full_ms": {
+      "median_ms": 807.610753,
+      "p90_ms": 823.667602
+    },
+    "live:tiny.md/scroll_frame_ms": {
+      "median_ms": 3.467,
+      "p90_ms": 3.751
+    },
+    "source:novel-1200k.md/input_frame_ms": {
+      "median_ms": 62.670112,
+      "p90_ms": 111.179804
+    },
+    "source:novel-1200k.md/open_first_ms": {
+      "median_ms": 1644.049228,
+      "p90_ms": 1689.113087
+    },
+    "source:novel-1200k.md/scroll_frame_ms": {
+      "median_ms": 5.708,
+      "p90_ms": 5.883
+    },
+    "source:one-mib.md/input_frame_ms": {
+      "median_ms": 67.149997,
+      "p90_ms": 102.354336
+    },
+    "source:one-mib.md/open_first_ms": {
+      "median_ms": 1469.593828,
+      "p90_ms": 1494.447017
+    },
+    "source:one-mib.md/scroll_frame_ms": {
+      "median_ms": 5.234,
+      "p90_ms": 6.332
+    },
+    "source:sections-460.md/input_frame_ms": {
+      "median_ms": 43.965018,
+      "p90_ms": 57.917928
+    },
+    "source:sections-460.md/open_first_ms": {
+      "median_ms": 875.967618,
+      "p90_ms": 924.910488
+    },
+    "source:sections-460.md/scroll_frame_ms": {
+      "median_ms": 3.411,
+      "p90_ms": 3.745
+    },
+    "source:tiny.md/input_frame_ms": {
+      "median_ms": 54.157886,
+      "p90_ms": 56.400215
+    },
+    "source:tiny.md/open_first_ms": {
+      "median_ms": 808.283555,
+      "p90_ms": 809.938574
+    },
+    "source:tiny.md/scroll_frame_ms": {
+      "median_ms": 3.149,
+      "p90_ms": 3.381
+    }
+  },
+  "policy": {
+    "absolute_ms": 25.0,
+    "edit_floor_ms": 16.0,
+    "relative": 0.35
+  },
+  "schema": 1
+}
