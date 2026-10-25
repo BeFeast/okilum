@@ -718,6 +718,18 @@ mod tests {
         assert!(Target::open(&path).is_err());
     }
 
+    const FILE_SYNC_ONLY: &str = r#"
+# A whole-filesystem flush represents unrelated blocked I/O. Fail immediately
+# rather than sleeping past the unchanged helper deadline. Positive controls
+# below require every expected file/directory flush to reach the real utility.
+sync() {
+    test "$#" -gt 1 && test "$1" = -- || { echo 'unrelated filesystem I/O requested' >&2; return 91; }
+    shift
+    for sync_path do printf '%s\n' "$sync_path" >> "$SYNC_CALLS"; done
+    command sync -- "$@"
+}
+"#;
+
     /// The production apply helper, real rename/rollback and real child process.
     /// Fake executable bodies are transaction controls, not native AppImage proof.
     fn transaction(payload: &[u8], tamper: bool, changed: bool) -> (Vec<u8>, String) {
@@ -756,7 +768,13 @@ mod tests {
         }
         let output = Command::new("/bin/sh")
             .current_dir(dir.path())
-            .args(["-c", APPLY, "test", "2147483647"])
+            .env("SYNC_CALLS", stage.join("sync-calls"))
+            .args([
+                "-c",
+                &format!("{FILE_SYNC_ONLY}\n{APPLY}"),
+                "test",
+                "2147483647",
+            ])
             .arg(&original)
             .arg(&stage)
             .arg(digest)
@@ -766,6 +784,24 @@ mod tests {
             .output()
             .unwrap();
         assert!(!dir.path().join("injected").exists());
+        if !tamper && !changed {
+            assert!(output.status.success(), "helper failed: {:?}", output);
+            let calls = fs::read_to_string(stage.join("sync-calls")).unwrap();
+            let target_pair = format!("{}\n{}\n", original.display(), parent.display());
+            let expected = if stage.join("completed").exists() {
+                format!(
+                    "{target_pair}{}\n{}\n",
+                    stage.join("completed.tmp").display(),
+                    stage.display()
+                )
+            } else {
+                // Failed launch must persist both the restored image and its
+                // parent, without a whole-filesystem flush during recovery.
+                target_pair.repeat(2)
+            };
+            assert_eq!(calls, expected, "exact commit/rollback fsync operands");
+        }
+
         if fs::read(&original).unwrap() != b"original" && !changed {
             assert_eq!(
                 fs::read(stage.join("previous.AppImage")).unwrap(),
@@ -958,15 +994,7 @@ mod tests {
 trace_stage() { stage_name=$1; printf 'helper trace %s stage=%s pid=%s\n' "$(date -u +%s.%N)" "$stage_name" "$$" >&2; }
 trap 'rc=$?; printf "helper exit rc=%s stage=%s\n" "$rc" "${stage_name:-shell-start}" >&2' 0
 trace_stage shell-start
-# A whole-filesystem flush represents unrelated blocked I/O. Fail immediately
-# rather than sleeping past the unchanged helper deadline. Positive controls
-# below require every expected file/directory flush to reach the real utility.
-sync() {
-    test "$#" -gt 1 && test "$1" = -- || { echo 'unrelated filesystem I/O requested' >&2; return 91; }
-    shift
-    for sync_path do printf '%s\n' "$sync_path" >> "$SYNC_CALLS"; done
-    command sync -- "$@"
-}
+
 "#,
         );
         let mut body = APPLY.to_string();
@@ -1011,6 +1039,7 @@ sync() {
             assert!(body.contains(before), "trace stage disappeared: {before}");
             body = body.replace(before, after);
         }
+        traced.push_str(FILE_SYNC_ONLY);
         traced.push_str(&body);
         let mut command = Command::new("/bin/sh");
         command
