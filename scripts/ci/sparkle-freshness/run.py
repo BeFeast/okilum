@@ -6,6 +6,7 @@ Each run owns isolated app identities, bundles, ephemeral test keys and a local 
 """
 import datetime
 import email.utils
+import errno
 import functools
 import hashlib
 import http.server
@@ -24,6 +25,23 @@ import time
 
 ROOT = Path(__file__).resolve().parents[3]
 FRAMEWORK = ROOT / 'vendor/sparkle'
+
+
+def remove_case(case, *, timeout=10, remove=shutil.rmtree,
+                clock=time.monotonic, sleep=time.sleep):
+    """Allow late fixture-helper writes to settle; never hide failed cleanup."""
+    deadline = clock() + timeout
+    while True:
+        try:
+            remove(case)
+            return
+        except OSError as error:
+            if error.errno != errno.ENOTEMPTY:
+                raise
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise
+            sleep(min(0.1, remaining))
 
 
 def run(*args, **kwargs):
@@ -325,7 +343,10 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     subprocess.run(['defaults', 'delete', identifier], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     if compare:
                         subprocess.run(['defaults', 'delete', identifier + '.updates'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    shutil.rmtree(case)
+                    # The host is reaped and the HTTP server is stopped above.
+                    # Sparkle helpers may finish a final filesystem write after
+                    # that boundary. Retry only ENOTEMPTY, with a hard deadline.
+                    remove_case(case)
                     assert 'window probe positive control detected standard Sparkle check' in trace.read_text(), trace.read_text()
                     assert 'unexpected updater window' not in trace.read_text(), trace.read_text()
 

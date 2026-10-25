@@ -1,12 +1,23 @@
-# #1290: the scroll frame cost must not grow with the note. A frame-trace release build scrolls
-# the 24k-line note and its first 320 lines under Xvfb; scripts/perf/scroll/budget.py compares
-# them. No secrets, publication or signing.
+# #1639: the editor latency gate, using one reusable trace binary. The legacy
+# Reader scroll measurements remain visible as non-blocking diagnostics.
 name: forgejo-perf-linux
 on:
   push:
     branches: ['forgejo-perf-linux-pr/**']
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: 'Optional successful run of this exact commit whose trace binary is reused'
+        type: string
+        default: ''
+      calibration_runs:
+        description: 'Independent gate runs on one unchanged binary (manual calibration only)'
+        type: choice
+        options: ['1', '2', '3', '4', '5']
+        default: '1'
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: forgejo-perf-linux-${{ github.ref }}
   cancel-in-progress: false
@@ -29,26 +40,86 @@ jobs:
             build-essential cmake pkg-config curl git mold zstd \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1 mesa-vulkan-drivers \
-            xvfb xdotool x11-apps dbus
+            xvfb xdotool x11-apps xclip dbus
       - name: Prepare pinned vendor
+        if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           rustc -Vv
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
-      - name: Run the scroll frame-cost guard
+      - name: Validate editor collector and budgets
+        run: python3 -m unittest discover -s scripts/perf/editor -p 'test_*.py'
+      - name: Build the reusable trace binary
+        if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
         run: |
           set -euo pipefail
           scripts/perf/build-linux-trace.sh "$RUNNER_TEMP/trace"
-          python3 scripts/perf/scroll/gen-notes.py "$RUNNER_TEMP/notes" --check
-          export DISPLAY=:99
+          (cd "$RUNNER_TEMP/trace" && sha256sum okilum > SHA256SUMS)
+      - name: Verify calibration artifact producer
+        if: github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_RUN_ID" in ''|*[!0-9]*) exit 2;; esac
+          producer=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '[.head_sha,.conclusion] | @tsv')
+          test "$producer" = "$(printf '%s\tsuccess' "$GITHUB_SHA")"
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != ''
+        with:
+          name: perf-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/reused
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+      - name: Reuse the verified exact-commit binary
+        if: github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != ''
+        run: python3 scripts/perf/editor/reuse.py "$RUNNER_TEMP/reused" "$RUNNER_TEMP/trace" "$GITHUB_SHA"
+      - name: Start the software display
+        run: |
           Xvfb :99 -screen 0 1366x768x24 >/dev/null 2>&1 &
           sleep 2
+      - name: Run the scroll frame-cost guard
+        id: legacy-scroll
+        continue-on-error: true
+        if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
+        run: |
+          set -euo pipefail
+          python3 scripts/perf/scroll/gen-notes.py "$RUNNER_TEMP/notes" --check
+          export DISPLAY=:99
           dbus-run-session -- python3 scripts/perf/scroll/linux/scroll-trace.py \
             "$RUNNER_TEMP/trace/okilum" "$RUNNER_TEMP/run" "$RUNNER_TEMP/notes" \
             reader:big-head-320.md reader:big-24k.md
           python3 scripts/perf/scroll/analyze.py --md "$RUNNER_TEMP/run/reader-big-head-320" "$RUNNER_TEMP/run/reader-big-24k"
           python3 scripts/perf/scroll/budget.py "$RUNNER_TEMP/run/reader-big-head-320" "$RUNNER_TEMP/run/reader-big-24k"
+      - name: Report informational scroll results
+        if: always()
+        env:
+          LEGACY_RESULT: ${{ steps.legacy-scroll.outcome }}
+        run: |
+          echo "Legacy Reader scroll probe: **${LEGACY_RESULT:-skipped}** (informational; editor latency determines this supplementary perf job)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Check editor latency and the baseline ratchet
+        env:
+          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '1' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if git cat-file -e origin/main:scripts/perf/editor/baseline.json 2>/dev/null; then
+            git show origin/main:scripts/perf/editor/baseline.json > "$RUNNER_TEMP/editor-main-baseline.json"
+            python3 scripts/perf/editor/budget.py ratchet \
+              "$RUNNER_TEMP/editor-main-baseline.json" scripts/perf/editor/baseline.json
+          else
+            echo 'Initial editor baseline: calibration evidence is required in the introducing PR (#1639).'
+          fi
+          export DISPLAY=:99
+          case "$CALIBRATION_RUNS" in 1|2|3|4|5) ;; *) exit 2;; esac
+          for calibration_pass in $(seq 1 "$CALIBRATION_RUNS"); do
+            timeout --signal=TERM --kill-after=5s 300s dbus-run-session -- \
+              python3 scripts/perf/editor/gate.py "$RUNNER_TEMP/trace/okilum" \
+              "$RUNNER_TEMP/editor/pass-$calibration_pass" scripts/perf/editor/baseline.json
+          done
+          echo "Consecutive green editor gate runs: **$CALIBRATION_RUNS** on commit $GITHUB_SHA, same binary." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -58,5 +129,9 @@ jobs:
             ${{ runner.temp }}/run/**/summary.txt
             ${{ runner.temp }}/run/**/wheel-*.txt
             ${{ runner.temp }}/run/**/app.log
+            ${{ runner.temp }}/editor/**
+            ${{ runner.temp }}/trace/okilum
+            ${{ runner.temp }}/trace/BUILD.txt
+            ${{ runner.temp }}/trace/SHA256SUMS
           retention-days: 7
           if-no-files-found: warn
