@@ -465,3 +465,29 @@ preload. Both scenarios retained the incremental graph and exact search results:
 The unchanged launches made zero source open/read calls and did not rebuild
 search. These are correctness checks with injected latency, separate from the
 paired release benchmark above; Ready denotes the worker event, not native paint.
+
+
+### Note preparation breakdown (#1700)
+
+`note_open_core_preparation` precedes `note_open_rendered` for a background
+navigation preparation. Both carry its `generation`. The report contains no
+source text, note paths or link targets. `worker_start_ms` measures the delay
+from open to worker entry; `worker_ms` measures the background work. The gap
+between its `since_open_ms` and `note_open_rendered.since_open_ms` shows the UI
+continuation delay. Existing accept/set-text/parsed/body-painted phases follow;
+Live Preview projection and layout are downstream of this boundary.
+
+`report.phases` gives inclusive `calls` and `duration_ms` for primary source read,
+Comrak parsing, embeds, presentation preprocessing, image/link/highlight rewriting,
+Obsidian transforms, link resolution, wiki/Markdown index lookups and target landing.
+Nested stages overlap: do not sum their durations. `filesystem` counts explicitly
+instrumented Rust filesystem operations in source reading and render-time path
+resolution (read, canonicalize, metadata and is-file checks), including unsuccessful
+operations. It is **not** a syscall, physical I/O or cache-miss count. Counts include
+parsed links, attempted wiki/Markdown resolutions, matched embeds and link-parse
+input bytes. Repeated passes and nested embedded documents are included. The scope
+is the background preparation job, not startup inventory, later link-state
+publication, backlinks or layout. HTML mode is identified by `html: true`.
+
+Collection is thread-local and scoped to a preparation with a diagnostic trace;
+other core consumers retain their output and do not accumulate reports.

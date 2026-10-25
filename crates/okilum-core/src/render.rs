@@ -204,7 +204,10 @@ pub fn render_html_from_source(
     }
     let arena = Arena::new();
     let opts = comrak_options();
-    let root = parse_document(&arena, &text, &opts);
+    let root = {
+        let _phase = crate::open_diagnostics::phase("parse");
+        parse_document(&arena, &text, &opts)
+    };
     rewrite_links(root, vault, note_rel, &text);
 
     let adapter = SyntectAdapter::new(Some(theme));
@@ -318,11 +321,9 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
             };
             return Some(
                 candidate
-                    .and_then(|p| p.canonicalize().ok())
+                    .and_then(|p| crate::open_diagnostics::fs(|| p.canonicalize()).ok())
                     .filter(|p| {
-                        vault
-                            .root
-                            .canonicalize()
+                        crate::open_diagnostics::fs(|| vault.root.canonicalize())
                             .is_ok_and(|root| p.starts_with(root))
                     })
                     .and_then(|p| url::Url::from_file_path(p).ok().map(String::from))
@@ -369,7 +370,10 @@ pub fn rewrite_source_images_with(
     mut resolve: impl FnMut(&str) -> Option<String>,
 ) -> String {
     let arena = Arena::new();
-    let root = parse_document(&arena, text, &comrak_options());
+    let root = {
+        let _phase = crate::open_diagnostics::phase("parse");
+        parse_document(&arena, text, &comrak_options())
+    };
     let lines: Vec<_> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(at, _)| at + 1))
         .collect();
@@ -475,7 +479,10 @@ pub fn block_html(source: &str) -> String {
     }
     let arena = Arena::new();
     let opts = comrak_options();
-    let root = parse_document(&arena, &markdown, &opts);
+    let root = {
+        let _phase = crate::open_diagnostics::phase("parse");
+        parse_document(&arena, &markdown, &opts)
+    };
     let mut out = String::new();
     if comrak::format_html(root, &opts, &mut out).is_err() {
         return String::new();
@@ -573,7 +580,10 @@ pub struct ReaderDocument {
 /// This avoids pairing displayed input with a later external edit when copying.
 /// As with [`reader_source`], `rel` accepts vault-relative and absolute paths.
 pub fn reader_document(vault: &Vault, rel: &str) -> anyhow::Result<ReaderDocument> {
-    let (raw, from) = read_source(vault, rel)?;
+    let (raw, from) = {
+        let _phase = crate::open_diagnostics::phase("read_source");
+        read_source(vault, rel)?
+    };
     Ok(reader_document_from_source(vault, from, &raw))
 }
 
@@ -750,7 +760,10 @@ mod reader_document_tests {
 fn read_source<'a>(vault: &Vault, rel: &'a str) -> anyhow::Result<(String, &'a str)> {
     let path = std::path::Path::new(rel);
     if path.is_absolute() {
-        Ok((std::fs::read_to_string(path)?, ""))
+        Ok((
+            crate::open_diagnostics::fs(|| std::fs::read_to_string(path))?,
+            "",
+        ))
     } else {
         Ok((vault.read_note(rel)?, rel))
     }
@@ -776,21 +789,42 @@ fn process_source_collect(
     identities: &mut Vec<crate::document_links::prepared::LinkIdentity>,
 ) -> String {
     let body = if reader {
-        std::borrow::Cow::Owned(crate::obsidian::before_links(body))
+        std::borrow::Cow::Owned({
+            let _phase = crate::open_diagnostics::phase("obsidian_before_links");
+            crate::obsidian::before_links(body)
+        })
     } else {
         std::borrow::Cow::Borrowed(body)
     };
     let s = if expand {
-        expand_embeds_collect(&body, vault, from, identities)
+        {
+            let _phase = crate::open_diagnostics::phase("embeds");
+            expand_embeds_collect(&body, vault, from, identities)
+        }
     } else {
         body.into_owned()
     };
-    let s = preprocess(&s);
-    let s = rewrite_source_images(&s, vault, from);
-    let s = rewrite_source_links_collect(&s, vault, from, identities);
-    let s = rewrite_highlights(&s);
+    let s = {
+        let _phase = crate::open_diagnostics::phase("preprocess");
+        preprocess(&s)
+    };
+    let s = {
+        let _phase = crate::open_diagnostics::phase("images");
+        rewrite_source_images(&s, vault, from)
+    };
+    let s = {
+        let _phase = crate::open_diagnostics::phase("links");
+        rewrite_source_links_collect(&s, vault, from, identities)
+    };
+    let s = {
+        let _phase = crate::open_diagnostics::phase("highlights");
+        rewrite_highlights(&s)
+    };
     if reader {
-        crate::obsidian::after_links(&s)
+        {
+            let _phase = crate::open_diagnostics::phase("obsidian_after_links");
+            crate::obsidian::after_links(&s)
+        }
     } else {
         s
     }
@@ -923,6 +957,7 @@ fn expand_embeds_structure(
                 out.push_str(line);
                 continue;
             };
+            crate::open_diagnostics::count("embeds", 1);
             let inner = cap[1].trim();
             let target = inner.split('|').next().unwrap_or("").trim();
             let (base, heading) = split_fragment(target);
