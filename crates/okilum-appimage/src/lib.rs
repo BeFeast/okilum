@@ -82,6 +82,15 @@ fn sha(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+// The producer and confirm_startup share the owner-only receipt contract.
+// tempfile directories otherwise default to 0777 masked by the caller's umask.
+fn stage_directory(parent: &Path) -> Result<tempfile::TempDir> {
+    Ok(tempfile::Builder::new()
+        .prefix(".okilum-update-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)?)
+}
+
 /// APPIMAGE must designate the original regular user-owned file, never the
 /// extracted executable. Symlinks and hardlinked installs require manual updates.
 #[derive(Debug)]
@@ -280,9 +289,7 @@ impl Staged {
             "Another AppImage updater is active"
         );
         target.unchanged()?;
-        let directory = tempfile::Builder::new()
-            .prefix(".okilum-update-")
-            .tempdir_in(parent)?;
+        let directory = stage_directory(parent)?;
         let image = directory.path().join("new.AppImage");
         let sig = directory.path().join("payload.sig");
         fetch(&release.key, &image, release.size)?;
@@ -824,6 +831,73 @@ mod tests {
             "positive kernel control"
         );
         Target::open(&path).unwrap().unchanged().unwrap();
+    }
+
+    #[test]
+    fn producer_receipt_confirms_in_same_version_under_standard_umask() {
+        use std::os::unix::process::CommandExt;
+        const MODE: &str = "OKILUM_RECEIPT_ROUNDTRIP_TEST";
+        let source = "a".repeat(40);
+        match std::env::var(MODE).as_deref() {
+            Ok("confirm") => {
+                assert!(confirm_startup("5010", &source).unwrap());
+                return;
+            }
+            Ok("produce") => {}
+            _ => {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "tests::producer_receipt_confirms_in_same_version_under_standard_umask",
+                        "--nocapture",
+                    ])
+                    .env(MODE, "produce");
+                unsafe {
+                    command.pre_exec(|| {
+                        libc::umask(0o022);
+                        Ok(())
+                    });
+                }
+                assert!(command.status().unwrap().success());
+                return;
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("Okilum.AppImage");
+        executable(&image, b"same-version identity fixture");
+        // This is the exact directory producer used by Staged::prepare_with.
+        let directory = stage_directory(root.path()).unwrap();
+        let metadata = fs::symlink_metadata(directory.path()).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        let mut expected = release();
+        expected.sha256 = sha(&image).unwrap();
+        fs::write(
+            directory.path().join("expected.json"),
+            serde_json::to_vec(&expected).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::producer_receipt_confirms_in_same_version_under_standard_umask",
+                "--nocapture",
+            ])
+            .env(MODE, "confirm")
+            .env("APPIMAGE", &image)
+            .env("OKILUM_APPIMAGE_UPDATE_RECEIPT", directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "confirmation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read(directory.path().join("started")).unwrap(),
+            b"startup confirmed\n"
+        );
     }
 
     #[test]
