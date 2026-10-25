@@ -151,7 +151,7 @@ diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -6248,6 +6248,102 @@
+@@ -6248,6 +6248,104 @@
      }
  
      #[gpui::test]
@@ -239,7 +239,9 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
 +            }
 +            map.install_projection(state.projection.pin(), &text, window, cx);
 +            let replacement = Rope::from("another document\nshort\n");
-+            map.set_text(&replacement, cx);
++            // Native document replacement uses on_text_changed with the full
++            // previous source range (the same path as set_value/replace_all).
++            map.on_text_changed(&replacement, &(0..text.len()), &replacement, cx);
 +            let mut fresh = DisplayMap::new(font, px(18.), Some(px(140.)));
 +            fresh.ensure_text_prepared(&replacement, cx);
 +            for (offset, _) in replacement.to_string().char_indices() {
