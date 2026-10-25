@@ -15,7 +15,7 @@ def gate(job, **overrides):
     env = dict(os.environ, EVENT='pull_request', SHARED_RESULT='success', LINUX_RESULT='success',
                SCOPE_RESULT='success', MACOS_REQUIRED='true', MACOS_LANE='local',
                HOSTED_JOB='skipped', HOSTED_RESULT='', LOCAL_RESULT='success',
-               MACOS_RESULT='success', WINDOWS_RESULT='success', PERF_RESULT='success', PERF_REQUIRED='true')
+               MACOS_RESULT='success', WINDOWS_RESULT='success', PERF_RESULT='success')
     env.update(overrides)
     return subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode == 0
 
@@ -55,13 +55,13 @@ class NativeGates(unittest.TestCase):
             for scope in ('true', 'false'):
                 self.assertFalse(gate('macos', SCOPE_RESULT=status, MACOS_REQUIRED=scope))
 
-    def test_linux_windows_never_block_mac_or_check(self):
+    def test_linux_windows_and_perf_never_block_mac_or_check(self):
         for status in ('failure', 'cancelled', 'skipped', ''):
             for scope in ('true', 'false'):
                 values = dict(LINUX_RESULT=status, WINDOWS_RESULT=status,
                               PERF_RESULT=status, MACOS_REQUIRED=scope)
                 self.assertTrue(gate('macos', **values))
-                self.assertTrue(gate('check', LINUX_RESULT=status, WINDOWS_RESULT=status))
+                self.assertTrue(gate('check', **values))
 
     def test_selected_native_failure_and_fork_skip_fail(self):
         for status in ('failure', 'cancelled', 'skipped', ''):
@@ -81,14 +81,6 @@ class NativeGates(unittest.TestCase):
             # Even docs-only PRs must have a successful scope/native aggregate.
             self.assertFalse(gate('check', MACOS_REQUIRED='false', MACOS_RESULT=status))
 
-    def test_check_requires_applicable_perf_and_rejects_missing_evidence(self):
-        for status in ('failure', 'cancelled', 'skipped', ''):
-            self.assertFalse(gate('check', PERF_RESULT=status))
-        self.assertTrue(gate('check', PERF_REQUIRED='false', PERF_RESULT='skipped'))
-        self.assertFalse(gate('check', PERF_REQUIRED='', PERF_RESULT='skipped'))
-        self.assertFalse(gate('check', PERF_REQUIRED='false', PERF_RESULT='failure'))
-        self.assertTrue(gate('check', EVENT='push', PERF_RESULT='skipped'))
-
     def test_main_requires_shared_without_pr_native_scope(self):
         self.assertTrue(gate('check', EVENT='push', MACOS_RESULT='skipped'))
         self.assertFalse(gate('check', EVENT='push', SHARED_RESULT='failure'))
@@ -98,7 +90,7 @@ class NativeGates(unittest.TestCase):
             block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:|\Z)', WORKFLOW, re.M | re.S)[1]
             value = re.search(r'^    needs: (.*)$', block, re.M)
             return set(value[1].strip('[]').split(', ')) if value else set()
-        self.assertEqual(needs('check'), {'native-scope', 'shared', 'macos', 'perf-linux'})
+        self.assertEqual(needs('check'), {'shared', 'macos'})
         self.assertEqual(needs('macos'), {'native-scope', 'macos-github', 'macos-local'})
         self.assertEqual(needs('shared'), set())
         for job in ('macos-github', 'macos-local'):

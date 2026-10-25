@@ -108,7 +108,7 @@ def paired(main, candidate, out, config, deadline):
 
 
 def markdown(report):
-    lines = ["", "## Same-runner input A/B", "", f"**{report['result']}**", "",
+    lines = ["", "## Same-runner input A/B", "", f"**{report['result']}** ({report.get('mode', 'strict')})", "",
              "Shipped, unpatched release binaries. Xvfb injection → matching post-frame; not native display latency.",
              "No absolute CI ceiling. Product 33ms Linux / 16ms M4 acceptance belongs on real hardware.",
              f"Defaults (configurable): {report.get('policy')}", f"CPU/runner: {report.get('hardware')}"]
@@ -134,9 +134,12 @@ def main(argv=None):
     parser.add_argument("outdir", type=Path)
     parser.add_argument("--policy", type=Path, default=HERE / "ab-policy.json")
     parser.add_argument("--summary", type=Path, default=os.environ.get("GITHUB_STEP_SUMMARY") or None)
+    parser.add_argument("--report-only", action="store_true",
+                        help="preserve performance FAIL in reports without failing the job; evidence errors still fail")
     args = parser.parse_args(argv)
     report = {"schema": 1, "boundary": BOUNDARY, "result": "NO_EVIDENCE", "exit_code": 2,
-              "attempts": [], "binaries": {}, "error": None}
+              "attempts": [], "binaries": {}, "error": None,
+              "mode": "report-only" if args.report_only else "strict"}
     created = False
     started = time.monotonic()
     try:
@@ -170,13 +173,15 @@ def main(argv=None):
     except (OSError, ValueError, subprocess.SubprocessError, gate.NoEvidence, probe.NoEvidence) as error:
         report["result"], report["exit_code"], report["error"] = "NO_EVIDENCE", 2, str(error)
     report["duration_seconds"] = time.monotonic() - started
+    report["process_exit_code"] = (0 if args.report_only and report["result"] == "FAIL"
+                                   else report["exit_code"])
     if created:
         (args.outdir / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     if args.summary:
         with args.summary.open("a") as stream:
             stream.write(markdown(report))
     print(f"{report['result']}: same-runner input A/B")
-    return report["exit_code"]
+    return report["process_exit_code"]
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Same-runner input A/B (#1662)
 
-The required, scope-aware `perf-linux` job pins main once and builds main and
+The report-only, scope-aware `perf-linux` job pins main once and builds main and
 PR release binaries with the same toolchain/flags on the same runner. Both
 binaries are **shipped-unpatched** builds: the ordinary release Cargo command,
 with no gpui measurement patch. Build receipts, source commits and SHA256 sums
@@ -34,13 +34,23 @@ with a **measurement build, not shipped**, using the existing trace patch. Its
 result and provenance remain visible and report-only. Neither an absent scroll
 trace nor a scroll failure is represented as input regression.
 
-Required activation is backed by GitHub run `40223917116` on head `2b9275a9`:
-five consecutive valid green A/B invocations with identical product-input
-hashes for main and PR. Forced-red run `40220173487` detected a diagnostic-only
-120 ms PR delay in all six scenarios on both paired attempts. Full receipts
-are recorded in PR #1707. The static #1639 calibration does not qualify.
-`ci / check` requires successful A/B for scoped PRs and permits its intentional
-skip for documentation-only changes and non-PR events.
+Required activation is **deferred**, and #1662 remains open. EPYC calibration
+run `40223917116` produced five valid green invocations, and forced-red run
+`40220173487` detected the diagnostic 120 ms delay. However, Xeon run
+`40230405638` produced two valid FAIL attempts with identical main/PR product
+input hashes. The source of this unchanged-product false rejection is unknown.
+Hardware, both failures and all positive controls/provenance remain in reports.
+
+Ordinary CI invokes `ab.py --report-only`: performance FAIL stays FAIL in JSON
+and the job summary (including both attempts), while the process exits zero.
+Missing controls, collector/harness failures and binary/provenance integrity
+errors remain `NO_EVIDENCE` with nonzero exit; they are never hidden as PASS.
+`ci / check` does not depend on perf; existing shared/macOS requirements remain.
+Multi-pass calibration keeps strict exits and the identical-product-input
+hash guard, stopping on the first failed invocation. No automatic calibration
+loop or runner selection is performed. Defaults 15% / 3 ms and one paired
+remeasurement are unchanged. A future activation needs its own decision and
+resolution of the Xeon blocker, not a waiver for future perf failures.
 
 The sections below document the original static collector and measurement
 boundary, retained for diagnostics and historical evidence.

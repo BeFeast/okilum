@@ -91,12 +91,16 @@ jobs:
           set -euo pipefail
           export DISPLAY=:99
           case "$CALIBRATION_RUNS" in 1|2|3|4|5) ;; *) exit 2;; esac
+          mode=()
+          if [ "$CALIBRATION_RUNS" = 1 ]; then mode+=(--report-only); fi
           for calibration_pass in $(seq 1 "$CALIBRATION_RUNS"); do
             timeout --signal=TERM --kill-after=5s 600s dbus-run-session -- \
               python3 scripts/perf/editor/ab.py "$RUNNER_TEMP/ab-binaries/main/okilum" \
-              "$RUNNER_TEMP/ab-binaries/pr/okilum" "$RUNNER_TEMP/editor/pass-$calibration_pass"
+              "$RUNNER_TEMP/ab-binaries/pr/okilum" "$RUNNER_TEMP/editor/pass-$calibration_pass" "${mode[@]}"
           done
-          echo "Consecutive green input A/B runs: **$CALIBRATION_RUNS**, identical pinned main/PR binaries in this job." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CALIBRATION_RUNS" != 1 ]; then
+            echo "Consecutive green input A/B calibration runs: **$CALIBRATION_RUNS**, identical pinned main/PR binaries in this job." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

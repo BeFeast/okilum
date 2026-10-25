@@ -51,14 +51,12 @@ class ScopeTests(unittest.TestCase):
                     for native in ['success', 'failure', 'cancelled', 'skipped']:
                         for perf in ['success', 'skipped', 'failure', 'cancelled', '']:
                             expected = (shared == 'success'
-                                        and (event == 'push' or (native == 'success'
-                                             and ((needed == 'true' and perf == 'success')
-                                                  or (needed == 'false' and perf == 'skipped')))))
+                                        and (event == 'push' or native == 'success'))
                             with self.subTest(event=event, shared=shared, needed=needed,
                                               native=native, perf=perf):
                                 result = subprocess.run(['bash', '-c', script], capture_output=True,
                                     env=dict(os.environ, EVENT=event, SHARED_RESULT=shared,
-                                             MACOS_REQUIRED=needed, MACOS_RESULT=native, PERF_REQUIRED=needed,
+                                             MACOS_REQUIRED=needed, MACOS_RESULT=native,
                                              WINDOWS_RESULT=native, PERF_RESULT=perf))
                                 self.assertEqual(result.returncode == 0, expected)
 

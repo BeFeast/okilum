@@ -69,11 +69,11 @@ class RunnerTests(unittest.TestCase):
             self.binaries.append(binary)
         self.out = self.root / 'out'
 
-    def invoke(self, results):
+    def invoke(self, results, *options):
         with patch.object(ab, 'hardware', return_value={'cpu_models': ['test CPU'], 'available_cpus': 4}), \
              patch.object(ab, 'paired', side_effect=results) as measured, \
              contextlib.redirect_stdout(io.StringIO()):
-            code = ab.main([*(str(x) for x in self.binaries), str(self.out)])
+            code = ab.main([*(str(x) for x in self.binaries), str(self.out), *options])
         return code, json.loads((self.out / 'result.json').read_text()), measured
 
     def test_valid_regression_gets_one_paired_retry_same_binary_and_cpu(self):
@@ -91,6 +91,34 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(report['result'], 'FAIL')
         self.assertEqual(measured.call_count, 2)
+
+    def test_report_only_retains_both_valid_failures_without_failing_process(self):
+        code, report, measured = self.invoke([pair(20, 30), pair(20, 30)], '--report-only')
+        self.assertEqual(code, 0)
+        self.assertEqual(report['result'], 'FAIL')
+        self.assertEqual(report['exit_code'], 1)
+        self.assertEqual(report['process_exit_code'], 0)
+        self.assertEqual(report['mode'], 'report-only')
+        self.assertEqual([a['result'] for a in report['attempts']], ['FAIL', 'FAIL'])
+        self.assertEqual(measured.call_count, 2)
+        self.assertIn('**FAIL** (report-only)', ab.markdown(report))
+
+    def test_report_only_missing_controls_still_fail_without_retry(self):
+        code, report, measured = self.invoke([ab.probe.NoEvidence('unchanged pixels')], '--report-only')
+        self.assertEqual(code, 2)
+        self.assertEqual(report['result'], 'NO_EVIDENCE')
+        self.assertIn('unchanged pixels', report['error'])
+        self.assertEqual(measured.call_count, 1)
+
+    def test_report_only_integrity_failure_is_not_a_performance_failure(self):
+        def mutate(*args):
+            self.binaries[1].write_bytes(b'changed')
+            return pair(20, 30)
+        code, report, measured = self.invoke(mutate, '--report-only')
+        self.assertEqual(code, 2)
+        self.assertEqual(report['result'], 'NO_EVIDENCE')
+        self.assertIn('SHA256 changed', report['error'])
+        self.assertEqual(measured.call_count, 1)
 
     def test_missing_evidence_does_not_retry(self):
         code, report, measured = self.invoke([ab.probe.NoEvidence('missing generation')])
