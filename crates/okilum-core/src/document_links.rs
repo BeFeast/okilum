@@ -1,6 +1,8 @@
 //! Document link syntax and navigation intent shared by all reader surfaces.
 //! Comrak defines syntax; byte ranges refer to the untouched authored source.
+mod indexed;
 mod local_files;
+pub use indexed::IndexedResolver;
 mod paths;
 pub mod prepared;
 pub(crate) use paths::fallback_links;
@@ -534,6 +536,15 @@ pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedL
     } else {
         vault.resolve_markdown(&path, from)
     };
+    resolved_note(resolution, target, wiki, heading)
+}
+
+fn resolved_note(
+    resolution: Resolution,
+    target: &str,
+    wiki: bool,
+    heading: Option<String>,
+) -> ResolvedLink {
     let (status, url, candidates) = match resolution {
         Resolution::Resolved { path } => {
             let suffix = heading
