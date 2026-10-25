@@ -32,9 +32,9 @@ the final package and accept a correct hash before its rename.
 The existing Windows native dispatch with package=okilum-http, features=updates
 also executes isolated native controls. Its fixture never forwards and exposes
 only GET metadata/package and PAC. An untrusted CA must fail; importing a temporary
-CurrentUser Root must still fail the old ureq/webpki policy but allow production
+LocalMachine Root on the ephemeral hosted runner must still fail the old ureq/webpki policy but allow production
 Source with system static proxy and PAC. Receipts retain source and request/UA
-observations. Root/proxy/process cleanup runs in finally; private fixture keys are
+observations. The CA import and each child process have explicit deadlines. Root/proxy/process cleanup runs in finally; private fixture keys are
 never uploaded. This is native transport/download evidence, not a claim that a
 GUI installer or Restart now was tested by the companion.
 
