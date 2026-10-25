@@ -1495,13 +1495,6 @@ pub(crate) fn render_update_status(
     )
 }
 
-/// Blur applies the Settings › T3 field only when the user typed something
-/// (it differs from what Settings put there) that differs from the panel's
-/// current origin. Enter always applies.
-
-/// An untouched Settings › T3 field takes the panel's origin when that
-/// arrives or changes; a field the user edited is left alone.
-
 #[cfg(test)]
 mod tests {
     use super::*;

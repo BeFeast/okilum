@@ -40,13 +40,12 @@ impl T3Settings {
                 .placeholder("t3.oklabs.uk or 10.10.0.23:23110")
                 .default_value(current.clone().unwrap_or_default())
         });
-        let input = cx.subscribe_in(&origin, window, |this, _, event, _, cx| match event {
-            InputEvent::Change => {
+        let input = cx.subscribe_in(&origin, window, |this, _, event, _, cx| {
+            if let InputEvent::Change = event {
                 this.edited = true;
                 this.error = None;
                 cx.notify();
             }
-            _ => {}
         });
         let saved = state.clone();
         let saved_alias = alias.clone();

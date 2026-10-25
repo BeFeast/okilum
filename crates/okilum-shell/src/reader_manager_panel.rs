@@ -243,8 +243,6 @@ impl ManagerPanel {
         let _ = cx;
     }
 
-    /// The T3 origin this panel uses (saved, or typed in Settings → T3).
-
     fn connected(&self) -> bool {
         #[cfg(target_os = "macos")]
         return self.webview.is_some();
