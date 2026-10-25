@@ -12,7 +12,7 @@ use super::{
 use crate::source_projection::{Active, Bias, FallbackReason, MapError, Snapshot};
 use std::{
     collections::{hash_map::RandomState, HashMap},
-    hash::BuildHasher,
+    hash::{BuildHasher, Hash, Hasher},
     ops::Range,
     sync::Arc,
 };
@@ -50,14 +50,37 @@ impl Context {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 // Request authority is checked before lookup and is never retained in the
-// cache key. An entry owns only bounded local bytes and semantic inputs.
+// returned local value. The full authored reference context stays in the key:
+// Classification exposes used references, not every unreferenced definition.
+// Until structural discovery proves a complete reference table, even unrelated
+// parent-byte changes conservatively recompute. Identity is rebound separately.
 struct Key {
     text: Arc<str>,
+    reference_source: Snapshot,
     references: Arc<[Reference]>,
     allow_frontmatter: bool,
     active: Active,
+}
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+            && self.reference_source.source() == other.reference_source.source()
+            && self.references == other.references
+            && self.allow_frontmatter == other.allow_frontmatter
+            && self.active == other.active
+    }
+}
+impl Eq for Key {}
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+        self.reference_source.source().hash(state);
+        self.references.hash(state);
+        self.allow_frontmatter.hash(state);
+        self.active.hash(state);
+    }
 }
 
 struct Derived {
@@ -205,7 +228,8 @@ impl Lease {
 }
 
 /// Entry count bounds metadata through the unchanged per-fragment caps. The
-/// byte budget counts authored/reference/display text, not process RSS or leases
+/// byte budget counts fragment, full parent reference-authority, reference and
+/// display text, not process RSS or leases
 /// retained by callers. Reader policy, structural discovery and global joins
 /// are deliberately outside this cache. No large-document admission is added.
 pub(crate) struct FragmentCache<S = RandomState> {
@@ -271,6 +295,7 @@ impl<S: BuildHasher> FragmentCache<S> {
         let text: Arc<str> = parent.copy_source(range.clone())?.into();
         let key = Key {
             text,
+            reference_source: parent.clone(),
             references: context.references.clone(),
             allow_frontmatter: context.allow_frontmatter && range.start == 0,
             active: context.active.clone(),
@@ -304,6 +329,7 @@ impl<S: BuildHasher> FragmentCache<S> {
                     .saturating_add(r.title.len())
             })
             .saturating_add(parent.document().len())
+            .saturating_add(parent.source().len())
             .saturating_add(derived.reveal.projection().display().len());
         if self.max_entries > 0 && bytes <= self.max_bytes {
             while self.entries.len() >= self.max_entries

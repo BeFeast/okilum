@@ -111,7 +111,13 @@ fn equivalent(lease: &Lease, source: &Snapshot, range: Range<usize>, context: &C
 fn real_cold_work_then_hit_rebinds_new_parent_offsets_and_keeps_old_leases() {
     let mut cache = FragmentCache::new(8, 8192);
     let body = "**e\u{301}** 🧠\r\n- [ ] task\n> quote\n";
-    let (old, range) = parent("first.md", 7, "prefix\n\n", body);
+    let prefix = "prefix\n\n";
+    let gap = "\nseparator\n\n";
+    let bytes = format!("{prefix}{body}{gap}{body}");
+    let first_range = prefix.len()..prefix.len() + body.len();
+    let second_range = prefix.len() + body.len() + gap.len()..bytes.len();
+    let old = Snapshot::new("first.md", 7, bytes.clone());
+    let range = first_range.clone();
     let context = context(&old);
     let before = work();
     let held = cache.get_or_build(&old, range.clone(), &context).unwrap();
@@ -121,11 +127,8 @@ fn real_cold_work_then_hit_rebinds_new_parent_offsets_and_keeps_old_leases() {
     );
     assert_ne!(held.display(&old).unwrap(), body);
     equivalent(&held, &old, range, &context);
-    for (id, generation, prefix) in [
-        ("first.md", 8, "longer prefix\n\n"),
-        ("second.md", 9, "x\n\n"),
-    ] {
-        let (current, range) = parent(id, generation, prefix, body);
+    for (id, generation, range) in [("first.md", 8, second_range), ("second.md", 9, first_range)] {
+        let current = Snapshot::new(id, generation, bytes.clone());
         assert_eq!(
             cache.get_or_build(&current, range.clone(), &context).err(),
             Some(Error::Source(MapError::StaleSnapshot))
@@ -515,4 +518,29 @@ fn stale_reference_authority_is_rejected_before_a_new_revision_can_reuse_a_value
     assert_eq!(held.links(&current), Err(MapError::StaleSnapshot));
     assert_eq!(held.links(&old).unwrap()[0].target, "first.md");
     assert_eq!(cache.stats().misses, 2);
+}
+
+#[test]
+fn unreferenced_definition_change_cannot_hide_behind_identical_used_references() {
+    let mut cache = FragmentCache::new(4, 8192);
+    let body = "**bold**\n\n";
+    let first = Snapshot::new("a.md", 1, format!("{body}[unused]: first.md\n"));
+    let second = Snapshot::new("a.md", 2, format!("{body}[unused]: other.md\n"));
+    let old = context(&first);
+    let new = context(&second);
+    assert_eq!(
+        old.references, new.references,
+        "used-reference subset is not full authority"
+    );
+    let held = cache.get_or_build(&first, 0..body.len(), &old).unwrap();
+    let before = work();
+    let current = cache.get_or_build(&second, 0..body.len(), &new).unwrap();
+    assert!(
+        work().0 > before.0 && work().1 > before.1,
+        "uncertain reference context must recompute"
+    );
+    assert_eq!(cache.stats().hits, 0);
+    assert_eq!(cache.stats().misses, 2);
+    equivalent(&current, &second, 0..body.len(), &new);
+    assert_eq!(held.display(&second), Err(MapError::StaleSnapshot));
 }
