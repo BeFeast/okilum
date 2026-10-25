@@ -695,15 +695,23 @@ mod tests {
     // A concurrent test can fork while fs::write still owns its writable fd.
     // CLOEXEC closes it on exec, but Linux can reject our probe before that.
     // Retry only kernel ETXTBSY; never hide permissions/noexec/fixture failures.
-    fn retry_text_busy<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    fn retry_text_busy<T>(operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        let start = std::time::Instant::now();
+        retry_text_busy_with(operation, || start.elapsed(), std::thread::sleep)
+    }
+
+    fn retry_text_busy_with<T>(
+        mut operation: impl FnMut() -> std::io::Result<T>,
+        elapsed: impl Fn() -> Duration,
+        mut sleep: impl FnMut(Duration),
+    ) -> std::io::Result<T> {
         loop {
             match operation() {
                 Err(error)
                     if error.raw_os_error() == Some(libc::ETXTBSY)
-                        && std::time::Instant::now() < deadline =>
+                        && elapsed() < Duration::from_secs(1) =>
                 {
-                    std::thread::sleep(Duration::from_millis(10));
+                    sleep(Duration::from_millis(10));
                 }
                 result => return result,
             }
@@ -731,12 +739,20 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::EACCES));
         assert_eq!(attempts, 1);
-        let clock = std::time::Instant::now();
-        let error = retry_text_busy::<()>(|| Err(std::io::Error::from_raw_os_error(libc::ETXTBSY)))
-            .unwrap_err();
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let mut attempts = 0;
+        let error = retry_text_busy_with::<()>(
+            || {
+                attempts += 1;
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            },
+            || elapsed.get(),
+            |delay| elapsed.set(elapsed.get() + delay),
+        )
+        .unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::ETXTBSY));
-        assert!(clock.elapsed() >= Duration::from_secs(1));
-        assert!(clock.elapsed() < Duration::from_secs(2));
+        assert_eq!(elapsed.get(), Duration::from_secs(1));
+        assert_eq!(attempts, 101);
     }
 
     #[test]
