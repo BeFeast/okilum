@@ -43,6 +43,9 @@ impl<'a> IndexedResolver<'a> {
     /// Translate only known, lexical in-vault OS paths. Unknown absolute paths
     /// remain candidates for lazy outside-file verification. No canonicalize.
     fn path<'p>(&self, path: &'p str) -> Cow<'p, str> {
+        if !Path::new(path).is_absolute() {
+            return Cow::Borrowed(path);
+        }
         for root in self
             .vault
             .graph_root

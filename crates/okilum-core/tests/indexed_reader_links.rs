@@ -168,3 +168,14 @@ fn indexed_links_do_not_redirect_a_dangling_local_alias_to_a_root_namesake() {
     });
     assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
 }
+
+#[test]
+fn a_relative_scope_root_does_not_reinterpret_a_relative_link_as_an_os_path() {
+    let mut vault = Vault::from_note_paths(["notes/target.md".to_owned()]);
+    vault.root = "notes".into();
+    let resolver = IndexedResolver::new(&vault);
+    let (link, report) =
+        open_diagnostics::capture(|| resolver.resolve("notes/target.md", false, "start.md"));
+    assert_eq!(link.candidates, ["notes/target.md"]);
+    assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
+}
