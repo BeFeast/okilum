@@ -37,15 +37,26 @@ def build(checkout, output, commit, role, target):
     return {"source_commit": commit, "sha256": digest, "kind": "shipped-unpatched"}
 
 
+def product_inputs(checkout, commit):
+    listing = run("git", "ls-tree", "-r", commit, "--", "crates", "Cargo.toml", "Cargo.lock",
+                  ".cargo", "rust-toolchain.toml", "scripts/patches", cwd=checkout)
+    return hashlib.sha256(listing.encode()).hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("main_commit")
     parser.add_argument("out", type=Path)
+    parser.add_argument("--require-identical-source", action="store_true",
+                        help="Calibration must compare identical product/build inputs")
     args = parser.parse_args()
     if not re.fullmatch("[0-9a-f]{40}", args.main_commit):
         raise ValueError("main commit must be a pinned full SHA")
     checkout = Path(run("git", "rev-parse", "--show-toplevel"))
     pr = run("git", "rev-parse", "HEAD", cwd=checkout)
+    inputs = {"main": product_inputs(checkout, args.main_commit), "pr": product_inputs(checkout, pr)}
+    if args.require_identical_source and inputs["main"] != inputs["pr"]:
+        raise ValueError("unchanged-code calibration refused: main/PR product inputs differ")
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     baseline = out / "main-source"
@@ -58,6 +69,8 @@ def main():
     try:
         receipts["main"] = build(baseline, out / "main", args.main_commit, "main", targets["main"])
         receipts["pr"] = build(checkout, out / "pr", pr, "pr", targets["pr"])
+        for role in receipts:
+            receipts[role]["product_inputs_sha256"] = inputs[role]
         (out / "pair.json").write_text(json.dumps(receipts, indent=2) + "\n")
     finally:
         # Our detached source only; no reset/clean of a caller-owned checkout.
