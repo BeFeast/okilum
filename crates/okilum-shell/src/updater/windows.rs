@@ -207,7 +207,7 @@ fn manager() -> Result<UpdateManager, velopack::Error> {
 fn manager_for(beta: bool) -> Result<UpdateManager, velopack::Error> {
     let (url, channel) = super::windows_feed::endpoint(beta);
     UpdateManager::new(
-        okilum_http::updates::Source::new(url, env!("OKILUM_RELEASE_VERSION"))
+        okilum_http::updates::Source::new(&url, env!("OKILUM_RELEASE_VERSION"))
             .map_err(|error| velopack::Error::Other(format!("{error:#}")))?,
         Some(UpdateOptions {
             ExplicitChannel: Some(channel.into()),

@@ -30,7 +30,7 @@ try{
  if(!$import.WaitForExit(30000)){Stop-Process -Id $import.Id -Force;throw 'Root import exceeded30s'}
  $import.WaitForExit();if($import.ExitCode -ne 0){throw 'Root import failed; hosted admin required'}
  $cert=[Security.Cryptography.X509Certificates.X509Certificate2]::new("$fixture/root.cer")
- Write-Host 'STAGE machine-root import complete' 
+ Write-Host 'STAGE machine-root import complete'
  Set-ItemProperty $reg ProxyEnable 0
  InvokeProbe fixed 'https://localhost:18179/updates' trusted-direct $true
  InvokeProbe legacy 'https://localhost:18179/updates' legacy-bundled-root $false
