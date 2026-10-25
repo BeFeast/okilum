@@ -47,7 +47,8 @@ Missing controls, collector/harness failures and binary/provenance integrity
 errors remain `NO_EVIDENCE` with nonzero exit; they are never hidden as PASS.
 `ci / check` does not depend on perf; existing shared/macOS requirements remain.
 Multi-pass calibration keeps strict exits and the identical-product-input
-hash guard, stopping on the first failed invocation. No automatic calibration
+hash guard (all tracked inputs except explicitly listed documentation, CI and
+measurement tooling; vendor setup, assets and unknown build inputs included), stopping on the first failed invocation. No automatic calibration
 loop or runner selection is performed. Defaults 15% / 3 ms and one paired
 remeasurement are unchanged. A future activation needs its own decision and
 resolution of the Xeon blocker, not a waiver for future perf failures.

@@ -38,9 +38,21 @@ def build(checkout, output, commit, role, target):
 
 
 def product_inputs(checkout, commit):
-    listing = run("git", "ls-tree", "-r", commit, "--", "crates", "Cargo.toml", "Cargo.lock",
-                  ".cargo", "rust-toolchain.toml", "scripts/patches", cwd=checkout)
-    return hashlib.sha256(listing.encode()).hexdigest()
+    # Conservative source-tree guard: unknown inputs are included by default.
+    # Exclusions are reporting/control-plane files shared by both builds in
+    # this job, never vendor setup, patches, assets or product build scripts.
+    excluded = ("docs", "design", "specs", ".github", ".forgejo", "scripts/ci",
+                "scripts/perf", "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "README.md")
+    listing = subprocess.check_output(["git", "ls-tree", "-rz", commit], cwd=checkout)
+    entries = []
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        path = entry.split(b"\t", 1)[1].decode("utf-8", errors="surrogateescape")
+        if not any(path == prefix or path.startswith(prefix + "/") for prefix in excluded):
+            entries.append(entry)
+    return hashlib.sha256(b"\0".join(entries)).hexdigest()
+
 
 
 def main():
