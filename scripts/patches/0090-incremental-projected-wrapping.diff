@@ -158,7 +158,7 @@ diff --git a/crates/base/src/input/editor/display_map/mod.rs b/crates/base/src/i
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -6248,6 +6248,58 @@
+@@ -6248,6 +6248,68 @@
      }
  
      #[gpui::test]
@@ -194,10 +194,20 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
 +            fresh.ensure_text_prepared(&text, cx);
 +            let shaped = fresh.install_projection(state.projection.pin(), &text, window, cx);
 +            assert!(shaped > 300, "positive control: a fresh map shapes the whole note");
-+            for (offset, _) in text.to_string().char_indices().step_by(17) {
++            let canonical = text.to_string();
++            for (offset, _) in canonical.char_indices().step_by(17) {
 +                let actual = state.display_map.offset_to_wrap_display_point(offset);
 +                assert_eq!(actual, fresh.offset_to_wrap_display_point(offset));
-+                assert_eq!(state.display_map.wrap_display_point_to_offset(actual), offset);
++                // A valid UTF-8 scalar can be inside an authored grapheme.
++                // Native hits clip right; cached and fresh layouts must agree.
++                let expected = crate::input::projection_layout::clip_hit_offset(
++                    &canonical, offset, ConcealBias::Right).unwrap();
++                assert_eq!(state.display_map.wrap_display_point_to_offset(actual), expected);
++                assert_eq!(fresh.wrap_display_point_to_offset(actual), expected);
++            }
++            for (offset, _) in canonical.grapheme_indices(true).step_by(17) {
++                let point = state.display_map.offset_to_wrap_display_point(offset);
++                assert_eq!(state.display_map.wrap_display_point_to_offset(point), offset);
 +            }
 +        }));
 +        // A line insertion shifts every following source/projected offset. Only
