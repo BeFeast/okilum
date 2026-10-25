@@ -116,7 +116,7 @@ def run_once(binary, base, name, live, rep, deadline):
         if live:
             full = wait_for(lambda: frame_event(log, "live"), proc, deadline, "full LP frame")
             if not full["live"] or full.get("limited") is not False:
-                raise NoEvidence("the small fixture did not produce a complete Live Preview")
+                raise NoEvidence("the fixture did not produce a complete Live Preview")
             sample["open_full_ms"] = (full["monotonic_ns"] - launch_ns) / 1e6
 
         def find_window():
@@ -197,6 +197,8 @@ def run_once(binary, base, name, live, rep, deadline):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--budgeted-only", action="store_true",
+                        help="Retry only the unchanged static-budget scenarios")
     parser.add_argument("binary", type=Path)
     parser.add_argument("outdir", type=Path)
     args = parser.parse_args()
@@ -207,22 +209,25 @@ def main():
     if fixtures.manifest() != json.loads((fixtures.HERE / "manifest.json").read_text()):
         raise NoEvidence("fixture manifest drift")
     summary = {"schema": 1, "boundary": "xvfb-software-post-frame", "samples": {},
-               "unsupported": [f"live:{name}" for name in
-                               ("sections-460.md", "one-mib.md", "novel-1200k.md")],
+               "support": None if args.budgeted_only else {}, "unsupported": [],
                "evidence": []}
     deadline = time.monotonic() + 295
     started = time.monotonic()
     try:
         scenarios = [(name, False) for name in fixtures.notes() if name != "raw-tail-60k.md"]
         scenarios += [("tiny.md", True), ("raw-tail-60k.md", True)]
+        support_names = ("sections-460.md", "one-mib.md", "novel-1200k.md")
+        if not args.budgeted_only:
+            scenarios += [(name, True) for name in support_names]
         for name, live in scenarios:
             key = f"{'live' if live else 'source'}:{name}"
-            summary["samples"][key] = {}
+            rows = summary["support"] if live and name in support_names else summary["samples"]
+            rows[key] = {}
             for rep in range(6):
                 base = out / key.replace(":", "-") / f"rep{rep}"
                 sample, proof = run_once(binary, base, name, live, rep, deadline)
                 for metric, value in sample.items():
-                    summary["samples"][key].setdefault(metric, []).append(value)
+                    rows[key].setdefault(metric, []).append(value)
                 summary["evidence"].append(proof)
                 print(f"{key} rep={rep}{' warmup' if rep == 0 else ''} {sample}", flush=True)
     finally:

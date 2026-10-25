@@ -17,8 +17,9 @@ results cannot affect another note or a newer generation. Active-block reveal is
 still the native provider's responsibility, including selection and IME changes.
 
 Supported presentation remains S1: headings, strong/emphasis/strike, code, ordinary
-links and wikilinks. Unsupported blocks remain exact Source. The existing 64 KiB
-and 4,096-node limits remain; the glyph tooltip explains whole-note Source fallback.
+links and wikilinks. Unsupported blocks remain exact Source. The original S1 used whole-note 64 KiB/4,096-node limits. The ordinary
+editor now uses [progressive block classification (#1640)](live-preview-large-documents.md):
+unchanged parser limits apply per block; larger accepted neighbors retain Live Preview.
 There is no startup indexing, new dependency, new vendor patch or gpui-core change.
 
 ## Acceptance evidence to complete before merge

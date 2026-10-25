@@ -33,7 +33,9 @@ def summary(value=100):
                                      for metric in (*METRICS, "open_full_ms")}
                     for name in LIVE_FIXTURES})
     return {"schema": 1, "boundary": "xvfb-software-post-frame", "samples": samples,
-            "unsupported": [f"live:{name}" for name in FIXTURES[1:]],
+            "support": {f"live:{name}": {metric: [9999, *([value] * 5)]
+                         for metric in (*METRICS, "open_full_ms")} for name in FIXTURES[1:]},
+            "unsupported": [],
             "evidence": ["CT141/run/source-and-live-traces"]}
 
 
@@ -61,8 +63,8 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(set(result), expected)
         self.assertEqual(len(result), 20)
         self.assertEqual(budget.METRIC_KEYS, expected)
-        self.assertEqual(budget.UNSUPPORTED,
-                         ("live:sections-460.md", "live:one-mib.md", "live:novel-1200k.md"))
+        self.assertEqual(budget.UNSUPPORTED, ())
+        self.assertEqual(len(budget.aggregate_support(raw, required=True)), 12)
         self.assertEqual(result["source:tiny.md/open_first_ms"], {"median_ms": 3.0, "p90_ms": 20.0})
         self.assertEqual(raw, original)
 
@@ -99,7 +101,7 @@ class AggregateTests(unittest.TestCase):
         for field, value in (("schema", True), ("schema", 1.0), ("schema", 2),
                              ("boundary", "native"), ("samples", {}), ("samples", []),
                              ("evidence", []), ("evidence", None), ("evidence", "trace.log"),
-                             ("unsupported", []), ("unsupported", None),
+                             ("unsupported", ["live:one-mib.md"]), ("unsupported", None),
                              ("unsupported", [None] * 3),
                              ("unsupported", ["live:sections-460.md"] * 3)):
             raw = summary()
@@ -138,6 +140,21 @@ class AggregateTests(unittest.TestCase):
         for index, raw in enumerate(cases):
             with self.subTest(case=index), self.assertRaises(ValueError):
                 budget.aggregate(raw)
+
+    def test_support_missing_or_malformed_never_proves_full_lp(self):
+        for invalid in ({}, None, {"live:one-mib.md": {}}):
+            raw = summary()
+            raw["support"] = invalid
+            with self.assertRaises(ValueError):
+                budget.aggregate_support(raw, required=True)
+        raw = summary()
+        raw["support"]["live:one-mib.md"]["input_frame_ms"] = [1] * 5
+        with self.assertRaises(ValueError):
+            budget.aggregate_support(raw, required=True)
+        raw = summary()
+        raw["support"] = None
+        self.assertEqual(budget.aggregate_support(raw), {})
+
 
 
 class BaselineTests(unittest.TestCase):
@@ -323,7 +340,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("xvfb-software-post-frame", text)
             self.assertIn("software CPU cost", text)
             for fixture in FIXTURES[1:]:
-                self.assertIn(f"UNSUPPORTED: live:{fixture}", text)
+                self.assertIn(f"MEASURED WITHOUT STATIC BUDGET: live:{fixture}", text)
             saved = json.loads(report.read_text())
             self.assertEqual(saved["boundary"], budget.BOUNDARY)
             self.assertEqual(saved["unsupported"], list(budget.UNSUPPORTED))

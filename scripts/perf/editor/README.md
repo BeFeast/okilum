@@ -28,7 +28,7 @@ of the five measured repetitions. With five observations p90 is their maximum.
   pixels independently prove the input was exercised. Pixel verification may
   wait up to two seconds for X11 to receive the software-rendered image; that
   untimed verification does not move the post-frame measurement endpoint.
-- `open_full_ms`: small fixture only, process launch to a frame after the
+- `open_full_ms`: every Live Preview fixture, process launch to a frame after the
   matching complete Live Preview provider was accepted. A limited provider is
   never a successful sample. Fixtures have no asynchronous media.
 - `scroll_frame_ms`: each repetition's p90 CPU `draw` cost during its wheel
@@ -53,9 +53,13 @@ Writing the diagnostic file happens asynchronously after the timestamp.
 This is the **Xvfb software post-frame boundary**. It proves neither GPU
 completion nor physical display scanout, and does not claim the product targets
 of 16 ms on M4 or 33 ms on weak Linux. Mac and GPU measurements are later work.
-The three large Live Preview scenarios are explicitly **unsupported until
-#1640**. They are neither passes nor failures; removing these exclusions and
-proving full presentation is part of #1640 acceptance.
+The three large Live Preview scenarios now require a complete matching LP
+projection, successful input/clipboard controls and scroll evidence. Their six
+samples (one warmup, five measured) appear in `support` and the job summary.
+They are **measured without a static budget**: the unchanged baseline retains
+its original 20 keys, and no invented values or relaxed thresholds are added.
+A missing/limited large LP result is no evidence and cannot pass. Same-runner
+A/B budgets for these new scenarios belong to #1662.
 
 ## Budgets and baseline updates
 
@@ -85,7 +89,10 @@ No environment variable overrides these limits.
 ## Noise protection and calibration
 
 `gate.py` runs the complete collector once. A valid budget failure permits
-exactly one fresh measurement of the **same binary**. Only two consecutive
+exactly one fresh measurement of the **same binary**, remeasuring the original
+20 budgeted metrics only. Attempt 1 must already have completed all large-LP
+support scenarios; the retry retains that evidence without repeating non-budgeted
+measurements. Only two consecutive
 budget failures make the job red. Both attempts and their median/p90 values
 are retained in `result.json`, raw artifacts and `GITHUB_STEP_SUMMARY`.
 Missing evidence, malformed data, a changed executable or a timeout fails

@@ -22,6 +22,8 @@ def summary(value=100, p90=None):
                                            value if p90 is None else p90]
                                    for metric in metrics}
                         for scenario, metrics in gate.budget.SCENARIOS.items()},
+            "support": {scenario: {metric: [9999, *([value] * 5)] for metric in metrics}
+                        for scenario, metrics in gate.budget.SUPPORT_SCENARIOS.items()},
             "unsupported": list(gate.budget.UNSUPPORTED),
             "evidence": ["CT141/mock-collector/trace.log"]}
 
@@ -105,6 +107,25 @@ class GateTests(unittest.TestCase):
         self.assertIn(commit, text)
         self.assertIn("GPU completion", text)
         self.assertIn("Unsupported (unmeasured; no PASS claim)", text)
+
+    def test_missing_large_lp_support_is_not_allowed_to_pass_or_retry(self):
+        raw = summary()
+        raw["support"] = None
+        code, report, runner = self.invoke(self.collector(raw))
+        self.assertEqual(code, 2)
+        self.assertEqual(report["result"], "NO_EVIDENCE")
+        self.assertIn("support measurements", report["error"])
+        self.assertEqual(runner.call_count, 1)
+
+    def test_retry_remeasures_only_budgeted_scenarios_after_valid_full_lp_support(self):
+        second = summary()
+        second["support"] = None
+        code, report, runner = self.invoke(self.collector(summary(200), second))
+        self.assertEqual(code, 0)
+        self.assertNotIn("--budgeted-only", runner.call_args_list[0].args[0])
+        self.assertIn("--budgeted-only", runner.call_args_list[1].args[0])
+        self.assertEqual(len(report["attempts"][0]["support_metrics"]), 12)
+        self.assertEqual(report["attempts"][1]["support_metrics"], {})
 
     def test_regression_then_pass_retries_once_and_shows_both_measurements(self):
         code, report, runner = self.invoke(self.collector(summary(200, 220), summary(100, 120)),

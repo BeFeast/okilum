@@ -19,10 +19,10 @@ mapping, source normalization, renderer-to-source reconstruction or canonical wr
 
 ## Hard limits and validation
 
-- Source and projected output: 256 KiB. Document identity: nonempty, at most 4,096 bytes.
-- At most 4,096 total block and marker ranges. Input must already be sorted and
+- Source and projected output: 2 MiB (#1640). Document identity: nonempty, at most 4,096 bytes.
+- At most 65,536 total block and marker ranges. Input must already be sorted and
   disjoint; overlapping, inverted, empty or out-of-bounds ranges are rejected.
-- At most 2,097,152 deterministic work units. Callers may lower this budget, never
+- At most 16,777,216 deterministic work units. Callers may lower this budget, never
   raise it. Byte scans/copies and fixed allowances for bounded range lookups consume
   fuel. This is a finite-work bound, not a measured native frame deadline.
 - Every range endpoint must be an extended grapheme boundary in canonical UTF-8.

@@ -32,7 +32,7 @@ BOM, Unicode, raw escapes/entities, newline choice, absent final newline, spacin
 
 ## Resource boundary
 
-Classifier input is limited to **64 KiB**, stricter than the mapping foundation's 256 KiB. Larger input returns exact Source without parsing. The classifier admits at most 4,096 AST nodes, depth 32 below the document root, 4,096 total block/marker ranges, and 4,096 total emitted styles/diagnostic reasons. Traversal and candidate scans are bounded by those limits and the input cap; no recursive classification starts before depth validation.
+One classifier invocation is limited to **64 KiB**. Larger input returns exact Source without parsing. The classifier admits at most 4,096 AST nodes, depth 32 below the document root, 4,096 total block/marker ranges, and 4,096 total emitted styles/diagnostic reasons. Traversal and candidate scans are bounded by those limits and the input cap; no recursive classification starts before depth validation. The ordinary editor's [segmented classification](live-preview-large-documents.md) applies these unchanged limits per top-level block instead of refusing the entire larger note; its document projection is independently bounded.
 
 Comrak has no cooperative cancellation/fuel API. Node/depth caps are checked **after parsing** and do not constitute a parser time or memory bound. No hard parse deadline or native input latency is claimed. A future adapter must schedule classification off the input/paint path, retain the complete canonical buffer, and discard stale results. Input/paint measurement, native single-buffer caret/IME/undo proof, and managed recovery/CAS integration remain separate acceptance gates for #211.
 

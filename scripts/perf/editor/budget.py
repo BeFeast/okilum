@@ -6,8 +6,8 @@ update BASELINE SUMMARY --output PATH proposes an equal-or-tighter baseline.
 ratchet OLD NEW checks a proposed baseline against the protected baseline.
 
 Exit 0 means pass; 1 means regression/relaxation; 2 means malformed/no evidence.
-These measurements do not establish native display latency or large Live Preview
-support (#1640). No environment variables can change the gate's policy.
+These measurements do not establish native display latency. Large Live Preview
+support is separately validated; its new timings have no invented static baseline. No environment variables can change the gate's policy.
 """
 
 import argparse
@@ -32,7 +32,9 @@ SCENARIOS = {
     "live:tiny.md": (*FRAME_METRICS, "open_full_ms"),
     "live:raw-tail-60k.md": (*FRAME_METRICS, "open_full_ms"),
 }
-UNSUPPORTED = tuple(f"live:{name}" for name in FIXTURES[1:])
+SUPPORT_SCENARIOS = {f"live:{name}": (*FRAME_METRICS, "open_full_ms")
+                     for name in FIXTURES[1:]}
+UNSUPPORTED = ()
 METRIC_KEYS = frozenset(f"{scenario}/{metric}"
                         for scenario, metrics in SCENARIOS.items() for metric in metrics)
 STATISTICS = ("median_ms", "p90_ms")
@@ -85,7 +87,7 @@ def aggregate(summary):
     nearest-rank p90 of five measured values is their maximum. Inputs are unmodified.
     Evidence entries are opaque provenance supplied by the collector.
     """
-    _keys(summary, ("schema", "boundary", "samples", "unsupported", "evidence"), "summary")
+    _keys(summary, ("schema", "boundary", "samples", "support", "unsupported", "evidence"), "summary")
     _header(summary)
     unsupported = summary["unsupported"]
     if (not isinstance(unsupported, list)
@@ -94,6 +96,7 @@ def aggregate(summary):
         raise ValueError(f"unsupported must contain exactly {list(UNSUPPORTED)!r}")
     if not isinstance(summary["evidence"], list) or not summary["evidence"]:
         raise ValueError("no evidence: expected a nonempty evidence list")
+    aggregate_support(summary)
     _keys(summary["samples"], SCENARIOS, "samples")
     result = {}
     for scenario, metrics in SCENARIOS.items():
@@ -122,6 +125,33 @@ def validate_baseline(baseline):
             raise ValueError(f"policy/{key} must equal {expected}")
     _validate_metrics(baseline["metrics"])
     return baseline
+
+
+def aggregate_support(summary, required=False):
+    """Measured full-LP scenarios, outside the unchanged 20-key static baseline.
+
+    A retry may explicitly omit them because they are not budget comparisons.
+    The gate requires every support scenario on attempt 1; missing/limited LP
+    is never a valid regression or a successful support claim.
+    """
+    rows = summary.get("support")
+    if rows is None:
+        if required:
+            raise ValueError("missing full Live Preview support measurements")
+        return {}
+    _keys(rows, SUPPORT_SCENARIOS, "support")
+    result = {}
+    for scenario, metrics in SUPPORT_SCENARIOS.items():
+        _keys(rows[scenario], metrics, scenario)
+        for metric in metrics:
+            samples = rows[scenario][metric]
+            if not isinstance(samples, list) or len(samples) != 6:
+                raise ValueError(f"{scenario}/{metric}: expected 6 support samples")
+            for value in samples:
+                _number(value, f"{scenario}/{metric}")
+            result[f"{scenario}/{metric}"] = {
+                "median_ms": float(median(samples[1:])), "p90_ms": float(max(samples[1:]))}
+    return result
 
 
 def verdict(baseline, observed):
@@ -187,8 +217,8 @@ def _write(path, value):
 
 def _scope():
     print(f"Scope: {BOUNDARY} (Xvfb software CPU cost; native display latency unproven)")
-    for scenario in UNSUPPORTED:
-        print(f"UNSUPPORTED: {scenario} (large Live Preview; #1640)")
+    for scenario in SUPPORT_SCENARIOS:
+        print(f"MEASURED WITHOUT STATIC BUDGET: {scenario} (#1662 A/B follows)")
 
 
 def main(argv=None):
@@ -234,7 +264,8 @@ def main(argv=None):
             _write(args.report, {"schema": SCHEMA, "boundary": BOUNDARY,
                                  "scope": "Xvfb software CPU cost; native display latency unproven",
                                  "unsupported": list(UNSUPPORTED), "evidence": summary["evidence"],
-                                 "metrics": observed, "failures": failures})
+                                 "metrics": observed, "support_metrics": aggregate_support(summary),
+                                 "failures": failures})
         print("FAIL: editor latency budget exceeded" if failures else "PASS: editor latency budget")
         return 1 if failures else 0
     except RelaxationError as error:

@@ -190,3 +190,23 @@ fn frontmatter_context_is_part_of_the_cache_key() {
         .iter()
         .any(|m| m.kind == crate::source_classifier::decorations::Kind::ThematicBreak));
 }
+
+#[test]
+fn cached_blocks_remain_present_before_a_changed_offscreen_block_is_reparsed() {
+    let original = "# Top\n\n**first**\n\n# Offscreen\n\n**last**\n";
+    let mut session = Session::default();
+    complete(&mut session, Snapshot::new("note.md", 1, original));
+    let edited = original.replacen("**last**", "**later**", 1);
+    let snapshot = Snapshot::new("note.md", 2, edited);
+    let mut progress = session.begin(snapshot.clone()).unwrap();
+    let partial = progress.classification();
+    assert!(!progress.is_complete());
+    assert_eq!(
+        project(&snapshot, partial.plan(), &Active::default())
+            .unwrap()
+            .display(),
+        "Top\n\nfirst\n\nOffscreen\n\n**later**\n"
+    );
+    assert_eq!(progress.advance(&mut session, 0..5, 1), 1);
+    assert!(progress.is_complete());
+}

@@ -107,7 +107,7 @@ def _attempt(binary, out, baseline, expected_sha, number, deadline, report):
     attempt = {"number": number, "directory": str(attempt_dir),
                "collector_exit": None, "timed_out": False,
                "exit_code": 2, "result": "NO_EVIDENCE",
-               "metrics": {}, "failures": [], "error": None,
+               "metrics": {}, "support_metrics": {}, "failures": [], "error": None,
                "binary_sha256_before": None, "binary_sha256_after": None}
     report["attempts"].append(attempt)
     started = time.monotonic()
@@ -115,7 +115,10 @@ def _attempt(binary, out, baseline, expected_sha, number, deadline, report):
         attempt["binary_sha256_before"] = _check_binary(binary, expected_sha)
         if deadline - time.monotonic() <= CLEANUP_SECONDS:
             raise NoEvidence("total deadline exhausted before attempt")
-        command = [sys.executable, str(HERE / "probe.py"), str(binary), str(attempt_dir)]
+        command = [sys.executable, str(HERE / "probe.py")]
+        if number == 2:
+            command.append("--budgeted-only")
+        command.extend([str(binary), str(attempt_dir)])
         try:
             code, timed_out = run_collector(command, out / f"attempt-{number}.collector.log",
                                            deadline)
@@ -129,6 +132,7 @@ def _attempt(binary, out, baseline, expected_sha, number, deadline, report):
             raise NoEvidence(f"collector exited {code}; see attempt-{number}.collector.log")
         raw = budget._load(attempt_dir / "summary.json")
         attempt["metrics"] = budget.aggregate(raw)
+        attempt["support_metrics"] = budget.aggregate_support(raw, required=number == 1)
         attempt["failures"] = budget.verdict(baseline, attempt["metrics"])
         attempt["evidence"] = raw["evidence"]
         if time.monotonic() >= deadline:
@@ -177,9 +181,22 @@ def markdown(report):
                 lines.append(f"| {_cell(key)} | {stats['median_ms']:.3f} | "
                              f"{stats['p90_ms']:.3f} | {failures or 'none'} |")
             lines.append("")
+        if attempt["support_metrics"]:
+            lines.extend(["### Full Live Preview support measurements", "",
+                          "All support cases require complete, non-limited matching projection frames, "
+                          "actual input and scroll controls. New timings are measured without a static "
+                          "budget; same-runner A/B belongs to #1662.", "",
+                          "| Metric | Median (ms) | p90 (ms) |",
+                          "| --- | ---: | ---: |"])
+            for key, stats in sorted(attempt["support_metrics"].items()):
+                lines.append(f"| {_cell(key)} | {stats['median_ms']:.3f} | {stats['p90_ms']:.3f} |")
+            lines.append("")
+        elif attempt["number"] == 2:
+            lines.extend(["Full-LP support is retained from attempt 1; this retry remeasures "
+                          "only the 20 static-budget metrics.", ""])
     lines.extend(["Unsupported (unmeasured; no PASS claim): "
                   + ", ".join(f"`{name}`" for name in budget.UNSUPPORTED)
-                  + " (large Live Preview; #1640).", ""])
+                  + ("." if budget.UNSUPPORTED else "none; large LP support requires the attempt-1 measurements above."), ""])
     return "\n".join(lines)
 
 
