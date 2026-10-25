@@ -204,6 +204,7 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
          cx.update(crate::init);
          let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
 diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crates/base/src/input/editor/display_map/projected_cache.rs
+new file mode 100644
 --- /dev/null
 +++ b/crates/base/src/input/editor/display_map/projected_cache.rs
 @@ -0,0 +1,173 @@
