@@ -61,6 +61,18 @@ def wait_for(predicate, process, log, seconds=90):
     raise AssertionError(f'Timeout: {log.read_text()}\nCallbacks:\n{callbacks}')
 
 
+UPDATER_START_BOUNDARY = 'window probe positive control detected standard Sparkle check'
+
+
+def assert_rollout_ordering(callbacks, group_receipt, probe_receipt):
+    # ArmWindowProbe records this positive control immediately before TSStart.
+    # A cancelled check can finish without ever offering an update (report 1).
+    assert UPDATER_START_BOUNDARY in callbacks, callbacks
+    for receipt in (group_receipt, probe_receipt):
+        assert receipt in callbacks, callbacks
+        assert callbacks.index(receipt) < callbacks.index(UPDATER_START_BOUNDARY), callbacks
+
+
 def main():
     assert sys.platform == 'darwin' and os.environ.get('GITHUB_SERVER_URL') == 'https://github.com', 'This integration test is hosted-macOS only'
     archive = Path(sys.argv[1])
@@ -226,12 +238,9 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     group_receipt = f'rollout group read={group} domain={domain} before-updater-start'
                     probe_domain = base_info.get('SUDefaultsDomain', identifier)
                     probe_receipt = f'rollout probe group read={group} domain={probe_domain} matches-source before-updater-start'
-                    wait_for(lambda: 'report 1 ' in trace.read_text(), process, output)
+                    wait_for(lambda: UPDATER_START_BOUNDARY in trace.read_text(), process, output)
                     callbacks = trace.read_text()
-                    assert group_receipt in callbacks, callbacks
-                    assert callbacks.index(group_receipt) < callbacks.index('report 1 '), callbacks
-                    assert probe_receipt in callbacks, callbacks
-                    assert callbacks.index(probe_receipt) < callbacks.index('report 1 '), callbacks
+                    assert_rollout_ordering(callbacks, group_receipt, probe_receipt)
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
                     if scenario == 'termination-retry-guard-refusal':
                         wait_for(lambda: 'retry editor guard refused' in trace.read_text(), process, output)

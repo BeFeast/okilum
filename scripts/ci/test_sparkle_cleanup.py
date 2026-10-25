@@ -13,6 +13,37 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
+class SparkleRolloutOrderingTests(unittest.TestCase):
+    def setUp(self):
+        self.source = 'rollout group read=6 domain=standard-main-bundle before-updater-start'
+        self.probe = 'rollout probe group read=6 domain=test.app matches-source before-updater-start'
+        self.boundary = 'window probe positive control detected standard Sparkle check'
+        self.cancel = 'foreground check started\nreport 7 \nordinary quit after cancellation\n'
+
+    def check(self, callbacks):
+        fixture.assert_rollout_ordering(callbacks, self.source, self.probe)
+
+    def test_cancel_check_finishes_without_an_update_offer(self):
+        self.check('\n'.join([self.source, self.probe, self.boundary, self.cancel]))
+
+    def test_missing_or_wrong_group_is_rejected_even_after_cancellation(self):
+        for source, probe in [('', self.probe), (self.source, ''),
+                              (self.source.replace('read=6', 'read=0'), self.probe),
+                              (self.source, self.probe.replace('read=6', 'read=0'))]:
+            with self.subTest(source=source, probe=probe), self.assertRaises(AssertionError):
+                self.check('\n'.join([source, probe, self.boundary, self.cancel]))
+
+    def test_groups_after_start_boundary_are_rejected(self):
+        for events in [(self.boundary, self.source, self.probe),
+                       (self.source, self.boundary, self.probe)]:
+            with self.subTest(events=events), self.assertRaises(AssertionError):
+                self.check('\n'.join([*events, self.cancel]))
+
+    def test_group_readbacks_without_positive_start_control_are_rejected(self):
+        with self.assertRaises(AssertionError):
+            self.check('\n'.join([self.source, self.probe, self.cancel]))
+
+
 class SparkleCleanupTests(unittest.TestCase):
     def test_clean_case_is_removed_once(self):
         remove = Mock()
