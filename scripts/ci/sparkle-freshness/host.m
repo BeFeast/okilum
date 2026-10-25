@@ -260,8 +260,9 @@ int main(void) {
                 || (requestedGroup.integerValue != 0 && requestedGroup.integerValue != 6)) return 33;
             [preferences setObject:requestedGroup forKey:@"SUUpdateGroupIdentifier"];
             [preferences synchronize];
-            // Read through a separate instance of precisely the store SUHost
-            // will use; do not merely read back the fixture's setter variable.
+            // Read precisely the store SUHost will use: the same standard
+            // singleton, or a second instance for an explicit suite. This checks
+            // in-process visibility, not independent on-disk persistence.
             NSUserDefaults *reader = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
                                             : NSUserDefaults.standardUserDefaults;
             id effectiveGroup = [reader objectForKey:@"SUUpdateGroupIdentifier"];

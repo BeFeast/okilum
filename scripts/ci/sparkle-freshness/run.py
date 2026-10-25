@@ -224,10 +224,10 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     group = base_info['TSPhaseGroup']
                     domain = base_info.get('SUDefaultsDomain', 'standard-main-bundle')
                     group_receipt = f'rollout group read={group} domain={domain} before-updater-start'
-                    wait_for(lambda: group_receipt in trace.read_text(), process, output)
+                    wait_for(lambda: 'report 1 ' in trace.read_text(), process, output)
                     callbacks = trace.read_text()
-                    if 'report 1 ' in callbacks:
-                        assert callbacks.index(group_receipt) < callbacks.index('report 1 '), callbacks
+                    assert group_receipt in callbacks, callbacks
+                    assert callbacks.index(group_receipt) < callbacks.index('report 1 '), callbacks
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
                     if scenario == 'termination-retry-guard-refusal':
                         wait_for(lambda: 'retry editor guard refused' in trace.read_text(), process, output)
