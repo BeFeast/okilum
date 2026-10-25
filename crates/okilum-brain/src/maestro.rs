@@ -59,6 +59,25 @@ impl Settings {
         Ok(())
     }
 }
+// A held-response service fixture controls when its peer may reply. Its
+// durability work must not race the production transport's five-second budget.
+#[cfg(test)]
+thread_local! {
+    static HELD_TEST_RESPONSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_held_test_response<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            HELD_TEST_RESPONSE.with(|held| held.set(self.0));
+        }
+    }
+    let _restore = Restore(HELD_TEST_RESPONSE.with(|held| held.replace(true)));
+    run()
+}
+
 #[derive(Clone)]
 pub struct Client {
     config: Settings,
@@ -73,11 +92,17 @@ impl Client {
             .as_deref()
             .map(crate::application::credential)
             .transpose()?;
+        let http = Http::builder().timeout(Duration::from_secs(5));
+        #[cfg(test)]
+        let http = if HELD_TEST_RESPONSE.with(|held| held.get()) {
+            http.timeout(None)
+        } else {
+            http
+        };
         Ok(Self {
             config,
             token,
-            http: Http::builder()
-                .timeout(Duration::from_secs(5))
+            http: http
                 .connect_timeout(Duration::from_secs(3))
                 .redirect(Policy::none())
                 .retry(reqwest::retry::never())
