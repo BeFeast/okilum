@@ -766,3 +766,73 @@ fn owned_feedback_center_single_instance_escape_and_close_with_owner(cx: &mut Te
         );
     });
 }
+
+#[gpui::test]
+fn close_keys_preserve_compose_drafts_and_close_the_unfocused_sent_screen(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        for key in ["escape", "secondary-w"] {
+            let (view, mut feedback) = open_from_button(reader);
+            feedback.simulate_input("Keep this draft");
+            let handle = feedback.window_handle();
+            feedback.simulate_keystrokes(key);
+            reader.run_until_parked();
+            reader.update(|_, cx| {
+                assert!(
+                    !cx.windows().contains(&handle.into()),
+                    "{key} closes compose"
+                );
+                assert_eq!(view.read(cx).text.read(cx).value(), "Keep this draft");
+            });
+            reader.update(|window, _| window.activate_window());
+            reader.dispatch_action(SendFeedback);
+            reader.run_until_parked();
+            feedback = feedback_context(reader);
+            assert_eq!(get_draft(&mut feedback).entity_id(), view.entity_id());
+            view.update(&mut feedback, |view, cx| {
+                view.state = SendState::Sent(Receipt {
+                    issue_number: 1703,
+                    issue_url: "https://git.oklabs.uk/BeFeast/okilum/issues/1703".into(),
+                    delivery_endpoint: None,
+                });
+                cx.notify();
+            });
+            feedback.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                feedback.debug_bounds("feedback-issue").is_some(),
+                "sent screen rendered"
+            );
+            let handle = feedback.window_handle();
+            feedback.simulate_keystrokes(key);
+            reader.run_until_parked();
+            reader.update(|_, cx| {
+                assert!(!cx.windows().contains(&handle.into()), "{key} closes sent");
+            });
+            reader.update(|window, _| window.activate_window());
+        }
+    });
+}
+
+#[gpui::test]
+fn close_keys_wait_while_feedback_is_sending(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        view.update(&mut feedback, |view, cx| {
+            view.state = SendState::Sending;
+            cx.notify();
+        });
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
+        let handle = feedback.window_handle();
+        for key in ["escape", "secondary-w"] {
+            feedback.simulate_keystrokes(key);
+            reader.run_until_parked();
+            reader.update(|_, cx| {
+                assert!(
+                    cx.windows().contains(&handle.into()),
+                    "{key} waits for send"
+                );
+                assert!(view.read(cx).visible);
+                assert!(matches!(view.read(cx).state, SendState::Sending));
+            });
+        }
+    });
+}
