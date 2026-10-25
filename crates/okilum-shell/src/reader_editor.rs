@@ -4216,6 +4216,10 @@ mod tests {
             std::fs::create_dir(root).unwrap();
             std::fs::write(root.join("note.md"), "# Original").unwrap();
         }
+        // Reader stores canonical roots. On macOS the temporary directory may
+        // use /var, a symlink to /private/var; compare the same filesystem identity.
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
             reader_open::install(cx);
