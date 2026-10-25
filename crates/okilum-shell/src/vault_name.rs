@@ -346,7 +346,10 @@ mod tests {
 
     #[gpui::test]
     fn vault_tooltip_keeps_the_full_absolute_path_and_name_separate(cx: &mut TestAppContext) {
-        let home = dirs::home_dir().expect("absolute home directory");
+        let home = PathBuf::from(
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .expect("absolute home directory"),
+        );
         let root = home
             .join("Library")
             .join("Mobile Documents")
