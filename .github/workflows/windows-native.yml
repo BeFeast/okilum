@@ -9,7 +9,7 @@ permissions: {contents: read}
 concurrency: {group: 'windows-native-${{ github.ref }}', cancel-in-progress: true}
 jobs:
   native:
-    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && inputs.package != 'okilum-http-health'
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
@@ -34,3 +34,47 @@ jobs:
         run: |
           Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
+      - name: Build the Windows network regression companion
+        if: inputs.package == 'okilum-http'
+        shell: pwsh
+        run: cargo build --locked -p okilum-http --example network_probe
+      - name: Upload exact-source network regression companion
+        if: inputs.package == 'okilum-http'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-network-${{ github.sha }}
+          path: target/debug/examples/network_probe.exe
+          retention-days: 3
+
+  health:
+    if: inputs.package == 'okilum-http-health'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+      - run: bash scripts/vendor-setup.sh
+      - name: Test production Feedback model and GET public health endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p network-receipt
+          printf 'source=%s\nrunner=%s\n' "$GITHUB_SHA" "$RUNNER_OS" > network-receipt/identity.txt
+          cargo test --locked -p okilum-http -- --test-threads=1
+          cargo run --locked -p okilum-http --example network_probe -- health https://pomoi.co/healthz network-receipt/pomoi.txt
+          cargo run --locked -p okilum-http --example network_probe -- health https://feedback.befeast.com/healthz network-receipt/alternate.txt
+          cat network-receipt/*.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feedback-network-${{ matrix.os }}-${{ github.sha }}
+          path: network-receipt/
+          retention-days: 7

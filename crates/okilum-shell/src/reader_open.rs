@@ -935,10 +935,11 @@ fn dispatch_path(path: &Path, cx: &mut App) {
 /// in one UI transaction. A window is registered before preparation starts so
 /// simultaneous OS deliveries cannot create duplicate vault readers.
 pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
+    let source = opening_source(cx);
     let resolving = resolve(opts, cx);
     cx.spawn(async move |cx| {
         let resolved = resolving.await;
-        cx.update(|cx| finish_open(resolved, cx));
+        cx.update(|cx| finish_open_from(resolved, source, cx));
     })
     .detach();
     Ok(())
@@ -982,15 +983,200 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
 }
 
 pub(crate) fn finish_open(resolved: Result<super::Opts>, cx: &mut App) {
-    match resolved {
-        Ok(opts) => {
-            if !focus_existing(&opts, cx) {
-                if let Err(error) = create_window(opts, None, None, cx) {
-                    show_error(error, cx);
-                }
-            }
+    // Startup restoration is not a request to replace an existing window.
+    finish_open_from(resolved, None, cx);
+}
+
+#[derive(Default)]
+struct LastReader(Option<WeakEntity<super::Reader>>);
+impl Global for LastReader {}
+
+pub(crate) fn focused(reader: WeakEntity<super::Reader>, cx: &mut App) {
+    cx.default_global::<LastReader>().0 = Some(reader);
+}
+
+fn opening_source(cx: &App) -> Option<WeakEntity<super::Reader>> {
+    let readers = readers(cx);
+    readers
+        .iter()
+        .rev()
+        .find(|r| Some(r.read(cx).reader_window) == cx.active_window())
+        .map(Entity::downgrade)
+        .or_else(|| {
+            cx.try_global::<LastReader>()
+                .and_then(|last| last.0.clone())
+        })
+}
+
+fn finish_open_from(
+    resolved: Result<super::Opts>,
+    source: Option<WeakEntity<super::Reader>>,
+    cx: &mut App,
+) {
+    let opts = match resolved {
+        Ok(opts) => opts,
+        Err(error) => return show_error(error, cx),
+    };
+    if focus_existing(&opts, cx) {
+        return;
+    }
+    let source = source.filter(|weak| {
+        weak.upgrade().is_some_and(|reader| {
+            let state = reader.read(cx);
+            !opts.single_file
+                && opts.vault.as_ref() != Some(&state.vault_root)
+                && cx.windows().contains(&state.reader_window)
+        })
+    });
+    if let Some(source) = source {
+        match super::reader_ui_state::vault_open(cx) {
+            "current" => return replace_vault(source, opts, cx),
+            "ask" => return ask_vault_destination(source, opts, cx),
+            _ => {}
         }
-        Err(error) => show_error(error, cx),
+    }
+    if let Err(error) = create_window(opts, None, None, cx) {
+        show_error(error, cx);
+    }
+}
+
+fn replace_vault(source: WeakEntity<super::Reader>, opts: super::Opts, cx: &mut App) {
+    let Some(reader) = source.upgrade() else {
+        return;
+    };
+    let handle = reader.read(cx).reader_window;
+    let _ = handle.update(cx, |_, window, cx| {
+        reader.update(cx, |reader, cx| {
+            // Match the close guard, including conflicts and failed durable saves.
+            if !reader.save_source(cx) {
+                return;
+            }
+            reader.record_ui_state(reader.ui_state.was_active(), cx);
+            super::reader_ui_state::flush(cx);
+            reader.start_loading(opts, window, cx);
+        });
+        window.activate_window();
+    });
+}
+
+struct VaultDestination {
+    source: WeakEntity<super::Reader>,
+    opts: super::Opts,
+    remember: bool,
+    focus: FocusHandle,
+}
+
+fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, cx: &mut App) {
+    let result = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
+                size(px(580.), px(250.)),
+                cx,
+            ))),
+            ..window_options(cx)
+        },
+        |window, cx| {
+            window.set_window_title("Okilum — Open another vault");
+            let view = cx.new(|cx| VaultDestination {
+                source,
+                opts,
+                remember: false,
+                focus: cx.focus_handle(),
+            });
+            view.read(cx).focus.clone().focus(window, cx);
+            cx.new(|cx| Root::new(view, window, cx))
+        },
+    );
+    if let Err(error) = result {
+        show_error(error, cx);
+    }
+}
+
+impl VaultDestination {
+    fn source_is_open(&self, cx: &App) -> bool {
+        self.source
+            .upgrade()
+            .is_some_and(|reader| cx.windows().contains(&reader.read(cx).reader_window))
+    }
+
+    fn answer(&self, current: bool, window: &mut Window, cx: &mut App) {
+        // A pending choice must survive its originating window. Keep the
+        // destination explicit instead of silently choosing another window.
+        if current && !self.source_is_open(cx) {
+            cx.refresh_windows();
+            return;
+        }
+        if self.remember {
+            super::reader_ui_state::set_vault_open(if current { "current" } else { "new" }, cx);
+        }
+        if current {
+            replace_vault(self.source.clone(), self.opts.clone(), cx);
+        } else if let Err(error) = create_window(self.opts.clone(), None, None, cx) {
+            show_error(error, cx);
+        }
+        window.remove_window();
+    }
+}
+impl Render for VaultDestination {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let source_is_open = self.source_is_open(cx);
+        v_flex()
+            .p_4()
+            .gap_3()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
+                if event.keystroke.key == "escape" {
+                    window.remove_window();
+                }
+            }))
+            .child(TitleBar::new().child("Open another vault"))
+            .when(!source_is_open, |view| {
+                view.child(
+                    "The original window was closed. Open this vault in a new window, or cancel.",
+                )
+            })
+            .child(format!(
+                "Where should {} open?",
+                self.opts
+                    .vault
+                    .as_deref()
+                    .map(|root| super::vault_name::shown(root, cx))
+                    .unwrap_or_default()
+            ))
+            .child(
+                gpui_component::checkbox::Checkbox::new("remember-vault-destination")
+                    .label("Remember my choice")
+                    .checked(self.remember)
+                    .on_click(cx.listener(|this, value: &bool, _, cx| {
+                        this.remember = *value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("vault-destination-cancel")
+                            .label("Cancel")
+                            .on_click(|_, window, _| window.remove_window()),
+                    )
+                    .child(
+                        Button::new("vault-destination-current")
+                            .label("In this window")
+                            .disabled(!source_is_open)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.answer(true, window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("vault-destination-new")
+                            .label("In a new window")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.answer(false, window, cx)),
+                            ),
+                    ),
+            )
     }
 }
 
@@ -1713,6 +1899,202 @@ mod entry_tests {
         ));
     }
     #[gpui::test]
+    fn another_vault_destination_asks_replaces_and_remembers(cx: &mut TestAppContext) {
+        use super::super::{reader_ui_state, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<_> = ["one", "two", "three"]
+            .into_iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("note.md"), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let opts = |index: usize| Opts {
+            vault: Some(roots[index].clone()),
+            session_directory: Some(state.clone()),
+            note: Some("note.md".into()),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            reader_ui_state::install(&state, cx);
+            assert_eq!(reader_ui_state::vault_open(cx), "ask");
+            finish_open(Ok(opts(0)), cx);
+        });
+        cx.run_until_parked();
+        let source = cx.update(|cx| readers(cx)[0].downgrade());
+        let original = cx.update(|cx| source.upgrade().unwrap().read(cx).reader_window);
+        cx.update(|cx| finish_open_from(Ok(opts(1)), Some(source.clone()), cx));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "ask creates a choice, not a second Reader"
+        );
+        cx.update(|cx| {
+            assert_eq!(readers(cx).len(), 1);
+            assert_eq!(source.upgrade().unwrap().read(cx).vault_root, roots[0]);
+            let prompt = cx.windows().into_iter().find(|w| *w != original).unwrap();
+            prompt
+                .downcast::<Root>()
+                .unwrap()
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .view()
+                        .clone()
+                        .downcast::<VaultDestination>()
+                        .ok()
+                        .unwrap();
+                    view.update(cx, |this, cx| {
+                        this.remember = true;
+                        this.answer(true, window, cx);
+                    });
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(reader_ui_state::vault_open(cx), "current");
+            assert_eq!(source.upgrade().unwrap().read(cx).vault_root, roots[1]);
+            assert_eq!(source.upgrade().unwrap().read(cx).reader_window, original);
+            reader_ui_state::flush(cx);
+            reader_ui_state::install(&state, cx);
+            assert_eq!(
+                reader_ui_state::vault_open(cx),
+                "current",
+                "remember survives reload"
+            );
+            reader_ui_state::set_vault_open("new", cx);
+            finish_open_from(Ok(opts(2)), Some(source.clone()), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(readers(cx).len(), 2);
+            assert_eq!(source.upgrade().unwrap().read(cx).vault_root, roots[1]);
+        });
+        cx.update(|cx| {
+            reader_ui_state::set_vault_open("ask", cx);
+            original
+                .update(cx, |_, window, _| window.activate_window())
+                .unwrap();
+            new_window(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(readers(cx).len(), 3, "New Window bypasses Ask"));
+        cx.update(|cx| {
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn pending_vault_choice_survives_its_source_window_closing(cx: &mut TestAppContext) {
+        use super::super::{reader_ui_state, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let roots: Vec<_> = ["first", "requested"]
+            .into_iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("note.md"), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            reader_ui_state::install(&fixture.path().join("state"), cx);
+            finish_open(
+                Ok(Opts {
+                    vault: Some(roots[0].clone()),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let source = cx.update(|cx| readers(cx)[0].clone());
+        let original = cx.update(|cx| source.read(cx).reader_window);
+        cx.update(|cx| {
+            finish_open_from(
+                Ok(Opts {
+                    vault: Some(roots[1].clone()),
+                    ..Default::default()
+                }),
+                Some(source.downgrade()),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let prompt = cx.windows().into_iter().find(|w| *w != original).unwrap();
+        cx.update(|cx| {
+            original
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap()
+        });
+        cx.run_until_parked();
+        // Keep the Reader entity alive: native-window liveness matters too.
+        cx.update(|cx| {
+            prompt
+                .downcast::<Root>()
+                .unwrap()
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .view()
+                        .clone()
+                        .downcast::<VaultDestination>()
+                        .ok()
+                        .unwrap();
+                    view.update(cx, |this, cx| {
+                        this.remember = true;
+                        assert!(!this.source_is_open(cx));
+                        this.answer(true, window, cx);
+                        assert_eq!(
+                            reader_ui_state::vault_open(cx),
+                            "ask",
+                            "unavailable choice is not remembered"
+                        );
+                    });
+                })
+                .unwrap()
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.windows().contains(&prompt),
+            "request remains available for an explicit new-window choice"
+        );
+        cx.update(|cx| {
+            prompt
+                .downcast::<Root>()
+                .unwrap()
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .view()
+                        .clone()
+                        .downcast::<VaultDestination>()
+                        .ok()
+                        .unwrap();
+                    view.update(cx, |this, cx| this.answer(false, window, cx));
+                })
+                .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(reader_ui_state::vault_open(cx), "new");
+            assert!(reader_of(&roots[1], cx).is_some());
+            assert!(!cx.windows().contains(&prompt));
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+    }
+
+    #[gpui::test]
     fn ordinary_startup_restores_local_document_and_first_run_opens_entry(cx: &mut TestAppContext) {
         use super::super::{reader_history::ReadingHistory, reader_startup, Opts};
         let fixture =
@@ -2315,6 +2697,9 @@ mod entry_tests {
                 install(cx);
                 cx.set_global(TestSessionDirectory(state.clone()));
                 reader_open_windows::install(state.clone(), cx);
+                // This fixture explicitly opens several independent vault windows.
+                super::super::reader_ui_state::install(&state, cx);
+                super::super::reader_ui_state::set_vault_open("new", cx);
                 cx.set_global(reader_startup::ReopenBase(base.clone()));
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
             });
@@ -2897,6 +3282,9 @@ mod entry_tests {
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_open_windows::install(state.clone(), cx);
+            // This fixture explicitly opens several independent vault windows.
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
         });
@@ -3033,6 +3421,7 @@ mod entry_tests {
             // As in the app: a vault opened without a note takes the one its
             // UI state names (the muninn run of #1375 failed on this).
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
         });

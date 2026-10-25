@@ -712,8 +712,16 @@ impl Render for FeedbackView {
             }));
         if let SendState::Sent(receipt) = &self.state {
             let url = receipt.issue_url.clone();
+            let delivery_host = receipt
+                .delivery_endpoint
+                .as_deref()
+                .and_then(|endpoint| url::Url::parse(endpoint).ok())
+                .and_then(|endpoint| endpoint.host_str().map(str::to_owned));
             return body
                 .child("Thank you — feedback sent.")
+                .when_some(delivery_host, |body, host| {
+                    body.child(div().text_sm().child(format!("Sent via {host}")))
+                })
                 .child(
                     h_flex().child(
                         div()

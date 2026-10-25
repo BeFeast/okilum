@@ -230,6 +230,29 @@ fn append_report(root: Option<&Path>, state: Option<&Path>, report: &serde_json:
     }
 }
 
+/// Transport failures retain their full cause chain outside the vault (#1667).
+pub(crate) fn network_failure(operation: &str, error: &anyhow::Error) {
+    append_report(
+        None,
+        None,
+        &serde_json::json!({
+            "time": timestamp(), "phase": "network_error",
+            "details": {"operation": operation, "error": format!("{error:#}")},
+        }),
+    );
+}
+
+pub(crate) fn feedback_delivery(endpoint: &str) {
+    append_report(
+        None,
+        None,
+        &serde_json::json!({
+            "time": timestamp(), "phase": "feedback_delivery",
+            "details": {"endpoint": endpoint},
+        }),
+    );
+}
+
 fn timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -924,6 +924,21 @@ impl Settings {
                         ),
                         cx,
                     ))
+                    .child(setting_row(
+                        "Open another vault",
+                        "Choose where another vault opens. New Window always creates a window.",
+                        h_flex().gap_1().children([
+                            ("current", "In this window"),
+                            ("new", "In a new window"),
+                            ("ask", "Ask every time"),
+                        ].into_iter().map(|(value, label)| {
+                            Button::new(SharedString::from(format!("vault-open-{value}")))
+                                .label(label)
+                                .selected(reader_ui_state::vault_open(cx) == value)
+                                .on_click(move |_, _, cx| reader_ui_state::set_vault_open(value, cx))
+                        })),
+                        cx,
+                    ))
                     .child(reader_reading_controls::render(window, cx))
                     .child(setting_row(
                         "Show labels on toolbar buttons",
