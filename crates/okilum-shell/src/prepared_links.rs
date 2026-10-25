@@ -292,7 +292,9 @@ impl Reader {
         let started = std::time::Instant::now();
         self.open_started = Some(started);
         let preparation_trace = reader_diagnostics::trace(cx);
-        let platform_probe = preparation_trace.as_ref().map(|_| platform::text_diagnostics::Probe::start());
+        let platform_probe = preparation_trace
+            .as_ref()
+            .map(|_| platform::text_diagnostics::Probe::start());
         cx.spawn_in(window, async move |this, cx| {
             let document = cx
                 .background_executor()
