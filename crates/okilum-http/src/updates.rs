@@ -17,10 +17,7 @@ pub struct Source {
 impl Source {
     pub fn new(base: &str, version: &str) -> Result<Self> {
         let base = url::Url::parse(&format!("{}/", base.trim_end_matches('/')))?;
-        ensure!(
-            matches!(base.scheme(), "https" | "http"),
-            "Unsupported feed scheme"
-        );
+        ensure!(base.scheme() == "https", "Update feeds require HTTPS");
         Ok(Self {
             base,
             version: version.into(),
@@ -177,6 +174,28 @@ mod tests {
         });
         (url, task)
     }
+    // Plain HTTP exists only inside cfg(test), never the production constructor.
+    fn fixture_source(base: &str, version: &str) -> Source {
+        let base = url::Url::parse(&format!("{}/", base.trim_end_matches('/'))).unwrap();
+        assert_eq!(base.scheme(), "http");
+        assert_eq!(base.host_str(), Some("127.0.0.1"));
+        Source {
+            base,
+            version: version.into(),
+        }
+    }
+    #[test]
+    fn production_constructor_rejects_plaintext_feed_downgrade() {
+        for endpoint in [
+            "http://updates.example/updates",
+            "http://127.0.0.1/updates",
+            "file:///updates",
+            "ftp://example/updates",
+        ] {
+            assert!(Source::new(endpoint, "test").is_err(), "{endpoint}");
+        }
+        assert!(Source::new("https://updates.example/updates", "test").is_ok());
+    }
     fn app() -> Manifest {
         Manifest {
             id: "BeFeast + &?".into(),
@@ -195,7 +214,7 @@ mod tests {
     fn feed_preserves_channel_query_and_user_agent() {
         for channel in ["stable", "beta"] {
             let (url, task) = server(200, br#"{"Assets":[]}"#.to_vec(), "");
-            let source = Source::new(&url, "0.1.test").unwrap();
+            let source = fixture_source(&url, "0.1.test");
             assert!(source
                 .get_release_feed(channel, &app(), "staging & ü")
                 .unwrap()
@@ -226,7 +245,7 @@ mod tests {
     fn package_streams_bytes_and_reports_progress() {
         let body = vec![42; 200_000];
         let (url, task) = server(200, body.clone(), "");
-        let source = Source::new(&url, "test").unwrap();
+        let source = fixture_source(&url, "test");
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("package.partial");
         let (tx, rx) = std::sync::mpsc::channel();
@@ -252,8 +271,7 @@ mod tests {
         for size in [2, 6] {
             let (url, task) = server(200, b"four".to_vec(), "");
             let dir = tempfile::tempdir().unwrap();
-            let error = Source::new(&url, "test")
-                .unwrap()
+            let error = fixture_source(&url, "test")
                 .download_release_entry(
                     &asset("app.nupkg", size),
                     &dir.path().join("partial"),
@@ -278,8 +296,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("partial");
             std::fs::write(&file, b"retained").unwrap();
-            let error = Source::new(&url, "test")
-                .unwrap()
+            let error = fixture_source(&url, "test")
                 .download_release_entry(&asset("app.nupkg", 8), &file, None)
                 .unwrap_err();
             assert!(error.to_string().contains(&status.to_string()), "{error}");
@@ -291,8 +308,7 @@ mod tests {
     fn feed_limit_and_invalid_json_are_not_accepted() {
         for body in [b"not JSON".to_vec(), vec![b' '; 4 * 1024 * 1024 + 1]] {
             let (url, task) = server(200, body, "");
-            assert!(Source::new(&url, "test")
-                .unwrap()
+            assert!(fixture_source(&url, "test")
                 .get_release_feed("stable", &app(), "staging")
                 .is_err());
             task.join().unwrap();
@@ -300,7 +316,7 @@ mod tests {
     }
     #[test]
     fn untrusted_path_components_are_rejected_before_network_or_file_io() {
-        let source = Source::new("http://127.0.0.1:1/updates", "test").unwrap();
+        let source = fixture_source("http://127.0.0.1:1/updates", "test");
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("must-not-exist");
         for name in [
@@ -344,7 +360,7 @@ mod tests {
             let manifest = root.join("sq.version");
             std::fs::write(&manifest, br#"<package><metadata><id>Okilum.NetworkRegression</id><version>0.1.1</version><mainExe>fixture.exe</mainExe><os>win</os><channel>stable</channel></metadata></package>"#).unwrap();
             let manager = velopack::UpdateManager::new(
-                Source::new(&url, "test").unwrap(),
+                fixture_source(&url, "test"),
                 Some(velopack::UpdateOptions {
                     ExplicitChannel: Some("stable".into()),
                     ..Default::default()

@@ -9,7 +9,8 @@ implicit Windows credentials or alternate endpoint is added.
 
 Stable/beta selection and URLs remain in windows_feed. Preserve localVersion,
 id and stagingId query values with URL encoding, send an explicit Okilum version
-User-Agent and disable redirects. A feed is bounded to4MiB; package filenames
+User-Agent, require HTTPS feed bases and disable redirects. Plain HTTP loopback
+is constructed only inside cfg(test), never via the production constructor. A feed is bounded to4MiB; package filenames
 must be safe ASCII basenames. Stream downloads under the declared size and retain
 progress. Velopack still owns its update lock, delta fallback, checksum/size
 validation, partial→final rename, apply and restart. The optional public-utils
