@@ -48,3 +48,5 @@ pub fn managed_clipboard() -> Arc<dyn ExactClipboardProvider> {
 
 #[cfg(all(test, windows))]
 mod windows_clipboard_tests;
+
+pub(crate) mod text_diagnostics;

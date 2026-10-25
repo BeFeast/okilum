@@ -3886,7 +3886,10 @@ impl Reader {
             .overflow_hidden()
             .rounded(px(6.))
             .font_weight(FontWeight::SEMIBOLD)
-            .tooltip(title)
+            .tooltip(project.as_ref().map_or_else(
+                || vault_name::path_tooltip(&self.vault_root),
+                |_| title.to_string(),
+            ))
             .debug_selector(|| "sidebar-vault-title".into())
             .dropdown_menu(move |menu, _, _| {
                 name_items.iter().fold(menu, |menu, item| {
@@ -6500,6 +6503,8 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_timing =
+            platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
@@ -6511,13 +6516,20 @@ impl Render for Reader {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let sync_started = std::time::Instant::now();
+        let sync_timing =
+            platform::text_diagnostics::time(platform::text_diagnostics::Work::ReaderUiSync);
         self.sync_tree();
         self.sync_sidebar(cx);
         self.restore_ui_tree();
         self.restore_ui_source(window, cx);
         self.record_ui_state(window.is_window_active(), cx);
-        self.sync_backlink_titles();
+        {
+            let _timing =
+                platform::text_diagnostics::time(platform::text_diagnostics::Work::BacklinkTitles);
+            self.sync_backlink_titles();
+        }
         self.sync_outline_section(cx);
+        drop(sync_timing);
         let diagnostics = self
             .loading
             .as_ref()

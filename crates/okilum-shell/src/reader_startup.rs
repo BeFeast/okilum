@@ -564,6 +564,7 @@ impl Render for Entry {
                 let open = root.clone();
                 let mut row = h_flex().w_full().gap_1().child(
                     Button::new(("recent-folder", index))
+                        .tooltip(super::vault_name::path_tooltip(root))
                         .ghost()
                         .flex_1()
                         .label(label)
