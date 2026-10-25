@@ -48,7 +48,7 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
      /// Get the bytes length of this line.
      #[inline]
      pub(crate) fn len(&self) -> usize {
-@@ -416,7 +421,10 @@
+@@ -416,27 +421,37 @@
          epoch: u64,
          hang_room: Pixels,
          window: &gpui::Window,
@@ -60,12 +60,15 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
          let mut trace = TraceSpan::new("set_projected", TraceIdentity::new(projection.source().stamp, epoch, true));
          let text = Rope::from(projection.text());
          trace.counts([text.len() as u64, text.lines_len() as u64, projection.styles().len() as u64, 0]);
-@@ -426,6 +434,17 @@
+         let mut items = Vec::new();
+         let scales = projection.line_scales();
++        let mut styles = crate::input::projection_layout::StyleCursor::new(projection.styles());
+         for row in 0..text.lines_len() {
              let line = text.slice_line(row).to_string();
              let start = text.line_start_offset(row);
              let font_size = self.font_size * crate::input::projection::line_scale(scales, row);
-+            let full_runs = crate::input::projection_layout::projected_runs(
-+                projection, start..start + line.len(), &self.font, gpui::black());
++            styles.advance(start..start + line.len());
++            let full_runs = styles.runs(start..start + line.len(), &self.font, gpui::black());
 +            let key = super::projected_cache::LineKey::new(
 +                &line, &full_runs, font_size, self.wrap_width, window.scale_factor(),
 +                crate::input::projection::line_hang(scales, row), hang_room);
@@ -78,7 +81,19 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
              // A hanging prefix (a revealed heading marker) that fits the room
              // left of the text is drawn in the margin, so the line wraps as if
              // it were not there: revealing it never changes the rows (#1034).
-@@ -444,12 +463,10 @@
+             let hang = crate::input::projection::line_hang(scales, row);
+             let hang = if hang > 0 && hang < line.len() && line.is_char_boundary(hang) && !has_rtl(&line) {
+-                let runs = crate::input::projection_layout::projected_runs(
+-                    projection,
+-                    start..start + hang,
+-                    &self.font,
+-                    gpui::black(),
+-                );
++                let runs = styles.runs(start..start + hang, &self.font, gpui::black());
+                 let marker = window
+                     .text_system()
+                     .shape_line(line[..hang].to_string().into(), font_size, &runs, None);
+@@ -444,12 +459,9 @@
              } else {
                  0
              };
@@ -89,13 +104,12 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
 -                gpui::black(),
 -            );
 +            let runs = if hang == 0 { full_runs } else {
-+                crate::input::projection_layout::projected_runs(
-+                    projection, start + hang..start + line.len(), &self.font, gpui::black())
++                styles.runs(start + hang..start + line.len(), &self.font, gpui::black())
 +            };
              let shape_start = attribution::now();
              let shaped = window
                  .text_system()
-@@ -481,15 +498,14 @@
+@@ -481,15 +493,14 @@
                      }),
                  ),
              };
@@ -381,3 +395,118 @@ new file mode 100644
 +        );
 +    }
 +}
+diff --git a/crates/base/src/input/projection_layout.rs b/crates/base/src/input/projection_layout.rs
+--- a/crates/base/src/input/projection_layout.rs
++++ b/crates/base/src/input/projection_layout.rs
+@@ -1,5 +1,5 @@
+ //! Shared font runs for wrapping and painting projected source.
+-use super::projection::SourceProjection;
++use super::projection::{ProjectionStyle, SourceProjection};
+ use gpui::{Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, px};
+ use std::ops::Range;
+ 
+@@ -9,8 +9,17 @@
+     font: &Font,
+     color: Hsla,
+ ) -> Vec<TextRun> {
++    projected_runs_for_styles(projection.styles().iter(), range, font, color)
++}
++
++fn projected_runs_for_styles<'a>(
++    styles: impl Iterator<Item = &'a ProjectionStyle> + Clone,
++    range: Range<usize>,
++    font: &Font,
++    color: Hsla,
++) -> Vec<TextRun> {
+     let mut boundaries = vec![range.start, range.end];
+-    for style in projection.styles() {
++    for style in styles.clone() {
+         if style.range.start.0 < range.end && style.range.end.0 > range.start {
+             boundaries.push(style.range.start.0.max(range.start));
+             boundaries.push(style.range.end.0.min(range.end));
+@@ -25,9 +34,7 @@
+             let mut actual_font = font.clone();
+             let mut strike = false;
+             let mut actual_color = color;
+-            for style in projection
+-                .styles()
+-                .iter()
++            for style in styles.clone()
+                 .filter(|s| s.range.start.0 <= r[0] && s.range.end.0 >= r[1])
+             {
+                 if let Some(family) = &style.font_family {
+@@ -57,6 +64,42 @@
+             }
+         })
+         .collect()
++}
++
++/// One forward wrapping pass. Only the styles overlapping this logical line
++/// participate in shaping. Preserve original provider order for overlapping
++/// font/color overrides; providers need not sort the input styles.
++pub(super) struct StyleCursor<'a> {
++    starts: Vec<(usize, &'a ProjectionStyle)>,
++    active: Vec<(usize, &'a ProjectionStyle)>,
++    next: usize,
++    start: usize,
++}
++
++impl<'a> StyleCursor<'a> {
++    pub(super) fn new(styles: &'a [ProjectionStyle]) -> Self {
++        let mut starts: Vec<_> = styles.iter().enumerate().collect();
++        starts.sort_by_key(|(_, style)| style.range.start.0);
++        Self { starts, active: Vec::new(), next: 0, start: 0 }
++    }
++
++    pub(super) fn advance(&mut self, line: Range<usize>) {
++        debug_assert!(line.start >= self.start, "wrapping visits lines in source order");
++        self.start = line.start;
++        self.active.retain(|(_, style)| style.range.end.0 > line.start);
++        while let Some(&(index, style)) = self.starts.get(self.next) {
++            if style.range.start.0 >= line.end { break; }
++            self.next += 1;
++            if style.range.end.0 > line.start {
++                self.active.push((index, style));
++            }
++        }
++        self.active.sort_by_key(|(index, _)| *index);
++    }
++
++    pub(super) fn runs(&self, range: Range<usize>, font: &Font, color: Hsla) -> Vec<TextRun> {
++        projected_runs_for_styles(self.active.iter().map(|(_, style)| *style), range, font, color)
++    }
+ }
+ 
+ /// Clip a *displayed user hit*, never a native canonical replacement range.
+@@ -193,6 +236,31 @@
+ mod tests {
+     use super::*;
+     use crate::input::projection::ConcealBias;
++
++    #[test]
++    fn wrapping_style_cursor_matches_all_styles_with_overrides_and_gaps() {
++        use super::super::projection::ProjectedByte;
++        let style = |start, end, bold, family: Option<&str>| ProjectionStyle {
++            range: ProjectedByte(start)..ProjectedByte(end), font_family: family.map(str::to_owned),
++            color: None, bold, italic: !bold, strikethrough: false,
++        };
++        // Deliberately unsorted and overlapping: original provider order, not
++        // start-offset order, decides the last family/color override.
++        let styles = [style(21, 32, true, Some("monospace")),
++            style(0, 40, false, Some("sans-serif")), style(8, 12, true, None),
++            style(20, 25, false, Some("serif")), style(0, 0, true, None)];
++        let mut cursor = StyleCursor::new(&styles);
++        let font = gpui::font("sans-serif");
++        for line in [0..7, 8..16, 17..17, 18..30, 31..39, 41..50] {
++            cursor.advance(line.clone());
++            for range in [line.clone(), line.start..line.start,
++                line.start..line.start + (line.end - line.start) / 2] {
++                assert_eq!(cursor.runs(range.clone(), &font, gpui::black()),
++                    projected_runs_for_styles(styles.iter(), range, &font, gpui::black()));
++            }
++        }
++        assert_eq!(cursor.next, styles.len(), "each style enters the cursor only once");
++    }
+ 
+     #[test]
+     fn grapheme_table_matches_original_at_every_byte_and_both_biases() {
