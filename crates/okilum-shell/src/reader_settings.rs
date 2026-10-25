@@ -1649,6 +1649,7 @@ mod tests {
             environment: Some("test".into()),
             manager_project: Some("brain".into()),
             manager: okilum_t3::projects::Manager::NotStarted,
+            appearance: Default::default(),
         };
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| {

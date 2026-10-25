@@ -244,10 +244,6 @@ impl ManagerPanel {
     }
 
     /// The T3 origin this panel uses (saved, or typed in Settings → T3).
-    #[cfg(test)]
-    pub(super) fn origin_value(&self, cx: &App) -> String {
-        self.origin.read(cx).value().to_string()
-    }
 
     fn connected(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -743,6 +739,57 @@ mod status_tests {
     use super::*;
     use ::core::prelude::v1::test;
     use std::time::Duration;
+
+    #[gpui::test]
+    fn shared_connection_refreshes_only_panels_without_project_overrides(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let project = Project {
+            folder: temp.path().into(),
+            name: "Fixture".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("fixture".into()),
+            manager_project: None,
+            // No network path: this fixture has no thread to connect.
+            manager: Manager::NotStarted,
+            appearance: Default::default(),
+        };
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let panel = cx
+                .new(|cx| ManagerPanel::new(project, Some(temp.path().join("state")), window, cx));
+            Root::new(panel, window, cx)
+        });
+        visual.run_until_parked();
+        let panel = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ManagerPanel>().unwrap()
+        });
+        panel.read_with(visual, |panel, _| assert!(!panel.project_override));
+        visual.update(|_, cx| {
+            cx.set_global(reader_t3_settings::Connection {
+                origin: Some("https://shared.example".into()),
+            })
+        });
+        visual.run_until_parked();
+        panel.update_in(visual, |panel, _, cx| {
+            assert_eq!(
+                panel.origin.read(cx).value().as_str(),
+                "https://shared.example"
+            );
+            panel.project_override = true;
+        });
+        visual.update(|_, cx| {
+            cx.set_global(reader_t3_settings::Connection {
+                origin: Some("https://changed.example".into()),
+            })
+        });
+        visual.run_until_parked();
+        panel.read_with(visual, |panel, cx| {
+            assert_eq!(
+                panel.origin.read(cx).value().as_str(),
+                "https://shared.example"
+            )
+        });
+    }
 
     #[test]
     fn retries_back_off_2_5_10_then_every_30_seconds() {
