@@ -100,6 +100,8 @@ def publish_channel(r2, key, tmp, channel, manifest, package, signature):
 
 
 def execute(args, r2, key, tmp):
+    if r2.call('GET', f'{PREFIX}/frozen.json') is not None:
+        raise ValueError('Pacman repository is frozen; Linux releases use AppImage')
     name = package_name(args.build)
     archive = f'{PREFIX}/builds/{args.build}'
     if args.command == 'publish':
