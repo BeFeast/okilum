@@ -193,3 +193,57 @@ fn unverified_outside_paths_do_not_activate_invalid_markdown_space_destinations(
         assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
     }
 }
+
+#[test]
+fn provisional_cached_image_identity_stays_visible_without_filesystem_calls() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("assets")).unwrap();
+    std::fs::write(root.path().join("note.md"), "# Start").unwrap();
+    std::fs::write(root.path().join("assets/picture.png"), "image").unwrap();
+    let mut vault = Vault::scan_metadata(root.path()).unwrap();
+    let expected = vault.resolve_asset("picture.png", "note.md").unwrap();
+    vault.inventory_complete = false;
+    let (document, report) = open_diagnostics::capture(|| {
+        render::reader_document_from_source(&vault, "note.md", "![picture](picture.png)")
+    });
+    assert!(document
+        .rendered
+        .contains(url::Url::from_file_path(expected).unwrap().as_str()));
+    assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
+}
+
+#[test]
+fn single_file_sibling_verification_keeps_the_original_rendered_url_actionable() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("note.md"), "# Start").unwrap();
+    std::fs::write(root.path().join("sibling.md"), "# Sibling").unwrap();
+    let mut vault = Vault::from_note_paths(["note.md".to_owned()]);
+    vault.root = root.path().to_owned();
+    vault.single_file = true;
+    // Complete within the currently browsed quick scope; sibling is not in
+    // that snapshot. Live verification may discover it, rendering may not.
+    vault.inventory_complete = true;
+    let (document, report) = open_diagnostics::capture(|| {
+        render::reader_document_from_source(&vault, "note.md", "[sibling](sibling.md)")
+    });
+    assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
+    assert_eq!(document.links.len(), 1);
+    assert!(document.rendered.contains("okilum://unresolved/sibling.md"));
+    let mut preparation = LinkPreparation::new(&vault, "note.md", |path| {
+        assert_eq!(path, "sibling.md");
+        Ok(TargetSnapshot {
+            revision: "same-sibling".into(),
+            headings: document_links::HeadingInventory::new("# Sibling"),
+            supports_setext: true,
+            managed: None,
+        })
+    })
+    .with_local_files();
+    let states = preparation.identities(&document.links);
+    let state = &states[&document.links[0].url];
+    assert_eq!(state.status, LinkStatus::Resolved);
+    assert_eq!(
+        state.action_url.as_deref(),
+        Some("okilum://open/sibling.md")
+    );
+}

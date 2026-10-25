@@ -97,7 +97,7 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
             }
             NodeValue::Image(img) => {
                 if !img.url.contains("://") {
-                    img.url = image_file_url(&img.url, &resolver, note_rel)
+                    img.url = image_file_url(&img.url, vault, &resolver, note_rel)
                         .unwrap_or_else(|| UNAVAILABLE_IMAGE.into());
                 }
             }
@@ -244,9 +244,18 @@ fn rewrite_source_links_collect(
     from_note: &str,
     identities: &mut Vec<crate::document_links::prepared::LinkIdentity>,
 ) -> String {
+    let resolver = crate::document_links::IndexedResolver::new(vault);
+    rewrite_source_links_indexed(text, &resolver, from_note, identities)
+}
+
+fn rewrite_source_links_indexed(
+    text: &str,
+    resolver: &crate::document_links::IndexedResolver<'_>,
+    from_note: &str,
+    identities: &mut Vec<crate::document_links::prepared::LinkIdentity>,
+) -> String {
     let mut output = text.to_owned();
     let mut resolutions = std::collections::BTreeMap::new();
-    let resolver = crate::document_links::IndexedResolver::new(vault);
     for link in resolver.parse(text, from_note).into_iter().rev() {
         let resolved = resolutions
             .entry((link.wiki, link.target.clone()))
@@ -290,6 +299,15 @@ fn rewrite_source_links_collect(
 /// blocks are not touched (#20).
 pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> String {
     let resolver = crate::document_links::IndexedResolver::new(vault);
+    rewrite_source_images_indexed(text, vault, &resolver, note_rel)
+}
+
+fn rewrite_source_images_indexed(
+    text: &str,
+    vault: &Vault,
+    resolver: &crate::document_links::IndexedResolver<'_>,
+    note_rel: &str,
+) -> String {
     rewrite_source_images_with(text, |url| {
         if url.contains("://") {
             return None;
@@ -334,15 +352,27 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
                     }),
             );
         }
-        Some(image_file_url(url, &resolver, note_rel).unwrap_or_else(|| UNAVAILABLE_IMAGE.into()))
+        Some(
+            image_file_url(url, vault, resolver, note_rel)
+                .unwrap_or_else(|| UNAVAILABLE_IMAGE.into()),
+        )
     })
 }
 
 fn image_file_url(
     target: &str,
+    vault: &Vault,
     resolver: &crate::document_links::IndexedResolver<'_>,
     from: &str,
 ) -> Option<String> {
+    // This branch reads only captured entries/asset_map. Preserve the accepted
+    // cached first-paint image identity until reconciliation completes.
+    if !vault.paths_complete() && !vault.single_file {
+        return vault
+            .resolve_asset(&crate::document_links::decode(target), from)
+            .and_then(|path| url::Url::from_file_path(path).ok())
+            .map(String::from);
+    }
     let resolved = resolver.resolve(target, false, from);
     (resolved.status == "attachment")
         .then(|| resolved.candidates.first())
@@ -797,13 +827,14 @@ fn process_source_collect(
         let _phase = crate::open_diagnostics::phase("preprocess");
         preprocess(&s)
     };
+    let resolver = crate::document_links::IndexedResolver::new(vault);
     let s = {
         let _phase = crate::open_diagnostics::phase("images");
-        rewrite_source_images(&s, vault, from)
+        rewrite_source_images_indexed(&s, vault, &resolver, from)
     };
     let s = {
         let _phase = crate::open_diagnostics::phase("links");
-        rewrite_source_links_collect(&s, vault, from, identities)
+        rewrite_source_links_indexed(&s, &resolver, from, identities)
     };
     let s = {
         let _phase = crate::open_diagnostics::phase("highlights");
