@@ -122,3 +122,7 @@ run_tests okilum-shell --bins updater::progress_ui_tests::
 if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
     run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
 fi
+
+# #1691: release fixture must use canonical macOS /var -> /private/var roots.
+# Exercise the same vault-switch save/conflict guard before beta publication.
+run_tests okilum-shell --bins reader_editor::tests::replacing_vault_saves_dirty_source_and_refuses_conflict --exact
