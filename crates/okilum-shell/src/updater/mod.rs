@@ -1,6 +1,8 @@
-//! macOS updates through stock Sparkle 2: its standard UI downloads, installs
-//! and relaunches. A manual check only probes and reports inline (#995). The
-//! app adds menu items and the beta channel preference.
+#[cfg(target_os = "linux")]
+pub(crate) mod appimage;
+// macOS updates through stock Sparkle 2: its standard UI downloads, installs
+// and relaunches. A manual check only probes and reports inline (#995). The
+// app adds menu items and the beta channel preference.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) mod linux_repo;
 #[cfg(target_os = "macos")]
@@ -60,9 +62,39 @@ pub(crate) fn installed_package() -> Option<String> {
 #[cfg(windows)]
 const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
+// Startup confirmation requires a constructed GUI window, not keyboard focus.
+// A restored/background Linux window (including Xvfb without a window manager)
+// may never become active; that must not prevent committing an applied update.
+#[cfg(any(target_os = "linux", test))]
+fn with_startup_window(cx: &App, confirm: impl FnOnce()) {
+    if !cx.windows().is_empty() {
+        confirm();
+    }
+}
+
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
+    #[cfg(target_os = "linux")]
+    if appimage::packaged() {
+        appimage::start();
+        _cx.spawn(async move |cx| {
+            let mut checked = status::generation();
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+                cx.update(|cx| {
+                    with_startup_window(cx, appimage::confirm_startup);
+                });
+                if status::generation() != checked {
+                    checked = status::generation();
+                    cx.update(|cx| cx.refresh_windows());
+                }
+            }
+        })
+        .detach();
+    }
     whats_new::install(_cx);
     #[cfg(windows)]
     {
@@ -129,7 +161,9 @@ pub(crate) fn available() -> bool {
     return macos::available();
     #[cfg(windows)]
     return windows::available();
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    return appimage::packaged();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     false
 }
 
@@ -141,6 +175,8 @@ pub(crate) fn apply_pending_at_start() -> bool {
 }
 
 pub(crate) fn check() {
+    #[cfg(target_os = "linux")]
+    appimage::check();
     #[cfg(target_os = "macos")]
     macos::check();
     #[cfg(windows)]
@@ -164,6 +200,10 @@ pub(crate) fn channel() -> &'static str {
     } else {
         "Stable"
     };
+    #[cfg(target_os = "linux")]
+    if appimage::packaged() {
+        return if appimage::beta() { "Beta" } else { "Stable" };
+    }
     #[cfg(target_os = "linux")]
     return if env!("OKILUM_BUILD_VERSION") == "development" {
         "Development"
@@ -221,12 +261,23 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
         }
         cx.refresh_windows();
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        if appimage::packaged() {
+            appimage::set_beta(enabled);
+            cx.refresh_windows();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (enabled, cx);
 }
 
 /// The same explicit action is exposed in About, Settings and the ready toast.
 pub(crate) fn action_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    if appimage::ready() {
+        return "Restart to update";
+    }
     #[cfg(target_os = "macos")]
     if macos::ready() {
         return "Restart now";
@@ -238,6 +289,8 @@ pub(crate) fn action_label() -> &'static str {
     "Check for Updates…"
 }
 pub(crate) fn restart_now(cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    appimage::restart(cx);
     #[cfg(windows)]
     windows::restart(None, cx);
     #[cfg(target_os = "macos")]
@@ -246,6 +299,11 @@ pub(crate) fn restart_now(cx: &mut App) {
 }
 
 pub(crate) fn activate(cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    if appimage::ready() {
+        appimage::restart(cx);
+        return;
+    }
     #[cfg(windows)]
     if windows::ready() {
         windows::restart(None, cx);
@@ -267,6 +325,10 @@ pub(crate) fn install_update() {
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    if window.is_window_active() && appimage::take_announcement() {
+        show_ready_notice(window, cx, appimage::restart);
+    }
     whats_new::notice(window, cx);
     #[cfg(windows)]
     if window.is_window_active() {
@@ -300,12 +362,7 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
 /// «Update ready» with Restart (#683). It stays until the user closes it or
 /// restarts: a downloaded update must not pass unnoticed. Closed, it does not
 /// return for the same package until the next launch.
-#[cfg(any(
-    windows,
-    target_os = "macos",
-    test,
-    all(target_os = "linux", feature = "updater-ui-harness")
-))]
+#[cfg(any(windows, test, target_os = "linux", target_os = "macos"))]
 fn show_ready_notice(
     window: &mut gpui::Window,
     cx: &mut App,
@@ -357,6 +414,36 @@ mod tests {
                 .size_full()
                 .children(Root::render_notification_layer(window, cx))
         }
+    }
+
+    #[gpui::test]
+    fn gui_startup_invokes_receipt_writer_after_window_creation(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("started");
+        cx.update(|cx| {
+            with_startup_window(cx, || {
+                std::fs::write(&receipt, b"startup confirmed\n").unwrap()
+            });
+            assert!(
+                !receipt.exists(),
+                "headless startup cannot confirm an update"
+            );
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Empty);
+            Root::new(view, window, cx)
+        });
+        // Exercise the same ordinary GUI startup boundary; no focus or native
+        // activation event is supplied. The real receipt writer's permissions,
+        // uid/path and compiled identity are covered by the producer roundtrip.
+        visual.update(|_, cx| {
+            with_startup_window(cx, || {
+                std::fs::write(&receipt, b"startup confirmed\n").unwrap()
+            });
+        });
+        assert_eq!(std::fs::read(receipt).unwrap(), b"startup confirmed\n");
     }
 
     /// #683: the notice used to vanish after 4 s, so an update downloaded while

@@ -225,8 +225,8 @@ fn windows_value(name: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&buffer[..len]))
 }
 
-/// How this copy was installed, without personal paths.
-fn install_kind() -> String {
+/// How this copy was installed; AppImage includes its original launch path.
+pub(crate) fn install_kind() -> String {
     #[cfg(windows)]
     {
         if crate::updater::channel() == "Portable" {
@@ -237,6 +237,9 @@ fn install_kind() -> String {
     }
     #[cfg(target_os = "linux")]
     {
+        if let Some(image) = std::env::var_os("APPIMAGE") {
+            return format!("AppImage ({:?})", std::path::PathBuf::from(image));
+        }
         use crate::updater::linux_repo::{current, Source};
         let exe = std::env::current_exe().ok();
         if exe.as_deref() != Some(std::path::Path::new("/usr/bin/okilum")) {

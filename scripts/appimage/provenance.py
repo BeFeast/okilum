@@ -20,4 +20,5 @@ Path('provenance.json').write_text(json.dumps({
                     for p in sorted(Path('tools').iterdir()) if p.is_file()},
     'bundled_libraries': Path('bundled-libraries.txt').read_text().splitlines(),
     'signed': False,
+    'acceptance_harness': os.environ.get('GITHUB_REF_NAME', '').startswith('forgejo-linux-pr/'),
 }, indent=2) + '\n')

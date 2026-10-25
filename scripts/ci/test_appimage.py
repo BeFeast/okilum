@@ -41,10 +41,10 @@ class AppImageTests(unittest.TestCase):
             for name in ('okilum.desktop', 'okilum.svg', 'AppRun'):
                 (extracted / name).touch()
             with patch.object(verify.subprocess, 'run', return_value=SimpleNamespace(
-                    stdout='libc.so.6 => /lib/libc.so.6', stderr='', returncode=0)) as loader:
+                    stdout='gpgv 2.4; libc.so.6 => /lib/libc.so.6', stderr='', returncode=0)) as loader:
                 parent_environment = dict(os.environ)
                 verify.verify(artifact, extracted)
-                loader.assert_called_once()
+                self.assertEqual(loader.call_count, 3)
                 self.assertEqual(loader.call_args.kwargs['env']['LD_LIBRARY_PATH'],
                                  str(extracted / 'usr/lib'))
                 self.assertEqual(dict(os.environ), parent_environment)

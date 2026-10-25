@@ -227,7 +227,7 @@ class Publication(unittest.TestCase):
     def test_wrong_source_version_or_bytes_and_signer_fail_before_mutation(self):
         for field, value in [('source_sha', 'b' * 40), ('build_version', '9999'),
                              ('release_version', '0.1.9999'), ('signed', True), ('workflow_run', '18'),
-                             ('sha256', '0' * 64), ('workflow_attempt', '2')]:
+                             ('sha256', '0' * 64), ('workflow_attempt', '2'), ('acceptance_harness', True)]:
             (self.directory / 'provenance.json').write_text(json.dumps({**self.provenance, field: value}))
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.publish()

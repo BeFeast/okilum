@@ -33,6 +33,11 @@ def verify(artifact, extracted):
                             capture_output=True, text=True, env=loader_env)
     print(result.stdout + result.stderr)
     require_loaded(result.stdout + result.stderr, result.returncode)
+    result = subprocess.run(['ldd', str(extracted / 'usr/bin/gpgv')], capture_output=True, text=True, env=loader_env)
+    require_loaded(result.stdout + result.stderr, result.returncode)
+    result = subprocess.run([str(extracted / 'usr/bin/gpgv'), '--version'], capture_output=True, text=True, env=loader_env)
+    if result.returncode or 'gpgv' not in result.stdout:
+        raise ValueError('Packaged signature verifier failed its positive control')
     for path in ('okilum.desktop', 'okilum.svg', 'AppRun'):
         if not (extracted / path).exists():
             raise ValueError('Missing AppDir entry: ' + path)
