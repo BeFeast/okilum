@@ -9,6 +9,7 @@ pub struct IndexedResolver<'a> {
 }
 impl<'a> IndexedResolver<'a> {
     pub fn new(vault: &'a Vault) -> Self {
+        let _phase = crate::open_diagnostics::phase("link_index_build");
         let mut assets: HashMap<String, Vec<String>> = HashMap::new();
         for entry in &vault.entries {
             if entry.kind != crate::vault::EntryKind::Attachment

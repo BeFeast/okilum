@@ -27,7 +27,8 @@ platform explanation, not a Linux profiler observation.
 Rendering now uses an explicit `IndexedResolver` over the captured inventory.
 It never calls the live resolver or path canonicalization. Markdown identity uses
 the existing note maps and captured occupied/non-directory facts; attachment
-suffix candidates are indexed once per rewrite pass, retaining ambiguity and
+suffix candidates are indexed once and shared by the image/link stages of a
+source pass (`link_index_build` reports the cost), retaining ambiguity and
 local-occupancy rules. Known lexical absolute paths inside the vault translate
 to indexed identities. Known vault-root spellings retain that identity. Unknown
 outside absolute paths produce an outside-file action without checking existence.
@@ -45,4 +46,9 @@ zero filesystem calls, 50 prepared identities and real parser/resolver activity.
 Calling the live resolver on the existing file is a positive control proving the
 filesystem counter detects work on the same OS. Additional cases preserve local,
 root and relative Markdown identity, ambiguous notes/assets, occupied local paths,
-and dangling symlink protection. Existing lazy-file tests retain existence checks.
+and dangling symlink protection. It also preserves cached first-paint image
+identities during provisional scans and verifies that a single-file sibling can
+be discovered by the separate background verifier while its original rendered
+URL remains actionable. Invalid CommonMark destinations with spaces do not gain
+a link merely because an unverified outside path is possible; the pinned
+conformance list is unchanged. Existing lazy-file tests retain existence checks.
