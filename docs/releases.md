@@ -210,3 +210,21 @@ with each other and retain their existing feed locks and monotonic guards.
 Verify the runner advertises only `publish`, then observe a main mirror and a
 release publisher start while a build runner remains occupied. Record queue wait
 and merge-to-feed separately; this removes PR queue starvation, not build time.
+
+## Independent signed Windows Stable (#1688)
+
+After exact-build Windows installation/feed/Restart/data acceptance and the manager's
+concrete signing and promotion GO, dispatch `releases.yml` on `main` with
+`windows_only: true`, `build: "<Windows build>"`, and `source: "<full main SHA>"`.
+Forgejo's dispatch API represents boolean inputs as strings (`"true"`). This selects
+that Windows build, independently of the current Mac Stable build/source. Without
+`source`, `windows_only` retains the legacy matching-Mac-build behavior.
+
+The independent route verifies main ancestry, archived source/build, catalog sizes
+and hashes, `signed=true` with signer fingerprint, Velopack package checksums and
+monotonic Stable version before any write. It requires no compilation or signing.
+`OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED` remains `1`; the independent route also
+rejects unsigned metadata if that variable is missing. Only Windows Stable package,
+Setup.exe and feed plus an exact-identity promotion receipt change. Mac/Linux feeds,
+tags, shared catalog Stable marker and notes remain unchanged. Failed publication
+can retry the same pinned identity; a different metadata identity fails closed.

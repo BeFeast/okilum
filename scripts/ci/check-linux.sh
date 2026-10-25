@@ -21,6 +21,7 @@ done
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 python3 -m unittest discover -s scripts/perf -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
+cargo test -p okilum-appimage --all-features
 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
 cargo check -p okilum-shell --no-default-features
 cargo test -p okilum-core --no-default-features --test portable_reader

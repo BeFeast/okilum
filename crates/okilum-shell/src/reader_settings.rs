@@ -22,6 +22,10 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+pub(crate) fn show_t3(cx: &mut App) {
+    show_section(None, Some(Section::T3), cx);
+}
+
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn show_updates(cx: &mut App) {
     show_section(None, Some(Section::Updates), cx);
@@ -331,6 +335,7 @@ impl Section {
     }
 }
 struct Settings {
+    t3: Option<Entity<reader_t3_settings::T3Settings>>,
     #[cfg(target_os = "linux")]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
@@ -358,12 +363,6 @@ struct Settings {
     editor_command: Option<(Entity<InputState>, Subscription)>,
     /// The build path of a new source-link mapping (#1165).
     map_from: Option<Entity<InputState>>,
-    /// Settings → T3 origin, made on first render of that section. Applied
-    /// on Enter, and on blur when it changed: there is no Connect button.
-    t3_origin: Option<(Entity<InputState>, Subscription)>,
-    /// What Settings itself put into that field (the panel's origin when it
-    /// was read), as opposed to what the user typed.
-    t3_seed: String,
 }
 impl Settings {
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -384,6 +383,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
+            t3: None,
             section: Section::remembered(cx),
             #[cfg(target_os = "linux")]
             sync: None,
@@ -398,8 +398,6 @@ impl Settings {
             _reader_changes: observer,
             editor_command: None,
             map_from: None,
-            t3_origin: None,
-            t3_seed: String::new(),
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -456,52 +454,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         self.reader = reader;
-        self.t3_origin = None;
-        cx.notify();
-    }
-    /// The open project's Manager panel and its T3 environment alias.
-    fn t3_target(&self, cx: &App) -> Option<(Entity<Reader>, okilum_t3::projects::Project)> {
-        let reader = self.reader.as_ref()?.upgrade()?;
-        let project = reader.read(cx).project_navigation.active.clone()?;
-        Some((reader, project))
-    }
-    /// The open project's Manager panel origin, if it has one yet.
-    fn t3_panel_origin(&self, cx: &App) -> Option<String> {
-        self.t3_target(cx)
-            .and_then(|(reader, _)| reader.read(cx).project_navigation.manager_panel.clone())
-            .map(|panel| panel.read(cx).origin_value(cx))
-            .filter(|origin| !origin.trim().is_empty())
-    }
-    fn t3_connect(&mut self, only_if_changed: bool, cx: &mut Context<Self>) {
-        let (Some((reader, _)), Some((input, _))) = (self.t3_target(cx), self.t3_origin.as_ref())
-        else {
-            return;
-        };
-        let Some(panel) = reader.read(cx).project_navigation.manager_panel.clone() else {
-            return;
-        };
-        let origin = input.read(cx).value().trim().to_string();
-        let current = panel.read(cx).origin_value(cx);
-        if origin.is_empty()
-            || only_if_changed && !t3_blur_applies(&origin, &self.t3_seed, &current)
-        {
-            return;
-        }
-        self.t3_seed = origin.clone();
-        // The browser is a native child of the Reader's window: connect there.
-        for handle in cx.windows() {
-            let Some(root) = handle.downcast::<Root>() else {
-                continue;
-            };
-            let panel = panel.clone();
-            let origin = origin.clone();
-            let reader_id = reader.entity_id();
-            let _ = root.update(cx, move |root, window, cx| {
-                if root.view().entity_id() == reader_id {
-                    panel.update(cx, |panel, cx| panel.connect_to(origin, window, cx));
-                }
-            });
-        }
+        self.t3 = None;
         cx.notify();
     }
     fn vault(&self, cx: &App) -> Option<Entity<Reader>> {
@@ -924,6 +877,21 @@ impl Settings {
                         ),
                         cx,
                     ))
+                    .child(setting_row(
+                        "Open another vault",
+                        "Choose where another vault opens. New Window always creates a window.",
+                        h_flex().gap_1().children([
+                            ("current", "In this window"),
+                            ("new", "In a new window"),
+                            ("ask", "Ask every time"),
+                        ].into_iter().map(|(value, label)| {
+                            Button::new(SharedString::from(format!("vault-open-{value}")))
+                                .label(label)
+                                .selected(reader_ui_state::vault_open(cx) == value)
+                                .on_click(move |_, _, cx| reader_ui_state::set_vault_open(value, cx))
+                        })),
+                        cx,
+                    ))
                     .child(reader_reading_controls::render(window, cx))
                     .child(setting_row(
                         "Show labels on toolbar buttons",
@@ -1294,48 +1262,7 @@ impl Settings {
             }
             #[cfg(target_os = "linux")]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
-            Section::T3 => {
-                let Some((reader, project)) = self.t3_target(cx) else {
-                    return content
-                        .child("Open a vault project to connect its Manager to T3.")
-                        .into_any_element();
-                };
-                let panel = reader.read(cx).project_navigation.manager_panel.clone();
-                let (status, error) =
-                    panel
-                        .as_ref()
-                        .map_or(("Not connected".into(), None), |panel| {
-                            let (line, error) = panel.read(cx).connection_status();
-                            (line.unwrap_or_else(|| "Connecting…".into()), error)
-                        });
-                content
-                    .child(div().text_sm().text_color(p.text_muted).child(
-                        "The T3 server where this project's Manager runs. Okilum remembers it per T3 environment.",
-                    ))
-                    .children(
-                        self.t3_origin
-                            .as_ref()
-                            .map(|(input, _)| Input::new(input).w_full()),
-                    )
-                    .child(
-                        div()
-                            .id("settings-t3-status")
-                            .text_sm()
-                            .text_color(p.text_muted)
-                            .child(format!(
-                                "{} · {}: {status}",
-                                project.name,
-                                project.environment.as_deref().unwrap_or("project")
-                            ))
-                            .when_some(error, |line, error| {
-                                line.tooltip(move |window, cx| {
-                                    gpui_component::tooltip::Tooltip::new(error.clone())
-                                        .build(window, cx)
-                                })
-                            }),
-                    )
-                    .into_any_element()
-            }
+            Section::T3 => content.children(self.t3.clone()).into_any_element(),
             Section::About => content.child(about::content(cx)).into_any_element(),
             // Nothing to do here yet, and it says so (#1356): connecting an
             // Inbox server is not offered in the Reader.
@@ -1379,35 +1306,11 @@ impl Render for Settings {
                     InputState::new(window, cx).placeholder("Build path, e.g. /src/ordgw")
                 }));
         }
-        if self.section == Section::T3 {
-            // The panel reads its saved origin asynchronously: an untouched
-            // field follows it instead of keeping the fallback it showed first.
-            let input = self.t3_origin.as_ref().map(|(input, _)| input.clone());
-            if let (Some(input), Some(panel)) = (input, self.t3_panel_origin(cx)) {
-                let typed = input.read(cx).value().to_string();
-                if let Some(origin) = t3_resync(&typed, &self.t3_seed, &panel) {
-                    input.update(cx, |input, cx| input.set_value(origin.clone(), window, cx));
-                    self.t3_seed = origin;
-                }
-            }
-        }
-        if self.section == Section::T3 && self.t3_origin.is_none() {
-            let saved = self
-                .t3_panel_origin(cx)
-                .unwrap_or_else(|| reader_manager_panel::DEFAULT_T3_ORIGIN.into());
-            self.t3_seed = saved.clone();
-            let input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(reader_manager_panel::DEFAULT_T3_ORIGIN)
-                    .default_value(saved)
-            });
-            let subscription =
-                cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
-                    InputEvent::PressEnter { .. } => this.t3_connect(false, cx),
-                    InputEvent::Blur => this.t3_connect(true, cx),
-                    _ => {}
-                });
-            self.t3_origin = Some((input, subscription));
+        if self.section == Section::T3 && self.t3.is_none() {
+            self.t3 =
+                Some(cx.new(|cx| {
+                    reader_t3_settings::T3Settings::new(self.reader.clone(), window, cx)
+                }));
         }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
@@ -1592,20 +1495,6 @@ pub(crate) fn render_update_status(
     )
 }
 
-/// Blur applies the Settings › T3 field only when the user typed something
-/// (it differs from what Settings put there) that differs from the panel's
-/// current origin. Enter always applies.
-fn t3_blur_applies(typed: &str, seed: &str, current: &str) -> bool {
-    let typed = typed.trim();
-    typed != seed.trim() && typed != current.trim()
-}
-
-/// An untouched Settings › T3 field takes the panel's origin when that
-/// arrives or changes; a field the user edited is left alone.
-fn t3_resync(typed: &str, seed: &str, panel: &str) -> Option<String> {
-    (typed.trim() == seed.trim() && panel.trim() != seed.trim()).then(|| panel.trim().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1699,28 +1588,6 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[test]
-    fn t3_field_blur_applies_only_what_the_user_typed() {
-        let saved = "http://10.10.0.23:23110";
-        let default = reader_manager_panel::DEFAULT_T3_ORIGIN;
-        // Settings opened before the panel's saved origin loaded: the field
-        // still shows the fallback, which must not replace the saved origin.
-        assert!(!t3_blur_applies(default, default, saved));
-        // An edit that differs from the panel's origin applies on blur.
-        assert!(t3_blur_applies("http://192.168.1.5:23110", default, saved));
-        // Typing the panel's own origin is not a change.
-        assert!(!t3_blur_applies(&format!(" {saved} "), default, saved));
-    }
-
-    #[test]
-    fn untouched_t3_field_follows_the_panel_origin_and_edits_stay() {
-        let saved = "http://10.10.0.23:23110";
-        let default = reader_manager_panel::DEFAULT_T3_ORIGIN;
-        assert_eq!(t3_resync(default, default, saved).as_deref(), Some(saved));
-        assert_eq!(t3_resync(saved, saved, saved), None);
-        assert_eq!(t3_resync("http://192.168.1.5", default, saved), None);
-    }
-
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     #[gpui::test]
     fn preview_uses_real_channel_controls_without_changing_the_platform_channel(
@@ -1756,6 +1623,57 @@ mod tests {
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(updater::channel(), platform_channel);
+    }
+
+    #[gpui::test]
+    fn manager_settings_entry_keeps_active_project_prefill(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("ops")).unwrap();
+        std::fs::write(
+            directory.path().join("ops/project.yaml"),
+            "t3: {environment: test, origin: 'https://project.example'}",
+        )
+        .unwrap();
+        let project = okilum_t3::projects::Project {
+            folder: directory.path().into(),
+            name: "Project".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("test".into()),
+            manager_project: Some("brain".into()),
+            manager: okilum_t3::projects::Manager::NotStarted,
+            appearance: Default::default(),
+        };
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                let mut reader = Reader::new(Opts::default(), window, cx);
+                reader.project_navigation.active = Some(project);
+                reader
+            });
+            window.activate_window();
+            Root::new(reader, window, cx)
+        });
+        // This is exactly the Manager button entry, including automatic active
+        // Reader resolution in show_section before Settings becomes active.
+        visual.update(|_, cx| show_t3(cx));
+        visual.run_until_parked();
+        let handle = visual.update(|_, cx| cx.global::<SettingsWindow>().0.unwrap());
+        handle
+            .update(visual, |root, _, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                let settings = settings.read(cx);
+                assert!(settings
+                    .reader
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .is_some());
+                let t3 = settings
+                    .t3
+                    .as_ref()
+                    .expect("Projects / T3 pane initialized");
+                assert_eq!(t3.read(cx).origin_value(cx), "https://project.example");
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -2631,4 +2549,49 @@ mod tests {
             );
         });
     }
+}
+
+// Native QA uses the exact Settings methods/actions, without preview status or
+// channel fixtures. These adapters are absent from normal product builds.
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_show(cx: &mut App) {
+    show_section(None, Some(Section::Updates), cx);
+}
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_channel(beta: bool, cx: &mut App) -> anyhow::Result<()> {
+    let handle = cx
+        .try_global::<SettingsWindow>()
+        .and_then(|s| s.0)
+        .ok_or_else(|| anyhow::anyhow!("Open native Settings first"))?;
+    handle.update(cx, |root, _, cx| {
+        let settings = root
+            .view()
+            .clone()
+            .downcast::<Settings>()
+            .map_err(|_| anyhow::anyhow!("Not native Settings"))?;
+        settings.update(cx, |settings, cx| settings.select_update_channel(beta, cx));
+        Ok(())
+    })?
+}
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_activate(cx: &mut App) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cx.try_global::<SettingsWindow>()
+            .and_then(|s| s.0)
+            .is_some(),
+        "Open native Settings first"
+    );
+    updater::activate(cx);
+    Ok(())
+}
+#[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+pub(crate) fn acceptance_section(cx: &mut App) -> Option<String> {
+    let handle = cx.try_global::<SettingsWindow>()?.0?;
+    handle
+        .update(cx, |root, _, cx| {
+            let settings = root.view().clone().downcast::<Settings>().ok()?;
+            Some(settings.read(cx).section.label().to_string())
+        })
+        .ok()
+        .flatten()
 }

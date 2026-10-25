@@ -1,0 +1,1213 @@
+#![cfg(target_os = "linux")]
+//! Linux AppImage updater. Production trust and endpoint cannot be overridden.
+use anyhow::{ensure, Context, Result};
+use base64::Engine as _;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Duration,
+};
+
+pub mod desktop;
+
+pub const FINGERPRINT: &str = "7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882";
+const ORIGIN: &str = "https://updates.befeast.com/";
+const IMAGE: &str = "Okilum-x86_64.AppImage";
+const MAX_IMAGE: u64 = 2 * 1024 * 1024 * 1024;
+const KEY: &str = include_str!("../../../scripts/arch/okilum-signing-key.asc");
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Release {
+    pub schema: u64,
+    pub platform: String,
+    pub channel: String,
+    pub build: u64,
+    pub version: String,
+    pub source: String,
+    pub filename: String,
+    pub sha256: String,
+    pub size: u64,
+    pub key: String,
+    pub fingerprint: String,
+    pub provenance_sha256: String,
+}
+
+impl Release {
+    fn validate(&self, channel: &str) -> Result<()> {
+        self.validate_authority(channel, FINGERPRINT)
+    }
+    fn validate_authority(&self, channel: &str, fingerprint: &str) -> Result<()> {
+        ensure!(
+            self.schema == 1 && self.platform == "linux-appimage",
+            "Unsupported release format"
+        );
+        ensure!(
+            self.channel == channel && matches!(channel, "beta" | "stable"),
+            "Release channel mismatch"
+        );
+        ensure!(
+            self.build > 5000 && self.version == format!("0.1.{}", self.build),
+            "Release build/version mismatch"
+        );
+        ensure!(
+            hex(&self.source, 40) && hex(&self.sha256, 64) && hex(&self.provenance_sha256, 64),
+            "Invalid source/checksum"
+        );
+        ensure!(
+            self.filename == IMAGE
+                && self.key == format!("okilum/linux/builds/{}/{IMAGE}", self.build),
+            "Invalid immutable payload path"
+        );
+        ensure!(
+            self.fingerprint == fingerprint && self.size > 0 && self.size <= MAX_IMAGE,
+            "Invalid signing authority or size"
+        );
+        Ok(())
+    }
+}
+fn hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn sha(path: &Path) -> Result<String> {
+    let mut hash = Sha256::new();
+    std::io::copy(&mut File::open(path)?, &mut hash)?;
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+// The producer and confirm_startup share the owner-only receipt contract.
+// tempfile directories otherwise default to 0777 masked by the caller's umask.
+fn stage_directory(parent: &Path) -> Result<tempfile::TempDir> {
+    Ok(tempfile::Builder::new()
+        .prefix(".okilum-update-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)?)
+}
+
+/// APPIMAGE must designate the original regular user-owned file, never the
+/// extracted executable. Symlinks and hardlinked installs require manual updates.
+#[derive(Debug)]
+pub struct Target {
+    pub path: PathBuf,
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    hash: String,
+}
+impl Target {
+    pub fn detect() -> Result<Self> {
+        Self::open(&PathBuf::from(
+            std::env::var_os("APPIMAGE").context("Not an AppImage launch")?,
+        ))
+    }
+    pub fn open(path: &Path) -> Result<Self> {
+        ensure!(path.is_absolute(), "APPIMAGE path must be absolute");
+        let m = fs::symlink_metadata(path)?;
+        ensure!(
+            m.is_file() && m.nlink() == 1 && m.uid() == unsafe { libc::geteuid() },
+            "AppImage must be a regular file owned by you, without links"
+        );
+        ensure!(
+            m.permissions().mode() & 0o111 != 0 && m.permissions().mode() & 0o222 != 0,
+            "AppImage is not writable/executable"
+        );
+        // Linux forbids write-opening a running executable (ETXTBSY), while
+        // replacing its directory entry is supported. Never write-open it.
+        // An actual create in the parent is necessary: access bits alone do not
+        // establish whether rename is permitted (read-only mounts, ACLs).
+        let probe = tempfile::NamedTempFile::new_in(path.parent().context("Missing parent")?)?;
+        drop(probe);
+        Ok(Self {
+            path: path.to_owned(),
+            dev: m.dev(),
+            ino: m.ino(),
+            mode: m.mode() & 0o777,
+            hash: sha(path)?,
+        })
+    }
+    fn unchanged(&self) -> Result<()> {
+        let m = fs::symlink_metadata(&self.path)?;
+        ensure!(
+            m.is_file()
+                && m.dev() == self.dev
+                && m.ino() == self.ino
+                && sha(&self.path)? == self.hash,
+            "Original AppImage changed; check again"
+        );
+        Ok(())
+    }
+}
+
+fn client() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(300))
+        .build()?)
+}
+fn download(key: &str, path: &Path, limit: u64) -> Result<()> {
+    let response = client()?
+        .get(format!("{ORIGIN}{key}"))
+        .send()?
+        .error_for_status()?;
+    ensure!(
+        response.content_length().is_none_or(|n| n <= limit),
+        "Download exceeds size limit"
+    );
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    let copied = std::io::copy(&mut response.take(limit + 1), &mut output)?;
+    ensure!(copied <= limit, "Download exceeds size limit");
+    output.sync_all()?;
+    Ok(())
+}
+
+/// A private keyring and empty homedir exclude user keyrings and network key lookup.
+fn verify(gpgv: &Path, data: &Path, sig: &Path, directory: &Path) -> Result<()> {
+    verify_authority(gpgv, data, sig, directory, KEY, FINGERPRINT)
+}
+fn verify_authority(
+    gpgv: &Path,
+    data: &Path,
+    sig: &Path,
+    directory: &Path,
+    public_key: &str,
+    fingerprint: &str,
+) -> Result<()> {
+    let armored: String = public_key
+        .lines()
+        .skip_while(|l| !l.is_empty())
+        .skip(1)
+        .take_while(|l| !l.starts_with('=') && !l.starts_with('-'))
+        .collect();
+    let key = base64::engine::general_purpose::STANDARD.decode(armored)?;
+    let keyring = directory.join("trusted.gpg");
+    fs::write(&keyring, key)?;
+    let output = Command::new(gpgv)
+        .args(["--homedir"])
+        .arg(directory)
+        .args(["--keyring"])
+        .arg(&keyring)
+        .args(["--status-fd", "1"])
+        .arg(sig)
+        .arg(data)
+        .env_remove("GNUPGHOME")
+        .output()
+        .context("Packaged signature verifier could not run")?;
+    ensure!(
+        output.status.success(),
+        "Release signature verification failed"
+    );
+    let status = String::from_utf8(output.stdout)?;
+    ensure!(
+        status.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.len() >= 3
+                && fields[0] == "[GNUPG:]"
+                && fields[1] == "VALIDSIG"
+                && (fields[2] == fingerprint || fields.last() == Some(&fingerprint))
+        }),
+        "Signature is not from the pinned Linux release authority"
+    );
+    Ok(())
+}
+
+pub fn check(beta: bool, current: u64, gpgv: &Path) -> Result<Option<Release>> {
+    let channel = if beta { "beta" } else { "stable" };
+    let dir = tempfile::tempdir()?;
+    let descriptor = dir.path().join("release.json");
+    let sig = dir.path().join("release.json.sig");
+    download(
+        &format!("okilum/linux/{channel}/latest.json"),
+        &descriptor,
+        64 * 1024,
+    )?;
+    download(
+        &format!("okilum/linux/{channel}/latest.json.sig"),
+        &sig,
+        16 * 1024,
+    )?;
+    verify(gpgv, &descriptor, &sig, dir.path())?;
+    let release: Release = serde_json::from_slice(&fs::read(descriptor)?)?;
+    release.validate(channel)?;
+    Ok((release.build > current).then_some(release))
+}
+
+/// Staging is ephemeral until an explicit restart. Crash before restart leaves
+/// the installed file intact. The private sibling directory survives apply and
+/// holds the old executable plus a recovery log.
+pub struct Staged {
+    directory: tempfile::TempDir,
+    target: Target,
+    release: Release,
+    _lock: File,
+}
+impl Staged {
+    pub fn prepare(target: Target, release: Release, beta: bool, gpgv: &Path) -> Result<Self> {
+        release.validate(if beta { "beta" } else { "stable" })?;
+        Self::prepare_with(target, release, gpgv, KEY, FINGERPRINT, download)
+    }
+    fn prepare_with(
+        target: Target,
+        release: Release,
+        gpgv: &Path,
+        public_key: &str,
+        fingerprint: &str,
+        fetch: impl Fn(&str, &Path, u64) -> Result<()>,
+    ) -> Result<Self> {
+        let parent = target.path.parent().context("Missing AppImage parent")?;
+        let lockpath = parent.join(format!(
+            ".{}.update-lock",
+            target.path.file_name().unwrap().to_string_lossy()
+        ));
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(lockpath)?;
+        ensure!(
+            unsafe {
+                libc::flock(
+                    std::os::fd::AsRawFd::as_raw_fd(&lock),
+                    libc::LOCK_EX | libc::LOCK_NB,
+                )
+            } == 0,
+            "Another AppImage updater is active"
+        );
+        target.unchanged()?;
+        let directory = stage_directory(parent)?;
+        let image = directory.path().join("new.AppImage");
+        let sig = directory.path().join("payload.sig");
+        fetch(&release.key, &image, release.size)?;
+        fetch(&format!("{}.sig", release.key), &sig, 16 * 1024)?;
+        verify_authority(
+            gpgv,
+            &image,
+            &sig,
+            directory.path(),
+            public_key,
+            fingerprint,
+        )?;
+        ensure!(
+            fs::metadata(&image)?.len() == release.size && sha(&image)? == release.sha256,
+            "AppImage size/checksum mismatch"
+        );
+        // Check the signed provenance as well as the descriptor's executable identity.
+        let provenance = directory.path().join("provenance.json");
+        let provenance_key = release.key.replace(IMAGE, "provenance.json");
+        fetch(&provenance_key, &provenance, 64 * 1024)?;
+        ensure!(
+            sha(&provenance)? == release.provenance_sha256,
+            "Provenance checksum mismatch"
+        );
+        let provenance_hash: serde_json::Value = serde_json::from_slice(&fs::read(&provenance)?)?;
+        let expected_build = release.build.to_string();
+        ensure!(
+            provenance_hash["source_sha"] == release.source
+                && provenance_hash["build_version"].as_str() == Some(expected_build.as_str())
+                && provenance_hash["release_version"] == release.version
+                && provenance_hash["sha256"] == release.sha256,
+            "Payload provenance identity mismatch"
+        );
+        fs::set_permissions(&image, fs::Permissions::from_mode(target.mode))?;
+        File::open(&image)?.sync_all()?;
+        Ok(Self {
+            directory,
+            target,
+            release,
+            _lock: lock,
+        })
+    }
+    /// Must only be called after editors and window state have been protected.
+    /// A bounded external helper waits for normal application shutdown before
+    /// replacing the file. No user command/path is interpolated into shell code.
+    #[allow(clippy::zombie_processes)] // Helper deliberately outlives the quitting GUI.
+    pub fn arm(self, args: &[std::ffi::OsString]) -> Result<PathBuf> {
+        self.target.unchanged()?;
+        let dir = self.directory.path();
+        ensure!(
+            sha(&dir.join("new.AppImage"))? == self.release.sha256,
+            "Staged payload changed"
+        );
+        fs::hard_link(&self.target.path, dir.join("previous.AppImage"))?;
+        fs::write(
+            dir.join("expected.json"),
+            serde_json::to_vec(&self.release)?,
+        )?;
+        File::open(dir.join("expected.json"))?.sync_all()?;
+        File::open(dir)?.sync_all()?;
+        File::open(self.target.path.parent().unwrap())?.sync_all()?;
+        let log = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(dir.join("apply.log"))?;
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(APPLY)
+            .arg("okilum-appimage-update")
+            .arg(std::process::id().to_string())
+            .arg(&self.target.path)
+            .arg(dir)
+            .arg(&self.release.sha256)
+            .arg(&self.target.hash)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .env_remove("APPIMAGE")
+            .env_remove("APPDIR")
+            .env_remove("LD_LIBRARY_PATH");
+        // Keep the flock across shutdown until the helper has finished.
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let lock_fd = self._lock.as_raw_fd();
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(lock_fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().context("Could not arm AppImage updater")?;
+        let path = self.directory.keep();
+        Ok(path)
+    }
+}
+
+const APPLY: &str = r#"
+set -eu
+pid=$1; target=$2; stage=$3; digest=$4; original=$5; shift 5
+n=0
+while kill -0 "$pid" 2>/dev/null; do
+    n=$((n+1)); test "$n" -le 120 || { echo 'Shutdown timed out; original retained'; exit 1; }
+    sleep 1
+done
+# Revalidate both the original inode and the staged bytes immediately before rename.
+test "$target" -ef "$stage/previous.AppImage" || { echo 'Original changed; refusing apply'; exit 1; }
+# Hash stdin so checksum output never contains an escaped user pathname or a
+# newline-delimited checksum record built from one. Keep read/hash failures fatal.
+actual=$(sha256sum < "$stage/previous.AppImage"); actual=${actual%% *}
+test "$actual" = "$original" || exit 1
+actual=$(sha256sum < "$stage/new.AppImage"); actual=${actual%% *}
+test "$actual" = "$digest" || exit 1
+# With explicit operands and no -f, coreutils sync uses fsync per file,
+# never syncfs of the entire busy filesystem. Persist the rename directory too.
+mv -f -- "$stage/new.AppImage" "$target"
+sync -- "$target" "$(dirname -- "$target")"
+echo 'Applied; previous.AppImage is the manual rollback copy'
+unset APPIMAGE APPDIR LD_LIBRARY_PATH APPIMAGE_EXTRACT_AND_RUN
+# The application never inherits the transaction lock. A startup confirmation
+# commits this transaction; a later session exit must never trigger rollback.
+OKILUM_APPIMAGE_UPDATE_RECEIPT="$stage" "$target" --appimage-extract-and-run "$@" 9>&- &
+child=$!
+n=0
+while test ! -f "$stage/started" && kill -0 "$child" 2>/dev/null; do
+    n=$((n+1)); test "$n" -le 60 || {
+        echo 'Startup confirmation timed out; application remains open, previous copy retained for manual recovery'
+        exit 1
+    }
+    sleep 1
+done
+if test -f "$stage/started"; then
+    printf 'committed\n' > "$stage/completed.tmp"
+    sync -- "$stage/completed.tmp"
+    mv -- "$stage/completed.tmp" "$stage/completed"
+    sync -- "$stage"
+    echo 'Startup confirmed; transaction committed and update lock released'
+    exit 0
+fi
+wait "$child" && child_status=0 || child_status=$?
+echo "Updated application exited before startup confirmation ($child_status); restoring previous AppImage"
+# Do not clobber another install/update made while the child was starting.
+actual=$(sha256sum < "$target"); actual=${actual%% *}
+test "$actual" = "$digest" || exit 1
+mv -f -- "$stage/previous.AppImage" "$target"
+sync -- "$target" "$(dirname -- "$target")"
+
+"#;
+
+/// Acknowledge a replacement only after the new GUI has a window. This receipt
+/// never supplies trust/feeds; it can only confirm this executable's identity.
+pub fn confirm_startup(build: &str, source: &str) -> Result<bool> {
+    let Some(directory) = std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT") else {
+        return Ok(false);
+    };
+    let directory = PathBuf::from(directory);
+    let target = Target::detect()?;
+    let metadata = fs::symlink_metadata(&directory)?;
+    ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o777 == 0o700,
+        "Unsafe update receipt directory"
+    );
+    ensure!(
+        directory.parent() == target.path.parent()
+            && directory
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".okilum-update-")),
+        "Update receipt is not beside the AppImage"
+    );
+    let expected: Release = serde_json::from_slice(&fs::read(directory.join("expected.json"))?)?;
+    ensure!(
+        expected.build.to_string() == build
+            && expected.source == source
+            && expected.sha256 == sha(&target.path)?,
+        "Restarted AppImage identity mismatch"
+    );
+    atomic_receipt(&directory.join("started"), b"startup confirmed\n")?;
+    Ok(true)
+}
+
+/// Publish a complete receipt only after its contents are durable.
+fn atomic_receipt(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path.parent().context("Missing receipt parent")?;
+    let mut receipt = tempfile::NamedTempFile::new_in(parent)?;
+    receipt.write_all(bytes)?;
+    receipt.as_file().sync_all()?;
+    receipt.persist_noclobber(path)?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+/// Compiled callers supply their own immutable identity, never fixture metadata.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_identity(build: &str, source: &str) -> Result<serde_json::Value> {
+    let target = Target::detect()?;
+    Ok(
+        serde_json::json!({"build":build,"source":source,"sha256":sha(&target.path)?,"path":target.path}),
+    )
+}
+
+/// Explicit fixture authority for the non-shipping native GUI harness only.
+/// Production check/prepare never call this function.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_prepare(
+    fixture: &Path,
+    fingerprint: &str,
+    build: &str,
+    source: &str,
+) -> Result<Staged> {
+    acceptance_prepare_inner(fixture, fingerprint, build, source, false)
+}
+
+/// Positive lock/staging control while the replaced native GUI remains open.
+/// Reverify and stage its exact signed current payload, then discard it. This
+/// does not fabricate a newer version or permit an equal-build installation.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_restage_current(
+    fixture: &Path,
+    fingerprint: &str,
+    build: &str,
+    source: &str,
+) -> Result<()> {
+    drop(acceptance_prepare_inner(
+        fixture,
+        fingerprint,
+        build,
+        source,
+        true,
+    )?);
+    Ok(())
+}
+
+#[cfg(feature = "acceptance-harness")]
+fn acceptance_prepare_inner(
+    fixture: &Path,
+    fingerprint: &str,
+    build: &str,
+    source: &str,
+    current_control: bool,
+) -> Result<Staged> {
+    let target = Target::detect()?;
+    ensure!(fixture.is_absolute(), "Fixture path must be absolute");
+    ensure!(
+        fingerprint != FINGERPRINT && fingerprint.len() == 40,
+        "Fixture must use a disposable authority"
+    );
+    let key = fs::read_to_string(fixture.join("public.asc"))?;
+    let gpgv = std::env::current_exe()?
+        .parent()
+        .context("Missing AppDir")?
+        .join("gpgv");
+    let private = tempfile::tempdir()?;
+    let descriptor = fixture.join("release.json");
+    let sig = fixture.join("release.json.sig");
+    ensure!(
+        verify(&gpgv, &descriptor, &sig, private.path()).is_err(),
+        "Production verifier accepted fixture trust"
+    );
+    verify_authority(&gpgv, &descriptor, &sig, private.path(), &key, fingerprint)?;
+    eprintln!("APPIMAGE_PRODUCTION_REJECTED_VALID_FIXTURE");
+    let release: Release = serde_json::from_slice(&fs::read(descriptor)?)?;
+    release.validate_authority("beta", fingerprint)?;
+    if current_control {
+        ensure!(
+            release.build == build.parse::<u64>()? && release.source == source,
+            "Restaging control must match this executable's compiled identity"
+        );
+    } else {
+        ensure!(
+            release.build > build.parse::<u64>()? && release.source != source,
+            "Acceptance requires two genuinely different builds/sources"
+        );
+    }
+    Staged::prepare_with(
+        target,
+        release,
+        &gpgv,
+        &key,
+        fingerprint,
+        |key, output, limit| {
+            let input = fixture.join(key);
+            ensure!(
+                fs::metadata(&input)?.len() <= limit,
+                "Fixture exceeds size limit"
+            );
+            fs::copy(input, output)?;
+            Ok(())
+        },
+    )
+}
+
+/// Non-shipping, explicit native QA entry. The only alternate trust call sites
+/// are compiled behind this feature; production check/prepare pin KEY/FINGERPRINT.
+/// No flags, environment variables or fixture files alter normal updater trust.
+#[cfg(feature = "acceptance-harness")]
+pub fn acceptance_entry(build: &str, source: &str) -> Option<Result<()>> {
+    let args: Vec<_> = std::env::args_os().collect();
+    let action = args.get(1)?.to_str()?;
+    if !matches!(
+        action,
+        "--appimage-update-acceptance" | "--appimage-update-acceptance-confirm"
+    ) {
+        return None;
+    }
+    Some((|| -> Result<()> {
+        ensure!(
+            args.len() == 5,
+            "Expected fixture-directory fingerprint receipt, or receipt build source"
+        );
+        if action == "--appimage-update-acceptance-confirm" {
+            ensure!(
+                args[3] == build && args[4] == source,
+                "Relaunched executable build/source mismatch"
+            );
+            let receipt = acceptance_identity(build, source)?;
+            // Open the external destination before confirming: an invalid receipt
+            // destination is an actual early-child failure/rollback control.
+            let destination = PathBuf::from(&args[2]);
+            let probe = tempfile::NamedTempFile::new_in(
+                destination.parent().context("Missing receipt parent")?,
+            )?;
+            drop(probe);
+            ensure!(
+                confirm_startup(build, source)?,
+                "Missing startup transaction"
+            );
+            atomic_receipt(&destination, &serde_json::to_vec(&receipt)?)?;
+            println!("APPIMAGE_NATIVE_RESTART_IDENTITY_PASS {receipt}");
+            return Ok(());
+        }
+        let fixture = PathBuf::from(&args[2]);
+        let fingerprint = args[3].to_str().context("Invalid fixture fingerprint")?;
+        let staged = acceptance_prepare(&fixture, fingerprint, build, source)?;
+        let next_build = staged.release.build.to_string();
+        let next_source = staged.release.source.clone();
+        let directory = staged.arm(&[
+            "--appimage-update-acceptance-confirm".into(),
+            args[4].clone(),
+            next_build.into(),
+            next_source.into(),
+        ])?;
+        println!(
+            "APPIMAGE_NATIVE_ARMED old_build={build} old_source={source} recovery={}",
+            directory.display()
+        );
+        Ok(())
+    })())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn release() -> Release {
+        serde_json::from_value(serde_json::json!({
+            "schema":1,"platform":"linux-appimage","channel":"beta",
+            "build":5010,"version":"0.1.5010","source":"a".repeat(40),
+            "filename":IMAGE,"sha256":"b".repeat(64),"size":100,
+            "key":format!("okilum/linux/builds/5010/{IMAGE}"),
+            "fingerprint":FINGERPRINT,"provenance_sha256":"c".repeat(64)
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn descriptor_rejects_wrong_channel_authority_identity_and_paths() {
+        release().validate("beta").unwrap(); // positive control
+        assert!(release().validate("stable").is_err());
+        for field in [
+            "schema",
+            "platform",
+            "channel",
+            "version",
+            "source",
+            "filename",
+            "sha256",
+            "key",
+            "fingerprint",
+            "provenance_sha256",
+        ] {
+            let mut value = serde_json::json!({
+                "schema":1,"platform":"linux-appimage","channel":"beta",
+                "build":5010,"version":"0.1.5010","source":"a".repeat(40),
+                "filename":IMAGE,"sha256":"b".repeat(64),"size":100,
+                "key":format!("okilum/linux/builds/5010/{IMAGE}"),
+                "fingerprint":FINGERPRINT,"provenance_sha256":"c".repeat(64)
+            });
+            value[field] = if field == "schema" {
+                2.into()
+            } else {
+                "../untrusted".into()
+            };
+            let bad: Release = serde_json::from_value(value).unwrap();
+            assert!(bad.validate("beta").is_err(), "{field}");
+        }
+    }
+    fn executable(path: &Path, contents: &[u8]) {
+        fs::write(path, contents).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[test]
+    fn original_path_rejects_symlinks_readonly_hardlinks_and_changed_inode_or_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("original.AppImage");
+        executable(&path, b"original");
+        let target = Target::open(&path).unwrap();
+        target.unchanged().unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&path, &alias).unwrap();
+        assert!(Target::open(&alias).is_err());
+        fs::hard_link(&path, dir.path().join("hardlink")).unwrap();
+        assert!(Target::open(&path).is_err());
+        fs::remove_file(dir.path().join("hardlink")).unwrap();
+        fs::write(&path, b"changed").unwrap();
+        assert!(target.unchanged().is_err());
+        executable(&dir.path().join("replacement"), b"original");
+        fs::rename(dir.path().join("replacement"), &path).unwrap();
+        assert!(target.unchanged().is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(Target::open(&path).is_err());
+    }
+
+    const FILE_SYNC_ONLY: &str = r#"
+# A whole-filesystem flush represents unrelated blocked I/O. Fail immediately
+# rather than sleeping past the unchanged helper deadline. Positive controls
+# below require every expected file/directory flush to reach the real utility.
+sync() {
+    test "$#" -gt 1 && test "$1" = -- || { echo 'unrelated filesystem I/O requested' >&2; return 91; }
+    shift
+    for sync_path do printf '%s\n' "$sync_path" >> "$SYNC_CALLS"; done
+    command sync -- "$@"
+}
+"#;
+
+    /// The production apply helper, real rename/rollback and real child process.
+    /// Fake executable bodies are transaction controls, not native AppImage proof.
+    fn transaction(payload: &[u8], tamper: bool, changed: bool) -> (Vec<u8>, String) {
+        transaction_at(
+            payload,
+            tamper,
+            changed,
+            "apps",
+            "Original with spaces.AppImage",
+        )
+    }
+    fn transaction_at(
+        payload: &[u8],
+        tamper: bool,
+        changed: bool,
+        parent: &str,
+        basename: &str,
+    ) -> (Vec<u8>, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join(parent);
+        fs::create_dir(&parent).unwrap();
+        let stage = parent.join("stage");
+        fs::create_dir(&stage).unwrap();
+        let original = parent.join(basename);
+        executable(&original, b"original");
+        Target::open(&original).unwrap().unchanged().unwrap();
+        fs::hard_link(&original, stage.join("previous.AppImage")).unwrap();
+        executable(&stage.join("new.AppImage"), payload);
+        let digest = sha(&stage.join("new.AppImage")).unwrap();
+        let old_digest = sha(&original).unwrap();
+        if tamper {
+            fs::write(stage.join("new.AppImage"), b"tampered").unwrap();
+        }
+        if changed {
+            fs::write(&original, b"external replacement").unwrap();
+        }
+        let output = Command::new("/bin/sh")
+            .current_dir(dir.path())
+            .env("SYNC_CALLS", stage.join("sync-calls"))
+            .args([
+                "-c",
+                &format!("{FILE_SYNC_ONLY}\n{APPLY}"),
+                "test",
+                "2147483647",
+            ])
+            .arg(&original)
+            .arg(&stage)
+            .arg(digest)
+            .arg(&old_digest)
+            .arg("--vault")
+            .arg("path with spaces")
+            .output()
+            .unwrap();
+        assert!(!dir.path().join("injected").exists());
+        if !tamper && !changed {
+            let committed = stage.join("completed").exists();
+            let external_replacement = !committed && sha(&original).unwrap() != old_digest;
+            assert_eq!(
+                output.status.success(),
+                !external_replacement,
+                "helper must refuse rollback over an external replacement: {:?}",
+                output
+            );
+            let calls = fs::read_to_string(stage.join("sync-calls")).unwrap();
+            let target_pair = format!("{}\n{}\n", original.display(), parent.display());
+            let expected = if committed {
+                format!(
+                    "{target_pair}{}\n{}\n",
+                    stage.join("completed.tmp").display(),
+                    stage.display()
+                )
+            } else if external_replacement {
+                // The independent installer owns the new file. The identity
+                // guard must stop before rollback or any recovery fsync.
+                target_pair
+            } else {
+                // Failed launch must persist both the restored image and its
+                // parent, without a whole-filesystem flush during recovery.
+                target_pair.repeat(2)
+            };
+            assert_eq!(calls, expected, "exact commit/rollback fsync operands");
+        }
+
+        if fs::read(&original).unwrap() != b"original" && !changed {
+            assert_eq!(
+                fs::read(stage.join("previous.AppImage")).unwrap(),
+                b"original"
+            );
+        }
+        (
+            fs::read(original).unwrap(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    }
+    #[test]
+    fn apply_preserves_original_on_tamper_and_external_change_and_rolls_back_launch_failure() {
+        let good = b"#!/bin/sh\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\ntest \"$1\" = --appimage-extract-and-run && test \"$2\" = --vault && test \"$3\" = 'path with spaces'\n";
+        let (result, log) = transaction(good, false, false);
+        assert_eq!(result, good);
+        assert!(log.contains("Applied")); // positive control: helper actually applied
+        assert_eq!(transaction(good, true, false).0, b"original");
+        assert_eq!(transaction(good, false, true).0, b"external replacement");
+        let (result, log) = transaction(b"#!/bin/sh\nexit 42\n", false, false);
+        assert_eq!(result, b"original");
+        assert!(log.contains("restoring previous AppImage"));
+    }
+    #[test]
+    fn unusual_paths_restore_failed_replacement_but_preserve_external_install() {
+        for name in [
+            "Okilum\\beta.AppImage",
+            "Okilum\nbeta.AppImage",
+            "Okilum beta.AppImage",
+            "Okilum'$(touch injected)`touch injected`;beta.AppImage",
+        ] {
+            // Exercise both the target basename and the stage's user-owned parent.
+            for (parent, basename) in [("apps", name), (name, "original.AppImage")] {
+                let (result, log) =
+                    transaction_at(b"#!/bin/sh\nexit 42\n", false, false, parent, basename);
+                assert!(log.contains("Applied;"), "{parent:?}/{basename:?}: {log}");
+                assert!(log.contains("restoring previous AppImage"), "{log}");
+                assert_eq!(result, b"original", "{parent:?}/{basename:?}");
+
+                // Rename over the running script, just like an independent installer.
+                // The original backup must survive and rollback must not clobber it.
+                let external = b"#!/bin/sh\nprintf 'external replacement' > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/external\"\nmv -f -- \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/external\" \"$0\"\nexit 42\n";
+                let (result, log) = transaction_at(external, false, false, parent, basename);
+                assert!(log.contains("Applied;"), "{parent:?}/{basename:?}: {log}");
+                assert!(log.contains("restoring previous AppImage"), "{log}");
+                assert_eq!(result, b"external replacement", "{parent:?}/{basename:?}");
+                assert_eq!(
+                    transaction_at(external, true, false, parent, basename).0,
+                    b"original"
+                );
+                assert_eq!(
+                    transaction_at(external, false, true, parent, basename).0,
+                    b"external replacement"
+                );
+            }
+        }
+    }
+    #[test]
+    fn running_executable_is_replaceable_even_though_write_open_is_etxtbsy() {
+        let path = std::env::current_exe().unwrap();
+        let error = OpenOptions::new().write(true).open(&path).unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::ETXTBSY),
+            "positive kernel control"
+        );
+        Target::open(&path).unwrap().unchanged().unwrap();
+    }
+
+    #[test]
+    fn producer_receipt_confirms_in_same_version_under_standard_umask() {
+        use std::os::unix::process::CommandExt;
+        const MODE: &str = "OKILUM_RECEIPT_ROUNDTRIP_TEST";
+        let source = "a".repeat(40);
+        match std::env::var(MODE).as_deref() {
+            Ok("confirm") => {
+                assert!(confirm_startup("5010", &source).unwrap());
+                return;
+            }
+            Ok("produce") => {}
+            _ => {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "tests::producer_receipt_confirms_in_same_version_under_standard_umask",
+                        "--nocapture",
+                    ])
+                    .env(MODE, "produce");
+                unsafe {
+                    command.pre_exec(|| {
+                        libc::umask(0o022);
+                        Ok(())
+                    });
+                }
+                assert!(command.status().unwrap().success());
+                return;
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("Okilum.AppImage");
+        executable(&image, b"same-version identity fixture");
+        // This is the exact directory producer used by Staged::prepare_with.
+        let directory = stage_directory(root.path()).unwrap();
+        let metadata = fs::symlink_metadata(directory.path()).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        let mut expected = release();
+        expected.sha256 = sha(&image).unwrap();
+        fs::write(
+            directory.path().join("expected.json"),
+            serde_json::to_vec(&expected).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::producer_receipt_confirms_in_same_version_under_standard_umask",
+                "--nocapture",
+            ])
+            .env(MODE, "confirm")
+            .env("APPIMAGE", &image)
+            .env("OKILUM_APPIMAGE_UPDATE_RECEIPT", directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "confirmation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read(directory.path().join("started")).unwrap(),
+            b"startup confirmed\n"
+        );
+    }
+
+    #[test]
+    fn confirmed_long_lived_child_does_not_retain_transaction_lock_or_trigger_late_rollback() {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let dir = tempfile::tempdir().unwrap();
+        let stage = dir.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        let target = dir.path().join("original.AppImage");
+        executable(&target, b"original");
+        fs::hard_link(&target, stage.join("previous.AppImage")).unwrap();
+        let payload = b"#!/bin/sh\necho $$ > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/child-pid\"\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\nexec sleep 30\n";
+        let payload = [
+            b"#!/bin/sh\nif [ \"$1\" = --probe-exec ]; then exit 0; fi\n".as_slice(),
+            &payload[b"#!/bin/sh\n".len()..],
+        ]
+        .concat();
+        let payload = payload.as_slice();
+        executable(&stage.join("new.AppImage"), payload);
+        let clock = std::time::Instant::now();
+        let probe = Command::new(stage.join("new.AppImage"))
+            .arg("--probe-exec")
+            .output()
+            .expect("fixture executable spawn failed (check path, mode, noexec/sandbox)");
+        assert!(
+            probe.status.success(),
+            "fixture executable preflight: {:?}",
+            probe
+        );
+        eprintln!(
+            "helper trace: executable preflight PASS at {:?}; path={:?}, mode={:o}",
+            clock.elapsed(),
+            stage.join("new.AppImage"),
+            fs::metadata(stage.join("new.AppImage"))
+                .unwrap()
+                .permissions()
+                .mode()
+        );
+        let lockpath = dir.path().join("lock");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&lockpath)
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let fd = lock.as_raw_fd();
+        let log_path = stage.join("apply.log");
+        let log = File::create(&log_path).unwrap();
+        // Instrument only this existing regression; production APPLY is unchanged.
+        let mut traced = String::from(
+            r#"
+trace_stage() { stage_name=$1; printf 'helper trace %s stage=%s pid=%s\n' "$(date -u +%s.%N)" "$stage_name" "$$" >&2; }
+trap 'rc=$?; printf "helper exit rc=%s stage=%s\n" "$rc" "${stage_name:-shell-start}" >&2' 0
+trace_stage shell-start
+
+"#,
+        );
+        let mut body = APPLY.to_string();
+        for (before, after) in [
+            (
+                "n=0\nwhile kill",
+                "trace_stage shutdown-wait\nn=0\nwhile kill",
+            ),
+            (
+                "# Revalidate both",
+                "trace_stage shutdown-complete\n# Revalidate both",
+            ),
+            (
+                "actual=$(sha256sum < \"$stage/previous.AppImage\")",
+                "trace_stage hash-original\nactual=$(sha256sum < \"$stage/previous.AppImage\")",
+            ),
+            (
+                "actual=$(sha256sum < \"$stage/new.AppImage\")",
+                "trace_stage hash-new\nactual=$(sha256sum < \"$stage/new.AppImage\")",
+            ),
+            (
+                "mv -f -- \"$stage/new.AppImage\" \"$target\"",
+                "trace_stage rename\nmv -f -- \"$stage/new.AppImage\" \"$target\"",
+            ),
+            (
+                "sync -- \"$target\" \"$(dirname -- \"$target\")\"",
+                "trace_stage sync-target\nsync -- \"$target\" \"$(dirname -- \"$target\")\"\ntrace_stage sync-target-complete",
+            ),
+            (
+                "echo 'Applied;",
+                "trace_stage post-rename-message\necho 'Applied;",
+            ),
+            (
+                "OKILUM_APPIMAGE_UPDATE_RECEIPT=",
+                "trace_stage child-spawn\nOKILUM_APPIMAGE_UPDATE_RECEIPT=",
+            ),
+            (
+                "if test -f \"$stage/started\"; then",
+                "trace_stage startup-wait-complete\nif test -f \"$stage/started\"; then",
+            ),
+        ] {
+            assert!(body.contains(before), "trace stage disappeared: {before}");
+            body = body.replace(before, after);
+        }
+        traced.push_str(FILE_SYNC_ONLY);
+        traced.push_str(&body);
+        let mut command = Command::new("/bin/sh");
+        command
+            .env("SYNC_CALLS", stage.join("sync-calls"))
+            .args(["-c", traced.as_str(), "test", "2147483647"])
+            .arg(&target)
+            .arg(&stage)
+            .arg(sha(&stage.join("new.AppImage")).unwrap())
+            .arg(sha(&target).unwrap())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log));
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut helper = command
+            .spawn()
+            .expect("/bin/sh helper spawn/pre_exec failed");
+        eprintln!(
+            "helper trace: spawn PASS pid={} at {:?}; lock_fd={fd}; log={:?}",
+            helper.id(),
+            clock.elapsed(),
+            log_path
+        );
+        drop(lock);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = helper.try_wait().unwrap() {
+                let output = fs::read_to_string(&log_path).unwrap_or_default();
+                eprintln!(
+                    "helper trace: exit {status} at {:?}\n{output}",
+                    clock.elapsed()
+                );
+                assert!(status.success(), "helper exit {status}: {output}");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let output = fs::read_to_string(&log_path).unwrap_or_default();
+                let started = stage.join("started").exists();
+                let completed = stage.join("completed").exists();
+                let _ = helper.kill();
+                let _ = helper.wait();
+                if let Ok(pid) = fs::read_to_string(stage.join("child-pid")) {
+                    if let Ok(pid) = pid.trim().parse::<i32>() {
+                        unsafe {
+                            libc::kill(pid, libc::SIGTERM);
+                        }
+                    }
+                }
+                panic!("helper did not finish within 10s; started={started}, completed={completed}; apply log: {output}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sync_calls = fs::read_to_string(stage.join("sync-calls")).unwrap();
+        let synced: Vec<_> = sync_calls.lines().map(PathBuf::from).collect();
+        assert_eq!(
+            synced,
+            vec![
+                target.clone(),
+                dir.path().to_path_buf(),
+                stage.join("completed.tmp"),
+                stage.clone()
+            ],
+            "apply and commit must fsync only their own files and rename directories"
+        );
+        let pid: i32 = fs::read_to_string(stage.join("child-pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "new application is still open"
+        );
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lockpath)
+            .unwrap();
+        let reacquired = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        assert_eq!(
+            reacquired, 0,
+            "another update can stage while the new app is open"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            payload,
+            "later session failure cannot roll back a committed update"
+        );
+    }
+
+    #[test]
+    fn production_verifier_rejects_disposable_key_and_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let status = Command::new("gpg")
+            .arg("--homedir")
+            .arg(dir.path())
+            .args([
+                "--batch",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                "",
+                "--quick-generate-key",
+                "Disposable CI only",
+                "ed25519",
+                "sign",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        let data = dir.path().join("release.json");
+        fs::write(&data, b"signed test bytes").unwrap();
+        assert!(Command::new("gpg")
+            .arg("--homedir")
+            .arg(dir.path())
+            .args(["--batch", "--detach-sign"])
+            .arg(&data)
+            .status()
+            .unwrap()
+            .success());
+        let sig = dir.path().join("release.json.sig");
+        // Positive control: generated signature verifies with its explicit keyring.
+        assert!(Command::new("gpg")
+            .arg("--homedir")
+            .arg(dir.path())
+            .arg("--verify")
+            .arg(&sig)
+            .arg(&data)
+            .status()
+            .unwrap()
+            .success());
+        let clean = tempfile::tempdir().unwrap();
+        assert!(
+            verify(Path::new("gpgv"), &data, &sig, clean.path()).is_err(),
+            "normal mode never accepts test trust"
+        );
+        fs::write(&data, b"tampered").unwrap();
+        assert!(!Command::new("gpg")
+            .arg("--homedir")
+            .arg(dir.path())
+            .arg("--verify")
+            .arg(&sig)
+            .arg(&data)
+            .status()
+            .unwrap()
+            .success());
+    }
+}

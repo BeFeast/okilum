@@ -1,0 +1,83 @@
+# Explicit runtime-only gate: uses accepted retained artifacts, never compiles.
+name: appimage-acceptance
+on:
+  # Parent may push the already-built exact source to this runtime-only ref.
+  # This works before a new workflow exists on default; it triggers no compiler.
+  push:
+    branches: ['forgejo-linux-acceptance-pr/**']
+  workflow_dispatch:
+    inputs:
+      old_run:
+        description: Accepted older forgejo-linux producer run ID
+        required: true
+        type: string
+      old_source:
+        description: Full accepted older source SHA (artifact identity)
+        required: true
+        type: string
+      new_run:
+        description: Current forgejo-linux producer run ID (already built once)
+        required: true
+        type: string
+      new_source:
+        description: Full current source SHA (artifact identity)
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ['ubuntu:24.04', 'fedora:44']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.new_source || github.sha }}
+          persist-credentials: false
+      - name: Validate retained producers and immutable sources
+        id: pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_RUN: ${{ inputs.old_run }}
+          OLD_SOURCE: ${{ inputs.old_source }}
+          NEW_RUN: ${{ inputs.new_run }}
+          NEW_SOURCE: ${{ inputs.new_source || github.sha }}
+        run: python3 scripts/appimage/validate-producers.py
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.pair.outputs.old_run }}
+          name: linux-appimage-${{ steps.pair.outputs.old_source }}
+          path: accepted-old
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.pair.outputs.new_run }}
+          name: linux-appimage-${{ steps.pair.outputs.new_source }}
+          path: current-new
+      - name: Run unchanged actual pair and native GUI gate
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          mkdir evidence
+          docker run --rm --network bridge \
+            -v "$PWD/accepted-old:/old:ro" -v "$PWD/current-new:/new:ro" \
+            -v "$PWD:/source:ro" -v "$PWD/evidence:/evidence" \
+            "$RUNTIME" bash /source/scripts/appimage/hosted-acceptance.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-update-${{ steps.pair.outputs.old_source }}-${{ steps.pair.outputs.new_source }}-${{ strategy.job-index }}
+          path: |
+            evidence/native/*.json
+            evidence/native/*.log
+            evidence/native/gui/*.json
+            evidence/native/gui/*.log
+            evidence/native/gui/BLOCKED.txt
+          retention-days: 7
+          if-no-files-found: warn

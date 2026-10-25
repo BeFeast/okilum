@@ -2765,7 +2765,9 @@ mod maestro_network_tests {
             assert_eq!(line, "GET /api/v1/fleet HTTP/1.1\r\n");
             requested.send(()).unwrap();
             // Only the test may release this response after committing its race.
-            wait_release.recv().unwrap();
+            wait_release
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("test must release the held response; timeout is a fixture watchdog");
             let mut body = crate::maestro::tests::raw();
             body["refreshed_at"] = json!(time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
@@ -2788,7 +2790,9 @@ mod maestro_network_tests {
         let delayed = request.clone();
         let operation = crate::maestro_operations::Request::Link(request.clone());
         let in_flight = std::thread::spawn(move || {
-            dispatch(&invoked, Command::MaestroLink { request: delayed }, None)
+            crate::maestro::with_held_test_response(|| {
+                dispatch(&invoked, Command::MaestroLink { request: delayed }, None)
+            })
         });
         wait_request.recv().unwrap();
         {

@@ -2791,6 +2791,94 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn appimage_restart_refuses_unprotected_editor_then_preserves_latest_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("first draft", window, cx);
+        });
+        visual.run_until_parked();
+        let journal = std::fs::read_dir(state.join("editor-drafts"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        // A directory at the journal destination causes a real write failure
+        // on either platform without relying on test-user permission privileges.
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("latest draft", window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.link_notice.as_ref().unwrap().to_string(),
+                DRAFT_WRITE_NOTICE
+            );
+        });
+        visual.update(|_, cx| assert!(crate::updater::appimage::prepare_restart(cx).is_err()));
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.link_notice.as_ref().unwrap().to_string(),
+                DRAFT_WRITE_NOTICE
+            );
+            assert_eq!(
+                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                "latest draft"
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "original"
+        );
+        std::fs::remove_dir(&journal).unwrap();
+        visual.update(|_, cx| assert!(crate::updater::appimage::prepare_restart(cx).is_ok()));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "latest draft"
+        );
+    }
+
     #[gpui::test]
     fn quit_flushes_every_editor_even_after_conflicts_and_save_errors(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
@@ -4117,6 +4205,91 @@ mod tests {
         undo(visual);
         assert_eq!(value(visual), "external\n");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
+    fn replacing_vault_saves_dirty_source_and_refuses_conflict(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        for root in [&first, &second] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("note.md"), "# Original").unwrap();
+        }
+        // Reader stores canonical roots. On macOS the temporary directory may
+        // use /var, a symlink to /private/var; compare the same filesystem identity.
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_open::install(cx);
+            reader_ui_state::install(&temp.path().join("state"), cx);
+            reader_ui_state::set_vault_open("current", cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(first.clone()),
+                        note: Some("note.md".into()),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader_open::register(view.downgrade(), first.clone(), cx);
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            window.activate_window();
+            reader.toggle_source(window, cx);
+            let input = reader.editing.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..0), "mine", window, cx)
+            });
+        });
+        // Replace the on-disk revision before the navigation guard can save.
+        std::fs::write(first.join("note.md"), "external").unwrap();
+        let requested = Opts {
+            vault: Some(second.clone()),
+            note: Some("note.md".into()),
+            ..Default::default()
+        };
+        visual.update(|_, cx| reader_open::open_window(requested.clone(), cx).unwrap());
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, _, cx| {
+            assert_eq!(reader.vault_root, first);
+            assert!(reader.editing.as_ref().unwrap().conflict.is_some());
+            assert!(!reader.save_source(cx));
+            assert_eq!(
+                std::fs::read_to_string(first.join("note.md")).unwrap(),
+                "external"
+            );
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            // Resolve with the latest disk version, then make a fresh dirty edit.
+            reader.resolve_source(true, window, cx);
+            let input = reader.editing.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..0), "saved-", window, cx)
+            });
+        });
+        visual.update(|_, cx| reader_open::open_window(requested, cx).unwrap());
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, _, _| {
+            assert_eq!(reader.vault_root, second);
+            assert!(reader.editing.is_none());
+        });
+        assert_eq!(
+            std::fs::read_to_string(first.join("note.md")).unwrap(),
+            "saved-external"
+        );
     }
 
     #[gpui::test]

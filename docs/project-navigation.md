@@ -78,6 +78,29 @@ webview. Hosted selector tests cover native edit command mapping. Oleg's Mac bet
 acceptance must still check text/image paste, copy, select-all, undo/redo, IME,
 T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
 
+### App-wide T3 connection in Settings (#1507)
+
+Settings → T3 owns the address field and app-wide connection. The
+Manager panel retains the native webview without an extra header; when disconnected it shows a
+plain explanation and Open T3 settings button. Pairing stays inside T3.
+The Settings address field submits with Enter or the app-styled Connect button. Names
+without a scheme use HTTPS; IP:port (and localhost:port) use HTTP. Browser paths,
+query strings and fragments are reduced to the origin, which is shown in the field
+and alongside the transport rule. Credentials in addresses are rejected.
+
+HTTP is allowed for loopback, RFC1918 IPv4, link-local, IPv6 unique-local,
+and the 100.64/10 tailnet range, retaining the main transport policy. Public names and public IPs require HTTPS. This is a deliberate private
+network transport exception; Okilum does not resolve arbitrary public names to
+classify them as private.
+
+Prefill uses optional `t3.origin` in the project manifest, then the manifest's
+`t3.environment` alias in the device connection registry, then the last successfully
+validated app-wide origin in app state. Explicit project manifest / registry
+bindings override the shared origin without replacing the app-wide last success.
+A successful Settings connection refreshes existing Manager panels across windows. A delayed prefill cannot replace typing.
+No project list layout or category changes are part of this fix.
+
+
 ### Native editing follow-up (#1510, #1551)
 
 The focused Manager webview owns Cmd+C/V/X/A/Z and Cmd+Shift+Z. Commands resolve

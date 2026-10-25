@@ -23,7 +23,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def validate(directory, source, receipt):
+def validate(directory, source, receipt, *, allow_acceptance_harness=False):
     original = (directory / 'provenance.json').read_bytes()
     provenance = json.loads(original)
     run = receipt['run']
@@ -32,6 +32,7 @@ def validate(directory, source, receipt):
     if (not re.fullmatch('[0-9a-f]{40}', source)
             or provenance.get('source_sha') != source or provenance.get('artifact') != artifact.IMAGE
             or provenance.get('signed') is not False
+            or (provenance.get('acceptance_harness', False) is not False and not allow_acceptance_harness)
             or provenance.get('sha256') != digest(image)
             or provenance.get('workflow_run') != str(run['id'])
             or provenance.get('workflow_attempt') != str(run['run_attempt'])

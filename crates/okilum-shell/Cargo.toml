@@ -14,6 +14,7 @@ default = ["brain"]
 brain = ["okilum-core/brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.
 settings-ui-harness = []
+appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
 # Non-publishing downloaded-update visual fixture; never starts an updater.
 updater-ui-harness = []
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
@@ -88,6 +89,7 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
 signal-hook-registry = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+okilum-appimage = { path = "../okilum-appimage" }
 okilum-sync-controller = { path = "../okilum-sync-controller" }
 wayland-client = "=0.31.15"
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }

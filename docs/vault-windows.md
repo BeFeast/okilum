@@ -4,7 +4,14 @@ Opening a full vault through Open folder, Recent, `--vault`, or native Open With
 focuses its existing window. Canonical directory identity includes symlink aliases.
 A pending opening reserves that identity before inventory preparation. Opening a
 Markdown file inside an open full vault navigates that window, preserving #560.
-Different vaults have separate windows; a standalone file remains a quick viewer.
+For a different vault, Settings → Appearance → Open another vault offers In this
+window, In a new window, and Ask every time (the default). The choice applies to
+folder selection, Recent, the vault menu, external links and native open intents.
+The prompt has Remember my choice; Settings can change it later. Cancel leaves
+the current vault intact. Replacement uses the same save guard as closing the
+window: conflicts and failed saves prevent replacement. A standalone file remains
+a quick viewer. Existing windows of the requested vault still receive focus.
+Explicit New Window and startup window restoration bypass this preference (#1665).
 
 File → New Window (also in the Reader menu) explicitly duplicates the active full
 vault: Cmd+Shift+N on macOS, Ctrl+Shift+N elsewhere. Each window has independent
