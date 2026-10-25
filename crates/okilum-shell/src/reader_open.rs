@@ -1899,7 +1899,7 @@ mod entry_tests {
         ));
     }
     #[gpui::test]
-    fn another_vault_destination_asks_replaces_and_remembers(cx: &mut TestAppContext) {
+    fn dock_folder_urls_ask_replace_and_remember(cx: &mut TestAppContext) {
         use super::super::{reader_ui_state, Opts};
         let fixture = tempfile::tempdir().unwrap();
         let state = fixture.path().join("state");
@@ -1921,6 +1921,9 @@ mod entry_tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             install(cx);
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_ui_state::install(&state, cx);
             assert_eq!(reader_ui_state::vault_open(cx), "ask");
             finish_open(Ok(opts(0)), cx);
@@ -1928,7 +1931,13 @@ mod entry_tests {
         cx.run_until_parked();
         let source = cx.update(|cx| readers(cx)[0].downgrade());
         let original = cx.update(|cx| source.upgrade().unwrap().read(cx).reader_window);
-        cx.update(|cx| finish_open_from(Ok(opts(1)), Some(source.clone()), cx));
+        cx.update(|cx| {
+            focused(source.clone(), cx);
+            dispatch_urls(
+                vec![url::Url::from_directory_path(&roots[1]).unwrap().into()],
+                cx,
+            );
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.windows().len(),
@@ -1969,7 +1978,10 @@ mod entry_tests {
                 "remember survives reload"
             );
             reader_ui_state::set_vault_open("new", cx);
-            finish_open_from(Ok(opts(2)), Some(source.clone()), cx);
+            dispatch_urls(
+                vec![url::Url::from_directory_path(&roots[2]).unwrap().into()],
+                cx,
+            );
         });
         cx.run_until_parked();
         cx.update(|cx| {
