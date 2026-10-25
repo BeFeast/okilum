@@ -7303,6 +7303,10 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    #[cfg(target_os = "linux")]
+    if _instance_lock.is_some() {
+        app_footprint::install_appimage_desktop();
+    }
 
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();
