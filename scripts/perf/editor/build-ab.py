@@ -14,17 +14,16 @@ def run(*args, cwd=None):
     return subprocess.check_output(args, cwd=cwd, text=True).strip()
 
 
-def build(checkout, output, commit, role):
+def build(checkout, output, commit, role, target):
     if run("git", "rev-parse", "HEAD", cwd=checkout) != commit:
         raise ValueError("checkout does not match pinned source")
     if run("git", "status", "--porcelain", "--untracked-files=no", cwd=checkout):
         raise ValueError("tracked source is dirty")
     subprocess.run(["bash", "scripts/vendor-setup.sh"], cwd=checkout, check=True)
     subprocess.run(["bash", "scripts/vendor-setup.sh", "--verify"], cwd=checkout, check=True)
-    subprocess.run(["cargo", "build", "--release", "--locked", "-p", "okilum-shell", "--bin", "okilum"], cwd=checkout, check=True)
-    target = Path(os.environ.get("CARGO_TARGET_DIR", checkout / "target"))
-    if not target.is_absolute():
-        target = checkout / target
+    build_env = {**os.environ, "CARGO_TARGET_DIR": str(target)}
+    subprocess.run(["cargo", "build", "--release", "--locked", "-p", "okilum-shell", "--bin", "okilum"],
+                   cwd=checkout, env=build_env, check=True)
     output.mkdir(parents=True, exist_ok=False)
     shutil.copy2(target / "release/okilum", output / "okilum")
     with (output / "okilum").open("rb") as stream:
@@ -51,13 +50,14 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     baseline = out / "main-source"
     run("git", "worktree", "add", "--detach", str(baseline), args.main_commit, cwd=checkout)
-    target = os.environ.setdefault("CARGO_TARGET_DIR", str(out / "target"))
-    if not Path(target).is_absolute():
-        raise ValueError("CARGO_TARGET_DIR must be absolute for both checkouts")
+    target_root = Path(os.environ.get("CARGO_TARGET_DIR", out / "target")).resolve()
+    # Role-specific directories exclude even untracked build-script outputs
+    # from crossing main/PR builds; only measurement runtime is compared.
+    targets = {role: target_root / f"ab-{role}" for role in ("main", "pr")}
     receipts = {}
     try:
-        receipts["main"] = build(baseline, out / "main", args.main_commit, "main")
-        receipts["pr"] = build(checkout, out / "pr", pr, "pr")
+        receipts["main"] = build(baseline, out / "main", args.main_commit, "main", targets["main"])
+        receipts["pr"] = build(checkout, out / "pr", pr, "pr", targets["pr"])
         (out / "pair.json").write_text(json.dumps(receipts, indent=2) + "\n")
     finally:
         # Our detached source only; no reset/clean of a caller-owned checkout.
