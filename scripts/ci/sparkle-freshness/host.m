@@ -269,6 +269,18 @@ int main(void) {
             if (![effectiveGroup isKindOfClass:NSNumber.class] || ![effectiveGroup isEqual:requestedGroup]) return 34;
             Trace([NSString stringWithFormat:@"rollout group read=%@ domain=%@ before-updater-start",
                    effectiveGroup, domain ?: @"standard-main-bundle"]);
+            // Test-only snapshot: the isolated production probe uses this suite,
+            // while the main host without SUDefaultsDomain uses standard defaults.
+            // Seed both explicitly; this does not repair production domain sharing.
+            NSString *probeDomain = domain ?: bundle.bundleIdentifier;
+            NSUserDefaults *probePreferences = [[NSUserDefaults alloc] initWithSuiteName:probeDomain];
+            [probePreferences setObject:requestedGroup forKey:@"SUUpdateGroupIdentifier"];
+            [probePreferences synchronize];
+            NSUserDefaults *probeReader = [[NSUserDefaults alloc] initWithSuiteName:probeDomain];
+            id probeGroup = [probeReader objectForKey:@"SUUpdateGroupIdentifier"];
+            if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:effectiveGroup]) return 34;
+            Trace([NSString stringWithFormat:@"rollout probe group read=%@ domain=%@ matches-source before-updater-start",
+                   probeGroup, probeDomain]);
             NSString *skip = [bundle objectForInfoDictionaryKey:@"TSSkip"];
             if (skip) [preferences setObject:skip forKey:@"SUSkippedVersion"];
             NSString *major = [bundle objectForInfoDictionaryKey:@"TSSkipMajor"];
