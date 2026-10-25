@@ -352,21 +352,9 @@ fn enrolled_index_reads_and_rebuilds_without_mutating_feed_or_source_receipts() 
         .unwrap();
     let before = serde_json::to_vec(&r.state.proposal_feed).unwrap();
     let bytes = fs::read(segment_path(&r, 1)).unwrap();
-    let index = BrainIndex::start(
-        f.brain.clone(),
-        r.root.clone(),
-        "records".into(),
-        r.state_dir.clone(),
-        true,
-    )
-    .unwrap();
-    // Up to 30 s: a busy CI runner indexes slowly; the loop exits as soon as it is ready.
-    for _ in 0..3000 {
-        if index.status().status == "ready" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    let (index, rebuild_requests) =
+        BrainIndex::ready_for_service_test(f.brain.clone(), r.root.clone(), r.state_dir.clone())
+            .unwrap();
     assert_eq!(index.status().status, "ready");
     let response = index
         .search(SearchRequest {
@@ -387,15 +375,7 @@ fn enrolled_index_reads_and_rebuilds_without_mutating_feed_or_source_receipts() 
         .unwrap()
         .contains("knowledge.md"));
     let generation = index.status().generation;
-    index.rebuild().unwrap();
-    // Up to 30 s: a busy CI runner indexes slowly; the loop exits as soon as it is ready.
-    for _ in 0..3000 {
-        let status = index.status();
-        if status.status == "ready" && status.generation != generation {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    index.rebuild_for_service_test(&rebuild_requests).unwrap();
     assert_eq!(index.status().status, "ready");
     assert_ne!(
         index.status().generation,
