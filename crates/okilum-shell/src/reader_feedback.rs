@@ -238,9 +238,20 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
                 this.view.update(cx, |view, _| view.visible = false);
             })
             .detach();
+            let sent = matches!(view.read(cx).state, SendState::Sent(_));
+            let state = cx.observe_in(&view, window, |this, view, window, cx| {
+                let sent = matches!(view.read(cx).state, SendState::Sent(_));
+                // Transfer focus once when the textarea leaves the screen.
+                if sent && !this.sent {
+                    this.focus.focus(window, cx);
+                }
+                this.sent = sent;
+            });
             FeedbackWindow {
                 view,
                 focus: cx.focus_handle(),
+                sent,
+                _state: state,
             }
         });
         cx.new(|cx| Root::new(content, window, cx))
@@ -267,16 +278,11 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
 struct FeedbackWindow {
     view: Entity<FeedbackView>,
     focus: FocusHandle,
+    sent: bool,
+    _state: Subscription,
 }
 impl Render for FeedbackWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The sent screen removes the focused textarea. Keep a focus target in
-        // the window so its close bindings remain in the dispatch tree.
-        if matches!(self.view.read(cx).state, SendState::Sent(_))
-            && !self.focus.contains_focused(window, cx)
-        {
-            self.focus.focus(window, cx);
-        }
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.view.clone();
         let p = brand::palette(cx);
         v_flex()
