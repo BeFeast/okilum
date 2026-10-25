@@ -4120,6 +4120,87 @@ mod tests {
     }
 
     #[gpui::test]
+    fn replacing_vault_saves_dirty_source_and_refuses_conflict(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        for root in [&first, &second] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("note.md"), "# Original").unwrap();
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_open::install(cx);
+            reader_ui_state::install(&temp.path().join("state"), cx);
+            reader_ui_state::set_vault_open("current", cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(first.clone()),
+                        note: Some("note.md".into()),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader_open::register(view.downgrade(), first.clone(), cx);
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            window.activate_window();
+            reader.toggle_source(window, cx);
+            let input = reader.editing.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..0), "mine", window, cx)
+            });
+        });
+        // Replace the on-disk revision before the navigation guard can save.
+        std::fs::write(first.join("note.md"), "external").unwrap();
+        let requested = Opts {
+            vault: Some(second.clone()),
+            note: Some("note.md".into()),
+            ..Default::default()
+        };
+        visual.update(|_, cx| reader_open::open_window(requested.clone(), cx).unwrap());
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, _, cx| {
+            assert_eq!(reader.vault_root, first);
+            assert!(reader.editing.as_ref().unwrap().conflict.is_some());
+            assert!(!reader.save_source(cx));
+            assert_eq!(
+                std::fs::read_to_string(first.join("note.md")).unwrap(),
+                "external"
+            );
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            // Resolve with the latest disk version, then make a fresh dirty edit.
+            reader.resolve_source(true, window, cx);
+            let input = reader.editing.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..0), "saved-", window, cx)
+            });
+        });
+        visual.update(|_, cx| reader_open::open_window(requested, cx).unwrap());
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, _, _| {
+            assert_eq!(reader.vault_root, second);
+            assert!(reader.editing.is_none());
+        });
+        assert_eq!(
+            std::fs::read_to_string(first.join("note.md")).unwrap(),
+            "saved-external"
+        );
+    }
+
+    #[gpui::test]
     fn native_edit_undo_save_and_conflict_navigation(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);

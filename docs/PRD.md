@@ -23,7 +23,7 @@ provider jobs, canonical enrollment or deployment.
 
 **Single-file viewer extension (2026-10-06, #560):** [quick viewer](single-file-viewer.md) defines document-only startup, lazy folder browsing and explicit vault upgrade.
 
-**Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines one window per vault by default and explicit duplicate windows sharing vault resources.
+**Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines vault-window selection (Ask every time by default, configurable reuse or new window) and explicit duplicate windows sharing vault resources.
 
 **Sync extension (2026-10-06, #574):** [explicit Sync enrollment](sync-enrollment.md) defines the approved opt-in background/reuse contract. Slice 1 tests compatibility only; it does not enable Sync in the reader.
 
