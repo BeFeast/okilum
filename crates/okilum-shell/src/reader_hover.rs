@@ -248,7 +248,7 @@ impl Reader {
     /// A wheel scroll over a side-panel list closes the preview and keeps new
     /// ones away until scrolling stops (#1101). The list still scrolls.
     pub(super) fn panel_scrolled(&mut self, cx: &mut Context<Self>) {
-        self.hover_preview.scrolled_at = Some(std::time::Instant::now());
+        self.hover_preview.scrolled_at = Some(cx.background_executor().now());
         if self.hover_preview.is_active() {
             self.clear_hover(cx);
         }
@@ -291,7 +291,10 @@ impl Reader {
         // scrolling has stopped; any further scroll cancels this wait.
         let quiet = beside
             .and(self.hover_preview.scrolled_at)
-            .map(|at| QUIET_AFTER_SCROLL.saturating_sub(at.elapsed()) + QUIET_AFTER_SCROLL)
+            .map(|at| {
+                let elapsed = cx.background_executor().now().saturating_duration_since(at);
+                QUIET_AFTER_SCROLL.saturating_sub(elapsed) + QUIET_AFTER_SCROLL
+            })
             .unwrap_or_default();
         self.schedule_hover(delay.max(quiet), window, cx);
     }
@@ -1115,7 +1118,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[ignore = "flaky on loaded runners; tracked in #1531"]
     fn linked_from_previews_only_from_the_title_beside_the_panel_and_scrolling_wins(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -1172,6 +1174,29 @@ mod tests {
         assert!(
             visible(visual),
             "the title previews again once scrolling stopped"
+        );
+
+        // Drive the scroll clock separately from the hover timer. A later
+        // wheel event cancels the first pending preview, even past its deadline.
+        reader.update_in(visual, |v, _, cx| v.panel_scrolled(cx));
+        settle(visual, 100);
+        visual.simulate_mouse_move(away, None, gpui::Modifiers::default());
+        visual.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
+        settle(visual, 200);
+        assert!(!visible(visual), "the first quiet-period wait is pending");
+        reader.update_in(visual, |v, _, cx| v.panel_scrolled(cx));
+        visual.run_until_parked();
+        visual.simulate_mouse_move(away, None, gpui::Modifiers::default());
+        visual.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
+        settle(visual, 400);
+        assert!(
+            !visible(visual),
+            "a stale hover deadline cannot win over another scroll"
+        );
+        settle(visual, 200);
+        assert!(
+            visible(visual),
+            "the replacement timer opens after the new quiet period"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
