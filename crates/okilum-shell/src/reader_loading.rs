@@ -1951,6 +1951,7 @@ impl Reader {
             return;
         };
         let report = move |window: &mut Window, trace: reader_diagnostics::Trace| {
+            let platform_probe = platform::text_diagnostics::Probe::start();
             let ms = move |t: std::time::Instant| t.duration_since(started).as_secs_f64() * 1000.;
             trace.event(
                 "note_open_parsed",
@@ -1967,6 +1968,7 @@ impl Reader {
                         serde_json::json!({
                             "since_open_ms": ms(done),
                             "layout_frame_ms": done.duration_since(frame).as_secs_f64() * 1000.,
+                            "platform": platform_probe.report(),
                         }),
                     );
                 });

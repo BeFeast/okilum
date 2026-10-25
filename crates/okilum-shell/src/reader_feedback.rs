@@ -222,8 +222,14 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         view.update(cx, |view, _| view.visible = true);
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            let _ = weak.update(cx, |view, _| view.visible = false);
-            true
+            weak.update(cx, |view, _| {
+                if matches!(view.state, SendState::Sending) {
+                    return false;
+                }
+                view.visible = false;
+                true
+            })
+            .unwrap_or(true)
         });
         Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
         opened = Some(view.clone());
@@ -232,7 +238,21 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
                 this.view.update(cx, |view, _| view.visible = false);
             })
             .detach();
-            FeedbackWindow { view }
+            let sent = matches!(view.read(cx).state, SendState::Sent(_));
+            let state = cx.observe_in(&view, window, |this, view, window, cx| {
+                let sent = matches!(view.read(cx).state, SendState::Sent(_));
+                // Transfer focus once when the textarea leaves the screen.
+                if sent && !this.sent {
+                    this.focus.focus(window, cx);
+                }
+                this.sent = sent;
+            });
+            FeedbackWindow {
+                view,
+                focus: cx.focus_handle(),
+                sent,
+                _state: state,
+            }
         });
         cx.new(|cx| Root::new(content, window, cx))
     });
@@ -257,6 +277,9 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
 
 struct FeedbackWindow {
     view: Entity<FeedbackView>,
+    focus: FocusHandle,
+    sent: bool,
+    _state: Subscription,
 }
 impl Render for FeedbackWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -267,9 +290,18 @@ impl Render for FeedbackWindow {
             .bg(p.surface)
             .text_color(p.text)
             .key_context("OkilumFeedbackWindow")
-            .on_action(move |_: &CloseFeedback, window, cx| {
-                view.update(cx, |view, _| view.visible = false);
-                window.remove_window();
+            .track_focus(&self.focus)
+            .capture_action(move |_: &CloseFeedback, window, cx| {
+                let sending = view.update(cx, |view, _| {
+                    if matches!(view.state, SendState::Sending) {
+                        return true;
+                    }
+                    view.visible = false;
+                    false
+                });
+                if !sending {
+                    window.remove_window();
+                }
             })
             .child(TitleBar::new().child("Send feedback"))
             .child(div().flex_1().min_h_0().p_5().child(self.view.clone()))

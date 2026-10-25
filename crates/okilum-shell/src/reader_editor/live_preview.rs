@@ -12,7 +12,7 @@ pub(super) struct LivePreview {
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
     #[cfg(target_os = "linux")]
-    latency_subscriptions: Option<(Subscription, Subscription)>,
+    latency_subscriptions: Option<(Subscription, Subscription, Subscription)>,
 }
 
 #[cfg(test)]
@@ -364,17 +364,48 @@ impl Reader {
             return;
         }
         let input = editing.input.clone();
+        // GPUI's interceptor runs at application key dispatch, before key
+        // bindings, focused-editor actions and default text insertion. Observe
+        // only: never stop propagation, notify or request an extra frame.
+        let key_received = Rc::new(Cell::new(None));
+        let key_seen = key_received.clone();
+        let key_input = input.clone();
+        let handle = window.window_handle();
+        let key = cx.intercept_keystrokes(move |_, event_window, app| {
+            let received_ns = latency_now_ns();
+            if event_window.window_handle() != handle {
+                return;
+            }
+            let editor = key_input.read(app);
+            if editor.focus_handle(app).is_focused(event_window) {
+                key_seen.set(Some((editor.source_stamp(), received_ns)));
+            } else {
+                key_seen.set(None);
+            }
+        });
         let edit_trace = trace.clone();
         let changed = cx.subscribe_in(
             &input,
             window,
             move |this, input, event: &SourceMutation, window, cx| {
                 let mutation_ns = latency_now_ns();
+                // One event can yield one measured mutation. Programmatic/IME
+                // changes without a matching preceding key stay unmeasured.
+                let key_ns = key_received
+                    .take()
+                    .filter(|(before, received)| {
+                        before.document == event.stamp.document
+                            && before.generation.checked_add(1) == Some(event.stamp.generation)
+                            && *received <= mutation_ns
+                            && mutation_ns - *received <= 1_000_000_000
+                    })
+                    .map_or(0, |(_, received)| received);
                 this.trace_editor_latency_frame(
                     input.clone(),
                     event.stamp,
                     "edit",
                     mutation_ns,
+                    key_ns,
                     edit_trace.clone(),
                     window,
                     cx,
@@ -422,15 +453,16 @@ impl Reader {
                     stamp,
                     "live",
                     0,
+                    0,
                     live_trace.clone(),
                     window,
                     cx,
                 );
             }
         });
-        editing.live_preview.latency_subscriptions = Some((changed, classified));
+        editing.live_preview.latency_subscriptions = Some((changed, classified, key));
         let stamp = input.read(cx).source_stamp();
-        self.trace_editor_latency_frame(input, stamp, "open", 0, trace, window, cx);
+        self.trace_editor_latency_frame(input, stamp, "open", 0, 0, trace, window, cx);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -440,6 +472,7 @@ impl Reader {
         stamp: gpui_component::input::projection::SourceStamp,
         purpose: &'static str,
         mutation_ns: u64,
+        key_ns: u64,
         trace: reader_diagnostics::Trace,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -471,7 +504,9 @@ impl Reader {
                     "document": stamp.document, "generation": stamp.generation,
                     "current_document": current.document, "current_generation": current.generation,
                     "presentation_epoch": editor.presentation_epoch(),
-                    "mutation_ns": mutation_ns, "monotonic_ns": latency_now_ns(),
+                    "mutation_ns": mutation_ns, "key_received_ns": key_ns,
+                    "key_boundary": "gpui-before-key-bindings-and-text-input",
+                    "monotonic_ns": latency_now_ns(),
                     "live": live, "limited": limited,
                 }));
             });
@@ -600,6 +635,20 @@ mod tests {
                     && event["details"]["purpose"] == "edit"
                     && event["details"]["outcome"] == "painted"
             }) {
+                let measured = events
+                    .iter()
+                    .find(|event| {
+                        event["phase"] == "editor_latency_frame"
+                            && event["details"]["purpose"] == "edit"
+                            && event["details"]["outcome"] == "painted"
+                    })
+                    .unwrap();
+                let key_ns = measured["details"]["key_received_ns"].as_u64().unwrap();
+                let mutation_ns = measured["details"]["mutation_ns"].as_u64().unwrap();
+                assert!(
+                    key_ns > 0 && key_ns <= mutation_ns,
+                    "the app key-dispatch positive control must precede mutation"
+                );
                 assert!(
                     events
                         .iter()

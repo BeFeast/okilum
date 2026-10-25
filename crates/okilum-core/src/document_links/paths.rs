@@ -26,13 +26,15 @@ pub fn markdown_path<'a>(vault: &Vault, path: &'a str) -> Option<Cow<'a, str>> {
         let mut paths = vault.graph_os_paths.lock().unwrap();
         return paths
             .entry(path.to_owned())
-            .or_insert_with(|| match input.canonicalize() {
-                Ok(real) => real
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|relative| format!("/{}", crate::vault::note_path(relative))),
-                Err(_) => Some(path.to_owned()),
-            })
+            .or_insert_with(
+                || match crate::open_diagnostics::fs(|| input.canonicalize()) {
+                    Ok(real) => real
+                        .strip_prefix(root)
+                        .ok()
+                        .map(|relative| format!("/{}", crate::vault::note_path(relative))),
+                    Err(_) => Some(path.to_owned()),
+                },
+            )
             .clone()
             .map(Cow::Owned);
     }
@@ -44,11 +46,9 @@ pub fn markdown_path<'a>(vault: &Vault, path: &'a str) -> Option<Cow<'a, str>> {
             .ok()
             .map(|relative| Cow::Owned(format!("/{}", relative.to_string_lossy())));
     }
-    let root = vault
-        .root
-        .canonicalize()
+    let root = crate::open_diagnostics::fs(|| vault.root.canonicalize())
         .unwrap_or_else(|_| vault.root.clone());
-    if let Ok(real) = input.canonicalize() {
+    if let Ok(real) = crate::open_diagnostics::fs(|| input.canonicalize()) {
         if let Ok(relative) = real.strip_prefix(&root) {
             return Some(Cow::Owned(format!("/{}", relative.to_string_lossy())));
         }
@@ -68,14 +68,19 @@ pub(crate) fn fallback_links(
     vault: &Vault,
     from: &str,
 ) -> Vec<(ParsedLink, Range<usize>)> {
-    fallback_after_strict(source, vault, from, &parse(source))
+    fallback_after_strict(
+        source,
+        &parse(source),
+        |target| resolve(target, false, vault, from),
+        true,
+    )
 }
 
 fn fallback_after_strict(
     source: &str,
-    vault: &Vault,
-    from: &str,
     strict: &[ParsedLink],
+    mut resolve_target: impl FnMut(&str) -> ResolvedLink,
+    allow_verified_outside: bool,
 ) -> Vec<(ParsedLink, Range<usize>)> {
     if !source.contains("](") || !source.contains(' ') {
         return Vec::new();
@@ -146,8 +151,10 @@ fn fallback_after_strict(
         if !target.contains(' ') || target.trim() != target || target.starts_with('<') {
             continue;
         }
-        let resolved = resolve(target, false, vault, from);
-        if !matches!(resolved.status, "resolved" | "attachment" | "outside_file") {
+        let resolved = resolve_target(target);
+        if !matches!(resolved.status, "resolved" | "attachment")
+            && !(allow_verified_outside && resolved.status == "outside_file")
+        {
             continue;
         }
         // A second strict parse proves the candidate is a link in this context:
@@ -170,9 +177,18 @@ fn fallback_after_strict(
 }
 
 pub fn parse_in_vault(source: &str, vault: &Vault, from: &str) -> Vec<ParsedLink> {
+    parse_with(source, |target| resolve(target, false, vault, from), true)
+}
+
+pub(super) fn parse_with(
+    source: &str,
+    resolve_target: impl FnMut(&str) -> ResolvedLink,
+    allow_verified_outside: bool,
+) -> Vec<ParsedLink> {
     let mut links = parse(source);
-    let fallback = fallback_after_strict(source, vault, from, &links);
+    let fallback = fallback_after_strict(source, &links, resolve_target, allow_verified_outside);
     links.extend(fallback.into_iter().map(|(link, _)| link));
+    crate::open_diagnostics::count("parsed_links", links.len());
     links.sort_by_key(|link| link.range.start);
     links
 }

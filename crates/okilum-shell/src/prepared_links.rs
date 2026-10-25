@@ -291,61 +291,88 @@ impl Reader {
         let quiet = matches!(landing, Some(Landing::Place(_)));
         let started = std::time::Instant::now();
         self.open_started = Some(started);
+        let preparation_trace = reader_diagnostics::trace(cx);
+        let platform_probe = preparation_trace
+            .as_ref()
+            .map(|_| platform::text_diagnostics::Probe::start());
         cx.spawn_in(window, async move |this, cx| {
             let document = cx
                 .background_executor()
                 .spawn(async move {
-                    let document = if html && !Path::new(&rel).is_absolute() {
-                        okilum_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
-                            PreparedDocument {
-                                source: html,
-                                canonical_source: None,
-                                original: None,
-                                identities: Vec::new(),
-                                frontmatter: None,
-                            }
-                        })
-                    } else {
-                        okilum_core::render::reader_document(&vault, &rel).map(|document| {
-                            PreparedDocument {
-                                canonical_source: Some(document.canonical_source),
-                                source: document.rendered,
-                                original: Some(document.original_body),
-                                identities: document.links,
-                                frontmatter: document.frontmatter,
-                            }
+                    let worker_started = std::time::Instant::now();
+                    let prepare = || {
+                        let document = if html && !Path::new(&rel).is_absolute() {
+                            okilum_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
+                                PreparedDocument {
+                                    source: html,
+                                    canonical_source: None,
+                                    original: None,
+                                    identities: Vec::new(),
+                                    frontmatter: None,
+                                }
+                            })
+                        } else {
+                            okilum_core::render::reader_document(&vault, &rel).map(|document| {
+                                PreparedDocument {
+                                    canonical_source: Some(document.canonical_source),
+                                    source: document.rendered,
+                                    original: Some(document.original_body),
+                                    identities: document.links,
+                                    frontmatter: document.frontmatter,
+                                }
+                            })
+                        };
+                        document.and_then(|document| {
+                            let _phase = okilum_core::open_diagnostics::phase("target_landing");
+                            let target = match landing {
+                                Some(Landing::Task(task)) => {
+                                    let original = document.original.as_deref().ok_or_else(|| {
+                                        anyhow::anyhow!("Task navigation is unavailable in HTML mode")
+                                    })?;
+                                    let target =
+                                        okilum_core::tasks::target(&task, original, &document.source)?;
+                                    Some(Ok((target.block, Some(target.text.unwrap_or_default()))))
+                                }
+                                // A line that cannot be placed opens the note at the
+                                // top and says so; it never lands on a guess.
+                                Some(Landing::Line(line) | Landing::Place(line)) => Some(
+                                    document
+                                        .canonical_source
+                                        .as_deref()
+                                        .and_then(|source| {
+                                            okilum_core::deep_link::reader_block(
+                                                source,
+                                                &document.source,
+                                                line,
+                                            )
+                                        })
+                                        .map(|block| (block, None))
+                                        .ok_or(line),
+                                ),
+                                None => None,
+                            };
+                            Ok((document, target))
                         })
                     };
-                    document.and_then(|document| {
-                        let target = match landing {
-                            Some(Landing::Task(task)) => {
-                                let original = document.original.as_deref().ok_or_else(|| {
-                                    anyhow::anyhow!("Task navigation is unavailable in HTML mode")
-                                })?;
-                                let target =
-                                    okilum_core::tasks::target(&task, original, &document.source)?;
-                                Some(Ok((target.block, Some(target.text.unwrap_or_default()))))
-                            }
-                            // A line that cannot be placed opens the note at the
-                            // top and says so; it never lands on a guess.
-                            Some(Landing::Line(line) | Landing::Place(line)) => Some(
-                                document
-                                    .canonical_source
-                                    .as_deref()
-                                    .and_then(|source| {
-                                        okilum_core::deep_link::reader_block(
-                                            source,
-                                            &document.source,
-                                            line,
-                                        )
-                                    })
-                                    .map(|block| (block, None))
-                                    .ok_or(line),
-                            ),
-                            None => None,
-                        };
-                        Ok((document, target))
-                    })
+                    if let Some(trace) = preparation_trace {
+                        let (document, report) = okilum_core::open_diagnostics::capture(prepare);
+                        trace.event(
+                            "note_open_core_preparation",
+                            serde_json::json!({
+                                "generation": generation,
+                                "since_open_ms": started.elapsed().as_secs_f64() * 1000.,
+                                "worker_ms": worker_started.elapsed().as_secs_f64() * 1000.,
+                                "worker_start_ms": worker_started.duration_since(started).as_secs_f64() * 1000.,
+                                "note_count": vault.notes.len(),
+                                "html": html,
+                                "success": document.is_ok(),
+                                "report": report,
+                            }),
+                        );
+                        document
+                    } else {
+                        prepare()
+                    }
                 })
                 .await;
             let mut request = request;
@@ -378,9 +405,10 @@ impl Reader {
                 if let Some(trace) = reader_diagnostics::trace(cx) {
                     trace.event(
                         "note_open_rendered",
-                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000. }),
+                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000., "generation": generation, "platform": platform_probe.as_ref().map(|probe| probe.report()) }),
                     );
                 }
+                drop(platform_probe);
                 let task_landing = document.is_ok().then_some(task_text).flatten();
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");

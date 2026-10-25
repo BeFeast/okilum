@@ -39,6 +39,7 @@ pub mod note_move;
 pub mod note_templates;
 pub mod note_title;
 pub mod obsidian;
+pub mod open_diagnostics;
 pub mod projects;
 pub mod properties;
 pub mod prose;
