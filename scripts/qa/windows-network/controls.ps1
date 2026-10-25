@@ -16,9 +16,15 @@ try{
  Set-ItemProperty $reg ProxyEnable 1;Set-ItemProperty $reg ProxyServer '127.0.0.1:18178';Set-ItemProperty $reg ProxyOverride '';Remove-ItemProperty $reg AutoConfigURL -EA SilentlyContinue
  & $probe fixed 'https://updater.okilum.test/updates' "$receipt/untrusted.txt"
  if($LASTEXITCODE -eq 0){throw 'Untrusted root unexpectedly accepted'}
+ if((Get-Content "$receipt/untrusted.txt" -Raw) -notmatch 'certificate|TLS|SSL|untrusted|unknownissuer'){throw 'Negative control did not establish a TLS trust rejection'}
  $cert=Import-Certificate -FilePath "$fixture/root.cer" -CertStoreLocation Cert:\CurrentUser\Root
+ Set-ItemProperty $reg ProxyEnable 0
+ & $probe fixed 'https://localhost:18179/updates' "$receipt/trusted-direct.txt"
+ if($LASTEXITCODE -ne 0){throw 'Direct fixture positive control failed'}
  & $probe legacy 'https://localhost:18179/updates' "$receipt/legacy-bundled-root.txt"
  if($LASTEXITCODE -eq 0){throw 'Legacy bundled trust unexpectedly accepted inspection root'}
+ if((Get-Content "$receipt/legacy-bundled-root.txt" -Raw) -notmatch 'certificate|TLS|SSL|untrusted|unknownissuer'){throw 'Legacy negative was not a TLS trust rejection'}
+ Set-ItemProperty $reg ProxyEnable 1
  & $probe fixed 'https://updater.okilum.test/updates' "$receipt/system-static.txt"
  if($LASTEXITCODE -ne 0){throw 'Windows trust+system static proxy control failed'}
  Set-ItemProperty $reg ProxyEnable 0;Set-ItemProperty $reg AutoConfigURL 'http://127.0.0.1:18178/proxy.pac'
