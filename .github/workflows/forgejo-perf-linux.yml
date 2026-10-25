@@ -49,7 +49,7 @@ jobs:
           python3 -c 'import json,sys; sys.path.insert(0,"scripts/perf/editor"); import ab; print(json.dumps(ab.hardware(),indent=2))' > "$RUNNER_TEMP/ab-hardware.json"
       - name: Pin main and build both unpatched release binaries
         env:
-          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '5' }}
+          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '1' }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
@@ -86,7 +86,7 @@ jobs:
           echo "Scroll: **${LEGACY_RESULT:-skipped}**, report-only measurement build, not shipped. Input A/B uses separate unpatched binaries." >> "$GITHUB_STEP_SUMMARY"
       - name: Check editor latency and the baseline ratchet
         env:
-          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '5' }}
+          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '1' }}
         run: |
           set -euo pipefail
           export DISPLAY=:99

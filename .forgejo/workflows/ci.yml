@@ -496,7 +496,7 @@ jobs:
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
-  # #1662: same-runner shipped input A/B; supplementary until calibration acceptance.
+  # #1662: calibrated same-runner shipped input A/B; required for applicable PRs.
   perf-linux:
     needs: native-scope
     if: >-
@@ -594,22 +594,29 @@ jobs:
             *) exit 1 ;;
           esac
 
-  # Keep the protected context; only shared code and applicable macOS block it.
+  # Keep the protected context: shared code, applicable macOS and input A/B.
   # Main's Linux release health is still reported independently by main-health.
   check:
-    needs: [shared, macos]
+    needs: [native-scope, shared, macos, perf-linux]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
     steps:
-      - name: Require shared code and applicable macOS checks
+      - name: Require shared code, applicable macOS and input A/B checks
         env:
           EVENT: ${{ github.event_name }}
           SHARED_RESULT: ${{ needs.shared.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
+          PERF_REQUIRED: ${{ needs.native-scope.outputs.macos }}
+          PERF_RESULT: ${{ needs.perf-linux.result }}
         run: |
           set -euo pipefail
           test "$SHARED_RESULT" = success
           if [ "$EVENT" = pull_request ]; then
             test "$MACOS_RESULT" = success
+            case "$PERF_REQUIRED" in
+              true) test "$PERF_RESULT" = success ;;
+              false) test "$PERF_RESULT" = skipped ;;
+              *) exit 1 ;;
+            esac
           fi

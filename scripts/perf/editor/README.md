@@ -1,6 +1,6 @@
 # Same-runner input A/B (#1662)
 
-The current supplementary `perf-linux` job pins main once and builds main and
+The required, scope-aware `perf-linux` job pins main once and builds main and
 PR release binaries with the same toolchain/flags on the same runner. Both
 binaries are **shipped-unpatched** builds: the ordinary release Cargo command,
 with no gpui measurement patch. Build receipts, source commits and SHA256 sums
@@ -34,11 +34,13 @@ with a **measurement build, not shipped**, using the existing trace patch. Its
 result and provenance remain visible and report-only. Neither an absent scroll
 trace nor a scroll failure is represented as input regression.
 
-Required activation is a separate final step: at least five consecutive green
-unchanged-editor A/B runs and one deliberately slowed PR build must produce
-valid A/B failure before `ci / check` can depend on `perf-linux`. The static
-#1639 calibration does not qualify. Until that evidence is recorded in the PR,
-this job remains supplementary.
+Required activation is backed by GitHub run `40223917116` on head `2b9275a9`:
+five consecutive valid green A/B invocations with identical product-input
+hashes for main and PR. Forced-red run `40220173487` detected a diagnostic-only
+120 ms PR delay in all six scenarios on both paired attempts. Full receipts
+are recorded in PR #1707. The static #1639 calibration does not qualify.
+`ci / check` requires successful A/B for scoped PRs and permits its intentional
+skip for documentation-only changes and non-PR events.
 
 The sections below document the original static collector and measurement
 boundary, retained for diagnostics and historical evidence.
