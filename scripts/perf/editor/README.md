@@ -1,3 +1,48 @@
+# Same-runner input A/B (#1662)
+
+The current supplementary `perf-linux` job pins main once and builds main and
+PR release binaries with the same toolchain/flags on the same runner. Both
+binaries are **shipped-unpatched** builds: the ordinary release Cargo command,
+with no gpui measurement patch. Build receipts, source commits and SHA256 sums
+are uploaded for both. CPU model, affinity/vCPU count, kernel, runner/image and
+run identity accompany each comparison.
+
+For each of four Source fixtures and two supported Live Preview fixtures,
+main and PR each get one warmup and five measured independent launches. The
+order alternates main/PR then PR/main to counterbalance temporal drift. The
+collector uses the same pinned fixture bytes for both roles. It verifies the
+matching document/generation post-frame diagnostic, actual changed clipboard
+buffer and changed pixels. Input starts before external key injection and ends
+at the product's matching post-frame diagnostic; this includes OS queue time,
+and does not establish physical display/scanout latency.
+
+Only input medians determine the A/B result. A scenario fails when the PR is
+worse than main **both by more than 15% and by more than 3 ms**. These are
+**configurable defaults**, stored once in `ab-policy.json`; no environment
+variable silently changes them. p90 and all raw samples remain in the report.
+A valid regression permits one complete paired remeasurement of the same two
+SHA-verified binaries. Infrastructure/missing evidence never retries. Both
+attempts share the configured 590-second deadline.
+
+There is **no absolute CI latency ceiling**. The product's app-key-event to
+post-frame limits (33 ms Linux / 16 ms M4) belong in acceptance on real hardware,
+not on bimodal hosted CPUs. The old static baseline is retained as historical
+evidence; A/B does not rewrite or relax it.
+
+Scroll is excluded from A/B. The legacy scroll diagnostic continues separately
+with a **measurement build, not shipped**, using the existing trace patch. Its
+result and provenance remain visible and report-only. Neither an absent scroll
+trace nor a scroll failure is represented as input regression.
+
+Required activation is a separate final step: at least five consecutive green
+unchanged-editor A/B runs and one deliberately slowed PR build must produce
+valid A/B failure before `ci / check` can depend on `perf-linux`. The static
+#1639 calibration does not qualify. Until that evidence is recorded in the PR,
+this job remains supplementary.
+
+The sections below document the original static collector and measurement
+boundary, retained for diagnostics and historical evidence.
+
 # Linux editor latency guard (#1639)
 
 The existing `perf-linux` job reuses its trace binary and Xvfb display. The
