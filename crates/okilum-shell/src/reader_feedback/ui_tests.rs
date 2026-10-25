@@ -338,6 +338,7 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
                 Ok(Receipt {
                     issue_number: 123,
                     issue_url: "https://git.oklabs.uk/BeFeast/okilum/issues/123".into(),
+                    delivery_endpoint: None,
                 })
             });
             view.send(cx);
@@ -535,6 +536,7 @@ fn one_click_sprint_send_reuses_the_non_modal_feedback_draft(cx: &mut TestAppCon
                 Ok(Receipt {
                     issue_number: 42,
                     issue_url: "https://git.oklabs.uk/BeFeast/okilum/issues/42".into(),
+                    delivery_endpoint: None,
                 })
             });
         });

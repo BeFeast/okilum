@@ -9,6 +9,7 @@ use std::{
 };
 
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
+const FALLBACK_ENDPOINT: &str = "https://feedback.befeast.com/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
 const MAX_LOG: usize = 256 * 1024;
 /// Client-side cap for the optional "video" part. Matches pomoi's
@@ -207,16 +208,29 @@ impl Report {
 pub(super) struct Receipt {
     pub issue_number: u64,
     pub issue_url: String,
+    // Set from the successful local attempt; the server cannot supply this field.
+    #[serde(skip)]
+    pub delivery_endpoint: Option<String>,
 }
 
 pub(super) fn send(report: Report) -> Result<Receipt> {
-    send_to(ENDPOINT, &report)
+    send_using(ENDPOINT, FALLBACK_ENDPOINT, &report)
+}
+fn send_using(primary: &str, fallback: &str, report: &Report) -> Result<Receipt> {
+    okilum_http::primary_then_fallback(primary, fallback, |endpoint| send_to(endpoint, report))
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
-    use reqwest::blocking::{
-        multipart::{Form, Part},
-        Client,
-    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Create Feedback network runtime")?
+        .block_on(send_to_async(endpoint, report))
+}
+async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
+    use futures_util::TryStreamExt;
+    use reqwest::multipart::{Form, Part};
+    use tokio::io::AsyncReadExt;
+    let attachment_error = Arc::new(std::sync::Mutex::new(None::<String>));
     report.validate()?;
     // A large video needs far longer than the text-only 45 s budget.
     let timeout = if report.video.is_some() {
@@ -224,11 +238,13 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     } else {
         Duration::from_secs(45)
     };
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let failure = |error: anyhow::Error| {
+        crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
+        let message = format!("{}. Your feedback is kept.", okilum_http::reason(&error));
+        error.context(message)
+    };
+    let client = okilum_http::async_client(endpoint, &report.meta.version, timeout)
+        .map_err(|error| failure(okilum_http::transport_failure(error)))?;
     let mut meta = serde_json::to_value(&report.meta)?;
     if super::sprint::enabled() {
         let context = super::sprint::context();
@@ -268,19 +284,77 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
         );
         form = form.part(
             "video",
-            Part::reader_with_length(file.take(length), length)
-                .file_name(video.name.clone())
-                .mime_str(video.mime)?,
+            Part::stream_with_length(
+                reqwest::Body::wrap_stream(
+                    tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file).take(length))
+                        .map_err({
+                            let attachment_error = attachment_error.clone();
+                            move |error| {
+                                *attachment_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some(error.to_string());
+                                error
+                            }
+                        }),
+                ),
+                length,
+            )
+            .file_name(video.name.clone())
+            .mime_str(video.mime)?,
         );
     }
     let response = client
         .post(endpoint)
         .multipart(form)
         .send()
-        .context("Couldn't confirm delivery. Your feedback is kept.")?;
+        .await
+        .map_err(|error| {
+            let local = attachment_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            if let Some(local) = local {
+                let error =
+                    anyhow::Error::new(error).context(format!("Read the attached video: {local}"));
+                crate::reader_diagnostics::network_failure(
+                    &format!("Feedback via {endpoint}"),
+                    &error,
+                );
+                error.context("Couldn't read the attached video. Your feedback is kept.")
+            } else {
+                failure(okilum_http::transport_failure(error.into()))
+            }
+        })?;
     let status = response.status();
-    let bytes = bounded(response, 16 * 1024)?;
+    let bytes = bounded_response(response, 16 * 1024)
+        .await
+        .map_err(|error| {
+            // A received HTTP status is authoritative. In particular, 201 may
+            // already have created an issue: never retry an unreadable receipt.
+            if status == reqwest::StatusCode::CREATED {
+                let error = error.context("Feedback returned HTTP 201 with an unreadable receipt");
+                crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
+                error.context("The server accepted your feedback, but its issue link could not be confirmed. Your draft is kept.")
+            } else {
+                let error = error.context(format!(
+                    "Feedback returned HTTP {} with an unreadable body",
+                    status.as_u16()
+                ));
+                crate::reader_diagnostics::network_failure(
+                    &format!("Feedback via {endpoint}"),
+                    &error,
+                );
+                error.context(format!(
+                    "{}. Your feedback is kept.",
+                    okilum_http::http_reason(status.as_u16())
+                ))
+            }
+        })?;
     if status != reqwest::StatusCode::CREATED {
+        let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
+        crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
+        if status.as_u16() == 407 {
+            bail!("{}. Your feedback is kept.", okilum_http::http_reason(407));
+        }
         let message = serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
             .and_then(|v| {
@@ -295,7 +369,7 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
             });
         bail!("{message} (HTTP {})", status.as_u16());
     }
-    let receipt: Receipt = serde_json::from_slice(&bytes)
+    let mut receipt: Receipt = serde_json::from_slice(&bytes)
         .context("Couldn't confirm the created issue. Your draft is kept.")?;
     ensure!(
         receipt.issue_number > 0
@@ -306,7 +380,20 @@ fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
                 ),
         "Unexpected feedback issue link. Your draft is kept."
     );
+    receipt.delivery_endpoint = Some(endpoint.to_owned());
+    crate::reader_diagnostics::feedback_delivery(endpoint);
     Ok(receipt)
+}
+async fn bounded_response(mut response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len().saturating_add(chunk.len()) <= maximum,
+            "Attachment or response exceeds its size limit."
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 fn bounded(reader: impl Read, maximum: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
