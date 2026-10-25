@@ -1,0 +1,286 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -79,0 +80 @@
++pub mod reference_audit;
+@@ -95 +96 @@
+-pub use parser::{parse_document, Options, ResolvedReference};
++pub use parser::{parse_document, parse_document_with_reference_audit, Options, ResolvedReference};
+--- a/src/parser/inlines.rs
++++ b/src/parser/inlines.rs
+@@ -2,0 +3,3 @@
++use crate::reference_audit::{
++    AuditBuilder, CallbackOutcome, CanonicalLookup, LookupEvent, ReferenceFuel,
++};
+@@ -4 +7 @@
+-use std::cell::Cell;
++use std::cell::{Cell, RefCell};
+@@ -1563,2 +1566,3 @@
+-        let mut reff: Option<Cow<ResolvedReference>> = if found_label {
+-            self.refmap.lookup(&lab).map(Cow::Borrowed)
++        let before = self.refmap.audit.as_ref().map(|_| self.refmap.fuel());
++        let (resolved, canonical) = if found_label {
++            self.refmap.lookup(&lab)
+@@ -1566 +1570 @@
+-            None
++            (None, CanonicalLookup::NotAttempted)
+@@ -1567,0 +1572,2 @@
++        let mut reff: Option<Cow<ResolvedReference>> = resolved.map(Cow::Borrowed);
++        let mut callback_outcome = CallbackOutcome::NotCalled;
+@@ -1572,9 +1578,38 @@
+-                reff = callback
+-                    .resolve(BrokenLinkReference {
+-                        normalized: &lab,
+-                        original: &unfolded_lab,
+-                    })
+-                    .map(Cow::Owned);
+-            }
+-        }
+-
++                let result = callback.resolve(BrokenLinkReference {
++                    normalized: &lab,
++                    original: &unfolded_lab,
++                });
++                if before.is_some() {
++                    callback_outcome = match &result {
++                        Some(value) => CallbackOutcome::Resolved {
++                            url: value.url.clone(),
++                            title: value.title.clone(),
++                        },
++                        None => CallbackOutcome::Unresolved,
++                    };
++                }
++                reff = result.map(Cow::Owned);
++            }
++        }
++
++        if let Some(before) = before {
++            let mut audit = self
++                .refmap
++                .audit
++                .as_ref()
++                .expect("requested audit")
++                .borrow_mut();
++            let sequence = audit.sequence;
++            audit.sequence += 1;
++            audit.lookups.push(LookupEvent {
++                sequence,
++                original: unfolded_lab.into_owned(),
++                normalized: lab,
++                canonical,
++                callback: callback_outcome,
++                before,
++                after: self.refmap.fuel(),
++                line: self.line,
++                inline_offset: initial_pos,
++            });
++        }
+@@ -2109,0 +2145 @@
++    pub(crate) audit: Option<RefCell<AuditBuilder>>,
+@@ -2118,0 +2155 @@
++            audit: None,
+@@ -2124 +2161,8 @@
+-    fn lookup(&self, lab: &str) -> Option<&ResolvedReference> {
++    pub(crate) fn fuel(&self) -> ReferenceFuel {
++        ReferenceFuel {
++            used: self.ref_size.get(),
++            maximum: self.max_ref_size,
++        }
++    }
++
++    fn lookup(&self, lab: &str) -> (Option<&ResolvedReference>, CanonicalLookup) {
+@@ -2130 +2174 @@
+-                    None
++                    (None, CanonicalLookup::Exhausted)
+@@ -2133,4 +2177,4 @@
+-                    Some(entry)
+-                }
+-            }
+-            None => None,
++                    (Some(entry), CanonicalLookup::Resolved)
++                }
++            }
++            None => (None, CanonicalLookup::Missing),
+--- a/src/parser/mod.rs
++++ b/src/parser/mod.rs
+@@ -41,0 +42,20 @@
++    parse_document_inner(arena, md, options, false).0
++}
++
++/// Run the same canonical parse with optional read-only reference evidence.
++/// This does not authorize fragment replay, a new fuel budget or cross-root reuse.
++pub fn parse_document_with_reference_audit<'a>(
++    arena: &'a Arena<AstNode<'a>>,
++    md: &str,
++    options: &Options,
++) -> (Node<'a>, crate::reference_audit::ReferenceAudit) {
++    let (root, audit) = parse_document_inner(arena, md, options, true);
++    (root, audit.expect("requested reference audit"))
++}
++
++fn parse_document_inner<'a>(
++    arena: &'a Arena<AstNode<'a>>,
++    md: &str,
++    options: &Options,
++    audit: bool,
++) -> (Node<'a>, Option<crate::reference_audit::ReferenceAudit>) {
+@@ -54,0 +75,3 @@
++    if audit {
++        parser.refmap.audit = Some(std::cell::RefCell::default());
++    }
+@@ -56 +79,12 @@
+-    parser.finish(linebuf)
++    let root = parser.finish(linebuf);
++    let final_fuel = parser.refmap.fuel();
++    let evidence = parser.refmap.audit.take().map(|audit| {
++        let audit = audit.into_inner();
++        crate::reference_audit::ReferenceAudit {
++            source: md.into(),
++            definitions: audit.definitions,
++            lookups: audit.lookups,
++            final_fuel,
++        }
++    });
++    (root, evidence)
+@@ -940 +974,2 @@
+-            self.resolve_reference_link_definitions(&mut ast.content)
++            let paragraph = ast.sourcepos;
++            self.resolve_reference_link_definitions(&mut ast.content, paragraph)
+@@ -1581 +1616,5 @@
+-    fn resolve_reference_link_definitions(&mut self, content: &mut String) -> bool {
++    fn resolve_reference_link_definitions(
++        &mut self,
++        content: &mut String,
++        paragraph: Sourcepos,
++    ) -> bool {
+@@ -1586 +1625,3 @@
+-                if let Some(offset) = self.parse_reference_inline(&content[seeked..]) {
++                if let Some(offset) =
++                    self.parse_reference_inline(&content[seeked..], paragraph, seeked)
++                {
+@@ -1631 +1672 @@
+-                let has_content = self.resolve_reference_link_definitions(content);
++                let has_content = self.resolve_reference_link_definitions(content, ast.sourcepos);
+@@ -2042 +2083,6 @@
+-    fn parse_reference_inline(&mut self, content: &str) -> Option<usize> {
++    fn parse_reference_inline(
++        &mut self,
++        content: &str,
++        paragraph: Sourcepos,
++        content_offset: usize,
++    ) -> Option<usize> {
+@@ -2112 +2158 @@
+-            self.refmap.map.entry(lab).or_insert(ResolvedReference {
++            let resolved = ResolvedReference {
+@@ -2115 +2161,20 @@
+-            });
++            };
++            if let Some(audit) = &self.refmap.audit {
++                let mut audit = audit.borrow_mut();
++                let sequence = audit.sequence;
++                audit.sequence += 1;
++                audit
++                    .definitions
++                    .push(crate::reference_audit::DefinitionEvent {
++                        sequence,
++                        label: lab.clone(),
++                        url: resolved.url.clone(),
++                        title: resolved.title.clone(),
++                        inserted: !self.refmap.map.contains_key(&lab),
++                        paragraph,
++                        content_offset,
++                        consumed_bytes: subj.pos,
++                        raw: content[..subj.pos].into(),
++                    });
++            }
++            self.refmap.map.entry(lab).or_insert(resolved);
+--- /dev/null
++++ b/src/reference_audit.rs
+@@ -0,0 +1,88 @@
++//! Optional evidence from one canonical root parse. No replay or cache authority.
++use crate::nodes::Sourcepos;
++
++/// Canonical expansion fuel, sampled without another lookup or charge.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct ReferenceFuel {
++    pub used: usize,
++    pub maximum: usize,
++}
++
++/// The parser's own accepted definition, including duplicates.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct DefinitionEvent {
++    pub sequence: usize,
++    pub label: String,
++    pub url: String,
++    pub title: String,
++    /// False means the existing first definition retained precedence.
++    pub inserted: bool,
++    /// Canonical paragraph context, not a fabricated definition source range.
++    pub paragraph: Sourcepos,
++    /// Offsets into the parser's prefix-stripped paragraph content, not root bytes.
++    pub content_offset: usize,
++    pub consumed_bytes: usize,
++    pub raw: String,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum CanonicalLookup {
++    NotAttempted,
++    Missing,
++    Exhausted,
++    Resolved,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum CallbackOutcome {
++    NotCalled,
++    Unresolved,
++    Resolved { url: String, title: String },
++}
++
++/// One actual reference-resolution attempt, in canonical traversal order.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct LookupEvent {
++    pub sequence: usize,
++    pub original: String,
++    pub normalized: String,
++    pub canonical: CanonicalLookup,
++    pub callback: CallbackOutcome,
++    pub before: ReferenceFuel,
++    pub after: ReferenceFuel,
++    /// Parser inline context; these are not validated editor byte coordinates.
++    pub line: usize,
++    pub inline_offset: usize,
++}
++
++/// Immutable read-only evidence tied to exact root bytes. Options and callback
++/// identity are NOT a reusable semantic-context key. No fragment budget is
++/// exposed, reset or replayed. Consumers must recompute until equivalence is proven.
++#[derive(Debug)]
++pub struct ReferenceAudit {
++    pub(crate) source: Box<str>,
++    pub(crate) definitions: Vec<DefinitionEvent>,
++    pub(crate) lookups: Vec<LookupEvent>,
++    pub(crate) final_fuel: ReferenceFuel,
++}
++impl ReferenceAudit {
++    pub fn source(&self) -> &str {
++        &self.source
++    }
++    pub fn definitions(&self) -> &[DefinitionEvent] {
++        &self.definitions
++    }
++    pub fn lookups(&self) -> &[LookupEvent] {
++        &self.lookups
++    }
++    pub fn final_fuel(&self) -> ReferenceFuel {
++        self.final_fuel
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct AuditBuilder {
++    pub definitions: Vec<DefinitionEvent>,
++    pub lookups: Vec<LookupEvent>,
++    pub sequence: usize,
++}
