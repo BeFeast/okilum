@@ -82,6 +82,15 @@ class ExactWindowsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'identity changed'): w.execute(store, SOURCE, BUILD)
         self.assertEqual(store.writes, [])
 
+    def test_malformed_receipt_fails_clearly_before_mutation(self):
+        for receipt in ({}, [], {'state': 'prepared'}, {'identity': None}):
+            with self.subTest(receipt=receipt):
+                store = prepared()
+                store.data[f'{w.PREFIX}/promotions/{BUILD}-{SOURCE}.json'] = catalog.encode(receipt)
+                with self.assertRaisesRegex(ValueError, 'identity changed'):
+                    w.execute(store, SOURCE, BUILD)
+                self.assertEqual(store.writes, [])
+
     def test_non_main_source_never_constructs_store(self):
         with patch.object(w.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'git')), \
              patch.object(w.windows, 'R2') as store:

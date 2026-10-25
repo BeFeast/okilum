@@ -62,8 +62,10 @@ def execute(store, source, build):
     identity = {'source': source, 'build': build, 'descriptor': descriptor,
                 'metadata_sha256': hashlib.sha256(metadata_raw).hexdigest()}
     prior = store.call('GET', receipt_key)
-    if prior and json.loads(prior)['identity'] != identity:
-        raise ValueError('Windows promotion identity changed during retry')
+    if prior:
+        receipt = json.loads(prior)
+        if not isinstance(receipt, dict) or receipt.get('identity') != identity:
+            raise ValueError('Windows promotion identity changed during retry')
     store.put(receipt_key, catalog.encode({'identity': identity, 'state': 'prepared'}), 'application/json', 'no-cache')
     # Real promoter emits the feed last. All validations happened before this loop.
     for key, data, content_type, cache in plan.writes:
