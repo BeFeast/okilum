@@ -778,22 +778,33 @@ sync() {
             .arg(&original)
             .arg(&stage)
             .arg(digest)
-            .arg(old_digest)
+            .arg(&old_digest)
             .arg("--vault")
             .arg("path with spaces")
             .output()
             .unwrap();
         assert!(!dir.path().join("injected").exists());
         if !tamper && !changed {
-            assert!(output.status.success(), "helper failed: {:?}", output);
+            let committed = stage.join("completed").exists();
+            let external_replacement = !committed && sha(&original).unwrap() != old_digest;
+            assert_eq!(
+                output.status.success(),
+                !external_replacement,
+                "helper must refuse rollback over an external replacement: {:?}",
+                output
+            );
             let calls = fs::read_to_string(stage.join("sync-calls")).unwrap();
             let target_pair = format!("{}\n{}\n", original.display(), parent.display());
-            let expected = if stage.join("completed").exists() {
+            let expected = if committed {
                 format!(
                     "{target_pair}{}\n{}\n",
                     stage.join("completed.tmp").display(),
                     stage.display()
                 )
+            } else if external_replacement {
+                // The independent installer owns the new file. The identity
+                // guard must stop before rollback or any recovery fsync.
+                target_pair
             } else {
                 // Failed launch must persist both the restored image and its
                 // parent, without a whole-filesystem flush during recovery.
