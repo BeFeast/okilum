@@ -3886,7 +3886,10 @@ impl Reader {
             .overflow_hidden()
             .rounded(px(6.))
             .font_weight(FontWeight::SEMIBOLD)
-            .tooltip(title)
+            .tooltip(project.as_ref().map_or_else(
+                || vault_name::path_tooltip(&self.vault_root),
+                |_| title.to_string(),
+            ))
             .debug_selector(|| "sidebar-vault-title".into())
             .dropdown_menu(move |menu, _, _| {
                 name_items.iter().fold(menu, |menu, item| {
