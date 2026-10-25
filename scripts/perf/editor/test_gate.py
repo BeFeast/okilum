@@ -143,7 +143,7 @@ class GateTests(unittest.TestCase):
         self.assertIn("| 100.000 | 120.000 |", text)
         self.assertIn("220.000 > 135.000 ms", text)
         self.assertEqual(text.count("| source:tiny.md/input_frame_ms |"), 2)
-        self.assertEqual(runner.call_args_list[0].args[0][2], runner.call_args_list[1].args[0][2])
+        self.assertEqual(runner.call_args_list[0].args[0][-2], runner.call_args_list[1].args[0][-2])
         self.assertEqual(runner.call_args_list[1].args[0][-1], str(self.out / "attempt-2"))
         for number in (1, 2):
             self.assertEqual((self.out / f"attempt-{number}" / "trace.log").read_text(),
