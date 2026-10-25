@@ -406,8 +406,10 @@ actual=$(sha256sum < "$stage/previous.AppImage"); actual=${actual%% *}
 test "$actual" = "$original" || exit 1
 actual=$(sha256sum < "$stage/new.AppImage"); actual=${actual%% *}
 test "$actual" = "$digest" || exit 1
+# With explicit operands and no -f, coreutils sync uses fsync per file,
+# never syncfs of the entire busy filesystem. Persist the rename directory too.
 mv -f -- "$stage/new.AppImage" "$target"
-sync -f "$target"
+sync -- "$target" "$(dirname -- "$target")"
 echo 'Applied; previous.AppImage is the manual rollback copy'
 unset APPIMAGE APPDIR LD_LIBRARY_PATH APPIMAGE_EXTRACT_AND_RUN
 # The application never inherits the transaction lock. A startup confirmation
@@ -424,9 +426,9 @@ while test ! -f "$stage/started" && kill -0 "$child" 2>/dev/null; do
 done
 if test -f "$stage/started"; then
     printf 'committed\n' > "$stage/completed.tmp"
-    sync -f "$stage/completed.tmp"
+    sync -- "$stage/completed.tmp"
     mv -- "$stage/completed.tmp" "$stage/completed"
-    sync -f "$stage"
+    sync -- "$stage"
     echo 'Startup confirmed; transaction committed and update lock released'
     exit 0
 fi
@@ -436,7 +438,7 @@ echo "Updated application exited before startup confirmation ($child_status); re
 actual=$(sha256sum < "$target"); actual=${actual%% *}
 test "$actual" = "$digest" || exit 1
 mv -f -- "$stage/previous.AppImage" "$target"
-sync -f "$target"
+sync -- "$target" "$(dirname -- "$target")"
 
 "#;
 
@@ -956,6 +958,15 @@ mod tests {
 trace_stage() { stage_name=$1; printf 'helper trace %s stage=%s pid=%s\n' "$(date -u +%s.%N)" "$stage_name" "$$" >&2; }
 trap 'rc=$?; printf "helper exit rc=%s stage=%s\n" "$rc" "${stage_name:-shell-start}" >&2' 0
 trace_stage shell-start
+# A whole-filesystem flush represents unrelated blocked I/O. Fail immediately
+# rather than sleeping past the unchanged helper deadline. Positive controls
+# below require every expected file/directory flush to reach the real utility.
+sync() {
+    test "$#" -gt 1 && test "$1" = -- || { echo 'unrelated filesystem I/O requested' >&2; return 91; }
+    shift
+    for sync_path do printf '%s\n' "$sync_path" >> "$SYNC_CALLS"; done
+    command sync -- "$@"
+}
 "#,
         );
         let mut body = APPLY.to_string();
@@ -981,8 +992,8 @@ trace_stage shell-start
                 "trace_stage rename\nmv -f -- \"$stage/new.AppImage\" \"$target\"",
             ),
             (
-                "sync -f \"$target\"",
-                "trace_stage sync-target\nsync -f \"$target\"\ntrace_stage sync-target-complete",
+                "sync -- \"$target\" \"$(dirname -- \"$target\")\"",
+                "trace_stage sync-target\nsync -- \"$target\" \"$(dirname -- \"$target\")\"\ntrace_stage sync-target-complete",
             ),
             (
                 "echo 'Applied;",
@@ -1003,6 +1014,7 @@ trace_stage shell-start
         traced.push_str(&body);
         let mut command = Command::new("/bin/sh");
         command
+            .env("SYNC_CALLS", stage.join("sync-calls"))
             .args(["-c", traced.as_str(), "test", "2147483647"])
             .arg(&target)
             .arg(&stage)
@@ -1057,6 +1069,18 @@ trace_stage shell-start
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        let sync_calls = fs::read_to_string(stage.join("sync-calls")).unwrap();
+        let synced: Vec<_> = sync_calls.lines().map(PathBuf::from).collect();
+        assert_eq!(
+            synced,
+            vec![
+                target.clone(),
+                dir.path().to_path_buf(),
+                stage.join("completed.tmp"),
+                stage.clone()
+            ],
+            "apply and commit must fsync only their own files and rename directories"
+        );
         let pid: i32 = fs::read_to_string(stage.join("child-pid"))
             .unwrap()
             .trim()
