@@ -37,7 +37,9 @@ impl<'a> IndexedResolver<'a> {
     }
 
     pub fn parse(&self, source: &str, from: &str) -> Vec<ParsedLink> {
-        super::paths::parse_with(source, |target| self.resolve(target, false, from))
+        // Unverified external paths cannot justify Obsidian's existing-file
+        // fallback for otherwise invalid CommonMark destinations with spaces.
+        super::paths::parse_with(source, |target| self.resolve(target, false, from), false)
     }
 
     /// Translate only known, lexical in-vault OS paths. Unknown absolute paths

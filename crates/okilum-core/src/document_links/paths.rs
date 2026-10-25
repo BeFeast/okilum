@@ -68,15 +68,19 @@ pub(crate) fn fallback_links(
     vault: &Vault,
     from: &str,
 ) -> Vec<(ParsedLink, Range<usize>)> {
-    fallback_after_strict(source, &parse(source), |target| {
-        resolve(target, false, vault, from)
-    })
+    fallback_after_strict(
+        source,
+        &parse(source),
+        |target| resolve(target, false, vault, from),
+        true,
+    )
 }
 
 fn fallback_after_strict(
     source: &str,
     strict: &[ParsedLink],
     mut resolve_target: impl FnMut(&str) -> ResolvedLink,
+    allow_verified_outside: bool,
 ) -> Vec<(ParsedLink, Range<usize>)> {
     if !source.contains("](") || !source.contains(' ') {
         return Vec::new();
@@ -148,7 +152,9 @@ fn fallback_after_strict(
             continue;
         }
         let resolved = resolve_target(target);
-        if !matches!(resolved.status, "resolved" | "attachment" | "outside_file") {
+        if !matches!(resolved.status, "resolved" | "attachment")
+            && !(allow_verified_outside && resolved.status == "outside_file")
+        {
             continue;
         }
         // A second strict parse proves the candidate is a link in this context:
@@ -171,15 +177,16 @@ fn fallback_after_strict(
 }
 
 pub fn parse_in_vault(source: &str, vault: &Vault, from: &str) -> Vec<ParsedLink> {
-    parse_with(source, |target| resolve(target, false, vault, from))
+    parse_with(source, |target| resolve(target, false, vault, from), true)
 }
 
 pub(super) fn parse_with(
     source: &str,
     resolve_target: impl FnMut(&str) -> ResolvedLink,
+    allow_verified_outside: bool,
 ) -> Vec<ParsedLink> {
     let mut links = parse(source);
-    let fallback = fallback_after_strict(source, &links, resolve_target);
+    let fallback = fallback_after_strict(source, &links, resolve_target, allow_verified_outside);
     links.extend(fallback.into_iter().map(|(link, _)| link));
     crate::open_diagnostics::count("parsed_links", links.len());
     links.sort_by_key(|link| link.range.start);

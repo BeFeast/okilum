@@ -179,3 +179,17 @@ fn a_relative_scope_root_does_not_reinterpret_a_relative_link_as_an_os_path() {
     assert_eq!(link.candidates, ["notes/target.md"]);
     assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
 }
+
+#[test]
+fn unverified_outside_paths_do_not_activate_invalid_markdown_space_destinations() {
+    let vault = Vault::from_note_paths([]);
+    for source in [
+        "[link](/my uri)\n",
+        "[link](/url \"title \"and\" title\")\n",
+    ] {
+        let (rendered, report) =
+            open_diagnostics::capture(|| render::rewrite_source_links(source, &vault, "note.md"));
+        assert_eq!(rendered, source);
+        assert_eq!(report.phases.get("filesystem").map_or(0, |p| p.calls), 0);
+    }
+}
