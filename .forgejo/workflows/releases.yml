@@ -10,7 +10,7 @@ on:
         required: false
         default: ''
       source:
-        description: 'Full main SHA required with linux_only; otherwise request all-platform builds (#1040)'
+        description: 'Full main SHA with linux_only or independent windows_only; otherwise request all-platform builds (#1040)'
         required: false
         default: ''
       mac_only:
@@ -26,7 +26,7 @@ on:
         type: boolean
         default: false
       windows_only:
-        description: 'With build: put the re-signed Windows build of that stable build on stable; Mac, Linux, tag and notes unchanged (#1104)'
+        description: 'With build + source: promote that signed Windows build only; without source: legacy Mac stable sibling (#1688)'
         type: boolean
         default: false
       skip_windows:
@@ -81,6 +81,14 @@ jobs:
           WINDOWS_ONLY: ${{ inputs.windows_only }}
           SKIP_WINDOWS: ${{ inputs.skip_windows }}
         run: |
+          # Exact Windows selection must exit before legacy Mac-build lookup.
+          if [ "$WINDOWS_ONLY" = true ] && [ -n "$PROMOTE_SOURCE" ]; then
+            if [ -z "$PROMOTE_BUILD" ] || [ "$MAC_ONLY" = true ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$SKIP_WINDOWS" = true ] || [ "$SUPERSEDE_PENDING" = true ]; then
+              echo 'exact windows_only requires build/source and excludes other modes and supersede_pending' >&2
+              exit 1
+            fi
+            exec python scripts/releases/windows_stable.py --source "$PROMOTE_SOURCE" --build "$PROMOTE_BUILD"
+          fi
           # Resolve Mac-only before any legacy source/build request can dispatch work.
           if [ "$MAC_ONLY" = true ]; then
             if [ -z "$PROMOTE_BUILD" ] || [ -n "$PROMOTE_SOURCE" ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$WINDOWS_ONLY" = true ] || [ "$SKIP_WINDOWS" = true ]; then
