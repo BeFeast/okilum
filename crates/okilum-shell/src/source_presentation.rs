@@ -437,6 +437,23 @@ struct MappedProjection {
     blocks: Vec<ProjectionBlock>,
 }
 impl SourceProjection for MappedProjection {
+    fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
+        if self.source.stamp != current.stamp
+            || (!Arc::ptr_eq(&self.source.text, &current.text) && self.source.text != current.text)
+        {
+            return None;
+        }
+        // Remap/reveal already validated this immutable source index. A mapping
+        // query checks it without rebuilding a second whole-source index for
+        // marker painting. Source boundaries do not depend on active/reveal.
+        let projection = self.reveal.projection();
+        match projection.source_to_display(projection.snapshot(), offset.0) {
+            Ok(_) => Some(true),
+            Err(okilum_core::source_projection::MapError::InvalidBoundary) => Some(false),
+            Err(_) => None,
+        }
+    }
+
     fn blocks(&self) -> &[ProjectionBlock] {
         &self.blocks
     }
@@ -566,6 +583,106 @@ mod tests {
             anchor: SourceByte(source.text.len()),
             head: SourceByte(source.text.len()),
             ..ActiveSource::default()
+        }
+    }
+
+    #[test]
+    fn boundary_reuse_preserves_exact_ranges_across_reveal_and_unpainted_edits() {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let original = source("prefix **e\u{301}** 🧠\r\n- [ ] task\n> quote\n");
+        let provider = CachedProvider::classify(original.clone());
+        let pinned = provider.compose(&original, &inactive(&original)).unwrap();
+        let old_display = pinned.text().to_owned();
+        let old_markers = format!("{:?}", pinned.markers());
+        let mut current = original.clone();
+        // No layout/paint between successive revisions: each remap must retain
+        // the previous revision's exact semantic ranges, never its boundary lease.
+        for prefix in ["x", "xx"] {
+            current.stamp.generation += 1;
+            current.text = Arc::from(format!("{prefix}{}", original.text));
+            let fresh = CachedProvider::classify(current.clone());
+            let hidden = provider.compose(&current, &inactive(&current)).unwrap();
+            let at = current.text.find("e\u{301}").unwrap();
+            let active = ActiveSource {
+                anchor: SourceByte(at),
+                head: SourceByte(at),
+                composition: Some(SourceByte(at)..SourceByte(at + "e\u{301}".len())),
+                ..ActiveSource::default()
+            };
+            let revealed = provider.compose(&current, &active).unwrap();
+            assert_ne!(
+                hidden.text(),
+                revealed.text(),
+                "active reveal positive control"
+            );
+            let boundaries: Vec<_> = current
+                .text
+                .grapheme_indices(true)
+                .map(|(i, _)| i)
+                .chain(std::iter::once(current.text.len()))
+                .collect();
+            for (actual, state) in [(&hidden, inactive(&current)), (&revealed, active)] {
+                let expected = fresh.compose(&current, &state).unwrap();
+                assert_eq!(actual.text(), expected.text());
+                assert_eq!(
+                    format!("{:?}", actual.markers()),
+                    format!("{:?}", expected.markers())
+                );
+                for offset in 0..=current.text.len() + 1 {
+                    let valid = boundaries.contains(&offset);
+                    assert_eq!(
+                        actual.source_boundary(&current, SourceByte(offset)),
+                        Some(valid)
+                    );
+                    for bias in [ConcealBias::Left, ConcealBias::Right] {
+                        assert_eq!(
+                            actual.to_projected(SourceByte(offset), bias),
+                            expected.to_projected(SourceByte(offset), bias)
+                        );
+                    }
+                }
+                for offset in 0..=actual.text().len() + 1 {
+                    for bias in [ConcealBias::Left, ConcealBias::Right] {
+                        assert_eq!(
+                            actual.to_source(ProjectedByte(offset), bias),
+                            expected.to_source(ProjectedByte(offset), bias)
+                        );
+                    }
+                }
+                for foreign in [
+                    SourceSnapshot {
+                        stamp: gpui_component::input::projection::SourceStamp {
+                            document: current.stamp.document + 1,
+                            ..current.stamp
+                        },
+                        ..current.clone()
+                    },
+                    SourceSnapshot {
+                        stamp: gpui_component::input::projection::SourceStamp {
+                            generation: current.stamp.generation + 1,
+                            ..current.stamp
+                        },
+                        ..current.clone()
+                    },
+                    SourceSnapshot {
+                        text: Arc::from("different bytes"),
+                        ..current.clone()
+                    },
+                ] {
+                    assert_eq!(actual.source_boundary(&foreign, SourceByte(0)), None);
+                }
+                assert_eq!(pinned.source_boundary(&current, SourceByte(0)), None);
+            }
+            // Retained paint data and its boundary authority remain immutable.
+            assert_eq!(pinned.text(), old_display);
+            assert_eq!(format!("{:?}", pinned.markers()), old_markers);
+            assert_eq!(pinned.source_boundary(&original, SourceByte(0)), Some(true));
+            let emoji = original.text.find('🧠').unwrap();
+            assert_eq!(
+                pinned.source_boundary(&original, SourceByte(emoji + 1)),
+                Some(false)
+            );
         }
     }
     #[test]
