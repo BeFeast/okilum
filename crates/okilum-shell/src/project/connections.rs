@@ -151,8 +151,12 @@ mod origin_tests {
         std::fs::create_dir_all(area.join("ops")).unwrap();
         std::fs::write(area.join("ops/project.yaml"), "t3: {environment: maestro}").unwrap();
         let app = Environment::from_input("app", "t3.oklabs.uk").unwrap();
-        save(&state, &app).unwrap();
-        save_last_origin(&state, &app).unwrap();
+        super::super::save_browser_environment(&state, &app).unwrap();
+        assert!(
+            !state.join("t3-connections.json").exists(),
+            "shared settings do not create registry overrides"
+        );
+        assert_eq!(project_origin(&area, "app", Some(&state)).unwrap(), None);
         assert_eq!(
             project_origin(&area, "maestro", Some(&state)).unwrap(),
             None

@@ -18,7 +18,8 @@ pub(super) fn save_browser_environment(
     state: &Path,
     environment: &Environment,
 ) -> anyhow::Result<()> {
-    connections::save(state, environment)?;
+    // This is the shared app default, not a project/environment override.
+    // Named registry entries belong to explicit project connections.
     connections::save_last_origin(state, environment)
 }
 
