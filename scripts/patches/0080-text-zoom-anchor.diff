@@ -1,0 +1,193 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1982,7 +1982,7 @@
+         let mut trace = TraceSpan::new("editor_prepaint", TraceIdentity::new(initial.source_stamp(), initial.presentation_epoch(), initial.projection.current.is_some()));
+         // Read the old shaped geometry before installing a new projection. The
+         // anchor is canonical source, not a display-row index that rewrap moves.
+-        let source_anchor = (|| {
++        let source_anchor = initial.zoom_anchor.or_else(|| {
+             if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some_and(|offset| offset != initial.scroll_handle.offset())
+                 || initial.text.len() > 256 * 1024 { return None; }
+             let last = initial.last_layout.as_ref().or(initial.projection_anchor_layout.as_ref())?;
+@@ -2028,7 +2028,7 @@
+                 }
+             }
+             None
+-        })();
++        });
+         let style = window.text_style();
+         let font = style.font();
+         let text_size = style.font_size.to_pixels(window.rem_size());
+@@ -2145,6 +2145,7 @@
+                 state.scroll_handle.set_offset(scroll);
+                 state.deferred_scroll_offset = Some(scroll);
+             }
++            state.zoom_anchor = None;
+             if let Some((offset, old_y, affinity)) = source_anchor {
+                 let row = state.display_map.offset_to_wrap_display_point_with_affinity(
+                     offset, affinity).row;
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -396,6 +396,7 @@
+     pub(super) last_layout: Option<LastLayout>,
+     // Previous painted geometry for anchoring only; never used for hit testing.
+     pub(super) projection_anchor_layout: Option<LastLayout>,
++    pub(super) zoom_anchor: Option<(usize, Pixels, bool)>,
+     // Temporary scroll extent required by a presentation anchor, never source rows.
+     pub(super) projection_anchor_tail: Pixels,
+     pub(super) last_cursor: Option<usize>,
+@@ -793,6 +794,7 @@
+             mode: LayoutMode::default(),
+             last_layout: None,
+             projection_anchor_layout: None,
++            zoom_anchor: None,
+             projection_anchor_tail: px(0.),
+             last_bounds: None,
+             last_selected_range: None,
+@@ -2942,6 +2944,27 @@
+     /// Current scroll offset of the editor viewport.
+     pub fn scroll_offset(&self) -> gpui::Point<gpui::Pixels> {
+         self.scroll_handle.offset()
++    }
++
++    /// Retain canonical source under the pointer (or the caret) during a font change.
++    pub fn preserve_zoom_anchor(&mut self, pointer: Option<Point<Pixels>>) {
++        let Some(last) = self.last_layout.as_ref() else { return; };
++        let source = pointer.and_then(|p| self.index_for_mouse_position(p).map(|h| h.0))
++            .unwrap_or_else(|| self.cursor());
++        let Some(projected) = last.project(source, ConcealBias::Right) else { return; };
++        let mut y = last.visible_top;
++        for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++            if projected >= *start {
++                if let Some(pos) = line.position_for_index(projected - start, last, false) {
++                    let screen_y = y + pos.y + self.scroll_handle.offset().y;
++                    if screen_y >= px(0.) && screen_y < self.input_bounds.size.height {
++                        self.zoom_anchor = Some((source, y + pos.y, false));
++                        return;
++                    }
++                }
++            }
++            y += line.size(&last.rows).height;
++        }
+     }
+ 
+     /// Set scroll offset of the editor viewport.
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -161,10 +161,62 @@
+     parsed_error: Option<SharedString>,
+     tx: Sender<UpdateOptions>,
+     _parse_task: Task<()>,
++    zoom_geometry: Vec<(usize, usize, usize, super::inline_geometry::AlignedLayout)>,
++    zoom_anchor: Option<(usize, usize, Pixels)>,
+     _receive_task: Task<()>,
+ }
+ 
+ impl TextViewState {
++    /// Capture a rendered text byte without changing the selection or document.
++    pub fn rendered_source_at(&self, pointer: Option<Point<Pixels>>) -> Option<(usize, usize, Point<Pixels>)> {
++        let point = pointer.unwrap_or(self.bounds.origin + gpui::point(px(1.), px(1.)));
++        let candidate = self.zoom_geometry.iter().filter(|(_, _, _, layout)| {
++            layout.bounds().bottom() >= self.bounds.top() && layout.bounds().top() < self.bounds.bottom()
++        }).min_by(|a, b| {
++            let distance = |layout: &super::inline_geometry::AlignedLayout| {
++                let bounds = layout.bounds();
++                if bounds.contains(&point) { 0. } else { f32::from(bounds.top() - point.y).abs() }
++            };
++            distance(&a.3).total_cmp(&distance(&b.3))
++        });
++        if let Some((segment, start, len, layout)) = candidate {
++            let local = layout.index_for_position(point).unwrap_or_else(|index| index).min(*len);
++            if let Some(position) = layout.position_for_index(local) {
++                return Some((*segment, start + local, position));
++            }
++        }
++        None
++    }
++
++    pub fn rendered_position_for_source(&self, segment: usize, source: usize) -> Option<Point<Pixels>> {
++        self.zoom_geometry.iter().find_map(|(part, start, len, layout)| {
++            (*part == segment && (*start..=*start + *len).contains(&source))
++                .then(|| layout.position_for_index(source - start)).flatten()
++        })
++    }
++
++    pub fn preserve_zoom_anchor(&mut self, pointer: Option<Point<Pixels>>) {
++        self.zoom_anchor = self.rendered_source_at(pointer).map(|(part, source, point)| (part, source, point.y));
++    }
++
++    pub(super) fn begin_zoom_frame(&mut self) { self.zoom_geometry.clear(); }
++
++    pub(super) fn finish_zoom_frame(&mut self, cx: &mut Context<Self>) {
++        let Some((segment, source, old_y)) = self.zoom_anchor.take() else { return; };
++        for (part, start, len, layout) in &self.zoom_geometry {
++            if *part == segment && (*start..=*start + *len).contains(&source) {
++                if let Some(position) = layout.position_for_index(source - start) {
++                    let delta = position.y - old_y;
++                    if delta.abs() > px(0.1) {
++                        self.list_state.scroll_by(delta);
++                        cx.notify();
++                    }
++                    break;
++                }
++            }
++        }
++    }
++
+     /// Create a Markdown TextViewState.
+     pub fn markdown(text: &str, cx: &mut Context<Self>) -> Self {
+         Self::new(TextViewFormat::Markdown, text, cx)
+@@ -228,6 +280,8 @@
+         let mut this = Self {
+             focus_handle,
+             bounds: Bounds::default(),
++            zoom_geometry: Vec::new(),
++            zoom_anchor: None,
+             multi_click_selection: None,
+             selected_text_override: None,
+             select_all: false,
+@@ -369,6 +423,9 @@
+         layout: &super::inline_geometry::AlignedLayout,
+         horizontal: Option<&gpui::ScrollHandle>,
+     ) {
++        if self.scrollable && self.zoom_geometry.len() < 512 {
++            self.zoom_geometry.push((segment, source_offset, text_len, layout.clone()));
++        }
+         if !self.search_geometry_pending || self.search_reveal_pending {
+             return;
+         }
+@@ -776,7 +833,7 @@
+     /// `remeasure_items` re-arms the latch and marks the items unmeasured
+     /// while keeping their old sizes as hints, so the scrollbar does not
+     /// collapse in the frame before the next layout measures the real heights.
+-    fn invalidate_measured_heights(&self) {
++    pub(super) fn invalidate_measured_heights(&self) {
+         let count = self.list_state.item_count();
+         if count > 0 {
+             self.list_state.remeasure_items(0..count);
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -653,6 +653,7 @@
+             // not invalidate an existing selection during window resizing.
+             if state.text_view_style.clone().with_bottom_padding(text_view_style.bottom_padding()) != text_view_style {
+                 state.selection_revision = state.selection_revision.wrapping_add(1);
++                state.invalidate_measured_heights();
+             }
+             state.text_view_style = text_view_style.clone();
+ 
+@@ -723,6 +724,7 @@
+         cx: &mut App,
+     ) -> Self::PrepaintState {
+         let state = request_layout.state.clone();
++        state.update(cx, |state, _| state.begin_zoom_frame());
+         let max_lines_active = state.read(cx).max_lines.is_some();
+         if max_lines_active {
+             if let Ok(mut line_spans) = state.read(cx).line_spans.lock() {
+@@ -736,6 +738,7 @@
+             .push(state.clone());
+         request_layout.element.prepaint(window, cx);
+         GlobalState::global_mut(cx).text_view_state_stack.pop();
++        state.update(cx, |state, cx| state.finish_zoom_frame(cx));
+ 
+         let mut clip_bottom = None;
+         if max_lines_active {

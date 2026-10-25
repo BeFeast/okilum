@@ -184,6 +184,15 @@ fn log_path(state: Option<&Path>) -> Result<PathBuf> {
         .join(LOG_FILE))
 }
 
+pub(crate) fn feedback_log_path(cx: &App) -> Result<PathBuf> {
+    let trace = trace(cx);
+    log_path(
+        trace
+            .as_ref()
+            .and_then(|trace| trace.inner.state.as_deref()),
+    )
+}
+
 fn record(root: &Path, state: Option<&Path>, report: serde_json::Value) {
     append_report(Some(root), state, &report);
 }
@@ -219,6 +228,29 @@ fn append_report(root: Option<&Path>, state: Option<&Path>, report: &serde_json:
     if let Err(error) = result {
         eprintln!("Cannot save Reader diagnostic: {error:#}");
     }
+}
+
+/// Transport failures retain their full cause chain outside the vault (#1667).
+pub(crate) fn network_failure(operation: &str, error: &anyhow::Error) {
+    append_report(
+        None,
+        None,
+        &serde_json::json!({
+            "time": timestamp(), "phase": "network_error",
+            "details": {"operation": operation, "error": format!("{error:#}")},
+        }),
+    );
+}
+
+pub(crate) fn feedback_delivery(endpoint: &str) {
+    append_report(
+        None,
+        None,
+        &serde_json::json!({
+            "time": timestamp(), "phase": "feedback_delivery",
+            "details": {"endpoint": endpoint},
+        }),
+    );
 }
 
 fn timestamp() -> u64 {

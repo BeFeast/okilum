@@ -1,0 +1,190 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 73965bae..52517d03 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -337,6 +337,30 @@ pub(crate) fn init(cx: &mut App) {
+     ]);
+ }
+ 
++/// One character the user typed at the selection, offered to the typed-text
++/// hook (Okilum #1636). Offsets are source bytes.
++pub struct TypedText<'a> {
++    pub typed: &'a str,
++    pub selection: Range<usize>,
++    pub text: &'a Rope,
++}
++
++/// What a typed-text hook does instead of plain typing.
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++pub struct TypedEdit {
++    /// Insert the character as typed first, as its own Undo step; `edits`
++    /// and `selection` then refer to the text after it.
++    pub insert_typed: bool,
++    /// Exact source edits, sorted and not overlapping, applied as one Undo
++    /// step. Empty: only the selection moves.
++    pub edits: Vec<(Range<usize>, String)>,
++    /// The selection after the edits.
++    pub selection: Range<usize>,
++}
++
++/// Decides, from the typed character and the text, whether to autoformat.
++pub type TypedTextHook = Rc<dyn Fn(&TypedText<'_>, &App) -> Option<TypedEdit>>;
++
+ /// The shared text-editing engine behind [`crate::input::InputState`],
+ /// [`crate::input::TextareaState`] and [`crate::input::EditorState`].
+ ///
+@@ -434,6 +458,13 @@ pub struct InputBaseState<M: InputModeKind> {
+     /// How long after a commit Enter and Tab still count as part of the
+     /// composition: they carry no indentation and accept no completion.
+     pub(super) ime_settle: Duration,
++    /// Turns one typed character into an autoformat (Okilum #1636).
++    typed_text_hook: Option<TypedTextHook>,
++    /// Set while the hook's own typing is inserted: it does not run again.
++    typed_hook_busy: bool,
++    /// The source and selection right after the last typed autoformat:
++    /// Backspace while both are unchanged takes back only the autoformat.
++    typed_autoformat: Option<(SourceStamp, Range<usize>)>,
+     pub(super) last_layout: Option<LastLayout>,
+     // Previous painted geometry for anchoring only; never used for hit testing.
+     pub(super) projection_anchor_layout: Option<LastLayout>,
+@@ -824,6 +855,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+             ime_marked_range: None,
+             ime_committed_at: None,
+             ime_settle: Duration::ZERO,
++            typed_text_hook: None,
++            typed_hook_busy: false,
++            typed_autoformat: None,
+             input_bounds: Bounds::default(),
+             selecting: false,
+             drag_anchors: Vec::new(),
+@@ -1743,6 +1777,103 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.ime_committed_at = Some(cx.background_executor().now());
+     }
+ 
++    /// Let `hook` turn a typed character into an autoformat: wrap the
++    /// selection, close a bracket. It sees each single character the user
++    /// types at the selection, never an IME composition or its commit, a
++    /// paste or a programmatic edit. `None` removes it.
++    pub fn set_typed_text_hook(&mut self, hook: Option<TypedTextHook>) {
++        self.typed_text_hook = hook;
++    }
++
++    /// Backspace right after a typed autoformat: Undo takes back only the
++    /// autoformat (the typed character stays, or a wrapped selection comes
++    /// back as it was). False, changing nothing, once the text or the
++    /// selection moved on.
++    fn revert_typed_autoformat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
++        let Some((stamp, selection)) = self.typed_autoformat.take() else {
++            return false;
++        };
++        let current: Range<usize> = self.selected_range.into();
++        if stamp != self.source_stamp() || selection != current || !self.is_editable() {
++            return false;
++        }
++        self.undo(&Undo, window, cx);
++        self.pause_blink_cursor(cx);
++        true
++    }
++
++    /// Run the typed-text hook for `typed` at `range`; true when it handled
++    /// the character (the text then holds its autoformat).
++    fn run_typed_text_hook(
++        &mut self,
++        range: &Range<usize>,
++        typed: &str,
++        intent: Option<EditIntent>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        let Some(hook) = self.typed_text_hook.clone() else {
++            return false;
++        };
++        let selection: Range<usize> = self.selected_range.into();
++        if self.typed_hook_busy
++            || self.silent_replace_text
++            || !self.emit_events
++            || self.ime_settling(cx)
++            || intent.is_some_and(|intent| intent != EditIntent::Typing)
++            || self.is_single_line()
++            || *range != selection
++            || typed.chars().count() != 1
++        {
++            return false;
++        }
++        let Some(edit) = hook(
++            &TypedText {
++                typed,
++                selection,
++                text: &self.text,
++            },
++            cx,
++        ) else {
++            return false;
++        };
++        if edit.insert_typed {
++            // The character as typed is its own Undo step, the autoformat
++            // the next: Undo or Backspace takes back only the autoformat.
++            self.typed_hook_busy = true;
++            self.undo_manager.pending_intent = intent;
++            self.replace_text_in_range(None, typed, window, cx);
++            self.typed_hook_busy = false;
++            self.undo_manager.commit_transaction();
++        }
++        if edit.edits.is_empty() {
++            let len = self.text.len();
++            let end = edit.selection.end.min(len);
++            let boundary = |offset: usize| self.text.clip_offset(offset, Bias::Left) == offset;
++            if edit.selection.start > end || !boundary(edit.selection.start) || !boundary(end) {
++                return edit.insert_typed;
++            }
++            self.selected_range = (edit.selection.start..end).into();
++            self.selection_reversed = false;
++            self.update_preferred_column();
++            self.sync_projection_active();
++            cx.notify();
++            return true;
++        }
++        if self.replace_source_edits(&edit.edits, edit.selection, window, cx) {
++            self.typed_autoformat = Some((self.source_stamp(), self.selected_range.into()));
++            return true;
++        }
++        if !edit.insert_typed {
++            // The plan did not fit the text: plain typing after all.
++            self.typed_hook_busy = true;
++            self.undo_manager.pending_intent = intent;
++            self.replace_text_in_range(None, typed, window, cx);
++            self.typed_hook_busy = false;
++        }
++        true
++    }
++
+     /// Set whether to show whitespace characters.
+     #[doc(hidden)]
+     pub fn show_whitespaces(mut self, show: bool) -> Self {
+@@ -2222,6 +2353,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     pub(super) fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
++        if self.revert_typed_autoformat(window, cx) {
++            return;
++        }
+         let intent = if self.selected_range.is_empty() {
+             self.select_to(self.previous_boundary(self.cursor()), cx);
+             EditIntent::Backspace
+@@ -4115,6 +4249,16 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         if !self.is_editable() {
+             return;
+         }
++        if self.typed_text_hook.is_some() && !self.typed_hook_busy {
++            let range = range_utf16
++                .as_ref()
++                .map(|range_utf16| self.range_from_utf16(range_utf16))
++                .unwrap_or(self.selected_range.into());
++            let typed = self.normalize_input(new_text);
++            if self.run_typed_text_hook(&range, &typed, requested_intent, window, cx) {
++                return;
++            }
++        }
+         let selection_before = self.selected_range;
+ 
+         if self.blink_cursor.read(cx).visible() {

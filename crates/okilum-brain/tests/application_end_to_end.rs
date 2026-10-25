@@ -1,4 +1,6 @@
 //! Independent application acceptance using real transports and synthetic providers.
+#[path = "../test_support/http_fixture.rs"]
+mod http_fixture;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use okilum_brain::{application::*, chat::ChatClient, *};
 use okilum_core::source::{SourceWrite, WriteBoundary};
@@ -8,8 +10,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -20,29 +21,18 @@ const DISCUSSION: &str = "Use existing AA stock; buy one marker and one tape.";
 const RESULT: &str = "Pack 4 AA, 2 markers, 1 tape. Buy 0 AA, 1 marker for 1 credit, 1 tape for 3 credits. Total 4 credits, within budget 5. Source: STOCK-CABINET-09.";
 
 fn listener() -> TcpListener {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    listener
+    TcpListener::bind("127.0.0.1:0").unwrap()
 }
-fn accept(listener: &TcpListener) -> TcpStream {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                return stream;
-            }
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(5));
-            }
-            Err(error) => panic!("missing fixture connection: {error}"),
-        }
-    }
+fn accept(listener: &http_fixture::Listener) -> TcpStream {
+    // Application setup and earlier provider stages can take arbitrary time.
+    // Joining the fixture reports any missing request after client completion.
+    let (stream, _) = listener.accept().expect("fixture accept");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
 }
+
 fn request(stream: &mut TcpStream) -> (String, String) {
     let mut header = Vec::new();
     while !header.ends_with(b"\r\n\r\n") {
@@ -70,15 +60,15 @@ struct Providers {
     todoist: String,
     chat: String,
     t3: String,
-    task_worker: thread::JoinHandle<()>,
-    chat_worker: thread::JoinHandle<()>,
-    t3_worker: thread::JoinHandle<Value>,
+    task_worker: http_fixture::Worker<()>,
+    chat_worker: http_fixture::Worker<()>,
+    t3_worker: http_fixture::Worker<Value>,
 }
 impl Providers {
     fn new(operation: String) -> Self {
         let tasks = listener();
         let todoist = format!("http://{}/api/v1/", tasks.local_addr().unwrap());
-        let task_worker = thread::spawn(move || {
+        let task_worker = http_fixture::Worker::spawn(tasks, move |tasks| {
             let mut original = None;
             for step in 0..4 {
                 let mut stream = accept(&tasks);
@@ -116,7 +106,7 @@ impl Providers {
         });
         let chats = listener();
         let chat = format!("http://{}/v1/", chats.local_addr().unwrap());
-        let chat_worker = thread::spawn(move || {
+        let chat_worker = http_fixture::Worker::spawn(chats, move |chats| {
             let mut stream = accept(&chats);
             let (headers, body) = request(&mut stream);
             assert!(headers.starts_with("POST /v1/chat/completions "));
@@ -136,7 +126,7 @@ impl Providers {
         });
         let t3_listener = listener();
         let t3 = format!("http://{}", t3_listener.local_addr().unwrap());
-        let t3_worker = thread::spawn(move || {
+        let t3_worker = http_fixture::Worker::spawn(t3_listener, move |t3_listener| {
             let mut command = Value::Null;
             for step in 0..4 {
                 let mut http = accept(&t3_listener);

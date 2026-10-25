@@ -2,7 +2,12 @@
 
 Okilum updates itself with stock [Sparkle 2](https://sparkle-project.org) (2.10.0,
 pinned by `scripts/updater/sparkle-lock.json`). The app uses
-`SPUStandardUpdaterController` and Sparkle's own UI. The application menu has
+`SPUUpdater` with a public custom `SPUUserDriver`; About owns progress, errors,
+Cancel update and Restart now. The metadata/freshness driver is also custom
+and creates no windows. Automatic checks report availability; only an explicit
+About Install action starts downloading. Automatic downloads remain disabled
+so every prepared installation passes [signed freshness and the final Rust editor
+guard](macos-update-freshness.md). The application menu has
 **About Okilum**, **Check for Updates…** and **Receive Beta Builds**. Sparkle also
 checks every hour on its own.
 
@@ -75,3 +80,5 @@ of the build you want from
 For the operator-only `scripts/open-verified-macos.sh`, supply the expected
 `OKILUM_SIGNING_TEAM_ID` and `OKILUM_SIGNING_IDENTITY` from trusted release
 configuration. These checks remain mandatory; never infer them from the download.
+
+PR previews are disabled by default (`OKILUM_MACOS_PR_PREVIEWS` must equal `true` to opt in); decision 2026-10-24: test new work in Sprint, Mac beta builds only from main (#1489).

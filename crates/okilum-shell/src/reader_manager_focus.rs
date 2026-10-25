@@ -10,6 +10,7 @@ extern "C" {
     ) -> *mut c_void;
     fn okilum_manager_focus_is_focused(handle: *mut c_void) -> bool;
     fn okilum_manager_focus_refresh(handle: *mut c_void);
+    fn okilum_manager_focus_document_loaded(handle: *mut c_void);
     fn okilum_manager_focus_detach(handle: *mut c_void);
 }
 
@@ -54,6 +55,10 @@ impl FocusRouting {
         // SAFETY: handle is retained until Drop and this type cannot leave the UI thread.
         unsafe { okilum_manager_focus_is_focused(self.handle.as_ptr()) }
     }
+    pub(super) fn document_loaded(&self) {
+        // SAFETY: the retained bridge and document belong to this UI thread.
+        unsafe { okilum_manager_focus_document_loaded(self.handle.as_ptr()) }
+    }
     pub(super) fn refresh(&self) {
         // SAFETY: same UI-thread-owned handle.
         unsafe { okilum_manager_focus_refresh(self.handle.as_ptr()) }
@@ -89,6 +94,56 @@ mod tests {
             control: bool,
             option: bool,
         ) -> *const c_char;
+    }
+    #[test]
+    fn russian_layout_uses_edit_key_positions_without_losing_modifier_guards() {
+        extern "C" {
+            fn okilum_manager_edit_action_for_keycode(
+                key: *const c_char,
+                code: u16,
+                command: bool,
+                shift: bool,
+                control: bool,
+                option: bool,
+            ) -> *const c_char;
+        }
+        for (key, code, expected) in [
+            ("м", 9, "paste:"),
+            ("с", 8, "copy:"),
+            ("ч", 7, "cut:"),
+            ("ф", 0, "selectAll:"),
+            ("я", 6, "undo:"),
+            ("c", 9, "copy:"),
+        ] {
+            let key = CString::new(key).unwrap();
+            // SAFETY: pure selector mapping; inputs live and results are static literals.
+            let action = unsafe {
+                okilum_manager_edit_action_for_keycode(
+                    key.as_ptr(),
+                    code,
+                    true,
+                    false,
+                    false,
+                    false,
+                )
+            };
+            assert_eq!(
+                unsafe { CStr::from_ptr(action) }.to_str().unwrap(),
+                expected
+            );
+            assert!(unsafe {
+                okilum_manager_edit_action_for_keycode(key.as_ptr(), code, true, false, true, false)
+            }
+            .is_null());
+        }
+    }
+    #[test]
+    fn webview_editor_webview_rearms_each_entry() {
+        extern "C" {
+            fn okilum_manager_focus_cycle_regression() -> bool;
+        }
+        // SAFETY: pure native state-machine regression; no app or GUI required.
+        assert!(unsafe { okilum_manager_focus_cycle_regression() });
     }
     fn action(
         key: &str,
@@ -148,5 +203,31 @@ mod tests {
             None,
             "T3 search goes to native keyDown"
         );
+    }
+    extern "C" {
+        fn okilum_manager_command_queue_regression(undo: bool) -> bool;
+    }
+    #[test]
+    fn rapid_paste_paste_keeps_both_commands_in_fifo_order() {
+        // SAFETY: the regression runs the production Foundation-only scheduler;
+        // it creates no window, browser, clipboard or GUI session.
+        assert!(unsafe { okilum_manager_command_queue_regression(false) });
+    }
+    #[test]
+    fn rapid_paste_undo_keeps_order_and_rejects_obsolete_completion() {
+        assert!(unsafe { okilum_manager_command_queue_regression(true) });
+    }
+
+    #[test]
+    #[ignore = "requires an active macOS GUI session and OKILUM_NATIVE_GUI=1"]
+    fn real_nsapp_webview_paste_manual() {
+        assert_eq!(std::env::var("OKILUM_NATIVE_GUI").as_deref(), Ok("1"));
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let status = std::process::Command::new("bash")
+            .arg("scripts/ci/check-manager-webview-paste.sh")
+            .current_dir(root)
+            .status()
+            .expect("cannot start native GUI fixture");
+        assert!(status.success(), "native GUI fixture failed");
     }
 }

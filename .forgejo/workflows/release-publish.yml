@@ -24,11 +24,32 @@ jobs:
     steps:
       - name: Install publication tools
         run: pacman -Syu --noconfirm --needed nodejs git python ca-certificates
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          # History lets publication verify an explicit source is a main commit (#1040).
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Check out the exact source from the runner server
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
       - name: Publish only a complete current-main build
         env:
           PLATFORM: ${{ inputs.platform }}
@@ -40,7 +61,7 @@ jobs:
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"
+        run: if [ "$PLATFORM" = appimage ]; then python scripts/releases/appimage_handoff.py publish --run "$SOURCE_RUN"; else python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"; fi
       - name: Refresh GitHub rolling Beta after platform publication
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

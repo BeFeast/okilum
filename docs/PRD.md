@@ -23,7 +23,7 @@ provider jobs, canonical enrollment or deployment.
 
 **Single-file viewer extension (2026-10-06, #560):** [quick viewer](single-file-viewer.md) defines document-only startup, lazy folder browsing and explicit vault upgrade.
 
-**Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines one window per vault by default and explicit duplicate windows sharing vault resources.
+**Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines vault-window selection (Ask every time by default, configurable reuse or new window) and explicit duplicate windows sharing vault resources.
 
 **Sync extension (2026-10-06, #574):** [explicit Sync enrollment](sync-enrollment.md) defines the approved opt-in background/reuse contract. Slice 1 tests compatibility only; it does not enable Sync in the reader.
 
@@ -35,6 +35,14 @@ Credentials use OS storage; event data stays session-only. Live reconciliation r
 whole selected window through a fresh PIT per cycle and confirms coverage only after
 all pages finish; bounds stop explicitly as incomplete. Corporate/native live acceptance
 and the visibility target remain unproven and cannot be silently substituted.
+
+**Note aliases (2026-10-23, #1562):** [reserved frontmatter aliases](note-aliases.md)
+adds vault-wide wiki resolution and Quick Open matching; declarations are plain
+property chips, with existing canonical-path precedence and explicit ambiguity.
+
+**Owned Settings/Feedback windows (2026-10-24, #1582):** [non-modal tools](owned-tool-windows.md)
+defines owner-relative positioning, lifecycle, singleton reuse and Esc, with native
+Windows ownership and explicit platform limitations.
 
 ## 1. What Okilum is
 

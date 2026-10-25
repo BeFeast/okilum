@@ -161,7 +161,12 @@ impl CachedProvider {
         let current = core_snapshot(source);
         let mut retained = self.retained.lock().ok()?;
         if retained.snapshot() != &current {
-            *retained = retained.remap(&current)?;
+            // An edit no reparse can prove keeps the blocks above it and
+            // draws only the edited block and the rest below as source,
+            // never the whole note (#1621).
+            *retained = retained
+                .remap(&current)
+                .or_else(|| retained.remap_raw_tail(&current))?;
         }
         let selection = active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0);
         let mut reveal = Active {
@@ -1257,6 +1262,65 @@ This paragraph remains ordinary Markdown.
                 projection.text(),
                 fresh.compose(&changed, &inactive(&changed)).unwrap().text()
             );
+        }
+    }
+
+    /// #1621: an edit the background classification has not seen never
+    /// draws the whole note as source. Blocks above the edited one keep their
+    /// rendered form, so their rows keep their height.
+    #[test]
+    fn unclassified_edits_keep_rendered_blocks_above_the_edit() {
+        let note = "# Days Gone\n\n![[cover.png]]\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\
+            - item\n\n```css\n.x { color: red; }\n\n[hidden] { display: none; }\n```\n\n";
+        let original = source(note);
+        let provider = CachedProvider::classify(original.clone());
+        let table = note.find("| a |").unwrap();
+        let fence_end = note.rfind("```").unwrap() + 3;
+        let list_end = note.find("- item").unwrap() + "- item".len();
+        // Enter after the fence, on its closing line, after the list, and at
+        // the end of the table's last row.
+        for (step, at) in [
+            note.len(),
+            fence_end,
+            list_end,
+            note.find("| 1 | 2 |").unwrap() + 9,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut text = note.to_owned();
+            text.insert(at, '\n');
+            let changed = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: original.stamp.generation + 1 + step as u64,
+                    ..original.stamp
+                },
+                text: Arc::from(text.as_str()),
+            };
+            let caret = ActiveSource {
+                anchor: SourceByte(at + 1),
+                head: SourceByte(at + 1),
+                ..ActiveSource::default()
+            };
+            let projection = provider
+                .compose(&changed, &caret)
+                .unwrap_or_else(|| panic!("Enter at {at} drew the whole note raw"));
+            assert!(projection.text().starts_with("Days Gone\n"), "{at}");
+            assert!(
+                projection
+                    .line_scales()
+                    .iter()
+                    .any(|s| s.line == 0 && s.scale > 1.),
+                "{at}: the heading keeps its size"
+            );
+            let rendered: Vec<_> = projection
+                .blocks()
+                .iter()
+                .map(|b| b.source.start.0)
+                .collect();
+            if at > table + 30 {
+                assert!(rendered.contains(&table), "{at}: the table stays rendered");
+            }
         }
     }
 

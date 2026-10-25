@@ -14,6 +14,10 @@ on:
   # Build any PR branch manually when shared dependencies need release validation.
   workflow_dispatch:
     inputs:
+      appimage_only:
+        description: 'Reuse accepted source-pinned AppImage for beta; skip Arch compilation'
+        required: false
+        default: 'false'
       source:
         description: 'Older main commit to build for the archive (#1040); empty builds the branch tip'
         required: false
@@ -40,11 +44,26 @@ jobs:
         id: select
         env:
           OKILUM_SOURCE: ${{ inputs.source }}
-        run: python3 scripts/releases/coalesce.py linux
+          APPIMAGE_ONLY: ${{ inputs.appimage_only }}
+        run: |
+          if [ "$APPIMAGE_ONLY" = true ]; then
+            python3 - <<'PYSELECT'
+          import os, sys
+          sys.path.insert(0, 'scripts/releases')
+          from coalesce import explicit_source
+          source = explicit_source(os.environ['OKILUM_SOURCE'], 'linux', os.environ['GITHUB_REF'], os.environ['GITHUB_EVENT_NAME'])
+          if source is None:
+              raise ValueError('AppImage-only dispatch requires an explicit main source')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'build=true\nsource={source}\n')
+          PYSELECT
+          else
+            python3 scripts/releases/coalesce.py linux
+          fi
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
+    if: inputs.appimage_only != 'true' && needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
@@ -117,8 +136,11 @@ jobs:
           retention-days: 7
 
   appimage-reuse:
+    outputs:
+      accepted: ${{ steps.reuse.outputs.accepted }}
     needs: select
-    if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # Arch coalescing must not suppress later accepted AppImage bytes on the next tick.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 10
     steps:
@@ -126,26 +148,43 @@ jobs:
         with:
           persist-credentials: false
       - name: Resolve accepted exact-source AppImage without compiling
+        id: reuse
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           SOURCE: ${{ needs.select.outputs.source }}
-        run: python3 scripts/releases/appimage_artifact.py --source "$SOURCE" --directory dist/appimage-publication
+        run: python3 scripts/releases/appimage_handoff.py stage --source "$SOURCE" --directory dist/appimage-publication
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: steps.reuse.outputs.accepted == 'true'
         with:
           name: appimage-publication
           path: dist/appimage-publication/
           retention-days: 7
 
-  publication:
-    needs: [select, release, appimage-reuse]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+  appimage-publication:
+    needs: [select, appimage-reuse]
+    if: always() && needs.select.result == 'success' && needs.appimage-reuse.outputs.accepted == 'true' && needs.appimage-reuse.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 3
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Dispatch protected publication after both artifacts are complete
+      - name: Dispatch independent protected AppImage beta publication
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: python3 scripts/releases/appimage_handoff.py dispatch
+
+  publication:
+    needs: [select, release]
+    if: needs.select.result == 'success' && needs.release.result == 'success' && inputs.appimage_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: bridge
+    timeout-minutes: 3
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dispatch protected Arch publication after accepted Arch release
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}

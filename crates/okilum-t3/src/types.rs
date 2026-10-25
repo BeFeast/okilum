@@ -24,13 +24,47 @@ impl ServerIdentity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub title: String,
     pub workspace_root: String,
     pub default_model_selection: Option<ModelSelection>,
+    /// The logo T3 found in the workspace, relative to `workspace_root`.
+    #[serde(default)]
+    pub favicon_path: Option<String>,
+    /// The manual icon set in T3 or in Okilum (#1627). An unknown kind
+    /// reads as none.
+    #[serde(default, deserialize_with = "crate::projects::icon::lenient")]
+    pub project_icon: Option<crate::projects::icon::ProjectIcon>,
+    /// The repository T3 found at `workspace_root`: where its logo can be
+    /// read on a machine without the checkout (#1627).
+    #[serde(default, deserialize_with = "lenient_repository")]
+    pub repository_identity: Option<RepositoryIdentity>,
+}
+
+/// The part of T3's `repositoryIdentity` Okilum reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryIdentity {
+    #[serde(default)]
+    pub web_url: Option<String>,
+    /// `github`, `forgejo`, `gitea`, `gitlab`, … as T3 names the host.
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// A missing, null or unreadable identity is none: it never hides a project.
+fn lenient_repository<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<RepositoryIdentity>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// T3's canonical model selection: a provider instance, a model of that

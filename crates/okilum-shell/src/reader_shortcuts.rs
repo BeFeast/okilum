@@ -5,12 +5,15 @@
 //! bindings `bind_keys` installed. Tooltips use [`hint`] for the same reason,
 //! so a rebound key changes the sheet, the tooltip and the menu together.
 use super::*;
+use crate::reader_editor::format;
+use gpui_base::ElementExt as _;
 use platform::labels::Os;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Group {
     Navigation,
     Notes,
+    Format,
     Search,
     View,
 }
@@ -20,6 +23,7 @@ impl Group {
         match self {
             Group::Navigation => "Navigation",
             Group::Notes => "Notes",
+            Group::Format => "Format",
             Group::Search => "Search",
             Group::View => "View",
         }
@@ -72,6 +76,19 @@ fn catalog() -> Vec<Entry> {
         entry::<NewNote>("New note", Notes),
         entry::<SaveSource>("Save", Notes),
         entry::<ToggleTask>("Toggle task", Notes),
+        entry::<note_paste::PasteAsPlainText>("Paste as plain text", Notes),
+        entry::<note_paste::PasteAsTitledLink>("Paste as titled link", Notes),
+        entry::<format::ToggleBold>("Bold", Format),
+        entry::<format::ToggleItalic>("Italic", Format),
+        entry::<format::ToggleStrikethrough>("Strikethrough", Format),
+        entry::<format::ToggleInlineCode>("Inline code", Format),
+        entry::<format::Heading1>("Heading 1", Format),
+        entry::<format::Heading2>("Heading 2", Format),
+        entry::<format::Heading3>("Heading 3", Format),
+        entry::<format::Heading4>("Heading 4", Format),
+        entry::<format::Heading5>("Heading 5", Format),
+        entry::<format::Heading6>("Heading 6", Format),
+        entry::<format::Paragraph>("Paragraph", Format),
         entry::<CloseNote>("Close note", Notes),
         entry::<RenameTreeNote>("Rename selected item", Notes),
         entry::<RenameNote>("Rename note", Notes),
@@ -79,6 +96,14 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_move_picker::FolderNext>("Next destination folder", Notes),
         entry::<reader_move_picker::FolderPrevious>("Previous destination folder", Notes),
         entry::<reader_move_picker::CloseFolderPicker>("Close destination picker", Notes),
+        entry::<reader_title_nav::NavMenuNext>("Next Recent or Pinned item", Navigation),
+        entry::<reader_title_nav::NavMenuPrevious>("Previous Recent or Pinned item", Navigation),
+        entry::<reader_title_nav::NavMenuCycleNext>("Cycle Recent or Pinned items", Navigation),
+        entry::<reader_title_nav::NavMenuCyclePrevious>(
+            "Cycle Recent or Pinned items backwards",
+            Navigation,
+        ),
+        entry::<reader_title_nav::NavMenuOpen>("Open Recent or Pinned item", Navigation),
         entry::<DeleteNote>(Os::CURRENT.move_to_trash(), Notes),
         entry::<UndoTrash>(Os::CURRENT.undo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
@@ -99,18 +124,26 @@ fn catalog() -> Vec<Entry> {
         entry::<RecentNewer>("Next recent note", Navigation),
         entry::<PaletteNext>("Next result", Search),
         entry::<PalettePrevious>("Previous result", Search),
+        entry::<quick_open::PaletteNextSection>("Next palette section", Search),
+        entry::<quick_open::PalettePreviousSection>("Previous palette section", Search),
+        entry::<quick_open::PalettePinned>("Go to Pinned in quick open", Search),
+        entry::<quick_open::PaletteRecent>("Go to Recent in quick open", Search),
+        entry::<quick_open::PaletteProjects>("Go to Projects in quick open", Search),
+        entry::<quick_open::PaletteFiles>("Go to Files in quick open", Search),
+        entry::<reader_text_zoom::ZoomIn>("Zoom in note text", View),
+        entry::<reader_text_zoom::ZoomOut>("Zoom out note text", View),
+        entry::<reader_text_zoom::Reset>("Actual size (reset note text zoom)", View),
         entry::<PdfZoomIn>("Zoom in PDF", View),
         entry::<PdfZoomOut>("Zoom out PDF", View),
         entry::<PdfZoomFit>("Fit PDF to width", View),
         entry::<ToggleSource>("Edit / Read", View),
         entry::<OpenLivePreview>("Live Preview", View),
-        entry::<CollapseSidebarSections>("Folders only", View),
-        entry::<ExpandSidebarSections>("Expand all sections", View),
         entry::<ToggleNotes>("Notes panel", View),
         entry::<ToggleProject>("Projects", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
         entry::<ToggleSoftWrap>("Soft wrap in code files", View),
+        entry::<ToggleNoteWidth>("Full / normal note width", View),
         entry::<ToggleShortcutSheet>("Keyboard shortcuts", View),
         entry::<reader_open::NewWindow>("New window", View),
         entry::<reader_settings::OpenSettings>("Settings", View),
@@ -160,6 +193,60 @@ pub(crate) fn shortcut(action: &dyn Action, cx: &App) -> Option<String> {
     keys_for(&cx.key_bindings().borrow(), action.name(), Os::CURRENT)
         .into_iter()
         .next()
+}
+
+/// The bound key of `action` as key caps (#1517): «Ctrl» «Tab», the key the
+/// tooltip [`shortcut`] names, split into its keys.
+pub(crate) fn shortcut_caps(action: &dyn Action, cx: &App) -> Option<Vec<String>> {
+    let bindings = cx.key_bindings();
+    let keymap = bindings.borrow();
+    let shown = keys_for(&keymap, action.name(), Os::CURRENT)
+        .into_iter()
+        .next()?;
+    let caps = keymap
+        .bindings()
+        .rev()
+        .filter(|binding| binding.action().name() == action.name())
+        .map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(|key| key.unparse())
+                .collect::<Vec<_>>()
+        })
+        .find(|keys| {
+            keys.iter()
+                .map(|key| Os::CURRENT.shortcut(key))
+                .collect::<Vec<_>>()
+                .join(" ")
+                == shown
+        })
+        .map(|keys| {
+            keys.iter()
+                .flat_map(|key| Os::CURRENT.key_caps(key))
+                .collect()
+        });
+    caps
+}
+
+/// One key as a small muted cap, the shortcut sheet's style; hints that name
+/// a key (the Recent menu footer, #1517) use the same cap.
+pub(crate) fn key_cap(
+    key: impl Into<SharedString>,
+    palette: brand::Palette,
+    tokens: brand::ReaderPalette,
+) -> Div {
+    div()
+        .h(px(20.))
+        .px(px(6.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(px(4.))
+        .bg(tokens.hover)
+        .text_size(px(12.))
+        .text_color(palette.text_muted)
+        .child(key.into())
 }
 
 /// `label` followed by the bound key of `action`, e.g. "Back ⌥←" — the same
@@ -320,21 +407,12 @@ impl Reader {
                             .child(row.label),
                     )
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .children(row.keys.iter().take(2).map(|key| {
-                                div()
-                                    .h(px(20.))
-                                    .px(px(6.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.))
-                                    .bg(tokens.hover)
-                                    .text_size(px(12.))
-                                    .text_color(palette.text_muted)
-                                    .child(key.clone())
-                            })),
+                        h_flex().flex_none().gap_1().children(
+                            row.keys
+                                .iter()
+                                .take(2)
+                                .map(|key| key_cap(key.clone(), palette, tokens)),
+                        ),
                     ),
             );
         }
@@ -353,6 +431,7 @@ impl Reader {
             .absolute()
             .inset_0()
             .occlude()
+            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
             .flex()
             .justify_center()
             .pt(px(56.))
@@ -366,6 +445,7 @@ impl Reader {
                     .debug_selector(|| "shortcut-sheet".into())
                     .key_context("ShortcutSheet")
                     .occlude()
+                    .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .w(px(520.))
                     .max_w_full()
@@ -460,7 +540,13 @@ mod tests {
         let mut sorted = groups.clone();
         sorted.sort();
         assert_eq!(groups, sorted, "rows stay grouped");
-        for group in [Group::Navigation, Group::Notes, Group::Search, Group::View] {
+        for group in [
+            Group::Navigation,
+            Group::Notes,
+            Group::Format,
+            Group::Search,
+            Group::View,
+        ] {
             assert!(groups.contains(&group), "{group:?} has rows");
         }
         let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();

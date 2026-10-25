@@ -29,6 +29,16 @@ pub(crate) struct PlainTextPreview {
 }
 
 impl PlainTextPreview {
+    pub(crate) fn preserve_zoom_anchor(
+        &mut self,
+        pointer: Option<Point<Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let State::Content { content, .. } = &self.state {
+            content.update(cx, |state, _| state.preserve_zoom_anchor(pointer));
+        }
+    }
+
     pub(crate) fn new(root: PathBuf, rel: String, path: PathBuf, cx: &mut Context<Self>) -> Self {
         let task = cx.background_executor().spawn(async move {
             source::load(&path).map(|preview| match preview {
@@ -87,7 +97,15 @@ impl Render for PlainTextPreview {
         let font_size = px(reader_ui_state::font_size(cx));
         // Monospace text uses the code size, not the reading size (#998).
         let code_size = reader_code_file::text_size(cx);
-        let view = v_flex().w_full().flex_1().min_h_0().px_6().pb_6().gap_3();
+        let view = v_flex()
+            .w_full()
+            .max_w(px(reader_ui_state::note_column_width(cx)))
+            .mx_auto()
+            .flex_1()
+            .min_h_0()
+            .px(px(READER_SIDE_PADDING))
+            .pb_6()
+            .gap_3();
         match &self.state {
             State::Loading => view.child(
                 div()

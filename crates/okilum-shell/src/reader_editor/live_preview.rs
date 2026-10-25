@@ -11,6 +11,20 @@ pub(super) struct LivePreview {
     queued: bool,
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
+    #[cfg(target_os = "linux")]
+    latency_subscriptions: Option<(Subscription, Subscription)>,
+}
+
+#[cfg(test)]
+impl LivePreview {
+    /// The note as Live Preview draws it with nothing revealed, once it is
+    /// classified: a test's proof that some Markdown really is concealed.
+    pub(super) fn concealed_text(&self) -> Option<String> {
+        use gpui_component::input::projection::{ActiveSource, ProjectionProvider as _};
+        let provider = self.accepted.as_ref()?;
+        let display = provider.compose(provider.source(), &ActiveSource::default())?;
+        Some(display.text().to_string())
+    }
 }
 
 fn projection_colors(cx: &App) -> ProjectionColors {
@@ -24,12 +38,17 @@ fn projection_colors(cx: &App) -> ProjectionColors {
 
 impl Reader {
     /// Opt-in, cross-platform diagnostics. Sampling reads state only: no notify/draw.
+    /// `OKILUM_EDITOR_LAYOUT_DIAGNOSTICS=1` logs a sample every second. It and
+    /// every Sprint build also log one `editor_frame_layout` line per laid-out
+    /// keystroke or caret move: what the layout cost and how far the view
+    /// moved (#1621), so a Feedback log carries the numbers.
     pub(super) fn start_editor_layout_diagnostics(
         &self,
         input: Entity<EditorState>,
         cx: &mut Context<Self>,
     ) {
-        if std::env::var("OKILUM_EDITOR_LAYOUT_DIAGNOSTICS").as_deref() != Ok("1") {
+        let samples = std::env::var("OKILUM_EDITOR_LAYOUT_DIAGNOSTICS").as_deref() == Ok("1");
+        if !samples && !crate::reader_feedback::sprint::enabled() {
             return;
         }
         let Some(trace) = self
@@ -49,6 +68,23 @@ impl Reader {
                     };
                     let editor = input.read(cx);
                     let Some(counts) = editor.layout_diagnostics() else { return false; };
+                    for frame in editor.take_layout_frames() {
+                        trace.event("editor_frame_layout", serde_json::json!({
+                            "generation": frame.generation,
+                            "presentation_epoch": frame.presentation_epoch,
+                            "edit": frame.edit,
+                            "raw": frame.raw,
+                            "prepaint_ms": frame.prepaint_ms,
+                            "reshape_ms": frame.reshape_ms,
+                            "reshaped_lines": frame.reshaped_lines,
+                            "scroll_delta": frame.scroll_delta,
+                            "anchor": frame.anchor,
+                            "live": editing.live_preview.enabled,
+                        }));
+                    }
+                    if !samples {
+                        return true;
+                    }
                     let scroll = editor.scroll_offset();
                     let bounds = editor.input_bounds();
                     trace.event("editor_layout_sample", serde_json::json!({
@@ -166,6 +202,12 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "linux")]
+        self.install_editor_latency_diagnostics(
+            std::env::var("OKILUM_EDITOR_LATENCY_DIAGNOSTICS").as_deref() == Ok("1"),
+            window,
+            cx,
+        );
         if let Some(editing) = &mut self.editing {
             editing.live_preview.restore_after_find = false;
             if editing.live_preview.enabled != enabled {
@@ -284,8 +326,297 @@ impl Reader {
     }
 }
 
+// Linux CI only. CLOCK_MONOTONIC is shared with Python's monotonic_ns; diagnostic
+// writer latency and wall-clock adjustments are excluded from the samples.
+#[cfg(target_os = "linux")]
+fn latency_now_ns() -> u64 {
+    let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: clock_gettime initializes the correctly sized writable timespec.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) };
+    assert_eq!(result, 0, "editor diagnostic monotonic clock failed");
+    // SAFETY: successful clock_gettime initialized time.
+    let time = unsafe { time.assume_init() };
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
+#[cfg(target_os = "linux")]
+impl Reader {
+    fn install_editor_latency_diagnostics(
+        &mut self,
+        requested: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !requested {
+            return;
+        }
+        let Some(trace) = self
+            .loading
+            .as_ref()
+            .and_then(|l| l.opts.diagnostics.clone())
+        else {
+            return;
+        };
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if editing.live_preview.latency_subscriptions.is_some() {
+            return;
+        }
+        let input = editing.input.clone();
+        let edit_trace = trace.clone();
+        let changed = cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, event: &SourceMutation, window, cx| {
+                let mutation_ns = latency_now_ns();
+                this.trace_editor_latency_frame(
+                    input.clone(),
+                    event.stamp,
+                    "edit",
+                    mutation_ns,
+                    edit_trace.clone(),
+                    window,
+                    cx,
+                );
+            },
+        );
+        let last = Rc::new(Cell::new(None));
+        let live_trace = trace.clone();
+        let classified = cx.observe_in(&input, window, move |this, input, window, cx| {
+            let Some(editing) = this.editing.as_ref().filter(|e| e.input == input) else {
+                return;
+            };
+            if !editing.live_preview.enabled {
+                return;
+            }
+            let editor = input.read(cx);
+            let stamp = editor.source_stamp();
+            let oversize = editor.text().len() > okilum_core::source_classifier::MAX_BYTES;
+            let accepted = editing
+                .live_preview
+                .accepted
+                .as_ref()
+                .filter(|provider| provider.source().stamp == stamp);
+            if !oversize && accepted.is_none() {
+                return;
+            }
+            let limited = oversize || accepted.is_some_and(|provider| provider.limited());
+            let identity = (stamp, editor.presentation_epoch(), limited);
+            if last.replace(Some(identity)) == Some(identity) {
+                return;
+            }
+            live_trace.event(
+                if limited {
+                    "live_preview_limited"
+                } else {
+                    "live_preview_accepted"
+                },
+                serde_json::json!({"document": stamp.document, "generation": stamp.generation,
+                    "presentation_epoch": editor.presentation_epoch(), "limited": limited,
+                    "monotonic_ns": latency_now_ns()}),
+            );
+            if !limited {
+                this.trace_editor_latency_frame(
+                    input.clone(),
+                    stamp,
+                    "live",
+                    0,
+                    live_trace.clone(),
+                    window,
+                    cx,
+                );
+            }
+        });
+        editing.live_preview.latency_subscriptions = Some((changed, classified));
+        let stamp = input.read(cx).source_stamp();
+        self.trace_editor_latency_frame(input, stamp, "open", 0, trace, window, cx);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn trace_editor_latency_frame(
+        &self,
+        input: Entity<EditorState>,
+        stamp: gpui_component::input::projection::SourceStamp,
+        purpose: &'static str,
+        mutation_ns: u64,
+        trace: reader_diagnostics::Trace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // GPUI invokes next-frame callbacks BEFORE draw/present. The nested
+        // callback is after that draw/present returned, before a later frame.
+        // This is a conservative software post-frame boundary, never scanout.
+        cx.on_next_frame(window, move |_, window, cx| {
+            cx.on_next_frame(window, move |this, _, cx| {
+                let matching = this.editing.as_ref().filter(|e| e.input == input);
+                let editor = input.read(cx);
+                let current = editor.source_stamp();
+                let live = matching.is_some_and(|e| e.live_preview.enabled);
+                let limited = matching
+                    .and_then(|e| e.live_preview.accepted.as_ref())
+                    .is_none_or(|p| p.limited());
+                let outcome = if matching.is_none() || current != stamp {
+                    "superseded"
+                } else if editor
+                    .range_to_bounds(&(editor.cursor()..editor.cursor()))
+                    .is_some()
+                {
+                    "painted"
+                } else {
+                    "unpainted"
+                };
+                trace.event("editor_latency_frame", serde_json::json!({
+                    "purpose": purpose, "outcome": outcome,
+                    "document": stamp.document, "generation": stamp.generation,
+                    "current_document": current.document, "current_generation": current.generation,
+                    "presentation_epoch": editor.presentation_epoch(),
+                    "mutation_ns": mutation_ns, "monotonic_ns": latency_now_ns(),
+                    "live": live, "limited": limited,
+                }));
+            });
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn latency_fence_fixture_forces_raw_tail_after_local_remap_refuses() {
+        use okilum_core::{
+            source_classifier::{classify, RetainedPresentation},
+            source_projection::Snapshot,
+        };
+        let source = include_str!("../../../../scripts/perf/editor/raw-tail-60k.md");
+        assert_eq!(source.len(), 60 * 1024);
+        let original = Snapshot::new("raw-tail-latency", 1, source);
+        let retained = RetainedPresentation::new(&classify(&original));
+        let edited = Snapshot::new("raw-tail-latency", 2, format!("{source}\n"));
+        assert!(
+            retained.remap(&edited).is_none(),
+            "the latency workload must exercise the fallback, not a local remap"
+        );
+        assert!(
+            retained.remap_raw_tail(&edited).is_some(),
+            "Enter at EOF inside this unclosed fence must run remap_raw_tail"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn latency_diagnostics_require_opt_in_and_trace(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let vault = fixture.path().join("notes");
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("Note.md"), "# Note\n\nBody\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+            cx.set_global(reader_history::TestSessionDirectory(
+                fixture.path().join("history"),
+            ));
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("Note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            reader.loading.as_mut().unwrap().opts.diagnostics = None;
+            reader.install_editor_latency_diagnostics(true, window, cx);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .latency_subscriptions
+                .is_none());
+            reader.loading.as_mut().unwrap().opts.diagnostics = Some(
+                reader_diagnostics::Trace::new(Some(state.clone()), Some(vault.clone())),
+            );
+            reader.install_editor_latency_diagnostics(false, window, cx);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .latency_subscriptions
+                .is_none());
+        });
+        visual.simulate_keystrokes("x");
+        visual.run_until_parked();
+        assert!(
+            !std::fs::read_to_string(state.join("reader-diagnostic.log"))
+                .unwrap_or_default()
+                .contains("editor_latency_frame")
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.install_editor_latency_diagnostics(true, window, cx);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .latency_subscriptions
+                .is_some());
+        });
+        visual.simulate_keystrokes("y");
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        // Diagnostics are asynchronous; wait only for the writer, outside the
+        // measured path. A positive control proves the disabled assertion above.
+        let log = state.join("reader-diagnostic.log");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let events: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            if events.iter().any(|event| {
+                event["phase"] == "editor_latency_frame"
+                    && event["details"]["purpose"] == "edit"
+                    && event["details"]["outcome"] == "painted"
+            }) {
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| event["phase"] == "editor_latency_frame"
+                            && event["details"]["outcome"] == "superseded"),
+                    "the older open generation must not become a latency sample"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "enabled frame event missing"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[cfg(unix)]
     #[gpui::test]
     fn mode_segments_follow_labels_preference_and_switch_editor_presentation(
@@ -449,20 +780,25 @@ mod tests {
         });
         visual.run_until_parked();
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
+        // #1512: at 200 px the name gives way and only Reveal current and
+        // Show hidden move into ⋯; nothing clips past the panel.
         let menu = visual.debug_bounds("sidebar-actions").unwrap();
-        let folders = visual.debug_bounds("folders-actions").unwrap();
         assert!(
             menu.right() < panel.right(),
             "menu={menu:?}, panel={panel:?}"
         );
-        assert!(
-            folders.right() < panel.right(),
-            "Folders actions never clip at 200px"
-        );
-        assert!(
-            visual.debug_bounds("sidebar-new-note").is_none(),
-            "long vault name takes precedence over actions"
-        );
+        if cfg!(any(unix, windows)) {
+            let new_note = visual.debug_bounds("sidebar-new-note").unwrap();
+            let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+            assert!(
+                title.right() <= new_note.left(),
+                "the name never covers an action"
+            );
+        }
+        assert!(visual.debug_bounds("sidebar-collapse-all").is_some());
+        for spilled in ["sidebar-reveal-current", "sidebar-show-hidden"] {
+            assert!(visual.debug_bounds(spilled).is_none(), "{spilled} is in ⋯");
+        }
     }
 
     use super::*;
@@ -553,6 +889,87 @@ mod tests {
             visual.debug_bounds("reader-callout-body-0").is_some(),
             "the first callout unfolds, rendered"
         );
+    }
+
+    /// #1621: Enter on the blank lines after a long CSS fence at the end of a
+    /// note, below a heading, a long link, a table and a callout. Each edit
+    /// frame is drawn before the background classification returns, as on a
+    /// slow machine. That frame drew the whole note as source with no anchor:
+    /// the rows above changed height and the view jumped on every Enter.
+    #[gpui::test]
+    fn enter_after_a_fence_below_rendered_blocks_keeps_the_view(cx: &mut TestAppContext) {
+        use crate::input_anchor_tests::{assert_held, draw};
+        let css: String = (0..60)
+            .map(|i| format!("  .rule-{i} {{ padding: {i}px; }}\n"))
+            .collect();
+        let note = format!(
+            "# Days Gone\n\n## Section\n\n[a long link label](https://example.com/{})\n\n\
+             | a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n> [!note] Callout\n> body\n\n\
+             ```css\n{css}```\n\n",
+            "x".repeat(300)
+        );
+        let (reader, visual, _directory) = fixture(cx, &note);
+        visual.simulate_resize(size(px(1000.), px(600.)));
+        reader.update_in(visual, |r, window, cx| {
+            if !r.editing.as_ref().unwrap().live_preview.enabled {
+                r.toggle_live_preview(window, cx);
+            }
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        input.update(visual, |input, cx| {
+            input.set_selected_range(note.len()..note.len(), cx)
+        });
+        let bounds = input.read_with(visual, |input, _| input.input_bounds());
+        visual.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        // The closing fence line, a few rows above the caret.
+        let reference = note.rfind("```").unwrap();
+        draw(&input, reference, visual);
+        visual.run_until_parked();
+        let mut before = draw(&input, reference, visual);
+        input.read_with(visual, |input, _| {
+            assert!(
+                input.scroll_offset().y < px(-200.),
+                "positive control: the editor is scrolled"
+            );
+            assert!(input.value().starts_with("# Days Gone"));
+        });
+        assert!(before.caret.is_some() && before.reference.is_some());
+        for key in 1..=8 {
+            visual.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse("enter").unwrap(), cx);
+            });
+            let edit = draw(&input, reference, visual);
+            input.read_with(visual, |input, _| {
+                assert_eq!(
+                    input.value().len(),
+                    note.len() + key,
+                    "Enter {key} reached the editor"
+                )
+            });
+            assert_held(
+                &before,
+                &edit,
+                &format!("Enter {key}, before classification"),
+            );
+            visual.run_until_parked();
+            let adopted = draw(&input, reference, visual);
+            assert_held(
+                &edit,
+                &adopted,
+                &format!("Enter {key}, classification adopted"),
+            );
+            // Blocks measured in that frame take their height in the next one.
+            visual.run_until_parked();
+            let settled = draw(&input, reference, visual);
+            assert_held(&adopted, &settled, &format!("Enter {key}, settled"));
+            before = settled;
+        }
     }
 
     #[gpui::test]

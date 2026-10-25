@@ -160,21 +160,23 @@ impl Reader {
                             .track_scroll(&self.recent_switcher.scroll)
                             .children(self.recent_switcher.paths.iter().enumerate().map(
                                 |(index, path)| {
-                                    let title = Path::new(path)
-                                        .file_stem()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .into_owned();
+                                    let title = self.note_label(path);
                                     let duplicate = self
                                         .recent_switcher
                                         .paths
                                         .iter()
-                                        .filter(|p| {
-                                            Path::new(p).file_stem() == Path::new(path).file_stem()
-                                        })
+                                        .filter(|p| self.note_label(p) == title)
                                         .count()
                                         > 1;
                                     v_flex()
+                                        .id(("recent-switcher-row", index))
+                                        .tooltip({
+                                            let path = path.clone();
+                                            move |window, cx| {
+                                                gpui_component::tooltip::Tooltip::new(path.clone())
+                                                    .build(window, cx)
+                                            }
+                                        })
                                         .px_2()
                                         .py_1()
                                         .rounded(px(6.))
