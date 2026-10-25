@@ -68,8 +68,14 @@ provider regressions cover partial-to-complete publication and retained edits
 in a document above 1 MiB, including Enter in an unclosed fence.
 
 The editor perf report remains supplementary under #1639's manager disposition.
-Actual large-note collection, exact-head native/required CI and review must be
-recorded in the introducing PR before acceptance. M4 <=16 ms and weak Linux
+The three new LP scenarios are measured/report-only in CI; their initial
+baseline values must not be invented. For #1640 acceptance, the introducing PR
+must report at least five measured input/scroll repetitions per size on the same
+binary (130 KB, 1 MiB and 1.2 MB). A size may leave the Source fallback only when
+its median editing-frame measurement is <=33 ms on Linux. A size that misses the
+threshold remains explicitly unsupported and is tracked for follow-up; a
+supplementary CI status does not waive this acceptance threshold. Exact-head
+native/required CI and review also remain mandatory. M4 <=16 ms and weak Linux
 <=33 ms remain product targets; Xvfb software post-frame results do not prove
 GPU completion or physical presentation. Same-runner A/B activation belongs to
 #1662 after this work.
