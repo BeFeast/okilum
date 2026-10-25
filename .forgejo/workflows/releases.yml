@@ -13,6 +13,10 @@ on:
         description: 'Full main SHA required with linux_only; otherwise request all-platform builds (#1040)'
         required: false
         default: ''
+      mac_only:
+        description: 'With build: promote only Mac appcast/zip/DMG; no Linux/Windows feeds, tag or notes'
+        type: boolean
+        default: false
       linux_only:
         description: 'Owner-approved Linux only: exact Linux build AND full source SHA; no builds or other platform writes (#1432)'
         type: boolean
@@ -71,11 +75,22 @@ jobs:
           PROMOTE_BUILD: ${{ inputs.build }}
           PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
+          MAC_ONLY: ${{ inputs.mac_only }}
           LINUX_ONLY: ${{ inputs.linux_only }}
           LINUX_ROLLBACK: ${{ inputs.linux_rollback }}
           WINDOWS_ONLY: ${{ inputs.windows_only }}
           SKIP_WINDOWS: ${{ inputs.skip_windows }}
         run: |
+          # Resolve Mac-only before any legacy source/build request can dispatch work.
+          if [ "$MAC_ONLY" = true ]; then
+            if [ -z "$PROMOTE_BUILD" ] || [ -n "$PROMOTE_SOURCE" ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$WINDOWS_ONLY" = true ] || [ "$SKIP_WINDOWS" = true ]; then
+              echo 'mac_only requires build and excludes source and other platform modes' >&2
+              exit 1
+            fi
+            args=()
+            if [ "$SUPERSEDE_PENDING" = true ]; then args+=(--supersede-pending); fi
+            exec python scripts/releases/publish.py --build "$PROMOTE_BUILD" --mac-only "${args[@]}"
+          fi
           # Handle Linux before the all-platform request/build path. Never dispatch builds.
           if [ "$LINUX_ONLY" = true ]; then
             if [ -z "$PROMOTE_BUILD" ] || [ -z "$PROMOTE_SOURCE" ]; then
