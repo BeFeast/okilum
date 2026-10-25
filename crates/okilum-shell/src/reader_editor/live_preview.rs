@@ -1,6 +1,7 @@
 //! Opt-in presentation over the existing exact Reader editor and FileEditor.
 use super::*;
 use crate::source_presentation::{CachedProvider, ProjectionColors};
+use okilum_core::source_classifier::segmented::{Session, MAX_DOCUMENT_BYTES};
 use std::cell::Cell;
 
 #[derive(Default)]
@@ -11,6 +12,7 @@ pub(super) struct LivePreview {
     queued: bool,
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
+    classification_cache: Arc<std::sync::Mutex<Session>>,
     #[cfg(target_os = "linux")]
     latency_subscriptions: Option<(Subscription, Subscription)>,
 }
@@ -144,14 +146,19 @@ impl Reader {
         let Some(editing) = &self.editing else {
             return div().into_any_element();
         };
-        let oversize =
-            editing.input.read(cx).text().len() > okilum_core::source_classifier::MAX_BYTES;
+        let oversize = editing.input.read(cx).text().len() > MAX_DOCUMENT_BYTES;
         let limited = oversize
             || editing
                 .live_preview
                 .accepted
                 .as_ref()
                 .is_some_and(|p| p.limited());
+        let preparing = editing
+            .live_preview
+            .accepted
+            .as_ref()
+            .filter(|provider| provider.source().stamp == editing.input.read(cx).source_stamp())
+            .is_some_and(|provider| !provider.complete());
         let live = editing.live_preview.enabled;
         // One control switches to the other editor mode (#992); the current
         // mode is what the page shows, so it needs no selected segment.
@@ -160,8 +167,10 @@ impl Reader {
                 .icon(Icon::default().path("icons/code-xml.svg"))
                 .when(labels, |button| button.label("Source"))
                 .accessibility_label("Source")
-                .tooltip(if limited {
-                    "Live Preview uses Source for this note. Switch to Source"
+                .tooltip(if preparing {
+                    "Preparing Live Preview. Switch to Source"
+                } else if limited {
+                    "Live Preview keeps limited blocks in Source. Switch to Source"
                 } else {
                     "Switch to Source"
                 })
@@ -176,7 +185,7 @@ impl Reader {
                 .accessibility_label("Live Preview")
                 .tooltip(reader_shortcuts::hint(
                     if limited {
-                        "Live Preview uses Source for this note"
+                        "Live Preview keeps limited blocks in Source"
                     } else {
                         "Live Preview"
                     },
@@ -265,7 +274,7 @@ impl Reader {
         }
         let input = editing.input.clone();
         let editor = input.read(cx);
-        if editor.text().len() > okilum_core::source_classifier::MAX_BYTES {
+        if editor.text().len() > MAX_DOCUMENT_BYTES {
             state.accepted = None;
             input.update(cx, |input, cx| input.set_projection_provider(None, cx));
             return;
@@ -277,7 +286,7 @@ impl Reader {
         if state
             .accepted
             .as_ref()
-            .is_some_and(|p| p.source().stamp == editor.source_stamp())
+            .is_some_and(|p| p.source().stamp == editor.source_stamp() && p.complete())
         {
             return;
         }
@@ -285,36 +294,43 @@ impl Reader {
             stamp: editor.source_stamp(),
             text: Arc::from(editor.value().as_ref()),
         };
+        let viewport = editor_source_viewport(editor);
+        let cache = state.classification_cache.clone();
         let marker = state.in_flight.clone();
         marker.set(true);
         state.queued = false;
         cx.spawn(async move |this, cx| {
-            let provider = cx
+            let (first, pending) = cx
                 .background_executor()
-                .spawn(async move { Arc::new(CachedProvider::classify(source)) })
+                .spawn(async move { CachedProvider::classify_priority(source, cache, viewport) })
                 .await;
+            let first = Arc::new(first);
+            // The first publication has exact metadata only for visible blocks.
+            // A stale document/generation/text cannot authorize its continuation.
+            let viewport = this
+                .update(cx, |this, cx| {
+                    this.adopt_live_preview_provider(&input, first, cx)
+                })
+                .ok()
+                .flatten();
+            if let (Some(pending), Some(viewport)) = (pending, viewport) {
+                let complete = cx
+                    .background_executor()
+                    .spawn(async move { Arc::new(pending.finish(viewport)) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.adopt_live_preview_provider(&input, complete, cx);
+                });
+            }
             // Parked editors can temporarily be absent while a move applies.
             // Their marker must still settle, so a later edit can schedule again.
             marker.set(false);
             let _ = this.update(cx, |this, cx| {
-                let colors = projection_colors(cx);
                 let Some(editing) = &mut this.editing else {
                     return;
                 };
                 if editing.input != input {
                     return;
-                }
-                let current = input.read(cx);
-                if current.source_stamp() == provider.source().stamp
-                    && current.value().as_ref() == provider.source().text.as_ref()
-                {
-                    editing.live_preview.accepted = Some(provider.clone());
-                    if editing.live_preview.enabled {
-                        editing.live_preview.colors.set(Some(colors));
-                        input.update(cx, |input, cx| {
-                            input.set_projection_provider(Some(provider.with_colors(colors)), cx)
-                        });
-                    }
                 }
                 if std::mem::take(&mut editing.live_preview.queued) {
                     this.schedule_live_preview(cx);
@@ -324,6 +340,52 @@ impl Reader {
         })
         .detach();
     }
+
+    fn adopt_live_preview_provider(
+        &mut self,
+        input: &Entity<EditorState>,
+        provider: Arc<CachedProvider>,
+        cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        let colors = projection_colors(cx);
+        let editing = self
+            .editing
+            .as_mut()
+            .filter(|editing| editing.input == *input)?;
+        let current = input.read(cx);
+        if current.source_stamp() != provider.source().stamp
+            || current.value().as_ref() != provider.source().text.as_ref()
+        {
+            return None;
+        }
+        let viewport = editor_source_viewport(current);
+        editing.live_preview.accepted = Some(provider.clone());
+        if !editing.live_preview.enabled {
+            return None;
+        }
+        editing.live_preview.colors.set(Some(colors));
+        input.update(cx, |input, cx| {
+            input.set_projection_provider(Some(provider.with_colors(colors)), cx)
+        });
+        cx.notify();
+        Some(viewport)
+    }
+}
+
+/// Native hit-testing maps the last viewport to canonical source. Before first
+/// layout, prioritize a small range around the source caret; never infer byte
+/// offsets from display row numbers or decoded Markdown.
+fn editor_source_viewport(editor: &EditorState) -> std::ops::Range<usize> {
+    let bounds = editor.input_bounds();
+    let start =
+        editor.source_offset_for_point(point(bounds.left() + px(1.), bounds.top() + px(1.)));
+    let end =
+        editor.source_offset_for_point(point(bounds.right() - px(1.), bounds.bottom() - px(1.)));
+    if let (Some(start), Some(end)) = (start, end) {
+        return start.min(end)..start.max(end);
+    }
+    let caret = editor.cursor().min(editor.text().len());
+    caret.saturating_sub(4096)..(caret + 8192).min(editor.text().len())
 }
 
 // Linux CI only. CLOCK_MONOTONIC is shared with Python's monotonic_ns; diagnostic
@@ -392,7 +454,7 @@ impl Reader {
             }
             let editor = input.read(cx);
             let stamp = editor.source_stamp();
-            let oversize = editor.text().len() > okilum_core::source_classifier::MAX_BYTES;
+            let oversize = editor.text().len() > MAX_DOCUMENT_BYTES;
             let accepted = editing
                 .live_preview
                 .accepted
@@ -1310,7 +1372,13 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             let e = r.editing.as_ref().unwrap();
-            assert!(e.live_preview.accepted.is_none());
+            let provider = e.live_preview.accepted.as_ref().unwrap();
+            assert!(provider.complete());
+            assert!(
+                provider.limited(),
+                "one oversized inline block stays explicitly limited"
+            );
+            assert_eq!(provider.source().text.as_ref(), large);
             assert_eq!(e.input.read(cx).value().as_ref(), large);
         });
         assert_eq!(

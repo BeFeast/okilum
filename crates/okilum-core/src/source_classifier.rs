@@ -15,6 +15,8 @@ pub use retained::{RetainedPresentation, RevealSnapshot};
 
 pub const MAX_BYTES: usize = 64 * 1024;
 pub const MAX_NODES: usize = 4096;
+// Per-block validation remains fixed when document projection grows.
+pub const MAX_BLOCK_RANGES: usize = 4096;
 pub const MAX_DEPTH: usize = 32;
 pub const MAX_STYLES_AND_REASONS: usize = 4096;
 
@@ -346,9 +348,7 @@ pub(crate) fn classify_fragment(
             reasons.push(SourceReason::UnsupportedOrAmbiguous);
             regions.push(Region::Source(block));
         }
-        if range_count > source_projection::MAX_RANGES
-            || styles.len() + reasons.len() > MAX_STYLES_AND_REASONS
-        {
+        if range_count > MAX_BLOCK_RANGES || styles.len() + reasons.len() > MAX_STYLES_AND_REASONS {
             return fallback(snapshot, SourceReason::StructureLimit);
         }
     }

@@ -10,7 +10,10 @@ use super::{
 };
 use crate::source_projection::{self, Active, Plan, Region, Snapshot};
 use markdown::{mdast::Node, Constructs, ParseOptions};
-use std::{collections::HashSet, ops::Range};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 /// Includes the 1.2M-character performance fixture; not a per-block parse cap.
 pub const MAX_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
@@ -118,6 +121,7 @@ impl BlockIndex {
         }
         let mut references: Vec<Reference> = Vec::new();
         let mut conflicting_definitions = Vec::new();
+        let mut definitions = HashMap::new();
         let mut visited = vec![&root];
         while let Some(node) = visited.pop() {
             if let Node::Definition(definition) = node {
@@ -126,7 +130,8 @@ impl BlockIndex {
                     url: definition.url.clone(),
                     title: definition.title.clone().unwrap_or_default(),
                 };
-                if let Some(previous) = references.iter().find(|r| r.label == reference.label) {
+                if let Some(&index) = definitions.get(&reference.label) {
+                    let previous = &references[index];
                     if previous != &reference {
                         let pos = definition
                             .position
@@ -135,6 +140,7 @@ impl BlockIndex {
                         conflicting_definitions.push(pos.start.offset..pos.end.offset);
                     }
                 } else {
+                    definitions.insert(reference.label.clone(), references.len());
                     references.push(reference);
                 }
             }
@@ -179,6 +185,15 @@ impl Session {
         self.cache.stats()
     }
 
+    pub fn classify(&mut self, source: Snapshot) -> Classification {
+        let mut work = match self.begin(source.clone()) {
+            Ok(work) => work,
+            Err(reason) => return super::fallback(&source, reason),
+        };
+        work.advance(self, 0..0, usize::MAX);
+        work.classification()
+    }
+
     pub fn begin(&mut self, source: Snapshot) -> Result<Progressive, SourceReason> {
         let full_reparse = self.previous.as_ref().is_none_or(|old| {
             old.document() != source.document()
@@ -190,8 +205,23 @@ impl Session {
         }
         let index = BlockIndex::new(source.clone())?;
         self.previous = Some(source);
+        // Keep proven offscreen presentation on a small edit: publishing only
+        // the active viewport must not erase cached block heights above it.
+        let classified = index
+            .blocks
+            .iter()
+            .map(|range| {
+                let fragment = Snapshot::new(
+                    index.snapshot.document(),
+                    index.snapshot.generation(),
+                    &index.snapshot.source()[range.clone()],
+                );
+                self.cache
+                    .lookup_fragment(&fragment, &index.references, range.start == 0)
+            })
+            .collect();
         Ok(Progressive {
-            classified: vec![None; index.blocks.len()],
+            classified,
             index,
             full_reparse,
         })

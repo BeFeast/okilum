@@ -10,7 +10,11 @@ use gpui_component::input::projection::{
     SourceSnapshot,
 };
 use okilum_core::{
-    source_classifier::{self, Classification, RetainedPresentation, Style},
+    source_classifier::{
+        self,
+        segmented::{Progressive, Session, MAX_DOCUMENT_BYTES},
+        Classification, RetainedPresentation, Style,
+    },
     source_projection::{Active, Bias, Projection, Snapshot},
 };
 
@@ -67,6 +71,52 @@ impl CachedProvider {
     /// Call only from a background classification task.
     pub fn classify(source: SourceSnapshot) -> Self {
         let snapshot = core_snapshot(&source);
+        let classified = if source.text.len() <= source_classifier::MAX_BYTES {
+            source_classifier::classify(&snapshot)
+        } else {
+            Session::default().classify(snapshot)
+        };
+        Self::from_classification(source, classified)
+    }
+
+    /// First publish visible blocks; finish the same snapshot off-thread. The
+    /// session lock is never taken by compose/input/render.
+    pub fn classify_priority(
+        source: SourceSnapshot,
+        session: Arc<Mutex<Session>>,
+        viewport: Range<usize>,
+    ) -> (Self, Option<PendingClassification>) {
+        let mut cache = session.lock().unwrap_or_else(|error| error.into_inner());
+        let snapshot = core_snapshot(&source);
+        let mut work = match cache.begin(snapshot.clone()) {
+            Ok(work) => work,
+            Err(_) => {
+                let classified = cache.classify(snapshot);
+                return (Self::from_classification(source, classified), None);
+            }
+        };
+        let visible_blocks = work
+            .index()
+            .blocks()
+            .iter()
+            .filter(|block| viewport.start <= block.end && block.start <= viewport.end)
+            .count()
+            .max(1);
+        work.advance(&mut cache, viewport, visible_blocks);
+        let classified = work.classification();
+        let complete = work.is_complete();
+        drop(cache);
+        let provider = Self::from_classification(source.clone(), classified);
+        let pending = (!complete).then_some(PendingClassification {
+            source,
+            session,
+            work,
+        });
+        (provider, pending)
+    }
+
+    fn from_classification(source: SourceSnapshot, classified: Classification) -> Self {
+        let snapshot = core_snapshot(&source);
         let links = if source.text.len() <= source_classifier::MAX_BYTES {
             okilum_core::document_links::parse(&source.text)
                 .into_iter()
@@ -78,9 +128,8 @@ impl CachedProvider {
                 })
                 .collect()
         } else {
-            Vec::new()
+            classified.links_for(&snapshot).unwrap_or_default().to_vec()
         };
-        let classified = source_classifier::classify(&snapshot);
         let tables = classified
             .decorations_for(&snapshot)
             .unwrap_or_default()
@@ -114,8 +163,16 @@ impl CachedProvider {
                 reason,
                 source_classifier::SourceReason::InputLimit
                     | source_classifier::SourceReason::StructureLimit
+                    | source_classifier::SourceReason::ProjectionBoundary
+                    | source_classifier::SourceReason::PendingBlocks
             )
         })
+    }
+    pub fn complete(&self) -> bool {
+        !self
+            .classified
+            .reasons()
+            .contains(&source_classifier::SourceReason::PendingBlocks)
     }
     pub fn source(&self) -> &SourceSnapshot {
         &self.source
@@ -124,6 +181,26 @@ impl CachedProvider {
     #[allow(dead_code)]
     pub fn reasons(&self) -> String {
         format!("{:?}", self.classified.reasons())
+    }
+}
+
+/// One off-thread continuation, discarded if the source changes before adoption.
+pub struct PendingClassification {
+    source: SourceSnapshot,
+    session: Arc<Mutex<Session>>,
+    work: Progressive,
+}
+
+impl PendingClassification {
+    pub fn finish(mut self, viewport: Range<usize>) -> CachedProvider {
+        let mut cache = self
+            .session
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.work.advance(&mut cache, viewport, usize::MAX);
+        let classified = self.work.classification();
+        drop(cache);
+        CachedProvider::from_classification(self.source, classified)
     }
 }
 
@@ -154,8 +231,8 @@ impl CachedProvider {
         active: &ActiveSource,
         colors: Option<ProjectionColors>,
     ) -> Option<Arc<dyn SourceProjection>> {
-        // #214's stricter cap is a presentation limit, not a buffer limit.
-        if source.text.len() > source_classifier::MAX_BYTES {
+        // The block parser cap no longer disables an otherwise valid document.
+        if source.text.len() > MAX_DOCUMENT_BYTES {
             return None;
         }
         let current = core_snapshot(source);
@@ -1348,11 +1425,71 @@ This paragraph remains ordinary Markdown.
         assert!(provider.compose(&source, &active).is_none());
     }
     #[test]
-    fn larger_input_is_full_source_fallback() {
-        let source = source(&"x".repeat(source_classifier::MAX_BYTES + 1));
+    fn input_over_document_cap_is_full_source_fallback() {
+        let source = source(&"x".repeat(MAX_DOCUMENT_BYTES + 1));
         let provider = CachedProvider::classify(source.clone());
         assert!(provider.compose(&source, &inactive(&source)).is_none());
-        assert_eq!(source.text.len(), source_classifier::MAX_BYTES + 1);
+        assert_eq!(source.text.len(), MAX_DOCUMENT_BYTES + 1);
+    }
+
+    #[test]
+    fn mebibyte_document_publishes_visible_projection_then_complete_exact_source() {
+        let mut text = String::from("\u{feff}# **Visible**\r\n\r\n");
+        while text.len() < 1024 * 1024 {
+            text.push_str("A paragraph with **strong** and [label](target.md). ");
+            text.push_str(&"bounded ordinary text ".repeat(20));
+            text.push_str("\r\n\r\n");
+        }
+        text.push_str("# Background heading\r\n\r\nend");
+        let source = source(&text);
+        let cache = Arc::new(Mutex::new(Session::default()));
+        let (visible, pending) = CachedProvider::classify_priority(source.clone(), cache, 0..40);
+        assert!(!visible.complete());
+        assert!(
+            visible.limited(),
+            "a partial publication cannot prove full LP"
+        );
+        let partial = visible.compose(&source, &inactive(&source)).unwrap();
+        assert!(partial.text().starts_with("\u{feff}Visible\r\n"));
+        assert!(partial.text().contains("# Background heading"));
+        assert_eq!(partial.source().text.as_ref().as_bytes(), text.as_bytes());
+        let complete = pending.unwrap().finish(0..40);
+        assert!(complete.complete());
+        assert!(!complete.limited(), "{:?}", complete.reasons());
+        let full = complete.compose(&source, &inactive(&source)).unwrap();
+        assert!(full.text().contains("strong and label"));
+        assert!(full.text().contains("\r\nBackground heading\r\n"));
+        assert_eq!(full.source().text.as_ref().as_bytes(), text.as_bytes());
+        let mut edited = source.clone();
+        edited.stamp.generation += 1;
+        edited.text = Arc::from(text.replacen("A paragraph", "An edited paragraph", 1));
+        let retained = complete.compose(&edited, &inactive(&edited)).unwrap();
+        assert!(retained.text().contains("strong and label"));
+        assert_eq!(retained.source().text, edited.text);
+    }
+
+    #[test]
+    fn large_raw_tail_edit_keeps_classified_prefix_while_waiting_for_adoption() {
+        let mut text = String::from("# **Retained**\n\n");
+        while text.len() < 1024 * 1024 {
+            text.push_str("A **formatted** paragraph followed by ordinary source text. ");
+            text.push_str(&"bounded paragraph ".repeat(20));
+            text.push_str("\n\n");
+        }
+        text.push_str("```text\ninside unclosed fence");
+        let original = source(&text);
+        let provider = CachedProvider::classify(original.clone());
+        assert!(provider.complete() && !provider.limited());
+        let mut edited = original.clone();
+        edited.stamp.generation += 1;
+        edited.text = Arc::from(format!("{text}\n"));
+        let projection = provider.compose(&edited, &inactive(&edited)).unwrap();
+        assert!(projection.text().starts_with("Retained\n"));
+        assert!(projection.text().contains("A formatted paragraph"));
+        assert!(projection
+            .text()
+            .ends_with("```text\ninside unclosed fence\n"));
+        assert_eq!(projection.source().text, edited.text);
     }
 
     #[test]

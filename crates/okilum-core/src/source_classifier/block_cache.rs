@@ -101,6 +101,33 @@ impl BlockCache {
         self.classify_fragment(snapshot, references, true)
     }
 
+    /// Rebind an unchanged block without invoking an inline parser. A lookup
+    /// miss is not a classification and does not increment `Stats::misses`.
+    pub(crate) fn lookup_fragment(
+        &mut self,
+        snapshot: &Snapshot,
+        references: &[Reference],
+        allow_frontmatter: bool,
+    ) -> Option<Classification> {
+        self.clock = self.clock.saturating_add(1);
+        let key = Key {
+            snapshot: snapshot.clone(),
+            references: references.to_vec().into(),
+            allow_frontmatter,
+        };
+        self.get(&key, snapshot)
+    }
+
+    fn get(&mut self, key: &Key, snapshot: &Snapshot) -> Option<Classification> {
+        let entry = self.entries.get_mut(key)?;
+        self.stats.hits += 1;
+        entry.touched = self.clock;
+        let mut result = entry.classification.clone();
+        result.snapshot = snapshot.clone();
+        result.plan = Plan::new(snapshot, result.plan.regions().to_vec());
+        Some(result)
+    }
+
     pub(crate) fn classify_fragment(
         &mut self,
         snapshot: &Snapshot,
@@ -113,14 +140,7 @@ impl BlockCache {
             references: references.to_vec().into(),
             allow_frontmatter,
         };
-        if let Some(entry) = self.entries.get_mut(&key) {
-            self.stats.hits += 1;
-            entry.touched = self.clock;
-            let mut result = entry.classification.clone();
-            // Neither a previous document identity nor its plan may escape a
-            // content-cache hit. All fragment coordinates remain unchanged.
-            result.snapshot = snapshot.clone();
-            result.plan = Plan::new(snapshot, result.plan.regions().to_vec());
+        if let Some(result) = self.get(&key, snapshot) {
             return result;
         }
         self.stats.misses += 1;

@@ -1,7 +1,7 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
 use super::{
     decorations::{Kind, Marker},
-    Classification, Reference, Style, StyleSpan, MAX_BYTES,
+    Classification, Reference, Style, StyleSpan,
 };
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
@@ -222,7 +222,7 @@ impl RetainedPresentation {
     pub fn remap_raw_tail(&self, current: &Snapshot) -> Option<Self> {
         if self.snapshot.document() != current.document()
             || current.generation() <= self.snapshot.generation()
-            || current.source().len() > MAX_BYTES
+            || current.source().len() > super::segmented::MAX_DOCUMENT_BYTES
             || self.base.is_err()
         {
             return None;
@@ -358,7 +358,7 @@ impl RetainedPresentation {
         const LOCAL_BYTES: usize = 4096;
         if self.snapshot.document() != current.document()
             || current.generation() <= self.snapshot.generation()
-            || current.source().len() > MAX_BYTES
+            || current.source().len() > super::segmented::MAX_DOCUMENT_BYTES
         {
             return None;
         }
@@ -809,7 +809,7 @@ impl RetainedPresentation {
     fn remap_inline(&self, current: &Snapshot) -> Option<Self> {
         if self.snapshot.document() != current.document()
             || current.generation() < self.snapshot.generation()
-            || current.source().len() > MAX_BYTES
+            || current.source().len() > super::segmented::MAX_DOCUMENT_BYTES
         {
             return None;
         }

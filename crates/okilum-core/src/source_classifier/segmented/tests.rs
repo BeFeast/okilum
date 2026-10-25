@@ -72,7 +72,7 @@ fn differential_whole_parse_preserves_containers_fences_and_unicode_offsets() {
         "---\nunclosed: **raw**\n\n# raw\n",
     ] {
         let snapshot = Snapshot::new("note.md", 7, source);
-        let old = super::super::super::classify(&snapshot);
+        let old = crate::source_classifier::classify(&snapshot);
         let new = complete(&mut Session::default(), snapshot.clone());
         let a = project(&snapshot, old.plan(), &Active::default()).unwrap();
         let b = project(&snapshot, new.plan(), &Active::default()).unwrap();
@@ -188,5 +188,5 @@ fn frontmatter_context_is_part_of_the_cache_key() {
         .decorations_for(&second)
         .unwrap()
         .iter()
-        .any(|m| m.kind == super::super::super::decorations::Kind::ThematicBreak));
+        .any(|m| m.kind == crate::source_classifier::decorations::Kind::ThematicBreak));
 }
