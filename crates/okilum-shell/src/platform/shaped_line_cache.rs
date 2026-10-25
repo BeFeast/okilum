@@ -20,6 +20,7 @@
 //! Memory has a hard cap in bytes; the least recently used lines go first.
 //! Nothing runs between calls: no timers, no idle work.
 
+use super::text_diagnostics::{self, Work};
 use anyhow::Result;
 use gpui::{
     DevicePixels, Font, FontId, FontMetrics, FontRun, GlyphId, Hsla, LineLayout, Pixels,
@@ -249,36 +250,45 @@ fn entry_bytes(text: &str, runs: &[FontRun], layout: &LineLayout) -> usize {
 
 impl PlatformTextSystem for ShapedLineCache {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+        let _timing = text_diagnostics::time(Work::FontLookup);
         let result = self.shaper.add_fonts(fonts);
         // New fonts can change what an existing run falls back to.
         self.clear();
         result
     }
     fn all_font_names(&self) -> Vec<String> {
+        let _timing = text_diagnostics::time(Work::FontLookup);
         self.shaper.all_font_names()
     }
     fn font_id(&self, descriptor: &Font) -> Result<FontId> {
+        let _timing = text_diagnostics::time(Work::FontLookup);
         self.shaper.font_id(descriptor)
     }
     fn prewarm_fonts(&self, font_ids: &[FontId]) {
+        let _timing = text_diagnostics::time(Work::FontLookup);
         self.shaper.prewarm_fonts(font_ids)
     }
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
+        let _timing = text_diagnostics::time(Work::FontMetrics);
         self.shaper.font_metrics(font_id)
     }
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<gpui::Bounds<f32>> {
+        let _timing = text_diagnostics::time(Work::FontMetrics);
         self.shaper.typographic_bounds(font_id, glyph_id)
     }
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
+        let _timing = text_diagnostics::time(Work::FontMetrics);
         self.shaper.advance(font_id, glyph_id)
     }
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
+        let _timing = text_diagnostics::time(Work::GlyphLookup);
         self.shaper.glyph_for_char(font_id, ch)
     }
     fn glyph_raster_bounds(
         &self,
         params: &RenderGlyphParams,
     ) -> Result<gpui::Bounds<DevicePixels>> {
+        let _timing = text_diagnostics::time(Work::GlyphRaster);
         self.shaper.glyph_raster_bounds(params)
     }
     fn rasterize_glyph(
@@ -286,9 +296,11 @@ impl PlatformTextSystem for ShapedLineCache {
         params: &RenderGlyphParams,
         raster_bounds: gpui::Bounds<DevicePixels>,
     ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
+        let _timing = text_diagnostics::time(Work::GlyphRaster);
         self.shaper.rasterize_glyph(params, raster_bounds)
     }
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
+        let _timing = text_diagnostics::time(Work::LineLayout);
         let hash = self.key_hash(text, font_size, runs);
         let cached = self
             .lines
@@ -299,7 +311,10 @@ impl PlatformTextSystem for ShapedLineCache {
             return layout;
         }
         // Shape without the lock: another thread may shape meanwhile.
-        let layout = self.shaper.layout_line(text, font_size, runs);
+        let layout = {
+            let _timing = text_diagnostics::time(Work::PlatformShape);
+            self.shaper.layout_line(text, font_size, runs)
+        };
         self.lines.lock().unwrap_or_else(|e| e.into_inner()).insert(
             hash,
             text,
@@ -505,6 +520,24 @@ mod tests {
             len: text.len(),
             font_id: FontId(1),
         }]
+    }
+
+    #[test]
+    fn open_probe_observes_font_and_shape_without_changing_cache_results() {
+        let shaper = Arc::new(CountingShaper::default());
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let probe = text_diagnostics::Probe::start();
+        assert_eq!(cache.font_id(&gpui::font("probe")).unwrap(), FontId(0));
+        let first = cache.layout_line("abc", px(14.), &run("abc"));
+        let second = cache.layout_line("abc", px(14.), &run("abc"));
+        assert!(same(&first, &second));
+        assert_eq!(shaper.0.load(Ordering::Relaxed), 1);
+        let report = probe.report();
+        // Process-wide totals may also include other tests running concurrently.
+        assert!(report["work"]["font_lookup"]["calls"].as_u64().unwrap() >= 1);
+        assert!(report["work"]["line_layout"]["calls"].as_u64().unwrap() >= 2);
+        assert!(report["work"]["platform_shape"]["calls"].as_u64().unwrap() >= 1);
+        assert!(!report.to_string().contains("abc"));
     }
 
     /// #1312: a line shaped once is not sent to the shaper again, whatever

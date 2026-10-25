@@ -280,7 +280,10 @@ pub(crate) fn cloud_placeholder(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         const SF_DATALESS: u32 = 0x4000_0000;
-        if rustix::fs::stat(path).is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0) {
+        let _phase = crate::open_diagnostics::phase("macos_placeholder_stat");
+        if crate::open_diagnostics::fs(|| rustix::fs::stat(path))
+            .is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0)
+        {
             return true;
         }
     }

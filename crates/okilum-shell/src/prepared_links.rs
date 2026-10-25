@@ -292,6 +292,7 @@ impl Reader {
         let started = std::time::Instant::now();
         self.open_started = Some(started);
         let preparation_trace = reader_diagnostics::trace(cx);
+        let platform_probe = preparation_trace.as_ref().map(|_| platform::text_diagnostics::Probe::start());
         cx.spawn_in(window, async move |this, cx| {
             let document = cx
                 .background_executor()
@@ -402,9 +403,10 @@ impl Reader {
                 if let Some(trace) = reader_diagnostics::trace(cx) {
                     trace.event(
                         "note_open_rendered",
-                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000., "generation": generation }),
+                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000., "generation": generation, "platform": platform_probe.as_ref().map(|probe| probe.report()) }),
                     );
                 }
+                drop(platform_probe);
                 let task_landing = document.is_ok().then_some(task_text).flatten();
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");

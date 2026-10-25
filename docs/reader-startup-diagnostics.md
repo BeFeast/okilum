@@ -491,3 +491,30 @@ publication, backlinks or layout. HTML mode is identified by `html: true`.
 
 Collection is thread-local and scoped to a preparation with a diagnostic trace;
 other core consumers retain their output and do not accumulate reports.
+
+The `platform` object on `note_open_rendered` additionally samples work through
+Okilum's existing `PlatformTextSystem` proxy while preparation is pending. It
+separates font lookup/prewarming, metrics, glyph lookup, line-layout requests
+(including cache hits), actual platform shaping on cache misses, and glyph
+raster/bounds calls. On macOS, that shaping delegates to CoreText; no GPUI-core
+changes or per-text/per-font log records are involved. It also counts Reader UI
+render/synchronization and backlink-title work during this interval.
+`note_open_body_painted.platform` samples the later parse-ready → first-layout
+interval; its existing `layout_frame_ms` remains wall time, not CPU-only layout.
+All platform counters are **process-wide, inclusive and overlapping**: another
+window or job can contribute, so they locate UI contention without assigning all
+that work to the newly opened document. Do not add nested durations together.
+Counters run only while an open/first-frame observation is alive, with no timers,
+extra frames or polling added.
+
+Code-path audit for #1700: ordinary `reader_document` preparation calls portable
+Rust/comrak transforms and path/index resolution. It does not call CoreText,
+spell checking, data detectors, or a webview. The alternate HTML renderer is
+identified by `html`; it is not selected by a macOS cfg. The direct macOS-only
+core operation is the placeholder-flag `stat` before a note read, now separately
+reported as `macos_placeholder_stat`. Platform font/shaping/layout work runs on
+the UI route, which can delay the continuation that emits `note_open_rendered`
+even when the background core report is fast. The worker/UI timestamps and
+platform snapshots distinguish these cases. Linux reproduction cannot eliminate
+macOS filesystem or scheduling costs; a non-iCloud repro eliminates an iCloud-only
+explanation, not all platform-specific I/O costs.
