@@ -2697,6 +2697,9 @@ mod entry_tests {
                 install(cx);
                 cx.set_global(TestSessionDirectory(state.clone()));
                 reader_open_windows::install(state.clone(), cx);
+                // This fixture explicitly opens several independent vault windows.
+                super::super::reader_ui_state::install(&state, cx);
+                super::super::reader_ui_state::set_vault_open("new", cx);
                 cx.set_global(reader_startup::ReopenBase(base.clone()));
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
             });
@@ -3279,6 +3282,9 @@ mod entry_tests {
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_open_windows::install(state.clone(), cx);
+            // This fixture explicitly opens several independent vault windows.
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
         });
@@ -3415,6 +3421,7 @@ mod entry_tests {
             // As in the app: a vault opened without a note takes the one its
             // UI state names (the muninn run of #1375 failed on this).
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
         });
