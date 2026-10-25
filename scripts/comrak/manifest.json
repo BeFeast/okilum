@@ -4,8 +4,8 @@
   "archive_url": "https://static.crates.io/crates/comrak/comrak-0.47.0.crate",
   "archive_sha256": "a13263e1b6ee0147fb4dce60678f8b9634deac47c9b87c3dd5cdb959cc0334d3",
   "patch": "reference-audit.diff",
-  "patch_sha256": "931cdd3cfb2d087d1d78bc975c0a41076fb7bcebae6d9eeddd677390c5ceb048",
-  "tree_sha256": "04344631fb2703ed1bc5ad3b317333868b9e2f986dae299f889b60adde3e6ffb",
+  "patch_sha256": "c59197ebf564e451a4427dec16ba5567a740bb3557ecd5d90d045ee685e17afb",
+  "tree_sha256": "32402860c71e6024b8955862edfdd9c7144e41407d71b8f7e0d1988d187bda87",
   "files": 118,
   "generated_path": "vendor/comrak-0.47.0",
   "changed_files": [

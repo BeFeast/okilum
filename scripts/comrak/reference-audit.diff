@@ -195,23 +195,29 @@
 +            self.refmap.map.entry(lab).or_insert(resolved);
 --- /dev/null
 +++ b/src/reference_audit.rs
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,122 @@
 +//! Optional evidence from one canonical root parse. No replay or cache authority.
 +use crate::nodes::Sourcepos;
 +
 +/// Canonical expansion fuel, sampled without another lookup or charge.
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub struct ReferenceFuel {
++    /// Bytes charged by successful canonical reference expansions.
 +    pub used: usize,
++    /// Canonical maximum for this root parse.
 +    pub maximum: usize,
 +}
 +
 +/// The parser's own accepted definition, including duplicates.
 +#[derive(Clone, Debug, PartialEq, Eq)]
 +pub struct DefinitionEvent {
++    /// Shared zero-based order among definition and lookup events.
 +    pub sequence: usize,
++    /// Canonically normalized label.
 +    pub label: String,
++    /// Canonically cleaned destination.
 +    pub url: String,
++    /// Canonically cleaned title.
 +    pub title: String,
 +    /// False means the existing first definition retained precedence.
 +    pub inserted: bool,
@@ -219,37 +225,61 @@
 +    pub paragraph: Sourcepos,
 +    /// Offsets into the parser's prefix-stripped paragraph content, not root bytes.
 +    pub content_offset: usize,
++    /// Bytes consumed from the parser's paragraph content.
 +    pub consumed_bytes: usize,
++    /// Consumed definition text in that same prefix-stripped content.
 +    pub raw: String,
 +}
 +
++/// Outcome of the canonical map lookup before any broken-link callback.
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub enum CanonicalLookup {
++    /// The parser did not have a candidate label for a map lookup.
 +    NotAttempted,
++    /// No effective definition existed.
 +    Missing,
++    /// The existing root expansion budget refused the lookup.
 +    Exhausted,
++    /// The effective definition resolved and charged canonical fuel once.
 +    Resolved,
 +}
 +
++/// The original broken-link callback's actual outcome, without another call.
 +#[derive(Clone, Debug, PartialEq, Eq)]
 +pub enum CallbackOutcome {
++    /// Canonical lookup resolved, or no callback was configured.
 +    NotCalled,
++    /// The callback was called once and returned no resolution.
 +    Unresolved,
-+    Resolved { url: String, title: String },
++    /// The callback was called once and supplied this result.
++    Resolved {
++        /// Callback destination, exactly as returned.
++        url: String,
++        /// Callback title, exactly as returned.
++        title: String,
++    },
 +}
 +
 +/// One actual reference-resolution attempt, in canonical traversal order.
 +#[derive(Clone, Debug, PartialEq, Eq)]
 +pub struct LookupEvent {
++    /// Shared zero-based order among definition and lookup events.
 +    pub sequence: usize,
++    /// Original label supplied to the existing callback contract.
 +    pub original: String,
++    /// Canonical normalized lookup label.
 +    pub normalized: String,
++    /// Actual outcome of the canonical lookup.
 +    pub canonical: CanonicalLookup,
++    /// Actual callback disposition after that lookup.
 +    pub callback: CallbackOutcome,
++    /// Fuel immediately before the existing lookup attempt.
 +    pub before: ReferenceFuel,
++    /// Fuel after lookup and callback; observing it does not charge fuel.
 +    pub after: ReferenceFuel,
 +    /// Parser inline context; these are not validated editor byte coordinates.
 +    pub line: usize,
++    /// Byte offset within the parser's current inline content.
 +    pub inline_offset: usize,
 +}
 +
@@ -264,15 +294,19 @@
 +    pub(crate) final_fuel: ReferenceFuel,
 +}
 +impl ReferenceAudit {
++    /// Exact authored root bytes supplied to this parse.
 +    pub fn source(&self) -> &str {
 +        &self.source
 +    }
++    /// All accepted definitions in canonical processing order, including duplicates.
 +    pub fn definitions(&self) -> &[DefinitionEvent] {
 +        &self.definitions
 +    }
++    /// Actual reference attempts in canonical inline traversal order.
 +    pub fn lookups(&self) -> &[LookupEvent] {
 +        &self.lookups
 +    }
++    /// Final fuel sampled from the same canonical root parser state.
 +    pub fn final_fuel(&self) -> ReferenceFuel {
 +        self.final_fuel
 +    }
