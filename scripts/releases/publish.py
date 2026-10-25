@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mirror current platform Betas, or promote one accepted source without rebuilding."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -240,8 +241,14 @@ def preflight_linux_macos(store, release):
     old = store.call('GET', 'okilum/arch/stable/x86_64/latest.json')
     if old and json.loads(old)['build'] > linux:
         raise ValueError('Arch stable would roll back')
+    preflight_macos(store, release)
+
+
+def preflight_macos(store, release, tree=None):
+    if tree is None:
+        tree = ET.ElementTree(ET.fromstring(store.call('GET', 'okilum/appcast.xml')))
     found = False
-    for item in ET.fromstring(store.call('GET', 'okilum/appcast.xml')).findall('./channel/item'):
+    for item in tree.findall('./channel/item'):
         if int(item.findtext(appcast.s('version'))) == release['build']:
             mac = release['platforms']['macos']['assets'][0]
             enclosure = item.find('enclosure')
@@ -255,6 +262,70 @@ def preflight_linux_macos(store, release):
             raise ValueError('macOS stable would roll back')
     if not found:
         raise ValueError('Selected macOS build is absent from appcast')
+
+
+def promote_mac_only(store, build, supersede_pending=False):
+    """Promote only verified Mac payloads; never mutate cross-platform releases."""
+    if build is None or build < 1:
+        raise ValueError('mac_only requires a positive explicit build')
+    key = f'{catalog.PREFIX}/macos-stable.json'
+    pending_key = f'{catalog.PREFIX}/macos-promoting.json'
+    previous_raw = store.call('GET', key)
+    previous = json.loads(previous_raw) if previous_raw else None
+    # An interrupted all-platform transaction must not be silently abandoned.
+    global_pending = store.call('GET', f'{catalog.PREFIX}/promoting.json')
+    global_done = store.call('GET', f'{catalog.PREFIX}/stable.json')
+    if global_pending:
+        pending = json.loads(global_pending)
+        done = json.loads(global_done) if global_done else None
+        if done is None or done['build'] != pending['build']:
+            if not supersede_pending or build <= pending['build']:
+                raise ValueError('Finish the interrupted promotion or explicitly supersede it with a newer build')
+    pending_raw = store.call('GET', pending_key)
+    pending = json.loads(pending_raw) if pending_raw else None
+    if pending and pending != previous and pending['build'] != build:
+        if not supersede_pending or build <= pending['build']:
+            raise ValueError('Finish the interrupted Mac promotion or explicitly supersede it with a newer build')
+    raw = store.call('GET', 'okilum/appcast.xml')
+    tree = ET.ElementTree(ET.fromstring(raw)) if raw else None
+    item = appcast.find(tree, build) if tree is not None else None
+    if item is None:
+        raise ValueError('Selected macOS build is absent from appcast')
+    source = item.findtext(appcast.t('source'))
+    descriptor_raw = store.call('GET', f'{catalog.PREFIX}/{source}/macos.json')
+    if descriptor_raw is None:
+        raise ValueError('Selected Mac build lacks completed catalog')
+    descriptor = json.loads(descriptor_raw)
+    if (descriptor.get('platform'), descriptor.get('source'), descriptor.get('build')) != ('macos', source, build):
+        raise ValueError('Mac catalog source/build mismatch')
+    release = {'build': build, 'source': source, 'platforms': {'macos': descriptor}}
+    if pending and pending['build'] == build and pending != release:
+        raise ValueError('Mac catalog changed during interrupted promotion')
+    if previous and previous['build'] > build:
+        raise ValueError('Refusing Mac release rollback')
+    preflight_macos(store, release, tree)
+    files = {}
+    for asset in descriptor['assets']:
+        name = asset['name']
+        if name in files or (name != 'Okilum-macos.zip' and name != f'Okilum-0.1.{build}.dmg'):
+            raise ValueError('Unexpected Mac asset')
+        data = store.call('GET', asset['key'])
+        if data is None or len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != asset['sha256']:
+            raise ValueError(f'Artifact verification failed: {name}')
+        files[name] = data
+    if 'Okilum-macos.zip' not in files or f'Okilum-0.1.{build}.dmg' not in files:
+        raise ValueError('Mac-only promotion requires verified zip and DMG')
+    store.put(pending_key, catalog.encode(release), 'application/json', 'no-cache')
+    # Retain existing descriptions/notes and Sparkle signature; only channel changes.
+    appcast.promote(tree, SimpleNamespace(build=build))
+    ET.indent(tree, '  ')
+    store.put('okilum/appcast.xml', ET.tostring(tree.getroot(), encoding='utf-8', xml_declaration=True),
+              'application/xml', 'no-cache')
+    store.put('okilum/macos/latest.zip', files['Okilum-macos.zip'], 'application/zip', 'no-cache')
+    store.put('okilum/macos/stable/Okilum.dmg', files[f'Okilum-0.1.{build}.dmg'],
+              'application/x-apple-diskimage', 'no-cache')
+    store.put(key, catalog.encode(release), 'application/json', 'no-cache')
+    print(f'Published Mac Stable only: {build}')
 
 
 def complete_windows(store, github, build, forgejo=None):
@@ -392,9 +463,16 @@ if __name__ == '__main__':
                         help='Owner-approved recovery: replace an interrupted promotion with a newer build')
     parser.add_argument('--windows-only', action='store_true',
                         help='Stable only: put the re-signed Windows build of this stable build on stable (#1104)')
+    parser.add_argument('--mac-only', action='store_true',
+                        help='With --build: only Mac appcast/zip/DMG; no other feeds, tag or notes')
     parser.add_argument('--skip-windows', action='store_true',
                         help='With --build: promote Mac and Linux; stable keeps its signed Windows build (#1378)')
     args = parser.parse_args()
+    if args.mac_only:
+        if args.build is None or args.windows_only or args.skip_windows:
+            parser.error('--mac-only requires --build and excludes other platform modes')
+        promote_mac_only(R2(), args.build, args.supersede_pending)
+        raise SystemExit(0)
     if args.skip_windows and (args.build is None or args.windows_only):
         parser.error('--skip-windows requires --build and excludes --windows-only')
     if args.windows_only:
