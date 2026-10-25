@@ -602,7 +602,12 @@ fn t3_settings_button() -> Button {
 impl Render for ManagerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.project.manager == Manager::NotStarted {
-            return div().p_2().child("Manager не запущен").into_any_element();
+            return v_flex()
+                .p_2()
+                .gap_2()
+                .child("Manager не запущен")
+                .child(t3_settings_button())
+                .into_any_element();
         }
         // No Okilum header or project line above T3: T3's own thread header
         // says where you are. Until connected, one quiet status line.
@@ -675,13 +680,16 @@ impl Render for ManagerPanel {
                 .into_any_element();
         }
         let (line, error) = self.connection_status();
-        div()
+        let line = line.or_else(|| (!self.loading).then(|| "T3 not connected".into()));
+        v_flex()
+            .gap_2()
             .id("manager-t3-status")
             .px_3()
             .py_2()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .children(line)
+            .child(t3_settings_button())
             .when_some(error, |status, error| {
                 status.tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)

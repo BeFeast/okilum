@@ -93,8 +93,11 @@ pub(super) fn project_origin(
     alias: &str,
     state: Option<&Path>,
 ) -> Result<Option<String>> {
-    let source = std::fs::read_to_string(area.join("ops/project.yaml"))?;
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source)?;
+    let manifest: serde_yaml::Value = match std::fs::read_to_string(area.join("ops/project.yaml")) {
+        Ok(source) => serde_yaml::from_str(&source)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_yaml::Value::Null,
+        Err(error) => return Err(error.into()),
+    };
     if let Some(origin) = manifest["t3"]["origin"].as_str() {
         return Ok(Some(Environment::from_input(alias, origin)?.origin()));
     }
