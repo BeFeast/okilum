@@ -273,11 +273,12 @@ int main(void) {
             // while the main host without SUDefaultsDomain uses standard defaults.
             // Seed both explicitly; this does not repair production domain sharing.
             NSString *probeDomain = domain ?: bundle.bundleIdentifier;
-            NSUserDefaults *probePreferences = [[NSUserDefaults alloc] initWithSuiteName:probeDomain];
-            [probePreferences setObject:requestedGroup forKey:@"SUUpdateGroupIdentifier"];
-            [probePreferences synchronize];
-            NSUserDefaults *probeReader = [[NSUserDefaults alloc] initWithSuiteName:probeDomain];
-            id probeGroup = [probeReader objectForKey:@"SUUpdateGroupIdentifier"];
+            CFStringRef probeAppID = (__bridge CFStringRef)probeDomain;
+            CFPreferencesSetAppValue(CFSTR("SUUpdateGroupIdentifier"),
+                                     (__bridge CFNumberRef)requestedGroup, probeAppID);
+            if (!CFPreferencesAppSynchronize(probeAppID)) return 34;
+            id probeGroup = CFBridgingRelease(CFPreferencesCopyAppValue(
+                CFSTR("SUUpdateGroupIdentifier"), probeAppID));
             if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:effectiveGroup]) return 34;
             Trace([NSString stringWithFormat:@"rollout probe group read=%@ domain=%@ matches-source before-updater-start",
                    probeGroup, probeDomain]);
