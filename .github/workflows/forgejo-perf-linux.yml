@@ -82,7 +82,7 @@ jobs:
           echo "Scroll: **${LEGACY_RESULT:-skipped}**, report-only measurement build, not shipped. Input A/B uses separate unpatched binaries." >> "$GITHUB_STEP_SUMMARY"
       - name: Check editor latency and the baseline ratchet
         env:
-          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '1' }}
+          CALIBRATION_RUNS: ${{ inputs.calibration_runs || '5' }}
         run: |
           set -euo pipefail
           export DISPLAY=:99
