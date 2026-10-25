@@ -44,6 +44,9 @@ jobs:
           scripts/vendor-setup.sh --verify
       - name: Validate editor collector and budgets
         run: python3 -m unittest discover -s scripts/perf/editor -p 'test_*.py'
+      - name: Record CPU and runner identity
+        run: |
+          python3 -c 'import json,sys; sys.path.insert(0,"scripts/perf/editor"); import ab; print(json.dumps(ab.hardware(),indent=2))' > "$RUNNER_TEMP/ab-hardware.json"
       - name: Pin main and build both unpatched release binaries
         run: |
           set -euo pipefail
@@ -103,6 +106,7 @@ jobs:
             ${{ runner.temp }}/ab-binaries/main/**
             ${{ runner.temp }}/ab-binaries/pr/**
             ${{ runner.temp }}/ab-binaries/pair.json
+            ${{ runner.temp }}/ab-hardware.json
             ${{ runner.temp }}/trace/okilum
             ${{ runner.temp }}/trace/BUILD.txt
             ${{ runner.temp }}/trace/SHA256SUMS
