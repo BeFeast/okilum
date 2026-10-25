@@ -284,12 +284,15 @@ mod tests {
                 "invalid input must not start a network request"
             );
         });
-        settings.update_in(visual, |settings, window, cx| {
-            settings
-                .origin
-                .update(cx, |input, cx| input.set_value("t3.oklabs.uk", window, cx))
-        });
+        visual.simulate_keystrokes("secondary-a");
+        visual.simulate_input("t3.oklabs.uk");
         visual.run_until_parked();
-        assert!(settings.read_with(visual, |settings, _| settings.error.is_none()));
+        settings.read_with(visual, |settings, cx| {
+            assert_eq!(settings.origin.read(cx).value().as_str(), "t3.oklabs.uk");
+            assert!(
+                settings.error.is_none(),
+                "typing clears the validation error"
+            );
+        });
     }
 }
