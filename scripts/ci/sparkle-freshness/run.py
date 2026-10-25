@@ -98,7 +98,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             '-F', FRAMEWORK, '-framework', 'Sparkle', '-framework', 'AppKit',
             '-Wl,-rpath,@executable_path/../Frameworks',
             ROOT / 'scripts/ci/sparkle-freshness/host.m', guard, '-liconv', '-o', executable)
-        for scenario in ('termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        for scenario in ('termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
@@ -141,6 +141,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'TSBeta': scenario != 'stable', 'TSRefuse': scenario in ('guard-refusal', 'quit-guard-refusal'),
                 'TSEditor': str(case / 'editor'), 'TSProtectedEditor': str(case / 'protected-editor'),
                 'TSCompareEligibility': compare, 'TSForeground': foreground,
+                'TSPhaseGroup': 0 if scenario == 'background-phase-included' else 6,
                 'TSBackgroundInstall': scenario.startswith('background-') or scenario == 'discovery',
                 'TSDiscovery': scenario == 'discovery',
                 'TSQuit': scenario.startswith('quit-'),
@@ -220,6 +221,13 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 environment.pop('DYLD_FRAMEWORK_PATH', None)
                 process = subprocess.Popen([str(app / 'Contents/MacOS/Freshness')], stdout=log_file, stderr=log_file, env=environment)
                 try:
+                    group = base_info['TSPhaseGroup']
+                    domain = base_info.get('SUDefaultsDomain', 'standard-main-bundle')
+                    group_receipt = f'rollout group read={group} domain={domain} before-updater-start'
+                    wait_for(lambda: group_receipt in trace.read_text(), process, output)
+                    callbacks = trace.read_text()
+                    if 'report 1 ' in callbacks:
+                        assert callbacks.index(group_receipt) < callbacks.index('report 1 '), callbacks
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
                     if scenario == 'termination-retry-guard-refusal':
                         wait_for(lambda: 'retry editor guard refused' in trace.read_text(), process, output)
@@ -316,6 +324,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         assert 'selection background' in trace.read_text()
                     if scenario == 'background-phase-unchanged':
                         assert not any('GET /4.zip' in r for r in requests), requests
+                    if scenario == 'background-phase-included':
+                        assert any('GET /4.zip' in r for r in requests), requests
                     assert 'downloaded 2' in trace.read_text(), trace.read_text()
                     assert 'prepared 2' in trace.read_text(), trace.read_text()
                     assert 'published feed' in trace.read_text(), trace.read_text()

@@ -249,9 +249,25 @@ int main(void) {
         TSComparisonForeground = [[bundle objectForInfoDictionaryKey:@"TSForeground"] boolValue];
         {
             // Fixture inputs for pinned Sparkle, never product-side selection.
-            NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"] ?: bundle.bundleIdentifier;
-            NSUserDefaults *preferences = [[NSUserDefaults alloc] initWithSuiteName:domain];
-            [preferences setInteger:6 forKey:@"SUUpdateGroupIdentifier"];
+            // Pinned Sparkle 2.10.0 SUHost uses standard defaults for its main
+            // bundle unless SUDefaultsDomain is explicitly supplied. Its own
+            // bundle identifier is NOT an equivalent suite name on macOS.
+            NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"];
+            NSUserDefaults *preferences = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
+                                                 : NSUserDefaults.standardUserDefaults;
+            NSNumber *requestedGroup = [bundle objectForInfoDictionaryKey:@"TSPhaseGroup"];
+            if (![requestedGroup isKindOfClass:NSNumber.class]
+                || (requestedGroup.integerValue != 0 && requestedGroup.integerValue != 6)) return 33;
+            [preferences setObject:requestedGroup forKey:@"SUUpdateGroupIdentifier"];
+            [preferences synchronize];
+            // Read through a separate instance of precisely the store SUHost
+            // will use; do not merely read back the fixture's setter variable.
+            NSUserDefaults *reader = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
+                                            : NSUserDefaults.standardUserDefaults;
+            id effectiveGroup = [reader objectForKey:@"SUUpdateGroupIdentifier"];
+            if (![effectiveGroup isKindOfClass:NSNumber.class] || ![effectiveGroup isEqual:requestedGroup]) return 34;
+            Trace([NSString stringWithFormat:@"rollout group read=%@ domain=%@ before-updater-start",
+                   effectiveGroup, domain ?: @"standard-main-bundle"]);
             NSString *skip = [bundle objectForInfoDictionaryKey:@"TSSkip"];
             if (skip) [preferences setObject:skip forKey:@"SUSkippedVersion"];
             NSString *major = [bundle objectForInfoDictionaryKey:@"TSSkipMajor"];
