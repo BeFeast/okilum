@@ -325,7 +325,7 @@ mod tests {
         reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
         let previous_input = reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing.as_ref().unwrap().input.clone()
+            r.editing.as_ref().unwrap().test_input()
         });
         visual.run_until_parked();
         visual.simulate_keystrokes("ctrl-tab");
@@ -389,23 +389,24 @@ mod tests {
                 .as_ref()
                 .expect("file selection restored the chosen editor");
             assert_ne!(
-                editing.input, previous_input,
+                editing.test_input(),
+                previous_input,
                 "the target owns a new editor"
             );
-            assert_eq!(editing.store.path(), r.vault_root.join("A.md"));
+            assert_eq!(r.selected_file(), "A.md", "actual selected editor path");
             assert!(
                 !r.source_live_preview(),
                 "the chosen Source mode was retained"
             );
-            assert_eq!(editing.input.read(cx).value().as_ref(), "Alpha");
-            editing.input.clone()
+            assert_eq!(editing.test_input().read(cx).value().as_ref(), "Alpha");
+            editing.test_input()
         });
         visual.simulate_input("mine");
         visual.run_until_parked();
         let dirty_source = reader.read_with(visual, |r, cx| {
             let editing = r.editing.as_ref().unwrap();
-            assert_eq!(editing.input, current_input);
-            let source = editing.input.read(cx).value().to_string();
+            assert_eq!(editing.test_input(), current_input);
+            let source = editing.test_input().read(cx).value().to_string();
             assert!(
                 source.contains("mine") && source != "Alpha",
                 "real keystrokes reached the editor"
@@ -429,14 +430,17 @@ mod tests {
             );
             let editing = r.editing.as_ref().unwrap();
             assert_eq!(
-                editing.input, current_input,
+                editing.test_input(),
+                current_input,
                 "refusal keeps the owned editor"
             );
             assert!(
-                editing.conflict_detected,
-                "actual save detected the external conflict"
+                r.link_notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.starts_with("This file changed outside Okilum.")),
+                "actual save reports the external conflict"
             );
-            assert_eq!(editing.input.read(cx).value().as_ref(), dirty_source);
+            assert_eq!(editing.test_input().read(cx).value().as_ref(), dirty_source);
         });
         assert_eq!(
             std::fs::read_to_string(root.join("A.md")).unwrap(),
