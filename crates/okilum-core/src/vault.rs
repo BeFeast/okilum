@@ -1309,7 +1309,21 @@ impl Vault {
             }
             // bare filename lookup
             let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
-            self.asset_map.get(&name).cloned()
+            self.asset_map.get(&name).cloned().or_else(|| {
+                if !self.single_file {
+                    return None;
+                }
+                // Quick mode has no recursive asset map. Resolve only a unique
+                // already-admitted attachment, including completed local copies.
+                let mut known = self.entries.iter().filter(|entry| {
+                    entry.kind == EntryKind::Attachment
+                        && Path::new(&entry.path)
+                            .file_name()
+                            .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
+                });
+                let first = known.next()?;
+                known.next().is_none().then(|| self.root.join(&first.path))
+            })
         }
     }
 
