@@ -14,6 +14,10 @@ use std::{
 const TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "linux")]
 const MAX_BYTES: usize = 8 * 1024 * 1024;
+// Keep the transport independent of the application crate: standalone native
+// examples include this file too. The note adapter's PNG test checks this cap.
+#[cfg(target_os = "linux")]
+const MAX_NOTE_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct WaylandClipboard {
     // The caller must bind GPUI to this same named socket before initializing it.
@@ -97,6 +101,7 @@ fn platform_text(cx: &App) -> Result<Option<String>, Error> {
 }
 
 /// A stable native offer, shared by text-only fields and note smart paste.
+#[cfg(target_os = "linux")]
 pub(super) enum Selection {
     Empty,
     Own,
@@ -105,6 +110,7 @@ pub(super) enum Selection {
 
 /// MIME selection used by the real data-control receive path. Reads share
 /// one pinned offer/deadline and a total payload budget, never the primary selection.
+#[cfg(target_os = "linux")]
 pub(super) fn receive_selection(
     mimes: &[String],
     own: Option<&str>,
@@ -140,11 +146,7 @@ pub(super) fn receive_selection(
     if requested.is_empty() {
         return Err(Error::Unsupported);
     }
-    let budget = if note {
-        crate::note_paste::offer::MAX_IMAGE_BYTES
-    } else {
-        MAX_BYTES
-    };
+    let budget = if note { MAX_NOTE_BYTES } else { MAX_BYTES };
     let mut used = 0;
     let mut data = Vec::new();
     for mime in requested {
@@ -164,6 +166,8 @@ pub(super) fn receive_selection(
     Ok(Selection::Data(data))
 }
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // The standalone text-only examples do not install note paste.
 pub(super) fn read_note_in_command(
     socket: Option<&Path>,
     seat: Option<String>,
