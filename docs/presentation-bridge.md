@@ -25,8 +25,8 @@ outside `compose`: compose only compares exact source and the entire native acti
 state, then returns the already prepared immutable SourceProjection trait object.
 It does not parse, lookup, reindex, derive reveal or create root authority.
 
-This adapter is **unselected**. Production CachedProvider classification, Reader
-and Brain backend selection/schedulers are unchanged. The legacy document-links
+This adapter is **unselected**. Production CachedProvider remains the selected display backend; Reader scheduling
+is unchanged. Brain navigation request ownership is described below. The legacy document-links
 inventory has different parsing semantics from classifier links and is not
 replaced. Retained remap/raw-tail continuity is not supplied by a current-root
 publication; replacing that production behavior with raw frames is not an
@@ -46,11 +46,11 @@ or Reader activation. Genuine 130KB product acceptance remains a later gate.
 
 ## Separately bound navigation inventory
 
-The private, unselected navigation inventory preserves the full immutable
+The private navigation inventory preserves the full immutable
 `document_links::ParsedLink`, including label/title and `exact_range=false`.
 It also prepares exactly the existing `CachedProvider` NoteLink conversion for
 compatibility. Legacy ranges do not certify edit or marker boundaries. The parser,
-production factory/conversion and navigation actions are unchanged; no resolver,
+normal factory/conversion and navigation actions retain their behavior; no resolver,
 filesystem/network request or note-open action is introduced.
 
 App lifetime/entity identity, complete workspace value, path, document/generation
@@ -72,8 +72,38 @@ Repeated compute is repeated cold parsing, not a cache hit. Checked reads and
 failed adoption do no parsing or derivation. Tests observe actual work through
 the existing `link_parse_bytes` and `parse` diagnostics, with nonempty cold controls.
 
-This module is unselected. It does not change Reader/Brain scheduling, full-active
-preparation, retained remap/raw-tail continuity or native epoch/held-pin lifecycle.
+## Brain consumer request ownership
+
+Brain's existing source-projection worker now begins the navigation session before
+unavailable, refused or physically busy inputs. The latest queued request is
+separate from the physical running flight. A foreground guard, constructed before
+first poll, settles only its captured flight on completion or cancellation. The
+stored foreground task is canceled when that owner retires. Only immutable
+request/source data enters the background worker.
+
+The worker computes the authored navigation inventory once, checks its immutable
+view, then feeds the exact legacy links into shared CachedProvider construction.
+The normal `classify` entry still uses the same producer and conversion. This is
+one navigation parse per worker, not one total parser call: canonical display
+classification remains separate. No parser or presentation authority is inferred
+from legacy navigation ranges.
+
+Completion checks the opaque latest request key and actual live input before
+calling destructive adoption. Obsolete results cannot revoke a newer queued
+request. Current admission and legacy provider installation occur in one UI
+update. `current_source_links` uses a short fail-closed session borrow and actual
+live owner/entity/workspace/path/document/generation/bytes, without parsing or
+scheduling. Goal/source clear explicitly supersedes pending navigation. Queue
+settlement is not proof of complete projection or painted presentation.
+
+Valid edits keep the legacy provider installed for its existing retained remap and
+raw-tail behavior. The deterministic BrainView regressions cover real loads,
+refusals, latest queued input, live binding changes, goal clear, close/reopen and
+two unpainted mutations, including intermediate legacy display/maps/styles/
+headings/markers/blocks/raw policy and actual producer work controls.
+
+Reader scheduling/park, full-active preparation, prepared publication selection,
+continuity activation and native epoch/held-pin proof remain separate obligations.
 Authored navigation inventory is separate from canonical presentation root/fuel
-proof, and from action permission, publication identity and painted-frame proof.
-Those activation obligations remain open before product selection.
+proof, action permission, publication identity and painted-frame proof. No
+PresentationProof, observer, large-note admission or performance claim is added.
