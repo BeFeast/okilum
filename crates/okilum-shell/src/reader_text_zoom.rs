@@ -795,6 +795,7 @@ mod tests {
         frame(visual);
         let base = reader.read_with(visual, read_code_widths);
         for zoom in [2., 0.5, 1.] {
+            CODE_STYLES.with(|styles| *styles.borrow_mut() = Some(Vec::new()));
             reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
             frame(visual);
             let actual = reader.read_with(visual, read_code_widths);
@@ -807,6 +808,15 @@ mod tests {
                     "{label} must scale with document zoom {zoom}: {actual:?} vs base {base:?}"
                 );
             }
+            let styles = CODE_STYLES.with(|styles| styles.borrow_mut().take().unwrap());
+            let expected = visual.update(|_, cx| cx.theme().mono_font_size * zoom);
+            assert!(
+                !styles.is_empty(),
+                "actual Read code block style positive control"
+            );
+            assert!(styles.iter().all(|size| *size == Some(expected.into())),
+                "Read code block font must equal themed base code font times zoom: {styles:?}, expected={expected:?}");
+            eprintln!("READ_CODE_STYLE zoom={zoom} expected={expected:?} styles={styles:?}");
         }
         reader.update_in(visual, |r, window, cx| {
             r.open_live_preview(window, cx);
@@ -815,6 +825,21 @@ mod tests {
             });
         });
         frame(visual);
+        // Font measurements need the measured source rows in the viewport.
+        // Keep the caret at the end so the callout remains concealed.
+        reader.update(visual, |r, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .input()
+                .update(cx, |input, cx| input.scroll_line_to_top(0, cx));
+        });
+        frame(visual);
+        let lp_identity = reader.read_with(visual, |r, cx| {
+            let input = r.editing.as_ref().unwrap().input().read(cx);
+            assert_eq!(input.value().as_ref(), source);
+            (input.source_stamp(), input.selected_range())
+        });
         let ranges = [
             0..4,
             6..10,
@@ -823,12 +848,26 @@ mod tests {
         let widths = |r: &Reader, cx: &App| {
             assert!(r.source_live_preview());
             let input = r.editing.as_ref().unwrap().input().read(cx);
+            assert_eq!(
+                input.top_visible_line(),
+                Some(0),
+                "measured LP rows must be visible"
+            );
+            assert_eq!(
+                (input.source_stamp(), input.selected_range()),
+                lp_identity.clone(),
+                "zoom and viewport preparation preserve source/selection"
+            );
+            assert_eq!(input.value().as_ref(), source);
             ranges.clone().map(|range| {
-                input
+                let bounds = input
                     .range_to_bounds(&range)
-                    .expect("actual LP body/inline/fence layout positive control")
-                    .size
-                    .width
+                    .expect("actual LP body/inline/fence layout positive control");
+                assert!(
+                    bounds.size.width > px(0.),
+                    "visible LP glyph width positive control: {range:?}: {bounds:?}"
+                );
+                bounds.size.width
             })
         };
         let base = reader.read_with(visual, widths);
@@ -841,6 +880,32 @@ mod tests {
             CODE_STYLES.with(|styles| *styles.borrow_mut() = Some(Vec::new()));
             reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
             frame(visual);
+            let before = reader.read_with(visual, |r, cx| {
+                let input = r.editing.as_ref().unwrap().input().read(cx);
+                (
+                    input.source_stamp(),
+                    input.selected_range(),
+                    input.top_visible_line(),
+                    input.visible_row_range(),
+                    input.scroll_offset(),
+                )
+            });
+            eprintln!("LP_VIEWPORT_BEFORE zoom={zoom} state={before:?}");
+            reader.update(visual, |r, cx| {
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input()
+                    .update(cx, |input, cx| input.scroll_line_to_top(0, cx));
+            });
+            frame(visual);
+            reader.read_with(visual, |r, cx| {
+                let input = r.editing.as_ref().unwrap().input().read(cx);
+                assert_eq!(
+                    (input.source_stamp(), input.selected_range()),
+                    (before.0, before.1)
+                );
+            });
             let actual = reader.read_with(visual, widths);
             let styles = CODE_STYLES.with(|styles| styles.borrow_mut().take().unwrap());
             let (font_size, stamp, epoch, painted_cursor) = reader.read_with(visual, |r, cx| {
@@ -868,7 +933,8 @@ mod tests {
                 "actual LP callout block renderer positive control"
             );
             let expected = visual.update(|_, cx| cx.theme().mono_font_size * zoom);
-            assert!(styles.iter().all(|size| *size == Some(expected.into())));
+            assert!(styles.iter().all(|size| *size == Some(expected.into())),
+                "LP code block font must equal themed base code font times zoom: {styles:?}, expected={expected:?}");
         }
         assert_eq!(
             std::fs::read_to_string(vault.join("start.md")).unwrap(),
