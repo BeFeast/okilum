@@ -2035,9 +2035,11 @@ impl Reader {
                 this.watcher_poll_active = false;
                 this.watcher = Some(watcher);
                 if let Some(error) = error {
-                    this.link_notice =
-                        Some(format!("Automatic folder updates unavailable: {error}").into());
-                    cx.notify();
+                    let message = format!("Automatic folder updates unavailable: {error}");
+                    if this.link_notice.as_deref() != Some(message.as_str()) {
+                        this.link_notice = Some(message.into());
+                        cx.notify();
+                    }
                 }
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
