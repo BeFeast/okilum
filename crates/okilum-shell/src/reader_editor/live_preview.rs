@@ -371,12 +371,9 @@ impl Reader {
         if editor.text().len() > okilum_core::source_classifier::MAX_BYTES {
             return None;
         }
-        // Observe actual snapshot-copy work in the existing test recorder.
+        // Observe actual snapshot construction through the existing public recorder.
         #[cfg(test)]
-        okilum_core::open_diagnostics::count(
-            "reader_projection_snapshot_bytes",
-            editor.text().len(),
-        );
+        let _snapshot_work = okilum_core::open_diagnostics::phase("reader_projection_snapshot");
         Some(nav::Input {
             binding: nav::Binding {
                 owner: state.owner.clone(),
@@ -2290,13 +2287,12 @@ mod tests {
         });
     }
     #[gpui::test]
-    fn refused_actual_reader_inputs_do_not_copy_projection_snapshots(cx: &mut TestAppContext) {
+    fn refused_actual_reader_inputs_have_zero_snapshot_construction_calls(cx: &mut TestAppContext) {
         let (reader, visual, _dir) = fixture(cx, ORIGINAL);
-        let bytes = |r: &okilum_core::open_diagnostics::Report| {
-            r.counts
-                .get("reader_projection_snapshot_bytes")
-                .copied()
-                .unwrap_or(0)
+        let snapshot_construction_calls = |r: &okilum_core::open_diagnostics::Report| {
+            r.phases
+                .get("reader_projection_snapshot")
+                .map_or(0, |phase| phase.calls)
         };
         reader.update_in(visual, |r, window, cx| {
             let input = r.editing.as_ref().unwrap().input.clone();
@@ -2306,9 +2302,9 @@ mod tests {
                 r.schedule_live_preview(cx);
             });
             assert_eq!(
-                bytes(&source_work),
+                snapshot_construction_calls(&source_work),
                 0,
-                "ordinary Source mode has no projection snapshot copy"
+                "ordinary Source mode has zero snapshot construction calls"
             );
             let large = format!("# {}\n", "🧠".repeat(17_000));
             assert!(large.len() > okilum_core::source_classifier::MAX_BYTES);
@@ -2319,9 +2315,9 @@ mod tests {
                 r.schedule_live_preview(cx);
             });
             assert_eq!(
-                bytes(&refused_work),
+                snapshot_construction_calls(&refused_work),
                 0,
-                "oversized refusal must not allocate a full projection snapshot"
+                "oversized refusal has zero snapshot construction calls"
             );
             assert!(r.editing.as_ref().unwrap().live_preview.running.is_none());
             let (_, admitted_work) = okilum_core::open_diagnostics::capture(|| {
@@ -2329,8 +2325,8 @@ mod tests {
                 r.schedule_live_preview(cx);
             });
             assert!(
-                bytes(&admitted_work) >= ORIGINAL.len() as u64,
-                "positive control: the actual bounded LP snapshot copy is observed"
+                snapshot_construction_calls(&admitted_work) > 0,
+                "positive control: actual bounded LP snapshot construction calls are observed"
             );
         });
         visual.run_until_parked();
