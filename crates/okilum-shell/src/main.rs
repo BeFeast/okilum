@@ -4872,7 +4872,7 @@ impl Reader {
             return view;
         }
         let entity = cx.entity().downgrade();
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
@@ -5056,7 +5056,7 @@ impl Reader {
     fn render_table_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.table_overlay.clone()?;
         let p = brand::palette(cx);
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         let entity = cx.entity().downgrade();
         let scrim = brand::reader_palette(cx).scrim;
