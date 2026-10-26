@@ -133,3 +133,20 @@ The bundle id is read from the app's `Info.plist` (a build that is not inside an
 cannot clean these up. There are no LaunchAgents or keychain items;
 LaunchServices forgets the document types and the `okilum:` URL scheme with
 the app.
+
+### AppImage desktop payload (#1716)
+
+Ordinary primary-instance AppImage launches silently refresh the owned launcher
+and icon off the UI thread through `okilum_appimage::desktop::install`. Help,
+build-info and active AppImage acceptance fixtures do not install them. A moved
+or updated image refreshes the quoted original `APPIMAGE` path on next launch.
+
+`--uninstall-data` lists and removes only the helper-owned files after its
+existing running-instance/Sync checks and confirmation, even if the image moved:
+
+- `~/.local/share/applications/okilum-appimage.desktop`
+- `~/.local/share/icons/hicolor/scalable/apps/okilum-appimage.svg`
+
+These exact paths follow the existing helper contract rather than XDG_DATA_HOME.
+Foreign payloads are refused and reported; distribution launchers are preserved.
+The optional desktop database refresh does not change default handlers.
