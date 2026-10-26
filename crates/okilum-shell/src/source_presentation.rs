@@ -14,9 +14,9 @@ use okilum_core::{
     source_projection::{Active, Bias, Projection, Snapshot},
 };
 
-#[allow(dead_code)] // Unselected navigation proof; no production factory calls it.
+#[allow(dead_code)] // Full authored metadata is separate from display backend selection.
 #[path = "source_presentation/navigation_inventory.rs"]
-mod navigation_inventory;
+pub(crate) mod navigation_inventory;
 
 #[allow(dead_code)] // Explicitly unselected until the consumer activation contract is proven.
 #[path = "source_presentation/publication_adapter.rs"]
@@ -74,7 +74,6 @@ impl CachedProvider {
     }
     /// Call only from a background classification task.
     pub fn classify(source: SourceSnapshot) -> Self {
-        let snapshot = core_snapshot(&source);
         let links = if source.text.len() <= source_classifier::MAX_BYTES {
             okilum_core::document_links::parse(&source.text)
                 .into_iter()
@@ -88,6 +87,21 @@ impl CachedProvider {
         } else {
             Vec::new()
         };
+        Self::from_links(source, links)
+    }
+    /// One authored-link producer for the Brain's actual worker. Reading a
+    /// completion here checks its immutable input; UI admission remains separate.
+    #[allow(dead_code)] // Standalone projection examples still use classify.
+    pub(crate) fn classify_navigation(
+        request: navigation_inventory::Request,
+        input: navigation_inventory::Input,
+    ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
+        let completion = request.compute();
+        let links = completion.view(&input)?.legacy_links().to_vec();
+        Ok((Self::from_links(input.source, links), completion))
+    }
+    fn from_links(source: SourceSnapshot, links: Vec<source_classifier::NoteLink>) -> Self {
+        let snapshot = core_snapshot(&source);
         let classified = source_classifier::classify(&snapshot);
         let tables = classified
             .decorations_for(&snapshot)
@@ -1529,5 +1543,57 @@ This paragraph remains ordinary Markdown.
         let bare = "a | b\n--|--\nc | d\n";
         assert!(bare[table_cell_offset(bare, 1, 1).unwrap()..].starts_with("d\n"));
         assert!(bare[table_cell_offset(bare, 0, 0).unwrap()..].starts_with("a |"));
+    }
+
+    #[test]
+    fn shared_navigation_worker_keeps_normal_factory_output_with_one_authored_producer() {
+        use super::navigation_inventory as nav;
+        for text in [
+            "# Heading\n\n[**label**](target.md 'title') [[note|alias]]\n\n- item\n\nend\n",
+            "[r]: /u\npara [a](x.md) [b](y.md)\n",
+            "| a | b |\n| - | - |\n| [[note|alias]] | [literal](path \"[[not|wiki]]\") |\n\nend\n",
+        ] {
+            let source = source(text);
+            let owner = nav::Owner::new(gpui::EntityId::from(1_u64));
+            let input = nav::Input {
+                binding: nav::Binding {
+                    owner: owner.clone(),
+                    workspace: serde_json::json!({"brain_id":"test","root":"/isolated"}),
+                    path: "note.md".into(),
+                },
+                source: source.clone(),
+            };
+            let mut session = nav::Session::new(owner);
+            let request = session.begin(Some(input.clone())).unwrap();
+            let ((provider, completion), report) = okilum_core::open_diagnostics::capture(|| {
+                CachedProvider::classify_navigation(request, input.clone()).unwrap()
+            });
+            let (legacy, baseline_work) =
+                okilum_core::open_diagnostics::capture(|| CachedProvider::classify(source.clone()));
+            assert_eq!(report.counts["link_parse_bytes"], text.len() as u64);
+            assert_eq!(report.counts, baseline_work.counts);
+            assert_eq!(
+                report.phases["parse"].calls,
+                baseline_work.phases["parse"].calls
+            );
+            assert!(report.phases["parse"].calls > 0);
+            assert_eq!(
+                completion.view(&input).unwrap().parsed_links(),
+                okilum_core::document_links::parse(text)
+            );
+            assert_eq!(provider.note_links(), legacy.note_links());
+            assert_eq!(provider.limited(), legacy.limited());
+            let active = inactive(&source);
+            let actual = provider.compose(&source, &active).unwrap();
+            let expected = legacy.compose(&source, &active).unwrap();
+            assert_eq!(actual.text(), expected.text());
+            assert_eq!(actual.styles(), expected.styles());
+            assert_eq!(actual.line_scales(), expected.line_scales());
+            assert_eq!(actual.blocks(), expected.blocks());
+            assert_eq!(
+                format!("{:?}", actual.markers()),
+                format!("{:?}", expected.markers())
+            );
+        }
     }
 }

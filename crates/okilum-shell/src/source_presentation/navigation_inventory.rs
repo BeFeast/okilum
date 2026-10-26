@@ -1,4 +1,4 @@
-//! Unselected authored-navigation inventory, not presentation/root/frame authority.
+//! Authored-navigation inventory, not presentation/root/frame authority.
 //! The consumer must supply its actual live binding. No resolution or open action.
 use gpui::EntityId;
 use gpui_component::input::projection::SourceSnapshot;
@@ -10,7 +10,7 @@ struct Lifetime;
 /// Actual app-consumer lifetime plus entity. Reopening even the same entity
 /// creates a new value; clones refer to the original lifetime, not a display name.
 #[derive(Clone)]
-pub(super) struct Owner {
+pub(crate) struct Owner {
     lifetime: Arc<Lifetime>,
     entity: EntityId,
 }
@@ -31,13 +31,13 @@ impl Eq for Owner {}
 
 /// Complete app binding, not a display name or digest of workspace identity.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct Binding {
+pub(crate) struct Binding {
     pub owner: Owner,
     pub workspace: Value,
     pub path: String,
 }
 #[derive(Clone)]
-pub(super) struct Input {
+pub(crate) struct Input {
     pub binding: Binding,
     pub source: SourceSnapshot,
 }
@@ -51,7 +51,7 @@ impl Input {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Error {
+pub(crate) enum Error {
     Unavailable,
     SourceLimit,
     Stale,
@@ -76,10 +76,33 @@ impl Ticket {
 }
 
 #[derive(Clone)]
-pub(super) struct Request(Ticket);
+pub(crate) struct Request(Ticket);
 #[derive(Clone)]
-pub(super) struct Completion(Arc<Inventory>);
+pub(crate) struct Completion(Arc<Inventory>);
+
+/// Logical attempt identity; physical worker ownership is managed by the UI.
+#[derive(Clone)]
+pub(crate) struct RequestKey {
+    owner: Arc<RequestOwner>,
+    sequence: u64,
+}
+impl RequestKey {
+    fn matches(&self, ticket: &Ticket) -> bool {
+        Arc::ptr_eq(&self.owner, &ticket.owner) && self.sequence == ticket.sequence
+    }
+}
+impl Completion {
+    pub fn view(&self, input: &Input) -> Result<View<'_>, Error> {
+        self.0.view(input)
+    }
+}
 impl Request {
+    pub fn key(&self) -> RequestKey {
+        RequestKey {
+            owner: self.0.owner.clone(),
+            sequence: self.0.sequence,
+        }
+    }
     /// Explicit cold work on the existing background executor, never in compose,
     /// a query, or failed adoption. A retry honestly performs another cold parse.
     pub fn compute(self) -> Completion {
@@ -106,7 +129,7 @@ impl Request {
 
 /// Only compute constructs this complete immutable value. There is no public
 /// partial constructor/flag and no accessor that claims it is current elsewhere.
-pub(super) struct Inventory {
+pub(crate) struct Inventory {
     ticket: Ticket,
     parsed: Vec<document_links::ParsedLink>,
     legacy: Vec<source_classifier::NoteLink>,
@@ -124,7 +147,7 @@ impl Inventory {
         })
     }
 }
-pub(super) struct View<'a> {
+pub(crate) struct View<'a> {
     parsed: &'a [document_links::ParsedLink],
     legacy: &'a [source_classifier::NoteLink],
 }
@@ -154,7 +177,7 @@ impl State {
 
 /// One real consumer lifetime. Drop/recreate on close/reopen; opaque owner
 /// identity rejects old deliveries even if every visible input and sequence match.
-pub(super) struct Session {
+pub(crate) struct Session {
     owner: Owner,
     request_owner: Arc<RequestOwner>,
     sequence: u64,
@@ -188,6 +211,18 @@ impl Session {
         };
         self.state = Some(State::Pending(ticket.clone()));
         Ok(Request(ticket))
+    }
+
+    /// Non-destructive outer worker check. An obsolete result must not enter
+    /// adopt, whose failure deliberately withdraws current admission.
+    pub fn is_pending(&self, key: &RequestKey, live: Option<&Input>) -> bool {
+        let Some(State::Pending(ticket)) = &self.state else {
+            return false;
+        };
+        Arc::ptr_eq(&ticket.owner, &self.request_owner)
+            && ticket.sequence == self.sequence
+            && key.matches(ticket)
+            && live.is_some_and(|live| ticket.input.same(live))
     }
 
     /// A failed/duplicate/foreign delivery withdraws admission, never revives an

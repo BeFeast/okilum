@@ -1324,6 +1324,7 @@ impl BrainView {
                                 self.show_evidence = false;
                                 self.show_history = false;
                                 self.pending_message = None;
+                                self.invalidate_source_navigation_inventory();
                                 self.source_snapshot = None;
                                 self.source_original.clear();
                                 self.source.reset("", window, cx);

@@ -299,3 +299,29 @@ fn existing_byte_cap_is_preserved_without_changing_authored_input() {
     no_parse(report);
     assert_eq!(input.source.text.as_ref(), text);
 }
+
+#[test]
+fn outer_pending_key_check_discards_old_work_without_revoking_the_latest_request() {
+    let first = input("[first](first.md)\n");
+    let mut session = session(&first);
+    let old = session.begin(Some(first.clone())).unwrap();
+    let old_key = old.key();
+    let mut latest = first.clone();
+    latest.source.stamp.generation += 1;
+    latest.source.text = Arc::from("[latest](latest.md)\n");
+    let request = session.begin(Some(latest.clone())).unwrap();
+    let key = request.key();
+    let obsolete = old.compute();
+    let (_, report) = capture(|| {
+        assert!(!session.is_pending(&old_key, Some(&latest)));
+        assert!(session.is_pending(&key, Some(&latest)));
+        drop(obsolete); // Real outer consumer must NOT call destructive adopt here.
+        assert!(session.is_pending(&key, Some(&latest)));
+    });
+    no_parse(report);
+    let inventory = session.adopt(request.compute(), Some(&latest)).unwrap();
+    assert_eq!(
+        inventory.view(&latest).unwrap().parsed_links()[0].target,
+        "latest.md"
+    );
+}
