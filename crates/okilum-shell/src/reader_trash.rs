@@ -75,113 +75,20 @@ fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
 }
 
 impl Reader {
-    fn trace_trash(&self, path: &str, stage: &'static str, error: Option<&str>, cx: &App) {
+    fn trace_trash(&self, phase: &'static str, path: &str, reason: Option<&str>, cx: &App) {
         if let Some(trace) = self
             .loading
             .as_ref()
             .and_then(|l| l.opts.diagnostics.clone())
             .or_else(|| reader_diagnostics::trace(cx))
         {
-            trace.event(
-                "trash",
-                serde_json::json!({"path": path, "stage": stage, "error": error}),
-            );
+            trace.event(phase, serde_json::json!({"path": path, "reason": reason}));
         }
     }
 
-    // A warm sidebar is usable before the full backlink inventory arrives.
-    // Keep the explicit request, but wait for that inventory before risk checks.
-    fn wait_to_trash(
-        &mut self,
-        relative: String,
-        creation: Option<Arc<reader_create::CreatedUndo>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let root = self.vault_root.clone();
-        let generation = self.loading.as_ref().map(|l| l.generation);
-        self.trash_pending = true;
-        self.trace_trash(&relative, "waiting_for_vault", None, cx);
-        window.push_notification(
-            Notification::new()
-                .id::<TrashToast>()
-                .message("Waiting for the vault to finish loading before moving to Trash…")
-                .placement(Anchor::BottomRight)
-                .py_2()
-                .autohide(false),
-            cx,
-        );
-        cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let scan_path = root.join(&relative);
-            let before = cx
-                .background_executor()
-                .spawn(async move { inventory(&scan_path) })
-                .await;
-            let mut ready = false;
-            for _ in 0..600 {
-                let state = this.update(cx, |r, _| {
-                    if r.vault_root != root
-                        || r.loading.as_ref().map(|l| l.generation) != generation
-                    {
-                        None
-                    } else {
-                        Some(r.loading.as_ref().is_some_and(|l| l.active))
-                    }
-                });
-                match state {
-                    Ok(Some(false)) => {
-                        ready = true;
-                        break;
-                    }
-                    Ok(Some(true)) => {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(100))
-                            .await
-                    }
-                    _ => break,
-                }
-            }
-            let check_path = root.join(&relative);
-            let unchanged = cx
-                .background_executor()
-                .spawn(async move {
-                    before.and_then(|before| {
-                        anyhow::ensure!(
-                            inventory(&check_path)? == before,
-                            "The item changed while waiting. Try again"
-                        );
-                        Ok(())
-                    })
-                })
-                .await;
-            let _ = this.update_in_own_window(cx, |r, window, cx| {
-                r.trash_pending = false;
-                window.remove_notification::<TrashToast>(cx);
-                let same =
-                    r.vault_root == root && r.loading.as_ref().map(|l| l.generation) == generation;
-                let error = if !ready || !same {
-                    Some(
-                        "The vault is not ready or changed. Nothing was moved; try again"
-                            .to_string(),
-                    )
-                } else if r.loading.as_ref().is_some_and(|l| l.phase != "Ready") {
-                    Some("Vault loading did not finish. Nothing was moved; try again".to_string())
-                } else {
-                    unchanged
-                        .err()
-                        .map(|e| format!("Cannot move to Trash: {e:#}"))
-                };
-                if let Some(error) = error {
-                    r.trace_trash(&relative, "wait_cancelled", Some(&error), cx);
-                    reader_toast::error(error, window, cx);
-                    cx.notify();
-                } else {
-                    r.delete_path_guarded(relative, creation, window, cx);
-                }
-            });
-        })
-        .detach();
+    fn trash_blocked(&self, path: &str, reason: &str, window: &mut Window, cx: &mut App) {
+        self.trace_trash("trash_blocked", path, Some(reason), cx);
+        reader_toast::transient(reason.to_owned(), window, cx);
     }
 
     pub(super) fn delete_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -222,31 +129,36 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.trace_trash(&relative, "requested", None, cx);
+        self.trace_trash("trash_requested", &relative, None, cx);
         let blocked = if relative.is_empty() {
             Some("Select a file or folder first")
         } else if self.trash_pending || self.note_move_pending {
             Some("Another file operation is still running. Please wait")
+        } else if self
+            .loading
+            .as_ref()
+            .is_some_and(|l| l.active && !(l.warm && l.published))
+        {
+            Some("The vault is still opening. Please try moving to Trash when it is ready")
         } else {
             None
         };
         if let Some(reason) = blocked {
-            self.trace_trash(&relative, "blocked", Some(reason), cx);
-            reader_toast::transient(reason, window, cx);
-            return;
-        }
-        if self.loading.as_ref().is_some_and(|load| load.active) {
-            self.wait_to_trash(relative, creation, window, cx);
+            self.trash_blocked(&relative, reason, window, cx);
             return;
         }
         let Some(state) = self.session_directory.clone() else {
-            let reason = "Recovery storage is unavailable. The item was kept";
-            self.trace_trash(&relative, "blocked", Some(reason), cx);
-            reader_toast::error(reason, window, cx);
+            self.trash_blocked(
+                &relative,
+                "Recovery storage is unavailable. The item was kept",
+                window,
+                cx,
+            );
             return;
         };
         if creation.is_some() && self.source_is_dirty(cx) {
-            reader_toast::transient(
+            self.trash_blocked(
+                &relative,
                 "Finish editing before undoing creation; your note was kept",
                 window,
                 cx,
@@ -254,10 +166,10 @@ impl Reader {
             return;
         }
         if !self.save_source(cx) {
-            self.trace_trash(
+            self.trash_blocked(
                 &relative,
-                "blocked",
-                Some("Unsaved changes could not be saved"),
+                "Unsaved changes could not be saved. The item was kept",
+                window,
                 cx,
             );
             return;
@@ -355,8 +267,8 @@ impl Reader {
                     let _ = this.update_in_own_window(cx, |this, window, cx| {
                         this.trash_pending = false;
                         this.trace_trash(
+                            "trash_failed",
                             &relative,
-                            "prepare_failed",
                             Some(&format!("{error:#}")),
                             cx,
                         );
@@ -384,6 +296,12 @@ impl Reader {
                         window.remove_notification::<TrashToast>(cx);
                         if this.vault_root != root {
                             this.trash_pending = false;
+                            this.trash_blocked(
+                                &relative,
+                                "The vault changed. Nothing was moved",
+                                window,
+                                cx,
+                            );
                             return false;
                         }
                         let name = Path::new(&relative)
@@ -482,8 +400,14 @@ impl Reader {
                     })
                     .unwrap_or(false);
                 if !shown || receive.recv().await != Ok(true) {
-                    let _ = this.update(cx, |this, cx| {
+                    let _ = this.update_in_own_window(cx, |this, window, cx| {
                         this.trash_pending = false;
+                        this.trash_blocked(
+                            &relative,
+                            "Move to Trash cancelled; the item was kept",
+                            window,
+                            cx,
+                        );
                         cx.notify();
                     });
                     return;
@@ -494,13 +418,16 @@ impl Reader {
                 if this.vault_root != root || dirty_creation || !this.save_source(cx) {
                     window.remove_notification::<TrashToast>(cx);
                     this.trash_pending = false;
-                    if dirty_creation {
-                        reader_toast::transient(
-                            "Finish editing before undoing creation; your note was kept",
-                            window,
-                            cx,
-                        );
-                    }
+                    this.trash_blocked(
+                        &relative,
+                        if dirty_creation {
+                            "Finish editing before undoing creation; your note was kept"
+                        } else {
+                            "The vault or unsaved edits changed. Nothing was moved"
+                        },
+                        window,
+                        cx,
+                    );
                     cx.notify();
                     return None;
                 }
@@ -516,7 +443,7 @@ impl Reader {
                         .autohide(false),
                     cx,
                 );
-                this.trace_trash(&relative, "system_trash_start", None, cx);
+                this.trace_trash("trash_system_start", &relative, None, cx);
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
                     this.editing.take()
                 } else {
@@ -556,7 +483,7 @@ impl Reader {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
-                        this.trace_trash(&relative, "completed", None, cx);
+                        this.trace_trash("trash_done", &relative, None, cx);
                         if creation.as_ref().is_some_and(|completed| {
                             this.creation_undo
                                 .as_ref()
@@ -582,8 +509,8 @@ impl Reader {
                     }
                     Err(error) => {
                         this.trace_trash(
+                            "trash_failed",
                             &relative,
-                            "system_trash_failed",
                             Some(&format!("{error:#}")),
                             cx,
                         );
@@ -684,6 +611,16 @@ impl Reader {
     /// vault stay in system Trash until that vault is open again.
     pub(super) fn undo_last_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.trash_undo.items.is_empty() || self.trash_pending {
+            self.trash_blocked(
+                "",
+                if self.trash_pending {
+                    "Another file operation is still running. Please wait"
+                } else {
+                    "There is no move to Trash to undo in this session"
+                },
+                window,
+                cx,
+            );
             return;
         }
         let Some(index) = self
@@ -692,11 +629,23 @@ impl Reader {
             .iter()
             .rposition(|t| same_vault(&t.root, &self.vault_root))
         else {
+            self.trace_trash(
+                "trash_blocked",
+                "",
+                Some("Undo belongs to another vault"),
+                cx,
+            );
             self.explain_foreign_trash(window, cx);
             return;
         };
         let trashed = self.trash_undo.items[index].clone();
         let Some(state) = self.session_directory.clone() else {
+            self.trash_blocked(
+                "",
+                "Recovery storage is unavailable. The item remains in Trash",
+                window,
+                cx,
+            );
             return;
         };
         let restored_root = trashed.root.clone();
@@ -726,6 +675,16 @@ impl Reader {
                 .await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.trash_pending = false;
+                this.trace_trash(
+                    if result.is_ok() {
+                        "trash_undo_done"
+                    } else {
+                        "trash_failed"
+                    },
+                    &restored_path.to_string_lossy(),
+                    result.as_ref().err().map(|e| format!("{e:#}")).as_deref(),
+                    cx,
+                );
                 if let Ok(directory) = &result {
                     if this.vault_root == restored_root {
                         let mut changes = okilum_core::Changes::default();
@@ -792,7 +751,7 @@ mod tests {
     use ::core::prelude::v1::test;
     #[cfg(target_os = "linux")]
     #[gpui::test]
-    fn sidebar_trash_waits_for_inventory_and_keeps_changed_items(cx: &mut TestAppContext) {
+    fn trash_during_published_warm_refresh_completes_and_undo_restores(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -824,70 +783,41 @@ mod tests {
         });
         let reader = entity.unwrap();
         visual.run_until_parked();
-        for (relative, changed) in [
-            ("Security/test.md", false),
-            ("Security/Folder", false),
-            ("Security/test.md", true),
-        ] {
+        for relative in ["Security/Folder", "Security/test.md"] {
             reader.update_in(visual, |r, window, cx| {
-                r.reveal_in_tree(relative, window, cx);
-                let load = r.loading.as_mut().unwrap();
-                load.active = true;
-                load.warm = true;
-                load.phase = "Preparing backlinks".into();
-                cx.notify();
-            });
-            visual.run_until_parked();
-            visual.update(|window, cx| window.draw(cx).clear(cx));
-            let selector: &'static str = format!("tree-row-{relative}").leak();
-            let row = visual
-                .debug_bounds(selector)
-                .expect("real sidebar row drawn");
-            visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
-            visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-            visual.run_until_parked();
-            // Last menu item is Move to Trash; use the real popup handler.
-            visual.simulate_keystrokes("up enter");
-            visual.run_until_parked();
-            reader.read_with(visual, |r, _| {
+                r.refresh_inventory(okilum_core::Changes::default(), window, cx);
+                let load = r.loading.as_ref().unwrap();
+                assert!(
+                    load.active && load.warm && load.published,
+                    "positive control: real published warm refresh"
+                );
+                r.delete_path(relative.into(), window, cx);
                 assert!(
                     r.trash_pending,
-                    "sidebar Trash request was silently dropped during warm loading"
-                )
+                    "Trash request silently dropped during published warm refresh"
+                );
             });
-            assert!(
-                root.join(relative).exists(),
-                "must wait for backlink inventory"
-            );
-            if changed {
-                std::fs::write(root.join(relative), "changed while waiting").unwrap();
-            }
-            reader.update(visual, |r, cx| {
-                let load = r.loading.as_mut().unwrap();
-                load.active = false;
-                load.phase = "Ready".into();
-                cx.notify();
-            });
-            visual.executor().advance_clock(Duration::from_millis(100));
             visual.run_until_parked();
-            reader.read_with(visual, |r, _| assert!(!r.trash_pending));
-            if changed {
-                assert_eq!(
-                    std::fs::read_to_string(root.join(relative)).unwrap(),
-                    "changed while waiting"
-                );
-                reader.read_with(visual, |r, _| assert!(r.trash_undo.items.is_empty()));
-            } else {
-                assert!(
-                    !root.join(relative).exists(),
-                    "explicit request completes after loading"
-                );
-                reader.read_with(visual, |r, _| assert_eq!(r.trash_undo.items.len(), 1));
-                reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
-                visual.run_until_parked();
-                assert!(root.join(relative).exists(), "Undo restores the same item");
-            }
+            assert!(
+                !root.join(relative).exists(),
+                "Trash must complete during refresh"
+            );
+            reader.read_with(visual, |r, _| {
+                assert!(!r.trash_pending);
+                assert_eq!(r.trash_undo.items.len(), 1);
+            });
+            reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
+            visual.run_until_parked();
+            assert!(root.join(relative).exists());
         }
+        assert_eq!(
+            std::fs::read(root.join("Security/test.md")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(root.join("Security/Folder/probe.md")).unwrap(),
+            b"folder bytes"
+        );
     }
 
     #[cfg(target_os = "linux")]
