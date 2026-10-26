@@ -1290,7 +1290,10 @@ impl Reader {
     /// here is a choice of its own and is kept.
     pub(super) fn edit_created_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let preferred = self.ui_state.live_preview;
+        let source_mode = self.ui_state.source_mode;
         self.toggle_source(window, cx);
+        // Creating a note opens its body for typing, not a new window mode.
+        self.ui_state.source_mode = source_mode;
         self.set_live_preview(true, window, cx);
         if let Some(editing) = &mut self.editing {
             editing.kept_preference = Some(preferred);
@@ -5188,6 +5191,84 @@ mod mode_navigation_tests {
                 );
             }
         }
+    }
+
+    #[gpui::test]
+    fn new_note_keeps_read_mode_for_later_file_choices(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "first.md", None, cx);
+            r.new_note(None, window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_input("Created from Read");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "Created from Read.md", Some(true), cx);
+            assert!(r
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .focus_handle(cx)
+                .is_focused(window));
+            r.open_note("second.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "second.md", None, cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("third.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", None, cx));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("vault/Created from Read.md")).unwrap(),
+            "# Created from Read\n"
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_mode_reopen_keeps_rename_keys_out_of_editor(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        visual.simulate_resize(size(px(1400.), px(860.)));
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(false, window, cx);
+            r.reveal_in_tree("second.md", window, cx);
+        });
+        visual.run_until_parked();
+        let before = std::fs::read_to_string(temp.path().join("vault/second.md")).unwrap();
+        let row = visual.debug_bounds("tree-row-second.md").unwrap();
+        visual.simulate_click(
+            point(row.left() + px(70.), row.center().y),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "second.md", Some(false), cx);
+            assert!(
+                r.tree_focus.is_focused(window),
+                "async reopen must retain tree focus"
+            );
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert!(
+                r.renaming.is_some(),
+                "Enter reaches the actual rename action"
+            );
+            assert_eq!(
+                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                before
+            );
+            assert!(!r.source_is_dirty(cx), "tree keys must not edit the note");
+        });
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("vault/second.md")).unwrap(),
+            before
+        );
     }
 
     #[gpui::test]
