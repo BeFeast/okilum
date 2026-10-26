@@ -428,7 +428,13 @@ impl Reader {
                     && this.ui_state.source_mode
                     && this.editing.is_none()
                 {
+                    let tree_had_focus = this.tree_focus.contains_focused(window, cx);
                     this.toggle_source(window, cx);
+                    // An asynchronous mode restore must keep tree navigation
+                    // and rename keys in the navigator that opened the note.
+                    if tree_had_focus {
+                        this.tree_focus.focus(window, cx);
+                    }
                 }
                 if let Some(line) = unplaced_line {
                     this.link_notice = Some(

@@ -17,6 +17,9 @@ checks before leaving the current editor, and only the latest successfully
 prepared note may reopen its editor. Other formats retain their existing preview;
 a failed or unsupported open does not force editing. Window/session restoration
 continues to use the existing saved mode policy, without a new global preference.
+New note temporarily opens Live Preview for typing without changing the window's
+chosen mode for other notes. Restoring an editor after a sidebar selection keeps
+keyboard focus in the tree (#1730).
 
 Windows Source and Live Preview use an app-owned exact Unicode clipboard reader
 (#1434). A restricted mode of the same executable reads `CF_UNICODETEXT` before
