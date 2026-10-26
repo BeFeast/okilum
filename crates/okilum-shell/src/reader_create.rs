@@ -1776,9 +1776,71 @@ mod tests {
             .sidebar_items()
             .into_iter()
             .find_map(|item| match item {
-                SideItem::Create(.., (label, tip)) => Some((label.to_string(), tip.to_string())),
+                SideItem::CreateOptions(.., (label, tip)) => {
+                    Some((label.to_string(), tip.to_string()))
+                }
                 _ => None,
             })
+    }
+
+    /// #1725: name entry must remain usable beside creation controls in a
+    /// normal-width sidebar, including a selected nested folder.
+    #[gpui::test]
+    fn creation_name_has_typing_space_in_nested_sidebar(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Security")).unwrap();
+        std::fs::write(root.join("Security/start.md"), "# Start").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Security/start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1580.), px(850.)));
+        reader.update(visual, |r, cx| {
+            r.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click(visual, "sidebar-new-note");
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let field = visual
+            .debug_bounds("create-name-input")
+            .expect("name field rendered");
+        assert!(
+            field.size.width >= px(120.),
+            "name field collapsed: {:?}",
+            field
+        );
+        visual.simulate_click(field.center(), gpui::Modifiers::default());
+        visual.simulate_input("Новая Security");
+        reader.update_in(visual, |r, window, cx| {
+            let create = r.creation.as_ref().unwrap();
+            assert_eq!(create.input.read(cx).value(), "Новая Security");
+            assert!(create.input.read(cx).focus_handle(cx).is_focused(window));
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(root.join("Security/Новая Security.md").is_file());
     }
 
     /// #1512: New note / New folder go next to the tree selection (a
