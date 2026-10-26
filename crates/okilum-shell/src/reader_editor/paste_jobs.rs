@@ -27,11 +27,21 @@ const PROGRESS_AFTER: Duration = Duration::from_millis(300);
 struct Target {
     reader: WeakEntity<Reader>,
     input: Entity<EditorState>,
+    root: PathBuf,
     /// The note's file, to find its editor again after it was reopened.
     path: Option<PathBuf>,
 }
 
 impl Target {
+    fn files_saved(&self, paths: &[PathBuf], cx: &mut App) {
+        if let Some(reader) = self.reader.upgrade() {
+            reader.update(cx, |reader, cx| {
+                if reader.vault_root == self.root {
+                    reader.pasted_attachments_saved(paths, cx);
+                }
+            });
+        }
+    }
     /// The editor to insert into now: the one pasted into while its session
     /// lasts, else the same note's current editor. `None` once the note is
     /// no longer being edited (left for Reader, another note, parked).
@@ -148,6 +158,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pasted_attachments_saved(&routed.saved_files, cx);
         if let Some(text) = &routed.insert {
             input.update(cx, |state, cx| {
                 state.replace_source_range(offset..offset, text, window, cx);
@@ -177,6 +188,7 @@ impl Reader {
         let input = Target {
             reader: cx.entity().downgrade(),
             input,
+            root: self.vault_root.clone(),
             path,
         };
         match follow_up {
@@ -197,7 +209,7 @@ impl Reader {
             } => {
                 let work = move || {
                     attachments::save_pasted_image(&vault_root, &note_rel, &image, &stamp)
-                        .map(|saved| saved.embed)
+                        .map(|saved| (saved.embed, vec![saved.path]))
                         .map_err(|error| error.user_text())
                 };
                 run_job(input, anchor, "Saving the pasted image…", work, window, cx);
@@ -304,6 +316,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
         let existing = files::vault_names(&work_plan.vault_root);
         let mut copied = Vec::new();
         let mut errors = Vec::new();
+        let mut saved_files = Vec::new();
         let mut base = 0u64;
         for item in &work_plan.items {
             let FileAction::Copy { file_name } = &item.action else {
@@ -315,22 +328,25 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             base += item.size;
             progress.store(base, Ordering::Relaxed);
             match result {
-                Ok(name) => copied.push(Some(files::link_target(
-                    &name,
-                    &work_plan.folder_rel,
-                    &existing,
-                ))),
+                Ok(name) => {
+                    saved_files.push(work_plan.folder.join(&name));
+                    copied.push(Some(files::link_target(
+                        &name,
+                        &work_plan.folder_rel,
+                        &existing,
+                    )));
+                }
                 Err(error) => {
                     errors.push(error.user_text(file_name));
                     copied.push(None);
                 }
             }
         }
-        (copied, errors)
+        (copied, errors, saved_files)
     });
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
-        let (copied, errors) = task.await;
+        let (copied, errors, saved_files) = task.await;
         finished.store(true, Ordering::Relaxed);
         eprintln!(
             "Paste: copied {} of {} files, {} bytes, ms={}",
@@ -340,6 +356,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             started.elapsed().as_millis()
         );
         let _ = cx.update_window(handle, |_, window, cx| {
+            input.files_saved(&saved_files, cx);
             let links = files::links(&plan, &copied);
             if !links.is_empty() {
                 let block = links.len() > 1;
@@ -361,7 +378,7 @@ fn run_job(
     input: Target,
     anchor: Anchor,
     label: &'static str,
-    work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    work: impl FnOnce() -> Result<(String, Vec<PathBuf>), String> + Send + 'static,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -380,7 +397,8 @@ fn run_job(
         let result = task.await;
         finished.store(true, Ordering::Relaxed);
         let _ = cx.update_window(handle, |_, window, cx| match result {
-            Ok(text) => {
+            Ok((text, files)) => {
+                input.files_saved(&files, cx);
                 if insert_at_anchor(&input, &anchor, &text, false, false, window, cx).is_none() {
                     note_closed(&text, window, cx);
                 }
@@ -754,4 +772,109 @@ fn progress_toast(
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod attachment_refresh_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn completed_drop_updates_inventory_without_waiting_for_native_events(cx: &mut TestAppContext) {
+        check_drop(cx, false);
+    }
+    #[gpui::test]
+    fn completed_quick_drop_updates_inventory_without_waiting_for_native_events(
+        cx: &mut TestAppContext,
+    ) {
+        check_drop(cx, true);
+    }
+    fn check_drop(cx: &mut TestAppContext, quick: bool) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n\n").unwrap();
+        let original = temp.path().join("dropped.png");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&original, png.into_inner()).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: (!quick).then(|| root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let held_watcher = reader.update_in(visual, |reader, window, cx| {
+            assert!(!reader.loading.as_ref().unwrap().active);
+            let watcher = reader
+                .watcher
+                .take()
+                .expect("native watcher positive control");
+            // Withhold OS delivery: a completed local write must publish its
+            // known endpoints, even if Syncthing/native notifications lag.
+            reader.open_live_preview(window, cx);
+            reader.drop_on_editor(&ExternalPaths(vec![original.clone()]), window, cx);
+            watcher
+        });
+        visual.run_until_parked();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            visual.run_until_parked();
+            let ready = reader.read_with(visual, |reader, cx| {
+                let source = reader.source_input().unwrap().read(cx).value();
+                let has_file = std::fs::read_dir(root.join("attachments"))
+                    .unwrap()
+                    .next()
+                    .is_some();
+                let admitted = reader
+                    .vault
+                    .entries
+                    .iter()
+                    .any(|entry| entry.kind == okilum_core::vault::EntryKind::Attachment);
+                has_file && source.contains("![[") && admitted
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "DROP_REFRESH1742: copied attachment was not published without native hints"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        reader.read_with(visual, |reader, cx| {
+            assert_eq!(reader.single_file, quick);
+            assert!(reader.source_live_preview());
+            let source = reader.source_input().unwrap().read(cx).value();
+            let rendered =
+                okilum_core::render::reader_document_from_source(&reader.vault, "note.md", &source)
+                    .rendered;
+            assert!(
+                rendered.contains("file://")
+                    && !okilum_core::render::has_unavailable_images(&rendered)
+            );
+            assert_eq!(reader.current_rel, "note.md");
+        });
+        drop(held_watcher);
+    }
 }

@@ -6988,6 +6988,76 @@ impl Reader {
         cx.notify();
     }
 
+    /// A completed paste/drop knows the exact files it created. Publish that
+    /// local mutation without depending on a platform-specific watcher event.
+    pub(super) fn pasted_attachments_saved(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        use okilum_core::vault::{EntryKind, VaultEntry};
+        let relatives: Vec<_> = paths
+            .iter()
+            .filter_map(|path| path.strip_prefix(&self.vault_root).ok())
+            .filter(|path| {
+                !path.as_os_str().is_empty()
+                    && path
+                        .components()
+                        .all(|part| matches!(part, std::path::Component::Normal(_)))
+                    && !okilum_core::vault::service_path(path)
+            })
+            .map(okilum_core::vault::note_path)
+            .collect();
+        if relatives.is_empty() {
+            return;
+        }
+        let mut directories = std::collections::BTreeSet::new();
+        for relative in &relatives {
+            if let Some(parent) = Path::new(relative).parent() {
+                directories.insert(okilum_core::vault::note_path(parent));
+            }
+        }
+        if self.single_file {
+            // These are receipts for already complete files, not permission to
+            // scan sibling sources or enroll an unexpanded subtree as a vault.
+            let mut entries: std::collections::BTreeMap<_, _> = self
+                .vault
+                .entries
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.kind))
+                .collect();
+            for relative in relatives {
+                for parent in Path::new(&relative)
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|path| !path.as_os_str().is_empty())
+                {
+                    entries.insert(okilum_core::vault::note_path(parent), EntryKind::Directory);
+                }
+                let kind = if relative.to_ascii_lowercase().ends_with(".md") {
+                    EntryKind::Markdown
+                } else {
+                    EntryKind::Attachment
+                };
+                entries.insert(relative, kind);
+            }
+            let mut vault = quick_vault(
+                &self.vault_root,
+                entries
+                    .into_iter()
+                    .map(|(path, kind)| VaultEntry { path, kind })
+                    .collect(),
+            );
+            vault.unreadable = self.vault.unreadable.clone();
+            vault.inventory_complete = vault.unreadable.is_empty();
+            self.publish_quick_folder(vault, cx);
+        } else {
+            self.queue_vault_mutation(
+                okilum_core::Changes {
+                    directories,
+                    ..Default::default()
+                },
+                cx,
+            );
+        }
+    }
+
     pub(crate) fn refresh_quick_folders(
         &mut self,
         changes: okilum_core::Changes,

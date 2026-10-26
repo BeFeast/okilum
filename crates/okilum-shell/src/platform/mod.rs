@@ -2,6 +2,8 @@
 pub mod exact_wayland_clipboard;
 #[cfg(any(windows, test))]
 pub mod exact_windows_clipboard;
+#[cfg(target_os = "linux")]
+pub mod wayland_note_clipboard;
 
 pub mod labels;
 

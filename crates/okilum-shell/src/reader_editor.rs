@@ -740,6 +740,7 @@ impl Reader {
                     .lock()
                     .map(|mut outbox| std::mem::take(&mut *outbox))
                     .unwrap_or_default();
+                this.pasted_attachments_saved(&pending.saved_files, cx);
                 let handled = pending.notice.is_some() || pending.follow_up.is_some();
                 if let Some(notice) = &pending.notice {
                     paste_jobs::show_notice(notice, window, cx);
