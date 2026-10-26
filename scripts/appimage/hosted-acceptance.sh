@@ -17,6 +17,13 @@ esac
 useradd --create-home --uid 12345 acceptance
 mkdir -p /work /evidence
 chown acceptance /work /evidence
+# Explicit single-runtime desktop-only path; leave the pair gate defaults intact.
+if [[ ${OKILUM_DESKTOP_ONLY:-} == 1716 ]]; then
+  [[ $(. /etc/os-release; echo "$ID:$VERSION_ID") == ubuntu:24.04 ]]
+  exec timeout --signal=TERM --kill-after=20s 15m runuser -u acceptance -- \
+    xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- \
+    python3 /source/scripts/appimage/desktop-lifecycle.py
+fi
 # Artifact extraction requires writable executable paths but never alters bytes.
 cp -a /old /work/old
 cp -a /new /work/new

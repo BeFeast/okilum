@@ -4,7 +4,7 @@ on:
   # Parent may push the already-built exact source to this runtime-only ref.
   # This works before a new workflow exists on default; it triggers no compiler.
   push:
-    branches: ['forgejo-linux-acceptance-pr/**']
+    branches: ['forgejo-linux-acceptance-pr/**', 'forgejo-desktop-acceptance/1716-*']
   workflow_dispatch:
     inputs:
       old_run:
@@ -28,6 +28,7 @@ permissions:
   actions: read
 jobs:
   native:
+    if: ${{ !startsWith(github.ref_name, 'forgejo-desktop-acceptance/') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -79,5 +80,60 @@ jobs:
             evidence/native/gui/*.json
             evidence/native/gui/*.log
             evidence/native/gui/BLOCKED.txt
+          retention-days: 7
+          if-no-files-found: warn
+
+  desktop:
+    if: ${{ startsWith(github.ref_name, 'forgejo-desktop-acceptance/1716-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate approved retained artifact and product inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, subprocess
+          source = 'ef0dfc7ac066237127fa871953f7e9e731d5918d'
+          allowed = {'.github/workflows/appimage-acceptance.yml',
+                     'scripts/appimage/hosted-acceptance.sh',
+                     'scripts/appimage/desktop-lifecycle.py'}
+          changed = subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines()
+          assert set(changed) <= allowed, changed
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+          run = api('repos/BeFeast/okilum/actions/runs/40245818580')
+          assert run['head_sha'] == source and run['conclusion'] == 'success'
+          artifact = api('repos/BeFeast/okilum/actions/artifacts/12618773739')
+          assert not artifact['expired'] and artifact['name'] == 'linux-appimage-' + source
+          assert artifact['workflow_run']['id'] == 40245818580
+          assert artifact['digest'] == 'sha256:b27de597961de0e9fd7b585b0934de5b28879ea2babc380b654ffa6115a182d8'
+          print('Retained producer/artifact and unchanged product inputs verified')
+          PYCODE
+          git rev-parse HEAD
+          sha256sum scripts/appimage/desktop-lifecycle.py scripts/appimage/hosted-acceptance.sh
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40245818580
+          artifact-ids: 12618773739
+          path: current-new
+          merge-multiple: true
+      - name: One Ubuntu ordinary-entrypoint desktop phase
+        run: |
+          mkdir evidence
+          docker run --rm --network bridge -e OKILUM_DESKTOP_ONLY=1716 \
+            -v "$PWD/current-new:/new:ro" -v "$PWD:/source:ro" \
+            -v "$PWD/evidence:/evidence" ubuntu:24.04 \
+            bash /source/scripts/appimage/hosted-acceptance.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-lifecycle-1716-${{ github.sha }}
+          path: evidence/desktop/
           retention-days: 7
           if-no-files-found: warn
