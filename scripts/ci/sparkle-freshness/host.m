@@ -12,6 +12,42 @@ static void Trace(NSString *event) {
     [file writeData:[[event stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding]];
     [file closeFile];
 }
+
+static BOOL RotatesGroup(void) {
+    return [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRotateGroupAfterDownload"] boolValue];
+}
+
+// Read-only instrumentation of the pinned framework's EXISTING defaults object.
+// A second defaults instance or CFPreferences receipt cannot prove what SUHost
+// actually sees. Never replace a Sparkle method, host, defaults object or value
+// through this observer. Missing layout is a fixture failure, not reproduction.
+static NSNumber *ObservedGroup(SPUUpdater *updater) {
+    Ivar hostSlot = class_getInstanceVariable(SPUUpdater.class, "_host");
+    id host = hostSlot && updater ? object_getIvar(updater, hostSlot) : nil;
+    Ivar defaultsSlot = host ? class_getInstanceVariable([host class], "_userDefaults") : NULL;
+    id defaults = defaultsSlot ? object_getIvar(host, defaultsSlot) : nil;
+    if (![defaults isKindOfClass:NSUserDefaults.class]) { Trace(@"group observer unavailable"); exit(56); }
+    id group = [defaults objectForKey:@"SUUpdateGroupIdentifier"];
+    if (![group isKindOfClass:NSNumber.class]) { Trace(@"group observer missing NSNumber"); exit(57); }
+    return group;
+}
+
+static NSNumber *LastProbeGroup;
+static NSString *LastProbeSelection;
+@interface TestFreshnessProbe : TSFreshnessProbe
+@end
+@implementation TestFreshnessProbe
+- (void)finish:(NSError *)error {
+    if (RotatesGroup()) {
+        LastProbeGroup = ObservedGroup(self.updater);
+        LastProbeSelection = self.selected.versionString ?: @"none";
+        Trace([NSString stringWithFormat:@"rotation probe selected=%@ source-group=%@ probe-group=%@ error=%@/%ld",
+               LastProbeSelection, ObservedGroup(TSUpdater), LastProbeGroup,
+               error.domain ?: @"none", (long)error.code]);
+    }
+    [super finish:error];
+}
+@end
 extern void fixture_record_report(int kind);
 extern bool fixture_about_retry_enabled(void);
 static BOOL TSFirstTerminationResolved;
@@ -88,8 +124,32 @@ static void FinishComparison(void) {
 @end
 @implementation TestUpdaterDelegate
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
+    if (RotatesGroup()) {
+        NSNumber *group = ObservedGroup(updater);
+        Trace([NSString stringWithFormat:@"rotation admitted=%@ source-group=%@", item.versionString, group]);
+        if (![item.versionString isEqualToString:@"4"] || group.integerValue != 0) exit(58);
+    }
     if (TSCompare) TSActualSelection = item;
     [super updater:updater didFindValidUpdate:item];
+}
+- (void)updater:(SPUUpdater *)updater didDownloadUpdate:(SUAppcastItem *)item {
+    if (!RotatesGroup()) return;
+    if (![item.versionString isEqualToString:@"4"]) exit(59);
+    // Real public callback, after Sparkle's random post-download rotation. Make
+    // that permitted transition deterministic only in this isolated test app.
+    NSBundle *bundle = updater.hostBundle;
+    NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"];
+    NSUserDefaults *preferences = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
+                                         : NSUserDefaults.standardUserDefaults;
+    [preferences setObject:@6 forKey:@"SUUpdateGroupIdentifier"];
+    if (![preferences synchronize]) exit(60);
+    CFStringRef probeDomain = (__bridge CFStringRef)(domain ?: bundle.bundleIdentifier);
+    CFPreferencesSetAppValue(CFSTR("SUUpdateGroupIdentifier"), (__bridge CFNumberRef)@6, probeDomain);
+    if (!CFPreferencesAppSynchronize(probeDomain)) exit(60);
+    id probeGroup = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("SUUpdateGroupIdentifier"), probeDomain));
+    NSNumber *sourceGroup = ObservedGroup(updater);
+    if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:@6] || ![sourceGroup isEqual:@6]) exit(61);
+    Trace(@"rotation didDownloadUpdate=4 transition=0->6 source-readback=6 probe-storage-readback=6");
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cycle finished check=%ld error=%@/%ld replacement=%d session=%d", (long)check, error.domain ?: @"none", (long)error.code, TSRestartAfterCycle, updater.sessionInProgress]);
@@ -121,6 +181,11 @@ static void FinishComparison(void) {
 }
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cancel replacement error=%@/%ld", error.domain ?: @"none", (long)error.code]);
+    if (RotatesGroup()) {
+        Trace([NSString stringWithFormat:@"rotation rejection error=%@/%ld selected=%@ source-group=%@ probe-group=%@",
+               error.domain ?: @"none", (long)error.code, LastProbeSelection,
+               ObservedGroup(TSUpdater), LastProbeGroup]);
+    }
     [super cancelForReplacement:reply error:error];
     Trace(@"cancel reply returned");
 }
@@ -292,6 +357,7 @@ int main(void) {
         }
         ArmWindowProbe(bundle);
         TSStart(bundle, [TestDriver new], [TestUpdaterDelegate new]);
+        if (RotatesGroup()) TSProbe = [TestFreshnessProbe new];
         if (TSUpdater.automaticallyDownloadsUpdates || !TSUpdater.automaticallyChecksForUpdates) return 32;
         TSInstallRequested = !TSCompare && ![[bundle objectForInfoDictionaryKey:@"TSDiscovery"] boolValue]; // explicit About Install intent
         if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];

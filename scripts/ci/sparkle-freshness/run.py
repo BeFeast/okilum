@@ -110,19 +110,32 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             '-F', FRAMEWORK, '-framework', 'Sparkle', '-framework', 'AppKit',
             '-Wl,-rpath,@executable_path/../Frameworks',
             ROOT / 'scripts/ci/sparkle-freshness/host.m', guard, '-liconv', '-o', executable)
-        for scenario in ('termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        rotation_scenarios = ('rotation-phase-standard-foreground', 'rotation-phase-suite-foreground',
+                              'rotation-phase-standard-background', 'rotation-phase-suite-background')
+        rotation_refusals = []
+        for scenario in (*rotation_scenarios, 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
                          'eligibility-delta-foreground', 'eligibility-os-background'):
+            # Gather both defaults paths before making the regression RED. An
+            # unexpected error is never classified as the original refusal.
+            if scenario not in rotation_scenarios and rotation_refusals:
+                raise AssertionError(f'Already admitted downloads rejected on unchanged signed feed: {rotation_refusals}')
             case = work / scenario
             case.mkdir()
             trace = evidence / f'{scenario}.trace'
             trace.write_text('')
             output = evidence / f'{scenario}.log'
             requests = []
+            feed_reads = []
 
             class Handler(http.server.SimpleHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/appcast.xml':
+                        feed_reads.append(hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest())
+                    super().do_GET()
+
                 def log_message(self, fmt, *args):
                     requests.append(fmt % args)
 
@@ -137,6 +150,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             receipt = case / 'installed'
             app = case / 'Freshness.app'
             compare = scenario.startswith('eligibility-')
+            rotation = scenario in rotation_scenarios
             foreground = scenario.endswith('-foreground')
             base_info = {
                 'CFBundleIdentifier': identifier, 'CFBundleExecutable': 'Freshness',
@@ -153,8 +167,9 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'TSBeta': scenario != 'stable', 'TSRefuse': scenario in ('guard-refusal', 'quit-guard-refusal'),
                 'TSEditor': str(case / 'editor'), 'TSProtectedEditor': str(case / 'protected-editor'),
                 'TSCompareEligibility': compare, 'TSForeground': foreground,
-                'TSPhaseGroup': 0 if scenario == 'background-phase-included' else 6,
-                'TSBackgroundInstall': scenario.startswith('background-') or scenario == 'discovery',
+                'TSPhaseGroup': 0 if rotation or scenario == 'background-phase-included' else 6,
+                'TSRotateGroupAfterDownload': rotation,
+                'TSBackgroundInstall': (rotation and not foreground) or scenario.startswith('background-') or scenario == 'discovery',
                 'TSDiscovery': scenario == 'discovery',
                 'TSQuit': scenario.startswith('quit-'),
                 'TSQuitDuringDownload': scenario == 'quit-during-download',
@@ -169,6 +184,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 run('codesign', '--force', '--sign', '-', destination, stdout=subprocess.DEVNULL)
 
             (case / 'editor').write_text('saved before verification')
+            if rotation and '-suite-' in scenario:
+                base_info['SUDefaultsDomain'] = identifier + '.updates'
             if compare:
                 base_info['SUDefaultsDomain'] = identifier + '.updates'
                 base_info['TSExpectDelta'] = 'delta' in scenario
@@ -213,7 +230,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 path.write_text('<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Freshness test</title>' + ''.join(items) + '</channel></rss>')
                 run(signer, '--ed-key-file', key, path, stdout=subprocess.DEVNULL)
 
-            feed(case / 'appcast.xml', [(4, 'stable'), (2, 'stable')] if compare else [(2, 'stable')])
+            feed(case / 'appcast.xml', [(4, 'stable'), (2, 'stable')] if compare or rotation else [(2, 'stable')])
+            initial_feed_hash = hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest()
             newer = [(4, 'beta'), (3, 'stable'), (2, 'stable')]
             feed(case / 'pending.xml', [(2, 'stable')] if scenario in ('unchanged', 'phase-unchanged', 'guard-refusal', 'quit-guard-refusal', 'restart-newest', 'quit-newest') else newer)
             if scenario == 'background-phase-unchanged':
@@ -241,6 +259,34 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     wait_for(lambda: UPDATER_START_BOUNDARY in trace.read_text(), process, output)
                     callbacks = trace.read_text()
                     assert_rollout_ordering(callbacks, group_receipt, probe_receipt)
+                    if rotation:
+                        wait_for(lambda: receipt.exists() or 'report 2 ' in trace.read_text(), process, output)
+                        callbacks = trace.read_text()
+                        assert 'rotation admitted=4 source-group=0' in callbacks, callbacks
+                        assert 'rotation didDownloadUpdate=4 transition=0->6 source-readback=6 probe-storage-readback=6' in callbacks, callbacks
+                        assert 'downloaded 4' in callbacks and 'prepared 4' in callbacks, callbacks
+                        assert f'selection {"foreground" if foreground else "background"}' in callbacks, callbacks
+                        assert any('GET /4.zip' in r for r in requests), requests
+                        assert not any('GET /2.zip' in r for r in requests), requests
+                        assert len(feed_reads) >= 2 and set(feed_reads) == {initial_feed_hash}, feed_reads
+                        assert hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest() == initial_feed_hash
+                        installed = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion']
+                        if 'report 2 ' in callbacks:
+                            assert not foreground, callbacks
+                            assert 'rotation rejection error=OkilumUpdate/3 selected=2 source-group=6 probe-group=6' in callbacks, callbacks
+                            assert 'rotation probe selected=2 source-group=6 probe-group=6 error=none/0' in callbacks, callbacks
+                            assert not receipt.exists() and installed == '1', callbacks
+                            assert 'final editor guard boundary' not in callbacks, callbacks
+                            assert 'termination requested' not in callbacks, callbacks
+                            rotation_refusals.append(scenario)
+                            print(f'REPRODUCED {scenario}: OkilumUpdate/3, fallback=2, source=6, probe=6, no install; feed={initial_feed_hash}', flush=True)
+                        else:
+                            assert receipt.read_text() == installed == '4', callbacks
+                            assert 'rotation probe selected=4 source-group=6 probe-group=6 error=none/0' in callbacks, callbacks
+                            assert 'final editor guard boundary' in callbacks, callbacks
+                            assert (case / 'protected-editor').read_text() == 'edited after verification'
+                            print(f'PASS admitted download survives group rotation: {scenario}; feed={initial_feed_hash}', flush=True)
+                        continue
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
                     if scenario == 'termination-retry-guard-refusal':
                         wait_for(lambda: 'retry editor guard refused' in trace.read_text(), process, output)
@@ -355,6 +401,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     server.shutdown()
                     server.server_close()
                     (evidence / f'{scenario}.requests.json').write_text(json.dumps(requests, indent=2))
+                    if rotation:
+                        (evidence / f'{scenario}.feed-hashes.json').write_text(json.dumps(feed_reads, indent=2))
                     info_path = app / 'Contents/Info.plist'
                     if info_path.exists():
                         info = plistlib.loads(info_path.read_bytes())
@@ -364,7 +412,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         }, indent=2))
                     # Only this throwaway test identity, never the user's defaults.
                     subprocess.run(['defaults', 'delete', identifier], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    if compare:
+                    if 'SUDefaultsDomain' in base_info:
                         subprocess.run(['defaults', 'delete', identifier + '.updates'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     # The host is reaped and the HTTP server is stopped above.
                     # Sparkle helpers may finish a final filesystem write after
