@@ -14,6 +14,10 @@ use okilum_core::{
     source_projection::{Active, Bias, Projection, Snapshot},
 };
 
+#[allow(dead_code)] // Unselected navigation proof; no production factory calls it.
+#[path = "source_presentation/navigation_inventory.rs"]
+mod navigation_inventory;
+
 #[allow(dead_code)] // Explicitly unselected until the consumer activation contract is proven.
 #[path = "source_presentation/publication_adapter.rs"]
 pub(crate) mod publication_adapter;

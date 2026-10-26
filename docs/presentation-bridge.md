@@ -43,3 +43,37 @@ The ordinary 64KiB wall, 256KiB native guard, range/work/per-block caps,
 full-parent cache key and canonical recompute remain. There is no fragment replay,
 cross-edit reuse/performance claim, large-note admission, candidate/native build
 or Reader activation. Genuine 130KB product acceptance remains a later gate.
+
+## Separately bound navigation inventory
+
+The private, unselected navigation inventory preserves the full immutable
+`document_links::ParsedLink`, including label/title and `exact_range=false`.
+It also prepares exactly the existing `CachedProvider` NoteLink conversion for
+compatibility. Legacy ranges do not certify edit or marker boundaries. The parser,
+production factory/conversion and navigation actions are unchanged; no resolver,
+filesystem/network request or note-open action is introduced.
+
+App lifetime/entity identity, complete workspace value, path, document/generation
+and exact source bytes form the input binding. A separate opaque request-session
+owner and checked attempt sequence govern async delivery; neither token claims
+options equivalence. A new consumer lifetime is distinct even when its entity id
+and visible input match the old one. No display name or hash stands in for equality.
+
+`begin` supersedes before checking input availability/ownership/size. Explicit
+`compute` calls the existing authored-link producer as cold work, outside compose.
+Only it can construct a complete result; no partial completion flag/constructor is
+exported. Adoption checks the actual live binding and latest pending ticket.
+Failed, stale, foreign or duplicate adoption withdraws admission and requires a
+fresh request. Live-query mismatch/unavailability likewise cancels pending/current
+admission, so switching away and back cannot resurrect old rights. Held immutable
+values can be read for their exact original input, not installed as current.
+
+Repeated compute is repeated cold parsing, not a cache hit. Checked reads and
+failed adoption do no parsing or derivation. Tests observe actual work through
+the existing `link_parse_bytes` and `parse` diagnostics, with nonempty cold controls.
+
+This module is unselected. It does not change Reader/Brain scheduling, full-active
+preparation, retained remap/raw-tail continuity or native epoch/held-pin lifecycle.
+Authored navigation inventory is separate from canonical presentation root/fuel
+proof, and from action permission, publication identity and painted-frame proof.
+Those activation obligations remain open before product selection.
