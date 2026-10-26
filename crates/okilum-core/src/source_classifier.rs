@@ -8,7 +8,13 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 
 pub mod decorations;
+// Deliberately unwired groundwork: Reader admission and its limits stay unchanged.
+#[allow(dead_code)]
+pub(crate) mod fragment_cache;
+// Canonical root authority groundwork; ordinary Reader admission remains unchanged.
 mod retained;
+#[allow(dead_code)]
+pub(crate) mod structural;
 pub use retained::{RetainedPresentation, RevealSnapshot};
 
 pub const MAX_BYTES: usize = 64 * 1024;
@@ -46,7 +52,7 @@ pub struct NoteLink {
 
 /// A reference link the full parse resolved from a document definition. A local
 /// reparse cannot see definitions; it may reuse only these exact labels.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Reference {
     label: String,
     url: String,
@@ -205,6 +211,21 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
 
 /// `references` resolve uses whose definitions lie outside a local fragment.
 pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Classification {
+    classify_fragment(snapshot, references, true)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_PARSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The caller establishes the fragment's structural extent and reference context.
+/// Frontmatter is a document-start policy, not a property of identical block bytes.
+pub(crate) fn classify_fragment(
+    snapshot: &Snapshot,
+    references: &[Reference],
+    allow_frontmatter: bool,
+) -> Classification {
     let source = snapshot.source();
     if source.len() > MAX_BYTES {
         return fallback(snapshot, SourceReason::InputLimit);
@@ -220,6 +241,20 @@ pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Cl
     }
     let context = Context::new(source);
     let arena = Arena::new();
+    let options = canonical_options(source, references, allow_frontmatter);
+    #[cfg(test)]
+    TEST_PARSE_CALLS.with(|count| count.set(count.get() + 1));
+    let root = comrak::parse_document(&arena, source, &options);
+    classify_parsed(snapshot, &context, root, allow_frontmatter)
+}
+
+/// A closed configuration shared with structural authority. Arbitrary option or
+/// callback pointers are not semantic identities.
+fn canonical_options<'a>(
+    source: &str,
+    references: &[Reference],
+    allow_frontmatter: bool,
+) -> Options<'a> {
     let mut options = Options::default();
     options.extension.strikethrough = true;
     options.extension.table = true;
@@ -236,15 +271,32 @@ pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Cl
     } else {
         "---"
     };
-    options.extension.front_matter_delimiter = Some(delimiter.into());
-    let root = comrak::parse_document(&arena, source, &options);
+    options.extension.front_matter_delimiter = allow_frontmatter.then(|| delimiter.into());
+    options
+}
+
+/// Consume the SAME canonical root, never fragments with fresh lookup fuel.
+fn classify_parsed<'a>(
+    snapshot: &Snapshot,
+    context: &Context<'_>,
+    root: &'a AstNode<'a>,
+    allow_frontmatter: bool,
+) -> Classification {
+    let source = snapshot.source();
+    let first_line = source.trim_start_matches('\u{feff}').lines().next();
+    let delimiter = if first_line == Some("+++") {
+        "+++"
+    } else {
+        "---"
+    };
     for (count, node) in root.descendants().enumerate() {
         if count >= MAX_NODES || node.ancestors().take(MAX_DEPTH + 2).count() > MAX_DEPTH + 1 {
             return fallback(snapshot, SourceReason::StructureLimit);
         }
     }
     // An unterminated frontmatter opener must not expose its body as Markdown.
-    if first_line == Some(delimiter)
+    if allow_frontmatter
+        && first_line == Some(delimiter)
         && !root
             .children()
             .any(|n| matches!(n.data.borrow().value, NodeValue::FrontMatter(_)))
@@ -376,7 +428,7 @@ pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Cl
         marker_scopes,
         contexts,
         references: resolved,
-        decorations: decorations::extract(root, &context).unwrap_or_default(),
+        decorations: decorations::extract(root, context).unwrap_or_default(),
         links,
         headings,
         reasons,

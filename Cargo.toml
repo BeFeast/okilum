@@ -5,6 +5,11 @@ members = ["crates/okilum-appimage", "crates/okilum-core", "crates/okilum-cored"
 # keeps its members inheriting from their own root while we path-depend into it.
 exclude = ["vendor", "inbox"]
 
+# Exact upstream 0.47.0 + optional read-only canonical reference/fuel evidence.
+# scripts/comrak-setup.py verifies the archive, patch and generated source tree.
+[patch.crates-io]
+comrak = { path = "vendor/comrak-0.47.0" }
+
 [workspace.dependencies]
 okilum-core = { path = "crates/okilum-core", default-features = false }
 anyhow = "1"
