@@ -837,6 +837,22 @@ mod attachment_refresh_tests {
             watcher
         });
         visual.run_until_parked();
+        reader.read_with(visual, |reader, cx| {
+            let source = reader.source_input().unwrap().read(cx).value();
+            let copied: Vec<_> = std::fs::read_dir(root.join("attachments"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(copied.len(), 1, "DROP_CONTROL1742: real copy must complete");
+            assert_eq!(
+                std::fs::read(&copied[0]).unwrap(),
+                std::fs::read(&original).unwrap()
+            );
+            assert!(
+                source.contains("![["),
+                "DROP_CONTROL1742: real drop must insert its embed"
+            );
+        });
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
         loop {
             visual.run_until_parked();
