@@ -37,7 +37,8 @@ container-prefix algorithm is copied here.
 
 The core session models pending/completed results without adding a runtime or
 scheduler. Complete results can adopt only for the current exact request sequence,
-source and closed context. Partial results never adopt; stale completed results
+source, owning session and closed context. Every attempted root input supersedes
+previous pending work, including validation refusals. Partial results never adopt; stale completed results
 cannot replace newer input. Held old authorities remain valid only for their old
 snapshot. On a change of **more than 20%** of the previous source bytes (maximum
 changed middle length after common prefix/suffix), retained structural authority

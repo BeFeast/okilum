@@ -423,8 +423,12 @@ fn validate_tree<'a>(root: &'a AstNode<'a>) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Default)]
+struct RequestOwner;
+
 #[derive(Clone)]
 pub(crate) struct Ticket {
+    owner: Arc<RequestOwner>,
     source: Snapshot,
     context: ParseContext,
     sequence: u64,
@@ -446,6 +450,7 @@ impl Ticket {
 
 #[derive(Default)]
 pub(crate) struct Session {
+    owner: Arc<RequestOwner>,
     requested: Option<Ticket>,
     accepted: Option<Arc<BlockIndex>>,
     accepted_sequence: Option<u64>,
@@ -453,6 +458,13 @@ pub(crate) struct Session {
 }
 impl Session {
     pub fn begin(&mut self, source: Snapshot, context: ParseContext) -> Result<Ticket, Error> {
+        // Every attempted root input supersedes previous asynchronous work, even
+        // when validation refuses it. Keep the last source for generation checks.
+        let Some(sequence) = self.sequence.checked_add(1) else {
+            self.requested = None;
+            return Err(Error::SequenceLimit);
+        };
+        self.sequence = sequence;
         preflight(&source)?;
         if let Some(old) = &self.requested {
             if old.source.document() == source.document()
@@ -468,23 +480,25 @@ impl Session {
                 || changed_bytes(old.source.source(), source.source()).saturating_mul(5)
                     > old.source.source().len()
         });
-        let sequence = self.sequence.checked_add(1).ok_or(Error::SequenceLimit)?;
         if full_invalidation {
             self.accepted = None;
+            self.accepted_sequence = None;
         }
         let ticket = Ticket {
+            owner: self.owner.clone(),
             source,
             context,
             sequence,
             full_invalidation,
         };
-        self.sequence = sequence;
         self.requested = Some(ticket.clone());
         Ok(ticket)
     }
     fn check_ticket(&self, ticket: &Ticket) -> Result<(), Error> {
         let current = self.requested.as_ref().ok_or(Error::Stale)?;
-        if ticket.sequence != current.sequence
+        if !Arc::ptr_eq(&ticket.owner, &self.owner)
+            || ticket.sequence != self.sequence
+            || ticket.sequence != current.sequence
             || ticket.source != current.source
             || ticket.context != current.context
         {
@@ -508,7 +522,7 @@ impl Session {
     }
     pub fn current(&self) -> Option<&Arc<BlockIndex>> {
         let ticket = self.requested.as_ref()?;
-        if self.accepted_sequence != Some(ticket.sequence) {
+        if ticket.sequence != self.sequence || self.accepted_sequence != Some(ticket.sequence) {
             return None;
         }
         self.accepted.as_ref().filter(|index| {
