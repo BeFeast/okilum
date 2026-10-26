@@ -20,6 +20,17 @@ fn audited_and_default_parse_keep_exact_ast_positions_and_outputs() {
         let (audited, evidence) = parse_document_with_reference_audit(&b, &source, &options);
         assert_eq!(evidence.source(), source);
         assert_eq!(
+            default
+                .descendants()
+                .map(|node| node.data.borrow().sourcepos)
+                .collect::<Vec<_>>(),
+            audited
+                .descendants()
+                .map(|node| node.data.borrow().sourcepos)
+                .collect::<Vec<_>>(),
+            "compare actual positions; XML sourcepos formatting is optional"
+        );
+        assert_eq!(
             cases::output(default, &options),
             cases::output(audited, &options)
         );

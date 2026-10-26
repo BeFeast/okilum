@@ -62,7 +62,8 @@ Receipt clarification: the earlier parser API's 21-case XML/HTML/CommonMark
 upstream comparison did not enable XML `render.sourcepos`; it proves those exact
 outputs, not an independent upstream source-position comparison. This slice
 checks source positions directly against a fresh canonical AST and checks their
-editor-coordinate conversions explicitly.
+editor-coordinate conversions explicitly. The existing 21-case audited/default
+API test now also compares every descendant's Sourcepos directly.
 
 Remaining integration obligations: safely bounded current-root assembly and
 fuel/outcome equivalence, projected joins/global mapping, viewport and publication
