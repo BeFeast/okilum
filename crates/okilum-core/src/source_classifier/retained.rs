@@ -67,8 +67,16 @@ pub struct RetainedPresentation {
     references: Arc<[Reference]>,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_RETAINED_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static TEST_REVEAL_PREPARES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl RetainedPresentation {
     pub fn new(classified: &Classification) -> Self {
+        #[cfg(test)]
+        TEST_RETAINED_BUILDS.with(|count| count.set(count.get() + 1));
         Self {
             snapshot: classified.snapshot.clone(),
             base: crate::source_projection::project(
@@ -127,6 +135,8 @@ impl RetainedPresentation {
         &self,
         active: &Active,
     ) -> Result<RevealSnapshot, crate::source_projection::SourceFallback> {
+        #[cfg(test)]
+        TEST_REVEAL_PREPARES.with(|count| count.set(count.get() + 1));
         self.validate_active(active)?;
         let mut reveal = RevealSnapshot {
             active: active.clone(),

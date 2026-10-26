@@ -1,5 +1,6 @@
 //! Immutable authority from one canonical root parse, deliberately Reader-unwired.
 //! No local parse, fragment fuel, replay, cache-key relaxation or global join.
+pub(crate) mod publication;
 use super::{Classification, Context, SourceReason, MAX_BYTES, MAX_DEPTH, MAX_NODES};
 use crate::source_projection::{FallbackReason, Snapshot, MAX_RANGES, MAX_WORK};
 use comrak::{
@@ -447,6 +448,7 @@ impl Ticket {
 pub(crate) struct Session {
     requested: Option<Ticket>,
     accepted: Option<Arc<BlockIndex>>,
+    accepted_sequence: Option<u64>,
     sequence: u64,
 }
 impl Session {
@@ -501,10 +503,14 @@ impl Session {
             ContextClaim::Known(completed.ticket.context),
         )?;
         self.accepted = Some(completed.index.clone());
+        self.accepted_sequence = Some(completed.ticket.sequence);
         Ok(completed.index)
     }
     pub fn current(&self) -> Option<&Arc<BlockIndex>> {
         let ticket = self.requested.as_ref()?;
+        if self.accepted_sequence != Some(ticket.sequence) {
+            return None;
+        }
         self.accepted.as_ref().filter(|index| {
             index
                 .check(&ticket.source, ContextClaim::Known(ticket.context))
