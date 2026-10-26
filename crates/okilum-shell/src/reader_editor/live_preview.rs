@@ -327,7 +327,6 @@ impl Reader {
             return;
         }
         let colors = projection_colors(cx);
-        let held = self.checked_live_provider(cx.entity_id(), cx);
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -336,6 +335,11 @@ impl Reader {
         editing.live_preview.enabled = !editing.live_preview.enabled;
         let input = editing.input.clone();
         let enabled = editing.live_preview.enabled;
+        let held = if enabled {
+            self.checked_live_provider(cx.entity_id(), cx)
+        } else {
+            None
+        };
         input.update(cx, |input, cx| {
             // Native search operates on source offsets and suppresses projection.
             // Close it before adopting Live Preview; Find returns to Source.
@@ -360,10 +364,19 @@ impl Reader {
     fn live_input(&self, entity: EntityId, cx: &App) -> Option<nav::Input> {
         let editing = self.editing.as_ref()?;
         let state = &editing.live_preview;
-        if !state.origin.matches(self, editing, entity) {
+        if !state.enabled || self.move_applying || !state.origin.matches(self, editing, entity) {
             return None;
         }
         let editor = editing.input.read(cx);
+        if editor.text().len() > okilum_core::source_classifier::MAX_BYTES {
+            return None;
+        }
+        // Observe actual snapshot-copy work in the existing test recorder.
+        #[cfg(test)]
+        okilum_core::open_diagnostics::count(
+            "reader_projection_snapshot_bytes",
+            editor.text().len(),
+        );
         Some(nav::Input {
             binding: nav::Binding {
                 owner: state.owner.clone(),
@@ -384,9 +397,9 @@ impl Reader {
         if self.move_applying {
             return None;
         }
-        let live = self.live_input(entity, cx)?;
         let state = &self.editing.as_ref()?.live_preview;
         let provider = state.accepted.as_ref()?;
+        let live = self.live_input(entity, cx)?;
         (provider.source().stamp == live.source.stamp && provider.source().text == live.source.text)
             .then(|| provider.clone())
     }
@@ -404,17 +417,12 @@ impl Reader {
         }
     }
     pub(super) fn schedule_live_preview(&mut self, cx: &mut Context<Self>) {
-        let captured = self.live_input(cx.entity_id(), cx);
-        let parked = self.move_applying;
+        // Refused inputs supersede below without copying the native buffer.
+        let live = self.live_input(cx.entity_id(), cx);
         let Some(editing) = &mut self.editing else {
             return;
         };
         let state = &mut editing.live_preview;
-        let live = captured.filter(|i| {
-            !parked
-                && state.enabled
-                && i.source.text.len() <= okilum_core::source_classifier::MAX_BYTES
-        });
         // An identical already queued/running request is not a new attempt.
         if let Some(input) = &live {
             if state
@@ -2229,8 +2237,9 @@ mod tests {
                 .running
                 .clone()
                 .unwrap();
-            r.open_source_find(cx); // Real direct enabled=false/source-clear path.
             let live = r.live_input(cx.entity_id(), cx).unwrap();
+            r.open_source_find(cx); // Real direct enabled=false/source-clear path.
+            assert!(r.live_input(cx.entity_id(), cx).is_none());
             assert!(!r
                 .editing
                 .as_ref()
@@ -2278,6 +2287,62 @@ mod tests {
             assert!(r
                 .checked_live_provider(e.live_preview.origin.reader, cx)
                 .is_some());
+        });
+    }
+    #[gpui::test]
+    fn refused_actual_reader_inputs_do_not_copy_projection_snapshots(cx: &mut TestAppContext) {
+        let (reader, visual, _dir) = fixture(cx, ORIGINAL);
+        let bytes = |r: &okilum_core::open_diagnostics::Report| {
+            r.counts
+                .get("reader_projection_snapshot_bytes")
+                .copied()
+                .unwrap_or(0)
+        };
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.editing.as_ref().unwrap().input.clone();
+            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            let (_, source_work) = okilum_core::open_diagnostics::capture(|| {
+                input.update(cx, |i, cx| i.replace("x", window, cx));
+                r.schedule_live_preview(cx);
+            });
+            assert_eq!(
+                bytes(&source_work),
+                0,
+                "ordinary Source mode has no projection snapshot copy"
+            );
+            let large = format!("# {}\n", "🧠".repeat(17_000));
+            assert!(large.len() > okilum_core::source_classifier::MAX_BYTES);
+            let (_, refused_work) = okilum_core::open_diagnostics::capture(|| {
+                input.update(cx, |i, cx| i.set_value(large, window, cx));
+                r.schedule_live_preview(cx);
+                r.set_live_preview(true, window, cx); // Oversized LP also refuses before copying.
+                r.schedule_live_preview(cx);
+            });
+            assert_eq!(
+                bytes(&refused_work),
+                0,
+                "oversized refusal must not allocate a full projection snapshot"
+            );
+            assert!(r.editing.as_ref().unwrap().live_preview.running.is_none());
+            let (_, admitted_work) = okilum_core::open_diagnostics::capture(|| {
+                input.update(cx, |i, cx| i.set_value(ORIGINAL, window, cx));
+                r.schedule_live_preview(cx);
+            });
+            assert!(
+                bytes(&admitted_work) >= ORIGINAL.len() as u64,
+                "positive control: the actual bounded LP snapshot copy is observed"
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+            assert_eq!(
+                *e.live_preview.completed_navigation_bytes().last().unwrap(),
+                ORIGINAL.len() as u64
+            );
         });
     }
 }
