@@ -1717,7 +1717,7 @@ fn live_blocks(
                 .child(format!("Image unavailable \u{b7} {source}"))
                 .into_any_element();
         }
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = font_size;
         // The first line keeps two identical blocks apart.
         let id = SharedString::from(format!("live-block-{}-{}", block.key, block.lines.start));

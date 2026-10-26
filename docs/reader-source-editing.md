@@ -21,6 +21,10 @@ New note temporarily opens Live Preview for typing without changing the window's
 chosen mode for other notes. Restoring an editor after a sidebar selection keeps
 keyboard focus in the tree (#1730).
 
+Document zoom scales code together with prose in Read and Live Preview (#1737).
+Inline code inherits the surrounding text size; rendered fenced blocks scale
+their themed monospace size by the same zoom factor, including inside callouts.
+
 Windows Source and Live Preview use an app-owned exact Unicode clipboard reader
 (#1434). A restricted mode of the same executable reads `CF_UNICODETEXT` before
 updater, state or GUI initialization. Its parent limits the entire request to two
