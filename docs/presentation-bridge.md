@@ -25,8 +25,8 @@ outside `compose`: compose only compares exact source and the entire native acti
 state, then returns the already prepared immutable SourceProjection trait object.
 It does not parse, lookup, reindex, derive reveal or create root authority.
 
-This adapter is **unselected**. Production CachedProvider remains the selected display backend; Reader scheduling
-is unchanged. Brain navigation request ownership is described below. The legacy document-links
+This adapter is **unselected**. Production CachedProvider remains the selected display backend. Brain navigation
+request ownership and Reader legacy delivery are described below. The legacy document-links
 inventory has different parsing semantics from classifier links and is not
 replaced. Retained remap/raw-tail continuity is not supplied by a current-root
 publication; replacing that production behavior with raw frames is not an
@@ -102,8 +102,43 @@ refusals, latest queued input, live binding changes, goal clear, close/reopen an
 two unpainted mutations, including intermediate legacy display/maps/styles/
 headings/markers/blocks/raw policy and actual producer work controls.
 
-Reader scheduling/park, full-active preparation, prepared publication selection,
-continuity activation and native epoch/held-pin proof remain separate obligations.
+Full-active preparation, prepared publication selection, continuity activation and
+native epoch/held-pin proof remain separate obligations. Brain lifecycle proof
+alone is not Reader park proof; Reader-specific delivery is described below.
 Authored navigation inventory is separate from canonical presentation root/fuel
 proof, action permission, publication identity and painted-frame proof. No
 PresentationProof, observer, large-note admission or performance claim is added.
+
+
+## Reader legacy classification delivery
+
+Reader's existing LivePreview worker uses the same opaque Session/shared producer
+to deliver CachedProvider. It computes one strict authored-link inventory per
+worker, plus the separate canonical display parse. The actual Reader SourceClick
+still calls parse_in_vault and preserves vault-dependent fallback, resolution,
+save-before-action and ambiguity handling. No strict inventory is promoted to
+Reader navigation or canonical-root authority.
+
+A new Editing owns one Reader/input lifetime, pinned Reader root/path/selected
+path, exact FileEditor path and document kind. Paths are compared as PathBuf and
+encoded losslessly for session identity, without new FS probes. Completion checks
+actual live Reader/input/context/source and latest opaque request before destructive
+adoption. It installs the legacy provider with the current palette in one UI update.
+Latest queued work is separate from an owned physical flight; its foreground guard
+exists before first poll, and cancellation settles only that flight.
+
+Editing::park cancels pending/queued delivery before disabling input and moving
+FileEditor to the worker. The existing input, lifetime and immutable legacy display
+stay in the foreground reassembly closure. Move completion explicitly resumes only
+after live path/store/text synchronization, including equal-value set_value paths.
+Retired Editing/close/new source gets a new owner. A held provider may reuse its exact
+current snapshot after full binding checks; this does not fake Session adoption or
+new current navigation rights. Interrupted/source-changed work is honestly cold.
+
+Valid pending edits retain the selected legacy remap/raw-tail presentation. Unchanged
+save echoes and theme updates reuse classification; external changed bytes are new
+work. No save/recovery/autosave/IME/action ordering or live block renderer is changed.
+Native full-active preparation, PreparedProvider selection, native epoch/held-pin
+proof, observer/PresentationProof and130KB admission remain separate follow-ons.
+The existing caps, full-parent key and canonical recompute/fuel remain unchanged;
+no cross-edit performance or Stable acceptance is claimed.
