@@ -832,15 +832,37 @@ mod tests {
             })
         };
         let base = reader.read_with(visual, widths);
+        assert!(
+            base.iter().all(|width| *width > px(0.)),
+            "LP baseline geometry positive control: {base:?}"
+        );
+        eprintln!("LP_GEOMETRY baseline={base:?}");
         for zoom in [2., 0.5, 1.] {
             CODE_STYLES.with(|styles| *styles.borrow_mut() = Some(Vec::new()));
             reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
             frame(visual);
             let actual = reader.read_with(visual, widths);
-            for (actual, base) in actual.into_iter().zip(base) {
-                assert!((actual - base * zoom).abs() < px(1.), "LP code zoom {zoom}");
-            }
             let styles = CODE_STYLES.with(|styles| styles.borrow_mut().take().unwrap());
+            let (font_size, stamp, epoch, painted_cursor) = reader.read_with(visual, |r, cx| {
+                let input = r.editing.as_ref().unwrap().input().read(cx);
+                (
+                    reader_ui_state::font_size(cx),
+                    input.source_stamp(),
+                    input.presentation_epoch(),
+                    input.painted_cursor(),
+                )
+            });
+            eprintln!("LP_GEOMETRY zoom={zoom} actual={actual:?} baseline={base:?} font_size={font_size} stamp={stamp:?} epoch={epoch} painted_cursor={painted_cursor:?} block_styles={styles:?}");
+            for (label, (actual, base)) in ["body", "inline code", "fenced code"]
+                .into_iter()
+                .zip(actual.into_iter().zip(base))
+            {
+                assert!(
+                    (actual - base * zoom).abs() < px(1.),
+                    "LP {label} zoom {zoom}: actual={actual:?}, base={base:?}, expected={:?}",
+                    base * zoom
+                );
+            }
             assert!(
                 !styles.is_empty(),
                 "actual LP callout block renderer positive control"
