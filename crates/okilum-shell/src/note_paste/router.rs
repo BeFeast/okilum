@@ -168,6 +168,8 @@ pub struct Routed {
     pub insert: Option<String>,
     pub follow_up: Option<FollowUp>,
     pub notice: Option<Notice>,
+    /// Complete locally saved files, published to inventory before their embeds.
+    pub saved_files: Vec<PathBuf>,
     /// The clipboard's type names (never contents), for the log.
     pub types: Vec<String>,
     /// Bytes taken from the clipboard, for the log.
@@ -185,6 +187,7 @@ impl Routed {
             insert: None,
             follow_up: None,
             notice: None,
+            saved_files: Vec::new(),
             types: types.to_vec(),
             bytes: 0,
             detail: String::new(),
@@ -244,6 +247,7 @@ fn finish(mut routed: Routed, cx: &RouteContext) -> Routed {
     }
     match attachments::save_pasted_image(cx.vault_root, note_rel, &image, cx.stamp) {
         Ok(saved) => {
+            routed.saved_files.push(saved.path);
             routed.insert = Some(fit(&saved.embed, false, cx.source, selection(cx)));
             routed
         }

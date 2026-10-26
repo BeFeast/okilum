@@ -2,9 +2,8 @@
 //! as a file in the vault's attachment folder plus an Obsidian embed.
 //!
 //! Shared by every platform. A platform that can read its clipboard inside the
-//! paste command implements [`NoteClipboard`] (macOS now); elsewhere the
-//! note editor keeps the text-only [`ExactClipboardProvider`].
-// Until the Linux and Windows lanes implement `NoteClipboard`, the offer reader is macOS-only.
+//! paste command implements [`NoteClipboard`] (macOS and Linux); elsewhere
+//! the note editor keeps the text-only [`ExactClipboardProvider`].
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod anchor;
 pub mod attachments;
@@ -48,6 +47,14 @@ pub trait NoteClipboard: Send + Sync {
     }
     /// Smart paste (#1611): the router run against this clipboard.
     fn route(&self, context: &RouteContext) -> Result<Routed, OfferError>;
+    /// Platforms with a self-owned selection must read GPUI on this UI thread.
+    fn route_in_command(
+        &self,
+        context: &RouteContext,
+        _: &App,
+    ) -> Result<Routed, ClipboardReadError> {
+        self.route(context).map_err(clipboard_error)
+    }
     /// Copied image or video files, or image data, for the Feedback window
     /// (#1609): attached, never pasted as a path.
     fn read_attachment(&self) -> Option<offer::ClipAttachment>;
@@ -60,6 +67,7 @@ pub trait NoteClipboard: Send + Sync {
 pub struct Outbox {
     pub notice: Option<Notice>,
     pub follow_up: Option<FollowUp>,
+    pub saved_files: Vec<PathBuf>,
 }
 pub type PasteOutbox = Arc<Mutex<Outbox>>;
 
@@ -164,7 +172,13 @@ pub fn platform_note_clipboard() -> Option<Arc<dyn NoteClipboard>> {
             crate::platform::exact_macos_clipboard::MacClipboard,
         ))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        Some(Arc::new(
+            crate::platform::wayland_note_clipboard::LinuxNoteClipboard::new(),
+        ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         None
     }
@@ -282,7 +296,7 @@ impl ExactClipboardProvider for NotePaste {
             stamp: &stamp,
             ask_above: ask_above_bytes(cx),
         };
-        let routed = self.clipboard.route(&route_context);
+        let routed = self.clipboard.route_in_command(&route_context, cx);
         let elapsed = started.elapsed();
         Some(match routed {
             Ok(routed) => {
@@ -310,6 +324,7 @@ impl ExactClipboardProvider for NotePaste {
                 } else if let Ok(mut outbox) = self.outbox.lock() {
                     outbox.notice = routed.notice;
                     outbox.follow_up = routed.follow_up;
+                    outbox.saved_files = routed.saved_files;
                 }
                 if failed {
                     Err(ClipboardReadError::Io)
@@ -319,7 +334,7 @@ impl ExactClipboardProvider for NotePaste {
             }
             Err(error) => {
                 eprintln!("Paste: clipboard read failed ({error:?})");
-                Err(clipboard_error(error))
+                Err(error)
             }
         })
     }

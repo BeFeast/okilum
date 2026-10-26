@@ -57,9 +57,14 @@ in the background; TSV as a table; plain text. Paste as Plain Text is
 Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
 Cmd+Alt+V / Ctrl+Alt+V. Files dropped onto the editor take the files path.
 Background results land only in the editing session of the note they were
-pasted into; otherwise a toast names the saved file. The rich-text, image and
-file readers are macOS-only for now; Linux (#1618) and Windows (#1619) paste
-text as described above.
+pasted into; otherwise a toast names the saved file. macOS supports rich-text, image and file offers. Linux also routes native
+PNG/JPEG and other supported image MIME offers, plus local `text/uri-list`
+files, through the note attachment pipeline. The Wayland data-control read
+keeps the same pinned-offer checks, deadline and payload limits; self-owned
+selections, X11 and unsupported compositors use GPUI's typed clipboard on the
+UI thread. Windows (#1619) still pastes text as described above. Completed
+local attachment writes publish their exact saved paths to inventory, so a
+paste or drop does not wait for filesystem notifications to display its image.
 
 A byte comparison with the opened base guards every changed save. An external
 change blocks navigation and app-owned Quit until Reload or Keep mine resolves
