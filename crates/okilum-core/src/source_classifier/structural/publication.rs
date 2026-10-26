@@ -49,6 +49,30 @@ pub(crate) struct View<'a> {
     pub identity: &'a PublicationId,
 }
 
+/// Validate independent native inputs against the existing root index, before union.
+pub(crate) fn checked_range(
+    roots: &Roots,
+    source: &Snapshot,
+    range: Range<usize>,
+    utf16: bool,
+) -> Result<Range<usize>, Error> {
+    let root = Root::accepted(
+        roots,
+        source,
+        ContextClaim::Known(ParseContext::LivePreview),
+    )?;
+    let active = Active {
+        selection: Some(range),
+        composition: None,
+    };
+    let input = if utf16 {
+        ActiveInput::Utf16(active)
+    } else {
+        ActiveInput::Source(active)
+    };
+    root.active(input)?.selection.ok_or(Error::ActiveMismatch)
+}
+
 #[derive(Clone)]
 struct Root {
     index: Arc<BlockIndex>,
@@ -121,6 +145,38 @@ impl Publication {
     }
     pub fn active(&self) -> &Active {
         &self.active
+    }
+    pub(crate) fn projection(
+        &self,
+        view: &View<'_>,
+    ) -> Result<&crate::source_projection::Projection, Error> {
+        self.check(view)?;
+        Ok(self.reveal.projection())
+    }
+    pub(crate) fn styles(
+        &self,
+        view: &View<'_>,
+    ) -> Result<&[crate::source_classifier::StyleSpan], Error> {
+        self.check(view)?;
+        Ok(self.retained.styles())
+    }
+    pub(crate) fn decorations(
+        &self,
+        view: &View<'_>,
+    ) -> Result<&[crate::source_classifier::decorations::Marker], Error> {
+        self.check(view)?;
+        Ok(self.retained.decorations())
+    }
+    pub(crate) fn reasons(
+        &self,
+        view: &View<'_>,
+    ) -> Result<&[crate::source_classifier::SourceReason], Error> {
+        self.check(view)?;
+        Ok(self
+            .root
+            .index
+            .classification(view.source, ContextClaim::Known(self.root.context))?
+            .reasons())
     }
     fn check(&self, view: &View<'_>) -> Result<(), Error> {
         let context = match &view.context {
@@ -251,6 +307,9 @@ impl Default for Session {
     }
 }
 impl Session {
+    pub(crate) fn invalidate(&mut self) {
+        self.requested = None;
+    }
     pub fn begin(
         &mut self,
         roots: &Roots,

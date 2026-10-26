@@ -12,6 +12,7 @@ pub mod decorations;
 #[allow(dead_code)]
 pub(crate) mod fragment_cache;
 // Canonical root authority groundwork; ordinary Reader admission remains unchanged.
+pub mod presentation;
 mod retained;
 #[allow(dead_code)]
 pub(crate) mod structural;

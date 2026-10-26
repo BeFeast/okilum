@@ -14,6 +14,10 @@ use okilum_core::{
     source_projection::{Active, Bias, Projection, Snapshot},
 };
 
+#[allow(dead_code)] // Explicitly unselected until the consumer activation contract is proven.
+#[path = "source_presentation/publication_adapter.rs"]
+pub(crate) mod publication_adapter;
+
 pub const BODY_FONT: &str = "Noto Sans";
 pub const CODE_FONT: &str = "Cascadia Code";
 
@@ -205,39 +209,44 @@ impl CachedProvider {
             source: source.clone(),
             // Retained with the styles, so a revision not yet classified keeps
             // its quote bars, bullets and task boxes (#1295).
-            markers: retained
-                .decorations()
-                .iter()
-                .filter(|m| !is_block(&m.kind))
-                .map(|m| ProjectionMarker {
-                    range: SourceByte(m.range.start)..SourceByte(m.range.end),
-                    scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
-                    kind: match m.kind {
-                        source_classifier::decorations::Kind::Unordered { depth } => {
-                            MarkerKind::Bullet { depth }
-                        }
-                        source_classifier::decorations::Kind::Quote { depth } => {
-                            MarkerKind::Quote { depth }
-                        }
-                        source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
-                        source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
-                        source_classifier::decorations::Kind::Task { checked } => {
-                            MarkerKind::Task { checked }
-                        }
-                        source_classifier::decorations::Kind::Table
-                        | source_classifier::decorations::Kind::Image
-                        | source_classifier::decorations::Kind::Callout => {
-                            unreachable!("filtered")
-                        }
-                    },
-                })
-                .collect(),
+            markers: projection_markers(retained.decorations()),
             reveal: reveal_snapshot,
             styles,
             line_scales,
             blocks,
         }))
     }
+}
+
+fn projection_markers(
+    decorations: &[source_classifier::decorations::Marker],
+) -> Vec<ProjectionMarker> {
+    decorations
+        .iter()
+        .filter(|m| !is_block(&m.kind))
+        .map(|m| ProjectionMarker {
+            range: SourceByte(m.range.start)..SourceByte(m.range.end),
+            scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
+            kind: match m.kind {
+                source_classifier::decorations::Kind::Unordered { depth } => {
+                    MarkerKind::Bullet { depth }
+                }
+                source_classifier::decorations::Kind::Quote { depth } => {
+                    MarkerKind::Quote { depth }
+                }
+                source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
+                source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
+                source_classifier::decorations::Kind::Task { checked } => {
+                    MarkerKind::Task { checked }
+                }
+                source_classifier::decorations::Kind::Table
+                | source_classifier::decorations::Kind::Image
+                | source_classifier::decorations::Kind::Callout => {
+                    unreachable!("filtered")
+                }
+            },
+        })
+        .collect()
 }
 
 /// Decorations Live Preview draws as rendered blocks: tables, images and
@@ -391,22 +400,50 @@ pub(crate) fn heading_scale(level: u8) -> f32 {
     }
 }
 
+// Shared conversion consumes a checked read view, not mutable parser authority.
+trait PresentationMap {
+    fn display_text(&self) -> &str;
+    fn map_source(&self, offset: usize) -> Option<usize>;
+}
+impl PresentationMap for Projection {
+    fn display_text(&self) -> &str {
+        self.display()
+    }
+    fn map_source(&self, offset: usize) -> Option<usize> {
+        self.source_to_display(self.snapshot(), offset).ok()
+    }
+}
+impl<T: PresentationMap> PresentationMap for Arc<T> {
+    fn display_text(&self) -> &str {
+        self.as_ref().display_text()
+    }
+    fn map_source(&self, offset: usize) -> Option<usize> {
+        self.as_ref().map_source(offset)
+    }
+}
+impl PresentationMap for okilum_core::source_classifier::presentation::View<'_> {
+    fn display_text(&self) -> &str {
+        self.display()
+    }
+    fn map_source(&self, offset: usize) -> Option<usize> {
+        self.source_to_display(offset).ok()
+    }
+}
+
 /// One entry per projected heading line: its scale, and the revealed marker
 /// (`## `) that hangs in the margin so the heading text does not move when the
 /// caret reveals it.
 fn heading_line_scales(
-    projection: &Projection,
+    projection: &impl PresentationMap,
     styles: &[source_classifier::StyleSpan],
 ) -> Vec<LineScale> {
-    let display = projection.display();
+    let display = projection.display_text();
     let newlines: Vec<usize> = display.match_indices('\n').map(|(at, _)| at).collect();
     let mut scales: Vec<LineScale> = styles
         .iter()
         .filter_map(|style| match style.style {
             Style::Heading(level) => {
-                let start = projection
-                    .source_to_display(projection.snapshot(), style.range.start)
-                    .ok()?;
+                let start = projection.map_source(style.range.start)?;
                 let line = newlines.partition_point(|&at| at < start);
                 let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
                 let scale = heading_scale(level);
@@ -499,7 +536,7 @@ impl SourceProjection for MappedProjection {
 
 /// Sweep canonical nested style intervals into disjoint projected metric runs.
 fn projected_styles(
-    projection: &Projection,
+    projection: &impl PresentationMap,
     styles: &[source_classifier::StyleSpan],
     colors: Option<ProjectionColors>,
 ) -> Option<Vec<ProjectionStyle>> {
@@ -514,12 +551,8 @@ fn projected_styles(
             Style::Link | Style::WikiLink => 5,
             Style::Definition => 6,
         };
-        let start = projection
-            .source_to_display(projection.snapshot(), style.range.start)
-            .ok()?;
-        let end = projection
-            .source_to_display(projection.snapshot(), style.range.end)
-            .ok()?;
+        let start = projection.map_source(style.range.start)?;
+        let end = projection.map_source(style.range.end)?;
         if start < end {
             events.extend([(start, slot, 1i32), (end, slot, -1)]);
         }
