@@ -301,6 +301,7 @@ impl Reader {
             if !editing.input.read(cx).search_session().open {
                 editing.live_preview.restore_after_find = editing.live_preview.enabled;
             }
+            editing.live_preview.suspend();
             editing.live_preview.enabled = false;
             let sensitive = reader_ui_state::find_case_sensitive(cx);
             editing.input.update(cx, |input, cx| {
@@ -4572,7 +4573,6 @@ mod tests {
             input.update(cx, |i, cx| i.set_value("edited [[start]] ", window, cx));
             input.update(cx, |i, cx| i.set_value("edited [[start]]", window, cx));
             r.schedule_live_preview(cx);
-            assert!(r.save_source(cx));
             r.editing
                 .as_ref()
                 .unwrap()
@@ -4584,6 +4584,15 @@ mod tests {
             old_marker.get(),
             "real LP classification pending at two-window park"
         );
+        // Mutation callbacks mark recovery pending after the update above.
+        // A REAL save in the next update settles the current input before move.
+        reference.update_in(reference_visual, |r, _, cx| {
+            assert!(r.save_source(cx));
+            assert!(
+                !r.source_is_dirty(cx),
+                "the unchanged production move guard admits this input"
+            );
+        });
         let task = source.update_in(source_visual, |r, window, cx| {
             let task = r.apply_link_move(&preview, window, cx).unwrap();
             assert!(r.move_applying);

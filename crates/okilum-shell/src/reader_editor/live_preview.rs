@@ -1969,7 +1969,8 @@ mod tests {
     async fn real_park_resume_failed_move_and_deferred_save_echo_keep_delivery_owned(
         cx: &mut TestAppContext,
     ) {
-        let original = "# Heading\n\n| a | b |\n| - | - |\n| c | d |\n\n[[target]]\n\n**tail**\n";
+        let original =
+            "# Heading\n\n| a | b |\n| - | - |\n| c | d |\n\n[target](target.md)\n\n**tail**\n";
         let (reader, visual, dir) = fixture(cx, original);
         std::fs::create_dir(dir.path().join("vault/New")).unwrap();
         reader.update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
@@ -1989,13 +1990,16 @@ mod tests {
             "New/target.md",
         )
         .unwrap();
-        let (task, old) = reader.update_in(visual, |r, window, cx| {
+        assert!(
+            preview.editor_paths().contains(&"note.md".to_owned()),
+            "explicit Markdown destination actually changes, so the real move must park this note"
+        );
+        let old = reader.update_in(visual, |r, window, cx| {
             let input = r.editing.as_ref().unwrap().input.clone();
             // A real reset changes generation even though the final bytes return.
             input.update(cx, |i, cx| i.set_value(format!("{original} "), window, cx));
             input.update(cx, |i, cx| i.set_value(original, window, cx));
             r.schedule_live_preview(cx);
-            assert!(r.save_source(cx));
             let old = r
                 .editing
                 .as_ref()
@@ -2007,13 +2011,19 @@ mod tests {
                 old.get(),
                 "actual classification task pending before real park"
             );
+            old
+        });
+        let task = reader.update_in(visual, |r, window, cx| {
+            assert!(r.save_source(cx));
+            assert!(!r.source_is_dirty(cx));
+            let input = r.editing.as_ref().unwrap().input.clone();
             let task = r.apply_link_move(&preview, window, cx).unwrap();
             assert!(
                 r.move_applying && r.editing.is_none(),
                 "actual Editing::park path"
             );
             assert!(!input.read(cx).is_editable());
-            (task, old)
+            task
         });
         assert!(task.await.unwrap().moved);
         assert!(
@@ -2186,6 +2196,72 @@ mod tests {
             assert!(
                 e.live_preview.owner != owner,
                 "actual rename/complete_move retires old Editing"
+            );
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+        });
+    }
+    #[gpui::test]
+    fn real_find_refusal_before_first_poll_requires_new_delivery_on_restore(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, visual, _dir) = fixture(cx, ORIGINAL);
+        let (old, latest) = reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(true, window, cx);
+            let flight = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .running
+                .clone()
+                .unwrap();
+            r.open_source_find(cx); // Real direct enabled=false/source-clear path.
+            let live = r.live_input(cx.entity_id(), cx).unwrap();
+            assert!(!r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .session
+                .is_pending(&flight.key, Some(&live)));
+            assert!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .search_session()
+                    .open
+            );
+            r.toggle_live_preview(window, cx); // Actual restore path closes native Find.
+            let latest = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .running
+                .clone()
+                .unwrap();
+            assert!(!Rc::ptr_eq(&flight, &latest));
+            assert!(r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .session
+                .is_pending(&latest.key, Some(&live)));
+            (flight.busy.clone(), latest.busy.clone())
+        });
+        visual.run_until_parked();
+        assert!(!old.get() && !latest.get());
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            assert_eq!(
+                e.live_preview.completed_navigation_bytes(),
+                vec![ORIGINAL.len() as u64],
+                "the canceled pre-poll request is not a completed immutable parse"
             );
             assert!(r
                 .checked_live_provider(e.live_preview.origin.reader, cx)
