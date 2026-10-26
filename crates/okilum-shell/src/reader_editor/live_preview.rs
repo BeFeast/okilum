@@ -1596,12 +1596,19 @@ mod tests {
             r.open_note("target.md", None, window, cx);
         });
         visual.run_until_parked();
-        reader.update_in(visual, |r, window, cx| {
-            r.toggle_source(window, cx);
-            r.set_live_preview(true, window, cx);
+        reader.update_in(visual, |r, _, _| {
+            assert_eq!(r.current_rel, "target.md", "actual next note was accepted");
+            assert_ne!(
+                r.editing
+                    .as_ref()
+                    .expect("chosen editor restored after selection")
+                    .input,
+                input,
+                "the next note owns a new actual editor"
+            );
             assert!(
                 r.source_live_preview(),
-                "classify the next note in Live Preview"
+                "actual note selection restores the chosen Live Preview mode"
             );
         });
         visual.run_until_parked();

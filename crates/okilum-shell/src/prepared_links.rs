@@ -412,6 +412,7 @@ impl Reader {
                 let task_landing = document.is_ok().then_some(task_text).flatten();
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
+                let navigation = this.navigation.generation;
                 this.accept_prepared_document(request, document, window, cx);
                 this.navigation.flash_pending = flash_block;
                 if let Some(line) = landing_line {
@@ -421,6 +422,14 @@ impl Reader {
                     this.land_task_text(text, cx);
                 }
                 this.finish_link_edit(generation, window, cx);
+                // Only a successfully accepted current request may reopen the
+                // chosen editor. Explicit link landings above keep ownership.
+                if this.navigation.generation != navigation
+                    && this.ui_state.source_mode
+                    && this.editing.is_none()
+                {
+                    this.toggle_source(window, cx);
+                }
                 if let Some(line) = unplaced_line {
                     this.link_notice = Some(
                         format!(
