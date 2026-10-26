@@ -11,7 +11,10 @@ pub mod decorations;
 // Deliberately unwired groundwork: Reader admission and its limits stay unchanged.
 #[allow(dead_code)]
 pub(crate) mod fragment_cache;
+// Canonical root authority groundwork; ordinary Reader admission remains unchanged.
 mod retained;
+#[allow(dead_code)]
+pub(crate) mod structural;
 pub use retained::{RetainedPresentation, RevealSnapshot};
 
 pub const MAX_BYTES: usize = 64 * 1024;
@@ -238,6 +241,20 @@ pub(crate) fn classify_fragment(
     }
     let context = Context::new(source);
     let arena = Arena::new();
+    let options = canonical_options(source, references, allow_frontmatter);
+    #[cfg(test)]
+    TEST_PARSE_CALLS.with(|count| count.set(count.get() + 1));
+    let root = comrak::parse_document(&arena, source, &options);
+    classify_parsed(snapshot, &context, root, allow_frontmatter)
+}
+
+/// A closed configuration shared with structural authority. Arbitrary option or
+/// callback pointers are not semantic identities.
+fn canonical_options<'a>(
+    source: &str,
+    references: &[Reference],
+    allow_frontmatter: bool,
+) -> Options<'a> {
     let mut options = Options::default();
     options.extension.strikethrough = true;
     options.extension.table = true;
@@ -255,9 +272,23 @@ pub(crate) fn classify_fragment(
         "---"
     };
     options.extension.front_matter_delimiter = allow_frontmatter.then(|| delimiter.into());
-    #[cfg(test)]
-    TEST_PARSE_CALLS.with(|count| count.set(count.get() + 1));
-    let root = comrak::parse_document(&arena, source, &options);
+    options
+}
+
+/// Consume the SAME canonical root, never fragments with fresh lookup fuel.
+fn classify_parsed<'a>(
+    snapshot: &Snapshot,
+    context: &Context<'_>,
+    root: &'a AstNode<'a>,
+    allow_frontmatter: bool,
+) -> Classification {
+    let source = snapshot.source();
+    let first_line = source.trim_start_matches('\u{feff}').lines().next();
+    let delimiter = if first_line == Some("+++") {
+        "+++"
+    } else {
+        "---"
+    };
     for (count, node) in root.descendants().enumerate() {
         if count >= MAX_NODES || node.ancestors().take(MAX_DEPTH + 2).count() > MAX_DEPTH + 1 {
             return fallback(snapshot, SourceReason::StructureLimit);
@@ -397,7 +428,7 @@ pub(crate) fn classify_fragment(
         marker_scopes,
         contexts,
         references: resolved,
-        decorations: decorations::extract(root, &context).unwrap_or_default(),
+        decorations: decorations::extract(root, context).unwrap_or_default(),
         links,
         headings,
         reasons,
