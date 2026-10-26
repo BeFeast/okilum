@@ -48,15 +48,12 @@ def run(*args, **kwargs):
     return subprocess.run([str(a) for a in args], check=True, **kwargs)
 
 
-def wait_for(predicate, process, log, seconds=90, terminal_codes=()):
+def wait_for(predicate, process, log, seconds=90):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if predicate():
             return
-        code = process.poll()
-        if code in terminal_codes:
-            return  # Caller must classify this failure; it is not a PASS.
-        if code not in (None, 0):
+        if process.poll() not in (None, 0):
             raise AssertionError(f'Host exited {process.returncode}: {log.read_text()}')
         time.sleep(.1)
     trace = log.with_suffix('.trace')
@@ -74,63 +71,6 @@ def assert_rollout_ordering(callbacks, group_receipt, probe_receipt):
     for receipt in (group_receipt, probe_receipt):
         assert receipt in callbacks, callbacks
         assert callbacks.index(receipt) < callbacks.index(UPDATER_START_BOUNDARY), callbacks
-
-
-def parse_rotation_trace(callbacks):
-    """Parse the native trace without filling gaps from storage readbacks."""
-    snapshots = []
-    for line in callbacks.splitlines():
-        if line.startswith('rotation observation '):
-            try:
-                snapshots.append(json.loads(line.removeprefix('rotation observation ')))
-            except json.JSONDecodeError:
-                snapshots.append(None)
-    refusal = re.search(r'rotation rejection error=([^/]+)/(-?\d+) selected=(\S+)', callbacks)
-    return {
-        'snapshots': snapshots,
-        'error_domain': refusal.group(1) if refusal else None,
-        'error_code': int(refusal.group(2)) if refusal else None,
-        'selected': refusal.group(3) if refusal else None,
-    }
-
-
-def classify_rotation(evidence):
-    """Classify native receipts; a storage readback cannot replace observation."""
-    snapshots = evidence.get('snapshots', [])
-    presence = ('updaterPresent', 'hostIvarPresent', 'hostPresent',
-                'defaultsIvarPresent', 'defaultsPresent', 'defaultsIsNSUserDefaults')
-
-    def complete(snapshot):
-        return (isinstance(snapshot, dict) and snapshot.get('state') == 'complete'
-                and all(snapshot.get(key) is True for key in presence)
-                and snapshot.get('groupType') == 'NSNumber'
-                and type(snapshot.get('group')) is int
-                and snapshot.get('role') in ('source', 'probe')
-                and snapshot.get('domain') not in (None, '', 'unavailable'))
-
-    if (evidence.get('process_exit') == 62 or not snapshots
-            or not all(complete(snapshot) for snapshot in snapshots)):
-        return 'observer-incomplete'
-    source = next((s for s in reversed(snapshots) if s['role'] == 'source'
-                   and s.get('boundary') in ('completion', 'rejection')), None)
-    probe = next((s for s in reversed(snapshots) if s['role'] == 'probe'
-                  and s.get('boundary') == 'completion'), None)
-    if source is None or probe is None:
-        return 'observer-incomplete'
-    hashes = evidence.get('feed_hashes', [])
-    same_feed = (len(hashes) >= 2 and bool(evidence.get('initial_feed_hash'))
-                 and all(h == evidence['initial_feed_hash'] for h in hashes)
-                 and evidence.get('final_feed_hash') == evidence['initial_feed_hash'])
-    if (evidence.get('defaults_path') == 'explicit-suite'
-            and evidence.get('error_domain') == 'OkilumUpdate' and evidence.get('error_code') == 3
-            and evidence.get('selected') == '2' and source['group'] == probe['group'] == 6
-            and source['boundary'] == 'rejection' and same_feed
-            and evidence.get('admitted_download') is True and evidence.get('foreground') is False
-            and evidence.get('installed') == '1' and evidence.get('relaunch_receipt') is None
-            and evidence.get('guard_seen') is False and evidence.get('termination_seen') is False
-            and evidence.get('process_exit') in (None, 0)):
-        return 'reproduced'
-    return 'not-reproduced-observer-complete'
 
 
 def main():
@@ -172,22 +112,16 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             ROOT / 'scripts/ci/sparkle-freshness/host.m', guard, '-liconv', '-o', executable)
         rotation_scenarios = ('rotation-phase-standard-foreground', 'rotation-phase-suite-foreground',
                               'rotation-phase-standard-background', 'rotation-phase-suite-background')
-        rotation_results = {}
-        rotation_expectations = {
-            'standard-main': 'EXPECTED observer-incomplete/defaults-missing: Foundation refuses the main bundle id as a suite; never reproduction or CF-readback substitution',
-            'explicit-suite-background': 'Only this path can reproduce with observed source AND probe NSNumber 6',
-        }
+        rotation_refusals = []
         for scenario in (*rotation_scenarios, 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
                          'eligibility-delta-foreground', 'eligibility-os-background'):
-            if scenario not in rotation_scenarios:
-                summary = {'expectations': rotation_expectations, 'scenarios': rotation_results,
-                           'job_status': 'RED in every class; use classification.json and ROTATION lines'}
-                (evidence / 'rotation-summary.json').write_text(json.dumps(summary, indent=2))
-                print('ROTATION SUMMARY ' + json.dumps(summary, sort_keys=True), flush=True)
-                raise AssertionError('Regression-only observation complete; fail closed in every class')
+            # Gather both defaults paths before making the regression RED. An
+            # unexpected error is never classified as the original refusal.
+            if scenario not in rotation_scenarios and rotation_refusals:
+                raise AssertionError(f'Already admitted downloads rejected on unchanged signed feed: {rotation_refusals}')
             case = work / scenario
             case.mkdir()
             trace = evidence / f'{scenario}.trace'
@@ -326,53 +260,32 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     callbacks = trace.read_text()
                     assert_rollout_ordering(callbacks, group_receipt, probe_receipt)
                     if rotation:
-                        wait_for(lambda: receipt.exists() or 'report 2 ' in trace.read_text(), process, output,
-                                 terminal_codes=(62,))
+                        wait_for(lambda: receipt.exists() or 'report 2 ' in trace.read_text(), process, output)
                         callbacks = trace.read_text()
+                        assert 'rotation admitted=4 source-group=0' in callbacks, callbacks
+                        assert 'rotation didDownloadUpdate=4 transition=0->6 source-readback=6 probe-storage-readback=6' in callbacks, callbacks
+                        assert 'downloaded 4' in callbacks and 'prepared 4' in callbacks, callbacks
+                        assert f'selection {"foreground" if foreground else "background"}' in callbacks, callbacks
+                        assert any('GET /4.zip' in r for r in requests), requests
+                        assert not any('GET /2.zip' in r for r in requests), requests
+                        assert len(feed_reads) >= 2 and set(feed_reads) == {initial_feed_hash}, feed_reads
+                        assert hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest() == initial_feed_hash
                         installed = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion']
-                        rotation_evidence = {
-                            **parse_rotation_trace(callbacks), 'process_exit': process.poll(),
-                            'defaults_path': 'explicit-suite' if '-suite-' in scenario else 'standard-main',
-                            'foreground': foreground, 'feed_hashes': feed_reads,
-                            'initial_feed_hash': initial_feed_hash,
-                            'final_feed_hash': hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest(),
-                            'installed': installed,
-                            'relaunch_receipt': receipt.read_text() if receipt.exists() else None,
-                            'guard_seen': 'final editor guard boundary' in callbacks,
-                            'termination_seen': 'termination requested' in callbacks,
-                            'admitted_download': all(marker in callbacks for marker in (
-                                'rotation admitted=4 source-group=0',
-                                'rotation didDownloadUpdate=4 transition=0->6 source-readback=6 probe-storage-readback=6',
-                                'downloaded 4', 'prepared 4',
-                                f'selection {"foreground" if foreground else "background"}'))
-                                and any('GET /4.zip' in r for r in requests)
-                                and not any('GET /2.zip' in r for r in requests),
-                        }
-                        classification = classify_rotation(rotation_evidence)
-                        if classification == 'observer-incomplete':
-                            # Complete the real callback and collect its deferred
-                            # nonzero exit. Do not abort the remaining scenarios.
-                            try:
-                                wait_for(lambda: process.poll() is not None, process, output, terminal_codes=(62,))
-                            except AssertionError as error:
-                                rotation_evidence['observer_exit_error'] = str(error)
-                            rotation_evidence['process_exit'] = process.poll()
-                            rotation_evidence['observer_nonzero_exit'] = process.poll() not in (None, 0)
-                        if foreground:
-                            rotation_evidence['foreground_control_pass'] = (
-                                classification == 'not-reproduced-observer-complete'
-                                and rotation_evidence['admitted_download']
-                                and len(feed_reads) >= 2 and set(feed_reads) == {initial_feed_hash}
-                                and rotation_evidence['final_feed_hash'] == initial_feed_hash
-                                and rotation_evidence['relaunch_receipt'] == installed == '4'
-                                and 'rotation probe selected=4 source-group=6 probe-group=6 error=none/0' in callbacks
-                                and 'final editor guard boundary' in callbacks
-                                and (case / 'protected-editor').exists()
-                                and (case / 'protected-editor').read_text() == 'edited after verification')
-                        record = {'classification': classification, **rotation_evidence}
-                        (evidence / f'{scenario}.classification.json').write_text(json.dumps(record, indent=2))
-                        rotation_results[scenario] = record
-                        print(f'ROTATION {scenario}: {classification}', flush=True)
+                        if 'report 2 ' in callbacks:
+                            assert not foreground, callbacks
+                            assert 'rotation rejection error=OkilumUpdate/3 selected=2 source-group=6 probe-group=6' in callbacks, callbacks
+                            assert 'rotation probe selected=2 source-group=6 probe-group=6 error=none/0' in callbacks, callbacks
+                            assert not receipt.exists() and installed == '1', callbacks
+                            assert 'final editor guard boundary' not in callbacks, callbacks
+                            assert 'termination requested' not in callbacks, callbacks
+                            rotation_refusals.append(scenario)
+                            print(f'REPRODUCED {scenario}: OkilumUpdate/3, fallback=2, source=6, probe=6, no install; feed={initial_feed_hash}', flush=True)
+                        else:
+                            assert receipt.read_text() == installed == '4', callbacks
+                            assert 'rotation probe selected=4 source-group=6 probe-group=6 error=none/0' in callbacks, callbacks
+                            assert 'final editor guard boundary' in callbacks, callbacks
+                            assert (case / 'protected-editor').read_text() == 'edited after verification'
+                            print(f'PASS admitted download survives group rotation: {scenario}; feed={initial_feed_hash}', flush=True)
                         continue
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
                     if scenario == 'termination-retry-guard-refusal':
@@ -477,18 +390,6 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     assert 'published feed' in trace.read_text(), trace.read_text()
                     assert sum('GET /appcast.xml' in r for r in requests) >= 2, requests
                     print(f'PASS Sparkle real lifecycle: {scenario}', flush=True)
-                except Exception as error:
-                    if not rotation:
-                        raise
-                    # A fixture failure in one case still produces a classified
-                    # receipt and cannot hide the other three observations.
-                    record = {**parse_rotation_trace(trace.read_text()),
-                              'process_exit': process.poll(), 'scenario_error': str(error),
-                              'defaults_path': 'explicit-suite' if '-suite-' in scenario else 'standard-main'}
-                    record['classification'] = classify_rotation(record)
-                    (evidence / f'{scenario}.classification.json').write_text(json.dumps(record, indent=2))
-                    rotation_results[scenario] = record
-                    print(f"ROTATION {scenario}: {record['classification']}", flush=True)
                 finally:
                     if process.poll() is None:
                         process.terminate()
@@ -517,9 +418,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     # Sparkle helpers may finish a final filesystem write after
                     # that boundary. Retry only ENOTEMPTY, with a hard deadline.
                     remove_case(case)
-                    if not rotation:
-                        assert 'window probe positive control detected standard Sparkle check' in trace.read_text(), trace.read_text()
-                        assert 'unexpected updater window' not in trace.read_text(), trace.read_text()
+                    assert 'window probe positive control detected standard Sparkle check' in trace.read_text(), trace.read_text()
+                    assert 'unexpected updater window' not in trace.read_text(), trace.read_text()
 
 
 if __name__ == '__main__':

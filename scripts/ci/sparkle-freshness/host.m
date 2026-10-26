@@ -21,66 +21,31 @@ static BOOL RotatesGroup(void) {
 // A second defaults instance or CFPreferences receipt cannot prove what SUHost
 // actually sees. Never replace a Sparkle method, host, defaults object or value
 // through this observer. Missing layout is a fixture failure, not reproduction.
-static BOOL TSObserverIncomplete;
-static NSDictionary *GroupSnapshot(SPUUpdater *updater, NSString *role, NSString *boundary) {
+static NSNumber *ObservedGroup(SPUUpdater *updater) {
     Ivar hostSlot = class_getInstanceVariable(SPUUpdater.class, "_host");
     id host = hostSlot && updater ? object_getIvar(updater, hostSlot) : nil;
     Ivar defaultsSlot = host ? class_getInstanceVariable([host class], "_userDefaults") : NULL;
     id defaults = defaultsSlot ? object_getIvar(host, defaultsSlot) : nil;
-    BOOL validDefaults = [defaults isKindOfClass:NSUserDefaults.class];
-    id group = validDefaults ? [defaults objectForKey:@"SUUpdateGroupIdentifier"] : nil;
-    BOOL number = [group isKindOfClass:NSNumber.class];
-    NSString *state = !updater ? @"updater-missing" : !hostSlot ? @"host-ivar-missing"
-        : !host ? @"host-missing" : !defaultsSlot ? @"defaults-ivar-missing"
-        : !defaults ? @"defaults-missing" : !validDefaults ? @"defaults-wrong-type"
-        : !group ? @"group-missing" : !number ? @"group-wrong-type" : @"complete";
-    if (![state isEqualToString:@"complete"]) TSObserverIncomplete = YES;
-    NSDictionary *snapshot = @{
-        @"role": role, @"boundary": boundary, @"state": state,
-        @"updaterPresent": @((BOOL)(updater != nil)), @"hostIvarPresent": @((BOOL)(hostSlot != NULL)),
-        @"hostPresent": @((BOOL)(host != nil)), @"defaultsIvarPresent": @((BOOL)(defaultsSlot != NULL)),
-        @"defaultsPresent": @((BOOL)(defaults != nil)), @"defaultsIsNSUserDefaults": @(validDefaults),
-        @"defaultsClass": defaults ? NSStringFromClass([defaults class]) : @"unavailable",
-        @"groupType": number ? @"NSNumber" : group ? NSStringFromClass([group class]) : @"unavailable",
-        @"group": number ? group : @"unavailable",
-        @"domain": [updater.hostBundle objectForInfoDictionaryKey:@"SUDefaultsDomain"]
-            ?: (updater.hostBundle == NSBundle.mainBundle ? @"standard-main-bundle"
-                : updater.hostBundle.bundleIdentifier ?: @"unavailable")
-    };
-    NSData *json = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:NULL];
-    Trace([@"rotation observation " stringByAppendingString:[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]]);
-    return snapshot;
+    if (![defaults isKindOfClass:NSUserDefaults.class]) { Trace(@"group observer unavailable"); exit(56); }
+    id group = [defaults objectForKey:@"SUUpdateGroupIdentifier"];
+    if (![group isKindOfClass:NSNumber.class]) { Trace(@"group observer missing NSNumber"); exit(57); }
+    return group;
 }
-static NSNumber *SnapshotNumber(NSDictionary *snapshot) {
-    return [snapshot[@"state"] isEqualToString:@"complete"] ? snapshot[@"group"] : nil;
-}
-static NSString *GroupText(NSNumber *group) { return group ? group.stringValue : @"unavailable"; }
 
 static NSNumber *LastProbeGroup;
 static NSString *LastProbeSelection;
 @interface TestFreshnessProbe : TSFreshnessProbe
 @end
 @implementation TestFreshnessProbe
-- (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
-    GroupSnapshot(updater, @"probe", @"selection");
-    Trace([@"rotation probe selection=" stringByAppendingString:item.versionString]);
-    [super updater:updater didFindValidUpdate:item];
-}
-- (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
-    // Observe the real callback argument before super releases self.updater.
-    // Missing observations are evidence, never an invented group or an exit
-    // from inside Sparkle's callback. Let the real completion run first.
-    LastProbeGroup = SnapshotNumber(GroupSnapshot(updater, @"probe", @"completion"));
-    LastProbeSelection = self.selected.versionString ?: @"none";
-    NSNumber *sourceGroup = SnapshotNumber(GroupSnapshot(TSUpdater, @"source", @"completion"));
-    Trace([NSString stringWithFormat:@"rotation probe selected=%@ source-group=%@ probe-group=%@ error=%@/%ld",
-           LastProbeSelection, GroupText(sourceGroup), GroupText(LastProbeGroup),
-           error.domain ?: @"none", (long)error.code]);
-    [super updater:updater didFinishUpdateCycleForUpdateCheck:check error:error];
-    if (TSObserverIncomplete) dispatch_async(dispatch_get_main_queue(), ^{
-        Trace(@"rotation observer-incomplete exit=62 after callback completion");
-        exit(62);
-    });
+- (void)finish:(NSError *)error {
+    if (RotatesGroup()) {
+        LastProbeGroup = ObservedGroup(self.updater);
+        LastProbeSelection = self.selected.versionString ?: @"none";
+        Trace([NSString stringWithFormat:@"rotation probe selected=%@ source-group=%@ probe-group=%@ error=%@/%ld",
+               LastProbeSelection, ObservedGroup(TSUpdater), LastProbeGroup,
+               error.domain ?: @"none", (long)error.code]);
+    }
+    [super finish:error];
 }
 @end
 extern void fixture_record_report(int kind);
@@ -160,9 +125,9 @@ static void FinishComparison(void) {
 @implementation TestUpdaterDelegate
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
     if (RotatesGroup()) {
-        NSNumber *group = SnapshotNumber(GroupSnapshot(updater, @"source", @"admission"));
-        Trace([NSString stringWithFormat:@"rotation admitted=%@ source-group=%@", item.versionString, GroupText(group)]);
-        if (![item.versionString isEqualToString:@"4"]) exit(58);
+        NSNumber *group = ObservedGroup(updater);
+        Trace([NSString stringWithFormat:@"rotation admitted=%@ source-group=%@", item.versionString, group]);
+        if (![item.versionString isEqualToString:@"4"] || group.integerValue != 0) exit(58);
     }
     if (TSCompare) TSActualSelection = item;
     [super updater:updater didFindValidUpdate:item];
@@ -182,9 +147,9 @@ static void FinishComparison(void) {
     CFPreferencesSetAppValue(CFSTR("SUUpdateGroupIdentifier"), (__bridge CFNumberRef)@6, probeDomain);
     if (!CFPreferencesAppSynchronize(probeDomain)) exit(60);
     id probeGroup = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("SUUpdateGroupIdentifier"), probeDomain));
-    NSNumber *sourceGroup = SnapshotNumber(GroupSnapshot(updater, @"source", @"download"));
-    if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:@6]) exit(61);
-    Trace([NSString stringWithFormat:@"rotation didDownloadUpdate=4 transition=0->6 source-readback=%@ probe-storage-readback=6", GroupText(sourceGroup)]);
+    NSNumber *sourceGroup = ObservedGroup(updater);
+    if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:@6] || ![sourceGroup isEqual:@6]) exit(61);
+    Trace(@"rotation didDownloadUpdate=4 transition=0->6 source-readback=6 probe-storage-readback=6");
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cycle finished check=%ld error=%@/%ld replacement=%d session=%d", (long)check, error.domain ?: @"none", (long)error.code, TSRestartAfterCycle, updater.sessionInProgress]);
@@ -219,7 +184,7 @@ static void FinishComparison(void) {
     if (RotatesGroup()) {
         Trace([NSString stringWithFormat:@"rotation rejection error=%@/%ld selected=%@ source-group=%@ probe-group=%@",
                error.domain ?: @"none", (long)error.code, LastProbeSelection,
-               GroupText(SnapshotNumber(GroupSnapshot(TSUpdater, @"source", @"rejection"))), GroupText(LastProbeGroup)]);
+               ObservedGroup(TSUpdater), LastProbeGroup]);
     }
     [super cancelForReplacement:reply error:error];
     Trace(@"cancel reply returned");
