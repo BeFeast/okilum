@@ -179,17 +179,42 @@ def main():
         facts['failure'] = repr(error)
         raise
     finally:
+        def group_members():
+            groups = {p.pid for p in owned}
+            members = []
+            for entry in Path('/proc').iterdir():
+                if entry.name.isdecimal():
+                    try:
+                        if os.getpgid(int(entry.name)) in groups:
+                            members.append(int(entry.name))
+                    except ProcessLookupError:
+                        pass
+            return members
         for process in owned:
-            if process.poll() is None:
+            try:
                 os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=5)
+        # Read back all owned process groups, including extraction children.
+        deadline = time.monotonic() + 5
+        while group_members() and time.monotonic() < deadline:
+            time.sleep(.1)
+        for pid in group_members():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         for log in logs:
             log.close()
-        facts['own_processes_after_cleanup'] = [p.pid for p in owned if p.poll() is None]
+        facts['own_processes_after_cleanup'] = group_members()
+        if facts['own_processes_after_cleanup']:
+            facts['result'] = 'BLOCKED'
         if ROOT.exists():
             shutil.rmtree(ROOT)
         facts['disposable_tree_absent'] = not ROOT.exists()
