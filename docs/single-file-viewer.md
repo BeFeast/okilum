@@ -5,10 +5,14 @@ An `.obsidian` ancestor is not authorization to enumerate or index it. OS delive
 of a file inside an already-open full vault focuses that window instead.
 
 The first document is read and prepared independently of folder enumeration.
-After its publication, a background task lists the containing directory once.
+After its publication, a background task lists the containing directory.
 Expanding a directory lists only that directory. Source bodies of siblings are
 not read for inventory; there is no search index, warm snapshot, cache lease,
 recursive watcher, backlinks reconciliation, or Inbox computation in quick mode.
+Already browsed directories use non-recursive subscriptions through the vault
+watcher debounce and change-delivery path. External creates, deletes and renames
+refresh only those shallow inventories, including attachments; unexpanded
+subtrees remain unenumerated.
 Session and source-edit history remain durable application state outside the
 notes, and session restore preserves quick mode. Rescan and source saves do not
 upgrade the viewer. Full-text search and vault-wide backlinks require the explicit

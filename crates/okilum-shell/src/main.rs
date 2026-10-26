@@ -1509,6 +1509,7 @@ struct Reader {
     /// The watcher lives here so it is dropped with the reader; the poll
     /// loop only borrows it through the entity.
     watcher: Option<VaultWatcher>,
+    quick_folders: std::collections::BTreeSet<String>,
     watcher_generation: u64,
     watcher_poll_active: bool,
     #[cfg(test)]
@@ -1778,6 +1779,7 @@ impl Reader {
             searcher,
             vault_root: vault_root.clone(),
             watcher: None,
+            quick_folders: Default::default(),
             watcher_generation: 0,
             watcher_poll_active: false,
             #[cfg(test)]
@@ -2007,16 +2009,20 @@ impl Reader {
         self.watcher_poll_active = true;
         let generation = self.watcher_generation;
         let root = self.vault_root.clone();
+        let quick_folders = self.single_file.then(|| self.quick_folders.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let (watcher, changes) = cx
+            let (watcher, changes, error) = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     if let Some(hold) = hold {
                         let _ = hold.recv().await;
                     }
+                    let error = quick_folders
+                        .as_ref()
+                        .and_then(|folders| watcher.watch_folders(folders).err());
                     let changes = watcher.poll();
-                    (watcher, changes)
+                    (watcher, changes, error)
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
@@ -2028,6 +2034,13 @@ impl Reader {
                 }
                 this.watcher_poll_active = false;
                 this.watcher = Some(watcher);
+                if let Some(error) = error {
+                    let message = format!("Automatic folder updates unavailable: {error}");
+                    if this.link_notice.as_deref() != Some(message.as_str()) {
+                        this.link_notice = Some(message.into());
+                        cx.notify();
+                    }
+                }
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
                         this.deferred_vault_changes.rescan |= changes.rescan;
@@ -2072,6 +2085,10 @@ impl Reader {
                 .extend(changes.directories);
             self.deferred_vault_changes.changed.extend(changes.changed);
             self.deferred_vault_changes.removed.extend(changes.removed);
+            return;
+        }
+        if self.single_file {
+            self.refresh_quick_folders(changes, window, cx);
             return;
         }
         if !changes.is_empty()
