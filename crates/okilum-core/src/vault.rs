@@ -1319,7 +1319,7 @@ impl Vault {
                     entry.kind == EntryKind::Attachment
                         && Path::new(&entry.path)
                             .file_name()
-                            .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
+                            .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
                 });
                 let first = known.next()?;
                 known.next().is_none().then(|| self.root.join(&first.path))
@@ -2156,6 +2156,17 @@ mod quick_attachment_receipt_tests {
         assert_eq!(
             vault.resolve_asset("attachments/image.png", "note.md"),
             Some(root.join("attachments/image.png"))
+        );
+        let unicode = "attachments/Снимок экрана.PNG";
+        std::fs::write(root.join(unicode), b"unicode attachment").unwrap();
+        vault.entries.push(VaultEntry {
+            path: unicode.into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("Снимок экрана.PNG", "note.md"),
+            Some(root.join(unicode)),
+            "match the full-vault Unicode filename lookup while retaining exact path bytes"
         );
     }
 }
