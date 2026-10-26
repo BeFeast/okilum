@@ -323,7 +323,10 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
-        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        let previous_input = reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.editing.as_ref().unwrap().input.clone()
+        });
         visual.run_until_parked();
         visual.simulate_keystrokes("ctrl-tab");
         visual.run_until_parked();
@@ -379,20 +382,61 @@ mod tests {
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "A.md"));
-        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
-        visual.run_until_parked();
+        let current_input = reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "A.md", "real release accepted the target");
+            let editing = r
+                .editing
+                .as_ref()
+                .expect("file selection restored the chosen editor");
+            assert_ne!(
+                editing.input, previous_input,
+                "the target owns a new editor"
+            );
+            assert_eq!(editing.store.path(), r.vault_root.join("A.md"));
+            assert!(
+                !r.source_live_preview(),
+                "the chosen Source mode was retained"
+            );
+            assert_eq!(editing.input.read(cx).value().as_ref(), "Alpha");
+            editing.input.clone()
+        });
         visual.simulate_input("mine");
         visual.run_until_parked();
+        let dirty_source = reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            assert_eq!(editing.input, current_input);
+            let source = editing.input.read(cx).value().to_string();
+            assert!(
+                source.contains("mine") && source != "Alpha",
+                "real keystrokes reached the editor"
+            );
+            assert!(
+                r.source_is_dirty(cx),
+                "real edited buffer is dirty before external change"
+            );
+            source
+        });
         std::fs::write(root.join("A.md"), "external").unwrap();
         visual.simulate_keystrokes("ctrl-tab");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "A.md");
-            assert!(r.editing.is_some());
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.current_rel, "A.md",
+                "external conflict refuses real navigation"
+            );
+            let editing = r.editing.as_ref().unwrap();
+            assert_eq!(
+                editing.input, current_input,
+                "refusal keeps the owned editor"
+            );
+            assert!(
+                editing.conflict_detected,
+                "actual save detected the external conflict"
+            );
+            assert_eq!(editing.input.read(cx).value().as_ref(), dirty_source);
         });
         assert_eq!(
             std::fs::read_to_string(root.join("A.md")).unwrap(),
