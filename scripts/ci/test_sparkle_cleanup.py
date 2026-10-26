@@ -1,5 +1,6 @@
 """Transient late writes must not mask real native or cleanup failures."""
 import errno
+from copy import deepcopy
 import importlib.util
 from pathlib import Path
 import unittest
@@ -11,6 +12,109 @@ spec = importlib.util.spec_from_file_location(
     "sparkle_fixture", Path(__file__).parent / "sparkle-freshness/run.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+
+
+class SparkleRotationEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        def snapshot(role, boundary):
+            return dict(role=role, boundary=boundary, state='complete',
+                        updaterPresent=True, hostIvarPresent=True, hostPresent=True,
+                        defaultsIvarPresent=True, defaultsPresent=True, defaultsIsNSUserDefaults=True,
+                        defaultsClass='NSUserDefaults', domain='isolated.test.updates',
+                        groupType='NSNumber', group=6)
+        self.receipt = dict(snapshots=[snapshot('probe', 'completion'), snapshot('source', 'rejection')],
+                            process_exit=None, defaults_path='explicit-suite',
+                            error_domain='OkilumUpdate', error_code=3, selected='2',
+                            foreground=False, feed_hashes=['a' * 64, 'a' * 64], initial_feed_hash='a' * 64,
+                            final_feed_hash='a' * 64, installed='1', relaunch_receipt=None,
+                            guard_seen=False, termination_seen=False, admitted_download=True)
+
+    def test_exact_original_refusal_is_reproduced(self):
+        self.assertEqual(fixture.classify_rotation(self.receipt), 'reproduced')
+
+    def native_trace(self, presence='true', missing_probe=False):
+        # Literal native JSON, including the old plain-C NSNumber int boxing.
+        template = '''{"role":"ROLE","boundary":"BOUNDARY","state":"complete",
+"updaterPresent":PRESENCE,"hostIvarPresent":PRESENCE,"hostPresent":PRESENCE,
+"defaultsIvarPresent":PRESENCE,"defaultsPresent":PRESENCE,"defaultsIsNSUserDefaults":true,
+"defaultsClass":"NSUserDefaults","domain":"test.app.updates","groupType":"NSNumber","group":6}'''
+        source = template.replace('ROLE', 'source').replace('BOUNDARY', 'rejection').replace('PRESENCE', presence)
+        probe = template.replace('ROLE', 'probe').replace('BOUNDARY', 'completion').replace('PRESENCE', presence)
+        if missing_probe:
+            probe = (probe.replace('"state":"complete"', '"state":"defaults-missing"')
+                     .replace('"defaultsPresent":true', '"defaultsPresent":false')
+                     .replace('"defaultsIsNSUserDefaults":true', '"defaultsIsNSUserDefaults":false')
+                     .replace('"defaultsClass":"NSUserDefaults"', '"defaultsClass":"unavailable"')
+                     .replace('"groupType":"NSNumber","group":6', '"groupType":"unavailable","group":"unavailable"'))
+        return ('rotation observation ' + probe.replace('\n', '') + '\nrotation observation '
+                + source.replace('\n', '')
+                + '\nrotation rejection error=OkilumUpdate/3 selected=2 source-group=6 probe-group=6\n')
+
+    def test_native_json_booleans_and_exact_refusal_reproduce(self):
+        receipt = {**self.receipt, **fixture.parse_rotation_trace(self.native_trace())}
+        self.assertEqual(fixture.classify_rotation(receipt), 'reproduced')
+
+    def test_native_integer_presence_flags_are_not_booleans(self):
+        receipt = {**self.receipt, **fixture.parse_rotation_trace(self.native_trace(presence='1'))}
+        self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
+
+    def test_standard_main_native_trace_cannot_use_cf_readback(self):
+        trace = self.native_trace(missing_probe=True) + 'rollout probe group read=6 domain=test.app matches-source before-updater-start\n'
+        receipt = {**self.receipt, **fixture.parse_rotation_trace(trace), 'defaults_path': 'standard-main'}
+        self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
+
+    def test_standard_main_never_counts_as_reproduction(self):
+        receipt = {**self.receipt, **fixture.parse_rotation_trace(self.native_trace()), 'defaults_path': 'standard-main'}
+        self.assertEqual(fixture.classify_rotation(receipt), 'not-reproduced-observer-complete')
+
+    def test_malformed_native_observation_is_incomplete(self):
+        receipt = {**self.receipt, **fixture.parse_rotation_trace(self.native_trace() + 'rotation observation {bad-json}\n')}
+        self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
+
+    def test_missing_nil_and_wrong_type_snapshots_are_incomplete(self):
+        for changes in [None, {'state': 'defaults-missing', 'defaultsPresent': False},
+                        {'groupType': 'NSString', 'group': '6'}, {'group': None},
+                        {'group': 'unavailable'}, {'group': True}, {'hostIvarPresent': False}]:
+            for role_index in (0, 1):
+                receipt = deepcopy(self.receipt)
+                if changes is None:
+                    receipt['snapshots'][role_index] = None
+                else:
+                    receipt['snapshots'][role_index].update(changes)
+                with self.subTest(changes=changes, role=role_index):
+                    self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
+
+    def test_storage_readback_cannot_replace_probe_observation(self):
+        receipt = deepcopy(self.receipt)
+        receipt['snapshots'] = [receipt['snapshots'][1]]
+        receipt['cf_probe_group'] = 6
+        self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
+
+    def test_random_probe_group_is_not_reproduction_or_normalized_to_six(self):
+        for group in (0, 1, 5, 13, 4294967294):
+            receipt = deepcopy(self.receipt)
+            receipt['snapshots'][0]['group'] = group
+            with self.subTest(group=group):
+                self.assertEqual(fixture.classify_rotation(receipt), 'not-reproduced-observer-complete')
+
+    def test_complete_snapshots_alone_cannot_prove_refusal(self):
+        for key, value in [('error_domain', 'SUSparkleErrorDomain'), ('error_code', 5),
+                           ('selected', '4'), ('foreground', True), ('feed_hashes', ['a' * 64]),
+                           ('final_feed_hash', 'b' * 64), ('installed', '4'), ('relaunch_receipt', '4'),
+                           ('guard_seen', True), ('termination_seen', True), ('admitted_download', False),
+                           ('process_exit', 56)]:
+            receipt = deepcopy(self.receipt)
+            receipt[key] = value
+            with self.subTest(key=key):
+                self.assertEqual(fixture.classify_rotation(receipt), 'not-reproduced-observer-complete')
+
+    def test_incomplete_history_or_deferred_exit_cannot_look_successful(self):
+        receipt = deepcopy(self.receipt)
+        receipt['snapshots'].insert(0, dict(state='defaults-missing'))
+        self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
+        receipt = deepcopy(self.receipt)
+        receipt['process_exit'] = 62
+        self.assertEqual(fixture.classify_rotation(receipt), 'observer-incomplete')
 
 
 class SparkleRolloutOrderingTests(unittest.TestCase):
