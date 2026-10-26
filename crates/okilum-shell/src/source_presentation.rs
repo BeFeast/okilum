@@ -73,6 +73,7 @@ impl CachedProvider {
         })
     }
     /// Call only from a background classification task.
+    #[allow(dead_code)] // Legacy entry for standalone projection fixtures and tests.
     pub fn classify(source: SourceSnapshot) -> Self {
         let links = if source.text.len() <= source_classifier::MAX_BYTES {
             okilum_core::document_links::parse(&source.text)

@@ -203,9 +203,10 @@ impl Editing {
 
     // UI subscriptions stay on the foreground executor; only the locked file
     // store crosses to the worker. Reassembly preserves undo/input state.
-    fn park(self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
+    fn park(mut self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
         // A second window can still hold its painted input until the next frame.
         // Freeze it synchronously, before moving the store off the UI thread.
+        self.live_preview.suspend();
         self.input
             .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
@@ -300,6 +301,7 @@ impl Reader {
             if !editing.input.read(cx).search_session().open {
                 editing.live_preview.restore_after_find = editing.live_preview.enabled;
             }
+            editing.live_preview.suspend();
             editing.live_preview.enabled = false;
             let sensitive = reader_ui_state::find_case_sensitive(cx);
             editing.input.update(cx, |input, cx| {
@@ -777,9 +779,11 @@ impl Reader {
             },
         );
         let (menu_facts, menu_watch) = reader_reminder::MenuFacts::watch(&input, cx);
+        let live_preview =
+            live_preview::LivePreview::new(self, cx.entity_id(), &store, &input, !plain_file);
         self.editing = Some(Editing {
             store,
-            live_preview: live_preview::LivePreview::default(),
+            live_preview,
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -2005,6 +2009,7 @@ impl Reader {
                 input.set_value(e.store.text().to_owned(), window, cx)
             });
         }
+        self.resume_live_preview(cx);
     }
     pub(super) fn source_has_other_editor(&self, cx: &mut Context<Self>) -> bool {
         let readers = cx.default_global::<Editors>().0.clone();
@@ -2070,6 +2075,7 @@ impl Reader {
                 .input
                 .update(cx, |input, cx| input.set_disabled(false, cx));
         }
+        self.resume_live_preview(cx);
     }
 
     pub(super) fn apply_link_move(
@@ -2229,6 +2235,7 @@ impl Reader {
                                 r.toggle_source(window, cx);
                             }
                         }
+                        r.resume_live_preview(cx);
                         cx.notify();
                     })
                 });
@@ -4525,7 +4532,18 @@ mod tests {
         source_visual.run_until_parked();
         reference_visual.run_until_parked();
         reference.update_in(reference_visual, |r, window, cx| {
-            r.toggle_source(window, cx)
+            r.toggle_source(window, cx);
+            r.set_live_preview(true, window, cx);
+        });
+        reference_visual.run_until_parked();
+        reference.read_with(reference_visual, |r, _| {
+            assert!(!r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .completed_navigation_bytes()
+                .is_empty());
         });
         let input = reference.read_with(reference_visual, |r, _| {
             r.editing.as_ref().unwrap().input.clone()
@@ -4551,6 +4569,30 @@ mod tests {
         let preview =
             okilum_core::link_rewrite::Preview::prepare(&root, "start.md", "New/renamed.md")
                 .unwrap();
+        let old_marker = reference.update_in(reference_visual, |r, window, cx| {
+            input.update(cx, |i, cx| i.set_value("edited [[start]] ", window, cx));
+            input.update(cx, |i, cx| i.set_value("edited [[start]]", window, cx));
+            r.schedule_live_preview(cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .pending_marker()
+                .unwrap()
+        });
+        assert!(
+            old_marker.get(),
+            "real LP classification pending at two-window park"
+        );
+        // Mutation callbacks mark recovery pending after the update above.
+        // A REAL save in the next update settles the current input before move.
+        reference.update_in(reference_visual, |r, _, cx| {
+            assert!(r.save_source(cx));
+            assert!(
+                !r.source_is_dirty(cx),
+                "the unchanged production move guard admits this input"
+            );
+        });
         let task = source.update_in(source_visual, |r, window, cx| {
             let task = r.apply_link_move(&preview, window, cx).unwrap();
             assert!(r.move_applying);
@@ -4565,6 +4607,10 @@ mod tests {
             task
         });
         assert!(task.await.unwrap().moved);
+        assert!(
+            !old_marker.get(),
+            "old captured marker settled without changing new work"
+        );
         source.update_in(source_visual, |r, _, cx| r.finish_move_editor(cx));
         reference_visual.run_until_parked();
         reference.read_with(reference_visual, |r, cx| {
@@ -4575,6 +4621,18 @@ mod tests {
             );
             assert!(!editing.store.dirty());
             assert!(editing.input.read(cx).is_editable());
+            assert!(
+                editing.live_preview.concealed_text().is_some(),
+                "other-window LP resumed"
+            );
+            assert_eq!(
+                *editing
+                    .live_preview
+                    .completed_navigation_bytes()
+                    .last()
+                    .unwrap(),
+                "edited [[renamed]]".len() as u64
+            );
         });
         assert_eq!(
             std::fs::read_to_string(root.join("ref.md")).unwrap(),
