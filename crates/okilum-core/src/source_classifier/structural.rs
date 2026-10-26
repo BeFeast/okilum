@@ -413,7 +413,7 @@ pub(crate) fn observe_untrusted(
     Ok(audit)
 }
 
-fn validate_tree(root: &AstNode<'_>) -> Result<(), Error> {
+fn validate_tree<'a>(root: &'a AstNode<'a>) -> Result<(), Error> {
     for (count, node) in root.descendants().enumerate() {
         if count >= MAX_NODES || node.ancestors().take(MAX_DEPTH + 2).count() > MAX_DEPTH + 1 {
             return Err(Error::Source(SourceReason::StructureLimit));
