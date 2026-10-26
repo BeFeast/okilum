@@ -109,6 +109,7 @@ pub struct VaultWatcher {
     rx: mpsc::Receiver<notify::Result<Event>>,
     // Dropping the watcher stops it; it is held only for that.
     _watcher: RecommendedWatcher,
+    folders: Option<BTreeSet<String>>,
     pending: Changes,
     last_event: Option<Instant>,
 }
@@ -126,9 +127,55 @@ impl VaultWatcher {
             root: root.to_path_buf(),
             rx,
             _watcher: watcher,
+            folders: None,
             pending: Changes::default(),
             last_event: None,
         })
+    }
+
+    /// Watch only explicitly browsed folders, including attachment changes.
+    /// Uses the same debounce and Changes delivery as a full vault, without
+    /// enrolling unexpanded subtrees or reading source bodies.
+    pub fn for_folders(root: &Path) -> notify::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let watcher = notify::recommended_watcher(move |ev| {
+            let _ = tx.send(ev);
+        })?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            rx,
+            _watcher: watcher,
+            folders: Some(BTreeSet::new()),
+            pending: Changes::default(),
+            last_event: None,
+        })
+    }
+
+    /// Register before enumeration; a new subscription also refreshes that
+    /// folder to cover changes between its previous listing and registration.
+    pub fn watch_folders(&mut self, folders: &BTreeSet<String>) -> notify::Result<()> {
+        let Some(watched) = self.folders.as_mut() else {
+            return Ok(());
+        };
+        for folder in folders.difference(watched).cloned().collect::<Vec<_>>() {
+            let path = self.root.join(&folder);
+            let resolved = path.canonicalize().map_err(notify::Error::io)?;
+            if resolved != path || !resolved.starts_with(&self.root) {
+                return Err(notify::Error::generic(
+                    "Folder watch escaped the viewer root",
+                ));
+            }
+            self._watcher
+                .watch(&resolved, RecursiveMode::NonRecursive)?;
+            watched.insert(folder.clone());
+            self.pending.directories.insert(folder);
+            self.last_event = Some(Instant::now());
+        }
+        for folder in watched.difference(folders).cloned().collect::<Vec<_>>() {
+            let _ = self._watcher.unwatch(&self.root.join(&folder));
+            watched.remove(&folder);
+        }
+        Ok(())
     }
 
     /// A path the vault cares about, made vault-relative. `None` for anything
@@ -183,6 +230,17 @@ impl VaultWatcher {
                     || p.file_name()
                         .is_some_and(|name| name.to_string_lossy().starts_with(".okilum-save-"))
                 {
+                    continue;
+                }
+                if let Some(folders) = &self.folders {
+                    let parent = relative.parent().map(crate::vault::note_path);
+                    if let Some(parent) = parent.filter(|parent| folders.contains(parent)) {
+                        self.pending.directories.insert(parent);
+                    }
+                    let path = crate::vault::note_path(relative);
+                    if folders.contains(&path) {
+                        self.pending.directories.insert(path);
+                    }
                     continue;
                 }
                 // Newly created/moved trees may arrive as a directory event only,
@@ -275,6 +333,52 @@ impl VaultWatcher {
 #[cfg(test)]
 mod topology_tests {
     use super::*;
+    #[test]
+    fn browsed_folders_report_attachments_without_enrolling_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("child")).unwrap();
+        let mut watcher = VaultWatcher::for_folders(&root).unwrap();
+        watcher
+            .watch_folders(&BTreeSet::from([String::new()]))
+            .unwrap();
+        watcher.pending = Changes::default();
+        let (tx, rx) = mpsc::channel();
+        watcher.rx = rx;
+        for path in ["image.png", "child/hidden.md"] {
+            tx.send(Ok(Event::new(EventKind::Create(
+                notify::event::CreateKind::File,
+            ))
+            .add_path(root.join(path))))
+                .unwrap();
+        }
+        watcher.poll();
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        assert_eq!(
+            watcher.poll().unwrap().directories,
+            BTreeSet::from([String::new()])
+        );
+        watcher
+            .watch_folders(&BTreeSet::from([String::new(), "child".into()]))
+            .unwrap();
+        assert!(
+            watcher.pending.directories.contains("child"),
+            "new registration closes listing race"
+        );
+        watcher.pending = Changes::default();
+        tx.send(Ok(Event::new(EventKind::Remove(
+            notify::event::RemoveKind::File,
+        ))
+        .add_path(root.join("child/removed.txt"))))
+            .unwrap();
+        watcher.poll();
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        assert_eq!(
+            watcher.poll().unwrap().directories,
+            BTreeSet::from(["child".into()])
+        );
+    }
+
     #[test]
     fn deleted_folder_untyped_event_keeps_topology_hint() {
         let temp = tempfile::tempdir().unwrap();

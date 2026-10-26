@@ -67,7 +67,7 @@ enum Event {
     },
     NetworkRoot(bool),
     Progress(String),
-    Siblings(Vault),
+    Siblings(Vault, Option<VaultWatcher>),
     SearchInventory {
         notes: Vec<okilum_core::vault::Note>,
         reconciled: Option<Box<Vault>>,
@@ -1566,6 +1566,7 @@ impl Reader {
             self.move_index = None;
         }
         self.watcher = None;
+        self.quick_folders.clear();
         self.watcher_poll_active = false;
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
@@ -2318,8 +2319,22 @@ impl Reader {
                         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
                     }
                     if opts.single_file {
-                        let vault = quick_folder(&root, "", &[], &cancel)?;
-                        send.send_blocking(Event::Siblings(vault)).map_err(|_| anyhow::anyhow!("Reader closed"))?;
+                        let watcher = VaultWatcher::for_folders(&root).and_then(|mut watcher| {
+                            watcher.watch_folders(&std::collections::BTreeSet::from([String::new()]))?;
+                            Ok(watcher)
+                        });
+                        let mut vault = quick_folder(&root, "", &[], &cancel)?;
+                        let watcher = match watcher {
+                            Ok(watcher) => Some(watcher),
+                            Err(error) => {
+                                vault.inventory_complete = false;
+                                vault.unreadable.push(okilum_core::vault::UnreadableEntry {
+                                    path: root.clone(), operation: "watch folder", error: error.to_string(),
+                                });
+                                None
+                            }
+                        };
+                        send.send_blocking(Event::Siblings(vault, watcher)).map_err(|_| anyhow::anyhow!("Reader closed"))?;
                         return Ok(());
                     }
                     #[cfg(test)]
@@ -2429,7 +2444,9 @@ impl Reader {
                                     reader_toast::error(notice, window, cx);
                                 }
                             }
-                            Event::Siblings(vault) => {
+                            Event::Siblings(vault, watcher) => {
+                                this.watcher = watcher;
+                                this.quick_folders.insert(String::new());
                                 this.publish_quick_folder(vault, cx);
                                 this.refresh_quick_document(window, cx);
                                 this.loading.as_mut().unwrap().active = false;
@@ -2783,7 +2800,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             assert!(r.single_file);
             assert_eq!(r.selected_file(), "sheet.tsv");
-            assert!(r.searcher.is_none() && r.watcher.is_none());
+            assert!(r.searcher.is_none() && r.watcher.is_some());
             assert!(r.file_preview.as_ref().unwrap().table.is_some());
             r.toggle_source(window, cx);
             assert_eq!(
@@ -6847,7 +6864,7 @@ mod tests {
 }
 
 /// A directory is enumerated only after publication or an explicit expansion.
-/// No recursive scanner, source reads, watcher, index, or cache participates.
+/// No recursive scanner, source reads, index, or cache participates.
 fn quick_folder(
     root: &Path,
     folder: &str,
@@ -6954,6 +6971,12 @@ impl Reader {
     }
 
     fn publish_quick_folder(&mut self, vault: Vault, cx: &mut Context<Self>) {
+        self.quick_folders.retain(|folder| {
+            folder.is_empty()
+                || vault.entries.iter().any(|entry| {
+                    entry.path == *folder && entry.kind == okilum_core::vault::EntryKind::Directory
+                })
+        });
         self.vault = Arc::new(vault);
         self.quick_open.inventory = Some(Arc::new(okilum_core::quick_open::inventory(
             self.vault.notes.clone(),
@@ -6965,7 +6988,37 @@ impl Reader {
         cx.notify();
     }
 
+    pub(crate) fn refresh_quick_folders(
+        &mut self,
+        changes: okilum_core::Changes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut folders = changes.directories;
+        for path in changes.changed.iter().chain(&changes.removed) {
+            if let Some(parent) = Path::new(path).parent() {
+                folders.insert(okilum_core::vault::note_path(parent));
+            }
+        }
+        if changes.rescan {
+            folders.extend(self.quick_folders.iter().cloned());
+        }
+        self.quick_folders.retain(|folder| {
+            folder.is_empty()
+                || self.vault.entries.iter().any(|entry| {
+                    entry.path == *folder && entry.kind == okilum_core::vault::EntryKind::Directory
+                })
+        });
+        for folder in folders {
+            if self.quick_folders.contains(&folder) {
+                self.load_quick_folder(folder, cx);
+            }
+        }
+        self.refresh_quick_document(window, cx);
+    }
+
     pub(crate) fn load_quick_folder(&mut self, folder: String, cx: &mut Context<Self>) {
+        self.quick_folders.insert(folder.clone());
         let root = self.vault_root.clone();
         let generation = self.loading.as_ref().map(|l| l.generation);
         cx.spawn(async move |this, cx| {
@@ -6994,6 +7047,19 @@ impl Reader {
                             .cloned()
                             .collect();
                         entries.extend(vault.entries);
+                        // A removed parent must also discard already-browsed descendants.
+                        let directories: std::collections::BTreeSet<_> = entries
+                            .iter()
+                            .filter(|entry| entry.kind == okilum_core::vault::EntryKind::Directory)
+                            .map(|entry| Path::new(&entry.path).to_owned())
+                            .collect();
+                        entries.retain(|entry| {
+                            Path::new(&entry.path)
+                                .ancestors()
+                                .skip(1)
+                                .take_while(|parent| !parent.as_os_str().is_empty())
+                                .all(|parent| directories.contains(parent))
+                        });
                         let mut updated = quick_vault(&expected_root, entries);
                         updated.unreadable = this
                             .vault
@@ -7146,6 +7212,100 @@ mod quick_view_tests {
         assert_eq!(vault.unreadable.len(), 1);
         assert!(!vault.inventory_complete);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn quick_folder_external_create_delete_updates_browsed_inventory(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("notes");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::create_dir(root.join("unexpanded")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
+        std::fs::write(root.join("child/existing.md"), "# Existing").unwrap();
+        std::fs::write(root.join("unexpanded/hidden.md"), "# Hidden").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("start.md")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.single_file && v.document_ready());
+            assert!(v.vault.entries.iter().any(|entry| entry.path == "child"));
+            assert!(!v
+                .vault
+                .entries
+                .iter()
+                .any(|entry| entry.path == "child/existing.md"));
+        });
+        // Actual external disk operations; no injected Changes or manual Rescan.
+        let expect_paths = |present: &[&str],
+                            absent: &[&str],
+                            visual: &mut gpui::VisualTestContext| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(8);
+            loop {
+                reader.update_in(visual, |v, window, cx| v.poll_vault(window, cx));
+                visual.run_until_parked();
+                let matches = reader.read_with(visual, |v, _| {
+                    present
+                        .iter()
+                        .all(|p| v.vault.entries.iter().any(|entry| entry.path == *p))
+                        && absent
+                            .iter()
+                            .all(|p| !v.vault.entries.iter().any(|entry| entry.path == *p))
+                });
+                if matches {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline,
+                    "external folder changes did not reach the quick sidebar: present={present:?}, absent={absent:?}");
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+        std::fs::write(root.join("external.md"), "# External").unwrap();
+        std::fs::write(root.join("image.png"), b"attachment probe").unwrap();
+        expect_paths(&["external.md", "image.png"], &[], visual);
+        reader.update_in(visual, |v, _, cx| v.load_quick_folder("child".into(), cx));
+        visual.run_until_parked();
+        // Settle subscription registration before the second external batch.
+        expect_paths(&["child/existing.md"], &[], visual);
+        std::fs::write(root.join("child/added.txt"), "attachment").unwrap();
+        std::fs::remove_file(root.join("external.md")).unwrap();
+        std::fs::remove_file(root.join("image.png")).unwrap();
+        std::fs::remove_file(root.join("child/existing.md")).unwrap();
+        expect_paths(
+            &["child/added.txt"],
+            &["external.md", "image.png", "child/existing.md"],
+            visual,
+        );
+        std::fs::remove_dir_all(root.join("child")).unwrap();
+        expect_paths(&[], &["child", "child/added.txt"], visual);
+        reader.read_with(visual, |v, _| {
+            assert!(v.single_file && v.index_dir.is_none() && v.searcher.is_none());
+            assert!(!v
+                .vault
+                .entries
+                .iter()
+                .any(|entry| entry.path == "unexpanded/hidden.md"));
+            assert_eq!(v.current_rel, "start.md");
+            assert!(v.note_source.contains("# Start"));
+        });
     }
 
     #[gpui::test]
@@ -7306,7 +7466,7 @@ mod quick_view_tests {
         reader.update_in(visual, |reader, window, cx| {
             assert!(reader.single_file && reader.document_ready());
             assert!(
-                reader.index_dir.is_none() && reader.searcher.is_none() && reader.watcher.is_none()
+                reader.index_dir.is_none() && reader.searcher.is_none() && reader.watcher.is_some()
             );
             assert!(reader.vault.entries.iter().any(|e| e.path == "child"));
             assert!(!reader
