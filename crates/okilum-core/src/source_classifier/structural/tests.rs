@@ -19,7 +19,27 @@ fn fresh_equivalent(index: &BlockIndex, source: &Snapshot) {
     let fresh = super::super::classify(source);
     let current = index.classification(source, known()).unwrap();
     assert_eq!(current.snapshot(), fresh.snapshot());
-    assert_eq!(current.plan.regions(), fresh.plan.regions());
+    use crate::source_projection::Region;
+    assert_eq!(current.plan.regions().len(), fresh.plan.regions().len());
+    for (actual, expected) in current.plan.regions().iter().zip(fresh.plan.regions()) {
+        match (actual, expected) {
+            (Region::Source(a), Region::Source(b)) => assert_eq!(a, b),
+            (
+                Region::Conceal {
+                    block: a,
+                    markers: am,
+                },
+                Region::Conceal {
+                    block: b,
+                    markers: bm,
+                },
+            ) => {
+                assert_eq!(a, b);
+                assert_eq!(am, bm);
+            }
+            _ => panic!("canonical region kind changed"),
+        }
+    }
     assert_eq!(current.styles, fresh.styles);
     assert_eq!(current.links, fresh.links);
     assert_eq!(current.decorations, fresh.decorations);
@@ -167,6 +187,15 @@ fn frontmatter_fence_and_container_definition_context_matches_canonical_root() {
 
 #[test]
 fn unicode_crlf_editor_byte_grapheme_and_utf16_boundaries_never_round_or_split() {
+    for text in ["\u{feff}# title 🧠\r\n", "-\t**tab**\n", "\tcode\n"] {
+        let snapshot = source(1, text);
+        let index = build(&snapshot);
+        assert_eq!(
+            index.blocks(&snapshot, known()).unwrap()[0].fragment.bytes,
+            0..text.len()
+        );
+        fresh_equivalent(&index, &snapshot);
+    }
     let snapshot = source(1, "# e\u{301} 👩‍💻 🇮🇱 🧠\r\n\r\n**bold**\r\n");
     let index = build(&snapshot);
     let valid: Vec<_> = snapshot
