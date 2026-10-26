@@ -478,3 +478,79 @@ fn existing_input_identity_and_structure_caps_refuse_before_unsafe_publication()
         Some(Error::Source(SourceReason::StructureLimit))
     );
 }
+
+#[test]
+fn review_foreign_root_completion_is_rejected_with_identical_inputs() {
+    let current = source(1, "# same\n\n**body**\n");
+    let mut first = Session::default();
+    let first_ticket = first
+        .begin(current.clone(), ParseContext::LivePreview)
+        .unwrap();
+    let foreign = first_ticket.clone().compute().unwrap();
+    let mut second = Session::default();
+    let second_ticket = second
+        .begin(current.clone(), ParseContext::LivePreview)
+        .unwrap();
+    let before = work();
+    assert_eq!(second.adopt(foreign).err(), Some(Error::Stale));
+    assert_eq!(work(), before, "foreign rejection performs no parser work");
+    assert!(second.current().is_none());
+    let accepted = second.adopt(second_ticket.compute().unwrap()).unwrap();
+    fresh_equivalent(&accepted, &current);
+    first.adopt(first_ticket.compute().unwrap()).unwrap();
+}
+
+#[test]
+fn review_refused_root_input_supersedes_pending_and_accepted_authority() {
+    let current = source(1, "# valid\n\n**body**\n");
+    for refused in [
+        source(2, "bad\0source"),
+        source(1, "same generation changed bytes"),
+        Snapshot::new("", 2, "invalid identity"),
+        source(2, &"a".repeat(MAX_BYTES + 1)),
+    ] {
+        let mut pending = Session::default();
+        let ticket = pending
+            .begin(current.clone(), ParseContext::LivePreview)
+            .unwrap();
+        let completion = ticket.clone().compute().unwrap();
+        let held = completion.index.clone();
+        let fuel = held
+            .references(&current, known())
+            .unwrap()
+            .fuel(&current, known())
+            .unwrap();
+        let before = work();
+        assert!(pending
+            .begin(refused.clone(), ParseContext::LivePreview)
+            .is_err());
+        assert_eq!(pending.reject_partial(&ticket), Err(Error::Stale));
+        assert_eq!(pending.adopt(completion).err(), Some(Error::Stale));
+        assert!(pending.current().is_none());
+        assert_eq!(work(), before);
+        assert_eq!(
+            held.references(&current, known())
+                .unwrap()
+                .fuel(&current, known())
+                .unwrap(),
+            fuel
+        );
+
+        let mut accepted = Session::default();
+        let initial = accepted
+            .begin(current.clone(), ParseContext::LivePreview)
+            .unwrap();
+        accepted.adopt(initial.compute().unwrap()).unwrap();
+        assert!(accepted.current().is_some());
+        assert!(accepted.begin(refused, ParseContext::LivePreview).is_err());
+        assert!(
+            accepted.current().is_none(),
+            "refused latest input cannot leave old authority current"
+        );
+        let recovery = accepted
+            .begin(source(3, current.source()), ParseContext::LivePreview)
+            .unwrap();
+        accepted.adopt(recovery.compute().unwrap()).unwrap();
+        assert!(accepted.current().is_some());
+    }
+}
