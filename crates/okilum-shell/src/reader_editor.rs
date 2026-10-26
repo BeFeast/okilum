@@ -413,6 +413,8 @@ impl Reader {
             if !self.leave_source(cx) {
                 return;
             }
+            // Explicit Read, not a navigation exit.
+            self.ui_state.source_mode = false;
             // Saved: keep its Undo history for a return to Edit (#1095).
             self.retained_edit =
                 input.map(|input| (file, input.update(cx, |input, _| input.take_edit_history())));
@@ -821,6 +823,7 @@ impl Reader {
             self.place_editor_at_reader(input.clone(), place, window, cx);
         }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
+        self.ui_state.source_mode = true;
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -1232,6 +1235,14 @@ impl Reader {
         if !self.save_source_for_navigation(cx) {
             return false;
         }
+        self.remember_source_mode();
+        self.editing = None;
+        true
+    }
+
+    /// Remember only presentation preference before a successful navigation exit.
+    /// Saving and permission to leave remain the caller's existing guards.
+    pub(super) fn remember_source_mode(&mut self) {
         // Document preparation can call leave_source again after the editor
         // has already closed. That no-op must retain the last presentation.
         if let Some(editing) = &self.editing {
@@ -1241,8 +1252,6 @@ impl Reader {
                 _ => live,
             };
         }
-        self.editing = None;
-        true
     }
 
     /// A vanished source must not trap this window. Keep the latest durable
@@ -1351,6 +1360,7 @@ impl Reader {
         {
             Ok(()) => {
                 self.editing = None;
+                self.ui_state.source_mode = false;
                 self.link_notice = Some("Draft kept in recovery. Reopen this note and enter source mode to restore it. If it was moved, restore its original path first.".into());
                 self.focus_handle.focus(window, cx);
             }
@@ -4438,14 +4448,16 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, _| {
             assert_eq!(reader.current_rel, "second.md");
-            assert!(reader.editing.is_none());
+            assert!(
+                reader.editing.is_some(),
+                "successful navigation retains Source"
+            );
         });
         assert_eq!(
             std::fs::read_to_string(root.join("first.md")).unwrap(),
             "external v2"
         );
         reader.update_in(visual, |reader, window, cx| {
-            reader.toggle_source(window, cx);
             reader
                 .editing
                 .as_ref()
@@ -5104,5 +5116,162 @@ mod autosave_tests {
         });
         wait(visual, 3000);
         assert_eq!(on_disk(&f), "original", "no retry loop until the next edit");
+    }
+}
+
+#[cfg(test)]
+mod mode_navigation_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    fn fixture(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for (path, text) in [
+            ("first.md", "# First\r\n\r\n**one** e\u{301} 🧠\r\n"),
+            ("second.md", "# Second\n\n[[first|one]]\n"),
+            ("third.md", "# Third\n\n| a | b |\n| - | - |\n| c | d |\n"),
+            (
+                "plain.txt",
+                "Plain text remains a read-only preview on selection.\n",
+            ),
+        ] {
+            std::fs::write(root.join(path), text).unwrap();
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("first.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        (reader.unwrap(), visual, temp)
+    }
+
+    fn assert_mode(reader: &Reader, expected: &str, live: Option<bool>, cx: &App) {
+        assert_eq!(
+            reader.selected_file(),
+            expected,
+            "actual selected file positive control"
+        );
+        match live {
+            None => assert!(reader.editing.is_none(), "explicit Read must remain Read"),
+            Some(live) => {
+                let editing = reader
+                    .editing
+                    .as_ref()
+                    .expect("chosen editing mode must survive the real file-switch pipeline");
+                assert_eq!(reader.source_live_preview(), live);
+                assert_eq!(editing.store.path(), reader.vault_root.join(expected));
+                assert_eq!(
+                    editing.input.read(cx).value().as_ref(),
+                    std::fs::read_to_string(editing.store.path()).unwrap()
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn selected_mode_follows_real_file_choices_and_latest_request(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = fixture(cx);
+        reader.read_with(visual, |r, cx| assert_mode(r, "first.md", None, cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx); // Actual explicit Source choice.
+            r.set_live_preview(false, window, cx);
+            assert_mode(r, "first.md", Some(false), cx);
+            r.open_note("second.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "second.md", Some(false), cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(true, window, cx); // Actual explicit LP choice.
+            r.open_note("third.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", Some(true), cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("third.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", Some(true), cx));
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx)); // Explicit Read.
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", None, cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("first.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "first.md", None, cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(false, window, cx);
+            r.open_note("second.md", None, window, cx);
+            r.open_note("third.md", None, window, cx); // Supersedes before the first worker is polled.
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", Some(false), cx));
+    }
+
+    #[gpui::test]
+    fn selected_mode_keeps_preview_fallback_and_failed_target_without_forced_editing(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, visual, temp) = fixture(cx);
+        reader.update_in(visual, |r, window, cx| {
+            r.open_live_preview(window, cx);
+            assert_mode(r, "first.md", Some(true), cx);
+            r.open_note("plain.txt", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_mode(r, "plain.txt", None, cx);
+            assert!(
+                r.file_preview.is_some(),
+                "actual unsupported-Markdown preview fallback"
+            );
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("second.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "second.md", Some(true), cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(false, window, cx);
+            r.open_note("missing.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "second.md");
+            assert!(
+                r.link_notice.is_some(),
+                "failed prepare reports absence rather than fabricating an editor"
+            );
+            assert!(r.editing.is_none());
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("third.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", Some(false), cx));
+        assert!(!temp.path().join("vault/missing.md").exists());
     }
 }

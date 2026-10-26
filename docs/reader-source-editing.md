@@ -10,6 +10,14 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Within the same Reader window, choosing another supported Markdown note keeps the
+chosen Read, Source or Live Preview mode (#1723). An explicit return to Read keeps
+later notes in Read. File switching still completes the existing save/recovery
+checks before leaving the current editor, and only the latest successfully
+prepared note may reopen its editor. Other formats retain their existing preview;
+a failed or unsupported open does not force editing. Window/session restoration
+continues to use the existing saved mode policy, without a new global preference.
+
 Windows Source and Live Preview use an app-owned exact Unicode clipboard reader
 (#1434). A restricted mode of the same executable reads `CF_UNICODETEXT` before
 updater, state or GUI initialization. Its parent limits the entire request to two
