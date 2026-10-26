@@ -142,3 +142,12 @@ Native full-active preparation, PreparedProvider selection, native epoch/held-pi
 proof, observer/PresentationProof and130KB admission remain separate follow-ons.
 The existing caps, full-parent key and canonical recompute/fuel remain unchanged;
 no cross-edit performance or Stable acceptance is claimed.
+
+
+Reader regression receipts distinguish full asynchronous same-byte save echoes
+(`apply_vault_changes` through executor drain, with zero classification/reinstall
+and stable native state) from deferral at a delivered consumer boundary. The latter
+starts a real autosave and delivers the existing reconciliation callback with actual
+fixture disk input while that save is pending, then drains actual save/refresh work.
+It does not prove that the whole entry/inventory pipeline delivers before autosave;
+that ordering remains unproven and is not inferred from a favorable schedule.

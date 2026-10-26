@@ -2072,29 +2072,41 @@ mod tests {
             // A real autosave starts while resumed classification is pending.
             input.update(cx, |i, cx| i.replace("x", window, cx));
         });
-        reader.update_in(visual, |r, window, cx| {
+        let saved_text = reader.update_in(visual, |r, window, cx| {
             let e = r.editing.as_ref().unwrap();
             let id = e.input.entity_id();
             let epoch = e.recovery_epoch;
             r.autosave(id, epoch, window, cx);
-            assert!(r.editing.as_ref().unwrap().autosaving.is_some());
-            r.apply_vault_changes(
-                okilum_core::Changes {
-                    changed: ["note.md".into()].into(),
-                    ..Default::default()
-                },
-                window,
-                cx,
-            );
+            let editing = r.editing.as_ref().unwrap();
+            let saved_text = editing
+                .autosaving
+                .clone()
+                .expect("REAL autosave worker is pending");
+            let sources = std::collections::HashMap::from([(
+                r.current_rel.clone(),
+                std::fs::read_to_string(editing.store.path()).unwrap(),
+            )]);
+            // Separate consumer-boundary proof: deliver the EXISTING publication
+            // callback during an actual save. apply_vault_changes is asynchronous;
+            // the full entry/echo regression above and its drained test stay separate.
+            r.reconcile_inventory_document(&sources, window, cx);
             assert!(
                 r.editing.as_ref().unwrap().refresh_deferred,
-                "actual callback defers behind actual save worker"
+                "DELIVERED consumer callback defers behind the REAL pending save"
             );
+            saved_text
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             let e = r.editing.as_ref().unwrap();
             assert!(!e.refresh_deferred && !e.conflict_detected);
+            assert_eq!(e.input.read(cx).value().as_ref(), saved_text);
+            assert_eq!(std::fs::read_to_string(e.store.path()).unwrap(), saved_text);
+            assert_eq!(
+                *e.live_preview.completed_navigation_bytes().last().unwrap(),
+                saved_text.len() as u64
+            );
+            assert!(e.live_preview.worker_reports.last().unwrap().phases["parse"].calls > 0);
             assert!(r
                 .checked_live_provider(e.live_preview.origin.reader, cx)
                 .is_some());
