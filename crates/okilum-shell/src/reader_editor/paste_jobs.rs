@@ -833,7 +833,7 @@ mod attachment_refresh_tests {
             // Withhold OS delivery: a completed local write must publish its
             // known endpoints, even if Syncthing/native notifications lag.
             reader.open_live_preview(window, cx);
-            reader.drop_on_editor(&ExternalPaths(vec![original.clone()]), window, cx);
+            reader.drop_on_editor(&ExternalPaths(vec![original.clone()].into()), window, cx);
             watcher
         });
         visual.run_until_parked();
