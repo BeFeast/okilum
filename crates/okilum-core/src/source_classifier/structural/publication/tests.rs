@@ -217,7 +217,7 @@ fn invalid_utf16_utf8_grapheme_crlf_active_inputs_refuse_without_derivation() {
             composition: None,
         }),
         ActiveInput::Source(Active {
-            selection: Some(4..2),
+            selection: Some(std::ops::Range { start: 4, end: 2 }),
             composition: None,
         }),
         ActiveInput::Source(Active {
