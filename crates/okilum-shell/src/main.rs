@@ -4235,15 +4235,10 @@ impl Reader {
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
                 #[cfg(any(unix, windows))]
-                SideItem::Create(input, depth, directory, templates, selected, destination) => {
-                    let (destination, destination_tip) = destination;
-                    let destination_entity = entity.clone();
-                    let destination_act = act.clone();
+                SideItem::Create(input, depth, directory, ..) => {
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
-                        // Consume Input's propagated submit before text fallback can
-                        // replace a selected filename with an empty newline.
                         .on_action(|_: &gpui_component::input::Enter, _, cx| {
                             cx.stop_propagation();
                         })
@@ -4256,7 +4251,23 @@ impl Reader {
                             })
                             .small(),
                         )
-                        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .debug_selector(|| "create-name-input".into())
+                                .child(Input::new(&input).small()),
+                        )
+                        .into_any_element()
+                }
+                #[cfg(any(unix, windows))]
+                SideItem::CreateOptions(depth, directory, templates, selected, destination) => {
+                    let (destination, destination_tip) = destination;
+                    let destination_entity = entity.clone();
+                    let destination_act = act.clone();
+                    row_base("inline-create-options".into())
+                        .debug_selector(|| "inline-create-options".into())
+                        .pl(px(18. + depth as f32 * 14.))
                         .when(!directory, |row| {
                             row.child(
                                 Button::new("create-template-picker")
@@ -6066,11 +6077,11 @@ enum SideItem {
     },
     Empty(&'static str),
     Tree(reader_tree::Row),
-    /// Input, depth, folder?, templates, chosen template, and where the
-    /// item lands as «in: …» label and tooltip (#1512).
+    /// The name gets its own full-width row; options cannot shrink its input.
     #[cfg(any(unix, windows))]
-    Create(
-        Entity<InputState>,
+    Create(Entity<InputState>, usize, bool),
+    #[cfg(any(unix, windows))]
+    CreateOptions(
         usize,
         bool,
         Vec<String>,
@@ -6092,6 +6103,10 @@ fn append_creation_rows(
 ) {
     items.push(SideItem::Create(
         create.input.clone(),
+        depth,
+        create.directory,
+    ));
+    items.push(SideItem::CreateOptions(
         depth,
         create.directory,
         create
