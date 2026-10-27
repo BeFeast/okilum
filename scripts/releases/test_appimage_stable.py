@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import appimage_stable as stable
 import appimage_publish as publication
@@ -20,18 +20,21 @@ class AppImageStableTests(unittest.TestCase):
         (self.input / stable.IMAGE).write_bytes(image)
         (self.input / 'provenance.json').write_text(json.dumps(provenance))
         self.store, self.key = Store(), Key()
-        publication.publish(self.store, self.key, self.root, self.input, SOURCE, receipt, 9999)
+        self.client = Mock()
+        stub = patch.object(publication.release_notes, 'merged_items', return_value=[])
+        stub.start(); self.addCleanup(stub.stop)
+        publication.publish(self.store, self.key, self.root, self.input, SOURCE, receipt, 9999, client=self.client)
         for key in ['okilum/appcast.xml', 'okilum/windows/stable/releases.stable.json',
                     'okilum/arch/stable/x86_64/latest.json', 'okilum/releases/stable.json']:
             self.store.objects[key] = b'preserve exact current bytes'
         self.store.writes.clear()
 
     def promote(self):
-        stable.execute(self.store, self.key, self.root, SOURCE, 5023)
+        stable.execute(self.store, self.key, self.root, SOURCE, 5023, client=self.client)
 
     def test_signed_stable_reuses_payload_and_original_identity_other_feeds_unchanged(self):
         before = dict(self.store.objects); self.promote()
-        self.assertTrue(all(key.startswith('okilum/linux/stable/') or key.startswith('okilum/linux/promotions/')
+        self.assertTrue(all(key.startswith('okilum/linux/stable/') or key.startswith('okilum/linux/promotions/') or key.startswith('okilum/releases/')
                             for key, _ in self.store.writes))
         for key, value in before.items(): self.assertEqual(self.store.objects[key], value, key)
         raw = self.store.objects['okilum/linux/stable/latest.json']; d = json.loads(raw)
@@ -41,6 +44,27 @@ class AppImageStableTests(unittest.TestCase):
         Path(str(path) + '.sig').write_bytes(self.store.objects['okilum/linux/stable/latest.json.sig']); self.key.verify(path)
         with patch.object(self.key, 'sign', side_effect=AssertionError('retry must retain signed bytes')):
             self.promote()
+
+    def test_stable_notes_are_independent_and_written_before_feed(self):
+        self.promote()
+        path = publication.release_notes.key(SOURCE, 'linux-appimage', 'stable')
+        notes = json.loads(self.store.objects[path])
+        self.assertEqual((notes['platform'], notes['channel'], notes['build'], notes['previous_build']),
+                         ('linux-appimage', 'stable', 5023, None))
+        names = [key for key, _ in self.store.writes]
+        self.assertLess(names.index(path), names.index('okilum/linux/stable/latest.json'))
+        self.promote()
+        self.assertEqual(json.loads(self.store.objects[path]), notes)
+
+    def test_stable_notes_failure_cannot_move_feed(self):
+        path = publication.release_notes.key(SOURCE, 'linux-appimage', 'stable')
+        self.store.fail = path
+        with self.assertRaises(RuntimeError):
+            self.promote()
+        self.assertNotIn('okilum/linux/stable/latest.json', self.store.objects)
+        self.store.fail = None
+        self.promote()
+        self.assertIn(path, self.store.objects)
 
     def test_corrupt_image_signature_descriptor_or_provenance_has_zero_writes(self):
         archive = 'okilum/linux/builds/5023/'
@@ -75,7 +99,7 @@ class AppImageStableTests(unittest.TestCase):
 
     def test_retry_recovers_interrupted_detached_pair_over_previous_stable(self):
         previous = {**json.loads(self.store.objects['okilum/linux/builds/5023/release.json']),
-                    'channel': 'stable', 'build': 5022, 'version': '0.1.5022'}
+                    'channel': 'stable', 'build': 5022, 'version': '0.1.5022', 'source': 'b' * 40}
         raw = publication.encode(previous); path = self.root / 'previous.json'
         path.write_bytes(raw); self.key.sign(path)
         self.store.objects['okilum/linux/stable/latest.json'] = raw
