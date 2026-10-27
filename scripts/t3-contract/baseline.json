@@ -1,0 +1,8 @@
+{
+  "upstream": "https://github.com/pingdotgg/t3code",
+  "tag": "v0.1.4-nightly.20261027.3783",
+  "release_target_commit": "dc84b0962efa4f4e05ef392c08986a9cd7c994d1",
+  "effect": "4.0.5",
+  "scope": "protocol v2 subscribeShell/subscribeThread/dispatchCommand encoded input+output; environment capabilities; server auth; token exchange",
+  "native_round_trip": "deferred until #1787 slice 2"
+}
