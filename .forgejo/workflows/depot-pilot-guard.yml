@@ -1,0 +1,30 @@
+# Preparatory only: absent enable variable skips the job before any API request.
+name: depot-pilot-guard
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+concurrency:
+  group: depot-pilot-guard
+  cancel-in-progress: false
+jobs:
+  guard:
+    if: vars.OKILUM_DEPOT_PILOT_ENABLED == 'true'
+    runs-on: bridge
+    timeout-minutes: 4
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check queue and conservative budget; unset Depot routing if unsafe
+        env:
+          DEPOT_PILOT_ENABLED: ${{ vars.OKILUM_DEPOT_PILOT_ENABLED }}
+          DEPOT_PILOT_START: ${{ vars.OKILUM_DEPOT_PILOT_START }}
+          DEPOT_PILOT_END: ${{ vars.OKILUM_DEPOT_PILOT_END }}
+          DEPOT_PILOT_CAP_USD: ${{ vars.OKILUM_DEPOT_PILOT_CAP_USD }}
+          DEPOT_USAGE_TOKEN: ${{ secrets.OKILUM_DEPOT_USAGE_TOKEN }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+        run: python3 scripts/ci/depot_guard.py
