@@ -3706,7 +3706,7 @@ impl Reader {
                     [
                         div()
                             .id(SharedString::from(format!("reader-crumb-{path}")))
-                            .debug_selector(move || format!("reader-crumb-{selector}").into())
+                            .debug_selector(move || format!("reader-crumb-{selector}"))
                             .flex_shrink(1.)
                             .min_w(px(24.))
                             .overflow_hidden()
