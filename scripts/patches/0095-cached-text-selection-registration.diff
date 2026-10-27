@@ -24,7 +24,7 @@ diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.
          }
      }
 
-@@ -644,9 +648,15 @@
+@@ -645,9 +649,15 @@
      }
 
      fn clear_state(&mut self, cx: &mut Context<Self>) -> Option<ClearHandler> {
@@ -40,7 +40,7 @@ diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.
          cx.emit(TextSelectionEvent::Cleared);
          cx.emit(TextSelectionEvent::SelectionChanged(None));
          self.clear.clone()
-@@ -724,6 +734,15 @@
+@@ -725,6 +735,15 @@
          let Some(state) = WindowSelectionState::existing(window, cx) else {
              return;
          };
@@ -56,7 +56,7 @@ diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.
          state.update(cx, |state, cx| {
              state.register_participant(self.clone(), registration, cx)
          });
-@@ -969,6 +988,8 @@
+@@ -975,6 +994,8 @@
 
      /// Sweeps participants after a rendered frame has completed.
      ///
@@ -65,7 +65,7 @@ diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.
      /// Registrations are stamped with the current generation while any sibling
      /// is painting. Sweeping only after paint makes registration independent of
      /// whether a participant or the lifecycle element paints first.
-@@ -978,7 +999,12 @@
+@@ -985,7 +1006,12 @@
              .participants
              .iter()
              .filter_map(|(id, registration)| {
@@ -79,7 +79,7 @@ diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.
                      .then(|| (*id, registration.participant.clone()))
              })
              .collect::<Vec<_>>();
-@@ -2023,6 +2049,133 @@
+@@ -2109,6 +2135,133 @@
          selection: TextSelectionHandle,
      }
 
@@ -213,3 +213,58 @@ diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.
      struct SelectionElementOnlyView;
      struct ToggleSelectionElementView {
          enabled: bool,
+@@ -3591,6 +3744,7 @@
+             MouseButton::Left,
+             gpui::Modifiers::default(),
+         );
++        assert_eq!(clear_count.get(), 0, "an empty click emits no clear");
+         cx.simulate_mouse_down(
+             point(px(70.), px(10.)),
+             MouseButton::Left,
+@@ -3604,7 +3758,15 @@
+             MouseButton::Left,
+             gpui::Modifiers::default(),
+         );
+-        cx.update(|window, cx| assert!(TextSelection::has_selection(window, cx)));
++        cx.update(|window, cx| {
++            assert!(TextSelection::has_selection(window, cx));
++            assert_eq!(TextSelection::selected_text(window, cx), "once");
++        });
++        assert_eq!(
++            clear_count.get(),
++            0,
++            "shift extension preserves the anchor without a false clear"
++        );
+
+         cx.simulate_mouse_down(
+             point(px(15.), px(10.)),
+@@ -3621,8 +3783,27 @@
+             MouseButton::Left,
+             gpui::Modifiers::default(),
+         );
+-        cx.update(|window, cx| assert!(TextSelection::has_selection(window, cx)));
+-        assert_eq!(clear_count.get(), 3);
++        cx.update(|window, cx| {
++            assert!(TextSelection::has_selection(window, cx));
++            assert_eq!(TextSelection::selected_text(window, cx), "once");
++        });
++        assert_eq!(
++            clear_count.get(),
++            1,
++            "the new gesture clears the real previous selection once"
++        );
++        cx.update(|window, cx| {
++            TextSelection::clear(window, cx);
++            assert!(!TextSelection::has_selection(window, cx));
++            assert_eq!(TextSelection::selected_text(window, cx), "");
++        });
++        assert_eq!(
++            clear_count.get(),
++            2,
++            "positive control: explicit real clear re-enters the state once"
++        );
++        cx.update(|window, cx| TextSelection::clear(window, cx));
++        assert_eq!(clear_count.get(), 2, "repeated empty clear is silent");
+     }
+
+     #[gpui::test]
