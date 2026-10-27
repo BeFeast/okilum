@@ -10,6 +10,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -77,12 +78,10 @@ def bootstrap(binary, version, directory):
     home = directory / 'home'
     home.mkdir(mode=0o700)
     base = home / 't3'
-    env = {**os.environ, 'HOME': str(home), 'T3CODE_HOME': str(base),
+    # Explicit allowlist: no provider credentials, agents, proxy auth or inherited T3 config.
+    env = {'PATH': os.environ.get('PATH', os.defpath), 'LANG': 'C.UTF-8', 'TZ': 'UTC',
+           'HOME': str(home), 'T3CODE_HOME': str(base),
            'XDG_CONFIG_HOME': str(home / '.config'), 'XDG_CACHE_HOME': str(home / '.cache')}
-    # No provider credentials or inherited configuration enters the disposable server.
-    for key in list(env):
-        if any(word in key for word in ('TOKEN', 'SECRET', 'API_KEY', 'PASSWORD')):
-            del env[key]
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -131,13 +130,21 @@ def bootstrap(binary, version, directory):
             return {'serverVersion': descriptor['serverVersion'], 'paired': True,
                     'client_round_trip': 'NOT_ENABLED: waiting for #1787 slice 2'}
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+            primary = sys.exception()
             try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+            except Exception as cleanup:
+                if primary is not None:
+                    raise RuntimeError(
+                        f'Bootstrap failed ({type(primary).__name__}: {primary}); '
+                        f'cleanup failed ({type(cleanup).__name__}: {cleanup})') from primary
+                raise
 
 
 def run(output):

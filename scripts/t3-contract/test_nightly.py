@@ -52,7 +52,9 @@ class ContractHarness(unittest.TestCase):
                 process = Mock(pid=12345)
                 process.poll.return_value = None
                 session = io.BytesIO(b'{"access_token":"ephemeral","token_type":"Bearer"}')
-                with patch.dict(os.environ, GITHUB_TOKEN='private', PROVIDER_API_KEY='private'), \
+                with patch.dict(os.environ, GITHUB_TOKEN='private', PROVIDER_API_KEY='private',
+                                AWS_ACCESS_KEY_ID='private', SSH_PRIVATE_KEY='private',
+                                SSH_AUTH_SOCK='/private/agent', T3CODE_MODE='private'), \
                         patch.object(nightly.subprocess, 'Popen', return_value=process) as spawn, \
                         patch.object(nightly, 'request', side_effect=[
                             json.dumps({'serverVersion': version}).encode(),
@@ -73,10 +75,27 @@ class ContractHarness(unittest.TestCase):
                     child_env = spawn.call_args.kwargs['env']
                     self.assertNotIn('GITHUB_TOKEN', child_env)
                     self.assertNotIn('PROVIDER_API_KEY', child_env)
+                    for key in ['AWS_ACCESS_KEY_ID', 'SSH_PRIVATE_KEY', 'SSH_AUTH_SOCK', 'T3CODE_MODE']:
+                        self.assertNotIn(key, child_env)
                     self.assertEqual(child_env['HOME'], str(root / 'home'))
                     self.assertTrue(spawn.call_args.kwargs['start_new_session'])
                     kill.assert_called_once_with(12345, nightly.signal.SIGTERM)
                     process.wait.assert_called_once_with(timeout=15)
+
+    def test_cleanup_timeout_preserves_primary_bootstrap_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = Mock(pid=12345)
+            process.poll.return_value = None
+            process.wait.side_effect = [nightly.subprocess.TimeoutExpired('server', 15),
+                                        nightly.subprocess.TimeoutExpired('server', 5)]
+            with patch.object(nightly.subprocess, 'Popen', return_value=process), \
+                    patch.object(nightly, 'request', return_value=b'{"serverVersion":"wrong"}'), \
+                    patch.object(nightly.os, 'killpg') as kill:
+                with self.assertRaisesRegex(RuntimeError,
+                        r'Bootstrap failed .*version mismatch.*cleanup failed .*TimeoutExpired'):
+                    nightly.bootstrap(Path('/not-executed'), 'vexpected', Path(directory))
+                self.assertEqual(kill.call_count, 2)
+                self.assertEqual(process.wait.call_count, 2)
 
     def test_schema_snapshot_covers_all_deferred_wire_directions_and_auth(self):
         value = json.loads((Path(__file__).parent / 'snapshot.json').read_text())
