@@ -55,6 +55,9 @@ snapshots are not requested; reconstruction and older-history loading belong
 to the projection slice.
 
 Dropping/closing the subscription cancels that RPC, not the remote agent.
+Implicit drop only shuts down the socket; it never writes protocol frames or
+waits for the peer. Explicit `close` sends Interrupt/Close and must run off the
+UI thread.
 `CancelSubscription::cancel` shuts down a blocked socket immediately; the worker
 then exits. The caller owns reconnect policy, view-generation checks and task
 lifetime. No commands, send retries, approvals or question responses are added

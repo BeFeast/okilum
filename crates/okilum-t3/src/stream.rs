@@ -329,6 +329,9 @@ impl ThreadSubscription {
 
 impl Drop for ThreadSubscription {
     fn drop(&mut self) {
-        self.close();
+        // Ownership can end on the UI thread. Never flush protocol frames or
+        // perform a close handshake here; graceful close is explicit. Closing
+        // the TCP stream cancels the RPC without stopping the remote agent.
+        let _ = self.cancel.shutdown(Shutdown::Both);
     }
 }
