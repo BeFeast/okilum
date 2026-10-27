@@ -2253,21 +2253,16 @@ impl Reader {
                         }
                         #[cfg(target_os = "macos")]
                         {
-                            let path = opts.open_path.clone().unwrap_or_else(|| {
-                                match (&opts.vault, &opts.note) {
-                                    (Some(root), Some(note)) => root.join(note),
-                                    (Some(root), None) => root.clone(),
-                                    _ => PathBuf::new(),
-                                }
-                            });
-                            let materialized = reader_icloud::materialize(&path, || {
-                                cancel.check()?;
-                                send.send_blocking(Event::Progress(reader_icloud::DOWNLOADING.into()))
-                                    .map_err(|_| anyhow::anyhow!("Reader closed"))
-                            })?;
-                            if opts.open_path.is_some() || opts.note.is_some() {
-                                opts.open_path = Some(materialized);
-                            }
+                            reader_icloud::prepare_explicit_open(
+                                &mut opts.open_path,
+                                opts.vault.as_deref(),
+                                opts.note.as_deref(),
+                                |path| reader_icloud::materialize(path, || {
+                                    cancel.check()?;
+                                    send.send_blocking(Event::Progress(reader_icloud::DOWNLOADING.into()))
+                                        .map_err(|_| anyhow::anyhow!("Reader closed"))
+                                }),
+                            )?;
                         }
                         let mut first = prepare_first_with_ui_notes(&opts, &cancel, &ui_notes)?;
                         if let Event::First { document, .. } = &first {

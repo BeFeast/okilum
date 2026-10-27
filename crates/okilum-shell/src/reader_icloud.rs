@@ -29,6 +29,30 @@ pub(crate) fn logical_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Preserve vault-vs-file intent. Only a legacy placeholder rename changes
+/// the explicit path; a plain folder/empty selection never requests hydration.
+pub(crate) fn prepare_explicit_open(
+    open_path: &mut Option<PathBuf>,
+    root: Option<&Path>,
+    note: Option<&str>,
+    materialize: impl FnOnce(&Path) -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<()> {
+    let path = open_path
+        .clone()
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            root.zip(note.filter(|note| !note.is_empty()))
+                .map(|(root, note)| root.join(note))
+        });
+    if let Some(path) = path {
+        let ready = materialize(&path)?;
+        if ready != path {
+            *open_path = Some(ready);
+        }
+    }
+    Ok(())
+}
+
 fn placeholder_name(path: &Path) -> PathBuf {
     let mut name = std::ffi::OsString::from(".");
     name.push(path.file_name().unwrap_or_default());
@@ -199,6 +223,34 @@ mod tests {
     fn ui_thread_is_rejected_before_any_filesystem_or_download_work() {
         assert!(require_worker(true).is_err());
         assert!(require_worker(false).is_ok());
+    }
+
+    #[test]
+    fn first_open_preserves_vault_note_intent_and_ignores_folder_only_selection() {
+        let root = Path::new("vault");
+        let mut open_path = None;
+        prepare_explicit_open(&mut open_path, Some(root), Some("note.md"), |path| {
+            assert_eq!(path, root.join("note.md"));
+            Ok(path.to_path_buf())
+        })
+        .unwrap();
+        assert!(open_path.is_none(), "local vault+note stays a vault intent");
+        for (root, note) in [(Some(root), None), (Some(root), Some("")), (None, None)] {
+            prepare_explicit_open(&mut open_path, root, note, |_| {
+                panic!("no explicit document")
+            })
+            .unwrap();
+            assert!(open_path.is_none());
+        }
+    }
+
+    #[test]
+    fn first_open_remaps_only_legacy_placeholder_names_and_retains_explicit_paths() {
+        let mut open_path = Some(PathBuf::from("vault/.note.md.icloud"));
+        prepare_explicit_open(&mut open_path, None, None, |path| Ok(logical_path(path))).unwrap();
+        assert_eq!(open_path, Some(PathBuf::from("vault/note.md")));
+        prepare_explicit_open(&mut open_path, None, None, |path| Ok(path.to_path_buf())).unwrap();
+        assert_eq!(open_path, Some(PathBuf::from("vault/note.md")));
     }
 
     #[test]
