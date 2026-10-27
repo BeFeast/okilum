@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,7 +75,85 @@ def snapshot(upstream, output):
     return matches[0]
 
 
-def bootstrap(binary, version, directory):
+def fixture_thread(binary, base, env, origin):
+    """Official MCP creates an idle scratch fixture, not a native-operation assertion."""
+    token = command([str(binary), 'auth', 'session', 'issue', '--base-dir', str(base),
+                     '--subject', 'mcp-client', '--scope', 'orchestration:read',
+                     '--scope', 'orchestration:operate', '--token-only'], env=env).strip()
+    session = None
+    def rpc(method, params, identifier=None):
+        nonlocal session
+        body = {'jsonrpc': '2.0', 'method': method, 'params': params}
+        if identifier is not None:
+            body['id'] = identifier
+        headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                   'Accept': 'application/json, text/event-stream'}
+        if session:
+            headers['mcp-session-id'] = session
+        req = urllib.request.Request(origin + '/mcp', data=json.dumps(body).encode(), headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as response:
+            session = response.headers.get('mcp-session-id', session)
+            data = response.read()
+            if identifier is None:
+                return None
+            if response.headers.get('Content-Type', '').startswith('text/event-stream'):
+                replies = [json.loads(line[6:]) for line in data.decode().splitlines()
+                           if line.startswith('data: ')]
+                reply = next(x for x in replies if x.get('id') == identifier)
+            else:
+                reply = json.loads(data)
+        if 'error' in reply or reply.get('id') != identifier:
+            raise ValueError('Idle fixture MCP setup failed')
+        return reply['result']
+    rpc('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {},
+                      'clientInfo': {'name': 'okilum-nightly-fixture', 'version': '1'}}, 1)
+    rpc('notifications/initialized', {})
+    result = rpc('tools/call', {'name': 't3_thread_launch', 'arguments': {
+        'title': 'Disposable nightly subscription fixture', 'scratch': True,
+        'modelSelection': {'instanceId': 'codex', 'model': 'gpt-5-codex'}}}, 2)
+    if result.get('isError'):
+        raise ValueError('Idle fixture launch rejected')
+    launched = result.get('structuredContent')
+    if not isinstance(launched, dict):
+        texts = [x['text'] for x in result.get('content', []) if x.get('type') == 'text']
+        if len(texts) != 1:
+            raise ValueError('Idle fixture result has no single structured payload')
+        launched = json.loads(texts[0])
+    if not launched.get('threadId') or launched.get('runId') is not None:
+        raise ValueError('Fixture must be an idle thread, never an agent run')
+    return launched['threadId']
+
+
+def native_roundtrip(binary, base, env, origin, probe):
+    thread_id = fixture_thread(binary, base, env, origin)
+    pairing = json.loads(command([str(binary), 'auth', 'pairing', 'create',
+                                  '--base-dir', str(base), '--json'], env=env))
+    # Pairing is performed by NativeToken::pair in the real Rust client. No Python
+    # token exchange or raw WebSocket operation substitutes for tested methods.
+    child_env = {**env, 'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted'}
+    completed = subprocess.run([str(probe)], env=child_env, input=json.dumps({
+        'origin': origin, 'credential': pairing['credential'], 'thread_id': thread_id}),
+        text=True, capture_output=True, timeout=90, check=False)
+    if completed.returncode != 0:
+        # No subprocess output: a future panic must not echo the stdin credential.
+        try:
+            failure = json.loads(completed.stdout)
+        except ValueError:
+            failure = {}
+        stage = failure.get('stage')
+        if stage not in {'hosted_preflight', 'native_pair', 'initial_subscribe',
+                         'initial_snapshot_decode_and_completion', 'resume_subscribe',
+                         'resume_decode_and_completion'}:
+            stage = 'unclassified_client_exit'
+        raise ValueError('Real okilum-t3 pair/snapshot/resume probe failed at '
+                         + stage + ' (exit ' + str(completed.returncode) + ')')
+    result = json.loads(completed.stdout)
+    if not all(result.get(key) is True for key in ['paired', 'snapshot', 'resume', 'resume_without_snapshot']):
+        raise ValueError('Incomplete real-client round-trip receipt')
+    return result
+
+
+def bootstrap(binary, version, directory, probe):
     home = directory / 'home'
     home.mkdir(mode=0o700)
     base = home / 't3'
@@ -108,27 +187,10 @@ def bootstrap(binary, version, directory):
                 raise TimeoutError('Disposable server readiness exceeded 60s')
             if descriptor['serverVersion'] != version.removeprefix('v'):
                 raise ValueError('Downloaded server descriptor version mismatch')
-            pairing = json.loads(command([str(binary), 'auth', 'pairing', 'create',
-                                          '--base-dir', str(base), '--json'], env=env))
-            body = urllib.parse.urlencode({
-                'grant_type': 'urn:ietf:params:oauth:grant-type:token-exchange',
-                'subject_token': pairing['credential'],
-                'subject_token_type': 'urn:t3:params:oauth:token-type:environment-bootstrap',
-                'requested_token_type': 'urn:ietf:params:oauth:token-type:access_token',
-                'scope': 'orchestration:read orchestration:operate',
-                'client_label': 'Okilum disposable nightly contract',
-            }).encode()
-            req = urllib.request.Request(origin + '/oauth/token', data=body,
-                                         headers={'Content-Type': 'application/x-www-form-urlencoded'})
-            with urllib.request.urlopen(req, timeout=15) as response:
-                session = json.load(response)
-            if not session.get('access_token') or session.get('token_type') != 'Bearer':
-                raise ValueError('Pairing exchange did not issue a Bearer session')
-            state = json.loads(request(origin + '/api/auth/session', token=session['access_token']))
-            if state.get('authenticated') is not True:
-                raise ValueError('Paired session is not authenticated')
-            return {'serverVersion': descriptor['serverVersion'], 'paired': True,
-                    'client_round_trip': 'NOT_ENABLED: waiting for #1787 slice 2'}
+            native = native_roundtrip(binary, base, env, origin, probe)
+            return {'serverVersion': descriptor['serverVersion'],
+                    'native_client': native,
+                    'deferred_operations': ['subscribeShell', 'dispatchCommand', 'capability flags']}
         finally:
             primary = sys.exception()
             try:
@@ -147,10 +209,46 @@ def bootstrap(binary, version, directory):
                 raise
 
 
+def build_client():
+    with (ROOT / 'rust-toolchain.toml').open('rb') as source:
+        toolchain = tomllib.load(source)['toolchain']['channel']
+    command(['rustup', 'toolchain', 'install', toolchain, '--profile', 'minimal'],
+            cwd=ROOT, timeout=300)
+    command(['bash', 'scripts/vendor-setup.sh'], cwd=ROOT, timeout=300)
+    command(['bash', 'scripts/vendor-setup.sh', '--verify'], cwd=ROOT, timeout=120)
+    command(['cargo', 'build', '--locked', '-p', 'okilum-t3', '--example', 'nightly_contract'],
+            cwd=ROOT, timeout=600)
+    target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
+    probe = (target / 'debug/examples/nightly_contract').resolve()
+    return probe
+
+
+def safe_error(error):
+    return type(error).__name__ + ': ' + (
+        'subprocess failed' if isinstance(error, subprocess.SubprocessError) else str(error))
+
+
+def observe_schema(release, root, output, receipt):
+    source = request(f"https://codeload.github.com/{UPSTREAM}/tar.gz/refs/tags/{release['tag_name']}")
+    receipt['source_archive_sha256'] = hashlib.sha256(source).hexdigest()
+    extract(source, root / 'source')
+    sources = list((root / 'source').iterdir())
+    if len(sources) != 1 or not sources[0].is_dir():
+        raise ValueError('Unexpected upstream source archive layout')
+    receipt['effect_version'] = snapshot(sources[0], output / 'actual-schema.json')
+    expected = (ROOT / 'scripts/t3-contract/snapshot.json').read_text()
+    actual = (output / 'actual-schema.json').read_text()
+    delta = ''.join(difflib.unified_diff(expected.splitlines(True), actual.splitlines(True),
+                                       fromfile='committed', tofile=release['tag_name']))
+    (output / 'schema.diff').write_text(delta)
+    receipt['schema_drift'] = bool(delta)
+
+
 def run(output):
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
         raise RuntimeError('Server contract probe runs only on GitHub-hosted Actions')
-    receipt = {'client_round_trip': 'NOT_ENABLED: waiting for #1787 slice 2'}
+    receipt = {'enabled_operations': ['NativeToken::pair', 'subscribeThread snapshot', 'subscribeThread resume'],
+               'deferred_operations': ['subscribeShell', 'dispatchCommand', 'capability flags']}
     output.mkdir(parents=True, exist_ok=True)
     try:
         command(['python3', '-m', 'unittest', 'discover', '-s',
@@ -159,42 +257,39 @@ def run(output):
         release = latest(json.loads(request(f'https://api.github.com/repos/{UPSTREAM}/releases?per_page=30')))
         receipt['version'] = release['tag_name']
         receipt['release_url'] = release['html_url']
-        asset = next(a for a in release['assets'] if a['name'] == f"t3-{release['tag_name'][1:]}-linux-x64.tar.gz")
-        data = request(asset['browser_download_url'])
-        digest = 'sha256:' + hashlib.sha256(data).hexdigest()
-        if asset.get('digest') != digest:
-            raise ValueError('Release asset SHA256 missing or mismatched')
-        receipt['asset_digest'] = digest
         with tempfile.TemporaryDirectory(prefix='okilum-t3-contract-') as temporary:
             root = Path(temporary)
-            extract(data, root / 'binary')
-            binaries = [p for p in (root / 'binary').rglob('t3') if p.is_file() and os.access(p, os.X_OK)]
-            if len(binaries) != 1:
-                raise ValueError('Expected one official T3 executable')
-            # Bootstrap is independent of schema drift; run both and retain both outcomes.
+            # Schema and client failures are independent observations. Never lose the
+            # upstream version/diff just because Rust/vendor installation is unavailable.
             try:
-                receipt['bootstrap'] = bootstrap(binaries[0], release['tag_name'], root)
+                observe_schema(release, root, output, receipt)
             except Exception as error:
-                receipt['bootstrap_error'] = type(error).__name__ + ': ' + str(error)
-            source = request(f"https://codeload.github.com/{UPSTREAM}/tar.gz/refs/tags/{release['tag_name']}")
-            receipt['source_archive_sha256'] = hashlib.sha256(source).hexdigest()
-            extract(source, root / 'source')
-            sources = list((root / 'source').iterdir())
-            if len(sources) != 1 or not sources[0].is_dir():
-                raise ValueError('Unexpected upstream source archive layout')
-            receipt['effect_version'] = snapshot(sources[0], output / 'actual-schema.json')
-        expected = (ROOT / 'scripts/t3-contract/snapshot.json').read_text()
-        actual = (output / 'actual-schema.json').read_text()
-        delta = ''.join(difflib.unified_diff(expected.splitlines(True), actual.splitlines(True),
-                                           fromfile='committed', tofile=release['tag_name']))
-        (output / 'schema.diff').write_text(delta)
-        receipt['schema_drift'] = bool(delta)
-        receipt['status'] = 'FAIL' if delta or receipt.get('bootstrap_error') else 'PASS'
+                receipt['schema_error'] = safe_error(error)
+            try:
+                probe = build_client()
+                receipt['client_source'] = command(['git', 'rev-parse', 'HEAD'], cwd=ROOT).strip()
+                receipt['client_binary_sha256'] = hashlib.sha256(probe.read_bytes()).hexdigest()
+                asset = next(a for a in release['assets'] if a['name'] ==
+                             f"t3-{release['tag_name'][1:]}-linux-x64.tar.gz")
+                data = request(asset['browser_download_url'])
+                digest = 'sha256:' + hashlib.sha256(data).hexdigest()
+                if asset.get('digest') != digest:
+                    raise ValueError('Release asset SHA256 missing or mismatched')
+                receipt['asset_digest'] = digest
+                extract(data, root / 'binary')
+                binaries = [p for p in (root / 'binary').rglob('t3')
+                            if p.is_file() and os.access(p, os.X_OK)]
+                if len(binaries) != 1:
+                    raise ValueError('Expected one official T3 executable')
+                receipt['bootstrap'] = bootstrap(binaries[0], release['tag_name'], root, probe)
+            except Exception as error:
+                receipt['bootstrap_error'] = safe_error(error)
+        receipt['status'] = 'FAIL' if (receipt.get('schema_drift') or receipt.get('schema_error')
+                                     or receipt.get('bootstrap_error')) else 'PASS'
     except Exception as error:
         # Do not include subprocess output: CLI diagnostics may contain one-time credentials.
         receipt['status'] = 'ERROR'
-        receipt['error'] = type(error).__name__ + ': ' + (
-            'subprocess failed' if isinstance(error, subprocess.SubprocessError) else str(error))
+        receipt['error'] = safe_error(error)
     (output / 'result.json').write_text(json.dumps(receipt, indent=2) + '\n')
     return receipt
 
@@ -215,7 +310,7 @@ def report(output):
         raise ValueError('Multiple T3 contract incident issues; refusing another')
     delta = (output / 'schema.diff').read_text() if (output / 'schema.diff').exists() else '(schema generation unavailable)'
     run_url = f"https://github.com/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    body = (MARKER + '\nNightly T3 protocol contract observation (#1789). Client round trips remain OFF until #1787 slice 2.\n\n'
+    body = (MARKER + '\nNightly T3 protocol contract observation (#1789). Real-client pair + thread snapshot/resume enabled; shell/dispatch/capability runtime checks deferred to future merged client API.\n\n'
             + '```json\n' + json.dumps(result, indent=2) + '\n```\n\n' + run_url
             + '\n\n```diff\n' + delta[:45000] + '\n```\nFull diff and actual schema: workflow artifact.\n')
     if matches:

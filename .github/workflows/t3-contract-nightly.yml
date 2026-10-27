@@ -12,7 +12,10 @@ concurrency:
 jobs:
   observe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,6 +25,8 @@ jobs:
           node-version: '24'
       - name: Official nightly bootstrap and upstream schema comparison
         id: probe
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/t3-contract-target
         continue-on-error: true
         run: python3 scripts/t3-contract/nightly.py run --output "$RUNNER_TEMP/t3-contract-report"
       - name: Open or update the single drift incident
