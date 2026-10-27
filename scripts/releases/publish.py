@@ -33,25 +33,30 @@ def module(name, path):
 
 windows = module('windows_publish', SCRIPTS / 'windows/publish.py')
 arch = module('arch_publish', SCRIPTS / 'arch/publish.py')
+github_auth = module('github_release_auth', SCRIPTS / 'ci/github_auth.py')
 
 
 class GitHub:
+    def __init__(self):
+        self.credentials = github_auth.Credentials()
+
     def call(self, method, path, body=None, binary=False):
         base = 'https://uploads.github.com' if binary else 'https://api.github.com'
         data = body if binary else (catalog.encode(body) if body is not None else None)
         req = urllib.request.Request(base + '/repos/BeFeast/okilum' + path, data=data, method=method,
-            headers={'Authorization': 'Bearer ' + os.environ['MIRROR_TOKEN'],
+            headers={'Authorization': 'Bearer ' + self.credentials.token,
                      'Accept': 'application/vnd.github+json',
                      'Content-Type': 'application/octet-stream' if binary else 'application/json',
                      'X-GitHub-Api-Version': '2022-11-28'})
         try:
             with urllib.request.urlopen(req, timeout=300) as response:
+                self.credentials.note_quota(getattr(response, 'headers', {}))
                 raw = response.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as error:
             if method == 'GET' and error.code == 404:
                 return None
-            raise
+            raise github_auth.http_error(error, f'GitHub release {method} {path.split("?")[0]}') from None
 
 
 def choose(store, build=None):
