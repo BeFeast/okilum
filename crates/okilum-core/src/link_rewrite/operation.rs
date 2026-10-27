@@ -32,6 +32,46 @@ pub struct Applied {
     pub warning: Option<String>,
 }
 impl Operation {
+    fn move_completed(&self) -> Result<bool> {
+        let from = self.root.join(&self.from);
+        let to = self.root.join(&self.to);
+        let source_exists = from.try_exists()?;
+        let target_exists = to.try_exists()?;
+        #[cfg(target_os = "macos")]
+        if source_exists && target_exists {
+            use std::os::unix::fs::MetadataExt;
+            let source = fs::symlink_metadata(&from)?;
+            let target = fs::symlink_metadata(&to)?;
+            let source_parent = from.parent().context("Missing source folder")?;
+            let target_parent = to.parent().context("Missing destination folder")?;
+            if !source.file_type().is_symlink()
+                && !target.file_type().is_symlink()
+                && (source.dev(), source.ino()) == (target.dev(), target.ino())
+                && source_parent.canonicalize()? == target_parent.canonicalize()?
+            {
+                // exists() sees both spellings on APFS. The stored directory
+                // entry, not the journal acknowledgement, identifies a rename
+                // which completed immediately before a crash.
+                let names = fs::read_dir(source_parent)?
+                    .map(|entry| entry.map(|entry| entry.file_name()))
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                let old = names
+                    .iter()
+                    .any(|name| Some(name.as_os_str()) == from.file_name());
+                let new = names
+                    .iter()
+                    .any(|name| Some(name.as_os_str()) == to.file_name());
+                ensure!(
+                    old != new,
+                    "Cannot identify the stored filename; recovery is retained"
+                );
+                return Ok(new);
+            }
+        }
+        ensure!(!(source_exists && target_exists), "Both source and destination exist; recovery will not guess which belongs to the operation");
+        Ok(!source_exists && target_exists)
+    }
+
     fn directory_rewrites(&self) -> Vec<String> {
         self.files
             .keys()
@@ -147,9 +187,7 @@ impl Operation {
         let _guard = Self::lock(path)?;
         let mut operation = Self::load(path)?;
         ensure!(!operation.reverted, "This operation was already reverted");
-        let moved = !operation.root.join(&operation.from).exists()
-            && operation.root.join(&operation.to).exists();
-        ensure!(!(operation.root.join(&operation.from).exists() && operation.root.join(&operation.to).exists()), "Both source and destination exist; recovery will not guess which belongs to the operation");
+        let moved = operation.move_completed()?;
         if let Some(snapshot) = &operation.directory {
             let location = if moved {
                 &operation.to

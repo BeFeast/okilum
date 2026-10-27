@@ -237,7 +237,11 @@ are reported as a completed move requiring inspection, not a retryable non-move.
 
 A destination with a dirty recovery journal or active editor is refused; its
 journal is preserved. Both path locks are held while the confirmation is open.
-Case-only renames on case-insensitive filesystems are refused as collisions.
+On macOS, a case-only rename is accepted when both names identify the same file
+in the same real directory. The atomic no-replace rename still refuses a distinct
+destination. Recovery uses the stored directory-entry spelling to undo such a
+rename, including an interrupted completion acknowledgement. Linux and Windows
+collision behaviour is unchanged.
 
 The active window follows the new path, preserving source/read mode and updating
 its path-based history/pins. Other open windows and authored links retain their

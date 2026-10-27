@@ -63,6 +63,57 @@ fn snapshot(dir: &File, name: &OsString) -> Result<(Vec<u8>, u64, u64)> {
     Ok((bytes, meta.dev(), meta.ino()))
 }
 
+// macOS RENAME_EXCL permits a case-only rename when both names resolve to
+// the same vnode in the same directory on a case-insensitive volume. Keep the
+// atomic no-replace operation: a plain rename could overwrite a racing writer.
+fn destination_conflicts(
+    macos: bool,
+    source: (u64, u64),
+    target: (u64, u64),
+    source_parent: (u64, u64),
+    target_parent: (u64, u64),
+) -> bool {
+    !(macos && source == target && source_parent == target_parent)
+}
+
+fn check_destination(
+    source_dir: &File,
+    source_name: &OsString,
+    target_dir: &File,
+    target_name: &OsString,
+) -> Result<()> {
+    match rustix::fs::statat(
+        target_dir,
+        target_name,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(target) => {
+            let source = rustix::fs::statat(
+                source_dir,
+                source_name,
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            )?;
+            let source_parent = source_dir.metadata()?;
+            let target_parent = target_dir.metadata()?;
+            // rustix stat field widths differ on Linux and macOS.
+            #[allow(clippy::unnecessary_cast)]
+            let conflicts = destination_conflicts(
+                cfg!(target_os = "macos"),
+                (source.st_dev as u64, source.st_ino as u64),
+                (target.st_dev as u64, target.st_ino as u64),
+                (source_parent.dev(), source_parent.ino()),
+                (target_parent.dev(), target_parent.ino()),
+            );
+            if conflicts {
+                bail!("The destination already exists; it will not be replaced");
+            }
+        }
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 pub struct MovePlan {
     source_dir: File,
     source_name: OsString,
@@ -92,15 +143,7 @@ impl MovePlan {
         let (target_dir, target_name) = parent(root, to)?;
         let expected = snapshot(&source_dir, &source_name)?;
         // Atomic NOREPLACE below is authoritative; this only improves the preview.
-        match rustix::fs::statat(
-            &target_dir,
-            &target_name,
-            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-        ) {
-            Ok(_) => bail!("The destination already exists; it will not be replaced"),
-            Err(rustix::io::Errno::NOENT) => {}
-            Err(error) => return Err(error.into()),
-        }
+        check_destination(&source_dir, &source_name, &target_dir, &target_name)?;
         Ok(Self {
             source_dir,
             source_name,
@@ -153,6 +196,41 @@ impl MovePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn case_only_collision_policy_requires_same_entry_and_parent_on_macos() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("test.md"), "original").unwrap();
+        std::fs::write(root.path().join("other.md"), "original").unwrap();
+        std::fs::create_dir(root.path().join("Folder")).unwrap();
+        let identity = |path: &Path| {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            (meta.dev(), meta.ino())
+        };
+        let source = identity(&root.path().join("test.md"));
+        let other = identity(&root.path().join("other.md"));
+        let parent = identity(root.path());
+        let folder = identity(&root.path().join("Folder"));
+        // APFS reports the same identity for test.md and Test.md. Exercise
+        // that stat result on Linux too; native macOS tests cover the syscall.
+        for entry in [source, folder] {
+            assert!(
+                !destination_conflicts(true, entry, entry, parent, parent),
+                "CASE1731: a macOS alias of the same entry is a rename"
+            );
+            assert!(destination_conflicts(false, entry, entry, parent, parent));
+            assert!(destination_conflicts(true, entry, entry, parent, folder));
+        }
+        assert!(destination_conflicts(true, source, other, parent, parent));
+        // The existing file collision is still refused by the real preflight.
+        assert!(
+            MovePlan::prepare(root.path(), Path::new("test.md"), Path::new("other.md")).is_err()
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("other.md")).unwrap(),
+            b"original"
+        );
+    }
+
     #[test]
     fn move_preserves_exact_bytes_and_refuses_changed_preview() {
         let root = tempfile::tempdir().unwrap();
@@ -235,3 +313,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod case_rename_native_tests;
