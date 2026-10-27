@@ -234,19 +234,27 @@ impl ProjectView {
         cx.notify();
     }
 
+    fn connection_environment(&self, cx: &App) -> anyhow::Result<Environment> {
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("This area is not connected to T3."))?;
+        Environment::from_input(&binding.environment, &self.origin.read(cx).value())
+    }
+
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.model_busy {
             return;
         }
-        let Some(binding) = &self.binding else {
+        if self.binding.is_none() {
             return;
-        };
+        }
         let Some(state) = self.state.clone() else {
             self.error = Some("Application state is unavailable.".into());
             cx.notify();
             return;
         };
-        let env = match Environment::new(&binding.environment, &self.origin.read(cx).value()) {
+        let env = match self.connection_environment(cx) {
             Ok(env) => env,
             Err(error) => {
                 self.error = Some(error.to_string());

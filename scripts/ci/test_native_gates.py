@@ -92,10 +92,10 @@ class NativeGates(unittest.TestCase):
             return set(value[1].strip('[]').split(', ')) if value else set()
         self.assertEqual(needs('check'), {'shared', 'macos'})
         self.assertEqual(needs('macos'), {'native-scope', 'macos-github', 'macos-local'})
-        self.assertEqual(needs('shared'), set())
+        self.assertEqual(needs('shared'), {'shared-select', 'shared-local', 'shared-github'})
         for job in ('macos-github', 'macos-local'):
             self.assertEqual(needs(job), {'native-scope'})
-        shared = re.search(r'^  shared:\n(.*?)(?=^  [\w-]+:)', WORKFLOW, re.M | re.S)[1]
+        shared = re.search(r'^  shared-local:\n(.*?)(?=^  [\w-]+:)', WORKFLOW, re.M | re.S)[1]
         self.assertIn('tini -s -- bash scripts/ci/check-shared.sh', shared)
         self.assertIn('scripts/vendor-setup.sh --verify', shared)
         self.assertNotIn('check-linux.sh', shared)
