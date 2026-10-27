@@ -35,11 +35,23 @@ jobs:
     outputs:
       build: ${{ steps.select.outputs.build }}
       source: ${{ steps.select.outputs.source }}
+      arch: ${{ steps.freeze.outputs.arch }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: ${{ inputs.source != '' && '0' || '1' }}
           persist-credentials: false
+      - name: Read durable pacman freeze marker
+        id: freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -A curl --max-time 30 -o "$RUNNER_TEMP/pacman-freeze.json" -w '%{http_code}' https://updates.befeast.com/okilum/arch/frozen.json)
+          case "$status" in
+            404) echo 'arch=true' >> "$GITHUB_OUTPUT" ;;
+            200) python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["state"] == "frozen" and d["build"] > 0' "$RUNNER_TEMP/pacman-freeze.json"; echo 'arch=false' >> "$GITHUB_OUTPUT" ;;
+            *) echo "Cannot inspect pacman freeze marker: HTTP $status" >&2; exit 1 ;;
+          esac
       - name: Select half-hourly or manual build
         id: select
         env:
@@ -63,7 +75,7 @@ jobs:
 
   release:
     needs: select
-    if: inputs.appimage_only != 'true' && needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
+    if: needs.select.outputs.arch != 'false' && inputs.appimage_only != 'true' && needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3

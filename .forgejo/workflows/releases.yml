@@ -17,8 +17,12 @@ on:
         description: 'With build: promote only Mac appcast/zip/DMG; no Linux/Windows feeds, tag or notes'
         type: boolean
         default: false
+      pacman_final:
+        description: 'Explicit final signed pacman build/source with migration notice, then freeze repository (#1564)'
+        type: boolean
+        default: false
       linux_only:
-        description: 'Owner-approved Linux only: exact Linux build AND full source SHA; no builds or other platform writes (#1432)'
+        description: 'Promote signed AppImage Stable: original AppImage build + full source; no builds or other OS writes (#1564)'
         type: boolean
         default: false
       linux_rollback:
@@ -76,11 +80,18 @@ jobs:
           PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
           MAC_ONLY: ${{ inputs.mac_only }}
+          PACMAN_FINAL: ${{ inputs.pacman_final }}
           LINUX_ONLY: ${{ inputs.linux_only }}
           LINUX_ROLLBACK: ${{ inputs.linux_rollback }}
           WINDOWS_ONLY: ${{ inputs.windows_only }}
           SKIP_WINDOWS: ${{ inputs.skip_windows }}
         run: |
+          if [ "$PACMAN_FINAL" = true ]; then
+            if [ -z "$PROMOTE_BUILD" ] || [ -z "$PROMOTE_SOURCE" ] || [ "$MAC_ONLY" = true ] || [ "$WINDOWS_ONLY" = true ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$SKIP_WINDOWS" = true ] || [ "$SUPERSEDE_PENDING" = true ]; then
+              echo 'pacman_final requires exact build/source and excludes all other modes' >&2; exit 1
+            fi
+            exec python scripts/releases/pacman_final.py --source "$PROMOTE_SOURCE" --build "$PROMOTE_BUILD"
+          fi
           # Exact Windows selection must exit before legacy Mac-build lookup.
           if [ "$WINDOWS_ONLY" = true ] && [ -n "$PROMOTE_SOURCE" ]; then
             if [ -z "$PROMOTE_BUILD" ] || [ "$MAC_ONLY" = true ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$SKIP_WINDOWS" = true ] || [ "$SUPERSEDE_PENDING" = true ]; then
@@ -109,9 +120,11 @@ jobs:
               echo 'linux_only excludes windows_only, skip_windows and supersede_pending' >&2
               exit 1
             fi
-            args=()
-            if [ "$LINUX_ROLLBACK" = true ]; then args+=(--rollback); fi
-            exec python scripts/releases/linux.py --source "$PROMOTE_SOURCE" --build "$PROMOTE_BUILD" "${args[@]}"
+            if [ "$LINUX_ROLLBACK" = true ]; then
+              echo 'AppImage Stable rollback requires separate owner disposition' >&2
+              exit 1
+            fi
+            exec python scripts/releases/appimage_stable.py --source "$PROMOTE_SOURCE" --build "$PROMOTE_BUILD"
           fi
           if [ "$LINUX_ROLLBACK" = true ]; then
             echo 'linux_rollback requires linux_only' >&2
