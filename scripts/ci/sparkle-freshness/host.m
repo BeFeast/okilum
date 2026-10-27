@@ -156,10 +156,11 @@ static void FinishComparison(void) {
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSCompareSourceOnly"] boolValue]) {
         // Standard-main probe defaults are a separately tracked product bug.
         // Prove real source admission/exclusion without pretending the isolated
-        // probe shares that state; no admission ticket may be created here.
+        // probe shares that state. A pending ticket is expected after a valid
+        // signed offer; a downloaded ticket is forbidden in this metadata check.
         NSString *actual = TSActualSelection.versionString ?: @"none";
         NSString *expected = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSExpectedSelection"];
-        if (![actual isEqualToString:expected] || TSDownloadedAdmission || TSPendingAdmission) exit(64);
+        if (![actual isEqualToString:expected] || TSDownloadedAdmission) exit(64);
         Trace([NSString stringWithFormat:@"eligibility matches source-only %@ %@ (probe defaults finding separate)",
                TSComparisonForeground ? @"foreground" : @"background", actual]);
         [@"eligibility matched" writeToFile:[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSReceipt"]

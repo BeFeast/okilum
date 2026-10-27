@@ -1,5 +1,7 @@
 """Transient late writes must not mask real native or cleanup failures."""
 import errno
+import ast
+import re
 from copy import deepcopy
 import importlib.util
 from pathlib import Path
@@ -12,6 +14,142 @@ spec = importlib.util.spec_from_file_location(
     "sparkle_fixture", Path(__file__).parent / "sparkle-freshness/run.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+
+
+class SparkleScenarioMatrixTests(unittest.TestCase):
+    """Execute the native runner's actual setup AST without starting macOS tools."""
+    @classmethod
+    def setUpClass(cls):
+        cls.tree = ast.parse(Path(spec.origin).read_text())
+        cls.suite = next(n for n in ast.walk(cls.tree) if isinstance(n, ast.With)
+                         and any(isinstance(s, ast.Assign) and any(isinstance(t, ast.Name)
+                                 and t.id == 'rotation_scenarios' for t in s.targets) for s in n.body))
+        start = next(i for i, n in enumerate(cls.suite.body) if isinstance(n, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == 'rotation_scenarios' for t in n.targets))
+        stop = next(i for i in range(start, len(cls.suite.body)) if isinstance(cls.suite.body[i], ast.For))
+        cls.matrix = {}
+        cls.execute(cls.suite.body[start:stop], cls.matrix)
+        cls.loop = cls.suite.body[stop]
+        setup_start = next(i for i, n in enumerate(cls.loop.body) if isinstance(n, ast.Assign)
+                           and any(isinstance(t, ast.Name) and t.id == 'compare' for t in n.targets))
+        setup_end = next(i for i, n in enumerate(cls.loop.body) if isinstance(n, ast.FunctionDef) and n.name == 'bundle')
+        cls.setup = cls.loop.body[setup_start:setup_end]
+        # These blocks extend the exact plist used by bundle(), before any signing.
+        for node in cls.loop.body[setup_end + 1:]:
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'signatures' for t in node.targets):
+                break
+            if isinstance(node, ast.If):
+                cls.setup.append(node)
+        feed = next(n for n in cls.loop.body if isinstance(n, ast.FunctionDef) and n.name == 'feed')
+        cls.phase_test = next(n.test for n in ast.walk(feed) if isinstance(n, ast.If)
+                              and 'context_change' in ast.unparse(n.test))
+        cls.code_expression = next(n.value for n in ast.walk(cls.loop) if isinstance(n, ast.Assign)
+                                   and any(isinstance(t, ast.Name) and t.id == 'expected_code' for t in n.targets))
+
+    @staticmethod
+    def execute(nodes, namespace):
+        exec(compile(ast.fix_missing_locations(ast.Module(body=deepcopy(nodes), type_ignores=[])),
+                     'native-scenario-setup', 'exec'), namespace)
+
+    def options(self, scenario, defaults):
+        ns = dict(self.matrix, scenario=scenario, defaults=defaults, identifier='test.fixture',
+                  address='http://127.0.0.1:1234', public_key='fixture-public-key',
+                  trace=Path('/fixture/trace'), receipt=Path('/fixture/installed'), case=Path('/fixture'))
+        self.execute(self.setup, ns)
+        return ns
+
+    def phased(self, options, version=4):
+        return eval(compile(ast.Expression(deepcopy(self.phase_test)), 'native-feed-predicate', 'eval'),
+                    dict(options, version=version))
+
+    def test_matrix_has_all_controls_and_both_defaults_without_duplicates(self):
+        cases = self.matrix['cases']
+        self.assertEqual(len(cases), len(set(cases)))
+        for name in self.matrix['ordinary_scenarios']:
+            self.assertEqual({d for n, d in cases if n == name}, {'standard-main', 'explicit-suite'})
+        self.assertEqual(len(cases), 5 + 2 * len(self.matrix['ordinary_scenarios']))
+
+    def test_source_only_selection_allows_pending_but_never_downloaded(self):
+        # Interpret only the real native boolean assertion, not a Python policy copy.
+        # This is a source-contract test, not an Objective-C compilation claim.
+        host = (Path(spec.origin).parent / 'host.m').read_text()
+        block = host.split('TSCompareSourceOnly', 1)[1].split('exit(64)', 1)[0]
+        expression = re.search(r'if \((.*?)\)\s*$', block, re.S).group(1)
+        expression = expression.replace('[actual isEqualToString:expected]', 'same_selection')
+        expression = expression.replace('||', ' or ').replace('&&', ' and ').replace('!', ' not ')
+        for name, defaults in self.matrix['cases']:
+            options = self.options(name, defaults)
+            info = options['base_info']
+            if not info.get('TSCompareSourceOnly'):
+                continue
+            pending = info['TSExpectedSelection'] != 'none'
+            with self.subTest(scenario=name):
+                self.assertFalse(eval(expression, {}, dict(same_selection=True,
+                                 TSDownloadedAdmission=False, TSPendingAdmission=pending)))
+                self.assertTrue(eval(expression, {}, dict(same_selection=False,
+                                TSDownloadedAdmission=False, TSPendingAdmission=pending)))
+                self.assertTrue(eval(expression, {}, dict(same_selection=True,
+                                TSDownloadedAdmission=True, TSPendingAdmission=pending)))
+
+    def test_eligibility_options_and_expected_selection_for_every_case(self):
+        for name, defaults in self.matrix['cases']:
+            options = self.options(name, defaults)
+            info = options['base_info']
+            with self.subTest(scenario=name, defaults=defaults):
+                self.assertEqual(info.get('SUDefaultsDomain'), 'test.fixture.updates' if defaults == 'explicit-suite' else None)
+                if name.startswith('eligibility-'):
+                    self.assertEqual(info['TSCompareSourceOnly'], defaults == 'standard-main')
+                    expected = '4' if name.endswith('-foreground') else '2' if any(x in name for x in ('phase', 'os')) else 'none'
+                    self.assertEqual(info['TSExpectedSelection'], expected)
+                else:
+                    self.assertNotIn('TSCompareSourceOnly', info)
+
+    def test_archive_context_reaches_same_version_path_in_both_defaults(self):
+        for name, defaults in self.matrix['cases']:
+            if not name.startswith('context-archive-'):
+                continue
+            with self.subTest(scenario=name, defaults=defaults):
+                self.assertFalse(self.phased(self.options(name, defaults)),
+                                 'archive /7 is unreachable when group6 filters version4')
+
+    def test_context_flags_expected_codes_and_unaffected_url_channel_phasing(self):
+        for name, defaults in self.matrix['cases']:
+            options = self.options(name, defaults)
+            info = options['base_info']
+            with self.subTest(scenario=name, defaults=defaults):
+                expected_rotate = name.startswith(('rotation-', 'context-'))
+                self.assertEqual(info['TSRotateGroupAfterDownload'], expected_rotate)
+                self.assertEqual(info['TSPhaseGroup'], 0 if expected_rotate or name == 'background-phase-included' else 6)
+                expected_phased_four = 'phase' in name or name.startswith(('context-url-', 'context-channel-'))
+                self.assertEqual(self.phased(options, 4), expected_phased_four)
+                self.assertEqual(self.phased(options, 2), name == 'phase-unchanged')
+                if name.startswith('context-'):
+                    self.assertEqual(info['TSBackgroundInstall'], name.endswith('-background'))
+                    code = eval(compile(ast.Expression(deepcopy(self.code_expression)), 'native-code-expectation', 'eval'), options)
+                    self.assertEqual(code, 7 if name.startswith('context-archive-') else 5)
+                    if not name.startswith('context-archive-'):
+                        self.assertTrue(self.phased(options))
+                elif name.startswith('rotation-') or name.startswith('eligibility-phase-'):
+                    self.assertTrue(self.phased(options))
+
+    def test_rotation_label_requires_observed_retention_marker(self):
+        self.assertEqual(fixture.rotation_result_label({'retention_reached_ready': True}), 'admission-retained PASS')
+        for value in (False, None, 0, 1, 'true'):
+            with self.subTest(value=value):
+                label = fixture.rotation_result_label({'retention_reached_ready': value})
+                self.assertNotIn('admission-retained', label)
+                self.assertIn('retention not exercised', label)
+
+    def test_production_config_alone_removes_signed_feed_opt_in(self):
+        for name, defaults in self.matrix['cases']:
+            info = self.options(name, defaults)['base_info']
+            with self.subTest(scenario=name, defaults=defaults):
+                if name == self.matrix['production_config_scenario']:
+                    self.assertNotIn('SURequireSignedFeed', info)
+                    self.assertIs(info['TSProductionConfig'], True)
+                else:
+                    self.assertIs(info['SURequireSignedFeed'], True)
+                    self.assertNotIn('TSProductionConfig', info)
 
 
 class SparkleRotationEvidenceTests(unittest.TestCase):

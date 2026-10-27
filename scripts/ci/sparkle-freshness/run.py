@@ -178,6 +178,13 @@ def assert_rotation_preserved(evidence):
 
 
 
+
+def rotation_result_label(evidence):
+    if evidence.get('retention_reached_ready') is True:
+        return 'admission-retained PASS'
+    return 'same-version path PASS; retention not exercised'
+
+
 def assert_production_config_refusal(evidence):
     """The shipped no-opt-in configuration must never gain a signed admission."""
     assert not evidence.get('scenario_error') and not evidence.get('observer_exit_error'), evidence
@@ -349,7 +356,9 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     if scenario == 'bad-signature' and version == 4:
                         signature = 'A' * 86 + '=='
                     context = ''
-                    if (('phase' in scenario or context_change) and (version == 4 or scenario == 'phase-unchanged')):
+                    if (not scenario.startswith('context-archive-')
+                            and ('phase' in scenario or context_change)
+                            and (version == 4 or scenario == 'phase-unchanged')):
                         released = email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=60))
                         context += f'<pubDate>{released}</pubDate><sparkle:phasedRolloutInterval>604800</sparkle:phasedRolloutInterval>'
                     if compare and 'major' in scenario:
@@ -451,11 +460,12 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                             and rotation_evidence['guard_seen'] and rotation_evidence['termination_seen'])
                         assert_rotation_preserved(rotation_evidence)
                         assert (case / 'protected-editor').read_text() == 'edited after verification'
-                        rotation_evidence['admission_retained_pass'] = True
+                        rotation_evidence['same_feed_installation_pass'] = True
+                        rotation_evidence['admission_retained_pass'] = rotation_evidence['retention_reached_ready']
                         record = {'classification': classification, **rotation_evidence}
                         (evidence / f'{case_name}.classification.json').write_text(json.dumps(record, indent=2))
                         rotation_results[scenario] = record
-                        print(f'ROTATION {scenario}: {classification}; admission-retained PASS', flush=True)
+                        print(f'ROTATION {scenario}: {classification}; {rotation_result_label(rotation_evidence)}', flush=True)
                         continue
                     expected = '2' if scenario in ('unchanged', 'phase-unchanged', 'background-phase-unchanged') else '3' if scenario == 'stable' else '4'
                     if scenario == 'termination-retry-guard-refusal':
@@ -565,15 +575,16 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 except Exception as error:
                     if not rotation:
                         raise
-                    # A fixture failure in one case still produces a classified
-                    # receipt and cannot hide the other three observations.
+                    # Retain this case's failure receipt, then stop the matrix.
+                    # Later cases and rotation-summary.json may be absent; this
+                    # is an incomplete run, never evidence that they passed.
                     record = {**parse_rotation_trace(trace.read_text()),
                               'process_exit': process.poll(), 'scenario_error': str(error),
                               'defaults_path': 'explicit-suite' if '-suite-' in scenario else 'standard-main'}
                     record['classification'] = classify_rotation(record)
                     (evidence / f'{case_name}.classification.json').write_text(json.dumps(record, indent=2))
                     rotation_results[scenario] = record
-                    print(f"ROTATION {scenario}: {record['classification']}; admission-retained FAIL", flush=True)
+                    print(f"ROTATION {scenario}: {record['classification']}; fixture failure, matrix stopped", flush=True)
                     raise
                 finally:
                     if process.poll() is None:
@@ -608,9 +619,10 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
 
         summary = {'expectations': rotation_expectations, 'scenarios': rotation_results,
                    'production_config': production_config_result,
-                   'admission_retained_pass': all(r.get('admission_retained_pass') for r in rotation_results.values())}
+                   'same_feed_installation_pass': all(r.get('same_feed_installation_pass') for r in rotation_results.values()),
+                   'admission_retained_pass': rotation_results.get('rotation-phase-suite-background', {}).get('admission_retained_pass', False)}
         (evidence / 'rotation-summary.json').write_text(json.dumps(summary, indent=2))
-        assert len(rotation_results) == 4 and summary['admission_retained_pass'], summary
+        assert len(rotation_results) == 4 and summary['same_feed_installation_pass'] and summary['admission_retained_pass'], summary
         assert production_config_result and production_config_result['production_config_original_refusal_pass'], summary
         print('ROTATION SUMMARY ' + json.dumps(summary, sort_keys=True), flush=True)
 
