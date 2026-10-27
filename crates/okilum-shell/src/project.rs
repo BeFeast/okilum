@@ -602,6 +602,7 @@ impl Render for ProjectView {
         let pending = self
             .chat
             .as_ref()
+            .filter(|chat| chat.pending_question_error.is_none())
             .map(|chat| chat.pending_questions)
             .unwrap_or(0);
         let open = self
@@ -827,6 +828,21 @@ impl Render for ProjectView {
                         ),
                 )
             })
+            .when_some(
+                self.chat
+                    .as_ref()
+                    .and_then(|chat| chat.pending_question_error.clone()),
+                |view, error| {
+                    view.child(
+                        div()
+                            .debug_selector(|| "project-questions-unavailable".into())
+                            .text_color(cx.theme().danger)
+                            .child(format!(
+                                "Questions unavailable: {error}. Open T3 to view questions."
+                            )),
+                    )
+                },
+            )
             .when_some(self.error.clone(), |view, error| {
                 view.child(
                     div()

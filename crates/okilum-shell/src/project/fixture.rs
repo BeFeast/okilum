@@ -20,6 +20,7 @@ pub(super) struct Fake {
     pub model_current: Mutex<Option<ModelSelection>>,
     pub model_failure: Mutex<Option<GatewayError>>,
     pub model_read_failure: Mutex<Option<GatewayError>>,
+    pub question_failure: Option<GatewayError>,
     pub model_writes: Mutex<Vec<ModelSelection>>,
     pub grown: Mutex<bool>,
 }
@@ -94,6 +95,9 @@ impl ManagerGateway for Fake {
         })
     }
     fn pending_requests(&self, _: &str) -> Result<Vec<String>> {
+        if let Some(error) = &self.question_failure {
+            return Err(error.clone());
+        }
         Ok(vec!["question-1".into()])
     }
     fn capabilities(&self) -> Result<Capabilities> {

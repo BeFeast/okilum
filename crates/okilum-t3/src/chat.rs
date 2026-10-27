@@ -20,6 +20,8 @@ pub struct Conversation {
     pub cursor: Option<u64>,
     pub has_more: bool,
     pub pending_questions: usize,
+    /// None only after a successful question read; an unavailable count is not zero.
+    pub pending_question_error: Option<String>,
 }
 
 impl Conversation {
@@ -31,6 +33,7 @@ impl Conversation {
             cursor: None,
             has_more: true,
             pending_questions: 0,
+            pending_question_error: None,
         }
     }
 
@@ -66,14 +69,27 @@ impl Conversation {
             let item = self.complete(gateway, item)?;
             refreshed.insert(item.position, item);
         }
-        let questions = gateway.pending_requests(&self.thread_id)?;
+        let questions = match gateway.pending_requests(&self.thread_id) {
+            Ok(questions) => Ok(questions),
+            Err(
+                error
+                @ (GatewayError::NotConnected | GatewayError::Expired | GatewayError::Revoked),
+            ) => return Err(error),
+            Err(error) => Err(error.to_string()),
+        };
         self.items.extend(refreshed);
         self.project_id = Some(page.thread.project_id);
         if let Some(cursor) = page.next_position {
             self.cursor = Some(cursor);
         }
         self.has_more = page.has_more;
-        self.pending_questions = questions.len();
+        match questions {
+            Ok(questions) => {
+                self.pending_questions = questions.len();
+                self.pending_question_error = None;
+            }
+            Err(error) => self.pending_question_error = Some(error),
+        }
         Ok(())
     }
 
