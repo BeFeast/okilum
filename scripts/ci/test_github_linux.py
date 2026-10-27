@@ -20,6 +20,10 @@ BRANCH = 'forgejo-linux-pr/1/' + SHA
 
 
 class LinuxBridgeTests(unittest.TestCase):
+    def setUp(self):
+        poll = patch.object(linux.transport, 'poll_delay', return_value=30)
+        poll.start(); self.addCleanup(poll.stop)
+
     def test_completed_workflow_refreshes_cached_queued_job_and_step_visibility(self):
         # Run 39813111900: all three reads returned the same queued aggregate
         # with no steps despite completed/success workflow and successful inputs.
@@ -149,7 +153,7 @@ class LinuxBridgeTests(unittest.TestCase):
                     clock=lambda: now[0], sleep=sleep, log=lambda *a, **k: None)
                 self.assertEqual(result, expected)
                 self.assertEqual(sum('/jobs?' in path for path, _ in calls), 3)
-                self.assertEqual(now[0], 40)
+                self.assertEqual(now[0], 90)
 
     def test_paginated_jobs_select_exactly_one_gate(self):
         calls = []

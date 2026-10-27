@@ -15,15 +15,13 @@ BUILD_STEP = 'Run full Linux gate'
 def main():
     result, branch, api = 'failure', None, None
     try:
-        token = os.environ.get('MIRROR_TOKEN')
-        if not token:
-            raise transport.Unavailable('Mirror token unavailable')
         sha = os.environ['PR_HEAD_SHA']
         branch = transport.ref_name(os.environ['PR_NUMBER'], sha, os.environ['GITHUB_RUN_ID'],
                                     os.environ.get('GITHUB_RUN_ATTEMPT') or '1', uuid.uuid4().hex)
         branch = branch.replace('forgejo-pr/', 'forgejo-linux-pr/', 1)
-        api = transport.GitHub(token)
-        transport.push_head(branch, sha, token)
+        api = transport.GitHub()
+        api.log_quota()
+        transport.push_head(branch, sha, api.token)
         result, message = transport.wait_for_run(api, branch, sha, workflow=WORKFLOW,
             job_name='linux', build_step=BUILD_STEP, queue_timeout=900, run_timeout=5400)
         print(message)

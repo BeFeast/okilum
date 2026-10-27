@@ -196,9 +196,9 @@ def main():
     if args.command == 'stage':
         if not args.source or args.directory is None:
             parser.error('stage requires --source and --directory')
-        token = os.environ['MIRROR_TOKEN']
-        accepted_bytes = stage_result(artifact.transport.GitHub(token), args.source, args.directory,
-                                      lambda aid: artifact.download(token, aid))
+        api = artifact.transport.GitHub()
+        accepted_bytes = stage_result(api, args.source, args.directory,
+                                      lambda aid: artifact.download(api.token, aid))
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'accepted={str(accepted_bytes).lower()}\n')
     elif args.command == 'dispatch':
