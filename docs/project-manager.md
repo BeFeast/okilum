@@ -123,3 +123,24 @@ request to manager acceptance and its resulting thread is not implemented in thi
 slice, and must not be inferred from queue receipts, titles or parentThreadId.
 Scheduled-task model following, manager migration and live integrated acceptance
 remain pending/blocked as described above. #1420 is not closed by request queuing.
+
+## MCP compatibility (#1759)
+
+Each authenticated MCP connection discovers its scoped `tools/list` catalog once
+(with bounded pagination). The catalog is reused by polling and refreshed after
+reconnection or a dropped session. Missing `t3_environment_read`, `t3_thread_read`
+or `t3_thread_send` gives a compatibility error naming the required tool before
+any feature call. Missing optional tools disable only their feature with a named
+explanation; no request is sent to a tool absent from that catalog.
+
+Pending questions use `t3_pending_request` with `action: list`. An unavailable
+question listing is shown as unavailable, never as a confirmed zero, while
+manager history, project verification and message sending remain available.
+Model reads use `t3_thread_configure` with only `threadId`; explicit model changes
+still require confirmation and separate configuration readback. Brain-local
+`t3_target_*` operations are unrelated to MCP tool names and remain unchanged.
+
+The checked-in 27 October input-schema fixture comes from the live manager agent
+catalog, not an Okilum OAuth `tools/list` capture. OAuth scopes can filter tools;
+real connection and response-shape acceptance remain pending until verified with
+an authorized paired client. Fixture tests do not claim live OAuth acceptance.

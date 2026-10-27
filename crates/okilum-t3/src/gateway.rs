@@ -40,6 +40,14 @@ pub enum GatewayError {
         code: String,
         message: String,
     },
+    /// A required Manager read/send capability is missing from tools/list.
+    Compatibility {
+        tool: String,
+    },
+    /// Only the feature using this optional tool is unavailable.
+    Unsupported {
+        tool: String,
+    },
     /// The server answered something this client does not understand.
     Protocol(String),
 }
@@ -56,6 +64,8 @@ impl std::fmt::Display for GatewayError {
             GatewayError::Revoked => write!(f, "T3 refused the token; it was revoked"),
             GatewayError::Unreachable(detail) => write!(f, "T3 is unreachable: {detail}"),
             GatewayError::Tool { code, message } => write!(f, "T3 refused ({code}): {message}"),
+            GatewayError::Compatibility { tool } => write!(f, "This T3 server is incompatible: required tool '{tool}' is missing"),
+            GatewayError::Unsupported { tool } => write!(f, "This feature is unavailable: T3 does not provide '{tool}'"),
             GatewayError::Protocol(detail) => write!(f, "unexpected answer from T3: {detail}"),
         }
     }

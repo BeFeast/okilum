@@ -1004,3 +1004,56 @@ fn manager_address_field_shows_a_friendly_error_without_starting_oauth(cx: &mut 
     }
     assert!(!state.path().join("t3-connections.json").exists());
 }
+
+#[gpui::test]
+fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake {
+        question_failure: Some(okilum_t3::GatewayError::Unsupported {
+            tool: "t3_pending_request".into(),
+        }),
+        ..Default::default()
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let view = fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
+            view.compose.update(cx, |input, cx| {
+                input.set_value("A message despite unavailable questions", window, cx)
+            });
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.can_send(),
+            "T3_PANEL1759: optional questions cannot disable send"
+        );
+        assert!(view.error.is_none());
+        let chat = view.chat.as_ref().unwrap();
+        assert_eq!(chat.items.len(), 2);
+        assert!(chat
+            .pending_question_error
+            .as_ref()
+            .unwrap()
+            .contains("t3_pending_request"));
+    });
+    assert!(visual
+        .debug_bounds("project-questions-unavailable")
+        .is_some());
+    let send = visual
+        .debug_bounds("project-send")
+        .expect("connected send control");
+    visual.simulate_click(send.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(gateway.sends.lock().unwrap().len(), 1);
+    view.read_with(visual, |view, _| {
+        assert!(view.error.is_none());
+        assert!(view.records[0].receipt.is_some());
+    });
+}
