@@ -112,3 +112,32 @@ fn case_rename_never_replaces_a_racing_destination() {
         "original"
     );
 }
+
+#[test]
+fn undo_case_rename_accepts_a_canonically_equivalent_journal_name() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("café.md"), "# Body\n").unwrap();
+    // Start from the filesystem's stored form, as the sidebar does.
+    let from = stored_names(root.path())
+        .pop()
+        .unwrap()
+        .into_string()
+        .unwrap();
+    let preview = Preview::prepare(root.path(), &from, "Café.md").unwrap();
+    let applied = preview
+        .apply(root.path(), state.path(), &mut BTreeMap::new())
+        .unwrap();
+    assert!(applied.moved, "{:?}", applied.warning);
+    let mut operation: serde_json::Value =
+        serde_json::from_slice(&fs::read(&applied.journal).unwrap()).unwrap();
+    operation["to"] = "Cafe\u{301}.md".into();
+    operation["complete"] = false.into();
+    fs::write(&applied.journal, serde_json::to_vec(&operation).unwrap()).unwrap();
+    Operation::revert(&applied.journal, state.path()).unwrap();
+    assert!(stored_names(root.path()).contains(&OsString::from(&from)));
+    assert_eq!(
+        fs::read_to_string(root.path().join(&from)).unwrap(),
+        "# Body\n"
+    );
+}

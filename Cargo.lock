@@ -6114,6 +6114,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "unicode-normalization",
  "unicode-segmentation",
  "url",
  "uuid",
