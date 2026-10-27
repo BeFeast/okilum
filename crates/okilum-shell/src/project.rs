@@ -10,8 +10,12 @@ use okilum_t3::{
 };
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+mod composer;
 mod connections;
 mod executors;
+#[cfg(target_os = "linux")]
+mod feed;
 mod launch;
 mod models;
 
@@ -72,6 +76,11 @@ pub(crate) struct ProjectView {
     polling: bool,
     generation: u64,
     _input: Subscription,
+    last_poll_status: Option<GatewayStatus>,
+    #[cfg(target_os = "linux")]
+    feed: Entity<feed::Feed>,
+    #[cfg(target_os = "linux")]
+    composer: Entity<composer::Composer>,
 }
 
 pub(super) struct ManagerStarted;
@@ -166,7 +175,22 @@ impl ProjectView {
                 .rows(3)
                 .placeholder("Message your manager…")
         });
+        #[cfg(not(target_os = "linux"))]
         let input = cx.subscribe(&compose, |_, _, _: &InputEvent, cx| cx.notify());
+        #[cfg(target_os = "linux")]
+        let parent = cx.entity().downgrade();
+        #[cfg(target_os = "linux")]
+        let feed = cx.new(|cx| feed::Feed::new(parent, cx));
+        #[cfg(target_os = "linux")]
+        let composer = cx.new(|cx| composer::Composer::new(compose.clone(), cx));
+        #[cfg(target_os = "linux")]
+        let input = cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, _: &composer::SendRequested, window, cx| {
+                this.send(None, window, cx);
+            },
+        );
         Self {
             binding: None,
             area: None,
@@ -195,6 +219,11 @@ impl ProjectView {
             polling: false,
             generation: 0,
             _input: input,
+            last_poll_status: None,
+            #[cfg(target_os = "linux")]
+            feed,
+            #[cfg(target_os = "linux")]
+            composer,
         }
     }
 
@@ -221,6 +250,9 @@ impl ProjectView {
                     .as_ref()
                     .and_then(|b| b.manager.thread_id.as_ref())
                     .map(Conversation::new);
+                #[cfg(target_os = "linux")]
+                self.feed.update(cx, |feed, cx| feed.reset(cx));
+                self.last_poll_status = None;
                 self.identity = None;
                 self.model_target = None;
                 self.models = None;
@@ -398,6 +430,8 @@ impl ProjectView {
                             binding.manager.thread_id = Some(thread.clone());
                         }
                         this.chat = Some(Conversation::new(thread));
+                        #[cfg(target_os = "linux")]
+                        this.feed.update(cx, |feed, cx| feed.reset(cx));
                         this.reason = None;
                         this.start_polling(window, cx);
                         cx.emit(ManagerStarted);
@@ -454,7 +488,7 @@ impl ProjectView {
                     }
                     Some((
                         gateway,
-                        this.chat.clone()?,
+                        this.chat.as_ref()?.poll_request(),
                         this.journal(),
                         this.generation,
                         window.is_window_active(),
@@ -468,7 +502,7 @@ impl ProjectView {
                 .flatten();
             let Some((
                 gateway,
-                mut chat,
+                chat,
                 journal,
                 generation,
                 focused,
@@ -482,9 +516,9 @@ impl ProjectView {
                 .background_executor()
                 .spawn(async move {
                     let identity = gateway.server_identity()?;
-                    chat.poll(gateway.as_ref())?;
+                    let chat = chat.fetch(gateway.as_ref())?;
                     anyhow::ensure!(
-                        chat.project_id.as_deref() == Some(expected_project.as_str()),
+                        chat.project_id == expected_project,
                         "The linked manager belongs to another T3 project. Check the area binding."
                     );
                     let records = journal
@@ -503,32 +537,76 @@ impl ProjectView {
                         return 0;
                     }
                     let mut delay = if focused { 2_000 } else { 15_000 };
+                    let status = this.gateway.as_ref().map(|gateway| gateway.status());
+                    let mut changed = this.last_poll_status != status;
+                    this.last_poll_status = status;
                     match result {
                         Ok((chat, identity, records, executors)) => {
                             if chat.has_more {
                                 delay = 100;
                             }
-                            this.chat = Some(chat);
+                            let Some(current) = this.chat.as_mut() else {
+                                return 0;
+                            };
+                            let changes = match current.apply_poll(chat) {
+                                Ok(changes) => changes,
+                                Err(error) => {
+                                    let error = Some(error.to_string());
+                                    if this.error != error {
+                                        this.error = error;
+                                        cx.notify();
+                                    }
+                                    return 15_000;
+                                }
+                            };
+                            let records_changed = this.records != records;
+                            changed |= changes.changed()
+                                || this.identity.as_ref() != Some(&identity)
+                                || records_changed
+                                || this.error.is_some();
                             this.identity = Some(identity);
-                            this.records = records;
+                            if records_changed {
+                                this.records = records;
+                            }
                             this.error = None;
+                            #[cfg(target_os = "linux")]
+                            this.feed.update(cx, |feed, cx| {
+                                feed.apply(
+                                    changes
+                                        .positions
+                                        .iter()
+                                        .filter_map(|position| current.items.get(position)),
+                                    records_changed.then_some(this.records.as_slice()),
+                                    cx,
+                                )
+                            });
                             if let Some(result) = executors {
                                 match result {
                                     Ok(snapshot) => {
+                                        changed |= this.executors.as_ref() != Some(&snapshot)
+                                            || this.executors_error.is_some();
                                         this.executors = Some(snapshot);
                                         this.executors_error = None;
                                     }
-                                    Err(error) => this.executors_error = Some(format!("{error:#}")),
+                                    Err(error) => {
+                                        let error = Some(format!("{error:#}"));
+                                        changed |= this.executors_error != error;
+                                        this.executors_error = error;
+                                    }
                                 }
                             }
                         }
                         Err(error) => {
+                            let error = Some(format!("{error:#}"));
+                            changed |= this.identity.is_some() || this.error != error;
                             this.identity = None;
-                            this.error = Some(format!("{error:#}"));
+                            this.error = error;
                             delay = 15_000;
                         }
                     }
-                    cx.notify();
+                    if changed {
+                        cx.notify();
+                    }
                     delay
                 })
                 .unwrap_or(0);
@@ -597,7 +675,15 @@ impl ProjectView {
                         .update(cx, |input, cx| input.set_value("", window, cx));
                 }
                 match records {
-                    Ok(records) => this.records = records,
+                    Ok(records) => {
+                        if this.records != records {
+                            this.records = records;
+                            #[cfg(target_os = "linux")]
+                            this.feed.update(cx, |feed, cx| {
+                                feed.apply(std::iter::empty(), Some(&this.records), cx)
+                            });
+                        }
+                    }
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 if let Err(error) = result {
@@ -678,88 +764,108 @@ impl Render for ProjectView {
             .as_ref()
             .zip(self.chat.as_ref())
             .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
-        let mut history = v_flex()
-            .id("project-messages")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .gap_4();
-        if let Some(chat) = &self.chat {
-            for item in chat.items.values() {
-                if !matches!(item.kind.as_str(), "user_message" | "assistant_message") {
+        #[cfg(target_os = "linux")]
+        let history = {
+            self.feed
+                .update(cx, |feed, cx| feed.set_controls(enabled, self.busy, cx));
+            self.composer.update(cx, |composer, cx| {
+                composer.set_controls(enabled, self.busy, cx)
+            });
+            div().flex_1().min_h_0().child(
+                self.feed
+                    .clone()
+                    .cached(StyleRefinement::default().size_full()),
+            )
+        };
+        #[cfg(not(target_os = "linux"))]
+        let history = {
+            let mut history = v_flex()
+                .id("project-messages")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .gap_4();
+            if let Some(chat) = &self.chat {
+                for item in chat.items.values() {
+                    if !matches!(item.kind.as_str(), "user_message" | "assistant_message") {
+                        continue;
+                    }
+                    let Some(text) = &item.text else {
+                        continue;
+                    };
+                    history = history.child(
+                        v_flex()
+                            .gap_1()
+                            .child(div().text_color(brand::palette(cx).text_muted).child(
+                                if item.kind == "user_message" {
+                                    "You"
+                                } else {
+                                    "Manager"
+                                },
+                            ))
+                            .child(
+                                TextView::markdown(
+                                    ("project-message", item.position as usize),
+                                    text.clone(),
+                                )
+                                .selectable(true)
+                                .style(reader_text_style(cx.theme())),
+                            ),
+                    );
+                }
+            }
+            for (index, record) in self.records.iter().enumerate() {
+                let projected = record.receipt.as_ref().is_some_and(|receipt| {
+                    self.chat.as_ref().is_some_and(|chat| {
+                        chat.items
+                            .values()
+                            .any(|item| item.message_id.as_ref() == Some(&receipt.message_id))
+                    })
+                });
+                if projected {
                     continue;
                 }
-                let Some(text) = &item.text else {
-                    continue;
-                };
+                let retry = record.clone();
                 history = history.child(
                     v_flex()
                         .gap_1()
                         .child(div().text_color(brand::palette(cx).text_muted).child(
-                            if item.kind == "user_message" {
-                                "You"
+                            if record.receipt.is_some() {
+                                "You · queued"
                             } else {
-                                "Manager"
+                                "Message delivery unconfirmed"
                             },
                         ))
-                        .child(
-                            TextView::markdown(
-                                ("project-message", item.position as usize),
-                                text.clone(),
+                        .when(record.receipt.is_some(), |row| {
+                            row.child(
+                                TextView::markdown(
+                                    ("project-retained", index),
+                                    record.message.text.clone(),
+                                )
+                                .selectable(true)
+                                .style(reader_text_style(cx.theme())),
                             )
-                            .selectable(true)
-                            .style(reader_text_style(cx.theme())),
-                        ),
+                        })
+                        .when(record.receipt.is_none(), |row| {
+                            row.child(
+                                Button::new(("project-retry", index))
+                                    .debug_selector(move || format!("project-retry-{index}"))
+                                    .ghost()
+                                    .icon(IconName::RotateCw)
+                                    .tooltip(format!(
+                                        "Retry retained message: {}",
+                                        record.message.text
+                                    ))
+                                    .disabled(self.busy || !enabled)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.send(Some(retry.clone()), window, cx)
+                                    })),
+                            )
+                        }),
                 );
             }
-        }
-        for (index, record) in self.records.iter().enumerate() {
-            let projected = record.receipt.as_ref().is_some_and(|receipt| {
-                self.chat.as_ref().is_some_and(|chat| {
-                    chat.items
-                        .values()
-                        .any(|item| item.message_id.as_ref() == Some(&receipt.message_id))
-                })
-            });
-            if projected {
-                continue;
-            }
-            let retry = record.clone();
-            history = history.child(
-                v_flex()
-                    .gap_1()
-                    .child(div().text_color(brand::palette(cx).text_muted).child(
-                        if record.receipt.is_some() {
-                            "You · queued"
-                        } else {
-                            "Message delivery unconfirmed"
-                        },
-                    ))
-                    .when(record.receipt.is_some(), |row| {
-                        row.child(
-                            TextView::markdown(
-                                ("project-retained", index),
-                                record.message.text.clone(),
-                            )
-                            .selectable(true)
-                            .style(reader_text_style(cx.theme())),
-                        )
-                    })
-                    .when(record.receipt.is_none(), |row| {
-                        row.child(
-                            Button::new(("project-retry", index))
-                                .debug_selector(move || format!("project-retry-{index}"))
-                                .ghost()
-                                .icon(IconName::RotateCw)
-                                .tooltip(format!("Retry retained message: {}", record.message.text))
-                                .disabled(self.busy || !enabled)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.send(Some(retry.clone()), window, cx)
-                                })),
-                        )
-                    }),
-            );
-        }
+            history
+        };
         v_flex()
             .id("project-tab")
             .debug_selector(|| "project-tab".into())
@@ -946,8 +1052,10 @@ impl Render for ProjectView {
                 history.into_any_element()
             })
             .when(!self.executors_open, |view| {
-                view.child(
-                    h_flex()
+                #[cfg(target_os = "linux")]
+                let composer = self.composer.clone().into_any_element();
+                #[cfg(not(target_os = "linux"))]
+                let composer = h_flex()
                         .items_end()
                         .gap_2()
                         .child(Textarea::new(&self.compose).flex_1())
@@ -965,8 +1073,8 @@ impl Render for ProjectView {
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.send(None, window, cx)),
                                 ),
-                        ),
-                )
+                        ).into_any_element();
+                view.child(composer)
             })
     }
 }

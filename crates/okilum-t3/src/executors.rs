@@ -138,7 +138,7 @@ fn cells(line: &str) -> Vec<&str> {
         .collect()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub entry: Entry,
     /// None is explicitly missing from the bound executor project's T3 listing.
@@ -146,7 +146,7 @@ pub struct Row {
     pub pending_questions: Option<usize>,
     pub question_error: Option<String>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub manager: String,
     pub registered: Vec<Row>,
