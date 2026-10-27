@@ -31,7 +31,7 @@ def verify(store, signing, tmp, prefix, name):
     return data
 
 
-def execute(store, signing, tmp, source, build):
+def execute(store, signing, tmp, source, build, *, client):
     if not re.fullmatch('[0-9a-f]{40}', source) or build <= 5000:
         raise ValueError('Expected full source SHA and original AppImage build')
     if signing.fingerprint != publication.FINGERPRINT:
@@ -82,11 +82,13 @@ def execute(store, signing, tmp, source, build):
         path = tmp / 'stable.json'; path.write_bytes(stable); signing.sign(path)
         signature = Path(str(path) + '.sig').read_bytes()
     path = tmp / 'stable.json'; path.write_bytes(stable); Path(str(path) + '.sig').write_bytes(signature); signing.verify(path)
+    notes = publication.release_notes.prepare_appimage(store, client, build, source, 'stable')
     receipt = {'source': source, 'build': build, 'descriptor': base64.b64encode(stable).decode(),
                'signature': base64.b64encode(signature).decode(), 'state': 'prepared',
                'before': prior.get('before') if prior else (base64.b64encode(current).decode() if current else None),
                'before_signature': prior.get('before_signature') if prior else (base64.b64encode(current_signature).decode() if current_signature else None)}
     store.put(receipt_key, publication.encode(receipt), 'application/json', 'no-cache')
+    publication.release_notes.record(store, notes)
     # Reuse the exact signed executable; never relabel the embedded version.
     for name, data in [(IMAGE, image), (IMAGE + '.sig', image_signature),
                        ('latest.json.sig', signature), ('latest.json', stable)]:
@@ -106,7 +108,7 @@ def main(argv=None):
         parser.error('Expected full source SHA and original AppImage build')
     subprocess.run(['git', 'merge-base', '--is-ancestor', args.source, 'origin/main'], check=True)
     with tempfile.TemporaryDirectory() as directory, publication.arch.SigningKey() as signing:
-        execute(publication.arch.R2(), signing, Path(directory), args.source, args.build)
+        execute(publication.arch.R2(), signing, Path(directory), args.source, args.build, client=publication.notes_client())
 
 
 if __name__ == '__main__':

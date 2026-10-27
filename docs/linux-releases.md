@@ -8,7 +8,8 @@ AppImage build>"` and `source: "<full main SHA>"`. The build is embedded in the
 AppImage, not its separate Forgejo publication number. This reuses the archived
 binary and original payload signature, verifies the signed descriptor and
 provenance, and signs a Stable-channel descriptor with the same pinned GPG key.
-No compilation or other OS feed, tag or notes changes occur. Stable rollback is
+No compilation or other OS feed or tag changes occur. AppImage Stable notes are
+published in their own platform/channel namespace before the Stable feed moves. Stable rollback is
 not an implicit flag; it needs a separate owner disposition.
 
 Before the switch, prepare ONE final pacman package containing the migration
@@ -382,3 +383,23 @@ pre-key-import phase, with complete attempt histories. This workflow has no such
 boundary. A newly edited workflow also cannot retrofit it into an older SHA's run.
 Bounded in-attempt retry is supported; cross-attempt recovery is explicitly blocked
 rather than inferred from logs. No gate waiver or attempt relabeling is permitted.
+
+## AppImage release notes (#1772)
+
+AppImage uses `okilum/releases/{source}/linux-appimage/{beta|stable}/notes.json`.
+Its `build` and `previous_build` are embedded AppImage versions (5000 + GitHub
+run number), never the Forgejo `publication_build` or pacman version. The source,
+platform, channel and build must all match the running executable. On Linux,
+`APPIMAGE` selects `linux-appimage`; other Linux installations keep `linux`.
+Mac and Windows namespaces are unchanged.
+
+Before advancing an AppImage channel, publication captures that channel's published
+release descriptor identity, generates the first-parent merged-PR range, and
+records the notes sidecar before the feed commit point. A retry reuses the
+persisted notes and original predecessor instead of linking the build to itself.
+A conflicting build at the same source/channel notes key fails explicitly; this
+per-source format cannot represent two different builds of the same source in
+one channel. Archive-only older payload publication does not invent a historical
+notes predecessor or change the current channel. Beta and Stable chains are
+independent. Notes errors fail publication visibly; executable bytes and signing
+rules remain unchanged.

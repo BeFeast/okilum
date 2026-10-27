@@ -80,6 +80,8 @@ impl Track {
             "macos"
         } else if cfg!(windows) {
             "windows"
+        } else if std::env::var_os("APPIMAGE").is_some() {
+            "linux-appimage"
         } else {
             "linux"
         };

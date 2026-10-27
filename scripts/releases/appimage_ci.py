@@ -117,7 +117,7 @@ def main(directory):
             with patch.dict(os.environ, ARCH_GPG_PRIVATE_KEY=secret, ARCH_GPG_FINGERPRINT=fingerprint), \
                     patch.object(publisher, 'FINGERPRINT', fingerprint), publisher.arch.SigningKey() as key:
                 def publish(store, number=9001):
-                    return publisher.publish(store, key, work, payload, source, receipt, number)
+                    return publisher.publish(store, key, work, payload, source, receipt, number, client=None)
 
                 build = publisher.validate(payload, source, receipt)[0]
                 archive = f'okilum/linux/builds/{build}'
@@ -208,5 +208,6 @@ def main(directory):
 if __name__ == '__main__':
     # Explicit disposable-key harness only. Production CLI rejects QA artifacts.
     production_validate = publisher.validate
-    with patch.object(publisher, 'validate', lambda *args: production_validate(*args, allow_acceptance_harness=True)):
+    with patch.object(publisher, 'validate', lambda *args: production_validate(*args, allow_acceptance_harness=True)), \
+            patch.object(publisher.release_notes, 'merged_items', return_value=[]):
         main(Path(sys.argv[1]).resolve())

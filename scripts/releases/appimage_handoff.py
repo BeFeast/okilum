@@ -183,7 +183,7 @@ def publish(client, run_id):
                     raise ValueError('Publication origin changed during transfer')
         with publisher.arch.SigningKey() as key:
             publisher.publish(publisher.arch.R2(), key, root, root / 'payload', source,
-                              receipt, 5000 + run['index_in_repo'])
+                              receipt, 5000 + run['index_in_repo'], client=client)
 
 
 def main():
