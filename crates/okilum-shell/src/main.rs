@@ -3331,6 +3331,10 @@ impl Reader {
         if self.selected_file().is_empty() {
             return;
         }
+        self.sync_tree();
+        if !self.tree.can_reveal(self.selected_file()) {
+            return;
+        }
         self.resizing_panel = None;
         self.panels.open(reader_layout::Panel::Notes);
         if self
@@ -3340,7 +3344,6 @@ impl Reader {
         {
             self.save_sidebar(cx);
         }
-        self.sync_tree();
         let current = self.selected_file().to_owned();
         let ix = self.tree.focus(&current);
         if let Some(ix) = self.select_index_folder(&current, ix) {

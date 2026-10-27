@@ -157,3 +157,45 @@ fn breadcrumb_reveal_is_disabled_for_a_document_outside_the_tree(cx: &mut TestAp
         assert_ne!(v.tree.cursor.as_deref(), Some("Absent.md"));
     });
 }
+
+#[gpui::test]
+fn shared_reveal_action_rejects_missing_and_out_of_scope_documents(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx);
+    reader.update(visual, |v, cx| {
+        assert!(v.leave_source(cx));
+        v.panels.close(reader_layout::Panel::Notes);
+        cx.notify();
+    });
+    let dispatch = |visual: &mut VisualTestContext| {
+        reader.update_in(visual, |v, window, cx| {
+            v.content.read(cx).focus_handle().clone().focus(window, cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.dispatch_action(Box::new(FocusCurrentFolder), cx));
+        visual.run_until_parked();
+    };
+    // Positive control: exercise the registered action used by menus/shortcuts.
+    dispatch(visual);
+    reader.read_with(visual, |v, _| {
+        assert!(v.panels.notes, "positive action-dispatch control");
+        assert_eq!(v.tree.cursor.as_deref(), Some("Folder/Sub/Note.md"));
+    });
+    for (path, scope) in [("Absent.md", ""), ("Folder/Sub/Note.md", "Other")] {
+        reader.update(visual, |v, cx| {
+            v.current_rel = path.into();
+            v.current_title = path.into();
+            v.tree.scope_to(scope);
+            v.panels.close(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        dispatch(visual);
+        reader.read_with(visual, |v, _| {
+            assert!(
+                !v.panels.notes,
+                "SHARED_REVEAL1756: unavailable action opened the sidebar for {path} in {scope}"
+            );
+            assert_eq!(v.selected_file(), path);
+        });
+    }
+}
