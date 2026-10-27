@@ -21,6 +21,7 @@ mod mcp;
 pub mod models;
 pub mod oauth;
 pub mod projects;
+pub mod reconnect;
 mod session;
 mod token;
 mod types;

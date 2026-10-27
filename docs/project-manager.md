@@ -144,3 +144,27 @@ The checked-in 27 October input-schema fixture comes from the live manager agent
 catalog, not an Okilum OAuth `tools/list` capture. OAuth scopes can filter tools;
 real connection and response-shape acceptance remain pending until verified with
 an authorized paired client. Fixture tests do not claim live OAuth acceptance.
+
+## Reconnect and token expiry (#1773)
+
+The Manager **↻** control reads the saved credential for the entered origin and
+reconnects with initialize and tools/list while that token is valid, including
+the final three days. It does not start OAuth or replace the keychain entry after
+a successful reconnect. Expired or missing credentials, or a 401 explicitly
+reporting `invalid_mcp_credential`, start authorization after this explicit user
+action. Network errors, generic 401 responses and missing tools remain visible
+errors; they never silently start another pairing flow or discard the credential.
+Changing the T3 origin cannot reuse or transmit the previous server's token.
+
+**Sign in again** explicitly authorizes a new connection. The panel shows the
+stored token's expiry in UTC; within three days this action is labelled **Renew**.
+There is no refresh grant or automatic renewal. A successful new authorization
+is saved before subsequent polling, so a later network error does not lose it.
+Re-entering a project continues to reuse stored credentials without opening a
+browser. Keychain errors remain visible; explicit sign-in can replace a damaged
+credential after successful authorization.
+
+When browser approval needs sign-in, the panel explains that a browser sign-in
+lasts 30 days and offers **Open T3 in browser** for the entered origin. An already
+signed-in browser can approve without a pairing code. The existing 180-second
+OAuth callback path and paste-back follow-up (#1758) are separate work.

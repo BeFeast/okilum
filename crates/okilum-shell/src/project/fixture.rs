@@ -11,6 +11,7 @@ type Result<T> = std::result::Result<T, GatewayError>;
 #[derive(Default)]
 pub(super) struct Fake {
     pub revoked: bool,
+    pub connection_status: Option<GatewayStatus>,
     pub wrong_project: bool,
     pub fail_first: bool,
     pub sends: Mutex<Vec<OutgoingMessage>>,
@@ -26,6 +27,9 @@ pub(super) struct Fake {
 }
 impl ManagerGateway for Fake {
     fn status(&self) -> GatewayStatus {
+        if let Some(status) = &self.connection_status {
+            return status.clone();
+        }
         if self.revoked {
             GatewayStatus::Revoked
         } else {

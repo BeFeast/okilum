@@ -1057,3 +1057,73 @@ fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppC
         assert!(view.records[0].receipt.is_some());
     });
 }
+
+#[gpui::test]
+fn reconnect_expiry_has_a_three_day_renew_reminder(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let expiry = chrono::DateTime::parse_from_rfc3339("2026-10-30T15:00:00Z")
+        .unwrap()
+        .timestamp() as u64;
+    assert_eq!(
+        expiry_note(expiry),
+        "Connection token expires 2026-10-30 15:00 UTC"
+    );
+    for status in [
+        GatewayStatus::ExpiresSoon { expires_at: expiry },
+        GatewayStatus::Connected { expires_at: expiry },
+    ] {
+        let soon = matches!(status, GatewayStatus::ExpiresSoon { .. });
+        let gateway = Arc::new(fixture::Fake {
+            connection_status: Some(status),
+            ..Default::default()
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view =
+                cx.new(|cx| fixture::view(state.path().to_owned(), gateway.clone(), window, cx));
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("project-token-expiry").is_some(),
+            "EXPIRY1773: token expiry must be visible"
+        );
+        assert_eq!(visual.debug_bounds("project-renew").is_some(), soon);
+        assert_eq!(
+            visual.debug_bounds("project-sign-in-again").is_some(),
+            !soon
+        );
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        assert_eq!(
+            visual.opened_url(),
+            None,
+            "a reminder cannot open OAuth automatically"
+        );
+    }
+}
+
+#[gpui::test]
+fn reconnect_browser_guidance_opens_only_the_entered_t3_origin(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake {
+        connection_status: Some(GatewayStatus::Revoked),
+        ..Default::default()
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture::view(state.path().to_owned(), gateway.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("project-browser-sign-in")
+        .expect("BROWSER1773: explicit browser sign-in link");
+    assert_eq!(visual.opened_url(), None);
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.opened_url().as_deref(),
+        Some("https://t3.example.test")
+    );
+    assert!(gateway.sends.lock().unwrap().is_empty());
+}
