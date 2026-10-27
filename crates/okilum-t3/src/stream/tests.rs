@@ -98,24 +98,33 @@ fn ticket(listener: &TcpListener) {
     write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
 }
 
+struct VerifyUpgrade;
+
+impl tungstenite::handshake::server::Callback for VerifyUpgrade {
+    fn on_request(
+        self,
+        request: &tungstenite::handshake::server::Request,
+        response: tungstenite::handshake::server::Response,
+    ) -> Result<
+        tungstenite::handshake::server::Response,
+        tungstenite::handshake::server::ErrorResponse,
+    > {
+        let url = url::Url::parse(&format!("http://fixture{}", request.uri())).unwrap();
+        assert_eq!(url.path(), "/ws");
+        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(
+            query.get("orchestrationProtocol").map(|s| s.as_ref()),
+            Some("2")
+        );
+        assert_eq!(query.get("wsTicket").map(|s| s.as_ref()), Some(TICKET));
+        assert!(!request.uri().to_string().contains(BEARER));
+        assert!(request.headers().get("authorization").is_none());
+        Ok(response)
+    }
+}
+
 fn socket(listener: &TcpListener) -> WebSocket<TcpStream> {
-    tungstenite::accept_hdr(
-        accept(listener),
-        |request: &tungstenite::handshake::server::Request, response| {
-            let url = url::Url::parse(&format!("http://fixture{}", request.uri())).unwrap();
-            assert_eq!(url.path(), "/ws");
-            let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
-            assert_eq!(
-                query.get("orchestrationProtocol").map(|s| s.as_ref()),
-                Some("2")
-            );
-            assert_eq!(query.get("wsTicket").map(|s| s.as_ref()), Some(TICKET));
-            assert!(!request.uri().to_string().contains(BEARER));
-            assert!(request.headers().get("authorization").is_none());
-            Ok(response)
-        },
-    )
-    .unwrap()
+    tungstenite::accept_hdr(accept(listener), VerifyUpgrade).unwrap()
 }
 
 fn send(socket: &mut WebSocket<TcpStream>, value: Value) {
