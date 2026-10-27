@@ -70,6 +70,14 @@ class SharedLaneTests(unittest.TestCase):
             self.assertNotEqual(execute('shared', dict(SELECTION=selection, LANE='local',
                 LOCAL='success', HOSTED_JOB='success', HOSTED_RESULT='success'))[0], 0)
 
+    def test_measurement_and_activation_execute_identical_bridge_jobs(self):
+        # Separate jobs keep an independent measurement outside required needs.
+        # Everything except the mutually exclusive condition must stay identical.
+        def execution(name):
+            return '\n'.join(line for line in block(name).splitlines()
+                             if not line.startswith('    if:'))
+        self.assertEqual(execution('shared-github'), execution('shared-measure'))
+
     def test_wiring_and_public_runner_isolation(self):
         self.assertEqual(WORKFLOW.count('vars.OKILUM_SHARED_LANE'), 1)
         self.assertNotIn('checkout', block('shared-select'))
