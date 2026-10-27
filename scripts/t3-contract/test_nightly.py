@@ -150,6 +150,29 @@ class ContractHarness(unittest.TestCase):
                 self.assertNotIn('message', args)
                 self.assertNotIn('attachments', args)
 
+    def test_build_failure_keeps_schema_diff_and_selected_version(self):
+        release = {'draft': False, 'tag_name': 'v0.1.4-nightly.20261027.3783',
+                   'published_at': '2026-10-27', 'html_url': 'https://example.invalid/release'}
+        def schema(release, root, output, receipt):
+            (output / 'schema.diff').write_text('-old\n+new\n')
+            receipt['schema_drift'] = True
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted'), \
+                patch.object(nightly, 'command', return_value=''), \
+                patch.object(nightly, 'request', return_value=json.dumps([release]).encode()), \
+                patch.object(nightly, 'observe_schema', side_effect=schema), \
+                patch.object(nightly, 'build_client', side_effect=nightly.subprocess.CalledProcessError(1, 'cargo')), \
+                patch.object(nightly, 'bootstrap') as bootstrap:
+            output = Path(directory)
+            result = nightly.run(output)
+            self.assertEqual(result['version'], release['tag_name'])
+            self.assertTrue(result['schema_drift'])
+            self.assertIn('subprocess failed', result['bootstrap_error'])
+            self.assertEqual(result['status'], 'FAIL')
+            self.assertEqual((output / 'schema.diff').read_text(), '-old\n+new\n')
+            self.assertEqual(json.loads((output / 'result.json').read_text()), result)
+            bootstrap.assert_not_called()
+
     def test_schema_snapshot_covers_all_deferred_wire_directions_and_auth(self):
         value = json.loads((Path(__file__).parent / 'snapshot.json').read_text())
         for method in ['subscribeShell', 'subscribeThread', 'dispatchCommand']:

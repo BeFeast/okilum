@@ -209,6 +209,41 @@ def bootstrap(binary, version, directory, probe):
                 raise
 
 
+def build_client():
+    with (ROOT / 'rust-toolchain.toml').open('rb') as source:
+        toolchain = tomllib.load(source)['toolchain']['channel']
+    command(['rustup', 'toolchain', 'install', toolchain, '--profile', 'minimal'],
+            cwd=ROOT, timeout=300)
+    command(['bash', 'scripts/vendor-setup.sh'], cwd=ROOT, timeout=300)
+    command(['bash', 'scripts/vendor-setup.sh', '--verify'], cwd=ROOT, timeout=120)
+    command(['cargo', 'build', '--locked', '-p', 'okilum-t3', '--example', 'nightly_contract'],
+            cwd=ROOT, timeout=600)
+    target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
+    probe = (target / 'debug/examples/nightly_contract').resolve()
+    return probe
+
+
+def safe_error(error):
+    return type(error).__name__ + ': ' + (
+        'subprocess failed' if isinstance(error, subprocess.SubprocessError) else str(error))
+
+
+def observe_schema(release, root, output, receipt):
+    source = request(f"https://codeload.github.com/{UPSTREAM}/tar.gz/refs/tags/{release['tag_name']}")
+    receipt['source_archive_sha256'] = hashlib.sha256(source).hexdigest()
+    extract(source, root / 'source')
+    sources = list((root / 'source').iterdir())
+    if len(sources) != 1 or not sources[0].is_dir():
+        raise ValueError('Unexpected upstream source archive layout')
+    receipt['effect_version'] = snapshot(sources[0], output / 'actual-schema.json')
+    expected = (ROOT / 'scripts/t3-contract/snapshot.json').read_text()
+    actual = (output / 'actual-schema.json').read_text()
+    delta = ''.join(difflib.unified_diff(expected.splitlines(True), actual.splitlines(True),
+                                       fromfile='committed', tofile=release['tag_name']))
+    (output / 'schema.diff').write_text(delta)
+    receipt['schema_drift'] = bool(delta)
+
+
 def run(output):
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
         raise RuntimeError('Server contract probe runs only on GitHub-hosted Actions')
@@ -219,57 +254,42 @@ def run(output):
         command(['python3', '-m', 'unittest', 'discover', '-s',
                  str(ROOT / 'scripts/t3-contract'), '-p', 'test_*.py', '-v'])
         receipt['harness_regressions'] = 'PASS'
-        with (ROOT / 'rust-toolchain.toml').open('rb') as source:
-            toolchain = tomllib.load(source)['toolchain']['channel']
-        command(['rustup', 'toolchain', 'install', toolchain, '--profile', 'minimal'],
-                cwd=ROOT, timeout=300)
-        command(['bash', 'scripts/vendor-setup.sh'], cwd=ROOT, timeout=300)
-        command(['bash', 'scripts/vendor-setup.sh', '--verify'], cwd=ROOT, timeout=120)
-        command(['cargo', 'build', '--locked', '-p', 'okilum-t3', '--example', 'nightly_contract'],
-                cwd=ROOT, timeout=600)
-        target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
-        probe = (target / 'debug/examples/nightly_contract').resolve()
-        receipt['client_source'] = command(['git', 'rev-parse', 'HEAD'], cwd=ROOT).strip()
-        receipt['client_binary_sha256'] = hashlib.sha256(probe.read_bytes()).hexdigest()
         release = latest(json.loads(request(f'https://api.github.com/repos/{UPSTREAM}/releases?per_page=30')))
         receipt['version'] = release['tag_name']
         receipt['release_url'] = release['html_url']
-        asset = next(a for a in release['assets'] if a['name'] == f"t3-{release['tag_name'][1:]}-linux-x64.tar.gz")
-        data = request(asset['browser_download_url'])
-        digest = 'sha256:' + hashlib.sha256(data).hexdigest()
-        if asset.get('digest') != digest:
-            raise ValueError('Release asset SHA256 missing or mismatched')
-        receipt['asset_digest'] = digest
         with tempfile.TemporaryDirectory(prefix='okilum-t3-contract-') as temporary:
             root = Path(temporary)
-            extract(data, root / 'binary')
-            binaries = [p for p in (root / 'binary').rglob('t3') if p.is_file() and os.access(p, os.X_OK)]
-            if len(binaries) != 1:
-                raise ValueError('Expected one official T3 executable')
-            # Bootstrap is independent of schema drift; run both and retain both outcomes.
+            # Schema and client failures are independent observations. Never lose the
+            # upstream version/diff just because Rust/vendor installation is unavailable.
             try:
+                observe_schema(release, root, output, receipt)
+            except Exception as error:
+                receipt['schema_error'] = safe_error(error)
+            try:
+                probe = build_client()
+                receipt['client_source'] = command(['git', 'rev-parse', 'HEAD'], cwd=ROOT).strip()
+                receipt['client_binary_sha256'] = hashlib.sha256(probe.read_bytes()).hexdigest()
+                asset = next(a for a in release['assets'] if a['name'] ==
+                             f"t3-{release['tag_name'][1:]}-linux-x64.tar.gz")
+                data = request(asset['browser_download_url'])
+                digest = 'sha256:' + hashlib.sha256(data).hexdigest()
+                if asset.get('digest') != digest:
+                    raise ValueError('Release asset SHA256 missing or mismatched')
+                receipt['asset_digest'] = digest
+                extract(data, root / 'binary')
+                binaries = [p for p in (root / 'binary').rglob('t3')
+                            if p.is_file() and os.access(p, os.X_OK)]
+                if len(binaries) != 1:
+                    raise ValueError('Expected one official T3 executable')
                 receipt['bootstrap'] = bootstrap(binaries[0], release['tag_name'], root, probe)
             except Exception as error:
-                receipt['bootstrap_error'] = type(error).__name__ + ': ' + str(error)
-            source = request(f"https://codeload.github.com/{UPSTREAM}/tar.gz/refs/tags/{release['tag_name']}")
-            receipt['source_archive_sha256'] = hashlib.sha256(source).hexdigest()
-            extract(source, root / 'source')
-            sources = list((root / 'source').iterdir())
-            if len(sources) != 1 or not sources[0].is_dir():
-                raise ValueError('Unexpected upstream source archive layout')
-            receipt['effect_version'] = snapshot(sources[0], output / 'actual-schema.json')
-        expected = (ROOT / 'scripts/t3-contract/snapshot.json').read_text()
-        actual = (output / 'actual-schema.json').read_text()
-        delta = ''.join(difflib.unified_diff(expected.splitlines(True), actual.splitlines(True),
-                                           fromfile='committed', tofile=release['tag_name']))
-        (output / 'schema.diff').write_text(delta)
-        receipt['schema_drift'] = bool(delta)
-        receipt['status'] = 'FAIL' if delta or receipt.get('bootstrap_error') else 'PASS'
+                receipt['bootstrap_error'] = safe_error(error)
+        receipt['status'] = 'FAIL' if (receipt.get('schema_drift') or receipt.get('schema_error')
+                                     or receipt.get('bootstrap_error')) else 'PASS'
     except Exception as error:
         # Do not include subprocess output: CLI diagnostics may contain one-time credentials.
         receipt['status'] = 'ERROR'
-        receipt['error'] = type(error).__name__ + ': ' + (
-            'subprocess failed' if isinstance(error, subprocess.SubprocessError) else str(error))
+        receipt['error'] = safe_error(error)
     (output / 'result.json').write_text(json.dumps(receipt, indent=2) + '\n')
     return receipt
 

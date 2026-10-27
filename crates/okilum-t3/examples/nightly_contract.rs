@@ -69,11 +69,11 @@ fn contract(stage: &mut &'static str) -> Result<serde_json::Value> {
     );
     // Secret arrives via stdin, never an argv, env variable, file or log.
     let input: Input = serde_json::from_reader(io::stdin())?;
-    let environment = Environment::new("disposable-nightly", &input.origin)?;
     ensure!(
         input.origin.starts_with("http://127.0.0.1:"),
         "non-loopback nightly origin"
     );
+    let environment = Environment::new("disposable-nightly", &input.origin)?;
     *stage = "native_pair";
     let token = NativeToken::pair(&environment, &input.credential, Duration::from_secs(10))?;
     let client = NativeClient::new(environment, token, Duration::from_secs(5))?;
