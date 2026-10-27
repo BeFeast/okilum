@@ -191,3 +191,8 @@ owns its input notifications, and the cached history entity stays independent
 of keystrokes. Tests exercise a 5,000-message thread with bounded row rendering,
 scroll and streaming behavior, unchanged polling, and real composer input; these
 are regression evidence, not live Linux/Hyprland acceptance.
+
+Vendor patch 0095 preserves selection registrations through GPUI cached paint
+using an element-state lease that expires on unmount. It also makes clearing an
+already-empty selection silent. This prevents selection cleanup from repeatedly
+invalidating the cached feed while preserving selectable Markdown and Copy.
