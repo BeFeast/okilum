@@ -64,12 +64,13 @@ class HostedPRTests(unittest.TestCase):
         for file, job, lane in [('brain-ci', 'brain-tests', 'brain'), ('inbox-ci', 'inbox-tests', 'inbox'),
                                  ('linux-release', 'release', 'arch'), ('windows-diagnostic', 'release', 'windows-release')]:
             workflow = (root / f'.forgejo/workflows/{file}.yml').read_text()
-            def evaluate(name, event, setting, fork, appimage_only=''):
+            def evaluate(name, event, setting, fork, appimage_only='', arch='true'):
                 block = re.search(rf'^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S)[1]
                 expr = re.search(r'    if: (?:>-\n      )?([^\n]+)', block)[1]
                 replacements = {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
                     'github.repository': 'BeFeast/okilum', 'github.event_name': event, 'vars.OKILUM_PR_LANE': setting,
                     'needs.select.outputs.build': 'true', 'inputs.appimage_only': appimage_only,
+                    'needs.select.outputs.arch': arch,
                     # Ordinary builds: no re-sign (#1104) is requested.
                     'needs.select.outputs.resign': ''}
                 for key, value in replacements.items():
@@ -81,6 +82,9 @@ class HostedPRTests(unittest.TestCase):
                         expected = event == 'pull_request' and setting != 'local' and not fork
                         self.assertEqual(evaluate(lane+'-github', event, setting, fork), expected)
                         self.assertEqual(evaluate(job, event, setting, fork), not expected)
+                        if lane == 'arch':
+                            with self.subTest(event=event, setting=setting, fork=fork, arch='frozen'):
+                                self.assertFalse(evaluate(job, event, setting, fork, arch='false'))
             if lane == 'arch':
                 for setting in ['', 'hosted', 'local']:
                     for fork in [False, True]:
