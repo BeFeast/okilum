@@ -1,4 +1,5 @@
 use super::*;
+use ::core::prelude::v1::test;
 
 fn fixture(cx: &mut TestAppContext) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
     let temp = tempfile::tempdir().unwrap();
