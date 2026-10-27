@@ -72,6 +72,15 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Inventory membership includes folded/hidden rows, limited to the current scope.
+    pub(crate) fn can_reveal(&self, path: &str) -> bool {
+        self.kinds.contains_key(path)
+            && (self.scope.is_empty()
+                || path
+                    .strip_prefix(&self.scope)
+                    .is_some_and(|tail| tail.starts_with('/')))
+    }
+
     pub(crate) fn is_directory(&self, path: &str) -> bool {
         self.kinds.get(path) == Some(&EntryKind::Directory)
     }
@@ -741,6 +750,36 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("24q4.md")).unwrap(),
             "---\ntitle: Old title\n---\n# Quarterly plans\n"
+        );
+    }
+
+    #[test]
+    fn reveal_eligibility_includes_hidden_folded_entries_but_respects_scope() {
+        let mut tree = Tree::default();
+        tree.refresh(
+            Path::new("/fixture"),
+            &[
+                VaultEntry {
+                    path: "Project/_Hidden.md".into(),
+                    kind: EntryKind::Markdown,
+                },
+                VaultEntry {
+                    path: "Other.md".into(),
+                    kind: EntryKind::Markdown,
+                },
+            ],
+        );
+        tree.collapse_all();
+        assert!(tree.can_reveal("Project/_Hidden.md"));
+        assert!(tree.can_reveal("Other.md"));
+        assert!(!tree.can_reveal("Missing.md"));
+        tree.scope_to("Project");
+        assert!(tree.can_reveal("Project/_Hidden.md"));
+        assert!(!tree.can_reveal("Other.md"));
+        tree.scope_to("Proj");
+        assert!(
+            !tree.can_reveal("Project/_Hidden.md"),
+            "whole path segments only"
         );
     }
 
