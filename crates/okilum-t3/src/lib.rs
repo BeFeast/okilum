@@ -23,6 +23,7 @@ pub mod oauth;
 pub mod projects;
 pub mod reconnect;
 mod session;
+pub mod stream;
 mod token;
 mod types;
 

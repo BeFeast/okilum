@@ -4,6 +4,10 @@ The 22 October [project navigation contract](project-navigation.md) supersedes
 the current-note Project button and adds manager-only bindings for minimal
 projects. The native transport and chat behavior below remain the fallback.
 
+The approved Linux native-client work (#1787) is incremental. Its
+[WS v2 transport boundary](manager-stream-transport.md) is separate from the
+current MCP connection; feed projection and Tier 1 actions follow separately.
+
 The Project control in a vault Reader window opens the manager of the area
 containing the current note. It reuses the existing `okilum-t3` OAuth MCP
 `ManagerGateway` and the implementation from closed, unmerged PR1427. The approved
