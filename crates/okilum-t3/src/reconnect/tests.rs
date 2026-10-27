@@ -1,5 +1,6 @@
 use super::*;
 use crate::testing::{FakeServer, Response};
+use crate::ManagerGateway;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
