@@ -157,7 +157,7 @@ def main():
         print('Depot pilot OFF; no API calls or jobs requested')
         return 0
     now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-    credentials = transport.auth.Credentials(permissions={**transport.auth.PERMISSIONS, 'variables': 'write'})
+    credentials = transport.auth.Credentials(variable_guard=True)
     api = transport.GitHub(credentials)
     api.log_quota()
     try:

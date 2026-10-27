@@ -105,10 +105,18 @@ class DepotGuardTests(unittest.TestCase):
         auth = g.transport.auth
         env = {'MIRROR_TOKEN': 'sentinel'}
         normal = auth.Credentials(env=env)
-        guard = auth.Credentials(env=env, permissions={**auth.PERMISSIONS, 'variables': 'write'})
+        guard = auth.Credentials(env=env, variable_guard=True)
         self.assertNotIn('variables', normal.permissions)
         self.assertEqual(guard.permissions['variables'], 'write')
         self.assertNotIn('variables', auth.PERMISSIONS)
+
+    def test_arbitrary_token_permissions_and_nonboolean_guard_mode_are_rejected(self):
+        auth = g.transport.auth
+        with self.assertRaises(TypeError):
+            auth.Credentials(env={'MIRROR_TOKEN': 'sentinel'}, permissions={'administration': 'write'})
+        for value in ('true', 1, {}, None):
+            with self.subTest(value=value), self.assertRaises(auth.CredentialError):
+                auth.Credentials(env={'MIRROR_TOKEN': 'sentinel'}, variable_guard=value)
 
     def test_depot_http_json_usage_period_and_secret_redaction(self):
         start, now = 1000, 2000

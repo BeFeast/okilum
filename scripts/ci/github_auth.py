@@ -58,7 +58,7 @@ def signed_jwt(app_id, private_key, now):
 
 
 class Credentials:
-    def __init__(self, fallback=None, *, env=None, clock=time.time, opener=None, permissions=None):
+    def __init__(self, fallback=None, *, env=None, clock=time.time, opener=None, variable_guard=False):
         env = os.environ if env is None else env
         self.app_id, self.installation_id, self.private_key = (env.get(k, '') for k in APP_FIELDS)
         present = [bool(env.get(k)) for k in APP_FIELDS]
@@ -73,7 +73,11 @@ class Credentials:
         self.expires = 0
         self.clock, self.opener = clock, opener or urllib.request.urlopen
         self.quota_logged = False
-        self.permissions = dict(PERMISSIONS if permissions is None else permissions)
+        if type(variable_guard) is not bool:
+            raise CredentialError('variable_guard must be an explicit boolean')
+        self.permissions = dict(PERMISSIONS)
+        if variable_guard:
+            self.permissions['variables'] = 'write'
 
     @property
     def token(self):
