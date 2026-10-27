@@ -196,6 +196,24 @@ class Publication(unittest.TestCase):
         names = [key for key, _ in self.store.writes]
         self.assertLess(names.index(path), names.index('okilum/linux/beta/latest.json'))
 
+    def test_next_publication_reads_actual_publisher_descriptor_as_predecessor(self):
+        first = self.publish()
+        source = 'b' * 40
+        receipt = copy.deepcopy(self.receipt)
+        receipt['run'].update(run_number=24, head_sha=source)
+        provenance = {**self.provenance, 'source_sha': source,
+                      'build_version': '5024', 'release_version': '0.1.5024'}
+        (self.directory / 'provenance.json').write_text(json.dumps(provenance))
+        second = publisher.publish(self.store, self.key, self.root, self.directory,
+                                   source, receipt, 10000, client=self.client)
+        self.assertEqual((first['platform'], first['channel'], first['build']),
+                         ('linux-appimage', 'beta', 5023))
+        self.assertEqual(second['build'], 5024)
+        notes = json.loads(self.store.objects[
+            publisher.release_notes.key(source, 'linux-appimage', 'beta')])
+        self.assertEqual((notes['build'], notes['previous_build'], notes['previous_source']),
+                         (5024, 5023, SOURCE))
+
     def test_notes_inventory_failure_prevents_all_writes_and_feed_changes(self):
         with patch.object(publisher.release_notes, 'merged_items', side_effect=RuntimeError('inventory')):
             with self.assertRaisesRegex(RuntimeError, 'inventory'):
