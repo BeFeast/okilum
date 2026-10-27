@@ -21,6 +21,7 @@ mod count_label;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
+mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
 mod note_paste;
@@ -7212,6 +7213,10 @@ OPTIONS:
 ";
 
 fn main() {
+    if let Err(error) = linux_sprint::initialize() {
+        eprintln!("Linux Sprint isolation: {error:#}");
+        std::process::exit(1);
+    }
     #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
     if let Some(result) = okilum_appimage::acceptance_entry(
         env!("OKILUM_BUILD_VERSION"),
@@ -7475,7 +7480,7 @@ fn main() {
                 kind: WindowKind::Normal,
                 // Wayland app id. Also the handle test tooling keys on, so it
                 // is part of the contract, not decoration.
-                app_id: Some("okilum".into()),
+                app_id: Some(linux_sprint::app_id().into()),
                 #[cfg(target_os = "linux")]
                 window_background: WindowBackgroundAppearance::Opaque,
                 ..TitleBar::window_options()

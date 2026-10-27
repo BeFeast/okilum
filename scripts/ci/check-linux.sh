@@ -23,6 +23,11 @@ python3 -m unittest discover -s scripts/perf -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
 cargo test -p okilum-appimage --all-features
 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
+# A second, explicit compiled distribution must refuse updater work even when
+# inherited AppImage/update-receipt variables would otherwise enable it.
+OKILUM_SPRINT_BUILD=1 OKILUM_RELEASE_VERSION='Sprint CI' \
+    APPIMAGE=/nonexistent/OkilumSprint.AppImage OKILUM_APPIMAGE_UPDATE_RECEIPT=/nonexistent/receipt \
+    cargo test --locked -p okilum-shell --bin okilum --features linux-sprint sprint_distribution -- --test-threads=1
 cargo check -p okilum-shell --no-default-features
 cargo test -p okilum-core --no-default-features --test portable_reader
 # Vendored gpui-kit tests when the patch stack changes (otherwise a skip line).
