@@ -912,3 +912,95 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
 fn leak_selector(selector: String) -> &'static str {
     Box::leak(selector.into_boxed_str())
 }
+
+#[gpui::test]
+fn manager_address_field_normalizes_and_saves_a_strict_origin(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            fixture::view(
+                state.path().to_owned(),
+                Arc::new(fixture::Fake::default()),
+                window,
+                cx,
+            )
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    for (entered, expected) in [
+        ("t3.oklabs.uk", "https://t3.oklabs.uk"),
+        ("10.10.0.23:23110", "http://10.10.0.23:23110"),
+    ] {
+        view.update_in(visual, |view, window, cx| {
+            view.origin
+                .update(cx, |input, cx| input.set_value(entered, window, cx));
+            let env = view
+                .connection_environment(cx)
+                .expect("T3_INPUT1755: human manager address must normalize before OAuth");
+            assert_eq!(env.origin(), expected);
+            connections::save(state.path(), &env).unwrap();
+            let stored: std::collections::BTreeMap<String, String> = serde_json::from_slice(
+                &std::fs::read(state.path().join("t3-connections.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(stored["example"], expected);
+            assert_eq!(
+                connections::load(state.path(), view.binding.as_ref().unwrap())
+                    .unwrap()
+                    .unwrap(),
+                env
+            );
+        });
+    }
+    // Persistent state remains a strict origin API, never an input normalizer.
+    std::fs::write(
+        state.path().join("t3-connections.json"),
+        r#"{"example":"t3.oklabs.uk"}"#,
+    )
+    .unwrap();
+    view.read_with(visual, |view, _| {
+        assert!(connections::load(state.path(), view.binding.as_ref().unwrap()).is_err())
+    });
+}
+
+#[gpui::test]
+fn manager_address_field_shows_a_friendly_error_without_starting_oauth(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            fixture::view(
+                state.path().to_owned(),
+                Arc::new(fixture::Fake::default()),
+                window,
+                cx,
+            )
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    for input in ["", "not a host", "ftp://t3.oklabs.uk"] {
+        view.update_in(visual, |view, window, cx| {
+            view.origin
+                .update(cx, |field, cx| field.set_value(input, window, cx));
+            view.connect(window, cx);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .starts_with("Enter a T3 address like "),
+                "T3_INPUT1755: {:?}",
+                view.error
+            );
+            assert!(!view.busy);
+            assert_eq!(view.origin.read(cx).value().as_ref(), input);
+        });
+    }
+    assert!(!state.path().join("t3-connections.json").exists());
+}
