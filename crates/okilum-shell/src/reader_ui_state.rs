@@ -892,6 +892,9 @@ pub(crate) struct Session {
     tree: Option<Layout>,
     source: Option<[f32; 2]>,
     pub(super) live_preview: bool,
+    /// This window keeps its chosen editing mode across Markdown file choices.
+    /// Session restoration still uses the existing saved source/LP fields.
+    pub(super) source_mode: bool,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
     pub(crate) source_highlight_pending: bool,

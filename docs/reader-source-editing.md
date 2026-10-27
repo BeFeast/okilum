@@ -10,6 +10,21 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Within the same Reader window, choosing another supported Markdown note keeps the
+chosen Read, Source or Live Preview mode (#1723). An explicit return to Read keeps
+later notes in Read. File switching still completes the existing save/recovery
+checks before leaving the current editor, and only the latest successfully
+prepared note may reopen its editor. Other formats retain their existing preview;
+a failed or unsupported open does not force editing. Window/session restoration
+continues to use the existing saved mode policy, without a new global preference.
+New note temporarily opens Live Preview for typing without changing the window's
+chosen mode for other notes. Restoring an editor after a sidebar selection keeps
+keyboard focus in the tree (#1730).
+
+Document zoom scales code together with prose in Read and Live Preview (#1737).
+Inline code inherits the surrounding text size; rendered fenced blocks scale
+their themed monospace size by the same zoom factor, including inside callouts.
+
 Windows Source and Live Preview use an app-owned exact Unicode clipboard reader
 (#1434). A restricted mode of the same executable reads `CF_UNICODETEXT` before
 updater, state or GUI initialization. Its parent limits the entire request to two
@@ -42,9 +57,14 @@ in the background; TSV as a table; plain text. Paste as Plain Text is
 Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
 Cmd+Alt+V / Ctrl+Alt+V. Files dropped onto the editor take the files path.
 Background results land only in the editing session of the note they were
-pasted into; otherwise a toast names the saved file. The rich-text, image and
-file readers are macOS-only for now; Linux (#1618) and Windows (#1619) paste
-text as described above.
+pasted into; otherwise a toast names the saved file. macOS supports rich-text, image and file offers. Linux also routes native
+PNG/JPEG and other supported image MIME offers, plus local `text/uri-list`
+files, through the note attachment pipeline. The Wayland data-control read
+keeps the same pinned-offer checks, deadline and payload limits; self-owned
+selections, X11 and unsupported compositors use GPUI's typed clipboard on the
+UI thread. Windows (#1619) still pastes text as described above. Completed
+local attachment writes publish their exact saved paths to inventory, so a
+paste or drop does not wait for filesystem notifications to display its image.
 
 A byte comparison with the opened base guards every changed save. An external
 change blocks navigation and app-owned Quit until Reload or Keep mine resolves

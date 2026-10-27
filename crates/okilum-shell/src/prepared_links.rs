@@ -6,6 +6,8 @@ use okilum_core::document_links::{
     prepared::{LinkPreparation, LinkState, TargetSnapshot},
 };
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) type States = Arc<BTreeMap<String, LinkState>>;
 pub(crate) type SnippetLinks = Vec<(std::ops::Range<usize>, String)>;
@@ -295,12 +297,46 @@ impl Reader {
         let platform_probe = preparation_trace
             .as_ref()
             .map(|_| platform::text_diagnostics::Probe::start());
+        #[cfg(target_os = "macos")]
+        let (cloud_send, cloud_receive) = async_channel::unbounded::<()>();
+        #[cfg(target_os = "macos")]
+        let cloud_done = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "macos")]
+        let cloud_progress_done = cloud_done.clone();
+        #[cfg(target_os = "macos")]
+        cx.spawn_in(window, async move |this, cx| {
+            while cloud_receive.recv().await.is_ok() {
+                if cloud_progress_done.load(Ordering::Acquire) {
+                    break;
+                }
+                let current = this
+                    .update_in_own_window(cx, |this, _, cx| {
+                        if this.navigation.preparation_generation != generation {
+                            return false;
+                        }
+                        if this.link_notice.as_deref() != Some(reader_icloud::DOWNLOADING) {
+                            this.link_notice = Some(reader_icloud::DOWNLOADING.into());
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !current {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| {
             let document = cx
                 .background_executor()
                 .spawn(async move {
                     let worker_started = std::time::Instant::now();
                     let prepare = || {
+                        #[cfg(target_os = "macos")]
+                        reader_icloud::materialize(&vault.root.join(&rel), || {
+                            cloud_send.send_blocking(()).map_err(|_| anyhow::anyhow!("Opening cancelled"))
+                        })?;
                         let document = if html && !Path::new(&rel).is_absolute() {
                             okilum_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
                                 PreparedDocument {
@@ -354,7 +390,7 @@ impl Reader {
                             Ok((document, target))
                         })
                     };
-                    if let Some(trace) = preparation_trace {
+                    let result = if let Some(trace) = preparation_trace {
                         let (document, report) = okilum_core::open_diagnostics::capture(prepare);
                         trace.event(
                             "note_open_core_preparation",
@@ -372,7 +408,10 @@ impl Reader {
                         document
                     } else {
                         prepare()
-                    }
+                    };
+                    #[cfg(target_os = "macos")]
+                    cloud_done.store(true, Ordering::Release);
+                    result
                 })
                 .await;
             let mut request = request;
@@ -412,6 +451,7 @@ impl Reader {
                 let task_landing = document.is_ok().then_some(task_text).flatten();
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
+                let navigation = this.navigation.generation;
                 this.accept_prepared_document(request, document, window, cx);
                 this.navigation.flash_pending = flash_block;
                 if let Some(line) = landing_line {
@@ -421,6 +461,20 @@ impl Reader {
                     this.land_task_text(text, cx);
                 }
                 this.finish_link_edit(generation, window, cx);
+                // Only a successfully accepted current request may reopen the
+                // chosen editor. Explicit link landings above keep ownership.
+                if this.navigation.generation != navigation
+                    && this.ui_state.source_mode
+                    && this.editing.is_none()
+                {
+                    let tree_had_focus = this.tree_focus.contains_focused(window, cx);
+                    this.toggle_source(window, cx);
+                    // An asynchronous mode restore must keep tree navigation
+                    // and rename keys in the navigator that opened the note.
+                    if tree_had_focus {
+                        this.tree_focus.focus(window, cx);
+                    }
+                }
                 if let Some(line) = unplaced_line {
                     this.link_notice = Some(
                         format!(

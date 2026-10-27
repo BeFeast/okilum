@@ -174,10 +174,18 @@ exec cat
             setup = scripts / 'vendor-setup.sh'
             original = (ROOT / 'scripts/vendor-setup.sh').read_text()
             setup.write_text(original.replace('928c3eb776a3d733d9b771f7dea27a6a79242ced', pinned))
+            # Isolate the GPUI reset contract from the independent canonical
+            # parser setup. Record that dependency invocation without networking
+            # or substituting fake parser sources into a production build.
+            (scripts / 'comrak-setup.py').write_text(
+                'from pathlib import Path\nimport json, sys\n'
+                'with Path(__file__).with_name("parser-calls.jsonl").open("a") as log:\n'
+                '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
             def patch(value):
                 (patches / '0001.diff').write_text('--- a/crates/base/src/text/selection_adapter.rs\n+++ b/crates/base/src/text/selection_adapter.rs\n@@ -1 +1 @@\n-pristine\n+' + value + '\n')
             patch('branch A')
             subprocess.run(['bash', str(setup)], check=True, capture_output=True)
+
             self.assertEqual(source.read_text(), 'branch A\n')
             (vendor / 'old-branch-artifact').write_text('generated')
             patch('branch B')
@@ -190,6 +198,9 @@ exec cat
             self.assertFalse((vendor / 'old-branch-artifact').exists())
             subprocess.run(['bash', str(setup), '--verify'], check=True, capture_output=True)
             subprocess.run(['bash', str(setup)], check=True, capture_output=True)
+            self.assertEqual(
+                [json.loads(line) for line in (scripts / 'parser-calls.jsonl').read_text().splitlines()],
+                [[], ['--verify'], [], ['--verify'], []])
 
 
 if __name__ == '__main__':

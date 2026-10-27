@@ -1419,12 +1419,17 @@ pub(crate) fn render_update_status(
     let available = matches!(status, updater::status::CheckStatus::Available(_));
     Some(
         h_flex()
+            .w_full()
+            .min_w_0()
             .gap_2()
             .items_center()
             .flex_wrap()
             .child(
                 div()
                     .debug_selector(move || format!("{id}-update-status"))
+                    .min_w_0()
+                    .max_w_full()
+                    .whitespace_normal()
                     .text_size(px(13.))
                     .text_color(p.text)
                     .child(line),

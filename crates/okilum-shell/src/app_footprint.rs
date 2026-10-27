@@ -37,6 +37,71 @@ pub(crate) fn roots() -> Vec<PathBuf> {
     roots.into_iter().filter(|p| p.is_absolute()).collect()
 }
 
+/// Ordinary Linux AppImage startup only; CLI commands and acceptance fixtures
+/// return before reaching this hook. The primary instance owns the background job.
+#[cfg(target_os = "linux")]
+pub(crate) fn install_appimage_desktop() {
+    #[cfg(feature = "appimage-acceptance-harness")]
+    if crate::appimage_acceptance::active() {
+        return;
+    }
+    let Some(image) = std::env::var_os("APPIMAGE").map(PathBuf::from) else {
+        return;
+    };
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("appimage-desktop".into())
+        .spawn(move || {
+            if let Err(error) = okilum_appimage::desktop::install(&home, &image) {
+                eprintln!("AppImage desktop integration: {error:#}");
+                return;
+            }
+            refresh_desktop_database(&home);
+        });
+}
+
+#[cfg(target_os = "linux")]
+fn refresh_desktop_database(home: &Path) {
+    let Ok((desktop, _)) = okilum_appimage::desktop::paths(home) else {
+        return;
+    };
+    // Optional cache refresh only, never change defaults or MIME associations.
+    if let Some(directory) = desktop.parent() {
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(directory)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_payload(home: &Path) -> Vec<PathBuf> {
+    okilum_appimage::desktop::paths(home)
+        .map(|(desktop, icon)| vec![desktop, icon])
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| path.symlink_metadata().is_ok())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn remove_appimage_desktop(home: &Path, report: &mut Report) {
+    let before = desktop_payload(home);
+    let result = okilum_appimage::desktop::remove(home);
+    for path in before {
+        if path.symlink_metadata().is_err() {
+            report.removed.push(path);
+        } else if let Err(error) = &result {
+            report.failed.push((path, error.to_string()));
+        }
+    }
+    refresh_desktop_database(home);
+}
+
 /// What an uninstall removed, kept or could not remove; printed for support.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Report {
@@ -355,8 +420,12 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         return 2;
     }
     let temp = std::env::temp_dir();
+    let desktop_home = std::env::var_os("HOME").map(PathBuf::from);
     let mut targets: Vec<PathBuf> = roots().into_iter().filter(|p| p.exists()).collect();
     targets.extend(search_sessions(&temp));
+    if let Some(home) = &desktop_home {
+        targets.extend(desktop_payload(home));
+    }
     let enrollment = enrollment_lock();
     targets.extend(enrollment.iter().filter(|p| p.exists()).cloned());
     let vaults: BTreeSet<PathBuf> = state
@@ -403,6 +472,9 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         return 2;
     }
     let mut report = purge(&roots(), state.as_deref(), &temp, &documents);
+    if let Some(home) = &desktop_home {
+        remove_appimage_desktop(home, &mut report);
+    }
     for lock in enrollment.into_iter().filter(|p| p.exists()) {
         match std::fs::remove_file(&lock) {
             Ok(()) => report.removed.push(lock),
@@ -971,7 +1043,7 @@ mod tests {
     const BASE_DIRECTORY_SITES: &[(&str, usize)] = &[
         // Roots, crash dumps, the Velopack log folder, the Linux sync units,
         // the drafts export and the macOS home (all in the inventory).
-        ("crates/okilum-shell/src/app_footprint.rs", 10),
+        ("crates/okilum-shell/src/app_footprint.rs", 12),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.
@@ -1075,6 +1147,50 @@ mod tests {
             production.contains("b dirs::z"),
             "positive control: code after the module stays"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_desktop_lifecycle_reports_exact_owned_files_and_keeps_foreign_payloads() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = tempfile::tempdir().unwrap();
+        let home = sandbox.path().join("isolated-home");
+        let image = sandbox.path().join("first image.AppImage");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(&image, b"not executed").unwrap();
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (desktop, icon) = okilum_appimage::desktop::paths(&home).unwrap();
+        let peer = desktop.parent().unwrap().join("okilum.desktop");
+        std::fs::create_dir_all(peer.parent().unwrap()).unwrap();
+        std::fs::write(&peer, b"distribution launcher").unwrap();
+        okilum_appimage::desktop::install(&home, &image).unwrap();
+        let initial = std::fs::read(&desktop).unwrap();
+        okilum_appimage::desktop::install(&home, &image).unwrap();
+        assert_eq!(std::fs::read(&desktop).unwrap(), initial);
+        assert_eq!(desktop_payload(&home), vec![desktop.clone(), icon.clone()]);
+        let moved = sandbox.path().join("updated image.AppImage");
+        std::fs::rename(&image, &moved).unwrap();
+        okilum_appimage::desktop::install(&home, &moved).unwrap();
+        let entry = std::fs::read_to_string(&desktop).unwrap();
+        assert!(entry.contains("updated image.AppImage"));
+        assert!(!entry.contains("first image.AppImage"));
+        let mut report = Report::default();
+        remove_appimage_desktop(&home, &mut report);
+        assert_eq!(report.removed, vec![desktop.clone(), icon.clone()]);
+        assert!(report.failed.is_empty());
+        assert_eq!(std::fs::read(&peer).unwrap(), b"distribution launcher");
+        let mut repeated = Report::default();
+        remove_appimage_desktop(&home, &mut repeated);
+        assert_eq!(repeated, Report::default());
+        std::fs::write(&desktop, b"foreign launcher").unwrap();
+        std::fs::write(&icon, b"foreign icon").unwrap();
+        assert!(okilum_appimage::desktop::install(&home, &moved).is_err());
+        let mut refused = Report::default();
+        remove_appimage_desktop(&home, &mut refused);
+        assert!(refused.removed.is_empty());
+        assert_eq!(refused.failed.len(), 2);
+        assert_eq!(std::fs::read(&desktop).unwrap(), b"foreign launcher");
+        assert_eq!(std::fs::read(&icon).unwrap(), b"foreign icon");
     }
 
     #[test]

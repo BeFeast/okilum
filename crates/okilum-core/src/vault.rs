@@ -1309,7 +1309,21 @@ impl Vault {
             }
             // bare filename lookup
             let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
-            self.asset_map.get(&name).cloned()
+            self.asset_map.get(&name).cloned().or_else(|| {
+                if !self.single_file {
+                    return None;
+                }
+                // Quick mode has no recursive asset map. Resolve only a unique
+                // already-admitted attachment, including completed local copies.
+                let mut known = self.entries.iter().filter(|entry| {
+                    entry.kind == EntryKind::Attachment
+                        && Path::new(&entry.path)
+                            .file_name()
+                            .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
+                });
+                let first = known.next()?;
+                known.next().is_none().then(|| self.root.join(&first.path))
+            })
         }
     }
 
@@ -2106,3 +2120,53 @@ mod preimage_visibility_tests {
 #[cfg(test)]
 #[path = "vault/alias_tests.rs"]
 mod alias_tests;
+
+#[cfg(test)]
+mod quick_attachment_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn quick_assets_use_only_unique_admitted_paths_without_scanning_other_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for folder in ["attachments", "unexpanded"] {
+            std::fs::create_dir(root.join(folder)).unwrap();
+            std::fs::write(root.join(folder).join("image.png"), b"attachment").unwrap();
+        }
+        let mut vault = Vault::from_note_paths(std::iter::empty());
+        vault.root = root.to_owned();
+        vault.single_file = true;
+        vault.entries.push(VaultEntry {
+            path: "attachments/image.png".into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("image.png", "note.md"),
+            Some(root.join("attachments/image.png"))
+        );
+        vault.entries.push(VaultEntry {
+            path: "unexpanded/image.png".into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("image.png", "note.md"),
+            None,
+            "known duplicates must not pick a winner"
+        );
+        assert_eq!(
+            vault.resolve_asset("attachments/image.png", "note.md"),
+            Some(root.join("attachments/image.png"))
+        );
+        let unicode = "attachments/Снимок экрана.PNG";
+        std::fs::write(root.join(unicode), b"unicode attachment").unwrap();
+        vault.entries.push(VaultEntry {
+            path: unicode.into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("Снимок экрана.PNG", "note.md"),
+            Some(root.join(unicode)),
+            "match the full-vault Unicode filename lookup while retaining exact path bytes"
+        );
+    }
+}

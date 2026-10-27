@@ -1,0 +1,522 @@
+diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -35,6 +35,7 @@
+     // Plain-source wrapping survives projection adoption. Its Rope/SumTree
+     // snapshots share unchanged nodes; an edit updates only affected lines.
+     source_wrap_map: Option<WrapMap>,
++    projected_cache: super::projected_cache::ProjectedCache,
+     hang_room: Pixels,
+     /// Wrap time and lines wrapped again by edits since the last
+     /// [`Self::take_edit_reshape`] (#1621). An edit that drops the projection
+@@ -50,6 +51,7 @@
+             source_text: Rope::new(),
+             projection: None,
+             source_wrap_map: None,
++            projected_cache: Default::default(),
+             hang_room: Pixels::default(),
+             edit_reshape: Default::default(),
+         }
+@@ -418,13 +420,13 @@
+                 if self.projection.is_none() {
+                     self.source_wrap_map = Some(self.wrap_map.clone());
+                 }
+-                self.wrap_map.set_projected(
++                let lines = self.wrap_map.set_projected(
+                     pinned.projection.as_ref(),
+                     pinned.stamp.presentation,
+                     self.hang_room,
+                     window,
++                    &mut self.projected_cache,
+                 );
+-                let lines = pinned.projection.text().split('\n').count();
+                 self.projection = Some(pinned);
+                 lines
+             }
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -44,6 +44,11 @@
+ }
+ 
+ impl LineItem {
++    #[cfg(test)]
++    pub(super) fn cached_test_line(len: usize, wrapped_lines: SmallVec<[Range<usize>; 1]>) -> Self {
++        Self { len, indent: 0, wrapped_lines }
++    }
++
+     /// Get the bytes length of this line.
+     #[inline]
+     pub(crate) fn len(&self) -> usize {
+@@ -416,27 +421,37 @@
+         epoch: u64,
+         hang_room: Pixels,
+         window: &gpui::Window,
+-    ) {
++        cache: &mut super::projected_cache::ProjectedCache,
++    ) -> usize {
++        cache.begin(projection.source().stamp.document);
++        let mut reshaped = 0;
+         let mut trace = TraceSpan::new("set_projected", TraceIdentity::new(projection.source().stamp, epoch, true));
+         let text = Rope::from(projection.text());
+         trace.counts([text.len() as u64, text.lines_len() as u64, projection.styles().len() as u64, 0]);
+         let mut items = Vec::new();
+         let scales = projection.line_scales();
++        let mut styles = crate::input::projection_layout::StyleCursor::new(projection.styles());
+         for row in 0..text.lines_len() {
+             let line = text.slice_line(row).to_string();
+             let start = text.line_start_offset(row);
+             let font_size = self.font_size * crate::input::projection::line_scale(scales, row);
++            styles.advance(start..start + line.len());
++            let full_runs = styles.runs(start..start + line.len(), &self.font, gpui::black());
++            let key = super::projected_cache::LineKey::new(
++                &line, &full_runs, font_size, self.wrap_width, window.scale_factor(),
++                crate::input::projection::line_hang(scales, row), hang_room);
++            if let Some(item) = cache.get(&key) {
++                cache.retain(key, item.clone());
++                items.push(item);
++                continue;
++            }
++            reshaped += 1;
+             // A hanging prefix (a revealed heading marker) that fits the room
+             // left of the text is drawn in the margin, so the line wraps as if
+             // it were not there: revealing it never changes the rows (#1034).
+             let hang = crate::input::projection::line_hang(scales, row);
+             let hang = if hang > 0 && hang < line.len() && line.is_char_boundary(hang) && !has_rtl(&line) {
+-                let runs = crate::input::projection_layout::projected_runs(
+-                    projection,
+-                    start..start + hang,
+-                    &self.font,
+-                    gpui::black(),
+-                );
++                let runs = styles.runs(start..start + hang, &self.font, gpui::black());
+                 let marker = window
+                     .text_system()
+                     .shape_line(line[..hang].to_string().into(), font_size, &runs, None);
+@@ -444,12 +459,9 @@
+             } else {
+                 0
+             };
+-            let runs = crate::input::projection_layout::projected_runs(
+-                projection,
+-                start + hang..start + line.len(),
+-                &self.font,
+-                gpui::black(),
+-            );
++            let runs = if hang == 0 { full_runs } else {
++                styles.runs(start + hang..start + line.len(), &self.font, gpui::black())
++            };
+             let shape_start = attribution::now();
+             let shaped = window
+                 .text_system()
+@@ -481,15 +493,14 @@
+                     }),
+                 ),
+             };
+-            items.push(LineItem {
+-                len: line.len(),
+-                indent: 0,
+-                wrapped_lines: ranges,
+-            });
++            let item = LineItem { len: line.len(), indent: 0, wrapped_lines: ranges };
++            cache.retain(key, item.clone());
++            items.push(item);
+         }
+         self.text = text;
+         self.lines = SumTree::from_iter(items, &());
+         self._initialized = true;
++        reshaped
+     }
+ 
+     /// Update the text wrapper and recalculate the wrapped lines.
+diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -143,8 +143,9 @@
+         epoch: u64,
+         hang_room: gpui::Pixels,
+         window: &gpui::Window,
+-    ) {
+-        self.wrapper.set_projected(projection, epoch, hang_room, window);
++        cache: &mut super::projected_cache::ProjectedCache,
++    ) -> usize {
++        self.wrapper.set_projected(projection, epoch, hang_room, window, cache)
+     }
+ 
+     pub(super) fn restore_source(&mut self, text: &Rope, cx: &mut App) {
+diff --git a/crates/base/src/input/editor/display_map/mod.rs b/crates/base/src/input/editor/display_map/mod.rs
+--- a/crates/base/src/input/editor/display_map/mod.rs
++++ b/crates/base/src/input/editor/display_map/mod.rs
+@@ -8,6 +8,7 @@
+ /// The goal is to provide a clean, unified API where Editor only needs to know
+ /// about `BufferPoint ↔ DisplayPoint` mapping, without worrying about internal wrap/fold complexity.
+ mod display_map;
++mod projected_cache;
+ mod fold_map;
+ mod folding;
+ mod text_wrapper;
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -6248,6 +6248,68 @@
+     }
+ 
+     #[gpui::test]
++    fn projection_wrap_cache_reuses_only_unchanged_line_metrics(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let original: String = (0..350).map(|n| format!("row{n} a\u{301} אבג 👩\u{200d}💻 wrapped words in a long line\n")).collect();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value(original.clone(), window, cx);
++            state.enable_layout_diagnostics();
++            state.set_projection_provider(Some(Arc::new(ScaledLineProvider { hang: 0 })), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            assert!(state.last_layout.as_ref().unwrap().projection.is_some());
++            state.take_layout_frames();
++            state.replace_text_in_range(Some(0..0), "x", window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let edit = state.take_layout_frames().into_iter().find(|f| f.edit).unwrap();
++            assert!(!edit.raw);
++            assert!(edit.reshaped_lines <= 3, "unchanged lines must reuse wraps: {edit:?}");
++            let last = state.last_layout.as_ref().unwrap();
++            let text = state.text.clone();
++            let mut fresh = DisplayMap::new(last.font.clone(), last.font_size, last.wrap_width);
++            fresh.set_wrapping_indent(super::super::WrappingIndent::None, cx);
++            fresh.set_hang_room(state.hang_room());
++            fresh.ensure_text_prepared(&text, cx);
++            let shaped = fresh.install_projection(state.projection.pin(), &text, window, cx);
++            assert!(shaped > 300, "positive control: a fresh map shapes the whole note");
++            let canonical = text.to_string();
++            for (offset, _) in canonical.char_indices().step_by(17) {
++                let actual = state.display_map.offset_to_wrap_display_point(offset);
++                assert_eq!(actual, fresh.offset_to_wrap_display_point(offset));
++                // A valid UTF-8 scalar can be inside an authored grapheme.
++                // Native hits clip right; cached and fresh layouts must agree.
++                let expected = crate::input::projection_layout::clip_hit_offset(
++                    &canonical, offset, ConcealBias::Right).unwrap();
++                assert_eq!(state.display_map.wrap_display_point_to_offset(actual), expected);
++                assert_eq!(fresh.wrap_display_point_to_offset(actual), expected);
++            }
++            for (offset, _) in canonical.grapheme_indices(true).step_by(17) {
++                let point = state.display_map.offset_to_wrap_display_point(offset);
++                assert_eq!(state.display_map.wrap_display_point_to_offset(point), offset);
++            }
++        }));
++        // A line insertion shifts every following source/projected offset. Only
++        // relative wrap ranges are reusable, never an old source hit map.
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.replace_text_in_range(Some(0..0), "new row\n", window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|_, cx| {
++            let state = view.input.read(cx);
++            assert!(state.last_layout.as_ref().unwrap().projection.is_some());
++            assert_eq!(state.value().as_ref(), format!("new row\nx{original}"));
++        });
++    }
++
++    #[gpui::test]
+     fn projection_edit_reuses_source_wrap_for_undo_and_ime(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+         let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
+diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crates/base/src/input/editor/display_map/projected_cache.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/base/src/input/editor/display_map/projected_cache.rs
+@@ -0,0 +1,173 @@
++//! Derived, editor-local wrapping of exact projected lines. No source identity or
++//! hit map is reused here: callers bind cached relative row ranges to the new
++//! projection. Keep only the previous and current publication's bounded entries.
++use std::collections::HashMap;
++use std::sync::Arc;
++
++use gpui::{Font, Pixels, TextRun};
++
++use super::text_wrapper::LineItem;
++
++const MAX_ENTRIES: usize = 8192;
++const MAX_BYTES: usize = 2 * 1024 * 1024;
++
++#[derive(Clone, Debug, PartialEq, Eq, Hash)]
++pub(super) struct LineKey {
++    text: Arc<str>,
++    fonts: Vec<(usize, Font)>,
++    font_size: u32,
++    wrap_width: Option<u32>,
++    scale_factor: u32,
++    hang: usize,
++    hang_room: u32,
++}
++
++impl LineKey {
++    #[allow(clippy::too_many_arguments)]
++    pub(super) fn new(
++        text: &str,
++        runs: &[TextRun],
++        font_size: Pixels,
++        wrap_width: Option<Pixels>,
++        scale_factor: f32,
++        hang: usize,
++        hang_room: Pixels,
++    ) -> Self {
++        Self {
++            text: Arc::from(text),
++            // Foreground/strike paint does not change wrap geometry. Retain
++            // every run's exact length and resolved font, including fallback
++            // family, weight, features and italic. No content hash is trusted
++            // without the key's full equality check.
++            fonts: runs.iter().map(|run| (run.len, run.font.clone())).collect(),
++            font_size: f32::from(font_size).to_bits(),
++            wrap_width: wrap_width.map(|width| f32::from(width).to_bits()),
++            scale_factor: scale_factor.to_bits(),
++            hang,
++            hang_room: f32::from(hang_room).to_bits(),
++        }
++    }
++
++    fn bytes(&self, line: &LineItem) -> usize {
++        self.text.len()
++            + self
++                .fonts
++                .iter()
++                .map(|(_, font)| std::mem::size_of::<(usize, Font)>() + font.family.len())
++                .sum::<usize>()
++            + line.wrapped_lines.len() * std::mem::size_of::<std::ops::Range<usize>>()
++            + std::mem::size_of::<Self>()
++            + std::mem::size_of::<LineItem>()
++    }
++}
++
++#[derive(Default)]
++pub(super) struct ProjectedCache {
++    document: Option<u64>,
++    previous: HashMap<LineKey, LineItem>,
++    current: HashMap<LineKey, LineItem>,
++    bytes: usize,
++}
++
++impl ProjectedCache {
++    pub(super) fn begin(&mut self, document: u64) {
++        if self.document != Some(document) {
++            self.previous.clear();
++            self.current.clear();
++            self.document = Some(document);
++        } else {
++            self.previous = std::mem::take(&mut self.current);
++        }
++        self.bytes = 0;
++    }
++
++    pub(super) fn get(&self, key: &LineKey) -> Option<LineItem> {
++        self.current
++            .get(key)
++            .or_else(|| self.previous.get(key))
++            .cloned()
++    }
++
++    pub(super) fn retain(&mut self, key: LineKey, line: LineItem) {
++        if self.current.contains_key(&key) {
++            return;
++        }
++        let bytes = key.bytes(&line);
++        if self.current.len() < MAX_ENTRIES && bytes <= MAX_BYTES.saturating_sub(self.bytes) {
++            self.bytes += bytes;
++            self.current.insert(key, line);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::{TextRun, px};
++
++    fn key(text: &str, width: f32, size: f32, hang: usize) -> LineKey {
++        LineKey::new(
++            text,
++            &[TextRun {
++                len: text.len(),
++                font: gpui::font("sans-serif"),
++                ..Default::default()
++            }],
++            px(size),
++            Some(px(width)),
++            1.,
++            hang,
++            px(50.),
++        )
++    }
++
++    fn line() -> LineItem {
++        // Construct through the sibling module's test helper.
++        LineItem::cached_test_line(8, smallvec::smallvec![0..4, 4..8])
++    }
++
++    #[test]
++    fn exact_line_metrics_and_document_are_required_for_reuse() {
++        let mut cache = ProjectedCache::default();
++        cache.begin(1);
++        cache.retain(key("abcdefgh", 40., 16., 0), line());
++        cache.begin(1);
++        assert!(cache.get(&key("abcdefgh", 40., 16., 0)).is_some());
++        for different in [
++            key("abcdxfgh", 40., 16., 0),
++            key("abcdefgh", 41., 16., 0),
++            key("abcdefgh", 40., 17., 0),
++            key("abcdefgh", 40., 16., 2),
++        ] {
++            assert!(cache.get(&different).is_none());
++        }
++        let mut font = key("abcdefgh", 40., 16., 0);
++        font.fonts[0].1.weight = gpui::FontWeight::BOLD;
++        assert!(cache.get(&font).is_none());
++        cache.begin(2);
++        assert!(cache.get(&key("abcdefgh", 40., 16., 0)).is_none());
++    }
++
++    #[test]
++    fn entries_are_bounded_and_unretained_history_is_discarded() {
++        let mut cache = ProjectedCache::default();
++        cache.begin(1);
++        for i in 0..MAX_ENTRIES + 10 {
++            cache.retain(key(&format!("line{i:08}"), 40., 16., 0), line());
++        }
++        assert!(cache.current.len() <= MAX_ENTRIES && cache.bytes <= MAX_BYTES);
++        let huge = key(&"x".repeat(MAX_BYTES + 1), 40., 16., 0);
++        cache.retain(huge.clone(), line());
++        assert!(cache.get(&huge).is_none());
++        let retained = key("abcdefgh", 40., 16., 0);
++        cache.begin(1);
++        cache.retain(retained.clone(), line());
++        cache.begin(1);
++        assert!(cache.get(&retained).is_some());
++        cache.begin(1);
++        assert!(
++            cache.get(&retained).is_none(),
++            "older publications are discarded"
++        );
++    }
++}
+diff --git a/crates/base/src/input/projection_layout.rs b/crates/base/src/input/projection_layout.rs
+--- a/crates/base/src/input/projection_layout.rs
++++ b/crates/base/src/input/projection_layout.rs
+@@ -1,5 +1,5 @@
+ //! Shared font runs for wrapping and painting projected source.
+-use super::projection::SourceProjection;
++use super::projection::{ProjectionStyle, SourceProjection};
+ use gpui::{Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, px};
+ use std::ops::Range;
+ 
+@@ -9,8 +9,17 @@
+     font: &Font,
+     color: Hsla,
+ ) -> Vec<TextRun> {
++    projected_runs_for_styles(projection.styles().iter(), range, font, color)
++}
++
++fn projected_runs_for_styles<'a>(
++    styles: impl Iterator<Item = &'a ProjectionStyle> + Clone,
++    range: Range<usize>,
++    font: &Font,
++    color: Hsla,
++) -> Vec<TextRun> {
+     let mut boundaries = vec![range.start, range.end];
+-    for style in projection.styles() {
++    for style in styles.clone() {
+         if style.range.start.0 < range.end && style.range.end.0 > range.start {
+             boundaries.push(style.range.start.0.max(range.start));
+             boundaries.push(style.range.end.0.min(range.end));
+@@ -25,9 +34,7 @@
+             let mut actual_font = font.clone();
+             let mut strike = false;
+             let mut actual_color = color;
+-            for style in projection
+-                .styles()
+-                .iter()
++            for style in styles.clone()
+                 .filter(|s| s.range.start.0 <= r[0] && s.range.end.0 >= r[1])
+             {
+                 if let Some(family) = &style.font_family {
+@@ -57,6 +64,42 @@
+             }
+         })
+         .collect()
++}
++
++/// One forward wrapping pass. Only the styles overlapping this logical line
++/// participate in shaping. Preserve original provider order for overlapping
++/// font/color overrides; providers need not sort the input styles.
++pub(super) struct StyleCursor<'a> {
++    starts: Vec<(usize, &'a ProjectionStyle)>,
++    active: Vec<(usize, &'a ProjectionStyle)>,
++    next: usize,
++    start: usize,
++}
++
++impl<'a> StyleCursor<'a> {
++    pub(super) fn new(styles: &'a [ProjectionStyle]) -> Self {
++        let mut starts: Vec<_> = styles.iter().enumerate().collect();
++        starts.sort_by_key(|(_, style)| style.range.start.0);
++        Self { starts, active: Vec::new(), next: 0, start: 0 }
++    }
++
++    pub(super) fn advance(&mut self, line: Range<usize>) {
++        debug_assert!(line.start >= self.start, "wrapping visits lines in source order");
++        self.start = line.start;
++        self.active.retain(|(_, style)| style.range.end.0 > line.start);
++        while let Some(&(index, style)) = self.starts.get(self.next) {
++            if style.range.start.0 >= line.end { break; }
++            self.next += 1;
++            if style.range.end.0 > line.start {
++                self.active.push((index, style));
++            }
++        }
++        self.active.sort_by_key(|(index, _)| *index);
++    }
++
++    pub(super) fn runs(&self, range: Range<usize>, font: &Font, color: Hsla) -> Vec<TextRun> {
++        projected_runs_for_styles(self.active.iter().map(|(_, style)| *style), range, font, color)
++    }
+ }
+ 
+ /// Clip a *displayed user hit*, never a native canonical replacement range.
+@@ -193,6 +236,31 @@
+ mod tests {
+     use super::*;
+     use crate::input::projection::ConcealBias;
++
++    #[test]
++    fn wrapping_style_cursor_matches_all_styles_with_overrides_and_gaps() {
++        use super::super::projection::ProjectedByte;
++        let style = |start, end, bold, family: Option<&str>| ProjectionStyle {
++            range: ProjectedByte(start)..ProjectedByte(end), font_family: family.map(str::to_owned),
++            color: None, bold, italic: !bold, strikethrough: false,
++        };
++        // Deliberately unsorted and overlapping: original provider order, not
++        // start-offset order, decides the last family/color override.
++        let styles = [style(21, 32, true, Some("monospace")),
++            style(0, 40, false, Some("sans-serif")), style(8, 12, true, None),
++            style(20, 25, false, Some("serif")), style(0, 0, true, None)];
++        let mut cursor = StyleCursor::new(&styles);
++        let font = gpui::font("sans-serif");
++        for line in [0..7, 8..16, 17..17, 18..30, 31..39, 41..50] {
++            cursor.advance(line.clone());
++            for range in [line.clone(), line.start..line.start,
++                line.start..line.start + (line.end - line.start) / 2] {
++                assert_eq!(cursor.runs(range.clone(), &font, gpui::black()),
++                    projected_runs_for_styles(styles.iter(), range, &font, gpui::black()));
++            }
++        }
++        assert_eq!(cursor.next, styles.len(), "each style enters the cursor only once");
++    }
+ 
+     #[test]
+     fn grapheme_table_matches_original_at_every_byte_and_both_biases() {

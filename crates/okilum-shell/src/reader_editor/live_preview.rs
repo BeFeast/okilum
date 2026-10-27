@@ -1,22 +1,133 @@
 //! Opt-in presentation over the existing exact Reader editor and FileEditor.
 use super::*;
-use crate::source_presentation::{CachedProvider, ProjectionColors};
+use crate::source_presentation::{navigation_inventory as nav, CachedProvider, ProjectionColors};
 use std::cell::Cell;
 
-#[derive(Default)]
+#[derive(Clone, PartialEq)]
+struct Origin {
+    reader: EntityId,
+    root: PathBuf,
+    reader_path: String,
+    selected: String,
+    file: PathBuf,
+    input: EntityId,
+    markdown: bool,
+}
+impl Origin {
+    fn matches(&self, reader: &Reader, editing: &Editing, entity: EntityId) -> bool {
+        self.reader == entity
+            && self.root == reader.vault_root
+            && self.reader_path == reader.current_rel
+            && self.selected == reader.selected_file()
+            && self.file == editing.store.path()
+            && self.input == editing.input.entity_id()
+            && self.markdown == editing.markdown
+    }
+}
+struct Job {
+    input: nav::Input,
+    request: nav::Request,
+}
+struct Flight {
+    key: nav::RequestKey,
+    busy: Rc<Cell<bool>>,
+}
+/// Constructed before first poll; cancellation settles only this physical job.
+struct FlightGuard(Rc<Flight>);
+impl FlightGuard {
+    fn finish(&self) {
+        self.0.busy.set(false);
+    }
+}
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 pub(super) struct LivePreview {
     pub enabled: bool,
     pub(super) restore_after_find: bool,
+    origin: Origin,
+    owner: nav::Owner,
+    session: nav::Session,
     in_flight: Rc<Cell<bool>>,
-    queued: bool,
+    running: Option<Rc<Flight>>,
+    task: Option<Task<()>>,
+    queued: Option<Job>,
+    // An interrupted request requires honest cold work after resume/refusal.
+    needs_compute: bool,
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
     #[cfg(target_os = "linux")]
-    latency_subscriptions: Option<(Subscription, Subscription)>,
+    latency_subscriptions: Option<(Subscription, Subscription, Subscription)>,
+    #[cfg(test)]
+    worker_reports: Vec<okilum_core::open_diagnostics::Report>,
+}
+impl LivePreview {
+    pub(super) fn new(
+        reader: &Reader,
+        entity: EntityId,
+        store: &FileEditor,
+        input: &Entity<EditorState>,
+        markdown: bool,
+    ) -> Self {
+        let owner = nav::Owner::new(input.entity_id());
+        Self {
+            enabled: false,
+            restore_after_find: false,
+            origin: Origin {
+                reader: entity,
+                root: reader.vault_root.clone(),
+                reader_path: reader.current_rel.clone(),
+                selected: reader.selected_file().to_owned(),
+                file: store.path().to_owned(),
+                input: input.entity_id(),
+                markdown,
+            },
+            session: nav::Session::new(owner.clone()),
+            owner,
+            in_flight: Rc::new(Cell::new(false)),
+            running: None,
+            task: None,
+            queued: None,
+            needs_compute: false,
+            accepted: None,
+            colors: Cell::new(None),
+            #[cfg(target_os = "linux")]
+            latency_subscriptions: None,
+            #[cfg(test)]
+            worker_reports: Vec::new(),
+        }
+    }
+    fn supersede(&mut self) {
+        self.needs_compute |= self.in_flight.get() || self.queued.is_some();
+        let _ = self.session.begin(None);
+        self.queued = None;
+    }
+    pub(super) fn suspend(&mut self) {
+        self.supersede();
+        self.task = None; // Drop runs the pre-poll guard; the worker owns no UI state.
+        self.running = None;
+        self.in_flight = Rc::new(Cell::new(false));
+        // Keep only the old immutable legacy display, never pending delivery rights.
+    }
+    fn owns(&self, flight: &Rc<Flight>) -> bool {
+        self.running.as_ref().is_some_and(|f| Rc::ptr_eq(f, flight))
+    }
 }
 
 #[cfg(test)]
 impl LivePreview {
+    pub(super) fn pending_marker(&self) -> Option<Rc<Cell<bool>>> {
+        self.running.as_ref().map(|flight| flight.busy.clone())
+    }
+    pub(super) fn completed_navigation_bytes(&self) -> Vec<u64> {
+        self.worker_reports
+            .iter()
+            .map(|r| r.counts["link_parse_bytes"])
+            .collect()
+    }
     /// The note as Live Preview draws it with nothing revealed, once it is
     /// classified: a test's proof that some Markdown really is concealed.
     pub(super) fn concealed_text(&self) -> Option<String> {
@@ -119,18 +230,13 @@ impl Reader {
         if editing.live_preview.colors.get() == Some(colors) {
             return;
         }
-        let Some(provider) = editing
-            .live_preview
-            .accepted
-            .as_ref()
-            .filter(|p| p.source().stamp == editing.input.read(cx).source_stamp())
-        else {
+        let Some(provider) = self.checked_live_provider(cx.entity_id(), cx) else {
             return;
         };
         // Publish the palette before notifying the input: the resulting render
         // observes it and cannot reinstall the same provider recursively.
         editing.live_preview.colors.set(Some(colors));
-        let provider = provider.clone().with_colors(colors);
+        let provider = provider.with_colors(colors);
         editing.input.update(cx, |input, cx| {
             input.set_projection_provider(Some(provider), cx)
         });
@@ -229,6 +335,11 @@ impl Reader {
         editing.live_preview.enabled = !editing.live_preview.enabled;
         let input = editing.input.clone();
         let enabled = editing.live_preview.enabled;
+        let held = if enabled {
+            self.checked_live_provider(cx.entity_id(), cx)
+        } else {
+            None
+        };
         input.update(cx, |input, cx| {
             // Native search operates on source offsets and suppresses projection.
             // Close it before adopting Live Preview; Find returns to Source.
@@ -238,12 +349,7 @@ impl Reader {
             input.set_searchable(!enabled, cx);
         });
         let provider = if enabled {
-            editing
-                .live_preview
-                .accepted
-                .as_ref()
-                .filter(|p| p.source().stamp == input.read(cx).source_stamp())
-                .map(|p| p.clone().with_colors(colors))
+            held.map(|p| p.with_colors(colors))
         } else {
             None
         };
@@ -255,74 +361,208 @@ impl Reader {
         cx.notify();
     }
 
+    fn live_input(&self, entity: EntityId, cx: &App) -> Option<nav::Input> {
+        let editing = self.editing.as_ref()?;
+        let state = &editing.live_preview;
+        if !state.enabled || self.move_applying || !state.origin.matches(self, editing, entity) {
+            return None;
+        }
+        let editor = editing.input.read(cx);
+        if editor.text().len() > okilum_core::source_classifier::MAX_BYTES {
+            return None;
+        }
+        // Observe actual snapshot construction through the existing public recorder.
+        #[cfg(test)]
+        let _snapshot_work = okilum_core::open_diagnostics::phase("reader_projection_snapshot");
+        Some(nav::Input {
+            binding: nav::Binding {
+                owner: state.owner.clone(),
+                workspace: serde_json::json!({
+                    "reader_root": self.vault_root.as_os_str().as_encoded_bytes(),
+                    "file": editing.store.path().as_os_str().as_encoded_bytes(),
+                    "markdown": editing.markdown,
+                }),
+                path: self.selected_file().to_owned(),
+            },
+            source: SourceSnapshot {
+                stamp: editor.source_stamp(),
+                text: Arc::from(editor.value().as_ref()),
+            },
+        })
+    }
+    fn checked_live_provider(&self, entity: EntityId, cx: &App) -> Option<Arc<CachedProvider>> {
+        if self.move_applying {
+            return None;
+        }
+        let state = &self.editing.as_ref()?.live_preview;
+        let provider = state.accepted.as_ref()?;
+        let live = self.live_input(entity, cx)?;
+        (provider.source().stamp == live.source.stamp && provider.source().text == live.source.text)
+            .then(|| provider.clone())
+    }
+    /// Called only after the real move callback has synchronized paths and text.
+    pub(super) fn resume_live_preview(&mut self, cx: &mut Context<Self>) {
+        if self.move_applying {
+            return;
+        }
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.store.text() == e.input.read(cx).value().as_ref())
+        {
+            self.schedule_live_preview(cx);
+        }
+    }
     pub(super) fn schedule_live_preview(&mut self, cx: &mut Context<Self>) {
+        // Refused inputs supersede below without copying the native buffer.
+        let live = self.live_input(cx.entity_id(), cx);
         let Some(editing) = &mut self.editing else {
             return;
         };
         let state = &mut editing.live_preview;
-        if !state.enabled {
+        // An identical already queued/running request is not a new attempt.
+        if let Some(input) = &live {
+            if state
+                .queued
+                .as_ref()
+                .is_some_and(|j| state.session.is_pending(&j.request.key(), Some(input)))
+                || state
+                    .running
+                    .as_ref()
+                    .is_some_and(|f| state.session.is_pending(&f.key, Some(input)) && f.busy.get())
+            {
+                return;
+            }
+        }
+        let held = live.as_ref().is_some_and(|i| {
+            !state.needs_compute
+                && state.accepted.as_ref().is_some_and(|p| {
+                    p.source().stamp == i.source.stamp && p.source().text == i.source.text
+                })
+        });
+        if held {
+            // Same-snapshot legacy display reuse is NOT new NavSession adoption.
+            let _ = state.session.begin(None);
+            state.queued = None;
+            return;
+        }
+        let interrupted = state.in_flight.get() || state.queued.is_some();
+        let request = state.session.begin(live.clone()).ok(); // BEFORE every refusal/busy return.
+        state.queued = None;
+        let Some((input, request)) = live.zip(request) else {
+            state.needs_compute |= interrupted;
+            if editing.input.read(cx).text().len() > okilum_core::source_classifier::MAX_BYTES {
+                state.accepted = None;
+                editing
+                    .input
+                    .update(cx, |input, cx| input.set_projection_provider(None, cx));
+            }
+            return;
+        };
+        // Valid edits keep the installed legacy remap/raw-tail presentation.
+        state.queued = Some(Job { input, request });
+        self.start_live_preview(cx);
+    }
+    fn start_live_preview(&mut self, cx: &mut Context<Self>) {
+        if self.move_applying {
+            return;
+        }
+        let live = self.live_input(cx.entity_id(), cx);
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        let state = &mut editing.live_preview;
+        if state.in_flight.get() {
+            return;
+        }
+        if let Some(task) = state.task.take() {
+            task.detach();
+        }
+        state.running = None;
+        let Some(job) = state.queued.take() else {
+            return;
+        };
+        let key = job.request.key();
+        if !state.enabled || !state.session.is_pending(&key, live.as_ref()) {
+            self.schedule_live_preview(cx);
             return;
         }
         let input = editing.input.clone();
-        let editor = input.read(cx);
-        if editor.text().len() > okilum_core::source_classifier::MAX_BYTES {
-            state.accepted = None;
-            input.update(cx, |input, cx| input.set_projection_provider(None, cx));
-            return;
-        }
-        if state.in_flight.get() {
-            state.queued = true;
-            return;
-        }
-        if state
-            .accepted
-            .as_ref()
-            .is_some_and(|p| p.source().stamp == editor.source_stamp())
-        {
-            return;
-        }
-        let source = SourceSnapshot {
-            stamp: editor.source_stamp(),
-            text: Arc::from(editor.value().as_ref()),
-        };
-        let marker = state.in_flight.clone();
-        marker.set(true);
-        state.queued = false;
-        cx.spawn(async move |this, cx| {
-            let provider = cx
+        let flight = Rc::new(Flight {
+            key,
+            busy: Rc::new(Cell::new(true)),
+        });
+        let guard = FlightGuard(flight.clone());
+        state.in_flight = flight.busy.clone();
+        state.running = Some(flight.clone());
+        state.task = Some(cx.spawn(async move |this, cx| {
+            let Job {
+                input: source,
+                request,
+            } = job;
+            let produced = cx
                 .background_executor()
-                .spawn(async move { Arc::new(CachedProvider::classify(source)) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    {
+                        okilum_core::open_diagnostics::capture(|| {
+                            CachedProvider::classify_navigation(request, source)
+                        })
+                    }
+                    #[cfg(not(test))]
+                    {
+                        CachedProvider::classify_navigation(request, source)
+                    }
+                })
                 .await;
-            // Parked editors can temporarily be absent while a move applies.
-            // Their marker must still settle, so a later edit can schedule again.
-            marker.set(false);
+            #[cfg(test)]
+            let (produced, report) = produced;
+            guard.finish();
             let _ = this.update(cx, |this, cx| {
+                let live = this.live_input(cx.entity_id(), cx);
                 let colors = projection_colors(cx);
+                let parked = this.move_applying;
                 let Some(editing) = &mut this.editing else {
                     return;
                 };
-                if editing.input != input {
+                let state = &mut editing.live_preview;
+                if !state.owns(&flight) {
                     return;
                 }
-                let current = input.read(cx);
-                if current.source_stamp() == provider.source().stamp
-                    && current.value().as_ref() == provider.source().text.as_ref()
+                if let Some(task) = state.task.take() {
+                    task.detach();
+                }
+                state.running = None;
+                #[cfg(test)]
+                state.worker_reports.push(report);
+                // Obsolete work never enters destructive adopt or clears a new queue.
+                if !parked
+                    && state.enabled
+                    && editing.input == input
+                    && state.session.is_pending(&flight.key, live.as_ref())
                 {
-                    editing.live_preview.accepted = Some(provider.clone());
-                    if editing.live_preview.enabled {
-                        editing.live_preview.colors.set(Some(colors));
-                        input.update(cx, |input, cx| {
-                            input.set_projection_provider(Some(provider.with_colors(colors)), cx)
-                        });
+                    match (produced, live) {
+                        (Ok((provider, completion)), Some(live)) => {
+                            if state.session.adopt(completion, Some(&live)).is_ok() {
+                                let provider = Arc::new(provider);
+                                state.accepted = Some(provider.clone());
+                                state.needs_compute = false;
+                                state.colors.set(Some(colors));
+                                input.update(cx, |input, cx| {
+                                    input.set_projection_provider(
+                                        Some(provider.with_colors(colors)),
+                                        cx,
+                                    )
+                                });
+                            }
+                        }
+                        _ => state.supersede(),
                     }
                 }
-                if std::mem::take(&mut editing.live_preview.queued) {
-                    this.schedule_live_preview(cx);
-                }
+                this.start_live_preview(cx);
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 }
 
@@ -364,17 +604,48 @@ impl Reader {
             return;
         }
         let input = editing.input.clone();
+        // GPUI's interceptor runs at application key dispatch, before key
+        // bindings, focused-editor actions and default text insertion. Observe
+        // only: never stop propagation, notify or request an extra frame.
+        let key_received = Rc::new(Cell::new(None));
+        let key_seen = key_received.clone();
+        let key_input = input.clone();
+        let handle = window.window_handle();
+        let key = cx.intercept_keystrokes(move |_, event_window, app| {
+            let received_ns = latency_now_ns();
+            if event_window.window_handle() != handle {
+                return;
+            }
+            let editor = key_input.read(app);
+            if editor.focus_handle(app).is_focused(event_window) {
+                key_seen.set(Some((editor.source_stamp(), received_ns)));
+            } else {
+                key_seen.set(None);
+            }
+        });
         let edit_trace = trace.clone();
         let changed = cx.subscribe_in(
             &input,
             window,
             move |this, input, event: &SourceMutation, window, cx| {
                 let mutation_ns = latency_now_ns();
+                // One event can yield one measured mutation. Programmatic/IME
+                // changes without a matching preceding key stay unmeasured.
+                let key_ns = key_received
+                    .take()
+                    .filter(|(before, received)| {
+                        before.document == event.stamp.document
+                            && before.generation.checked_add(1) == Some(event.stamp.generation)
+                            && *received <= mutation_ns
+                            && mutation_ns - *received <= 1_000_000_000
+                    })
+                    .map_or(0, |(_, received)| received);
                 this.trace_editor_latency_frame(
                     input.clone(),
                     event.stamp,
                     "edit",
                     mutation_ns,
+                    key_ns,
                     edit_trace.clone(),
                     window,
                     cx,
@@ -422,15 +693,16 @@ impl Reader {
                     stamp,
                     "live",
                     0,
+                    0,
                     live_trace.clone(),
                     window,
                     cx,
                 );
             }
         });
-        editing.live_preview.latency_subscriptions = Some((changed, classified));
+        editing.live_preview.latency_subscriptions = Some((changed, classified, key));
         let stamp = input.read(cx).source_stamp();
-        self.trace_editor_latency_frame(input, stamp, "open", 0, trace, window, cx);
+        self.trace_editor_latency_frame(input, stamp, "open", 0, 0, trace, window, cx);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -440,6 +712,7 @@ impl Reader {
         stamp: gpui_component::input::projection::SourceStamp,
         purpose: &'static str,
         mutation_ns: u64,
+        key_ns: u64,
         trace: reader_diagnostics::Trace,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -471,7 +744,9 @@ impl Reader {
                     "document": stamp.document, "generation": stamp.generation,
                     "current_document": current.document, "current_generation": current.generation,
                     "presentation_epoch": editor.presentation_epoch(),
-                    "mutation_ns": mutation_ns, "monotonic_ns": latency_now_ns(),
+                    "mutation_ns": mutation_ns, "key_received_ns": key_ns,
+                    "key_boundary": "gpui-before-key-bindings-and-text-input",
+                    "monotonic_ns": latency_now_ns(),
                     "live": live, "limited": limited,
                 }));
             });
@@ -600,6 +875,20 @@ mod tests {
                     && event["details"]["purpose"] == "edit"
                     && event["details"]["outcome"] == "painted"
             }) {
+                let measured = events
+                    .iter()
+                    .find(|event| {
+                        event["phase"] == "editor_latency_frame"
+                            && event["details"]["purpose"] == "edit"
+                            && event["details"]["outcome"] == "painted"
+                    })
+                    .unwrap();
+                let key_ns = measured["details"]["key_received_ns"].as_u64().unwrap();
+                let mutation_ns = measured["details"]["mutation_ns"].as_u64().unwrap();
+                assert!(
+                    key_ns > 0 && key_ns <= mutation_ns,
+                    "the app key-dispatch positive control must precede mutation"
+                );
                 assert!(
                     events
                         .iter()
@@ -1008,6 +1297,17 @@ mod tests {
             )
         };
         let before = reader.read_with(visual, snapshot);
+        let work = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .completed_navigation_bytes()
+        });
+        assert!(
+            !work.is_empty(),
+            "actual classification worker positive control"
+        );
         let accepted = reader.read_with(visual, |r, _| {
             r.editing
                 .as_ref()
@@ -1039,6 +1339,27 @@ mod tests {
             });
             visual.run_until_parked();
             assert_eq!(reader.read_with(visual, snapshot), before);
+            reader.read_with(visual, |r, cx| {
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .live_preview
+                        .completed_navigation_bytes(),
+                    work,
+                    "same-byte metadata echo cannot reparse classification"
+                );
+                let (_, report) = okilum_core::open_diagnostics::capture(|| {
+                    assert!(r
+                        .checked_live_provider(
+                            r.editing.as_ref().unwrap().live_preview.origin.reader,
+                            cx
+                        )
+                        .is_some());
+                });
+                assert!(!report.counts.contains_key("link_parse_bytes"));
+                assert!(!report.phases.contains_key("parse"));
+            });
             reader.read_with(visual, |r, _| {
                 assert!(Arc::ptr_eq(
                     &accepted,
@@ -1251,7 +1572,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             let e = r.editing.as_ref().unwrap();
-            assert!(!e.live_preview.in_flight.get() && !e.live_preview.queued);
+            assert!(!e.live_preview.in_flight.get() && e.live_preview.queued.is_none());
             let p = e.live_preview.accepted.as_ref().unwrap();
             assert_eq!(p.source().stamp, input.read(cx).source_stamp());
             assert_eq!(
@@ -1275,12 +1596,19 @@ mod tests {
             r.open_note("target.md", None, window, cx);
         });
         visual.run_until_parked();
-        reader.update_in(visual, |r, window, cx| {
-            r.toggle_source(window, cx);
-            r.set_live_preview(true, window, cx);
+        reader.update_in(visual, |r, _, _| {
+            assert_eq!(r.current_rel, "target.md", "actual next note was accepted");
+            assert_ne!(
+                r.editing
+                    .as_ref()
+                    .expect("chosen editor restored after selection")
+                    .input,
+                input,
+                "the next note owns a new actual editor"
+            );
             assert!(
                 r.source_live_preview(),
-                "classify the next note in Live Preview"
+                "actual note selection restores the chosen Live Preview mode"
             );
         });
         visual.run_until_parked();
@@ -1489,5 +1817,535 @@ mod tests {
         visual.simulate_keystrokes("ctrl-z");
         visual.run_until_parked();
         input.read_with(visual, |i, _| assert_eq!(i.value().as_ref(), original));
+    }
+    fn legacy_equivalent(actual: &dyn SourceProjection, expected: &dyn SourceProjection) {
+        use gpui_component::input::projection::{ConcealBias, ProjectedByte, SourceByte};
+        assert_eq!(actual.source().stamp, expected.source().stamp);
+        assert_eq!(actual.text(), expected.text());
+        assert_eq!(actual.styles(), expected.styles());
+        assert_eq!(actual.line_scales(), expected.line_scales());
+        assert_eq!(actual.blocks(), expected.blocks());
+        assert_eq!(
+            format!("{:?}", actual.markers()),
+            format!("{:?}", expected.markers())
+        );
+        for offset in 0..=actual.source().text.len() {
+            for bias in [ConcealBias::Left, ConcealBias::Right] {
+                assert_eq!(
+                    actual.to_projected(SourceByte(offset), bias),
+                    expected.to_projected(SourceByte(offset), bias)
+                );
+            }
+        }
+        for offset in 0..=actual.text().len() {
+            for bias in [ConcealBias::Left, ConcealBias::Right] {
+                assert_eq!(
+                    actual.to_source(ProjectedByte(offset), bias),
+                    expected.to_source(ProjectedByte(offset), bias)
+                );
+            }
+        }
+        for marker in actual.markers() {
+            assert_eq!(
+                actual.marker_scope_is_raw(&marker.scope),
+                expected.marker_scope_is_raw(&marker.scope)
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn actual_latest_inputs_keep_legacy_metadata_and_one_navigation_producer(
+        cx: &mut TestAppContext,
+    ) {
+        let original = "# Heading\r\n\r\n| a | b |\r\n| - | - |\r\n| c | d |\r\n\r\n**tail** e\u{301} 👩‍💻 [[target|alias]]\r\n";
+        let (reader, visual, _dir) = fixture(cx, original);
+        reader.update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        let held = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .accepted
+                .clone()
+                .unwrap()
+        });
+        let expected = CachedProvider::classify(held.source().clone());
+        for insert in ["x", "y"] {
+            reader.update_in(visual, |r, window, cx| {
+                let input = r.editing.as_ref().unwrap().input.clone();
+                input.update(cx, |i, cx| {
+                    let at = i.value().find("** e").unwrap();
+                    i.set_selected_range(at..at, cx);
+                    i.replace(insert, window, cx);
+                });
+                r.schedule_live_preview(cx);
+                let e = r.editing.as_ref().unwrap();
+                assert!(Arc::ptr_eq(
+                    e.live_preview.accepted.as_ref().unwrap(),
+                    &held
+                ));
+                let snapshot = SourceSnapshot {
+                    stamp: input.read(cx).source_stamp(),
+                    text: Arc::from(input.read(cx).value().as_ref()),
+                };
+                let active = ActiveSource {
+                    anchor: gpui_component::input::projection::SourceByte(snapshot.text.len()),
+                    head: gpui_component::input::projection::SourceByte(snapshot.text.len()),
+                    ..Default::default()
+                };
+                let actual = held.compose(&snapshot, &active).unwrap();
+                let reference = expected.compose(&snapshot, &active).unwrap();
+                legacy_equivalent(actual.as_ref(), reference.as_ref());
+                assert!(
+                    !actual.blocks().is_empty(),
+                    "rendered table above dirty tail remains rendered"
+                );
+            });
+        }
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            let source = e.input.read(cx).value();
+            assert!(source.contains("tailxy"));
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+            let reports = &e.live_preview.worker_reports;
+            assert_eq!(
+                reports.len(),
+                3,
+                "initial cold, old physical job, latest queued job"
+            );
+            assert_eq!(reports[0].counts["link_parse_bytes"], original.len() as u64);
+            assert_eq!(
+                reports[1].counts["link_parse_bytes"],
+                (original.len() + 1) as u64
+            );
+            assert_eq!(reports[2].counts["link_parse_bytes"], source.len() as u64);
+            assert!(reports.iter().all(|r| r.phases["parse"].calls > 0));
+            assert!(!e.live_preview.in_flight.get() && e.live_preview.queued.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn actual_refusal_restore_and_binding_checks_do_not_adopt_old_work(cx: &mut TestAppContext) {
+        let (reader, visual, _dir) = fixture(cx, ORIGINAL);
+        reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(true, window, cx);
+            let old_key = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .running
+                .as_ref()
+                .unwrap()
+                .key
+                .clone();
+            r.set_live_preview(false, window, cx); // Refusal supersedes before return.
+            r.set_live_preview(true, window, cx); // Same bytes, distinct new attempt.
+            let live = r.live_input(cx.entity_id(), cx).unwrap();
+            let state = &r.editing.as_ref().unwrap().live_preview;
+            assert!(!state.session.is_pending(&old_key, Some(&live)));
+            assert!(state.queued.is_some());
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, _, cx| {
+            let root = r.vault_root.clone();
+            let path = r.current_rel.clone();
+            assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
+            r.vault_root = root.join("different-owner-root");
+            r.schedule_live_preview(cx);
+            assert!(r.checked_live_provider(cx.entity_id(), cx).is_none());
+            r.vault_root = root;
+            r.current_rel = "foreign.md".into();
+            r.schedule_live_preview(cx);
+            assert!(r.checked_live_provider(cx.entity_id(), cx).is_none());
+            r.current_rel = path;
+            // An exact held legacy snapshot is reusable, not fresh Nav admission.
+            assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
+            let live = r.live_input(cx.entity_id(), cx).unwrap();
+            assert!(r
+                .editing
+                .as_mut()
+                .unwrap()
+                .live_preview
+                .session
+                .current(Some(&live))
+                .is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn real_park_resume_failed_move_and_deferred_save_echo_keep_delivery_owned(
+        cx: &mut TestAppContext,
+    ) {
+        let original =
+            "# Heading\n\n| a | b |\n| - | - |\n| c | d |\n\n[target](target.md)\n\n**tail**\n";
+        let (reader, visual, dir) = fixture(cx, original);
+        std::fs::create_dir(dir.path().join("vault/New")).unwrap();
+        reader.update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        let baseline = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .accepted
+                .clone()
+                .unwrap()
+        });
+        let preview = okilum_core::link_rewrite::Preview::prepare(
+            &dir.path().join("vault"),
+            "target.md",
+            "New/target.md",
+        )
+        .unwrap();
+        assert!(
+            preview.editor_paths().contains(&"note.md".to_owned()),
+            "explicit Markdown destination actually changes, so the real move must park this note"
+        );
+        let old = reader.update_in(visual, |r, window, cx| {
+            let input = r.editing.as_ref().unwrap().input.clone();
+            // A real reset changes generation even though the final bytes return.
+            input.update(cx, |i, cx| i.set_value(format!("{original} "), window, cx));
+            input.update(cx, |i, cx| i.set_value(original, window, cx));
+            r.schedule_live_preview(cx);
+            let old = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .pending_marker()
+                .unwrap();
+            assert!(
+                old.get(),
+                "actual classification task pending before real park"
+            );
+            old
+        });
+        let task = reader.update_in(visual, |r, window, cx| {
+            assert!(r.save_source(cx));
+            assert!(!r.source_is_dirty(cx));
+            let input = r.editing.as_ref().unwrap().input.clone();
+            let task = r.apply_link_move(&preview, window, cx).unwrap();
+            assert!(
+                r.move_applying && r.editing.is_none(),
+                "actual Editing::park path"
+            );
+            assert!(!input.read(cx).is_editable());
+            task
+        });
+        assert!(task.await.unwrap().moved);
+        assert!(
+            !old.get(),
+            "canceled pre-poll job settles its OWN marker; no parse is claimed for it"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            r.finish_move_editor(cx);
+            r.sync_move_input(window, cx); // The real complete_move synchronization hook.
+            let e = r.editing.as_ref().unwrap();
+            assert!(
+                e.live_preview.in_flight.get(),
+                "explicit resume starts latest work"
+            );
+            assert!(Arc::ptr_eq(
+                e.live_preview.accepted.as_ref().unwrap(),
+                &baseline
+            ));
+            let text = e.input.read(cx).value();
+            assert!(text.contains("New/target"));
+            let expected = CachedProvider::classify(baseline.source().clone());
+            let snapshot = SourceSnapshot {
+                stamp: e.input.read(cx).source_stamp(),
+                text: Arc::from(text.as_ref()),
+            };
+            let active = ActiveSource::default();
+            legacy_equivalent(
+                baseline.compose(&snapshot, &active).unwrap().as_ref(),
+                expected.compose(&snapshot, &active).unwrap().as_ref(),
+            );
+            let input = e.input.clone();
+            input.update(cx, |i, _| i.enable_layout_diagnostics());
+            let facts = |cx: &App| {
+                let i = input.read(cx);
+                (i.source_stamp(), i.presentation_epoch(), i.selected_range(), i.scroll_offset(),
+                    i.value(), i.layout_diagnostics().unwrap().provider_applies)
+            };
+            let before_echo = facts(cx);
+            let flight = r.editing.as_ref().unwrap().live_preview.running.clone().unwrap();
+            let file = dir.path().join("vault/note.md");
+            std::fs::write(&file, std::fs::read(&file).unwrap()).unwrap();
+            r.apply_vault_changes(okilum_core::Changes { changed: ["note.md".into()].into(), ..Default::default() }, window, cx);
+            assert_eq!(facts(cx), before_echo, "same-byte echo while resumed work is pending does not reinstall/reset native presentation");
+            assert!(Rc::ptr_eq(&flight, r.editing.as_ref().unwrap().live_preview.running.as_ref().unwrap()),
+                "echo cannot launch a second classification worker");
+            // A real autosave starts while resumed classification is pending.
+            input.update(cx, |i, cx| i.replace("x", window, cx));
+        });
+        let saved_text = reader.update_in(visual, |r, window, cx| {
+            let e = r.editing.as_ref().unwrap();
+            let id = e.input.entity_id();
+            let epoch = e.recovery_epoch;
+            r.autosave(id, epoch, window, cx);
+            let editing = r.editing.as_ref().unwrap();
+            let saved_text = editing
+                .autosaving
+                .clone()
+                .expect("REAL autosave worker is pending");
+            let sources = std::collections::HashMap::from([(
+                r.current_rel.clone(),
+                std::fs::read_to_string(editing.store.path()).unwrap(),
+            )]);
+            // Separate consumer-boundary proof: deliver the EXISTING publication
+            // callback during an actual save. apply_vault_changes is asynchronous;
+            // the full entry/echo regression above and its drained test stay separate.
+            r.reconcile_inventory_document(&sources, window, cx);
+            assert!(
+                r.editing.as_ref().unwrap().refresh_deferred,
+                "DELIVERED consumer callback defers behind the REAL pending save"
+            );
+            saved_text
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            assert!(!e.refresh_deferred && !e.conflict_detected);
+            assert_eq!(e.input.read(cx).value().as_ref(), saved_text);
+            assert_eq!(std::fs::read_to_string(e.store.path()).unwrap(), saved_text);
+            assert_eq!(
+                *e.live_preview.completed_navigation_bytes().last().unwrap(),
+                saved_text.len() as u64
+            );
+            assert!(e.live_preview.worker_reports.last().unwrap().phases["parse"].calls > 0);
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+            assert!(!e.live_preview.in_flight.get());
+            assert!(
+                e.live_preview.worker_reports.len() >= 2,
+                "actual baseline/resumed cold worker controls"
+            );
+        });
+        // A destination race fails a REAL move, then the real resume hook recovers.
+        let failed = okilum_core::link_rewrite::Preview::prepare(
+            &dir.path().join("vault"),
+            "New/target.md",
+            "target.md",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("vault/target.md"), "destination raced").unwrap();
+        let task = reader.update_in(visual, |r, window, cx| {
+            r.apply_link_move(&failed, window, cx).unwrap()
+        });
+        let outcome = task.await;
+        assert!(!matches!(outcome, Ok(ref a) if a.moved));
+        reader.update_in(visual, |r, window, cx| {
+            r.finish_move_editor(cx);
+            r.sync_move_input(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert!(r
+                .checked_live_provider(r.editing.as_ref().unwrap().live_preview.origin.reader, cx)
+                .is_some());
+            assert!(!r.editing.as_ref().unwrap().live_preview.in_flight.get());
+        });
+    }
+
+    #[gpui::test]
+    fn real_close_and_different_root_reopen_retire_only_the_old_flight(cx: &mut TestAppContext) {
+        let (reader, visual, _dir) = fixture(cx, ORIGINAL);
+        let old = reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(true, window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .pending_marker()
+                .unwrap()
+        });
+        assert!(old.get());
+        visual.update(|window, _| window.remove_window());
+        drop(reader);
+        let (reader, visual, _other_dir) = fixture(cx, ORIGINAL);
+        let new = reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(true, window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .pending_marker()
+                .unwrap()
+        });
+        assert!(!Rc::ptr_eq(&old, &new));
+        visual.run_until_parked();
+        assert!(!old.get() && !new.get());
+        reader.read_with(visual, |r, cx| {
+            assert!(r
+                .checked_live_provider(r.editing.as_ref().unwrap().live_preview.origin.reader, cx)
+                .is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn real_own_path_rename_recreates_the_reader_editing_owner(cx: &mut TestAppContext) {
+        let (reader, visual, dir) = fixture(cx, ORIGINAL);
+        reader.update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        // Persist the LP preference through the REAL exit/reopen path first.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.open_live_preview(window, cx));
+        visual.run_until_parked();
+        let owner = reader.read_with(visual, |r, _| {
+            r.editing.as_ref().unwrap().live_preview.owner.clone()
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.rename_note_title(window, cx);
+            r.renaming
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |i, cx| i.set_value("renamed.md", window, cx));
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "renamed.md");
+            assert!(!dir.path().join("vault/note.md").exists());
+            let e = r.editing.as_ref().unwrap();
+            assert!(
+                e.live_preview.owner != owner,
+                "actual rename/complete_move retires old Editing"
+            );
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+        });
+    }
+    #[gpui::test]
+    fn real_find_refusal_before_first_poll_requires_new_delivery_on_restore(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, visual, _dir) = fixture(cx, ORIGINAL);
+        let (old, latest) = reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(true, window, cx);
+            let flight = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .running
+                .clone()
+                .unwrap();
+            let live = r.live_input(cx.entity_id(), cx).unwrap();
+            r.open_source_find(cx); // Real direct enabled=false/source-clear path.
+            assert!(r.live_input(cx.entity_id(), cx).is_none());
+            assert!(!r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .session
+                .is_pending(&flight.key, Some(&live)));
+            assert!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .search_session()
+                    .open
+            );
+            r.toggle_live_preview(window, cx); // Actual restore path closes native Find.
+            let latest = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .running
+                .clone()
+                .unwrap();
+            assert!(!Rc::ptr_eq(&flight, &latest));
+            assert!(r
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .session
+                .is_pending(&latest.key, Some(&live)));
+            (flight.busy.clone(), latest.busy.clone())
+        });
+        visual.run_until_parked();
+        assert!(!old.get() && !latest.get());
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            assert_eq!(
+                e.live_preview.completed_navigation_bytes(),
+                vec![ORIGINAL.len() as u64],
+                "the canceled pre-poll request is not a completed immutable parse"
+            );
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+        });
+    }
+    #[gpui::test]
+    fn refused_actual_reader_inputs_have_zero_snapshot_construction_calls(cx: &mut TestAppContext) {
+        let (reader, visual, _dir) = fixture(cx, ORIGINAL);
+        let snapshot_construction_calls = |r: &okilum_core::open_diagnostics::Report| {
+            r.phases
+                .get("reader_projection_snapshot")
+                .map_or(0, |phase| phase.calls)
+        };
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.editing.as_ref().unwrap().input.clone();
+            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            let (_, source_work) = okilum_core::open_diagnostics::capture(|| {
+                input.update(cx, |i, cx| i.replace("x", window, cx));
+                r.schedule_live_preview(cx);
+            });
+            assert_eq!(
+                snapshot_construction_calls(&source_work),
+                0,
+                "ordinary Source mode has zero snapshot construction calls"
+            );
+            let large = format!("# {}\n", "🧠".repeat(17_000));
+            assert!(large.len() > okilum_core::source_classifier::MAX_BYTES);
+            let (_, refused_work) = okilum_core::open_diagnostics::capture(|| {
+                input.update(cx, |i, cx| i.set_value(large, window, cx));
+                r.schedule_live_preview(cx);
+                r.set_live_preview(true, window, cx); // Oversized LP also refuses before copying.
+                r.schedule_live_preview(cx);
+            });
+            assert_eq!(
+                snapshot_construction_calls(&refused_work),
+                0,
+                "oversized refusal has zero snapshot construction calls"
+            );
+            assert!(r.editing.as_ref().unwrap().live_preview.running.is_none());
+            let (_, admitted_work) = okilum_core::open_diagnostics::capture(|| {
+                input.update(cx, |i, cx| i.set_value(ORIGINAL, window, cx));
+                r.schedule_live_preview(cx);
+            });
+            assert!(
+                snapshot_construction_calls(&admitted_work) > 0,
+                "positive control: actual bounded LP snapshot construction calls are observed"
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            assert!(r
+                .checked_live_provider(e.live_preview.origin.reader, cx)
+                .is_some());
+            assert_eq!(
+                *e.live_preview.completed_navigation_bytes().last().unwrap(),
+                ORIGINAL.len() as u64
+            );
+        });
     }
 }

@@ -427,6 +427,7 @@ impl Reader {
                 self.file_preview = Some(preview);
                 self.find_open = false;
                 self.link_notice = None;
+                self.remember_source_mode();
                 self.editing = None;
                 if reader_delimited::editable(rel) {
                     self.discover_source_recovery(cx);

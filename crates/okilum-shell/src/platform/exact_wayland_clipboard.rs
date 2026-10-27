@@ -14,6 +14,10 @@ use std::{
 const TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "linux")]
 const MAX_BYTES: usize = 8 * 1024 * 1024;
+// Keep the transport independent of the application crate: standalone native
+// examples include this file too. The note adapter's PNG test checks this cap.
+#[cfg(target_os = "linux")]
+const MAX_NOTE_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct WaylandClipboard {
     // The caller must bind GPUI to this same named socket before initializing it.
@@ -96,6 +100,88 @@ fn platform_text(cx: &App) -> Result<Option<String>, Error> {
     Ok(cx.read_from_clipboard().and_then(|item| item.text()))
 }
 
+/// A stable native offer, shared by text-only fields and note smart paste.
+#[cfg(target_os = "linux")]
+pub(super) enum Selection {
+    Empty,
+    Own,
+    Data(Vec<(String, Vec<u8>)>),
+}
+
+/// MIME selection used by the real data-control receive path. Reads share
+/// one pinned offer/deadline and a total payload budget, never the primary selection.
+#[cfg(target_os = "linux")]
+pub(super) fn receive_selection(
+    mimes: &[String],
+    own: Option<&str>,
+    note: bool,
+    mut receive: impl FnMut(&str, usize) -> Result<Vec<u8>, Error>,
+) -> Result<Selection, Error> {
+    if own.is_some_and(|own| mimes.iter().any(|mime| mime == own)) {
+        return Ok(Selection::Own);
+    }
+    let text = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"]
+        .into_iter()
+        .find(|mime| mimes.iter().any(|value| value == mime));
+    let mut requested = Vec::new();
+    if note {
+        if mimes.iter().any(|mime| mime == "text/uri-list") {
+            requested.push("text/uri-list");
+        }
+        if let Some(image) = [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "image/tiff",
+            "image/bmp",
+        ]
+        .into_iter()
+        .find(|mime| mimes.iter().any(|value| value == mime))
+        {
+            requested.push(image);
+        }
+    }
+    requested.extend(text);
+    if requested.is_empty() {
+        return Err(Error::Unsupported);
+    }
+    let budget = if note { MAX_NOTE_BYTES } else { MAX_BYTES };
+    let mut used = 0;
+    let mut data = Vec::new();
+    for mime in requested {
+        let limit = (if mime.starts_with("image/") {
+            budget
+        } else {
+            MAX_BYTES
+        })
+        .min(budget - used);
+        let bytes = receive(mime, limit)?;
+        if bytes.len() > limit {
+            return Err(Error::TooLarge);
+        }
+        used += bytes.len();
+        data.push((mime.to_owned(), bytes));
+    }
+    Ok(Selection::Data(data))
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // The standalone text-only examples do not install note paste.
+pub(super) fn read_note_in_command(
+    socket: Option<&Path>,
+    seat: Option<String>,
+) -> Result<Selection, Error> {
+    linux::read_selection(
+        socket.ok_or(Error::Unsupported)?,
+        seat,
+        &ClipboardReadRequest::default(),
+        Instant::now() + TIMEOUT,
+        Some(&own_mime()),
+        true,
+    )
+}
+
 /// GPUI offers this type with every selection it sets (its `self_mime`).
 #[cfg(target_os = "linux")]
 fn own_mime() -> String {
@@ -145,6 +231,7 @@ mod linux {
         offers: HashMap<ObjectId, Vec<String>>,
         failure: Option<Error>,
         synced: u64,
+        byte_limit: usize,
     }
     impl State {
         fn check(&self) -> Result<(), Error> {
@@ -372,7 +459,13 @@ mod linux {
         queue.dispatch_pending(state).map_err(|_| Error::Io)?;
         state.check()?;
         if pipe_ready {
-            return drain_pipe(pipe.unwrap(), bytes, deadline, request, MAX_BYTES);
+            return drain_pipe(
+                pipe.unwrap(),
+                bytes,
+                deadline,
+                request,
+                state.byte_limit.max(1),
+            );
         }
         Ok(false)
     }
@@ -465,6 +558,21 @@ mod linux {
         deadline: Instant,
         own: Option<&str>,
     ) -> Result<Exact, Error> {
+        match read_selection(path, requested_seat, request, deadline, own, false)? {
+            Selection::Empty => Ok(Exact::Text(None)),
+            Selection::Own => Ok(Exact::Own),
+            Selection::Data(mut data) => decode(data.remove(0).1).map(Exact::Text),
+        }
+    }
+
+    pub(super) fn read_selection(
+        path: &Path,
+        requested_seat: Option<String>,
+        request: &ClipboardReadRequest,
+        deadline: Instant,
+        own: Option<&str>,
+        note: bool,
+    ) -> Result<Selection, Error> {
         let connection = connect(path, deadline, request)?;
         let mut queue = connection.new_event_queue::<State>();
         let qh = queue.handle();
@@ -492,36 +600,35 @@ mod linux {
         let _device = manager.get_data_device(&seat.proxy, &qh, ());
         barrier(&connection, &mut queue, &mut state, deadline, request)?;
         let Some(offer) = state.selection.clone() else {
-            return Ok(Exact::Text(None));
+            return Ok(Selection::Empty);
         };
-        let mimes = state.offers.get(&offer.id()).ok_or(Error::Unavailable)?;
-        if own.is_some_and(|own| mimes.iter().any(|mime| mime == own)) {
-            return Ok(Exact::Own);
-        }
-        let mime = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"]
-            .into_iter()
-            .find(|mime| mimes.iter().any(|value| value == mime))
-            .ok_or(Error::Unsupported)?;
+        let mimes = state
+            .offers
+            .get(&offer.id())
+            .cloned()
+            .ok_or(Error::ChangedOffer)?;
         state.pinned = Some(offer.id());
-        let (input, output) = pipe_with(PipeFlags::CLOEXEC).map_err(|_| Error::Io)?;
-        rustix::fs::fcntl_setfl(&input, rustix::fs::OFlags::NONBLOCK).map_err(|_| Error::Io)?;
-        offer.receive(mime.to_owned(), output.as_fd());
-        drop(output);
-        let mut bytes = Vec::new();
-        while !pump(
-            &connection,
-            &mut queue,
-            &mut state,
-            Some(&input),
-            &mut bytes,
-            deadline,
-            request,
-        )? {}
-        // EOF alone does not prove the selection stayed current. Complete a
-        // protocol barrier after draining queued changes on this connection.
-        barrier(&connection, &mut queue, &mut state, deadline, request)?;
-        remaining(deadline, request)?;
-        decode(bytes).map(Exact::Text)
+        receive_selection(&mimes, own, note, |mime, limit| {
+            state.byte_limit = limit;
+            let (input, output) = pipe_with(PipeFlags::CLOEXEC).map_err(|_| Error::Io)?;
+            rustix::fs::fcntl_setfl(&input, rustix::fs::OFlags::NONBLOCK).map_err(|_| Error::Io)?;
+            offer.receive(mime.to_owned(), output.as_fd());
+            drop(output);
+            let mut bytes = Vec::new();
+            while !pump(
+                &connection,
+                &mut queue,
+                &mut state,
+                Some(&input),
+                &mut bytes,
+                deadline,
+                request,
+            )? {}
+            // Verify the same selection after every MIME reaches EOF.
+            barrier(&connection, &mut queue, &mut state, deadline, request)?;
+            remaining(deadline, request)?;
+            Ok(bytes)
+        })
     }
 
     #[cfg(test)]

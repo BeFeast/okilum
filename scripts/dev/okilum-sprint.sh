@@ -369,8 +369,10 @@ info = plistlib.loads(template.encode())
 for key in list(info):
     if key.startswith('SU'):
         del info[key]
-# Do not register the working app's document associations or URL protocol.
-info.pop('CFBundleDocumentTypes', None)
+# Accept explicit Dock/Finder drops without becoming a default document handler.
+for document in info.get('CFBundleDocumentTypes', []):
+    document['LSHandlerRank'] = 'None'
+# Keep the working app's URL protocol exclusive to the working app.
 info.pop('CFBundleURLTypes', None)
 info.update(CFBundleExecutable='sprint-launch', CFBundleName='Okilum Sprint',
             CFBundleDisplayName='Okilum Sprint', SUEnableAutomaticChecks=False,

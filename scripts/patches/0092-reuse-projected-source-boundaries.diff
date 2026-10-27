@@ -1,0 +1,211 @@
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -9,7 +9,7 @@
+     App, BorderStyle, Bounds, Edges, Hsla, Pixels, Point, ShapedLine, TextAlign, Window, fill,
+     point, px, quad, size, transparent_black,
+ };
+-use std::{cell::RefCell, ops::Range, sync::Arc};
++use std::{cell::RefCell, ops::Range, sync::{Arc, OnceLock}};
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+ pub(super) struct RowPaint {
+@@ -37,7 +37,31 @@
+ 
+ pub(super) struct MarkerSource {
+     pub(super) snapshot: SourceSnapshot,
+-    boundaries: Vec<usize>,
++    boundaries: OnceLock<Vec<usize>>,
++}
++
++#[cfg(test)]
++thread_local! {
++    // Counts actual full-source segmentation, separate from per-offset validation.
++    static SOURCE_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++fn source_boundaries(text: &str) -> Vec<usize> {
++    #[cfg(test)]
++    SOURCE_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
++    text.grapheme_indices(true)
++        .map(|(i, _)| i)
++        .chain(std::iter::once(text.len()))
++        .collect()
++}
++
++impl MarkerSource {
++    fn is_boundary(&self, pin: &PinnedProjection, offset: usize) -> bool {
++        // A provider may decline reuse. Never replace grapheme checks with UTF-8
++        // checks or infer that a matching generation proves identical bytes.
++        pin.projection.source_boundary(&self.snapshot, crate::input::projection::SourceByte(offset))
++            .unwrap_or_else(|| self.boundaries.get_or_init(|| source_boundaries(&self.snapshot.text)).binary_search(&offset).is_ok())
++    }
+ }
+ 
+ /// Check cheap inventory/identity guards before touching canonical bytes. Reuse
+@@ -74,12 +98,9 @@
+     }
+     let validated = Arc::new(MarkerSource {
+         snapshot: source.clone(),
+-        boundaries: source
+-            .text
+-            .grapheme_indices(true)
+-            .map(|(i, _)| i)
+-            .chain(std::iter::once(source.text.len()))
+-            .collect(),
++        // Supported immutable mappings already validated these source boundaries.
++        // Other providers build the canonical index on their first query.
++        boundaries: OnceLock::new(),
+     });
+     *cache.borrow_mut() = Some(validated.clone());
+     Some(validated)
+@@ -101,7 +122,6 @@
+         presentation: layout.presentation_epoch,
+     };
+     let current = &validated.snapshot;
+-    let boundaries = &validated.boundaries;
+     let mut markers = Vec::new();
+     for marker in pin.projection.markers() {
+         // Backgrounds replace no glyphs; `code_rows` handles them.
+@@ -118,7 +138,7 @@
+                 marker.scope.end.0,
+             ]
+             .iter()
+-            .any(|i| boundaries.binary_search(i).is_err())
++            .any(|i| !validated.is_boundary(pin, *i))
+         {
+             return vec![];
+         }
+@@ -249,7 +269,6 @@
+     let Some(pin) = &layout.projection else {
+         return vec![];
+     };
+-    let boundaries = &validated.boundaries;
+     let blocks: Vec<_> = pin
+         .projection
+         .markers()
+@@ -258,8 +277,8 @@
+         .filter_map(|marker| {
+             let (start, end) = (marker.range.start, marker.range.end);
+             if start.0 >= end.0
+-                || boundaries.binary_search(&start.0).is_err()
+-                || boundaries.binary_search(&end.0).is_err()
++                || !validated.is_boundary(pin, start.0)
++                || !validated.is_boundary(pin, end.0)
+             {
+                 return None;
+             }
+@@ -554,6 +573,97 @@
+         }
+     }
+ 
++    struct IndexedFixture {
++        fixture: Fixture,
++        indexed: SourceSnapshot,
++        boundaries: Vec<usize>,
++        queries: std::sync::atomic::AtomicUsize,
++    }
++    impl SourceProjection for IndexedFixture {
++        fn source(&self) -> &SourceSnapshot { &self.fixture.source }
++        fn text(&self) -> &str { &self.fixture.source.text }
++        fn styles(&self) -> &[ProjectionStyle] { &[] }
++        fn markers(&self) -> &[ProjectionMarker] { &self.fixture.markers }
++        fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
++            if self.indexed.stamp != current.stamp || self.indexed.text != current.text {
++                return None;
++            }
++            self.queries.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            Some(self.boundaries.binary_search(&offset.0).is_ok())
++        }
++        fn to_projected(&self, b: SourceByte, _: ConcealBias) -> Option<ProjectedByte> {
++            Some(ProjectedByte(b.0))
++        }
++        fn to_source(&self, b: ProjectedByte, _: ConcealBias) -> Option<SourceByte> {
++            Some(SourceByte(b.0))
++        }
++    }
++
++    #[test]
++    fn marker_boundary_queries_reuse_exact_mapping_with_canonical_fallback() {
++        let source = SourceSnapshot {
++            stamp: SourceStamp { document: 73, generation: 5 },
++            text: Arc::from("- e\u{301} 🧠\r\n"),
++        };
++        let markers = vec![ProjectionMarker {
++            range: SourceByte(0)..SourceByte(1),
++            scope: SourceByte(0)..SourceByte(source.text.len()),
++            kind: MarkerKind::Bullet { depth: 1 },
++        }];
++        // The oracle is independent of either the cached or fallback code path.
++        let expected: Vec<_> = source.text.grapheme_indices(true).map(|(i, _)| i)
++            .chain(std::iter::once(source.text.len())).collect();
++        let fixture = |indexed: SourceSnapshot| Arc::new(IndexedFixture {
++            fixture: Fixture { source: source.clone(), markers: markers.clone() },
++            boundaries: indexed.text.grapheme_indices(true).map(|(i, _)| i)
++                .chain(std::iter::once(indexed.text.len())).collect(),
++            indexed, queries: std::sync::atomic::AtomicUsize::new(0),
++        });
++        let mapping = fixture(source.clone());
++        let pin = PinnedProjection {
++            stamp: LayoutStamp { source: source.stamp, presentation: 7 },
++            projection: mapping.clone(),
++        };
++        SOURCE_INDEX_BUILDS.with(|count| count.set(0));
++        let validated = source_for_markers(Some(&pin), pin.stamp, source.stamp, true,
++            &RefCell::new(None), |text| text == source.text.as_ref()).unwrap();
++        for offset in 0..=source.text.len() + 1 {
++            assert_eq!(validated.is_boundary(&pin, offset), expected.contains(&offset));
++        }
++        assert!(mapping.queries.load(std::sync::atomic::Ordering::Relaxed) > 0,
++            "positive control: the validated mapping answered real queries");
++        SOURCE_INDEX_BUILDS.with(|count| assert_eq!(count.get(), 0,
++            "a validated mapping must not rebuild the full source boundary index"));
++
++        // An old or foreign lease cannot authorize current-source boundaries.
++        for indexed in [
++            SourceSnapshot { stamp: SourceStamp { document: 74, ..source.stamp }, ..source.clone() },
++            SourceSnapshot { stamp: SourceStamp { generation: 6, ..source.stamp }, ..source.clone() },
++            SourceSnapshot { text: Arc::from("- different bytes"), ..source.clone() },
++        ] {
++            let stale = PinnedProjection { projection: fixture(indexed), ..pin.clone() };
++            SOURCE_INDEX_BUILDS.with(|count| count.set(0));
++            let validated = source_for_markers(Some(&stale), stale.stamp, source.stamp, true,
++                &RefCell::new(None), |text| text == source.text.as_ref()).unwrap();
++            for offset in 0..=source.text.len() + 1 {
++                assert_eq!(validated.is_boundary(&stale, offset), expected.contains(&offset));
++            }
++            SOURCE_INDEX_BUILDS.with(|count| assert_eq!(count.get(), 1,
++                "unsupported identity must segment canonical source exactly once"));
++        }
++        // Existing providers need not implement the optional query.
++        let plain = PinnedProjection { projection: Arc::new(Fixture {
++            source: source.clone(), markers,
++        }), ..pin.clone() };
++        SOURCE_INDEX_BUILDS.with(|count| count.set(0));
++        let fallback = source_for_markers(Some(&plain), plain.stamp, source.stamp, true,
++            &RefCell::new(None), |_| true).unwrap();
++        for offset in 0..=source.text.len() + 1 {
++            assert_eq!(fallback.is_boundary(&plain, offset), expected.contains(&offset));
++        }
++        SOURCE_INDEX_BUILDS.with(|count| assert_eq!(count.get(), 1));
++    }
++
+     #[test]
+     fn marker_inventory_gates_source_access_and_reuses_exact_snapshot() {
+         let cache = RefCell::new(None);
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -199,6 +199,14 @@
+     /// do not expose a policy retain raw marker foreground by default.
+     fn marker_scope_is_raw(&self, _scope: &Range<SourceByte>) -> bool {
+         true
++    }
++
++    /// Query the immutable source boundary index used to validate this mapping.
++    /// Some(false) rejects a split grapheme; None requests canonical segmentation.
++    /// Reuse requires the exact document, generation AND authored bytes. Reveal,
++    /// selection and row geometry must still be checked against the current pin.
++    fn source_boundary(&self, _current: &SourceSnapshot, _offset: SourceByte) -> Option<bool> {
++        None
+     }
+ 
+     fn source(&self) -> &SourceSnapshot;

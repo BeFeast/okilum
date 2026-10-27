@@ -81,6 +81,8 @@ run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 # #1462: use the platform NewNote shortcut after an external folder deletion.
 run_tests okilum-shell --bins reader_create::tests::deleted_folder_keyboard_creation_preserves_draft --exact
+# #1729: exercise the native NSFileManager Trash and Undo path for a real folder.
+run_tests okilum-shell --bins reader_trash::tests::unlinked_folder_moves_without_dialog_and_undo_restores_contents --exact
 # #1110 (AGENTS 9a): first run → choose a vault → a window always exists; this
 # replaces the manual first-launch check on every PR. #1137: a reopen with no
 # window restores the last vault or the start screen.

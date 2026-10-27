@@ -57,6 +57,8 @@ mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
+#[cfg(any(target_os = "macos", test))]
+mod reader_icloud;
 mod reader_image;
 mod reader_incremental;
 mod reader_instance;
@@ -1509,6 +1511,7 @@ struct Reader {
     /// The watcher lives here so it is dropped with the reader; the poll
     /// loop only borrows it through the entity.
     watcher: Option<VaultWatcher>,
+    quick_folders: std::collections::BTreeSet<String>,
     watcher_generation: u64,
     watcher_poll_active: bool,
     #[cfg(test)]
@@ -1778,6 +1781,7 @@ impl Reader {
             searcher,
             vault_root: vault_root.clone(),
             watcher: None,
+            quick_folders: Default::default(),
             watcher_generation: 0,
             watcher_poll_active: false,
             #[cfg(test)]
@@ -2007,16 +2011,20 @@ impl Reader {
         self.watcher_poll_active = true;
         let generation = self.watcher_generation;
         let root = self.vault_root.clone();
+        let quick_folders = self.single_file.then(|| self.quick_folders.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let (watcher, changes) = cx
+            let (watcher, changes, error) = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     if let Some(hold) = hold {
                         let _ = hold.recv().await;
                     }
+                    let error = quick_folders
+                        .as_ref()
+                        .and_then(|folders| watcher.watch_folders(folders).err());
                     let changes = watcher.poll();
-                    (watcher, changes)
+                    (watcher, changes, error)
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
@@ -2028,6 +2036,13 @@ impl Reader {
                 }
                 this.watcher_poll_active = false;
                 this.watcher = Some(watcher);
+                if let Some(error) = error {
+                    let message = format!("Automatic folder updates unavailable: {error}");
+                    if this.link_notice.as_deref() != Some(message.as_str()) {
+                        this.link_notice = Some(message.into());
+                        cx.notify();
+                    }
+                }
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
                         this.deferred_vault_changes.rescan |= changes.rescan;
@@ -2074,6 +2089,10 @@ impl Reader {
             self.deferred_vault_changes.removed.extend(changes.removed);
             return;
         }
+        if self.single_file {
+            self.refresh_quick_folders(changes, window, cx);
+            return;
+        }
         if !changes.is_empty()
             && !changes.rescan
             && self.incremental_state.is_some()
@@ -2118,6 +2137,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "macos")]
+        let logical = reader_icloud::logical_path(Path::new(rel));
+        #[cfg(target_os = "macos")]
+        let rel = logical.to_str().unwrap_or(rel);
         if self.project_navigation.active.is_none() {
             self.close_project(window, cx);
         }
@@ -2172,6 +2195,12 @@ impl Reader {
             Ok(document) => document,
             Err(error) => {
                 eprintln!("Document unavailable: {error:#}");
+                #[cfg(target_os = "macos")]
+                if let Some(error) = error.downcast_ref::<reader_icloud::DownloadError>() {
+                    self.link_notice = Some(error.to_string().into());
+                    cx.notify();
+                    return;
+                }
                 self.link_notice = Some("This note couldn’t be opened. Check that it is available and you have permission to read it.".into());
                 cx.notify();
                 return;
@@ -4235,15 +4264,10 @@ impl Reader {
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
                 #[cfg(any(unix, windows))]
-                SideItem::Create(input, depth, directory, templates, selected, destination) => {
-                    let (destination, destination_tip) = destination;
-                    let destination_entity = entity.clone();
-                    let destination_act = act.clone();
+                SideItem::Create(input, depth, directory, ..) => {
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
-                        // Consume Input's propagated submit before text fallback can
-                        // replace a selected filename with an empty newline.
                         .on_action(|_: &gpui_component::input::Enter, _, cx| {
                             cx.stop_propagation();
                         })
@@ -4256,7 +4280,23 @@ impl Reader {
                             })
                             .small(),
                         )
-                        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .debug_selector(|| "create-name-input".into())
+                                .child(Input::new(&input).small()),
+                        )
+                        .into_any_element()
+                }
+                #[cfg(any(unix, windows))]
+                SideItem::CreateOptions(depth, directory, templates, selected, destination) => {
+                    let (destination, destination_tip) = destination;
+                    let destination_entity = entity.clone();
+                    let destination_act = act.clone();
+                    row_base("inline-create-options".into())
+                        .debug_selector(|| "inline-create-options".into())
+                        .pl(px(18. + depth as f32 * 14.))
                         .when(!directory, |row| {
                             row.child(
                                 Button::new("create-template-picker")
@@ -4861,7 +4901,7 @@ impl Reader {
             return view;
         }
         let entity = cx.entity().downgrade();
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
@@ -5045,7 +5085,7 @@ impl Reader {
     fn render_table_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.table_overlay.clone()?;
         let p = brand::palette(cx);
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         let entity = cx.entity().downgrade();
         let scrim = brand::reader_palette(cx).scrim;
@@ -6066,11 +6106,11 @@ enum SideItem {
     },
     Empty(&'static str),
     Tree(reader_tree::Row),
-    /// Input, depth, folder?, templates, chosen template, and where the
-    /// item lands as «in: …» label and tooltip (#1512).
+    /// The name gets its own full-width row; options cannot shrink its input.
     #[cfg(any(unix, windows))]
-    Create(
-        Entity<InputState>,
+    Create(Entity<InputState>, usize, bool),
+    #[cfg(any(unix, windows))]
+    CreateOptions(
         usize,
         bool,
         Vec<String>,
@@ -6092,6 +6132,10 @@ fn append_creation_rows(
 ) {
     items.push(SideItem::Create(
         create.input.clone(),
+        depth,
+        create.directory,
+    ));
+    items.push(SideItem::CreateOptions(
         depth,
         create.directory,
         create
@@ -7303,6 +7347,10 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    #[cfg(target_os = "linux")]
+    if _instance_lock.is_some() {
+        app_footprint::install_appimage_desktop();
+    }
 
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();
