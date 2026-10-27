@@ -17,7 +17,9 @@ An absent binding displays “not connected”; Okilum neither creates T3 resour
 nor guesses a newer manager. A changed binding gets a separate view. Drafts for
 an unchanged binding survive note navigation and closing/reopening Project.
 
-For an already-bound area, enter its T3 HTTPS origin and choose Connect. The
+For an already-bound area, enter its T3 address and choose Connect. A bare
+hostname defaults to HTTPS; a private IP with a port defaults to HTTP. Invalid
+input shows an address example, and only the normalized origin is saved. The
 existing authorization-code/PKCE flow opens the system browser; this is an
 explicit user action. Tokens stay in OS credential storage; only alias/origin
 are saved in application state. Polling loads history and refreshes growing
