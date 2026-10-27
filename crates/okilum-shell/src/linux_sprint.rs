@@ -131,12 +131,15 @@ mod tests {
                 );
                 assert_eq!(std::env::temp_dir(), state.join("tmp"));
                 assert_ne!(state, PathBuf::from(before));
-                let desktop = home.join(".local/share/applications/okilum.desktop");
-                std::fs::create_dir_all(desktop.parent().unwrap()).unwrap();
-                std::fs::write(&desktop, "working Okilum").unwrap();
-                crate::app_footprint::install_appimage_desktop();
-                assert_eq!(crate::app_footprint::uninstall_data(true), 2);
-                assert_eq!(std::fs::read_to_string(desktop).unwrap(), "working Okilum");
+                #[cfg(target_os = "linux")]
+                {
+                    let desktop = home.join(".local/share/applications/okilum.desktop");
+                    std::fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+                    std::fs::write(&desktop, "working Okilum").unwrap();
+                    crate::app_footprint::install_appimage_desktop();
+                    assert_eq!(crate::app_footprint::uninstall_data(true), 2);
+                    assert_eq!(std::fs::read_to_string(desktop).unwrap(), "working Okilum");
+                }
             } else {
                 assert_eq!(state, PathBuf::from(before));
                 assert_eq!(
