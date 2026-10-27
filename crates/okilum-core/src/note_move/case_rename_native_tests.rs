@@ -11,7 +11,7 @@ fn stored_names(root: &Path) -> Vec<OsString> {
 }
 
 #[test]
-fn file_case_rename_rewrites_links_and_undo_uses_stored_spelling() {
+fn file_case_rename_keeps_resolvable_links_and_undo_uses_stored_spelling() {
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let body = "\u{feff}# Test\r\n";
@@ -27,6 +27,7 @@ fn file_case_rename_rewrites_links_and_undo_uses_stored_spelling() {
         .apply(root.path(), state.path(), &mut BTreeMap::new())
         .unwrap();
     assert!(applied.moved, "{:?}", applied.warning);
+    assert!(applied.warning.is_none(), "{:?}", applied.warning);
     let names = stored_names(root.path());
     assert!(names.contains(&OsString::from("Test.md")));
     assert!(!names.contains(&OsString::from("test.md")));
@@ -36,7 +37,15 @@ fn file_case_rename_rewrites_links_and_undo_uses_stored_spelling() {
     );
     assert_eq!(
         fs::read_to_string(root.path().join("ref.md")).unwrap(),
-        "[[Test]]\n"
+        "[[test]]\n"
+    );
+    // A wiki target which still resolves needs no source-text rewrite.
+    assert_eq!(
+        crate::vault::Vault::scan(root.path())
+            .unwrap()
+            .resolve_from("test", "ref.md")
+            .path(),
+        Some("Test.md")
     );
     // A crash between rename and journal acknowledgement must also be undoable.
     let mut operation: serde_json::Value =
@@ -57,7 +66,7 @@ fn file_case_rename_rewrites_links_and_undo_uses_stored_spelling() {
 }
 
 #[test]
-fn folder_case_rename_rewrites_links_and_undo_preserves_assets() {
+fn folder_case_rename_keeps_resolvable_links_and_undo_preserves_assets() {
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("Security")).unwrap();
@@ -73,11 +82,23 @@ fn folder_case_rename_rewrites_links_and_undo_preserves_assets() {
         .apply(root.path(), state.path(), &mut BTreeMap::new())
         .unwrap();
     assert!(applied.moved, "{:?}", applied.warning);
+    assert!(applied.warning.is_none(), "{:?}", applied.warning);
     assert!(stored_names(root.path()).contains(&OsString::from("security")));
     assert!(!stored_names(root.path()).contains(&OsString::from("Security")));
     assert_eq!(
         fs::read_to_string(root.path().join("ref.md")).unwrap(),
-        "[[security/test]]\n"
+        "[[Security/test]]\n"
+    );
+    assert_eq!(
+        crate::vault::Vault::scan(root.path())
+            .unwrap()
+            .resolve_from("Security/test", "ref.md")
+            .path(),
+        Some("security/test.md")
+    );
+    assert_eq!(
+        fs::read(root.path().join("security/picture.png")).unwrap(),
+        [0, 255, 13]
     );
     Operation::revert(&applied.journal, state.path()).unwrap();
     assert!(stored_names(root.path()).contains(&OsString::from("Security")));
@@ -93,16 +114,27 @@ fn folder_case_rename_rewrites_links_and_undo_preserves_assets() {
 }
 
 #[test]
-fn case_rename_never_replaces_a_racing_destination() {
+fn case_rename_reports_a_source_replacement_without_overwriting_bytes() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("test.md"), "original").unwrap();
+    let source = fs::symlink_metadata(root.path().join("test.md")).unwrap();
+    let alias = fs::symlink_metadata(root.path().join("Test.md"))
+        .expect("case-insensitive APFS race fixture");
+    assert_eq!((source.dev(), source.ino()), (alias.dev(), alias.ino()));
     let plan = MovePlan::prepare(root.path(), Path::new("test.md"), Path::new("Test.md")).unwrap();
-    assert!(plan
+    let moved = plan
         .commit_before_rename(|| {
             fs::rename(root.path().join("test.md"), root.path().join("saved.md")).unwrap();
             fs::write(root.path().join("Test.md"), "external").unwrap();
         })
-        .is_err());
+        .unwrap();
+    // The syscall succeeded on the replacement alias. Reporting it as an
+    // unmoved error would invite an unsafe retry; retain both writers' bytes
+    // and require inspection through the existing post-rename warning.
+    assert!(moved
+        .warning
+        .as_deref()
+        .is_some_and(|warning| warning.contains("external writer")));
     assert_eq!(
         fs::read_to_string(root.path().join("Test.md")).unwrap(),
         "external"
@@ -129,6 +161,7 @@ fn undo_case_rename_accepts_a_canonically_equivalent_journal_name() {
         .apply(root.path(), state.path(), &mut BTreeMap::new())
         .unwrap();
     assert!(applied.moved, "{:?}", applied.warning);
+    assert!(applied.warning.is_none(), "{:?}", applied.warning);
     let mut operation: serde_json::Value =
         serde_json::from_slice(&fs::read(&applied.journal).unwrap()).unwrap();
     operation["to"] = "Cafe\u{301}.md".into();

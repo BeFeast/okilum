@@ -232,6 +232,83 @@ mod tests {
     }
 
     #[test]
+    fn case_only_preview_keeps_resolvable_wiki_text_and_undo_restores_bytes() {
+        use crate::link_rewrite::{Operation, Preview};
+        use std::{collections::BTreeMap, fs};
+        for folder in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let (from, to, source, destination, wiki) = if folder {
+                fs::create_dir(root.path().join("Security")).unwrap();
+                fs::write(root.path().join("Security/picture.png"), [0, 255, 13]).unwrap();
+                (
+                    "Security",
+                    "security",
+                    "Security/test.md",
+                    "security/test.md",
+                    "Security/test",
+                )
+            } else {
+                ("test.md", "Test.md", "test.md", "Test.md", "test")
+            };
+            let body = "\u{feff}# Test\r\n";
+            let reference = format!("[[{wiki}]]\r\n");
+            fs::write(root.path().join(source), body).unwrap();
+            fs::write(root.path().join("ref.md"), &reference).unwrap();
+            let preview = Preview::prepare(root.path(), from, to).unwrap();
+            assert!(
+                preview.changes.is_empty(),
+                "already-resolving wiki source stays byte-exact"
+            );
+            assert!(
+                preview.skipped.is_empty(),
+                "positive link-discovery control"
+            );
+            let applied = preview
+                .apply(root.path(), state.path(), &mut BTreeMap::new())
+                .unwrap();
+            assert!(
+                applied.moved && applied.warning.is_none(),
+                "{:?}",
+                applied.warning
+            );
+            assert_eq!(
+                fs::read(root.path().join(destination)).unwrap(),
+                body.as_bytes()
+            );
+            assert_eq!(
+                fs::read(root.path().join("ref.md")).unwrap(),
+                reference.as_bytes()
+            );
+            assert_eq!(
+                crate::vault::Vault::scan(root.path())
+                    .unwrap()
+                    .resolve_from(wiki, "ref.md")
+                    .path(),
+                Some(destination)
+            );
+            if folder {
+                assert_eq!(
+                    fs::read(root.path().join("security/picture.png")).unwrap(),
+                    [0, 255, 13]
+                );
+            }
+            Operation::revert(&applied.journal, state.path()).unwrap();
+            assert_eq!(fs::read(root.path().join(source)).unwrap(), body.as_bytes());
+            assert_eq!(
+                fs::read(root.path().join("ref.md")).unwrap(),
+                reference.as_bytes()
+            );
+            if folder {
+                assert_eq!(
+                    fs::read(root.path().join("Security/picture.png")).unwrap(),
+                    [0, 255, 13]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn move_preserves_exact_bytes_and_refuses_changed_preview() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("Folder")).unwrap();
