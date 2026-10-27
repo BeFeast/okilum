@@ -156,11 +156,18 @@ impl NativeClient {
         let cancel = stream.try_clone().map_err(|_| StreamError::Unreachable)?;
         let (socket, _) = tungstenite::client_tls_with_config(url.as_str(), stream, None, None)
             .map_err(|error| match error {
-                tungstenite::Error::Http(response) if response.status().as_u16() == 426 => {
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+                    if response.status().as_u16() == 426 =>
+                {
                     StreamError::IncompatibleProtocol
                 }
-                tungstenite::Error::Http(response) if response.status().as_u16() == 401 => {
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+                    if response.status().as_u16() == 401 =>
+                {
                     StreamError::PairingRequired
+                }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)) => {
+                    StreamError::Http(response.status().as_u16())
                 }
                 _ => StreamError::Unreachable,
             })?;
