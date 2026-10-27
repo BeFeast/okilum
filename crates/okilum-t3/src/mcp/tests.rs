@@ -1071,3 +1071,28 @@ fn a_refused_or_unmatched_icon_save_is_an_error_and_writes_nothing() {
 
 #[path = "compatibility_tests.rs"]
 mod compatibility_tests;
+
+#[test]
+fn invalid_credential_code_is_scoped_to_a_bearer_challenge() {
+    for valid in [
+        "Bearer error=\"invalid_mcp_credential\"",
+        "bEaReR realm=\"T3\", error = \"invalid_mcp_credential\"",
+        "Basic realm=\"legacy\", Bearer realm=\"T3\", error=invalid_mcp_credential",
+    ] {
+        assert!(invalid_credential_challenge(valid), "{valid}");
+    }
+    for unrelated in [
+        "Basic realm=\"legacy\", error=\"invalid_mcp_credential\"",
+        "Bearer realm=\"T3\", Basic realm=\"legacy\", error=\"invalid_mcp_credential\"",
+        "error=\"invalid_mcp_credential\"",
+        "Bearer realm=\"T3, error=invalid_mcp_credential\"",
+        "Bearer realm=\"T3, \\\"quoted\\\", error=invalid_mcp_credential\"",
+        "Bearer error=\"invalid_token\"",
+        "Bearer realm=\"unterminated, error=invalid_mcp_credential",
+    ] {
+        assert!(
+            !invalid_credential_challenge(unrelated),
+            "AUTH_SCHEME1773: {unrelated}"
+        );
+    }
+}

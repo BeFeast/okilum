@@ -72,8 +72,10 @@ impl Conversation {
         let questions = match gateway.pending_requests(&self.thread_id) {
             Ok(questions) => Ok(questions),
             Err(
-                error
-                @ (GatewayError::NotConnected | GatewayError::Expired | GatewayError::Revoked),
+                error @ (GatewayError::NotConnected
+                | GatewayError::Expired
+                | GatewayError::Revoked
+                | GatewayError::InvalidCredential),
             ) => return Err(error),
             Err(error) => Err(error.to_string()),
         };
