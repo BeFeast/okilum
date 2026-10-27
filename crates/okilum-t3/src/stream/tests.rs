@@ -376,6 +376,26 @@ fn malformed_chunk_is_validated_before_any_projection_change() {
 }
 
 #[test]
+fn dropping_a_subscription_does_not_write_or_wait_for_the_peer() {
+    let fixture = Fixture::start(|listener| {
+        ticket(&listener);
+        let mut ws = socket(&listener);
+        request(&mut ws, None);
+        chunk(&mut ws, vec![snapshot(10)]);
+        ack(&mut ws);
+        // The successful receive/ACK is a positive control for a live socket.
+        // Explicit graceful close is checked separately by the streaming test.
+        assert!(ws.read().is_err(), "implicit drop wrote a protocol frame");
+    });
+    let mut stream = client(&fixture.env).subscribe("thread-a", None).unwrap();
+    stream.receive(|_| Ok(())).unwrap();
+    let started = Instant::now();
+    drop(stream);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    fixture.finish();
+}
+
+#[test]
 fn cancellation_wakes_a_blocked_receive_without_interrupting_the_agent() {
     let (ready_tx, ready_rx) = mpsc::sync_channel(0);
     let fixture = Fixture::start(move |listener| {
