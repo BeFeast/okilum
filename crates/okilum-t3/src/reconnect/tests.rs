@@ -199,3 +199,24 @@ fn missing_expired_or_explicit_sign_in_uses_a_new_authorization() {
         );
     }
 }
+
+#[test]
+fn unrelated_challenge_error_never_starts_oauth() {
+    for challenge in [
+        "Basic realm=\"legacy\", error=\"invalid_mcp_credential\"",
+        "Bearer realm=\"T3, error=invalid_mcp_credential\"",
+    ] {
+        let server = FakeServer::start(move |_| {
+            Response::empty(401).with_header("www-authenticate", challenge)
+        });
+        let env = environment(&server);
+        let result = connect(
+            &env,
+            Some((env.credential_url(), token(30 * 86400))),
+            false,
+            || panic!("AUTH_SCHEME1773: unrelated challenge cannot start OAuth"),
+        );
+        assert!(result.is_err());
+        assert_eq!(server.requests().len(), 1);
+    }
+}

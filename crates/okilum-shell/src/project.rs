@@ -1,6 +1,7 @@
 //! The area's remote manager in the existing Reader window (#1418).
 //! Network work stays off the UI thread; questionnaires remain in T3.
 use super::*;
+use anyhow::Context as _;
 use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
     chat::{Conversation, MessageJournal, MessageRecord},
@@ -281,7 +282,9 @@ impl ProjectView {
                 };
                 match task.await {
                     Ok(Some((_, bytes))) => {
-                        StoredToken::from_secret(&bytes).map(|token| Some((key, token)))
+                        StoredToken::from_secret(&bytes)
+                            .context("Saved T3 credentials cannot be read. Choose Sign in again to replace them after authorization.")
+                            .map(|token| Some((key, token)))
                     }
                     Ok(None) => Ok(None),
                     Err(error) => Err(error),

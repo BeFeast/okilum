@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, WWW_AUTHENTICATE};
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -311,12 +311,12 @@ impl McpGateway {
             .is_some_and(|value| value.starts_with("text/event-stream"));
         match status {
             StatusCode::UNAUTHORIZED => {
-                let challenge = response
+                let rejected_challenge = response
                     .headers()
-                    .get("www-authenticate")
-                    .and_then(|h| h.to_str().ok())
-                    .unwrap_or("")
-                    .to_owned();
+                    .get_all(WWW_AUTHENTICATE)
+                    .iter()
+                    .filter_map(|value| value.to_str().ok())
+                    .any(invalid_credential_challenge);
                 let body = response.text().unwrap_or_default();
                 let rejected = serde_json::from_str::<Value>(&body)
                     .ok()
@@ -325,17 +325,7 @@ impl McpGateway {
                             body.get(key).and_then(Value::as_str) == Some("invalid_mcp_credential")
                         })
                     })
-                    || challenge.split(',').any(|part| {
-                        let part = part.trim();
-                        let part = part
-                            .split_once(' ')
-                            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
-                            .map_or(part, |(_, parameter)| parameter.trim());
-                        part.split_once('=').is_some_and(|(name, value)| {
-                            name.trim().eq_ignore_ascii_case("error")
-                                && value.trim().trim_matches('"') == "invalid_mcp_credential"
-                        })
-                    });
+                    || rejected_challenge;
                 return Err(if rejected {
                     GatewayError::InvalidCredential
                 } else {
@@ -562,6 +552,56 @@ impl ManagerGateway for McpGateway {
         self.call_value("t3_thread_configure", args)?;
         self.thread_configuration(thread_id)
     }
+}
+
+// Challenge parameters belong to their authentication scheme. Commas inside
+// quoted values are data, so a realm cannot manufacture an error parameter.
+fn invalid_credential_challenge(header: &str) -> bool {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    for (index, ch) in header.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch == ',' && !quoted {
+            parts.push(header[start..index].trim());
+            start = index + 1;
+        }
+    }
+    if quoted || escaped {
+        return false;
+    }
+    parts.push(header[start..].trim());
+    let mut bearer = false;
+    for part in parts {
+        let boundary = part
+            .find(|ch: char| ch.is_ascii_whitespace() || ch == '=')
+            .unwrap_or(part.len());
+        let (name, tail) = part.split_at(boundary);
+        let tail = tail.trim_start();
+        let parameter = if tail.starts_with('=') {
+            part
+        } else {
+            bearer = name.eq_ignore_ascii_case("Bearer");
+            tail
+        };
+        if bearer {
+            if let Some((name, value)) = parameter.split_once('=') {
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .unwrap_or(value);
+                if name.trim().eq_ignore_ascii_case("error") && value == "invalid_mcp_credential" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn gateway_error(failure: Failure) -> GatewayError {
