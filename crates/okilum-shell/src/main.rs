@@ -57,6 +57,8 @@ mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
+#[cfg(any(target_os = "macos", test))]
+mod reader_icloud;
 mod reader_image;
 mod reader_incremental;
 mod reader_instance;
@@ -2135,6 +2137,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "macos")]
+        let logical = reader_icloud::logical_path(Path::new(rel));
+        #[cfg(target_os = "macos")]
+        let rel = logical.to_str().unwrap_or(rel);
         if self.project_navigation.active.is_none() {
             self.close_project(window, cx);
         }
@@ -2189,6 +2195,12 @@ impl Reader {
             Ok(document) => document,
             Err(error) => {
                 eprintln!("Document unavailable: {error:#}");
+                #[cfg(target_os = "macos")]
+                if let Some(error) = error.downcast_ref::<reader_icloud::DownloadError>() {
+                    self.link_notice = Some(error.to_string().into());
+                    cx.notify();
+                    return;
+                }
                 self.link_notice = Some("This note couldn’t be opened. Check that it is available and you have permission to read it.".into());
                 cx.notify();
                 return;
