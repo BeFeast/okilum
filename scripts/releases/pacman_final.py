@@ -10,7 +10,7 @@ import tempfile
 import linux
 
 MARKER = 'okilum/arch/frozen.json'
-NOTICE = b'Okilum Linux updates now use the signed AppImage'
+NOTICE = b'Okilum Linux is transitioning to the signed AppImage'
 
 
 def execute(store, signing, tmp, source, build):

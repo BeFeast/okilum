@@ -14,10 +14,11 @@ post_remove() {
 MSG
 }
 
-# Final pacman migration notice (#1564). The repository is retained, not deleted.
+# Pacman transition notice (#1564), also present before the final release.
 post_install() {
     cat <<'MSG'
-==> Okilum Linux updates now use the signed AppImage. The pacman repository is frozen.
+==> Okilum Linux is transitioning to the signed AppImage.
+    Pacman freeze and AppImage Stable availability are announced separately.
     Notes and application state stay in their current locations.
     Download and signature-verification instructions: https://git.oklabs.uk/BeFeast/okilum/src/branch/main/docs/linux-releases.md
     After Linux Stable is announced, download without running it:
