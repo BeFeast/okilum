@@ -58,7 +58,7 @@ def signed_jwt(app_id, private_key, now):
 
 
 class Credentials:
-    def __init__(self, fallback=None, *, env=None, clock=time.time, opener=None):
+    def __init__(self, fallback=None, *, env=None, clock=time.time, opener=None, variable_guard=False):
         env = os.environ if env is None else env
         self.app_id, self.installation_id, self.private_key = (env.get(k, '') for k in APP_FIELDS)
         present = [bool(env.get(k)) for k in APP_FIELDS]
@@ -73,6 +73,11 @@ class Credentials:
         self.expires = 0
         self.clock, self.opener = clock, opener or urllib.request.urlopen
         self.quota_logged = False
+        if type(variable_guard) is not bool:
+            raise CredentialError('variable_guard must be an explicit boolean')
+        self.permissions = dict(PERMISSIONS)
+        if variable_guard:
+            self.permissions['variables'] = 'write'
 
     @property
     def token(self):
@@ -81,7 +86,7 @@ class Credentials:
             request = urllib.request.Request(f'{API}/app/installations/{self.installation_id}/access_tokens',
                 method='POST', headers={'Authorization': 'Bearer ' + jwt,
                     'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'},
-                data=json.dumps({'repositories': ['okilum'], 'permissions': PERMISSIONS}).encode())
+                data=json.dumps({'repositories': ['okilum'], 'permissions': self.permissions}).encode())
             try:
                 with self.opener(request, timeout=30) as response:
                     result = json.load(response)
