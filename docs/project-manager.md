@@ -168,3 +168,31 @@ When browser approval needs sign-in, the panel explains that a browser sign-in
 lasts 30 days and offers **Open T3 in browser** for the entered origin. An already
 signed-in browser can approve without a pairing code. The existing 180-second
 OAuth callback path and paste-back follow-up (#1758) are separate work.
+
+## Linux virtualized feed (#1787, slice 1)
+
+The 27 October decision explicitly permits a Linux native T3 client for Tier 1.
+This first slice keeps the existing MCP gateway, authorization, durable send
+journal and question link. WebSocket v2 transport and native turn controls are
+later slices. The macOS embedded T3 webview is unchanged.
+
+On Linux the message history uses the vendored MessageScroller virtual list.
+Only viewport rows and its fixed overdraw are rendered, including for thousands
+of loaded messages. It follows the latest reply until the reader scrolls away;
+new messages preserve that choice, and Jump to latest resumes tail following.
+Growing replies invalidate only their affected row measurements. Retained send
+receipts disappear when their message is projected; unconfirmed operations keep
+their original Retry identity.
+
+Poll workers receive the cursor and growing item identities instead of cloning
+the loaded conversation. Successful reads apply only unequal items and notify
+the panel only when displayed data or connection status changes. The composer
+owns its input notifications, and the cached history entity stays independent
+of keystrokes. Tests exercise a 5,000-message thread with bounded row rendering,
+scroll and streaming behavior, unchanged polling, and real composer input; these
+are regression evidence, not live Linux/Hyprland acceptance.
+
+Vendor patch 0095 preserves selection registrations through GPUI cached paint
+using an element-state lease that expires on unmount. It also makes clearing an
+already-empty selection silent. This prevents selection cleanup from repeatedly
+invalidating the cached feed while preserving selectable Markdown and Copy.

@@ -180,3 +180,70 @@ fn a_changed_intent_cannot_reuse_an_existing_request_identity() {
         .to_string()
         .contains("identity changed"));
 }
+
+#[test]
+fn unchanged_poll_reports_no_change_and_keeps_the_displayed_text_allocation() {
+    let grown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = grown.clone();
+    let fake = Fake {
+        read: Box::new(move |_| {
+            Ok(page(vec![item(
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    "expanded reply"
+                } else {
+                    "reply"
+                },
+                "running",
+                None,
+            )]))
+        }),
+        ..Default::default()
+    };
+    let mut chat = Conversation::new("manager");
+    let first = chat.poll_request().fetch(&fake).unwrap();
+    assert!(chat.apply_poll(first).unwrap().changed());
+    let pointer = chat.items[&7].text.as_ref().unwrap().as_ptr();
+    let unchanged = chat.poll_request().fetch(&fake).unwrap();
+    assert!(!chat.apply_poll(unchanged).unwrap().changed());
+    assert_eq!(chat.items[&7].text.as_ref().unwrap().as_ptr(), pointer);
+    grown.store(true, std::sync::atomic::Ordering::SeqCst);
+    let update = chat.poll_request().fetch(&fake).unwrap();
+    assert_eq!(chat.apply_poll(update).unwrap().positions, [7]);
+    assert_eq!(chat.items[&7].text.as_deref(), Some("expanded reply"));
+}
+
+#[test]
+fn poll_request_carries_growing_identities_without_copying_completed_history() {
+    let mut chat = Conversation::new("manager");
+    for position in 0..10_000 {
+        let mut message = item("completed history", "completed", None);
+        message.position = position;
+        chat.items.insert(position, message);
+    }
+    let mut live = item("streaming", "running", None);
+    live.position = 10_000;
+    live.item_id = "live".into();
+    chat.items.insert(live.position, live);
+    chat.cursor = Some(10_000);
+    let request = chat.poll_request();
+    assert_eq!(request.growing, vec![String::from("live")]);
+    assert_eq!(request.cursor, Some(10_000));
+    assert_eq!(request.thread_id, "manager");
+}
+
+#[test]
+fn poll_update_for_another_binding_cannot_mutate_history() {
+    let fake = Fake {
+        read: Box::new(|_| Ok(page(vec![item("other", "completed", None)]))),
+        ..Default::default()
+    };
+    let update = Conversation::new("manager")
+        .poll_request()
+        .fetch(&fake)
+        .unwrap();
+    let mut current = Conversation::new("new-manager");
+    assert!(current.apply_poll(update).is_err());
+    assert!(current.items.is_empty());
+    assert!(current.project_id.is_none());
+    assert!(current.cursor.is_none());
+}

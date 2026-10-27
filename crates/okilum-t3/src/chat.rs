@@ -37,10 +37,89 @@ impl Conversation {
         }
     }
 
-    /// One page per poll. Previously growing items are refreshed by id even
-    /// after the position cursor has advanced past them. A failed poll leaves
-    /// the previous projection and its cursor intact.
+    /// Only the cursor and growing item identities cross the worker boundary.
+    pub fn poll_request(&self) -> PollRequest {
+        PollRequest {
+            thread_id: self.thread_id.clone(),
+            cursor: self.cursor,
+            growing: self
+                .items
+                .values()
+                .filter(|item| is_growing(item))
+                .map(|item| item.item_id.clone())
+                .collect(),
+        }
+    }
+
+    /// Preserve the synchronous API for existing callers.
     pub fn poll(&mut self, gateway: &dyn ManagerGateway) -> Result<()> {
+        let update = self.poll_request().fetch(gateway)?;
+        self.apply_poll(update)?;
+        Ok(())
+    }
+
+    /// Commit a complete successful read and report only changed positions.
+    pub fn apply_poll(&mut self, update: PollUpdate) -> Result<PollChanges> {
+        if update.thread_id != self.thread_id {
+            return Err(GatewayError::Protocol(
+                "T3 answered for another manager".into(),
+            ));
+        }
+        let mut changes = PollChanges::default();
+        for (position, item) in update.items {
+            if self.items.get(&position) != Some(&item) {
+                self.items.insert(position, item);
+                changes.positions.push(position);
+            }
+        }
+        let cursor = update.next_position.or(self.cursor);
+        let (questions, error) = match update.questions {
+            Ok(count) => (count, None),
+            Err(error) => (self.pending_questions, Some(error)),
+        };
+        changes.metadata = self.project_id.as_deref() != Some(&update.project_id)
+            || self.cursor != cursor
+            || self.has_more != update.has_more
+            || self.pending_questions != questions
+            || self.pending_question_error != error;
+        self.project_id = Some(update.project_id);
+        self.cursor = cursor;
+        self.has_more = update.has_more;
+        self.pending_questions = questions;
+        self.pending_question_error = error;
+        Ok(changes)
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct PollChanges {
+    pub positions: Vec<u64>,
+    pub metadata: bool,
+}
+impl PollChanges {
+    pub fn changed(&self) -> bool {
+        self.metadata || !self.positions.is_empty()
+    }
+}
+
+pub struct PollRequest {
+    thread_id: String,
+    cursor: Option<u64>,
+    growing: Vec<String>,
+}
+
+pub struct PollUpdate {
+    thread_id: String,
+    pub project_id: String,
+    items: BTreeMap<u64, TimelineItem>,
+    next_position: Option<u64>,
+    pub has_more: bool,
+    questions: std::result::Result<usize, String>,
+}
+
+impl PollRequest {
+    /// A failed read never mutates the projection retained by the UI.
+    pub fn fetch(self, gateway: &dyn ManagerGateway) -> Result<PollUpdate> {
         let mut query = self.query();
         query.after_position = self.cursor;
         let page = gateway.read_thread(&query)?;
@@ -54,15 +133,15 @@ impl Conversation {
             let item = self.complete(gateway, item)?;
             refreshed.insert(item.position, item);
         }
-        for old in self.items.values().filter(|item| is_growing(item)) {
-            if refreshed.values().any(|item| item.item_id == old.item_id) {
+        for old in &self.growing {
+            if refreshed.values().any(|item| &item.item_id == old) {
                 continue;
             }
-            let page = gateway.read_thread(&self.query().item(&old.item_id, None))?;
+            let page = gateway.read_thread(&self.query().item(old, None))?;
             let item = page
                 .items
                 .into_iter()
-                .find(|item| item.item_id == old.item_id)
+                .find(|item| &item.item_id == old)
                 .ok_or_else(|| {
                     GatewayError::Protocol("a growing manager reply disappeared".into())
                 })?;
@@ -79,20 +158,14 @@ impl Conversation {
             ) => return Err(error),
             Err(error) => Err(error.to_string()),
         };
-        self.items.extend(refreshed);
-        self.project_id = Some(page.thread.project_id);
-        if let Some(cursor) = page.next_position {
-            self.cursor = Some(cursor);
-        }
-        self.has_more = page.has_more;
-        match questions {
-            Ok(questions) => {
-                self.pending_questions = questions.len();
-                self.pending_question_error = None;
-            }
-            Err(error) => self.pending_question_error = Some(error),
-        }
-        Ok(())
+        Ok(PollUpdate {
+            thread_id: self.thread_id.clone(),
+            project_id: page.thread.project_id,
+            items: refreshed,
+            next_position: page.next_position,
+            has_more: page.has_more,
+            questions: questions.map(|questions| questions.len()),
+        })
     }
 
     fn query(&self) -> ThreadQuery {

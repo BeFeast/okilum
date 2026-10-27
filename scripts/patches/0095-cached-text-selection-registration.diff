@@ -1,0 +1,270 @@
+# 0095: retain cached text-selection registrations, clear only actual selection changes.
+# Cause: finish_frame prunes GPUI-cached participants -> empty clear emits
+# SelectionChanged(None) -> the text adapter re-notifies its cached feed forever.
+# Use an element-state lease (preserved by cached paint, dropped on unmount),
+# never a permanent participant reference. No gpui-core patch or API dependency.
+diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.rs
+--- a/crates/base/src/text_selection.rs
++++ b/crates/base/src/text_selection.rs
+@@ -209,6 +209,9 @@
+     document_order: u64,
+     text_bounds: Vec<Bounds<Pixels>>,
+     self_scroll: bool,
++    // Owned by GPUI element state, so cached paint keeps it alive and unmount
++    // drops it even when the application retains the selection participant.
++    frame_lease: Option<WeakEntity<()>>,
+ }
+
+ impl TextSelectionRegistration {
+@@ -222,6 +225,7 @@
+             document_order: 0,
+             text_bounds: Vec::new(),
+             self_scroll: false,
++            frame_lease: None,
+         }
+     }
+
+@@ -645,9 +649,15 @@
+     }
+
+     fn clear_state(&mut self, cx: &mut Context<Self>) -> Option<ClearHandler> {
++        let changed = self.snapshot.is_some() || self.local_selection;
+         self.snapshot = None;
+         self.projected_copy_text = None;
+         self.local_selection = false;
++        // Empty cleanup is not a selection change. In particular, it must not
++        // notify a cached renderer through an adapter's clear callback.
++        if !changed {
++            return None;
++        }
+         cx.emit(TextSelectionEvent::Cleared);
+         cx.emit(TextSelectionEvent::SelectionChanged(None));
+         self.clear.clone()
+@@ -725,6 +735,15 @@
+         let Some(state) = WindowSelectionState::existing(window, cx) else {
+             return;
+         };
++        // A cached GPUI subtree replays paint without calling register again.
++        // Its element state survives that replay; after an actual unmount the
++        // lease dies before the post-frame sweep, independently of the handle.
++        let lease = window.use_keyed_state(
++            ("text-selection-registration", self.entity_id()),
++            cx,
++            |_, _| (),
++        );
++        registration.frame_lease = Some(lease.downgrade());
+         state.update(cx, |state, cx| {
+             state.register_participant(self.clone(), registration, cx)
+         });
+@@ -975,6 +994,8 @@
+
+     /// Sweeps participants after a rendered frame has completed.
+     ///
++    /// Element-state leases preserve registrations replayed by a cached subtree;
++    /// unlike a participant handle, their lifetime ends when the element unmounts.
+     /// Registrations are stamped with the current generation while any sibling
+     /// is painting. Sweeping only after paint makes registration independent of
+     /// whether a participant or the lifecycle element paints first.
+@@ -985,7 +1006,12 @@
+             .participants
+             .iter()
+             .filter_map(|(id, registration)| {
+-                (registration.generation != self.frame_generation)
++                let cached = registration
++                    .registration
++                    .frame_lease
++                    .as_ref()
++                    .is_some_and(|lease| lease.upgrade().is_some());
++                (registration.generation != self.frame_generation && !cached)
+                     .then(|| (*id, registration.participant.clone()))
+             })
+             .collect::<Vec<_>>();
+@@ -2109,6 +2135,133 @@
+         selection: TextSelectionHandle,
+     }
+
++    struct CachedSelectionChild {
++        selection: TextSelectionHandle,
++        renders: Rc<Cell<usize>>,
++    }
++    impl Render for CachedSelectionChild {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            self.renders.set(self.renders.get() + 1);
++            let selection = self.selection.clone();
++            div().size_full().on_prepaint(move |bounds, window, cx| {
++                let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
++                selection.register(
++                    TextSelectionRegistration::new(hitbox, bounds).with_text_bounds(vec![bounds]),
++                    window,
++                    cx,
++                );
++            })
++        }
++    }
++    struct CachedSelectionHost {
++        child: Entity<CachedSelectionChild>,
++        shown: bool,
++    }
++    impl Render for CachedSelectionHost {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            div()
++                .size_full()
++                .child(TextSelectionLayer)
++                .when(self.shown, |this| {
++                    this.child(
++                        self.child
++                            .clone()
++                            .cached(gpui::StyleRefinement::default().size_full()),
++                    )
++                })
++        }
++    }
++
++    #[gpui::test]
++    fn cached_participant_keeps_copy_and_unmount_clears_a_still_live_handle(
++        cx: &mut TestAppContext,
++    ) {
++        let renders = Rc::new(Cell::new(0));
++        let (host, visual) = cx.add_window_view(|_, cx| {
++            let selection = TextSelectionHandle::new("cached copy", cx);
++            CachedSelectionHost {
++                child: cx.new(|_| CachedSelectionChild {
++                    selection,
++                    renders: renders.clone(),
++                }),
++                shown: true,
++            }
++        });
++        let selection = host.read_with(visual, |host, cx| host.child.read(cx).selection.clone());
++        visual.update(|window, cx| {
++            let state = WindowSelectionState::existing(window, cx).expect("selection layer");
++            state.update(cx, |state, cx| {
++                state.begin(point(px(1.), px(1.)), false, cx);
++                state.update(point(px(8.), px(1.)), cx);
++                state.end(cx);
++            });
++            assert_eq!(TextSelection::selected_text(window, cx), "cached copy");
++        });
++        visual.run_until_parked();
++        let before = renders.get();
++        assert!(before > 0, "positive control: participant really rendered");
++        host.update(visual, |_, cx| cx.notify());
++        visual.run_until_parked();
++        assert_eq!(renders.get(), before, "the child really used cached paint");
++        visual.update(|window, cx| {
++            assert_eq!(TextSelection::selected_text(window, cx), "cached copy");
++            assert!(selection.snapshot(cx).is_some());
++        });
++        host.update(visual, |host, cx| {
++            host.shown = false;
++            cx.notify();
++        });
++        visual.run_until_parked();
++        visual.update(|window, cx| {
++            assert_eq!(TextSelection::selected_text(window, cx), "");
++            assert!(
++                selection.snapshot(cx).is_none(),
++                "a live handle cannot retain unmounted geometry"
++            );
++        });
++    }
++
++    #[gpui::test]
++    fn empty_clear_is_silent_but_a_real_local_selection_clears_once(cx: &mut TestAppContext) {
++        let events = Rc::new(Cell::new(0));
++        let clears = Rc::new(Cell::new(0));
++        let (selection, _events) = cx.update(|cx| {
++            let selection = TextSelectionHandle::new("control", cx);
++            let count = events.clone();
++            let events = selection.subscribe(
++                move |event, _| {
++                    if matches!(event, TextSelectionEvent::SelectionChanged(None)) {
++                        count.set(count.get() + 1);
++                    }
++                },
++                cx,
++            );
++            let count = clears.clone();
++            selection.clear_with(move |_| count.set(count.get() + 1), cx);
++            (selection, events)
++        });
++        let clear = |cx: &mut App| {
++            if let Some(clear) = selection.0.update(cx, |state, cx| state.clear_state(cx)) {
++                clear(cx);
++            }
++        };
++        cx.update(clear);
++        assert_eq!((events.get(), clears.get()), (0, 0));
++        cx.update(|cx| selection.set_local_selection(true, cx));
++        cx.update(clear);
++        assert_eq!(
++            (events.get(), clears.get()),
++            (1, 1),
++            "positive control: real clear delivered"
++        );
++        cx.update(clear);
++        assert_eq!(
++            (events.get(), clears.get()),
++            (1, 1),
++            "empty clear is idempotent"
++        );
++    }
++
+     struct SelectionElementOnlyView;
+     struct ToggleSelectionElementView {
+         enabled: bool,
+@@ -3591,6 +3744,7 @@
+             MouseButton::Left,
+             gpui::Modifiers::default(),
+         );
++        assert_eq!(clear_count.get(), 0, "an empty click emits no clear");
+         cx.simulate_mouse_down(
+             point(px(70.), px(10.)),
+             MouseButton::Left,
+@@ -3604,7 +3758,15 @@
+             MouseButton::Left,
+             gpui::Modifiers::default(),
+         );
+-        cx.update(|window, cx| assert!(TextSelection::has_selection(window, cx)));
++        cx.update(|window, cx| {
++            assert!(TextSelection::has_selection(window, cx));
++            assert_eq!(TextSelection::selected_text(window, cx), "once");
++        });
++        assert_eq!(
++            clear_count.get(),
++            0,
++            "shift extension preserves the anchor without a false clear"
++        );
+
+         cx.simulate_mouse_down(
+             point(px(15.), px(10.)),
+@@ -3621,8 +3783,27 @@
+             MouseButton::Left,
+             gpui::Modifiers::default(),
+         );
+-        cx.update(|window, cx| assert!(TextSelection::has_selection(window, cx)));
+-        assert_eq!(clear_count.get(), 3);
++        cx.update(|window, cx| {
++            assert!(TextSelection::has_selection(window, cx));
++            assert_eq!(TextSelection::selected_text(window, cx), "once");
++        });
++        assert_eq!(
++            clear_count.get(),
++            1,
++            "the new gesture clears the real previous selection once"
++        );
++        cx.update(|window, cx| {
++            TextSelection::clear(window, cx);
++            assert!(!TextSelection::has_selection(window, cx));
++            assert_eq!(TextSelection::selected_text(window, cx), "");
++        });
++        assert_eq!(
++            clear_count.get(),
++            2,
++            "positive control: explicit real clear re-enters the state once"
++        );
++        cx.update(|window, cx| TextSelection::clear(window, cx));
++        assert_eq!(clear_count.get(), 2, "repeated empty clear is silent");
+     }
+
+     #[gpui::test]
