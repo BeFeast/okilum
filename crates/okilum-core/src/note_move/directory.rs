@@ -135,15 +135,7 @@ impl DirectoryMovePlan {
             DirectorySnapshot::at(&source_dir, &source_name)? == *expected,
             "Folder changed after preview"
         );
-        match rustix::fs::statat(
-            &target_dir,
-            &target_name,
-            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-        ) {
-            Ok(_) => bail!("The destination already exists; it will not be replaced"),
-            Err(rustix::io::Errno::NOENT) => {}
-            Err(error) => return Err(error.into()),
-        }
+        check_destination(&source_dir, &source_name, &target_dir, &target_name)?;
         Ok(Self {
             source_dir,
             source_name,
