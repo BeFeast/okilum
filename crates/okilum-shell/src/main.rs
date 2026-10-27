@@ -69,9 +69,9 @@ mod reader_loading;
 mod reader_log;
 #[cfg(target_os = "macos")]
 mod reader_manager_focus;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod reader_manager_links;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod reader_manager_occlusion;
 mod reader_manager_panel;
 mod reader_manager_start;

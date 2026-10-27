@@ -43,7 +43,7 @@ fn status_line(
 pub(super) struct ManagerPanel {
     project: Project,
     pub(super) focused: bool,
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     previous_gpui_focus: Option<FocusHandle>,
     origin: Entity<InputState>,
     project_override: bool,
@@ -62,7 +62,7 @@ pub(super) struct ManagerPanel {
     _activation: Option<Subscription>,
     #[cfg(target_os = "macos")]
     focus_routing: Option<crate::reader_manager_focus::FocusRouting>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     webview: Option<Entity<gpui_wry::WebView>>,
 }
 
@@ -160,7 +160,7 @@ impl ManagerPanel {
         Self {
             project,
             focused: false,
-            #[cfg(any(target_os = "macos", test))]
+            #[cfg(any(target_os = "macos", windows, test))]
             previous_gpui_focus: None,
             origin,
             // Ignore global changes until manifest/registry precedence is known.
@@ -176,13 +176,13 @@ impl ManagerPanel {
             _activation: Some(activation),
             #[cfg(target_os = "macos")]
             focus_routing: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             webview: None,
         }
     }
 
     // Called for the AppKit mouse-down notification, not merely DOM focus.
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn native_focus_entered(
         &mut self,
         generation: u64,
@@ -208,7 +208,7 @@ impl ManagerPanel {
     }
 
     pub(super) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(view) = &self.webview {
             view.update(cx, |view, _| {
                 if visible != view.visible() {
@@ -236,7 +236,7 @@ impl ManagerPanel {
         self.focused = false;
         #[cfg(target_os = "macos")]
         self.focus_routing.take();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(view) = self.webview.take() {
             view.update(cx, |view, _| view.hide());
         }
@@ -244,9 +244,9 @@ impl ManagerPanel {
     }
 
     fn connected(&self) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         return self.webview.is_some();
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         false
     }
 
@@ -403,7 +403,24 @@ impl ManagerPanel {
                                 this.failed(error, window, cx);
                             }
                         }
-                        #[cfg(not(target_os = "macos"))]
+                        #[cfg(windows)]
+                        match Self::windows_browser(&url, generation, window, cx) {
+                            Ok(view) => {
+                                this.webview = Some(view);
+                                this.error = None;
+                                this.retrying = false;
+                                this.failures = 0;
+                            }
+                            Err(e) => {
+                                // Runtime/embedding failure is terminal for this connection.
+                                // Never retry creation or install WebView2 implicitly.
+                                let error = format!("Manager WebView2 could not be opened: {e:#}");
+                                this.log_failure(&error, cx);
+                                this.error = Some(error);
+                                this.retrying = false;
+                            }
+                        }
+                        #[cfg(not(any(target_os = "macos", windows)))]
                         {
                             let _ = (url, window);
                             this.error = None;
@@ -418,6 +435,135 @@ impl ManagerPanel {
         })
         .detach();
         cx.notify();
+    }
+
+    #[cfg(windows)]
+    fn windows_browser(
+        url: &url::Url,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Entity<gpui_wry::WebView>> {
+        use raw_window_handle::HasWindowHandle;
+        let handle = HasWindowHandle::window_handle(window)?;
+        let profile = crate::reader_history::state_directory()?.join("manager-webview2");
+        std::fs::create_dir_all(&profile)?;
+        let mut context = wry::WebContext::new(Some(profile));
+        let (send, receive) = async_channel::unbounded::<String>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = receive.recv().await {
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        if this.generation != generation || this.closed {
+                            return;
+                        }
+                        match event.as_str() {
+                            "focus" => {
+                                this.previous_gpui_focus = window.focused(cx);
+                                window.blur(cx);
+                                this.focused = true;
+                            }
+                            "blur" => this.focused = false,
+                            "escape" => {
+                                if let Some(view) = &this.webview {
+                                    let _ = view.read(cx).handle().raw().focus_parent();
+                                }
+                                this.focused = false;
+                                if let Some(focus) = this.previous_gpui_focus.take() {
+                                    focus.focus(window, cx);
+                                }
+                            }
+                            _ => return,
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        // #1596: links and copies the T3 page cannot carry out in a WKWebView.
+        let (link_send, link_receive) =
+            async_channel::unbounded::<crate::reader_manager_links::PageRequest>();
+        cx.spawn_in(window, async move |_, cx| {
+            while let Ok(request) = link_receive.recv().await {
+                let handled = cx.update(|_, cx| match request {
+                    crate::reader_manager_links::PageRequest::OpenExternal(url) => {
+                        cx.open_url(url.as_str())
+                    }
+                    crate::reader_manager_links::PageRequest::Copy(text) => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
+                    }
+                });
+                if handled.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let new_windows = link_send.clone();
+        let t3 = url.clone();
+        let page_events = send.clone();
+        let browser = wry::WebViewBuilder::new_with_web_context(&mut context)
+            .with_incognito(false)
+            .with_url(url.as_str())
+            .with_focused(false)
+            .with_initialization_script(
+                r#"
+                window.addEventListener('focus', () => window.ipc.postMessage('focus'));
+                window.addEventListener('blur', () => window.ipc.postMessage('blur'));
+                document.addEventListener('focusin', () => window.ipc.postMessage('focus'));
+                document.addEventListener('keydown', event => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault(); event.stopImmediatePropagation();
+                        window.ipc.postMessage('escape');
+                    }
+                }, true);
+            "#,
+            )
+            .with_initialization_script(&crate::reader_manager_links::page_script(&url))
+            .with_ipc_handler(move |request| {
+                if matches!(request.body().as_str(), "focus" | "blur" | "escape") {
+                    let _ = send.try_send(request.body().clone());
+                } else if let Some(request) = crate::reader_manager_links::page_request(
+                    request.body(),
+                    &request.uri().to_string(),
+                    &t3,
+                ) {
+                    let _ = link_send.try_send(request);
+                }
+            })
+            // target=_blank links and any window.open the page script did not
+            // take: WebKit gets no second web view; the system browser opens it.
+            .with_new_window_req_handler(move |url, _| {
+                if let Some(url) = crate::reader_manager_links::external_url(&url) {
+                    let _ = new_windows
+                        .try_send(crate::reader_manager_links::PageRequest::OpenExternal(url));
+                }
+                wry::NewWindowResponse::Deny
+            })
+            .with_on_page_load_handler(move |event, _url| {
+                let event = match event {
+                    wry::PageLoadEvent::Started => "page-load:started",
+                    wry::PageLoadEvent::Finished => "page-load:finished",
+                };
+                let _ = page_events.try_send(event.into());
+            })
+            .with_navigation_handler(|url| {
+                url::Url::parse(&url).is_ok_and(|url| {
+                    url.username().is_empty()
+                        && url.password().is_none()
+                        && okilum_t3::Environment::new(
+                            "navigation",
+                            &url.origin().ascii_serialization(),
+                        )
+                        .is_ok()
+                })
+            })
+            .build_as_child(&handle)?;
+        Ok(cx.new(|cx| gpui_wry::WebView::new(browser, window, cx)))
     }
 
     #[cfg(target_os = "macos")]
@@ -605,7 +751,7 @@ impl Render for ManagerPanel {
         }
         // No Okilum header or project line above T3: T3's own thread header
         // says where you are. Until connected, one quiet status line.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(view) = &self.webview {
             let native = view.read(cx).handle();
             let view_state = view.clone();
@@ -635,6 +781,12 @@ impl Render for ManagerPanel {
                             // previous frame's popup geometry.
                             let obscured = clear != Some(full);
                             let _ = panel.update(cx, |panel, cx| {
+                                #[cfg(windows)]
+                                if obscured && panel.focused {
+                                    let _ = native.raw().focus_parent();
+                                    panel.focused = false;
+                                }
+                                #[cfg(target_os = "macos")]
                                 if obscured
                                     && panel.focus_routing.as_ref().is_some_and(|r| r.focused())
                                 {
@@ -662,6 +814,7 @@ impl Render for ManagerPanel {
                                 let _ = native.raw().set_visible(false);
                             }
                             let _ = panel.update(cx, |panel, _| {
+                                #[cfg(target_os = "macos")]
                                 if let Some(routing) = &panel.focus_routing {
                                     routing.refresh();
                                 }
@@ -719,11 +872,11 @@ impl Reader {
                 return div().size_full().child(project.clone()).into_any_element();
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(panel) = &self.project_navigation.manager_panel {
             return div().size_full().child(panel.clone()).into_any_element();
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         if let Some(project) = &self.project {
             return div().size_full().child(project.clone()).into_any_element();
         }
