@@ -110,6 +110,10 @@ class MergedRange(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(); self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.git('init', '-b', 'main')
+        # Disposable repositories must have no background writers during strict cleanup.
+        self.git('config', 'gc.auto', '0')
+        self.git('config', 'maintenance.auto', 'false')
+        self.git('config', 'gc.autoDetach', 'false')
         self.git('config', 'user.name', 'Offline test'); self.git('config', 'user.email', 'test@example.invalid')
         self.old = self.commit('Previous published main')
         self.git('branch', 'feature')
@@ -137,6 +141,12 @@ class MergedRange(unittest.TestCase):
         execute = subprocess.run
         with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
             return notes.merged_items(self.client, previous, source)
+
+    def test_disposable_repository_disables_automatic_maintenance(self):
+        for key, expected in [('gc.auto', '0'), ('maintenance.auto', 'false'),
+                              ('gc.autoDetach', 'false')]:
+            with self.subTest(key=key):
+                self.assertEqual(self.git('config', '--local', '--get', key), expected)
 
     def test_first_parent_range_uses_merge_commit_not_pr_dates_or_branch_commits(self):
         self.assertEqual(self.select(self.previous, self.source),
