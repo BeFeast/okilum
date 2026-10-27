@@ -65,3 +65,22 @@ pixel change and nonzero-scroll controls. Raw evidence, checksums and build rece
 are retained at `~/work/qa-evidence/1679/muninn-first/` on maestro and
 `~/work/qa-evidence/1679/native-first/` on muninn. The QA apps and owned input daemon
 exited and the GUI lock was released. No hosted baseline or budget was changed.
+
+## Visible font runs: follow-up
+
+Native prepaint previously resolved every visible logical line's fonts and colors
+by scanning the projection's complete style inventory. It now uses the same
+forward `StyleCursor` as projected wrapping, constructing its style index once per
+prepaint and resolving each visible line against overlapping styles. Provider
+order still determines overlapping font/color overrides. Sparse visible rows,
+empty lines, CRLF and absolute IME underline ranges use the existing paint path.
+There is no persistent cache or change to source mapping, epochs, frame requests,
+row geometry or scroll anchoring. The index still covers the whole inventory;
+this change does not make all per-keystroke work proportional to one block.
+
+The regression compares the actual visible-run consumer with the previous full
+scan, including unsorted overlapping styles and Unicode/IME inputs. A supported
+long-note control counts actual style visits during font/color resolution;
+that count excludes sorting, allocations, parsing and native frame latency.
+Current-head native muninn latency and Mac/no-jump acceptance remain to be measured.
+The 64 KiB app wall, 256 KiB native guard and editor latency gate are unchanged.
