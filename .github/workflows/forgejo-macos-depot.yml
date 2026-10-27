@@ -1,0 +1,62 @@
+# Trusted same-repository Forgejo PR heads only. External GitHub PRs use ci.yml.
+# No Forgejo token, signing identity, publishing or access to the private LAN.
+name: forgejo-macos-depot
+
+on:
+  push:
+    branches: [main, 'forgejo-pr/**']
+
+permissions:
+  contents: read
+
+# Shadow reads the existing main baseline and never saves a second cache.
+# Unique PR refs preserve exact-source comparisons; no gate consumes this workflow.
+concurrency:
+  group: forgejo-macos-depot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    # Both variables are absent by default. Never queue a missing Depot label.
+    if: vars.OKILUM_DEPOT_MACOS_SHADOW == 'true' && vars.OKILUM_DEPOT_MACOS_RUNNER == 'depot-macos-15'
+    runs-on: ${{ vars.OKILUM_DEPOT_MACOS_RUNNER || 'macos-15' }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify native runner
+        run: test "$(uname -m)" = arm64
+      # Caches from unique sibling forgejo-pr refs are invisible to each other.
+      # Only main writes the shared baseline; PRs consume it without duplicating GBs.
+      - name: Restore native Cargo cache
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ~/.cache/okilum-macos/reader-arm64/
+          key: forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/ci/check-macos.sh', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+          # An older main cache still holds most compiled dependencies; cargo rebuilds
+          # only what changed. Without it nearly every PR built from scratch (#1074).
+          restore-keys: |
+            forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Compile Reader and run quick native regressions
+        id: native
+        if: github.ref != 'refs/heads/main' || steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/ci/check-macos.sh
+      - name: Save native thumbnail evidence
+        if: always() && steps.native.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-thumbnail-evidence
+          path: ${{ runner.temp }}/thumbnail-evidence/
+      - name: Save Sparkle lifecycle evidence
+        if: always() && steps.native.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sparkle-freshness-evidence
+          path: ${{ runner.temp }}/sparkle-freshness-evidence/
+          if-no-files-found: warn

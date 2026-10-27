@@ -33,12 +33,23 @@ pub enum GatewayError {
     },
     Expired,
     Revoked,
+    /// A 401 explicitly identifying a rejected MCP credential. Only this
+    /// server verdict permits reconnect to fall back to a new OAuth flow.
+    InvalidCredential,
     Unreachable(String),
     /// T3 refused the operation; `code` is T3's failure code, for example
     /// `capability_denied` or `thread_not_found`.
     Tool {
         code: String,
         message: String,
+    },
+    /// A required Manager read/send capability is missing from tools/list.
+    Compatibility {
+        tool: String,
+    },
+    /// Only the feature using this optional tool is unavailable.
+    Unsupported {
+        tool: String,
     },
     /// The server answered something this client does not understand.
     Protocol(String),
@@ -54,8 +65,11 @@ impl std::fmt::Display for GatewayError {
             ),
             GatewayError::Expired => write!(f, "the T3 token has expired; reconnect"),
             GatewayError::Revoked => write!(f, "T3 refused the token; it was revoked"),
+            GatewayError::InvalidCredential => write!(f, "T3 rejected the saved MCP credential; sign in again"),
             GatewayError::Unreachable(detail) => write!(f, "T3 is unreachable: {detail}"),
             GatewayError::Tool { code, message } => write!(f, "T3 refused ({code}): {message}"),
+            GatewayError::Compatibility { tool } => write!(f, "This T3 server is incompatible: required tool '{tool}' is missing"),
+            GatewayError::Unsupported { tool } => write!(f, "This feature is unavailable: T3 does not provide '{tool}'"),
             GatewayError::Protocol(detail) => write!(f, "unexpected answer from T3: {detail}"),
         }
     }
@@ -78,6 +92,16 @@ pub trait ManagerGateway: Send + Sync {
     }
 
     fn status(&self) -> GatewayStatus;
+
+    /// Saved credential expiry, including an already-expired MCP credential.
+    fn token_expires_at(&self) -> Option<u64> {
+        match self.status() {
+            GatewayStatus::Connected { expires_at } | GatewayStatus::ExpiresSoon { expires_at } => {
+                Some(expires_at)
+            }
+            _ => None,
+        }
+    }
 
     fn server_identity(&self) -> GatewayResult<crate::ServerIdentity>;
 

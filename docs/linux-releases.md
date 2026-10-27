@@ -1,5 +1,52 @@
 # Linux releases (Arch / Omarchy / CachyOS)
 
+## AppImage-only Linux delivery (#1564)
+
+Linux Stable is a signed AppImage. After acceptance and the manager's concrete GO,
+dispatch `releases.yml` on `main` with `linux_only: "true"`, `build: "<original
+AppImage build>"` and `source: "<full main SHA>"`. The build is embedded in the
+AppImage, not its separate Forgejo publication number. This reuses the archived
+binary and original payload signature, verifies the signed descriptor and
+provenance, and signs a Stable-channel descriptor with the same pinned GPG key.
+No compilation or other OS feed or tag changes occur. AppImage Stable notes are
+published in their own platform/channel namespace before the Stable feed moves. Stable rollback is
+not an implicit flag; it needs a separate owner disposition.
+
+Before the switch, prepare ONE final pacman package containing the migration
+notice in `okilum.install`. Only after the AppImage Stable URL is ready, the manager
+can authorize `releases.yml` with `pacman_final: "true"`, the exact pacman `build`
+and full `source`. This validates the signed package and embedded notice, publishes
+that final signed pacman Stable release and then writes `okilum/arch/frozen.json`.
+Automatic Arch builds stop once the marker exists, and both legacy Arch publishers
+and promotion paths reject further writes. The old repository remains available;
+it is never deleted. AppImage beta publication continues from retained CI artifacts.
+Neither this documentation nor merging the capability authorizes that live step.
+
+Download the signed Linux image from the selected channel (`stable` only after
+accepted promotion; otherwise explicit `beta`) and verify before opening:
+
+```bash
+mkdir -p "$HOME/Applications"
+curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage -o "$HOME/Applications/Okilum.AppImage"
+curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage.sig -o "$HOME/Applications/Okilum.AppImage.sig"
+curl -fL -A curl https://updates.befeast.com/okilum/arch/okilum-signing-key.asc -o /tmp/okilum-signing-key.asc
+gpg --show-keys --with-fingerprint /tmp/okilum-signing-key.asc
+```
+
+Require fingerprint `7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882` before import, then:
+
+```bash
+gpg --import /tmp/okilum-signing-key.asc
+gpg --verify "$HOME/Applications/Okilum.AppImage.sig" "$HOME/Applications/Okilum.AppImage"
+chmod +x "$HOME/Applications/Okilum.AppImage"
+```
+
+Notes and user state retain their existing paths. The migration does not remove
+packages or launch an application. Desktop lifecycle hookup and real signed
+beta-to-beta Ubuntu/Arch plus muninn acceptance remain explicit release gates.
+The pacman instructions below describe the retained historical repository.
+
+
 Okilum is distributed as the `okilum` x86_64 Arch package. Updates arrive with
 your normal system upgrade (`sudo pacman -Syu`, or `omarchy update` on Omarchy);
 the Linux app has no **Check for Updates** menu. A desktop entry
@@ -336,3 +383,23 @@ pre-key-import phase, with complete attempt histories. This workflow has no such
 boundary. A newly edited workflow also cannot retrofit it into an older SHA's run.
 Bounded in-attempt retry is supported; cross-attempt recovery is explicitly blocked
 rather than inferred from logs. No gate waiver or attempt relabeling is permitted.
+
+## AppImage release notes (#1772)
+
+AppImage uses `okilum/releases/{source}/linux-appimage/{beta|stable}/notes.json`.
+Its `build` and `previous_build` are embedded AppImage versions (5000 + GitHub
+run number), never the Forgejo `publication_build` or pacman version. The source,
+platform, channel and build must all match the running executable. On Linux,
+`APPIMAGE` selects `linux-appimage`; other Linux installations keep `linux`.
+Mac and Windows namespaces are unchanged.
+
+Before advancing an AppImage channel, publication captures that channel's published
+release descriptor identity, generates the first-parent merged-PR range, and
+records the notes sidecar before the feed commit point. A retry reuses the
+persisted notes and original predecessor instead of linking the build to itself.
+A conflicting build at the same source/channel notes key fails explicitly; this
+per-source format cannot represent two different builds of the same source in
+one channel. Archive-only older payload publication does not invent a historical
+notes predecessor or change the current channel. Beta and Stable chains are
+independent. Notes errors fail publication visibly; executable bytes and signing
+rules remain unchanged.

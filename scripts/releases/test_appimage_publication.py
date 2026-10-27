@@ -157,9 +157,12 @@ class Publication(unittest.TestCase):
         (self.directory / 'provenance.json').write_text(json.dumps(self.provenance))
         self.original = (self.directory / 'provenance.json').read_bytes()
         self.store = Store(); self.key = Key()
+        self.client = Mock()
+        self.range = patch.object(publisher.release_notes, 'merged_items', return_value=[])
+        self.range.start(); self.addCleanup(self.range.stop)
 
     def publish(self, **kwargs):
-        return publisher.publish(self.store, self.key, self.root, self.directory, SOURCE, self.receipt, 9999, **kwargs)
+        return publisher.publish(self.store, self.key, self.root, self.directory, SOURCE, self.receipt, 9999, client=self.client, **kwargs)
 
     def test_same_bytes_version_separate_descriptor_and_commit_last(self):
         descriptor = self.publish()
@@ -169,10 +172,67 @@ class Publication(unittest.TestCase):
         self.assertEqual(self.store.objects[prefix + '/provenance.json'], self.original)
         self.assertEqual(self.store.writes[-1][0], 'okilum/linux/beta/latest.json')
         self.assertTrue(all(metadata[-1] == 'no-cache' for key, metadata in self.store.writes if '/beta/' in key))
-        self.assertFalse(any('/releases/' in key or '/arch/' in key or '/stable/' in key for key in self.store.objects))
+        self.assertFalse(any('/arch/' in key or '/stable/' in key for key in self.store.objects))
+        notes = json.loads(self.store.objects[publisher.release_notes.key(SOURCE, 'linux-appimage', 'beta')])
+        self.assertEqual((notes['build'], notes['previous_build']), (5023, None))
         # Retry must use existing verified signatures, including after a partial upload.
         with patch.object(self.key, 'sign', side_effect=AssertionError('must reuse existing signature')):
             self.assertEqual(self.publish(), descriptor)
+
+    def test_notes_use_appimage_predecessor_and_retry_keeps_original_range(self):
+        previous = {'build': 5022, 'source': 'b' * 40,
+                    'platform': 'linux-appimage', 'channel': 'beta'}
+        self.store.objects['okilum/linux/beta/latest.json'] = json.dumps(previous).encode()
+        self.store.objects['okilum/arch/beta/x86_64/latest.json'] = json.dumps(
+            {'build': 9998, 'source': 'c' * 40}).encode()
+        self.publish()
+        path = publisher.release_notes.key(SOURCE, 'linux-appimage', 'beta')
+        raw = self.store.objects[path]
+        notes = json.loads(raw)
+        self.assertEqual((notes['build'], notes['previous_build'], notes['previous_source']),
+                         (5023, 5022, 'b' * 40))
+        self.publish()
+        self.assertEqual(self.store.objects[path], raw)
+        names = [key for key, _ in self.store.writes]
+        self.assertLess(names.index(path), names.index('okilum/linux/beta/latest.json'))
+
+    def test_next_publication_reads_actual_publisher_descriptor_as_predecessor(self):
+        first = self.publish()
+        source = 'b' * 40
+        receipt = copy.deepcopy(self.receipt)
+        receipt['run'].update(run_number=24, head_sha=source)
+        provenance = {**self.provenance, 'source_sha': source,
+                      'build_version': '5024', 'release_version': '0.1.5024'}
+        (self.directory / 'provenance.json').write_text(json.dumps(provenance))
+        second = publisher.publish(self.store, self.key, self.root, self.directory,
+                                   source, receipt, 10000, client=self.client)
+        self.assertEqual((first['platform'], first['channel'], first['build']),
+                         ('linux-appimage', 'beta', 5023))
+        self.assertEqual(second['build'], 5024)
+        notes = json.loads(self.store.objects[
+            publisher.release_notes.key(source, 'linux-appimage', 'beta')])
+        self.assertEqual((notes['build'], notes['previous_build'], notes['previous_source']),
+                         (5024, 5023, SOURCE))
+
+    def test_notes_inventory_failure_prevents_all_writes_and_feed_changes(self):
+        with patch.object(publisher.release_notes, 'merged_items', side_effect=RuntimeError('inventory')):
+            with self.assertRaisesRegex(RuntimeError, 'inventory'):
+                self.publish()
+        self.assertEqual(self.store.writes, [])
+
+    def test_notes_write_failure_keeps_feed_and_retry_keeps_predecessor(self):
+        previous = {'build': 5022, 'source': 'b' * 40,
+                    'platform': 'linux-appimage', 'channel': 'beta'}
+        current = json.dumps(previous).encode()
+        self.store.objects['okilum/linux/beta/latest.json'] = current
+        path = publisher.release_notes.key(SOURCE, 'linux-appimage', 'beta')
+        self.store.fail = path
+        with self.assertRaises(RuntimeError):
+            self.publish()
+        self.assertEqual(self.store.objects['okilum/linux/beta/latest.json'], current)
+        self.store.fail = None
+        self.publish()
+        self.assertEqual(json.loads(self.store.objects[path])['previous_build'], 5022)
 
     def test_partial_upload_recovers_and_immutable_conflict_has_no_mutation(self):
         self.store.fail = 'okilum/linux/builds/5023/release.json'
@@ -215,11 +275,11 @@ class Publication(unittest.TestCase):
         self.assertFalse(any('/beta/' in key for key in self.store.objects))
 
     def test_moving_failure_keeps_old_descriptor_and_retry_completes(self):
-        self.store.objects['okilum/linux/beta/latest.json'] = b'{"build":5022}'
+        self.store.objects['okilum/linux/beta/latest.json'] = json.dumps({'build':5022, 'source':'b'*40, 'platform':'linux-appimage', 'channel':'beta'}).encode()
         self.store.fail = 'okilum/linux/beta/latest.json'
         with self.assertRaises(RuntimeError):
             self.publish()
-        self.assertEqual(self.store.objects['okilum/linux/beta/latest.json'], b'{"build":5022}')
+        self.assertEqual(self.store.objects['okilum/linux/beta/latest.json'], json.dumps({'build':5022, 'source':'b'*40, 'platform':'linux-appimage', 'channel':'beta'}).encode())
         self.store.fail = None
         self.publish()
         self.assertEqual(json.loads(self.store.objects['okilum/linux/beta/latest.json'])['build'], 5023)

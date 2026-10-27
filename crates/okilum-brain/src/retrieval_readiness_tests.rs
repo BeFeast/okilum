@@ -5,7 +5,6 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::Instant,
 };
 
 enum ProviderEvent {
@@ -172,15 +171,33 @@ impl Fixture {
             goal: Uuid::new_v4().to_string(),
         }
     }
-    fn start_worker(&mut self) {
-        self.index = BrainIndex::start(
-            self.index.brain_id.clone(),
-            self.index.root.clone(),
-            "records".into(),
-            self.index.operational.clone(),
-            true,
-        )
-        .unwrap();
+    fn restart_from_partial_cache(&mut self) {
+        let previous = &self.index;
+        let (trigger, requests) = mpsc::channel();
+        // This test owns cache persistence/reuse, not watcher/debounce timing.
+        // Reopen real source handles and retain only the persisted cache; the
+        // fresh view cannot accidentally reuse the previous in-memory vectors.
+        self.index = Arc::new(BrainIndex {
+            brain_id: previous.brain_id.clone(),
+            root: previous.root.clone(),
+            records_dir: previous.records_dir.clone(),
+            operational: previous.operational.clone(),
+            cache_root: previous.cache_root.clone(),
+            source: SourceStore::open_read_only(
+                &previous.brain_id,
+                &previous.root,
+                &previous.operational.join("source"),
+            )
+            .unwrap(),
+            view: RwLock::new(View {
+                epoch: 0,
+                status: IndexStatus::default(),
+                generation: None,
+            }),
+            trigger,
+            _watcher: Mutex::new(None),
+        });
+        self._triggers = requests;
     }
     fn refresh(&self) -> thread::JoinHandle<Result<()>> {
         let index = self.index.clone();
@@ -247,14 +264,6 @@ impl Fixture {
         );
     }
 }
-fn until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while !condition() {
-        assert!(Instant::now() < deadline, "condition timeout");
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 #[test]
 fn blocked_document_embeddings_leave_lexical_backlinks_ready_then_publish_new_semantic_generation()
 {
@@ -354,13 +363,18 @@ fn failed_enrichment_retains_partial_vectors_and_restart_reuses_only_complete_ve
     fixture.usable("indexing");
     provider.release.send(false).unwrap();
     refresh.join().unwrap().unwrap();
-    // Start a new index/worker from the persisted partial cache.
-    fixture.start_worker();
+    // Restart from persisted bytes, then observe the actual refresh result.
+    fixture.restart_from_partial_cache();
+    let refresh = fixture.observed_refresh(&provider);
     let pending = provider.blocked();
     assert_eq!(pending["input"].as_array().unwrap().len(), 3);
     fixture.usable("indexing");
     provider.release.send(true).unwrap();
-    until(|| fixture.index.status().semantic_status == "ready");
+    match provider.entered.recv().unwrap() {
+        ProviderEvent::Refreshed(result) => result.unwrap(),
+        ProviderEvent::Embedding(_) => panic!("restart requested more than the missing vectors"),
+    }
+    refresh.join().unwrap();
     fixture.usable("ready");
 }
 

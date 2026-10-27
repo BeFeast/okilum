@@ -309,7 +309,7 @@ class Workflow(unittest.TestCase):
                    'SKIP_WINDOWS': 'false', 'SUPERSEDE_PENDING': 'false', 'LINUX_ROLLBACK': 'false'}
             result = subprocess.run(['bash', '-e', '-c', script], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines(), ['scripts/releases/linux.py', '--source', SOURCE, '--build', str(BUILD)])
+            self.assertEqual(result.stdout.splitlines(), ['scripts/releases/appimage_stable.py', '--source', SOURCE, '--build', str(BUILD)])
             for change in [{'PROMOTE_BUILD': ''}, {'PROMOTE_SOURCE': ''}, {'WINDOWS_ONLY': 'true'},
                            {'SKIP_WINDOWS': 'true'}, {'SUPERSEDE_PENDING': 'true'},
                            {'LINUX_ONLY': 'false', 'LINUX_ROLLBACK': 'true'}]:
@@ -317,8 +317,8 @@ class Workflow(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, '')
             result = subprocess.run(['bash', '-e', '-c', script], env={**env, 'LINUX_ROLLBACK': 'true'}, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('--rollback', result.stdout.splitlines())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
 
 
 if __name__ == '__main__':

@@ -8,6 +8,7 @@ import re
 import tempfile
 
 import appimage_artifact as artifact
+import release_notes
 spec = importlib.util.spec_from_file_location('arch_signing', Path(__file__).parents[1] / 'arch/publish.py')
 arch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(arch)
@@ -56,7 +57,7 @@ def signature(store, key, tmp, prefix, name, data):
     return existing
 
 
-def publish(store, key, tmp, directory, source, receipt, publication_build, archive_only=False):
+def publish(store, key, tmp, directory, source, receipt, publication_build, archive_only=False, *, client):
     build, image, original = validate(directory, source, receipt)
     if key.fingerprint != FINGERPRINT:
         raise ValueError('AppImage requires the existing pinned Linux signing authority')
@@ -89,6 +90,7 @@ def publish(store, key, tmp, directory, source, receipt, publication_build, arch
             raise ValueError('Conflicting beta identity for the same AppImage build')
         if current['build'] > build:
             archive_only = True
+    notes = None if archive_only else release_notes.prepare_appimage(store, client, build, source)
     # Preflight every immutable conflict and verify reused signatures before ANY write.
     values = {artifact.IMAGE: image, 'provenance.json': original, 'release.json': encoded}
     for name, data in values.items():
@@ -106,6 +108,7 @@ def publish(store, key, tmp, directory, source, receipt, publication_build, arch
         if store.call('GET', f'{archive}/{name}') != data:
             raise ValueError('Immutable AppImage readback failed: ' + name)
     if not archive_only:
+        release_notes.record(store, notes)
         for name in [artifact.IMAGE, artifact.IMAGE + '.sig']:
             store.put(f'{PREFIX}/beta/{name}', values[name], 'application/octet-stream', 'no-cache')
         # Clients verify this signature and referenced immutable bytes. Crossing a detached
@@ -114,6 +117,12 @@ def publish(store, key, tmp, directory, source, receipt, publication_build, arch
         store.put(f'{PREFIX}/beta/latest.json', encoded, 'application/json', 'no-cache')
     print(f'AppImage {build} source {source}: ' + ('archive only' if archive_only else 'beta'))
     return descriptor
+
+
+def notes_client():
+    # Same authenticated Forgejo client as the other release publishers.
+    import publication
+    return publication.Forgejo()
 
 
 if __name__ == '__main__':
@@ -130,4 +139,4 @@ if __name__ == '__main__':
         validate(tmp / 'payload', args.source, receipt)
         with arch.SigningKey() as key:
             publish(arch.R2(), key, tmp, tmp / 'payload', args.source, receipt,
-                    args.publication_build, args.archive_only)
+                    args.publication_build, args.archive_only, client=notes_client())

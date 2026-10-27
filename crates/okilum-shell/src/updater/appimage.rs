@@ -18,7 +18,7 @@ fn preference() -> anyhow::Result<PathBuf> {
     Ok(crate::reader_history::state_directory()?.join("appimage-update-channel"))
 }
 pub(super) fn packaged() -> bool {
-    std::env::var_os("APPIMAGE").is_some()
+    crate::linux_sprint::allows_updates() && std::env::var_os("APPIMAGE").is_some()
 }
 pub(super) fn beta() -> bool {
     INITIALIZED.get_or_init(|| {
@@ -123,6 +123,9 @@ pub(super) fn check() {
     });
 }
 pub(super) fn restart(cx: &mut gpui::App) {
+    if !crate::linux_sprint::allows_updates() {
+        return;
+    }
     if BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -154,6 +157,9 @@ pub(super) fn restart(cx: &mut gpui::App) {
 
 /// Called after GPUI has a window, without requiring focus, outside rendering.
 pub(super) fn confirm_startup() {
+    if !crate::linux_sprint::allows_updates() {
+        return;
+    }
     static STARTED: AtomicBool = AtomicBool::new(false);
     if std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none()
         || STARTED.swap(true, Ordering::SeqCst)
@@ -185,4 +191,23 @@ pub(crate) fn prepare_restart(cx: &mut gpui::App) -> anyhow::Result<Vec<std::ffi
 pub(crate) fn acceptance_stage(staged: okilum_appimage::Staged) {
     *PENDING.lock().unwrap() = Some(staged);
     status::set(CheckStatus::Ready);
+}
+
+#[cfg(all(test, feature = "linux-sprint"))]
+mod sprint_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn sprint_distribution_refuses_before_engine_or_status_work() {
+        let generation = status::generation();
+        assert!(!packaged());
+        assert!(!crate::updater::available());
+        start();
+        check();
+        confirm_startup();
+        assert_eq!(status::generation(), generation);
+        assert!(!ready());
+        assert_eq!(crate::updater::channel(), "Sprint");
+    }
 }

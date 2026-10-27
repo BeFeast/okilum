@@ -2251,6 +2251,19 @@ impl Reader {
                         if let Some(trace) = &opts.diagnostics {
                             trace.event("first_worker_start", serde_json::json!({}));
                         }
+                        #[cfg(target_os = "macos")]
+                        {
+                            reader_icloud::prepare_explicit_open(
+                                &mut opts.open_path,
+                                opts.vault.as_deref(),
+                                opts.note.as_deref(),
+                                |path| reader_icloud::materialize(path, || {
+                                    cancel.check()?;
+                                    send.send_blocking(Event::Progress(reader_icloud::DOWNLOADING.into()))
+                                        .map_err(|_| anyhow::anyhow!("Reader closed"))
+                                }),
+                            )?;
+                        }
                         let mut first = prepare_first_with_ui_notes(&opts, &cancel, &ui_notes)?;
                         if let Event::First { document, .. } = &first {
                             opts.note = document.as_ref().map(|(path, _)| path.clone());

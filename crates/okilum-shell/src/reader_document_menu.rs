@@ -112,7 +112,7 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let fixed_width = 176. + if dirty { 32. } else { 0. };
+        let fixed_width = 208. + if dirty { 32. } else { 0. };
         let mut spare = document_width - fixed_width - title_width - compact_parent;
         // One toggle to the other editor mode (#992).
         let show_presentation = !is_file && self.editing.is_some() && spare >= 32.;
@@ -185,6 +185,17 @@ impl Reader {
                 .debug_selector(|| "reader-history-forward".into())
                 .disabled(self.navigation.history_ix + 1 >= self.navigation.history.len())
                 .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
+            )
+            .child(
+                reader_icon_button(
+                    "reader-reveal-current",
+                    Icon::default().path(brand::READER_FOCUS_ICON),
+                    reader_shortcuts::hint("Reveal in sidebar", &FocusCurrentFolder, cx),
+                    cx,
+                )
+                .debug_selector(|| "reader-reveal-current".into())
+                .disabled(!self.tree.can_reveal(self.selected_file()))
+                .on_click(cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx))),
             )
             .child(self.render_breadcrumbs(collapse_parents, cx));
         if rel.is_empty() {
@@ -1032,3 +1043,7 @@ mod tests {
         std::fs::remove_dir_all(fixture).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "reader_document_menu/reveal_tests.rs"]
+mod reveal_tests;

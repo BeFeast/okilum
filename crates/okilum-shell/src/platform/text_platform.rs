@@ -261,13 +261,19 @@ impl Platform for TextPlatform {
         self.inner.write_to_find_pasteboard(item)
     }
     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
-        self.inner.write_credentials(url, username, password)
+        self.inner.write_credentials(
+            &crate::linux_sprint::credential_key(url),
+            username,
+            password,
+        )
     }
     fn read_credentials(&self, url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
-        self.inner.read_credentials(url)
+        self.inner
+            .read_credentials(&crate::linux_sprint::credential_key(url))
     }
     fn delete_credentials(&self, url: &str) -> Task<Result<()>> {
-        self.inner.delete_credentials(url)
+        self.inner
+            .delete_credentials(&crate::linux_sprint::credential_key(url))
     }
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {
         self.inner.keyboard_layout()

@@ -112,7 +112,12 @@ pub(super) fn store(path: &Path, json: &str) -> std::io::Result<()> {
 /// `gpui_component::init` is silently replaced and a click does nothing (#961).
 /// The click is routed by the notification itself, see `deliver`.
 pub(super) fn install(cx: &mut App) {
-    cx.set_app_identity("com.befeast.okilum", "Okilum");
+    let identifier = if crate::linux_sprint::enabled() {
+        crate::linux_sprint::app_id()
+    } else {
+        "com.befeast.okilum"
+    };
+    cx.set_app_identity(identifier, crate::linux_sprint::name());
 }
 
 #[cfg(any(unix, windows))]

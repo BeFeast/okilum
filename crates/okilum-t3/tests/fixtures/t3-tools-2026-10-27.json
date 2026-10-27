@@ -1,0 +1,644 @@
+{
+ "captured": "2026-10-27 ~16:30 Israel",
+ "server": "https://t3.oklabs.uk (upstream T3, live)",
+ "method": "Input schemas as the live T3 MCP server exposes them to an agent thread (manager mcp:d53baa7b). NOT a raw tools/list over the Okilum OAuth client: /mcp rejects non-OAuth bearer sessions (401 invalid_mcp_credential). Tool availability for the Okilum client may additionally be filtered by its OAuth scopes (Okilum session scopes seen: orchestration:read, orchestration:operate, settings:write, source-control:write). Response shapes are not included.",
+ "removed_vs_okilum_main": [
+  "t3_pending_request_list (-> t3_pending_request action=list)",
+  "t3_thread_configuration (-> t3_thread_configure read with threadId only)"
+ ],
+ "tools": [
+  {
+   "name": "t3_pending_request",
+   "description": "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
+   "inputSchema": {
+    "properties": {
+     "action": {
+      "enum": [
+       "list",
+       "read",
+       "respond"
+      ],
+      "type": "string"
+     },
+     "answers": {
+      "type": "object"
+     },
+     "requestId": {
+      "type": "string"
+     },
+     "threadId": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_thread_configure",
+   "description": "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+   "inputSchema": {
+    "properties": {
+     "modelSelection": {
+      "properties": {
+       "instanceId": {},
+       "model": {},
+       "options": {},
+       "provider": {}
+      },
+      "required": [
+       "model"
+      ],
+      "type": "object"
+     },
+     "threadId": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_thread_read",
+   "description": "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`.",
+   "inputSchema": {
+    "properties": {
+     "afterPosition": {
+      "anyOf": [
+       {
+        "minimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "itemId": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "limit": {
+      "anyOf": [
+       {
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "maxCharsPerItem": {
+      "anyOf": [
+       {
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "runLimit": {
+      "anyOf": [
+       {
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "textOffset": {
+      "anyOf": [
+       {
+        "minimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "threadId": {
+      "type": "string"
+     },
+     "view": {
+      "anyOf": [
+       {
+        "enum": [
+         "messages",
+         "activity"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "threadId"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_thread_list",
+   "description": "List threads in a project, newest first. Omit `projectId` for yours. Filter by status, title, settled, or snoozed. Page with the cursor.",
+   "inputSchema": {
+    "properties": {
+     "cursor": {
+      "anyOf": [
+       {
+        "minimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "includeSubagents": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "limit": {
+      "anyOf": [
+       {
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "projectId": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "settled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "snoozed": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "statuses": {
+      "anyOf": [
+       {
+        "items": {
+         "enum": [
+          "idle",
+          "preparing",
+          "queued",
+          "starting",
+          "running",
+          "waiting",
+          "completed",
+          "interrupted",
+          "failed",
+          "cancelled",
+          "rolled_back"
+         ],
+         "type": "string"
+        },
+        "maxItems": 10,
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "titleContains": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_thread_send",
+   "description": "Send a message to any thread. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart.",
+   "inputSchema": {
+    "properties": {
+     "clientRequestId": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "message": {
+      "type": "string"
+     },
+     "mode": {
+      "anyOf": [
+       {
+        "enum": [
+         "auto",
+         "queue",
+         "steer",
+         "restart"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "threadId": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "threadId",
+     "message"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_thread_launch",
+   "description": "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`.",
+   "inputSchema": {
+    "properties": {
+     "interactionMode": {
+      "enum": [
+       "default",
+       "plan"
+      ],
+      "type": "string"
+     },
+     "message": {
+      "maxLength": 120000,
+      "type": "string"
+     },
+     "modelSelection": {
+      "properties": {
+       "instanceId": {},
+       "model": {},
+       "options": {},
+       "provider": {}
+      },
+      "required": [
+       "model"
+      ],
+      "type": "object"
+     },
+     "projectId": {
+      "type": "string"
+     },
+     "runtimeMode": {
+      "enum": [
+       "approval-required",
+       "auto-accept-edits",
+       "auto",
+       "full-access"
+      ],
+      "type": "string"
+     },
+     "scratch": {
+      "type": "boolean"
+     },
+     "title": {
+      "type": "string"
+     },
+     "workspaceStrategy": {
+      "properties": {
+       "baseRef": {
+        "type": "string"
+       },
+       "branch": {
+        "type": "string"
+       },
+       "startFromOrigin": {
+        "type": "boolean"
+       },
+       "type": {
+        "enum": [
+         "root",
+         "existing_worktree",
+         "worktree"
+        ],
+        "type": "string"
+       },
+       "worktreePath": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "type": "object"
+     },
+     "attachments": {
+      "type": "array"
+     }
+    },
+    "required": [
+     "title"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_project_list",
+   "description": "List projects. Pages can shift.",
+   "inputSchema": {
+    "properties": {
+     "cursor": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "limit": {
+      "maximum": 100,
+      "minimum": 1,
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_project_read",
+   "description": "Read one project: workspace and saved scripts.",
+   "inputSchema": {
+    "properties": {
+     "projectId": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "projectId"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_project_create",
+   "description": "Register a project folder.",
+   "inputSchema": {
+    "properties": {
+     "createWorkspaceRootIfMissing": {
+      "type": "boolean"
+     },
+     "defaultModelSelection": {
+      "properties": {
+       "instanceId": {},
+       "model": {},
+       "options": {},
+       "provider": {}
+      },
+      "required": [
+       "model"
+      ],
+      "type": "object"
+     },
+     "scripts": {
+      "items": {
+       "properties": {
+        "async": {
+         "type": "boolean"
+        },
+        "autoOpenPreview": {
+         "type": "boolean"
+        },
+        "command": {
+         "type": "string"
+        },
+        "icon": {
+         "enum": [
+          "play",
+          "test",
+          "lint",
+          "configure",
+          "build",
+          "debug"
+         ],
+         "type": "string"
+        },
+        "id": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "previewUrl": {
+         "type": "string"
+        },
+        "runOnSettle": {
+         "type": "boolean"
+        },
+        "runOnWorktreeCreate": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "id",
+        "name",
+        "command",
+        "icon",
+        "runOnWorktreeCreate"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "title": {
+      "type": "string"
+     },
+     "workspaceRoot": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "title"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_project_update",
+   "description": "Update one project's settings. Omitted fields are unchanged.",
+   "inputSchema": {
+    "properties": {
+     "autoPull": {
+      "type": "boolean"
+     },
+     "defaultModelSelection": {
+      "properties": {
+       "instanceId": {},
+       "model": {},
+       "options": {},
+       "provider": {}
+      },
+      "required": [
+       "model"
+      ],
+      "type": "object"
+     },
+     "defaultThreadEnvMode": {
+      "enum": [
+       "local",
+       "worktree"
+      ],
+      "type": "string"
+     },
+     "faviconPath": {
+      "type": "string"
+     },
+     "projectIcon": {
+      "properties": {
+       "color": {
+        "type": "string"
+       },
+       "emoji": {
+        "type": "string"
+       },
+       "kind": {
+        "enum": [
+         "lucide",
+         "emoji",
+         "monogram"
+        ],
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "text": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "kind"
+      ],
+      "type": "object"
+     },
+     "projectId": {
+      "type": "string"
+     },
+     "scripts": {
+      "items": {
+       "properties": {
+        "async": {
+         "type": "boolean"
+        },
+        "autoOpenPreview": {
+         "type": "boolean"
+        },
+        "command": {
+         "type": "string"
+        },
+        "icon": {
+         "enum": [
+          "play",
+          "test",
+          "lint",
+          "configure",
+          "build",
+          "debug"
+         ],
+         "type": "string"
+        },
+        "id": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "previewUrl": {
+         "type": "string"
+        },
+        "runOnSettle": {
+         "type": "boolean"
+        },
+        "runOnWorktreeCreate": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "id",
+        "name",
+        "command",
+        "icon",
+        "runOnWorktreeCreate"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "title": {
+      "type": "string"
+     },
+     "workspaceRoot": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "projectId"
+    ],
+    "type": "object"
+   }
+  },
+  {
+   "name": "t3_environment_read",
+   "description": "Read this server's identity and preferences.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "type": "object"
+   }
+  }
+ ]
+}

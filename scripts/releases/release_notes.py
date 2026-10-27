@@ -14,7 +14,7 @@ OKILUM = '{https://git.oklabs.uk/BeFeast/okilum/update-metadata}'
 
 
 def key(source, platform, channel):
-    if (not re.fullmatch('[0-9a-f]{40}', source) or platform not in ('macos', 'linux', 'windows')
+    if (not re.fullmatch('[0-9a-f]{40}', source) or platform not in ('macos', 'linux', 'linux-appimage', 'windows')
             or channel not in ('beta', 'stable')):
         raise ValueError('Notes require a full source SHA, known platform and channel')
     return f'{PREFIX}/{source}/{platform}/{channel}/notes.json'
@@ -40,6 +40,13 @@ def predecessor(store, platform, channel='beta'):
         if raw is None:
             return None
         result = json.loads(raw)
+    elif platform == 'linux-appimage':
+        raw = store.call('GET', f'okilum/linux/{channel}/latest.json')
+        if raw is None:
+            return None
+        result = json.loads(raw)
+        if result.get('platform') != 'linux-appimage' or result.get('channel') != channel:
+            raise ValueError('Invalid previous AppImage channel identity')
     elif platform == 'windows':
         raw = store.call('GET', f'okilum/windows/{channel}/releases.{channel}.json')
         if raw is None:
@@ -114,6 +121,22 @@ def prepare(store, client, platform, build, source, channel='beta'):
             'previous_build': previous['build'] if previous else None,
             'previous_source': previous['source'] if previous else None,
             'items': merged_items(client, previous['source'] if previous else None, source)}
+
+
+def prepare_appimage(store, client, build, source, channel='beta'):
+    """Pin a range before moving the feed; retry never makes a self predecessor."""
+    path = key(source, 'linux-appimage', channel)
+    raw = store.call('GET', path)
+    if raw is not None:
+        existing = json.loads(raw)
+        if (existing['build'], existing['source'], existing['platform'], existing['channel']) != (
+                build, source, 'linux-appimage', channel):
+            raise ValueError('Conflicting AppImage notes identity')
+        return existing
+    previous = predecessor(store, 'linux-appimage', channel)
+    if previous and (previous['build'] >= build or previous['source'] == source):
+        raise ValueError('AppImage notes require an older distinct published predecessor')
+    return prepare(store, client, 'linux-appimage', build, source, channel)
 
 
 def prepare_preview(store, pr, build, source):

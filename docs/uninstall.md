@@ -150,3 +150,22 @@ existing running-instance/Sync checks and confirmation, even if the image moved:
 These exact paths follow the existing helper contract rather than XDG_DATA_HOME.
 Foreign payloads are refused and reported; distribution launchers are preserved.
 The optional desktop database refresh does not change default handlers.
+
+## Linux Sprint (explicit development build)
+
+The `linux-sprint` feature requires `OKILUM_SPRINT_BUILD=1` and a `Sprint `
+release version; default/release builds do not enable it. Before other startup
+work, it sets state to `~/.local/state/okilum-sprint` and XDG config/cache/state/data
+and temporary sessions to subdirectories there. The existing `roots()` inventory
+therefore resolves only these private roots. Credential keys have their own
+`okilum-sprint:` prefix. This build neither starts the AppImage updater nor
+installs the ordinary desktop registration. Its ordinary `--uninstall-data`
+entry refuses, so it cannot remove production registrations or Sync services.
+
+The Linux Sprint installer owns only `~/Applications/OkilumSprint.AppImage` and
+`~/.local/share/applications/okilum-sprint.desktop`. To retire Sprint, quit it,
+remove those two files, and preserve/export any unsaved drafts before deciding
+whether to remove its private state tree. `~/Applications/Okilum.AppImage` and
+ordinary Okilum data/registrations are outside that inventory. Vaults opened
+explicitly in Sprint remain the user's canonical files, with ordinary editing
+and save/recovery guards.

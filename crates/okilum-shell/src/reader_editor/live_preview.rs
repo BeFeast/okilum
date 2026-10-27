@@ -1069,8 +1069,8 @@ mod tests {
         });
         visual.run_until_parked();
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
-        // #1512: at 200 px the name gives way and only Reveal current and
-        // Show hidden move into ⋯; nothing clips past the panel.
+        // #1512: at 200 px the name gives way and only
+        // Show hidden moves into ⋯; nothing clips past the panel.
         let menu = visual.debug_bounds("sidebar-actions").unwrap();
         assert!(
             menu.right() < panel.right(),
@@ -1085,9 +1085,14 @@ mod tests {
             );
         }
         assert!(visual.debug_bounds("sidebar-collapse-all").is_some());
-        for spilled in ["sidebar-reveal-current", "sidebar-show-hidden"] {
-            assert!(visual.debug_bounds(spilled).is_none(), "{spilled} is in ⋯");
-        }
+        assert!(
+            visual.debug_bounds("sidebar-show-hidden").is_none(),
+            "Show hidden is in ⋯"
+        );
+        assert!(
+            visual.debug_bounds("sidebar-reveal-current").is_none(),
+            "Reveal moved beside the breadcrumb"
+        );
     }
 
     use super::*;

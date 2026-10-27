@@ -93,6 +93,8 @@ class Plan:
 
 
 def execute(store, signing, tmp, source, build, rollback=False):
+    if store.call('GET', 'okilum/arch/frozen.json') is not None:
+        raise ValueError('Pacman repository is frozen; use AppImage Stable')
     if not re.fullmatch('[0-9a-f]{40}', source):
         raise ValueError('Expected full lowercase source SHA')
     arch.package_name(build)

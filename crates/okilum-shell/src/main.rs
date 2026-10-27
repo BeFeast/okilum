@@ -21,6 +21,7 @@ mod count_label;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
+mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
 mod note_paste;
@@ -57,6 +58,8 @@ mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
+#[cfg(any(target_os = "macos", test))]
+mod reader_icloud;
 mod reader_image;
 mod reader_incremental;
 mod reader_instance;
@@ -2135,6 +2138,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "macos")]
+        let logical = reader_icloud::logical_path(Path::new(rel));
+        #[cfg(target_os = "macos")]
+        let rel = logical.to_str().unwrap_or(rel);
         if self.project_navigation.active.is_none() {
             self.close_project(window, cx);
         }
@@ -2189,6 +2196,12 @@ impl Reader {
             Ok(document) => document,
             Err(error) => {
                 eprintln!("Document unavailable: {error:#}");
+                #[cfg(target_os = "macos")]
+                if let Some(error) = error.downcast_ref::<reader_icloud::DownloadError>() {
+                    self.link_notice = Some(error.to_string().into());
+                    cx.notify();
+                    return;
+                }
                 self.link_notice = Some("This note couldn’t be opened. Check that it is available and you have permission to read it.".into());
                 cx.notify();
                 return;
@@ -3311,11 +3324,15 @@ impl Reader {
         cx.notify();
     }
 
-    /// Sidebar header «Reveal current» (#410): only the path to the
+    /// Document toolbar «Reveal in sidebar» (#1756): only the path to the
     /// open note stays expanded, and the note is selected; a folder's index
     /// note selects its folder unless it was opened from its own row (#1512).
     fn focus_current_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() {
+            return;
+        }
+        self.sync_tree();
+        if !self.tree.can_reveal(self.selected_file()) {
             return;
         }
         self.resizing_panel = None;
@@ -3327,7 +3344,6 @@ impl Reader {
         {
             self.save_sidebar(cx);
         }
-        self.sync_tree();
         let current = self.selected_file().to_owned();
         let ix = self.tree.focus(&current);
         if let Some(ix) = self.select_index_folder(&current, ix) {
@@ -3688,10 +3704,12 @@ impl Reader {
             .children(folders.into_iter().filter(|_| !collapse_parents).flat_map(
                 |(folder, path)| {
                     let menu_path = path.clone();
+                    let selector = path.clone();
                     let menu_root = self.vault_root.clone();
                     [
                         div()
                             .id(SharedString::from(format!("reader-crumb-{path}")))
+                            .debug_selector(move || format!("reader-crumb-{selector}"))
                             .flex_shrink(1.)
                             .min_w(px(24.))
                             .overflow_hidden()
@@ -6208,7 +6226,7 @@ const SIDEBAR_NAME_GAP: f32 = 4.;
 const SIDEBAR_NAME_CHROME: f32 = 30.;
 /// The name keeps at least this much, caret included, before an action
 /// moves into ⋯; a longer name is cut with an ellipsis first (#1512). At the
-/// default 280 px width all five actions fit, vault colour dot included.
+/// default 280 px width all four actions fit, vault colour dot included.
 const SIDEBAR_NAME_MIN: f32 = 80.;
 
 /// The sidebar header's actions, in their fixed order (#1512). The order is
@@ -6218,32 +6236,27 @@ enum SidebarAction {
     NewNote,
     NewFolder,
     CollapseAll,
-    RevealCurrent,
     ShowHidden,
 }
 
 impl SidebarAction {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::NewNote,
         Self::NewFolder,
         Self::CollapseAll,
-        Self::RevealCurrent,
         Self::ShowHidden,
     ];
 
     /// Only these leave the row for ⋯ on a narrow sidebar; they trail the
     /// fixed ones, so the spilled tail is always a run of them.
     fn spills(self) -> bool {
-        matches!(self, Self::RevealCurrent | Self::ShowHidden)
+        matches!(self, Self::ShowHidden)
     }
 
     /// Creating files needs the platform file layer.
     fn available() -> &'static [Self] {
-        const WITHOUT_FILES: [SidebarAction; 3] = [
-            SidebarAction::CollapseAll,
-            SidebarAction::RevealCurrent,
-            SidebarAction::ShowHidden,
-        ];
+        const WITHOUT_FILES: [SidebarAction; 2] =
+            [SidebarAction::CollapseAll, SidebarAction::ShowHidden];
         if cfg!(any(unix, windows)) {
             &Self::ALL
         } else {
@@ -6256,7 +6269,6 @@ impl SidebarAction {
             Self::NewNote => "sidebar-new-note",
             Self::NewFolder => "sidebar-new-folder",
             Self::CollapseAll => "sidebar-collapse-all",
-            Self::RevealCurrent => "sidebar-reveal-current",
             Self::ShowHidden => "sidebar-show-hidden",
         }
     }
@@ -6266,7 +6278,6 @@ impl SidebarAction {
             Self::NewNote => "New note",
             Self::NewFolder => "New folder",
             Self::CollapseAll => "Collapse all folders",
-            Self::RevealCurrent => "Reveal current note",
             Self::ShowHidden => HIDDEN_FILES_MENU,
         }
     }
@@ -6276,7 +6287,6 @@ impl SidebarAction {
             Self::NewNote => Box::new(NewNote),
             Self::NewFolder => Box::new(NewFolder),
             Self::CollapseAll => Box::new(CollapseFolders),
-            Self::RevealCurrent => Box::new(FocusCurrentFolder),
             Self::ShowHidden => Box::new(ToggleHiddenFiles),
         }
     }
@@ -6291,7 +6301,6 @@ impl SidebarAction {
             Self::NewNote => Icon::default().path("icons/square-pen.svg"),
             Self::NewFolder => Icon::default().path("icons/folder-plus.svg"),
             Self::CollapseAll => Icon::default().path(brand::READER_COLLAPSE_ICON),
-            Self::RevealCurrent => Icon::default().path(brand::READER_FOCUS_ICON),
             Self::ShowHidden if show_hidden => Icon::new(IconName::Eye),
             Self::ShowHidden => Icon::new(IconName::EyeOff),
         }
@@ -6304,7 +6313,6 @@ impl SidebarAction {
             #[cfg(any(unix, windows))]
             Self::NewFolder => reader.new_folder(None, window, cx),
             Self::CollapseAll => reader.collapse_folders(cx),
-            Self::RevealCurrent => reader.focus_current_folder(window, cx),
             Self::ShowHidden => reader.toggle_hidden_files(cx),
             #[cfg(not(any(unix, windows)))]
             Self::NewNote | Self::NewFolder => {}
@@ -6322,7 +6330,7 @@ fn sidebar_action_click(
 }
 
 /// How many header actions fit beside the name (#1512). New note, New
-/// folder and Collapse all always stay; only Reveal current and Show hidden
+/// folder and Collapse all always stay; only Show hidden
 /// move into ⋯, which then takes a slot of its own. The name gives way
 /// first, down to its minimum; below that it is cut with an ellipsis.
 fn sidebar_visible_actions(available: f32, name: f32, actions: &[SidebarAction]) -> usize {
@@ -7200,6 +7208,10 @@ OPTIONS:
 ";
 
 fn main() {
+    if let Err(error) = linux_sprint::initialize() {
+        eprintln!("Linux Sprint isolation: {error:#}");
+        std::process::exit(1);
+    }
     #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
     if let Some(result) = okilum_appimage::acceptance_entry(
         env!("OKILUM_BUILD_VERSION"),
@@ -7463,7 +7475,7 @@ fn main() {
                 kind: WindowKind::Normal,
                 // Wayland app id. Also the handle test tooling keys on, so it
                 // is part of the contract, not decoration.
-                app_id: Some("okilum".into()),
+                app_id: Some(linux_sprint::app_id().into()),
                 #[cfg(target_os = "linux")]
                 window_background: WindowBackgroundAppearance::Opaque,
                 ..TitleBar::window_options()
@@ -9499,7 +9511,7 @@ mod document_link_landing_tests {
 
     /// #1512, #1474: the sidebar has one header row. The vault name sits on
     /// the left and opens the vault menu; New note, New folder, Collapse all,
-    /// Reveal current and Show hidden keep fixed slots on the right, idle and
+    /// Show hidden keep fixed slots on the right, idle and
     /// hovered. There is no Folders row: root entries follow the header.
     #[gpui::test]
     fn sidebar_header_is_one_row_with_fixed_actions_and_no_folders_row(
@@ -9547,15 +9559,10 @@ mod document_link_landing_tests {
                 "sidebar-new-note",
                 "sidebar-new-folder",
                 "sidebar-collapse-all",
-                "sidebar-reveal-current",
                 "sidebar-show-hidden",
             ]
         } else {
-            &[
-                "sidebar-collapse-all",
-                "sidebar-reveal-current",
-                "sidebar-show-hidden",
-            ]
+            &["sidebar-collapse-all", "sidebar-show-hidden"]
         };
         assert_eq!(
             SidebarAction::available()
@@ -9682,31 +9689,21 @@ mod document_link_landing_tests {
         );
     }
 
-    /// #1512: a narrow sidebar sends only Reveal current and Show hidden
-    /// into ⋯; the others never leave the row, and the name gives way first.
+    /// #1756: Reveal moved to the note toolbar; only Show hidden can spill.
     #[test]
-    fn narrow_sidebar_spills_only_reveal_and_show_hidden() {
+    fn narrow_sidebar_spills_only_show_hidden() {
         let all = &SidebarAction::ALL;
         let min = SIDEBAR_NAME_MIN;
         let slot = SIDEBAR_ACTION_SLOT;
-        assert_eq!(sidebar_visible_actions(400., 120., all), 5);
-        // The name gives way down to its minimum before anything spills.
-        assert_eq!(sidebar_visible_actions(min + 5. * slot, 300., all), 5);
-        assert_eq!(sidebar_visible_actions(min + 5. * slot - 1., 300., all), 3);
-        assert_eq!(
-            sidebar_visible_actions(min + 4. * slot + 1., min, all),
-            3,
-            "four in the row plus ⋯ does not fit beside the name"
-        );
-        // At the narrowest the three fixed ones stay.
+        assert_eq!(sidebar_visible_actions(400., 120., all), 4);
+        assert_eq!(sidebar_visible_actions(min + 4. * slot, 300., all), 4);
+        assert_eq!(sidebar_visible_actions(min + 4. * slot - 1., 300., all), 3);
         assert_eq!(sidebar_visible_actions(60., min, all), 3);
-        assert!(all[3..].iter().all(|action| action.spills()));
+        assert!(all[3].spills());
         assert!(!all[..3].iter().any(|action| action.spills()));
-        // Default width (280 px, 12 px padding, two gaps), with and without
-        // the vault colour dot: every action stays in the row.
         for dot in [0., VAULT_DOT_SLOT] {
             let room = 280. - 24. - dot - 2. * SIDEBAR_NAME_GAP;
-            assert_eq!(sidebar_visible_actions(room, 200., all), 5, "dot {dot}");
+            assert_eq!(sidebar_visible_actions(room, 200., all), 4, "dot {dot}");
         }
     }
 

@@ -1,6 +1,9 @@
 #!/bin/bash
 # Never mirror internal branches, PR refs or pre-publication tags.
 set -Eeuo pipefail
+if [ "${OKILUM_GITHUB_AUTH_RESOLVED:-}" != 1 ]; then
+    exec python3 "$(dirname "$0")/../ci/github_auth.py" exec -- bash "$0"
+fi
 : "${MIRROR_TOKEN:?GitHub mirror token required}"
 git fetch --no-tags origin main
 args=('refs/remotes/origin/main:refs/heads/main')
@@ -14,4 +17,15 @@ if [ -n "${RELEASE_TAG:-}" ]; then
         args+=("refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG")
     fi
 fi
-git push "https://x-access-token:${MIRROR_TOKEN}@github.com/BeFeast/okilum.git" "${args[@]}"
+auth_dir=$(mktemp -d)
+trap 'rm -rf "$auth_dir"' EXIT
+cat > "$auth_dir/askpass" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+    *Username*) printf '%s\n' x-access-token ;;
+    *) printf '%s\n' "$MIRROR_TOKEN" ;;
+esac
+ASKPASS
+chmod 700 "$auth_dir/askpass"
+GIT_ASKPASS="$auth_dir/askpass" GIT_TERMINAL_PROMPT=0 \
+    git -c credential.helper= push https://github.com/BeFeast/okilum.git "${args[@]}"

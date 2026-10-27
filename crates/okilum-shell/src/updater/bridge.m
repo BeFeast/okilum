@@ -47,6 +47,44 @@ static void TSSend(int kind, NSString *text) {
 - (void)dismissUpdateInstallation {}
 @end
 
+// A downloaded update has already passed Sparkle's admission filters. Keep
+// that admission only for the same signed item collection, URL and channels.
+// Public appcast callbacks expose all item properties, not the raw XML bytes.
+// No preference, date or private selector is changed by this receipt.
+static NSArray<NSDictionary *> *TSSignedItems(SUAppcast *appcast) {
+    if (appcast.signingValidationStatus != SPUAppcastSigningValidationStatusSucceeded) return nil;
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    for (SUAppcastItem *item in appcast.items) {
+        if (item.signingValidationStatus != SPUAppcastSigningValidationStatusSucceeded) return nil;
+        [items addObject:[item.propertiesDictionary copy]];
+    }
+    return [items copy];
+}
+@interface TSAdmission : NSObject
+@property(nonatomic, copy) NSArray<NSDictionary *> *items;
+@property(nonatomic, copy) NSDictionary *item;
+@property(nonatomic, copy) NSString *version;
+@property(nonatomic, copy) NSURL *archive;
+@property(nonatomic, copy) NSString *feed;
+@property(nonatomic, copy) NSSet<NSString *> *channels;
+- (BOOL)covers:(SUAppcastItem *)item feed:(NSString *)feed channels:(NSSet<NSString *> *)channels
+    signedItems:(NSArray<NSDictionary *> *)items;
+@end
+@implementation TSAdmission
+- (BOOL)covers:(SUAppcastItem *)item feed:(NSString *)feed channels:(NSSet<NSString *> *)channels
+    signedItems:(NSArray<NSDictionary *> *)items {
+    return self.items != nil && items != nil && [self.items isEqualToArray:items]
+        && item.signingValidationStatus == SPUAppcastSigningValidationStatusSucceeded
+        && !item.informationOnlyUpdate && !item.majorUpgrade
+        && [self.item isEqualToDictionary:item.propertiesDictionary]
+        && [self.version isEqualToString:item.versionString] && [self.archive isEqual:item.fileURL]
+        && [self.feed isEqualToString:feed] && [self.channels isEqualToSet:channels];
+}
+@end
+static TSAdmission *TSPendingAdmission;
+static TSAdmission *TSDownloadedAdmission;
+static void TSClearAdmission(void) { TSPendingAdmission = nil; TSDownloadedAdmission = nil; }
+
 // A probe must have its own host identity: probing the installation updater
 // resumes its retained installer instead of fetching the feed. Copy the host's
 // version/security configuration, but never allow this metadata-only updater to
@@ -60,6 +98,7 @@ static void TSSend(int kind, NSString *text) {
 @property(nonatomic, copy) NSSet<NSString *> *channels;
 @property(nonatomic, copy) NSString *feed;
 @property(nonatomic) BOOL foreground;
+@property(nonatomic, copy) NSArray<NSDictionary *> *signedItems;
 - (void)check:(SPUUpdater *)source channels:(NSSet<NSString *> *)channels
   foreground:(BOOL)foreground completion:(void (^)(SUAppcastItem *, NSError *))completion;
 @end
@@ -75,6 +114,7 @@ static void TSSend(int kind, NSString *text) {
     self.channels = channels;
     self.completion = completion;
     self.selected = nil;
+    self.signedItems = nil;
     NSError *error = nil;
     if (!self.directory) {
         self.directory = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
@@ -124,6 +164,9 @@ static void TSSend(int kind, NSString *text) {
     *error = [NSError errorWithDomain:@"OkilumUpdate" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The freshness probe only reads update information."}];
     return NO;
 }
+- (void)updater:(SPUUpdater *)updater didFinishLoadingAppcast:(SUAppcast *)appcast {
+    self.signedItems = TSSignedItems(appcast);
+}
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item { self.selected = item; }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     [self finish:error];
@@ -160,20 +203,42 @@ static NSSet<NSString *> *TSChannels(void) {
 static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^completion)(BOOL, NSError *)) {
     NSSet<NSString *> *channels = TSChannels();
     NSString *feed = TSUpdater.feedURL.absoluteString;
+    TSAdmission *admission = TSDownloadedAdmission;
     [TSProbe check:TSUpdater channels:channels foreground:foreground completion:^(SUAppcastItem *selected, NSError *error) {
         if (![channels isEqualToSet:TSChannels()] || ![feed isEqualToString:TSUpdater.feedURL.absoluteString])
             error = [NSError errorWithDomain:@"OkilumUpdate" code:5 userInfo:@{NSLocalizedDescriptionKey:@"The update channel changed during verification. Check again."}];
+        if (admission && (![admission.feed isEqualToString:feed] || ![admission.channels isEqualToSet:channels]))
+            error = [NSError errorWithDomain:@"OkilumUpdate" code:5 userInfo:@{NSLocalizedDescriptionKey:@"The update channel or URL changed after download. Check again."}];
+        // A no-update result is not a fetch/parse/signature failure. Only a
+        // receipt from a real download can preserve the previous admission;
+        // fresh discovery still uses Sparkle's current eligibility unchanged.
+        BOOL noUpdate = [error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError;
+        BOOL notSuperseded = !selected || [SUStandardVersionComparator.defaultComparator
+            compareVersion:selected.versionString toVersion:item.versionString] != NSOrderedDescending;
+        if ((!error || noUpdate) && notSuperseded && admission && admission == TSDownloadedAdmission
+            && [admission covers:item feed:TSUpdater.feedURL.absoluteString channels:TSChannels()
+                signedItems:TSProbe.signedItems]) {
+            completion(YES, nil);
+            return;
+        }
         if (!error && !selected) error = [NSError errorWithDomain:@"OkilumUpdate" code:2
             userInfo:@{NSLocalizedDescriptionKey:@"The update is no longer available on this channel. Check for updates again."}];
         NSComparisonResult comparison = [SUStandardVersionComparator.defaultComparator compareVersion:selected.versionString ?: @"" toVersion:item.versionString];
         if (!error && comparison == NSOrderedAscending)
             error = [NSError errorWithDomain:@"OkilumUpdate" code:3
                 userInfo:@{NSLocalizedDescriptionKey:@"The current feed is older than the downloaded update. Nothing was installed."}];
+        if (!error && comparison == NSOrderedSame && (![selected.fileURL isEqual:item.fileURL]
+            || ![selected.propertiesDictionary[@"enclosure"] isEqual:item.propertiesDictionary[@"enclosure"]]))
+            error = [NSError errorWithDomain:@"OkilumUpdate" code:7
+                userInfo:@{NSLocalizedDescriptionKey:@"The downloaded update's archive changed. Nothing was installed."}];
         completion(!error && comparison == NSOrderedSame, error);
     }];
 }
 
 @interface TSUpdaterDelegate : NSObject <SPUUpdaterDelegate>
+@property(nonatomic, copy) NSArray<NSDictionary *> *signedItems;
+@property(nonatomic, copy) NSString *feed;
+@property(nonatomic, copy) NSSet<NSString *> *channels;
 @end
 @implementation TSUpdaterDelegate
 // Stable items carry the "stable" channel, so builds that predate this bridge
@@ -181,8 +246,31 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 - (NSSet<NSString *> *)allowedChannelsForUpdater:(SPUUpdater *)updater {
     return TSChannels();
 }
+- (void)updater:(SPUUpdater *)updater didFinishLoadingAppcast:(SUAppcast *)appcast {
+    TSClearAdmission();
+    self.signedItems = TSSignedItems(appcast);
+    self.feed = updater.feedURL.absoluteString;
+    self.channels = TSChannels();
+}
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
+    TSPendingAdmission = nil;
+    if (self.signedItems && item.signingValidationStatus == SPUAppcastSigningValidationStatusSucceeded
+        && !item.informationOnlyUpdate && !item.majorUpgrade) {
+        TSAdmission *admission = [TSAdmission new];
+        admission.items = self.signedItems;
+        admission.item = item.propertiesDictionary;
+        admission.version = item.versionString;
+        admission.archive = item.fileURL;
+        admission.feed = self.feed;
+        admission.channels = self.channels;
+        TSPendingAdmission = admission;
+    }
     TSSend(1, item.displayVersionString);
+}
+- (void)updater:(SPUUpdater *)updater didDownloadUpdate:(SUAppcastItem *)item {
+    TSDownloadedAdmission = [TSPendingAdmission covers:item feed:updater.feedURL.absoluteString
+        channels:TSChannels() signedItems:self.signedItems] ? TSPendingAdmission : nil;
+    TSPendingAdmission = nil;
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     // Sparkle has released its old driver and cleared sessionInProgress here.
@@ -405,6 +493,7 @@ static TSTerminationDelegate *TSTermination;
 }
 - (void)dismissUpdateInstallation {
     NSAssert(NSThread.isMainThread, @"Sparkle is main-thread only");
+    TSClearAdmission();
     self.cancellation = nil;
     self.retryTermination = nil;
     TSTermination.verifiedQuit = NO;
