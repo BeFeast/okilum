@@ -41,6 +41,9 @@ pub(crate) fn roots() -> Vec<PathBuf> {
 /// return before reaching this hook. The primary instance owns the background job.
 #[cfg(target_os = "linux")]
 pub(crate) fn install_appimage_desktop() {
+    if crate::linux_sprint::enabled() {
+        return; // The Sprint installer owns only okilum-sprint.desktop.
+    }
     #[cfg(feature = "appimage-acceptance-harness")]
     if crate::appimage_acceptance::active() {
         return;
@@ -408,6 +411,10 @@ fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
 /// `pacman -Rns okilum` (or before), keeping vaults. Returns the exit code.
 #[cfg(target_os = "linux")]
 pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
+    if crate::linux_sprint::enabled() {
+        eprintln!("Remove Linux Sprint through its dedicated installer; ordinary Okilum cleanup is disabled.");
+        return 2;
+    }
     use std::io::{BufRead, Write};
     let state = crate::reader_history::state_directory().ok();
     let units = std::env::var_os("XDG_CONFIG_HOME")
@@ -1041,6 +1048,7 @@ mod tests {
     /// add it to docs/uninstall.md and `roots()` (or the OS-specific removal),
     /// then update this list.
     const BASE_DIRECTORY_SITES: &[(&str, usize)] = &[
+        ("crates/okilum-shell/src/linux_sprint.rs", 5),
         // Roots, crash dumps, the Velopack log folder, the Linux sync units,
         // the drafts export and the macOS home (all in the inventory).
         ("crates/okilum-shell/src/app_footprint.rs", 12),

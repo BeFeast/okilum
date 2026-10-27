@@ -10,6 +10,8 @@ name = "okilum"
 path = "src/main.rs"
 
 [features]
+# Dedicated Linux development distribution; guarded by build.rs, never a release feature.
+linux-sprint = []
 default = ["brain"]
 brain = ["okilum-core/brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.

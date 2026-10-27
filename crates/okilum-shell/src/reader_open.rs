@@ -1413,7 +1413,7 @@ pub(crate) fn window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         window_min_size: Some(size(px(600.), px(400.))),
-        app_id: Some("okilum".into()),
+        app_id: Some(crate::linux_sprint::app_id().into()),
         #[cfg(target_os = "linux")]
         window_background: WindowBackgroundAppearance::Opaque,
         titlebar: Some(super::reader_titlebar_options()),
