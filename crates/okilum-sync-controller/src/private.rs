@@ -31,6 +31,7 @@ pub(crate) fn directory(path: &Path) -> Result<()> {
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>> {
     read_file(path, true)
 }
+#[cfg(target_os = "linux")]
 pub(crate) fn public_file(path: &Path) -> Result<Vec<u8>> {
     read_file(path, false)
 }

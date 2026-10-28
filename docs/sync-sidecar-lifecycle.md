@@ -554,3 +554,23 @@ recovery for that case remain future runtime work, not a permissive fallback.
 References: [TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject),
 [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess),
 [IsProcessInJob](https://learn.microsoft.com/en-us/windows/win32/api/jobapi/nf-jobapi-isprocessinjob).
+
+## macOS durable pairing prerequisite (#588, stage 7)
+
+The `enrollment` controller is now available on macOS as well as Linux. It uses
+its existing private Unix journal and locks; it does not depend on systemd or
+expose the Linux runtime or Desktop controller on macOS. Constructing it and
+reading an absent connection remain inert. Only an explicit `begin` may prepare
+state or call the injected pairing service.
+
+Both Unix CI gates exercise lost exchange/restart, offline terminal removal and
+scope binding. The public API storage tests additionally verify that a lost start
+reply preserves the request and both credentials across reconstruction, storage
+is owner-private, and shared/symlinked directories or a corrupt journal cannot
+reach the service. The macOS gate runs these on the actual hosted OS filesystem;
+no real hub, approval session, Syncthing process or GUI is used by these tests.
+
+This is a library prerequisite, not shipped Enable Sync. The macOS desktop still
+needs verified bundled-runtime preparation, owned SMAppService/supervisor wiring,
+and the integrated enrollment/removal loop. Native login/sleep/update acceptance
+and #589 recovery/rollout remain open; iCloud and production hubs are untouched.

@@ -102,6 +102,13 @@ run_tests okilum-shell --bins reader_tasks::tests::task_labels_fit_descenders --
 # process-group owned tree (real process tree, signals, process scan via libproc) and
 # the private socket transport (LOCAL_PEERCRED); each needs the real macOS kernel.
 run_tests okilum-sync-controller --lib sidecar::
+# #588: the durable pairing journal is shared with macOS, independently of the
+# Linux systemd runtime. Exercise actual private-file/lock operations on this OS.
+run_tests okilum-sync-controller --lib enrollment::
+cargo "${cargo_args[@]}" -p okilum-sync-controller --test enrollment_storage -- --list \
+    | tee "${RUNNER_TEMP}/macos-test-list.txt"
+grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
+cargo "${cargo_args[@]}" -p okilum-sync-controller --test enrollment_storage -- --test-threads=1
 # #1013: the supervisor's run loop against a real process tree and real sockets (the
 # shell does not depend on this crate, so nothing else would even build it here).
 run_tests okilum-sync-supervisor --tests ""

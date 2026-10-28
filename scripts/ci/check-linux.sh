@@ -23,6 +23,9 @@ python3 -m unittest discover -s scripts/perf -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
 cargo test -p okilum-appimage --all-features
 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
+# #588: keep shared durable pairing recovery covered on both Unix platforms.
+cargo test --locked -p okilum-sync-controller --lib enrollment::
+cargo test --locked -p okilum-sync-controller --test enrollment_storage
 # A second, explicit compiled distribution must refuse updater work even when
 # inherited AppImage/update-receipt variables would otherwise enable it.
 OKILUM_SPRINT_BUILD=1 OKILUM_RELEASE_VERSION='Sprint CI' \
