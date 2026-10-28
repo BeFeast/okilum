@@ -30,7 +30,8 @@ SVG 4 MiB, raster 4 megapixels/4096 pixels per axis. A stuck worker cannot spawn
 replacement threads without bound. Raster density adapts to both dimensions and
 the pixel-area budget. Logical width/height remain independent of the raster, so
 tall diagrams keep their document geometry and scroll with the note. Fallbacks
-log a reason category once per failed render key without source-authored labels.
+log a reason category without source-authored labels; repeated frames of the
+same failed render are quiet. Changing width/theme and returning may log again.
 
 The cache uses source SHA-256, 128 CSS-pixel width buckets and theme. At most 32
 entries/64 MiB of rasters are retained, with matching all-window GPU atlas eviction. Worker completions account for raster
