@@ -18,11 +18,14 @@ use core_foundation_sys::{
         CFDictionaryRef,
     },
     string::{kCFStringEncodingUTF8, CFStringCreateWithBytes, CFStringRef},
-    url::{CFURLGetFileSystemRepresentation, CFURLRef},
+    url::{CFURLCreateFromFileSystemRepresentation, CFURLGetFileSystemRepresentation, CFURLRef},
 };
 use std::{
     ffi::c_void,
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, net::UnixStream},
+    },
     path::{Path, PathBuf},
 };
 
@@ -45,6 +48,12 @@ extern "C" {
         requirement: *mut SecRequirementRef,
     ) -> OSStatus;
     fn SecCodeCheckValidity(
+        code: SecCodeRef,
+        flags: u32,
+        requirement: SecRequirementRef,
+    ) -> OSStatus;
+    fn SecStaticCodeCreateWithPath(path: CFURLRef, flags: u32, code: *mut SecCodeRef) -> OSStatus;
+    fn SecStaticCodeCheckValidity(
         code: SecCodeRef,
         flags: u32,
         requirement: SecRequirementRef,
@@ -129,7 +138,7 @@ fn guest_code(token: &[u8; 32]) -> Result<Owned> {
         Ok(Owned(guest))
     }
 }
-fn check_requirement(code: &Owned, requirement: &CodeRequirement) -> Result<()> {
+fn compiled_requirement(requirement: &CodeRequirement) -> Result<Owned> {
     unsafe {
         let text = requirement.as_str();
         let text = Owned(
@@ -148,12 +157,50 @@ fn check_requirement(code: &Owned, requirement: &CodeRequirement) -> Result<()> 
             "SecRequirementCreateWithString",
             SecRequirementCreateWithString(text.0.cast(), DEFAULT_FLAGS, &mut compiled),
         )?;
-        let compiled = Owned(compiled);
+        Ok(Owned(compiled))
+    }
+}
+fn check_requirement(code: &Owned, requirement: &CodeRequirement) -> Result<()> {
+    let compiled = compiled_requirement(requirement)?;
+    unsafe {
         status(
             "SecCodeCheckValidity",
             SecCodeCheckValidity(code.0, DEFAULT_FLAGS, compiled.0),
         )
         .context(NOT_SATISFIED)
+    }
+}
+
+/// Validate code on disk, including the bundle's resource seal when `path` names
+/// an app. This is read-only and never invokes codesign or repairs a signature.
+/// The caller revalidates layout/ownership before every native effect; this is
+/// not an atomic lease over a path another process can replace.
+pub fn verify_static_code(path: &Path, requirement: &CodeRequirement) -> Result<()> {
+    ensure!(path.is_absolute(), "absolute code path required");
+    let compiled = compiled_requirement(requirement)?;
+    unsafe {
+        let bytes = path.as_os_str().as_bytes();
+        let url = Owned(
+            CFURLCreateFromFileSystemRepresentation(
+                kCFAllocatorDefault,
+                bytes.as_ptr(),
+                bytes.len() as CFIndex,
+                u8::from(path.is_dir()),
+            )
+            .cast(),
+        );
+        ensure!(!url.0.is_null(), "cannot create the code URL");
+        let mut code: SecCodeRef = std::ptr::null();
+        status(
+            "SecStaticCodeCreateWithPath",
+            SecStaticCodeCreateWithPath(url.0.cast(), DEFAULT_FLAGS, &mut code),
+        )?;
+        let code = Owned(code);
+        status(
+            "SecStaticCodeCheckValidity",
+            SecStaticCodeCheckValidity(code.0, DEFAULT_FLAGS, compiled.0),
+        )
+        .context("static code does not satisfy the signature requirement")
     }
 }
 fn code_path(code: &Owned) -> Result<PathBuf> {

@@ -592,3 +592,31 @@ before requests. No Syncthing process or real config is accessed. The macOS gate
 also runs the shared status rules, so local idle never becomes proof of completed
 first receive. Native folder mutation/recovery and complete macOS discovery remain
 separate acceptance work; compiling the folder controller does not close them.
+
+### macOS bundle ownership guard
+
+`macos::bundle::BundleGuard` is a read-only prerequisite for the native
+`OwnedSupervisor` implementation. It binds one prepared installation/instance,
+current UID, existing device identity and state path to the current app's canonical
+bundle. It refuses changed bindings, moved bundles, symlinked or group/world-writable
+bundle entries, missing executable code, state inside the install tree, and any
+agent plist differing from the shared generated definition. Its bounded plist
+read does not repair a definition. Private-state ownership and file durability
+remain the transactional store's responsibility.
+
+The production `NativeSignature` verifier uses Security.framework static code
+validation with the caller's explicit app and helper requirements. It validates
+the outer app/resource seal and the helper separately. No signature, Team ID or
+identifier is inferred from untrusted journal contents; the release build policy
+must supply them. Tests use synthetic policies, never a release-policy fallback.
+The existing live IPC peer verification still authenticates the actual process
+by audit token, code requirement and executable path.
+
+Portable tests inject recording/refusing signature checks. A hosted macOS test
+ad-hoc signs a disposable app with a resource, accepts its exact code-directory
+hash, rejects the release-policy mismatch and changed resource seal, and accepts
+the restored resource as a positive control. It does not register a service or
+launch the fixture app. A verification result is not an atomic lease over the
+bundle: the native adapter must revalidate at every effect, and ownership/IPC,
+selected Syncthing payload and actual stop/reap integration remain subsequent
+work under #588. Native login/sleep/update acceptance is still open.
