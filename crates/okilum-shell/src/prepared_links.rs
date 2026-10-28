@@ -281,7 +281,21 @@ impl Reader {
             restore_position: self
                 .navigation
                 .history_nav
-                .map(|index| self.navigation.history_positions[index]),
+                .map(|index| self.navigation.history_positions[index])
+                .or_else(|| {
+                    // Plain file-list/Quick Open returns restore the last reading
+                    // place. Explicit search, heading, line and task landings win.
+                    if location.0.is_some() || location.1.is_some() || landing.is_some() {
+                        return None;
+                    }
+                    if rel == self.current_rel {
+                        return Some(self.content.read(cx).list_state().logical_scroll_top());
+                    }
+                    self.navigation
+                        .places
+                        .get(&(self.vault_root.clone(), rel.to_owned()))
+                        .copied()
+                }),
         };
         let vault = self.vault.clone();
         let rel = rel.to_owned();
