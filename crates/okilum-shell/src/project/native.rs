@@ -51,6 +51,9 @@ impl Native {
             metadata: Metadata::default(),
         }
     }
+    pub(super) fn deleted(&self) -> bool {
+        self.metadata.deleted
+    }
     pub(super) fn active(&self) -> bool {
         self.client.is_some()
     }
@@ -517,6 +520,16 @@ impl ProjectView {
                     )),
             );
         }
+        if self.native.metadata.deleted {
+            view = view.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .debug_selector(|| "project-live-deleted".into())
+                    .child("This manager thread was deleted. Open T3 to choose another manager."),
+            );
+        }
         if self.native.metadata.payload_budget_exceeded {
             view =
                 view.child(div().w_full().min_w_0().whitespace_normal().child(
@@ -558,18 +571,13 @@ fn notice(error: &StreamError) -> String {
 }
 
 fn terminal(error: &StreamError) -> bool {
-    matches!(
-        error,
-        StreamError::PairingRequired
-            | StreamError::Expired
-            | StreamError::WrongOrigin
-            | StreamError::MissingReadPermission
-            | StreamError::IncompatibleProtocol
-            | StreamError::Rejected
-            | StreamError::Protocol(_)
-            | StreamError::Http(403 | 404)
-    )
+    match error {
+        StreamError::Closed | StreamError::Unreachable => false,
+        StreamError::Http(status) => !matches!(*status, 408 | 429 | 500..=599),
+        _ => true,
+    }
 }
+
 fn delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.saturating_sub(1).min(4)).min(15))
 }

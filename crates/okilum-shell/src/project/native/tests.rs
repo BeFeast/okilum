@@ -15,6 +15,10 @@ fn retry_backoff_is_bounded_and_classifies_auth_or_protocol_failures_as_terminal
     assert!(terminal(&StreamError::PairingRequired));
     assert!(terminal(&StreamError::Protocol("schema")));
     assert!(!terminal(&StreamError::Unreachable));
+    assert!(terminal(&StreamError::Http(400)));
+    assert!(terminal(&StreamError::Http(302)));
+    assert!(!terminal(&StreamError::Http(429)));
+    assert!(!terminal(&StreamError::Http(503)));
 }
 #[gpui::test]
 fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
@@ -162,6 +166,46 @@ fn pairing_token_keeps_the_full_row_width_in_a_narrow_panel(cx: &mut TestAppCont
     assert!(
         bounds.size.width > px(240.) && bounds.right() <= px(320.),
         "pairing input shrank or escaped the panel: {bounds:?}"
+    );
+    drop(root);
+}
+
+#[gpui::test]
+fn deleted_live_thread_disables_send_with_a_visible_reason(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let temp = tempfile::tempdir().unwrap();
+    let env = Environment::new("fixture", "https://native.invalid").unwrap();
+    let token=NativeToken::from_secret(&env,&serde_json::to_vec(&json!({"origin":env.origin(),"access_token":"fixture-only","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read"})).unwrap()).unwrap();
+    let client = Arc::new(NativeClient::new(env, token, Duration::from_secs(2)).unwrap());
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            view.active = false;
+            view.identity = Some(ServerIdentity {
+                environment_id: "fixture".into(),
+                label: "Fixture".into(),
+            });
+            view.native.client = Some(client);
+            assert!(
+                view.can_send(),
+                "positive control: valid manager send was already disabled"
+            );
+            view.native.metadata.deleted = true;
+            assert!(!view.can_send());
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(760.), px(1000.)));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-live-deleted").is_some(),
+        "deleted live thread has no visible reason"
     );
     drop(root);
 }

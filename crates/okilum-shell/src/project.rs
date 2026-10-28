@@ -462,6 +462,11 @@ impl ProjectView {
     }
 
     fn can_send(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.native.active() && self.native.deleted() {
+            return false;
+        }
+
         self.identity.is_some()
             && self.gateway.as_ref().is_some_and(|gateway| {
                 matches!(

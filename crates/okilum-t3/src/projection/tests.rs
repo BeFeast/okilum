@@ -255,3 +255,22 @@ fn replacement_snapshot_invalidates_an_outstanding_page_even_if_its_cursor_match
     assert!(p.metadata.has_more_history);
     assert!(!p.take_changes().changed());
 }
+
+#[test]
+fn deleted_thread_clears_history_and_later_events_cannot_resurrect_it() {
+    let mut p = model(vec![message("body", 1, "assistant_message")]);
+    p.apply(&[update(
+        "thread.deleted",
+        json!({"id":"thread","projectId":"project","title":"Manager"}),
+    )])
+    .unwrap();
+    assert!(p.metadata.deleted && p.keys().is_empty());
+    assert!(p.take_changes().changed());
+    p.apply(&[update(
+        "turn-item.updated",
+        message("body", 1, "assistant_message"),
+    )])
+    .unwrap();
+    assert!(!p.take_changes().changed());
+    assert!(p.keys().is_empty());
+}
