@@ -177,8 +177,10 @@ mod tests {
                 gpui_component::v_flex()
                     .w(px(400.))
                     .child(
-                        ReaderImage::new(self.0.clone().into())
-                            .with_logical_size(size(px(240.), px(6000.))),
+                        div().flex_none().child(
+                            ReaderImage::new(self.0.clone().into())
+                                .with_logical_size(size(px(240.), px(6000.))),
+                        ),
                     )
                     .child(
                         div()
