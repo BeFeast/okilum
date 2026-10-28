@@ -599,15 +599,13 @@ fn tree_label(
     note_titles: bool,
     titles: &HashMap<String, String>,
 ) -> String {
-    if kind == EntryKind::Markdown {
-        if note_titles {
-            if let Some(title) = titles.get(path) {
-                return title.clone();
-            }
-        }
-        okilum_core::Vault::title_of(path)
-    } else {
-        path.rsplit('/').next().unwrap_or(path).to_owned()
+    match kind {
+        EntryKind::Markdown if note_titles => titles
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| okilum_core::Vault::title_of(path)),
+        EntryKind::Markdown => okilum_core::Vault::title_of(path),
+        _ => path.rsplit('/').next().unwrap_or(path).to_owned(),
     }
 }
 
