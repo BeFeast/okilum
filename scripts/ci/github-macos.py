@@ -110,7 +110,9 @@ def ref_name(number, sha, run_id, attempt, invocation=None):
     if invocation is not None and not re.fullmatch(r"[0-9a-f]{32}", invocation):
         raise ValueError("Expected a UUID hex invocation identifier")
     suffix = f"-{invocation}" if invocation is not None else ""
-    return f"forgejo-pr/{number}/{sha}-{run_id}-{attempt}{suffix}"
+    # A legacy branch can be named forgejo-*-pr/<number>. Git cannot create
+    # children below that file. Keep every invocation a sibling of legacy refs.
+    return f"forgejo-pr/{number}-{sha}-{run_id}-{attempt}{suffix}"
 
 
 DIAGNOSTIC_LIMIT = 4096
@@ -279,15 +281,28 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
         sleep(poll_delay())
 
 
+# All callers of ref_name, including standalone Linux and the generic PR bridge.
+BRIDGE_PREFIXES = (
+    "forgejo-pr", "forgejo-linux-pr", "forgejo-shared-pr", "forgejo-linux-binary-pr",
+    "forgejo-brain-pr", "forgejo-inbox-pr", "forgejo-arch-pr", "forgejo-windows-release-pr",
+    "forgejo-native-core-pr", "forgejo-native-sync-pr", "forgejo-native-shell-pr",
+    "forgejo-perf-linux-pr",
+)
+
+
 def cleanup(api, number):
     if not re.fullmatch(r"[1-9][0-9]*", str(number)):
         raise ValueError("Expected a positive PR number")
-    prefix = f"refs/heads/forgejo-pr/{number}/"
-    refs = api.request(f"git/matching-refs/heads/forgejo-pr/{number}/")
-    for ref in refs:
-        if ref["ref"].startswith(prefix):
-            api.request("git/" + ref["ref"], "DELETE")
-            print(f"Deleted {ref['ref']}")
+    invocation = r"[0-9a-f]{40}-[1-9][0-9]*-[1-9][0-9]*(?:-[0-9a-f]{32})?"
+    for namespace in BRIDGE_PREFIXES:
+        root = f"refs/heads/{namespace}/{number}"
+        # New sibling refs, old nested invocation refs, and the legacy PR leaf.
+        owned = re.compile(re.escape(root) + rf"(?:[-/]{invocation})?$")
+        refs = api.request(f"git/matching-refs/heads/{namespace}/{number}")
+        for ref in refs:
+            if owned.fullmatch(ref["ref"]):
+                api.request("git/" + ref["ref"], "DELETE")
+                print(f"Deleted {ref['ref']}")
 
 
 def main():

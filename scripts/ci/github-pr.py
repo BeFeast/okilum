@@ -28,6 +28,7 @@ LANES = {
 def main():
     started = time.monotonic()
     result, branch, api = 'failure', None, None
+    pushed = False
     token = ''
     try:
         lane = os.environ['CI_LANE']
@@ -42,6 +43,7 @@ def main():
         api.log_quota()
         token = api.token
         transport.push_head(branch, sha, token)
+        pushed = True
         result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
             job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
         print(message)
@@ -52,7 +54,7 @@ def main():
             print(f'Shared hosted bridge queue+run seconds={time.monotonic() - started:.1f}', flush=True)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'result={result}\n')
-        if branch and api:
+        if pushed and branch and api:
             try:
                 token = api.token
                 api.request('git/refs/heads/' + branch, 'DELETE')

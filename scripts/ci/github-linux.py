@@ -14,6 +14,7 @@ BUILD_STEP = 'Run full Linux gate'
 
 def main():
     result, branch, api = 'failure', None, None
+    pushed = False
     try:
         sha = os.environ['PR_HEAD_SHA']
         branch = transport.ref_name(os.environ['PR_NUMBER'], sha, os.environ['GITHUB_RUN_ID'],
@@ -22,6 +23,7 @@ def main():
         api = transport.GitHub()
         api.log_quota()
         transport.push_head(branch, sha, api.token)
+        pushed = True
         result, message = transport.wait_for_run(api, branch, sha, workflow=WORKFLOW,
             job_name='linux', build_step=BUILD_STEP, queue_timeout=900, run_timeout=5400)
         print(message)
@@ -30,7 +32,7 @@ def main():
     finally:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'result={result}\n')
-        if branch and api:
+        if pushed and branch and api:
             try:
                 api.request('git/refs/heads/' + branch, 'DELETE')
             except transport.Unavailable:
