@@ -23,6 +23,8 @@ pub struct Binding {
     pub attention: Vec<AttentionItem>,
     #[serde(default = "stuck_default")]
     pub stuck_after_seconds: u64,
+    #[serde(skip)]
+    pub registry_error: Option<String>,
 }
 /// Human-owned next actions. No issue/thread state creates these entries.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -254,7 +256,19 @@ impl Binding {
         // The current registry supersedes literal IDs retained in old cards.
         // An unreadable registry cannot establish live executor ownership.
         let mut binding = binding;
-        let registry = crate::executors::Registry::read(area).ok();
+        let needs_registry = binding
+            .issues
+            .iter()
+            .any(|scope| scope.agent_thread_id.is_some());
+        let registry = match crate::executors::Registry::read(area) {
+            Ok(registry) => Some(registry),
+            Err(error) => {
+                if needs_registry {
+                    binding.registry_error = Some(format!("{error:#}"));
+                }
+                None
+            }
+        };
         for scope in &mut binding.issues {
             let entry = registry.as_ref().and_then(|registry| {
                 registry

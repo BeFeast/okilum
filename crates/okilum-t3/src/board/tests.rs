@@ -399,9 +399,9 @@ fn current_registry_rotation_supersedes_stale_card_ids() {
     thread.thread_id = "mcp:launch:current".into();
     assert_eq!(column(scope, Some(&open), &[thread]), Column::Working);
     std::fs::write(area.join("ops/thread-ids.md"), "invalid").unwrap();
-    assert!(Binding::read(&area).unwrap().unwrap().issues[0]
-        .agent_thread_id
-        .is_none());
+    let unknown = Binding::read(&area).unwrap().unwrap();
+    assert!(unknown.issues[0].agent_thread_id.is_none());
+    assert!(unknown.registry_error.is_some());
     std::fs::remove_dir_all(area).unwrap();
 }
 
