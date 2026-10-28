@@ -315,6 +315,13 @@ mode or query state. Beneath the header is the tree of real folders and notes
 grouping). Top-level folders are labelled in weight 600 without a folder icon;
 deeper folders have `Folder`/`FolderOpen`; notes have `FileText`. The current note
 is highlighted with `selected` and weight 500, and its ancestors are expanded.
+Markdown tree rows use the file stem by default (#1834). Settings → Appearance →
+File tree labels can select Title (first H1 → frontmatter title → file stem);
+the row label and its sort key change together, live in every Reader window.
+Non-Markdown files retain their full name. The folder's `_index.md` still leads
+its folder, but its label follows the same setting. Reveal and rename continue
+to use the path identity; note headings, Quick Open, search and Linked from keep
+their titles in either mode.
 There is no flat note-list mode in the sidebar and no item cap (#369). Folders whose name starts with `_` or `.` are
 not shown; their notes stay reachable through links and search. Archive folders
 (`Archive`, `4 Archive`, `Архив`) are muted and open only on request or to reveal
