@@ -106,9 +106,11 @@ class CleanupDiagnosticTests(unittest.TestCase):
                     patch.object(bridge.transport, 'GitHub') as api, \
                     patch.object(bridge.transport, 'wait_for_run', return_value=('success', 'ok')), \
                     contextlib.redirect_stdout(output):
+                api.return_value.token = 'cleanup-secret'
                 api.return_value.request.side_effect = bridge.transport.Unavailable(
-                    'GitHub DELETE git/refs/heads/x: HTTP 404 (request failed)')
+                    'GitHub DELETE git/refs/heads/x: HTTP 404 (request failed) cleanup-secret')
                 self.assertEqual(bridge.main(), 0)
             self.assertIn('cleanup failed: GitHub DELETE', output.getvalue())
             self.assertIn('HTTP 404 (request failed)', output.getvalue())
+            self.assertNotIn('cleanup-secret', output.getvalue())
             self.assertEqual(Path(env['GITHUB_OUTPUT']).read_text(), 'result=success\n')

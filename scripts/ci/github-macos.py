@@ -123,7 +123,7 @@ def safe_diagnostic(message, token):
         for secret in (token, urllib.parse.quote(token, safe="")):
             message = message.replace(secret, "[REDACTED]")
     message = re.sub(r"https?://[^\s/@]+(?::[^\s/@]*)?@", "https://[REDACTED]@", message)
-    message = re.sub(r"(?i)(authorization[:=]\s*(?:bearer|basic)\s+)\S+",
+    message = re.sub(r"(?i)(authorization[:=]\s*(?:bearer|basic|token)\s+)\S+",
                      r"\1[REDACTED]", message)
     message = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "?", message)
     return message[:DIAGNOSTIC_LIMIT] + (" [truncated]" if len(message) > DIAGNOSTIC_LIMIT else "")

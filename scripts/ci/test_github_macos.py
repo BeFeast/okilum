@@ -388,3 +388,8 @@ class PushDiagnosticTests(PushRetryTests):
             self.assertNotIn(secret, result)
         self.assertLessEqual(len(result), bridge.DIAGNOSTIC_LIMIT + len(" [truncated]"))
         self.assertTrue(result.endswith(" [truncated]"))
+
+    def test_token_authorization_scheme_redacted_without_literal_token(self):
+        result = bridge.safe_diagnostic('Authorization: token ghp_example', '')
+        self.assertNotIn('ghp_example', result)
+        self.assertIn('[REDACTED]', result)
