@@ -1256,7 +1256,10 @@ mod tests {
             vault.unreadable.is_empty(),
             "CLOUD1837: pending cloud files are not unreadable"
         );
-        assert_eq!(vault.cloud_placeholders, [stub.clone()]);
+        assert_eq!(
+            vault.cloud_placeholders.as_slice(),
+            std::slice::from_ref(&stub)
+        );
         assert!(!vault.inventory_complete && !vault.paths_complete());
         assert_eq!(stats.read, 1);
         assert_eq!(
@@ -1280,7 +1283,10 @@ mod tests {
             StartupSnapshot::load(&cache, &root).unwrap().vault(),
         ] {
             assert!(cached.unreadable.is_empty());
-            assert_eq!(cached.cloud_placeholders, [stub.clone()]);
+            assert_eq!(
+                cached.cloud_placeholders.as_slice(),
+                std::slice::from_ref(&stub)
+            );
         }
         let mut legacy = loaded.clone();
         for item in &mut legacy.unreadable {
@@ -1292,7 +1298,10 @@ mod tests {
             legacy.vault().unreadable.is_empty(),
             "old cache records migrate without false errors"
         );
-        assert_eq!(legacy.vault().cloud_placeholders, [stub.clone()]);
+        assert_eq!(
+            legacy.vault().cloud_placeholders.as_slice(),
+            std::slice::from_ref(&stub)
+        );
         std::fs::remove_file(&stub).unwrap();
         std::fs::write(root.join("Later.md"), "# Materialized\n[[local]]").unwrap();
         let (ready, current, stats) =
@@ -1332,7 +1341,10 @@ mod tests {
                 .0,
         ] {
             assert!(vault.unreadable.is_empty());
-            assert_eq!(vault.cloud_placeholders, [stub.clone()]);
+            assert_eq!(
+                vault.cloud_placeholders.as_slice(),
+                std::slice::from_ref(&stub)
+            );
         }
         std::fs::write(temp.path().join("bad.md"), [0xff]).unwrap();
         let vault = Vault::scan(temp.path()).unwrap();

@@ -941,7 +941,10 @@ mod tests {
             })
             .unwrap();
         assert!(vault.unreadable.is_empty());
-        assert_eq!(vault.cloud_placeholders, [path.clone()]);
+        assert_eq!(
+            vault.cloud_placeholders.as_slice(),
+            std::slice::from_ref(&path)
+        );
         assert!(snapshot.source("Pending.md").is_none());
         let mut state = State::new(vault, snapshot);
         let mut reads = Vec::new();
@@ -977,7 +980,10 @@ mod tests {
         std::fs::write(&stub, "synthetic unavailable source").unwrap();
         let (vault, snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
         assert!(vault.unreadable.is_empty());
-        assert_eq!(vault.cloud_placeholders, [stub.clone()]);
+        assert_eq!(
+            vault.cloud_placeholders.as_slice(),
+            std::slice::from_ref(&stub)
+        );
         let cache = temp.path().join("cache");
         save_provisional(&snapshot, &vault, &cache, None).unwrap();
         let mut state = State::new(vault, snapshot);
