@@ -37,7 +37,8 @@ Markdown paths, and cannot escape through `..`, absolute paths or symlinks.
 The version-1 binding contains `title`, `goal`, `repository`, `stage_note`,
 `refresh_seconds` (default 30, configurable), and ordered `issues`. Each issue has
 `number`, `expected`, `executor`, optional `notes`, `pull_requests` and `builds`
-(label + HTTPS URL). An optional `execution` names both `thread_id` and `run_id`;
+(label + HTTPS URL). An optional legacy `execution` names both `thread_id` and `run_id` for cached
+progress context. Working classification uses the automatic evidence below;
 merely naming an executor does not establish that it is working on this issue.
 Build links are explicit destinations, not verified inclusion or installation.
 
@@ -59,8 +60,8 @@ are healthy or refreshing. A failed or stale
 source shows one compact line with its last successful read time. Internal error
 text and polling counters are not presented as ordinary Board content.
 
-Open issues without an exact issue-to-run link stay in Queue. In progress needs
-that exact run in the bound project's live listing. Closed issues stay in Checks:
+Open issues need a verified open PR reference or current-task/active-run evidence
+to enter In progress. Otherwise they stay in Queue. Closed issues stay in Checks:
 merge/closure is neither available delivery nor Oleg acceptance. No delivery
 placeholder or acceptance disclaimer is shown. Verified
 feed/artifact correlation and human acceptance remain later slices; removing
@@ -69,7 +70,7 @@ empty placeholders does not establish those facts.
 ## Verification and acceptance
 
 Targeted tests cover the exact fourteen-issue scope, closed without acceptance,
-exact-run execution matching, independent and partial failure, retained snapshots,
+open-PR/current-task evidence, independent and partial failure, retained snapshots,
 coalescing and late answers. Native GPUI fixtures exercise the actual Manager
 composer (append, Unicode, Undo, no send and project mismatch), hidden Board state,
 and real Reader project → note → Board navigation with the retained Manager draft.
@@ -151,9 +152,10 @@ Issue #1795 stays open until Oleg approves the resulting build.
 
 ## Live agent source, push 3
 
-An issue's optional `agent_thread_id` names one exact thread from the already
-connected gateway's bound-project listing. Missing `agent_thread_id` means no live status and no binding error, even when
-there is an issue execution link. The executor name alone never resolves a live thread.
+The current executor registry resolves each card to a literal thread in the already
+connected gateway's bound-project listing. An exact registry role supersedes a
+stale `agent_thread_id`; otherwise the literal ID must still belong to the registry.
+A thread title or unregistered executor display name never establishes ownership.
 The agent tag opens T3 through the existing server identity, using its encoded
 thread URL. Missing or ambiguous bound agents are reported, not matched by name.
 
@@ -171,8 +173,8 @@ progress line is shown only if the Manager already has that exact thread/run in
 its conversation cache and the issue has the same execution link. Other agent
 timelines are not fetched, and thread titles are never relabelled as progress.
 Unavailable progress is omitted. Source errors keep the existing one-line notice
-and retained snapshot. Agent activity does not promote an issue to working or
-mark a build/issue accepted.
+and retained snapshot. Agent activity alone never promotes an entire backlog. Only its explicit current
+task can use active-run evidence; neither branch marks a build/issue accepted.
 
 The manager may maintain the same canonical `ops/board.yaml`, for example:
 
