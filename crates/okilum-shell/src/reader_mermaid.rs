@@ -271,7 +271,10 @@ mod tests {
             cx.default_global::<Cache>()
                 .entries
                 .push((request.clone(), None));
-            DiagramAsset::load(request.clone(), cx)
+            // Return a concrete task, not the trait method's opaque future
+            // whose captured App lifetime must stay inside this update.
+            let executor = cx.background_executor().clone();
+            executor.spawn(DiagramAsset::load(request.clone(), cx))
         });
         let result = work.await.unwrap();
         cx.update(|cx| {
