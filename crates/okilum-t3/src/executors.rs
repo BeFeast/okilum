@@ -15,6 +15,8 @@ const MAX_EXECUTORS: usize = 128;
 pub struct Entry {
     pub role: String,
     pub thread_id: String,
+    /// Stable current issue number from the optional registry column.
+    pub current_task: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registry {
@@ -72,6 +74,9 @@ impl Registry {
             tables.len() == 1,
             "Expected one Role / Thread registry table"
         );
+        let header = cells(section[tables[0]]);
+        let task_column = header.iter().position(|cell| *cell == "Current task");
+        let mut roles = BTreeSet::new();
         let mut manager = None;
         let mut executors = Vec::new();
         let mut ids = BTreeSet::new();
@@ -118,9 +123,31 @@ impl Registry {
                     executors.len() < MAX_EXECUTORS,
                     "Executor registry exceeds 128 entries; no partial registry was loaded"
                 );
+                ensure!(
+                    roles.insert(row[0]),
+                    "Duplicate executor role in current registry"
+                );
+                let current_task = task_column
+                    .and_then(|column| row.get(column))
+                    .map(|value| {
+                        let value = value.trim().trim_matches('`');
+                        if value.is_empty() || value == "—" || value == "-" {
+                            return Ok(None);
+                        }
+                        let number = value
+                            .strip_prefix('#')
+                            .unwrap_or(value)
+                            .parse::<u64>()
+                            .context("Current task must be one positive issue number or blank")?;
+                        ensure!(number > 0, "Current task must be positive");
+                        Ok(Some(number))
+                    })
+                    .transpose()?
+                    .flatten();
                 executors.push(Entry {
                     role: row[0].to_owned(),
                     thread_id: id,
+                    current_task,
                 });
             }
         }
