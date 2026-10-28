@@ -771,6 +771,8 @@ struct Opts {
     /// be a good way to index the wrong directory.
     vault: Option<PathBuf>,
     open_path: Option<PathBuf>,
+    /// An explicit CLI/OS open created this empty Markdown file (#1835).
+    created_note: bool,
     /// More log files opened with `open_path`, in one view (#1160).
     extra_logs: Vec<PathBuf>,
     single_file: bool,
@@ -1502,6 +1504,7 @@ struct Reader {
     queued_open_note: Option<String>,
     /// Where an external link queued with `queued_open_note` lands (#1049).
     queued_landing: Option<okilum_core::deep_link::Position>,
+    queued_edit_note: Option<String>,
     /// An external link opened while editing: once its note is accepted, the
     /// editor returns there with the caret on the link's line (#1049).
     pending_link_edit: Option<reader_deep_link::EditLanding>,
@@ -1783,6 +1786,7 @@ impl Reader {
             pending_open_document: None,
             queued_open_note: None,
             queued_landing: None,
+            queued_edit_note: None,
             pending_link_edit: None,
             side_panels: [None, None],
             outline_section: None,

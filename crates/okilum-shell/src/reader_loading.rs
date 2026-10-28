@@ -215,6 +215,25 @@ fn prepare_first_with_last_document(
     last_document: impl FnOnce(&Path) -> Result<Option<String>>,
 ) -> Result<Event> {
     cancel.check()?;
+    let mut opts = opts.clone();
+    if let Some(path) = opts.open_path.as_deref() {
+        let (path, created) = reader_open::resolve_explicit_path(path, opts.vault.as_deref())?;
+        opts.open_path = Some(path);
+        opts.created_note |= created;
+    }
+    let mut event = prepare_first_existing_document(&opts, cancel, last_document)?;
+    if let Event::First { intent, .. } = &mut event {
+        intent.created_note = opts.created_note;
+    }
+    Ok(event)
+}
+
+fn prepare_first_existing_document(
+    opts: &Opts,
+    cancel: &Cancellation,
+    last_document: impl FnOnce(&Path) -> Result<Option<String>>,
+) -> Result<Event> {
+    cancel.check()?;
     let root = opts.vault.as_deref();
     let path = opts
         .open_path
@@ -1581,6 +1600,7 @@ impl Reader {
             .note
             .clone()
             .filter(|rel| reader_delimited::editable(rel) || opens_as_file(rel));
+        let created_note = pending.intent.created_note;
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
         if preserve_document {
             self.link_notice = None;
@@ -1608,8 +1628,10 @@ impl Reader {
             .and_then(|load| load.opts.landing.clone())
             .filter(|_| !preserve_document);
         if let Some(note) = self.queued_open_note.take() {
+            let edit = self.queued_edit_note.take().as_deref() == Some(note.as_str());
             match self.queued_landing.take() {
                 Some(position) => self.open_link(&note, position, window, cx),
+                None if edit => self.open_created_note(&note, window, cx),
                 None => self.open_note(&note, None, window, cx),
             }
         } else if let Some(log) = pending.log {
@@ -1632,6 +1654,8 @@ impl Reader {
             self.preview_file(&rel, window, cx);
         } else if let Some(position) = first_link {
             self.open_first_link(position, window, cx);
+        } else if created_note && self.editing.is_none() {
+            self.toggle_source(window, cx);
         }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
