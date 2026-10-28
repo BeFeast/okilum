@@ -52,32 +52,31 @@ impl Composer {
 }
 impl Render for Composer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let modes = h_flex().gap_1().children(
-            self.native
-                .then(|| {
-                    [
-                        (Mode::Auto, "Send"),
-                        (Mode::Queue, "Queue"),
-                        (Mode::Steer, "Steer"),
-                    ]
-                    .into_iter()
-                    .map(|(mode, label)| {
-                        Button::new(SharedString::from(format!("project-mode-{label}")))
-                            .ghost()
-                            .label(format!(
-                                "{}{label}",
-                                if self.mode == mode { "✓ " } else { "" }
-                            ))
-                            .disabled(self.busy || (mode == Mode::Steer && !self.steer))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.mode = mode;
-                                cx.notify();
-                            }))
-                    })
-                    .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-        );
+        let modes = if self.native {
+            [
+                (Mode::Auto, "Send"),
+                (Mode::Queue, "Queue"),
+                (Mode::Steer, "Steer"),
+            ]
+            .into_iter()
+            .map(|(mode, label)| {
+                Button::new(SharedString::from(format!("project-mode-{label}")))
+                    .ghost()
+                    .label(format!(
+                        "{}{label}",
+                        if self.mode == mode { "✓ " } else { "" }
+                    ))
+                    .disabled(self.busy || (mode == Mode::Steer && !self.steer))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.mode = mode;
+                        cx.notify();
+                    }))
+            })
+            .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let modes = h_flex().gap_1().children(modes);
         v_flex().w_full().gap_1().child(modes).child(
             h_flex()
                 .items_end()

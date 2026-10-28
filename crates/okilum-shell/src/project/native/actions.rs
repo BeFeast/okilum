@@ -1,7 +1,9 @@
 //! Action drafts invalidate this entity, never the virtualized history.
 use super::*;
 use okilum_t3::actions::{DispatchMode, Intent, Journal, Record, State};
-use serde_json::{json, Value};
+use serde_json::json;
+#[cfg(test)]
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 pub(crate) struct Actions {
