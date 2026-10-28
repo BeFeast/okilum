@@ -1,9 +1,15 @@
-# Mermaid Sprint, 28 October 2026
+# Mermaid diagrams
 
-Manager-authorized Sprint delivery for #1739 (duplicate of technical record
-#1182). This branch pins `merman = "=0.9.2"`. The later main PR still requires
-Oleg's acceptance and the existing ≥30/33 visual gate. No corpus is committed.
-CT141 `/tmp/okilum-mermaid-corpus` was absent; it is not reconstructed.
+Reader and Live Preview render Mermaid using pinned `merman = "=0.9.2"`
+(#1739; technical record #1182). Oleg accepted the Sprint rendering on
+28 October 2026. Source mode keeps highlighted Mermaid code.
+
+The real-vault corpus measurement runs after merge and before Stable: report
+error-free and visually correct counts against mermaid-cli, p95 latency, peak
+RSS and crashes. The visual bar is at least 90% correct. By the 28 October
+publication decision this measurement is not a main-PR merge condition.
+Personal corpus sources stay outside the repository and public logs; repository
+fixtures are synthetic.
 
 Reader and Live Preview share the Markdown extension. In LP only Mermaid code
 fences join S7 blocks: caret/selection/composition reveals their source through
