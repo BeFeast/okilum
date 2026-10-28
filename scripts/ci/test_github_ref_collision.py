@@ -22,6 +22,11 @@ SHA = 'a' * 40
 
 
 class RefCollisionTests(unittest.TestCase):
+    def test_cleanup_namespaces_cover_every_configured_lane(self):
+        expected = {'forgejo-pr', 'forgejo-linux-pr'}
+        expected.update(f'forgejo-{lane}-pr' for lane in pr.LANES)
+        self.assertEqual(set(bridge.BRIDGE_PREFIXES), expected)
+
     def test_real_git_legacy_leaf_blocks_old_child_but_not_new_sibling(self):
         with tempfile.TemporaryDirectory() as tmp:
             def git(*args, **kwargs):
