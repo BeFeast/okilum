@@ -49,10 +49,9 @@ pub(crate) fn resolve_explicit_path(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let parent = okilum_core::vault::canonical_root(parent).map_err(|error| {
-        if error
-            .downcast_ref::<io::Error>()
-            .is_some_and(|e| e.kind() == io::ErrorKind::NotFound)
-        {
+        let kind = error.kind();
+        let error = anyhow::Error::from(error);
+        if kind == io::ErrorKind::NotFound {
             error.context(MissingParent(parent.to_path_buf()))
         } else {
             error.context(format!(
