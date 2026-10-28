@@ -530,11 +530,12 @@ mod topology_tests {
     fn cloud_materialization_metadata_is_forwarded_as_a_source_change() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("Pending.md");
+        std::fs::write(&path, [0xff]).unwrap();
         let mut watcher = VaultWatcher::new(temp.path()).unwrap();
         let (tx, rx) = mpsc::channel();
         watcher.rx = rx;
-        // No readable source exists: routing a dataless-flag notification must
-        // need only its identity, not open/download its contents.
+        // Metadata routing uses only the path/file metadata, not source bytes
+        // (these bytes deliberately are not a valid Markdown UTF-8 source).
         tx.send(Ok(Event::new(EventKind::Modify(
             notify::event::ModifyKind::Metadata(notify::event::MetadataKind::Any),
         ))

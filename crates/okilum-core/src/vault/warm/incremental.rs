@@ -435,7 +435,18 @@ impl State {
             let Ok(relative) = path.strip_prefix(&self.vault.root) else {
                 return true;
             };
-            let scoped = input_directory_scope(relative, &changes.directories, &directories);
+            // Legacy stubs can vanish with only the materialized document's
+            // event. Match that explicit filename convention without opening
+            // either source, and keep parent-directory hints working as before.
+            let logical = relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix('.'))
+                .and_then(|name| name.strip_suffix(".icloud"))
+                .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+                .map(|name| note_path(&relative.with_file_name(name)));
+            let scoped = input_directory_scope(relative, &changes.directories, &directories)
+                || logical.is_some_and(|path| touched.contains(&path));
             !scoped
                 || !std::fs::symlink_metadata(path)
                     .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
@@ -954,6 +965,64 @@ mod tests {
             state.snapshot.source("Pending.md").as_deref(),
             Some("# Materialized")
         );
+        compare(&state);
+    }
+
+    #[test]
+    fn legacy_cloud_stub_retires_on_logical_path_event_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let stub = root.join(".Pending.md.icloud");
+        std::fs::write(&stub, "synthetic unavailable source").unwrap();
+        let (vault, snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        assert!(vault.unreadable.is_empty());
+        assert_eq!(vault.cloud_placeholders, [stub.clone()]);
+        let cache = temp.path().join("cache");
+        save_provisional(&snapshot, &vault, &cache, None).unwrap();
+        let mut state = State::new(vault, snapshot);
+        std::fs::remove_file(stub).unwrap();
+        let logical = root.join("Pending.md");
+        std::fs::write(&logical, "# Materialized from legacy stub").unwrap();
+        let mut reads = Vec::new();
+        let changes = crate::Changes {
+            changed: BTreeSet::from(["Pending.md".into()]),
+            ..Default::default()
+        };
+        assert!(
+            changes.directories.is_empty(),
+            "no parent-directory hint or Retry"
+        );
+        let batch = state
+            .apply_with_reader(&changes, &mut |_, _| Ok(()), &mut |path| {
+                reads.push(path.to_owned());
+                std::fs::read(path)
+            })
+            .unwrap();
+        assert_eq!(reads, [logical]);
+        assert_eq!(batch.read, 1);
+        assert!(state.vault.cloud_placeholders.is_empty() && state.vault.unreadable.is_empty());
+        assert!(state
+            .vault
+            .notes
+            .iter()
+            .any(|note| note.path == "Pending.md"));
+        assert_eq!(
+            state.snapshot.source("Pending.md").as_deref(),
+            Some("# Materialized from legacy stub")
+        );
+        state.persist_delta(&cache).unwrap();
+        let saved = Snapshot::load(&cache, &root).unwrap();
+        assert!(saved.vault().cloud_placeholders.is_empty());
+        assert_eq!(
+            saved.source("Pending.md"),
+            state.snapshot.source("Pending.md")
+        );
+        assert!(StartupSnapshot::load(&cache, &root)
+            .unwrap()
+            .vault()
+            .cloud_placeholders
+            .is_empty());
         compare(&state);
     }
 
