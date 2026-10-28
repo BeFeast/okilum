@@ -36,7 +36,7 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
  }
 
  /// A inline element used to render a inline text and support selectable.
-@@ -1645,3 +1649,129 @@
+@@ -1645,3 +1649,240 @@
          ));
      }
  }
@@ -45,7 +45,7 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +mod font_presentation_regressions {
 +    use super::{InlineHighlight, text_runs};
 +    use gpui::{
-+        FontWeight, HighlightStyle, LineFragment, TextStyle, TextSystem, WindowTextSystem, px,
++        FontWeight, HighlightStyle, LineFragment, PlatformTextSystem, TextStyle, TextSystem, WindowTextSystem, px,
 +    };
 +    use std::sync::Arc;
 +    use unicode_segmentation::UnicodeSegmentation;
@@ -165,6 +165,117 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +            "wrap must keep a complete emoji sequence"
 +        );
 +    }
++
++    struct MissingEmojiFont(std::sync::Arc<std::sync::atomic::AtomicUsize>);
++
++    impl gpui::PlatformTextSystem for MissingEmojiFont {
++        fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> {
++            super::test_fonts::WideMonoTextSystem.add_fonts(fonts)
++        }
++        fn all_font_names(&self) -> Vec<String> {
++            vec!["Body".into(), "Mono".into()]
++        }
++        fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> {
++            if descriptor.family.as_ref().contains("Emoji") {
++                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                anyhow::bail!("synthetic platform has no emoji font");
++            }
++            super::test_fonts::WideMonoTextSystem.font_id(descriptor)
++        }
++        fn font_metrics(&self, id: gpui::FontId) -> gpui::FontMetrics {
++            super::test_fonts::WideMonoTextSystem.font_metrics(id)
++        }
++        fn typographic_bounds(
++            &self,
++            id: gpui::FontId,
++            glyph: gpui::GlyphId,
++        ) -> anyhow::Result<gpui::Bounds<f32>> {
++            super::test_fonts::WideMonoTextSystem.typographic_bounds(id, glyph)
++        }
++        fn advance(
++            &self,
++            id: gpui::FontId,
++            glyph: gpui::GlyphId,
++        ) -> anyhow::Result<gpui::Size<f32>> {
++            super::test_fonts::WideMonoTextSystem.advance(id, glyph)
++        }
++        fn glyph_for_char(&self, id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> {
++            super::test_fonts::WideMonoTextSystem.glyph_for_char(id, ch)
++        }
++        fn glyph_raster_bounds(
++            &self,
++            params: &gpui::RenderGlyphParams,
++        ) -> anyhow::Result<gpui::Bounds<gpui::DevicePixels>> {
++            super::test_fonts::WideMonoTextSystem.glyph_raster_bounds(params)
++        }
++        fn rasterize_glyph(
++            &self,
++            params: &gpui::RenderGlyphParams,
++            bounds: gpui::Bounds<gpui::DevicePixels>,
++        ) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> {
++            super::test_fonts::WideMonoTextSystem.rasterize_glyph(params, bounds)
++        }
++        fn layout_line(
++            &self,
++            text: &str,
++            size: gpui::Pixels,
++            runs: &[gpui::FontRun],
++        ) -> gpui::LineLayout {
++            super::test_fonts::WideMonoTextSystem.layout_line(text, size, runs)
++        }
++    }
++
++    #[test]
++    fn unavailable_emoji_font_uses_gpui_fallback_for_shaping_and_wrapping() {
++        use gpui::{GlyphId, LineFragment, TextSystem};
++        use std::sync::{
++            Arc,
++            atomic::{AtomicUsize, Ordering},
++        };
++        let rejected = Arc::new(AtomicUsize::new(0));
++        let system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(MissingEmojiFont(
++            rejected.clone(),
++        )))));
++        let style = TextStyle {
++            font_family: "Mono".into(),
++            ..Default::default()
++        };
++        let text = "x✅❌y";
++        let runs = [style.to_run(text.len())];
++        let runs = crate::font_presentation::font_runs(text, &runs);
++        let size = gpui::px(20.);
++        let shaped = system.layout_line(text, size, &runs, None);
++        assert!(
++            rejected.load(Ordering::Relaxed) > 0,
++            "positive control: requested emoji face was unavailable"
++        );
++        let glyphs = shaped
++            .runs
++            .iter()
++            .flat_map(|r| &r.glyphs)
++            .map(|g| g.id)
++            .collect::<Vec<_>>();
++        assert_eq!(
++            glyphs,
++            text.chars().map(|c| GlyphId(c as u32)).collect::<Vec<_>>(),
++            "fallback retains every glyph instead of a missing-glyph box"
++        );
++        let measured = crate::font_presentation::line_fragments(text, &style.font(), size, &system)
++            .iter()
++            .map(|f| match f {
++                LineFragment::Text { text } => {
++                    system
++                        .layout_line(text, size, &[style.to_run(text.len())], None)
++                        .width
++                }
++                LineFragment::Element { width, .. } => *width,
++            })
++            .sum::<gpui::Pixels>();
++        assert_eq!(
++            measured, shaped.width,
++            "both paths use the same upstream fallback"
++        );
++    }
 +}
 diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
 --- a/crates/base/src/text/inline_flow.rs
@@ -275,19 +386,21 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
              let key = super::projected_cache::LineKey::new(
                  &line, &full_runs, font_size, self.wrap_width, window.scale_factor(),
                  crate::input::projection::line_hang(scales, row), hang_room);
-@@ -462,6 +473,7 @@
-             let runs = if hang == 0 { full_runs } else {
-                 styles.runs(start + hang..start + line.len(), &self.font, gpui::black())
+@@ -460,7 +471,8 @@
+                 0
              };
-+            let runs = crate::font_presentation::font_runs(&line[hang..], &runs);
+             let runs = if hang == 0 { full_runs } else {
+-                styles.runs(start + hang..start + line.len(), &self.font, gpui::black())
++                let runs = styles.runs(start + hang..start + line.len(), &self.font, gpui::black());
++                crate::font_presentation::font_runs(&line[hang..], &runs).into_owned()
+             };
              let shape_start = attribution::now();
              let shaped = window
-                 .text_system()
 diff --git a/crates/base/src/font_presentation.rs b/crates/base/src/font_presentation.rs
 new file mode 100644
 --- /dev/null
 +++ b/crates/base/src/font_presentation.rs
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,187 @@
 +//! Unicode emoji presentation is a font choice, not a missing-glyph fallback.
 +use gpui::{
 +    Font, FontFeatures, FontStyle, FontWeight, LineFragment, Pixels, TextRun, TextStyle,
@@ -297,6 +410,8 @@ new file mode 100644
 +use unicode_properties::{EmojiStatus, UnicodeEmoji};
 +use unicode_segmentation::UnicodeSegmentation;
 +
++// GPUI resolves an unavailable family through its existing system fallback
++// stack, then uses platform glyph fallback. Do not duplicate OS font discovery.
 +fn family() -> &'static str {
 +    if cfg!(target_os = "macos") {
 +        "Apple Color Emoji"
