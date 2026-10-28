@@ -466,10 +466,6 @@ impl ProjectView {
         if self.native.active() {
             return !self.native.deleted() && self.native.client_can_operate();
         }
-        #[cfg(target_os = "linux")]
-        if self.native.active() && self.native.deleted() {
-            return false;
-        }
 
         self.identity.is_some()
             && self.gateway.as_ref().is_some_and(|gateway| {

@@ -331,7 +331,7 @@ impl Render for Actions {
     }
 }
 impl ProjectView {
-    pub(super) fn native_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn native_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || !self.can_send() {
             return;
         }

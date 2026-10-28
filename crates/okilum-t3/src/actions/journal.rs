@@ -119,9 +119,26 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new() -> Self {
+            Self(
+                std::env::temp_dir()
+                    .join(format!("okilum-native-actions-{}", uuid::Uuid::new_v4())),
+            )
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
     #[test]
     fn uncertain_delivery_reopens_the_same_intent_and_acknowledgement_prevents_resend() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Directory::new();
         let env = Environment::new("fixture", "http://127.0.0.1:8080").unwrap();
         let journal = Journal::new(dir.path(), &env, "thread");
         let record = journal
@@ -177,7 +194,7 @@ mod tests {
     }
     #[test]
     fn damaged_state_and_failed_prepare_never_dispatch_or_mask_an_older_intent() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Directory::new();
         let env = Environment::new("fixture", "http://127.0.0.1:8080").unwrap();
         let journal = Journal::new(dir.path(), &env, "thread");
         let record = journal
