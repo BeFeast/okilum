@@ -1686,6 +1686,10 @@ impl Reader {
             return;
         }
         if self.current_document_is_cloud_pending() {
+            // A previously queued refresh must not publish a late read failure
+            // after metadata has identified the document as merely pending.
+            self.navigation.reconciliation_generation =
+                self.navigation.reconciliation_generation.wrapping_add(1);
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1739,6 +1743,10 @@ impl Reader {
             return;
         }
         if self.current_document_is_cloud_pending() {
+            // A previously queued refresh must not publish a late read failure
+            // after metadata has identified the document as merely pending.
+            self.navigation.reconciliation_generation =
+                self.navigation.reconciliation_generation.wrapping_add(1);
             self.refresh_link_preparation(cx);
             return;
         }
