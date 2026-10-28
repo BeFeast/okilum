@@ -332,16 +332,19 @@ pub fn register_manager(source: &str, expected: &Manager, id: &str) -> Result<St
     Ok(updated)
 }
 
-/// Any T3 thread id: MCP-created `mcp:<id>` and plain UUIDs created in the
-/// T3 UI alike. Only path-safe characters, so the id cannot escape a route.
+/// T3 UI UUIDs and namespaced MCP ids, including `mcp:launch:<hex>`.
+/// Each namespace segment is nonempty and contains only route-safe characters.
 fn thread_id(id: &str) -> Result<String> {
     let suffix = id.strip_prefix("mcp:").unwrap_or(id);
     ensure!(
         !suffix.is_empty()
             && suffix.len() <= 128
-            && suffix
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            && suffix.split(':').all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            }),
         "invalid Manager thread id"
     );
     Ok(id.to_owned())
@@ -451,6 +454,126 @@ pub fn manager_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LAUNCHED_MANAGER: &str =
+        "mcp:launch:13099777befea3a4729bea16bc252db454294b4b5da5e221eec148a17a4ba965";
+    const LAUNCHED_CLOCK_MANAGER: &str =
+        "mcp:launch:0bb8517fa1a266d825f5af536bb6eb8db71673df1a8738f856fbd153c3c8dc75";
+
+    #[test]
+    fn launched_manager_ids_discover_register_and_route_without_losing_the_namespace() {
+        let vault = std::env::temp_dir().join(format!("okilum-launch-id-{}", uuid::Uuid::new_v4()));
+        for (name, id, registry) in [
+            ("okilum", LAUNCHED_MANAGER, true),
+            ("dremla", LAUNCHED_CLOCK_MANAGER, true),
+            ("tx10-clock", LAUNCHED_CLOCK_MANAGER, false),
+        ] {
+            let ops = vault.join(name).join("ops");
+            std::fs::create_dir_all(&ops).unwrap();
+            std::fs::write(
+                ops.join("project.yaml"),
+                format!("name: {name}\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: maestro\n  manager: {{project_id: brain, thread_id: '{id}', workspace_mode: local}}\n"),
+            )
+            .unwrap();
+            if registry {
+                let source = "# Registry\r\n| Manager | — (not started) | today |\r\n| UI | `mcp:ui` | unchanged |\r\n";
+                let updated = register_manager(source, &Manager::NotStarted, id).unwrap();
+                assert_eq!(
+                    updated,
+                    source.replace("— (not started)", &format!("`{id}`"))
+                );
+                std::fs::write(ops.join("thread-ids.md"), updated).unwrap();
+            }
+        }
+        let discovered = discover(&vault);
+        assert!(discovered.errors.is_empty(), "{:?}", discovered.errors);
+        assert_eq!(discovered.projects.len(), 3);
+        let environment = crate::Environment::new("maestro", "https://example.com").unwrap();
+        let identity = crate::ServerIdentity {
+            environment_id: "environment-1".into(),
+            label: "test".into(),
+        };
+        for project in discovered.projects {
+            let expected = if project.name == "okilum" {
+                LAUNCHED_MANAGER
+            } else {
+                LAUNCHED_CLOCK_MANAGER
+            };
+            assert_eq!(project.manager, Manager::Thread(expected.into()));
+            assert_eq!(
+                project
+                    .native_binding()
+                    .unwrap()
+                    .unwrap()
+                    .manager
+                    .thread_id
+                    .as_deref(),
+                Some(expected),
+            );
+            let browser = manager_url(&environment, &identity, expected).unwrap();
+            assert_eq!(browser.path(), format!("/environment-1/{expected}"));
+            assert!(browser.query().is_none() && browser.fragment().is_none());
+            let desktop = url::Url::parse(&identity.thread_url(expected)).unwrap();
+            assert_eq!(desktop.path(), format!("/environment-1/{expected}"));
+            assert!(desktop.query().is_none() && desktop.fragment().is_none());
+        }
+        std::fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn manager_ids_reject_route_escapes_and_empty_namespace_segments() {
+        let environment = crate::Environment::new("test", "https://example.com").unwrap();
+        let identity = crate::ServerIdentity {
+            environment_id: "environment-1".into(),
+            label: "test".into(),
+        };
+        for invalid in [
+            "",
+            "mcp:",
+            ":launch:abc",
+            "mcp::abc",
+            "mcp:launch:",
+            "mcp:launch::abc",
+            "mcp:launch:abc/def",
+            "mcp:launch:..",
+            "mcp:launch:a.b",
+            "mcp:launch:abc%2Fdef",
+            "mcp:launch:abc?x=y",
+            "mcp:launch:abc#fragment",
+            "mcp:launch:abc def",
+            "mcp:launch:abc\t",
+            "mcp:launch:abc\n",
+            "mcp:launch:abc\\def",
+            "mcp:launch:abc`def",
+        ] {
+            assert!(thread_id(invalid).is_err(), "{invalid:?}");
+            assert!(
+                manager_role(&format!("| Manager | `{invalid}` |")).is_err(),
+                "{invalid:?}"
+            );
+            assert!(
+                register_manager(
+                    "| Manager | — (not started) |",
+                    &Manager::NotStarted,
+                    invalid
+                )
+                .is_err(),
+                "{invalid:?}"
+            );
+            assert!(
+                manager_url(&environment, &identity, invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(thread_id(&format!("mcp:launch:{}", "a".repeat(129))).is_err());
+        for valid in [
+            LAUNCHED_MANAGER,
+            "mcp:2b650343-3ba8-4a69-9a80-d3da9a05254b",
+            "2b650343-3ba8-4a69-9a80-d3da9a05254b",
+        ] {
+            assert_eq!(thread_id(valid).unwrap(), valid);
+        }
+    }
 
     #[test]
     fn fenced_example_before_registry_never_receives_the_operational_id() {
