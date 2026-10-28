@@ -33,6 +33,8 @@ impl Cancellation {
 }
 
 pub(crate) struct Loading {
+    #[cfg(any(target_os = "macos", test))]
+    pub cloud_download: Option<reader_icloud::Batch>,
     pub generation: u64,
     pub cancellation: Cancellation,
     pub phase: String,
@@ -2253,7 +2255,17 @@ impl Reader {
         } else {
             Vec::new()
         };
+        #[cfg(any(target_os = "macos", test))]
+        let cloud_download = if refresh.is_some() {
+            self.loading
+                .as_mut()
+                .and_then(|load| load.cloud_download.take())
+        } else {
+            None
+        };
         self.loading = Some(Loading {
+            #[cfg(any(target_os = "macos", test))]
+            cloud_download,
             generation,
             cancellation: cancel.clone(),
             phase: "Opening document".into(),
@@ -2682,7 +2694,17 @@ impl Reader {
             .gap_2()
             .text_xs()
             .when_some(reader_diagnostics::cloud_status(self.vault.cloud_placeholders.len()), |view, status| {
-                view.child(div().id("reader-cloud-pending").text_color(muted).child(status))
+                let view = view.child(div().id("reader-cloud-pending").text_color(muted).child(status));
+                #[cfg(target_os = "macos")]
+                let view = {
+                    let active = self.loading.as_ref().and_then(|load| load.cloud_download.as_ref()).is_some_and(|batch| batch.active);
+                    view.child(Button::new("reader-cloud-download-all").ghost().small()
+                        .label(if active { "Requesting downloads…" } else { "Download all" })
+                        .disabled(active)
+                        .tooltip(reader_icloud::KEEP_DOWNLOADED)
+                        .on_click(cx.listener(|this, _, _, cx| this.download_all_icloud(cx))))
+                };
+                view
             })
             .when(issue_count > 0 && !network_waiting, |view| {
                 view.child(
