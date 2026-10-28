@@ -4,11 +4,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context as _, Result};
 use sha2::{Digest, Sha256};
 
+mod missing_note;
+pub(crate) use missing_note::resolve_explicit_path;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OpenIntent {
     pub root: PathBuf,
     pub single_file: bool,
     pub note: Option<String>,
+    /// Only an explicit open may create a note; validation itself stays read-only.
+    pub created_note: bool,
 }
 
 impl OpenIntent {
@@ -60,6 +65,7 @@ impl OpenIntent {
                 root: path,
                 single_file: false,
                 note: None,
+                created_note: false,
             });
         }
         let log = okilum_core::log::is_log_path(&path);
@@ -99,6 +105,7 @@ impl OpenIntent {
             single_file,
             root,
             note: Some(note),
+            created_note: false,
         })
     }
 
@@ -153,6 +160,7 @@ mod tests {
             root: root.to_path_buf(),
             single_file: false,
             note: None,
+            created_note: false,
         };
 
         // Not isolated: the OS cache (positive control that the two scopes differ).
@@ -524,6 +532,7 @@ pub(crate) fn cache_candidate_path(root: &Path) -> Result<PathBuf> {
         root: root.to_path_buf(),
         single_file: false,
         note: None,
+        created_note: false,
     }
     .cache_path(&cache_base()?))
 }
@@ -538,6 +547,7 @@ pub(crate) fn cache_path_for(root: &Path, opts: &super::Opts) -> Result<PathBuf>
             root: root.to_owned(),
             single_file: false,
             note: None,
+            created_note: false,
         }
         .cache_path(base));
     }
@@ -962,8 +972,14 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
                 })
             })
             .context("No file or vault was requested")?;
-        let path = okilum_core::vault::canonical_root(&path)
-            .context("This file or folder couldn’t be opened.")?;
+        let path = if opts.open_path.is_some() {
+            let (path, created) = resolve_explicit_path(&path, opts.vault.as_deref())?;
+            opts.created_note |= created;
+            path
+        } else {
+            okilum_core::vault::canonical_root(&path)
+                .context("This file or folder couldn’t be opened.")?
+        };
         let intent = OpenIntent::validate_cached(
             &path,
             opts.vault.as_deref(),
@@ -1215,11 +1231,13 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
                     if reader.document_ready() {
                         match &opts.landing {
                             Some(position) => reader.open_link(note, position.clone(), window, cx),
+                            None if opts.created_note => reader.open_created_note(note, window, cx),
                             None => reader.open_note(note, None, window, cx),
                         }
                     } else {
                         reader.queued_open_note = Some(note.clone());
                         reader.queued_landing = opts.landing.clone();
+                        reader.queued_edit_note = opts.created_note.then(|| note.clone());
                     }
                 }
             });
@@ -1693,6 +1711,9 @@ impl Render for OpenError {
 /// The open-failure text: plain words for the common OS errors, otherwise
 /// the outermost, human-written context. The full chain stays in stderr.
 fn open_error_text(error: &anyhow::Error) -> String {
+    if let Some(parent) = error.downcast_ref::<missing_note::MissingParent>() {
+        return parent.to_string();
+    }
     use std::io::ErrorKind;
     let io = error
         .chain()

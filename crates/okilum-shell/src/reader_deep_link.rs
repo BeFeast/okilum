@@ -42,6 +42,26 @@ const FRAGMENT_IN_EDITOR: &str =
     "Headings and blocks are found in the reading view. The note is open for editing.";
 
 impl Reader {
+    /// Use the ordinary opener/save guard and its generation-bound editor handoff.
+    pub(crate) fn open_created_note(
+        &mut self,
+        rel: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.navigation.preparation_generation;
+        self.open_note(rel, None, window, cx);
+        if self.navigation.preparation_generation != before {
+            self.pending_link_edit = Some(EditLanding {
+                generation: Some(self.navigation.preparation_generation),
+                rel: rel.to_owned(),
+                line: None,
+                column: None,
+                fragment: false,
+            });
+        }
+    }
+
     /// Open `rel` at a link's position. A fragment and a line together: the
     /// line wins. While editing, the caret moves without asking: unsaved
     /// edits stay, nothing is lost.
