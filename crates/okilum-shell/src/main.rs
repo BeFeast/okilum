@@ -6587,6 +6587,13 @@ impl Render for Reader {
         let sync_started = std::time::Instant::now();
         let sync_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::ReaderUiSync);
+        if self
+            .tree
+            .set_note_titles(reader_ui_state::tree_note_titles(cx))
+        {
+            self.tree_sticky.clear();
+            self.tree_revealed.clear();
+        }
         self.sync_tree();
         self.sync_sidebar(cx);
         self.restore_ui_tree();

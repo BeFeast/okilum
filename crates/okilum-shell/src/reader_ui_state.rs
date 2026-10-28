@@ -126,6 +126,8 @@ struct Saved {
     find_case_sensitive: bool,
     typed_views: okilum_core::typed_view::Preferences,
     toolbar_labels: bool,
+    /// File tree only: false shows Markdown stems, true shows note titles (#1834).
+    tree_note_titles: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
     vault_open: String,
@@ -188,6 +190,7 @@ impl Default for Saved {
             find_case_sensitive: false,
             typed_views: Default::default(),
             toolbar_labels: false,
+            tree_note_titles: false,
             code_soft_wrap: false,
             vault_open: String::new(),
             settings_section: String::new(),
@@ -227,6 +230,7 @@ struct Store {
     find_changed: bool,
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
+    tree_note_titles_changed: bool,
     code_soft_wrap_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
@@ -325,6 +329,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         // different process's newly saved mappings with our startup defaults.
         typed_views_changed: false,
         toolbar_labels_changed: false,
+        tree_note_titles_changed: false,
         code_soft_wrap_changed: false,
         vault_open_changed: false,
         settings_section_changed: false,
@@ -553,6 +558,7 @@ struct WriteJob {
     find_changed: bool,
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
+    tree_note_titles_changed: bool,
     code_soft_wrap_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
@@ -639,6 +645,9 @@ impl WriteJob {
         }
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
+        }
+        if self.tree_note_titles_changed {
+            latest.tree_note_titles = self.saved.tree_note_titles;
         }
         if self.vault_open_changed {
             latest.vault_open = self.saved.vault_open.clone();
@@ -773,6 +782,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.find_changed
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
+            && !state.tree_note_titles_changed
             && !state.vault_open_changed
             && !state.settings_section_changed
             && !state.code_soft_wrap_changed
@@ -809,6 +819,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
+        tree_note_titles_changed: state.tree_note_titles_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         vault_open_changed: state.vault_open_changed,
         settings_section_changed: state.settings_section_changed,
@@ -1339,6 +1350,22 @@ pub(crate) fn set_toolbar_labels(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub(crate) fn tree_note_titles(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.tree_note_titles)
+}
+
+pub(crate) fn set_tree_note_titles(value: bool, cx: &mut App) {
+    if !installed(cx) || tree_note_titles(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.tree_note_titles = value;
+    state.tree_note_titles_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn code_soft_wrap(cx: &App) -> bool {
     cx.try_global::<Store>()
         .is_some_and(|state| state.saved.code_soft_wrap)
@@ -1816,6 +1843,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.find_changed = false;
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
+        state.tree_note_titles_changed = false;
         state.code_soft_wrap_changed = false;
         state.vault_open_changed = false;
         state.settings_section_changed = false;
@@ -1880,6 +1908,31 @@ mod tests {
     }
     use ::core::prelude::v1::test;
     use gpui_component::WindowExt;
+
+    #[gpui::test]
+    fn tree_label_preference_defaults_to_file_names_and_survives_relaunch(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        // Legacy Settings has no tree-label key: the new default is file names.
+        std::fs::write(
+            state.join("reader-ui.json"),
+            format!("{{\"version\":{VERSION}}}"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            install(&state, cx);
+            assert!(!tree_note_titles(cx));
+            set_tree_note_titles(true, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(tree_note_titles(cx), "title mode is remembered");
+            set_tree_note_titles(false, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(!tree_note_titles(cx), "switching back is remembered too");
+        });
+    }
 
     #[gpui::test]
     fn saved_log_regexes_persist_merge_and_clear_pending_changes(cx: &mut TestAppContext) {
@@ -2197,6 +2250,7 @@ mod tests {
         cx.update(|cx| {
             install(&directory, cx);
             set_toolbar_labels(true, cx);
+            set_tree_note_titles(true, cx);
             record(&first, Layout::default(), true, cx);
             let stale = job(cx).unwrap();
             let closed = Layout {
@@ -2237,6 +2291,7 @@ mod tests {
                 find_changed: false,
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
+                tree_note_titles_changed: false,
                 code_soft_wrap_changed: false,
                 vault_open_changed: false,
                 settings_section_changed: false,
@@ -2277,6 +2332,10 @@ mod tests {
             flush(cx);
             let merged = read(&current.path).unwrap();
             assert_eq!(merged.appearance, "dark");
+            assert!(
+                merged.tree_note_titles,
+                "an unrelated writer preserves the tree-label preference"
+            );
             assert!(
                 !merged.find_case_sensitive,
                 "positive control: the search setting was saved"

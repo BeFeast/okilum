@@ -894,6 +894,21 @@ impl Settings {
                     ))
                     .child(reader_reading_controls::render(window, cx))
                     .child(setting_row(
+                        "File tree labels",
+                        "Show file names as on disk, or note titles. Sorting follows the chosen label.",
+                        h_flex().gap_1().children([
+                            ("settings-tree-file-name", "File name", false),
+                            ("settings-tree-note-title", "Title", true),
+                        ].into_iter().map(|(id, label, titles)| {
+                            Button::new(id)
+                                .debug_selector(move || id.into())
+                                .label(label)
+                                .selected(reader_ui_state::tree_note_titles(cx) == titles)
+                                .on_click(move |_, _, cx| reader_ui_state::set_tree_note_titles(titles, cx))
+                        })),
+                        cx,
+                    ))
+                    .child(setting_row(
                         "Show labels on toolbar buttons",
                         "Show names beside icons when there is room.",
                         div()
@@ -1504,6 +1519,112 @@ pub(crate) fn render_update_status(
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[cfg(any(unix, windows))]
+    #[gpui::test]
+    fn file_tree_label_setting_updates_folder_and_vault_live(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut readers = Vec::new();
+        let source = "---\ntitle: Ignored metadata\n---\n# Zebra heading\n";
+        for folder in [false, true] {
+            let root = fixture.path().join(if folder { "folder" } else { "vault" });
+            std::fs::create_dir(&root).unwrap();
+            for (path, body) in [
+                ("a.md", source),
+                ("z.md", "---\ntitle: Alpha metadata\n---\nBody\n"),
+                ("_index.md", "# Index title\n"),
+                ("data.csv", "x,y\n1,2\n"),
+            ] {
+                std::fs::write(root.join(path), body).unwrap();
+            }
+            let mut entity = None;
+            let handle = cx.add_window(|window, cx| {
+                let reader = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: (!folder).then(|| root.clone()),
+                            open_path: folder.then(|| root.join("a.md")),
+                            note: (!folder).then(|| "a.md".into()),
+                            single_file: folder,
+                            session_directory: Some(state.clone()),
+                            index_dir: Some(fixture.path().join(if folder {
+                                "folder-cache"
+                            } else {
+                                "vault-cache"
+                            })),
+                            panel_settings_override: Some(fixture.path().join("panels.json")),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                entity = Some(reader.clone());
+                Root::new(reader, window, cx)
+            });
+            readers.push((handle, entity.unwrap(), folder));
+        }
+        cx.run_until_parked();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(Some(readers[0].1.downgrade()), cx);
+                settings.section = Section::Appearance;
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        visual.simulate_resize(size(px(1400.), px(1000.)));
+        visual.run_until_parked();
+        assert!(
+            !visual.update(|_, cx| reader_ui_state::tree_note_titles(cx)),
+            "file names are the default"
+        );
+        for (id, titles) in [
+            ("settings-tree-file-name", false),
+            ("settings-tree-note-title", true),
+            ("settings-tree-file-name", false),
+        ] {
+            let button = visual
+                .debug_bounds(id)
+                .expect("real Settings control is rendered");
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert_eq!(reader_ui_state::tree_note_titles(cx), titles);
+                for (handle, reader, folder) in &readers {
+                    handle.update(cx, |_, window, cx| {
+                        window.draw(cx).clear(cx);
+                        reader.update(cx, |reader, cx| {
+                            assert_eq!(reader.single_file, *folder, "positive control: both opener modes");
+                            let labels = reader.tree.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>();
+                            assert_eq!(labels, if titles {
+                                vec!["Index title", "Alpha metadata", "Zebra heading", "data.csv"]
+                            } else {
+                                vec!["_index", "a", "data.csv", "z"]
+                            }, "LABEL1834: Settings must update existing tree rows and their sort live");
+                            assert_eq!(reader.current_rel, "a.md");
+                            assert_eq!(reader.current_title, "Zebra heading");
+                            assert_eq!(reader.note_label("z.md"), "Alpha metadata", "other title surfaces are unchanged");
+                            reader.focus_current_folder(window, cx);
+                            assert_eq!(reader.tree.cursor.as_deref(), Some("a.md"), "Reveal follows path identity");
+                            reader.begin_rename("z.md".into(), window, cx);
+                            let rename = reader.renaming.as_ref().expect("rename targets the real file");
+                            assert_eq!(rename.path, "z.md");
+                            assert_eq!(rename.input.read(cx).value().as_str(), "z", "rename edits the filename in either mode");
+                            reader.cancel_rename(window, cx);
+                            assert_eq!(std::fs::read_to_string(reader.vault_root.join("a.md")).unwrap(), source);
+                        });
+                    }).unwrap();
+                }
+            });
+            visual.run_until_parked();
+        }
+    }
 
     #[gpui::test]
     fn first_open_defaults_to_about_and_last_pane_survives_restart(cx: &mut TestAppContext) {
