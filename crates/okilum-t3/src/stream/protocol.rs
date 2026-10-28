@@ -13,6 +13,7 @@ pub enum ThreadUpdate {
         history_cursor: Option<String>,
         has_more_history: bool,
         payload_budget_exceeded: bool,
+        latest_local_turn_ordinal: Option<u64>,
     },
     Event {
         sequence: u64,
@@ -70,6 +71,10 @@ pub(super) fn decode_chunk(
                     history_cursor,
                     has_more_history: flag("hasMoreHistory")?,
                     payload_budget_exceeded: flag("payloadBudgetExceeded")?,
+                    latest_local_turn_ordinal: match item.get("latestLocalTurnOrdinal") {
+                        None | Some(Value::Null) => None,
+                        Some(value) => Some(sequence(value)?),
+                    },
                 }
             }
             Some("event") => {

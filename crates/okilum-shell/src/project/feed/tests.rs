@@ -278,3 +278,29 @@ fn projected_receipts_hide_retained_duplicates_without_changing_retry_identity(
     });
     assert!(visual.debug_bounds("project-retry-1").is_some());
 }
+
+#[gpui::test]
+fn activity_rows_render_tools_and_keep_reasoning_collapsed(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 0);
+    let mut reasoning = message(1);
+    reasoning.kind = "reasoning".into();
+    reasoning.text = Some("Reasoning stays collapsed".into());
+    let mut tool = message(2);
+    tool.kind = "command_execution".into();
+    tool.title = Some("Command · completed".into());
+    tool.text = Some("cargo test".into());
+    view.update(visual, |view, cx| {
+        view.feed.update(cx, |feed, cx| {
+            feed.apply([&reasoning, &tool].into_iter(), None, cx)
+        })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-tool-2").is_some(),
+        "ACTIVITY1787: message-only filter hid the command row"
+    );
+    assert!(
+        visual.debug_bounds("project-reasoning-toggle-1").is_some(),
+        "ACTIVITY1787: reasoning disclosure is absent"
+    );
+}

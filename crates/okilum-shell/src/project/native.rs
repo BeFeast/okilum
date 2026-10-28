@@ -1,0 +1,478 @@
+//! Linux live history. The background task owns the socket; the retained model
+//! and cursor are paired under a mutex, including during concurrent history loads.
+use super::*;
+use okilum_t3::{
+    projection::{Metadata, Projection},
+    stream::{
+        CancelSubscription, NativeClient, NativeToken, ResumeCursor, StreamError,
+        ThreadSubscription,
+    },
+};
+use std::sync::Mutex;
+
+struct Retained {
+    model: Projection,
+    cursor: Option<ResumeCursor>,
+    valid: bool,
+    epoch: u64,
+}
+pub(super) struct Native {
+    input: Entity<InputState>,
+    open: bool,
+    busy: bool,
+    error: Option<String>,
+    expires_at: Option<u64>,
+    client: Option<Arc<NativeClient>>,
+    retained: Option<Arc<Mutex<Retained>>>,
+    cancel: Option<CancelSubscription>,
+    worker: Option<Task<()>>,
+    history_busy: bool,
+    metadata: Metadata,
+}
+impl Native {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<ProjectView>) -> Self {
+        Self {
+            input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("One-time T3 pairing token")
+                    .masked(true)
+            }),
+            open: false,
+            busy: false,
+            error: None,
+            expires_at: None,
+            client: None,
+            retained: None,
+            cancel: None,
+            worker: None,
+            history_busy: false,
+            metadata: Metadata::default(),
+        }
+    }
+    pub(super) fn active(&self) -> bool {
+        self.client.is_some()
+    }
+    pub(super) fn pause(&mut self) {
+        if let Some(retained) = &self.retained {
+            retained.lock().unwrap().epoch += 1;
+        }
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
+        }
+        self.worker.take();
+    }
+    pub(super) fn clear(&mut self) {
+        self.pause();
+        self.client = None;
+        self.retained = None;
+        self.error = None;
+        self.metadata = Metadata::default();
+        self.busy = false;
+        self.history_busy = false;
+        self.open = false;
+        self.expires_at = None;
+    }
+}
+impl Drop for Native {
+    fn drop(&mut self) {
+        self.pause();
+    }
+}
+impl ProjectView {
+    pub(super) fn native_restore(
+        &mut self,
+        ask: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.native.busy {
+            return;
+        }
+        let Some(environment) = self.environment.clone() else {
+            return;
+        };
+        self.native.busy = true;
+        let generation = self.generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let task = match this.update_in(cx, |_, _, cx| {
+                cx.read_credentials(&NativeToken::credential_key(&environment))
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
+            };
+            let result = match task.await {
+                Ok(Some((_, bytes))) => NativeToken::from_secret(&environment, &bytes).map(Some),
+                Ok(None) => Ok(None),
+                Err(_) => Err(StreamError::Protocol(
+                    "the saved live connection could not be read; pair again explicitly",
+                )),
+            };
+            let result = match result {
+                Ok(Some(token)) => {
+                    cx.background_executor()
+                        .spawn(async move {
+                            let expiry = token.expires_at();
+                            NativeClient::new(environment, token, Duration::from_secs(10))
+                                .map(|client| Some((Arc::new(client), expiry)))
+                        })
+                        .await
+                }
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.native.busy = false;
+                match result {
+                    Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
+                    Ok(None) => {
+                        if ask {
+                            this.native.open = true;
+                        }
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        this.native.error = Some(error.to_string());
+                        if ask {
+                            this.native.open = true;
+                        }
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        if ask {
+            cx.notify();
+        }
+    }
+    fn native_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.native.busy {
+            return;
+        }
+        let Some(environment) = self.environment.clone() else {
+            return;
+        };
+        let credential = self.native.input.read(cx).value().to_string();
+        if credential.trim().is_empty() {
+            self.native.error = Some("Enter a one-time T3 pairing token".into());
+            cx.notify();
+            return;
+        }
+        self.native
+            .input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.native.busy = true;
+        self.native.error = None;
+        let generation = self.generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let env = environment.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { NativeToken::pair(&env, &credential, Duration::from_secs(10)) })
+                .await;
+            let result = match result {
+                Ok(token) => {
+                    let expiry = token.expires_at();
+                    let bytes = token.to_secret();
+                    let task = match this.update_in(cx, |this, _, cx| {
+                        if this.generation != generation {
+                            return None;
+                        }
+                        Some(cx.write_credentials(
+                            &NativeToken::credential_key(&environment),
+                            &environment.alias,
+                            &bytes,
+                        ))
+                    }) {
+                        Ok(Some(task)) => task,
+                        _ => return,
+                    };
+                    match task.await {
+                        Ok(()) => {
+                            cx.background_executor()
+                                .spawn(async move {
+                                    NativeClient::new(environment, token, Duration::from_secs(10))
+                                        .map(|client| (Arc::new(client), expiry))
+                                })
+                                .await
+                        }
+                        Err(_) => Err(StreamError::Protocol(
+                            "the live connection could not be saved",
+                        )),
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.native.busy = false;
+                match result {
+                    Ok((client, expiry)) => this.install_native(client, expiry, window, cx),
+                    Err(error) => {
+                        this.native.error = Some(error.to_string());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn install_native(
+        &mut self,
+        client: Arc<NativeClient>,
+        expiry: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(binding) = &self.binding else {
+            return;
+        };
+        let Some((thread, project)) = binding
+            .manager
+            .thread_id
+            .as_ref()
+            .zip(binding.manager.project_id.as_ref())
+        else {
+            return;
+        };
+        self.native.pause();
+        self.native.client = Some(client);
+        self.native.error = None;
+        self.native.expires_at = Some(expiry);
+        self.native.open = false;
+        if self.native.retained.is_none() {
+            self.native.retained = Some(Arc::new(Mutex::new(Retained {
+                model: Projection::new(thread, project),
+                cursor: None,
+                valid: true,
+                epoch: 0,
+            })));
+        }
+        self.native_start(window, cx);
+        cx.notify();
+    }
+    pub(super) fn native_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active || self.native.worker.is_some() {
+            return;
+        }
+        let Some(client) = self.native.client.clone() else {
+            return;
+        };
+        let Some(retained) = self.native.retained.clone() else {
+            return;
+        };
+        let Some(thread) = self.chat.as_ref().map(|chat| chat.thread_id.clone()) else {
+            return;
+        };
+        let epoch = {
+            let mut r = retained.lock().unwrap();
+            r.epoch += 1;
+            r.epoch
+        };
+        self.native.worker = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut socket: Option<ThreadSubscription> = None;
+            let mut failures = 0u32;
+            loop {
+                if socket.is_none() {
+                    let cursor = {
+                        let r = retained.lock().unwrap();
+                        if r.epoch != epoch {
+                            return;
+                        }
+                        r.valid.then(|| r.cursor.clone()).flatten()
+                    };
+                    let connect_client = client.clone();
+                    let connect_thread = thread.clone();
+                    match cx
+                        .background_executor()
+                        .spawn(async move { connect_client.subscribe(&connect_thread, cursor) })
+                        .await
+                    {
+                        Ok(stream) => {
+                            let cancel = stream.cancellation().ok();
+                            if this
+                                .update_in(cx, |this, _, _| {
+                                    this.native.cancel = cancel;
+                                })
+                                .is_err()
+                            {
+                                return;
+                            }
+                            socket = Some(stream);
+                        }
+                        Err(error) => {
+                            let terminal = terminal(&error);
+                            let message = error.to_string();
+                            let _ = this.update_in(cx, |this, _, cx| {
+                                if this.native.error.as_ref() != Some(&message) {
+                                    this.native.error = Some(message);
+                                    cx.notify();
+                                }
+                            });
+                            if terminal {
+                                return;
+                            }
+                            failures = failures.saturating_add(1);
+                            cx.background_executor().timer(delay(failures)).await;
+                            continue;
+                        }
+                    }
+                }
+                let mut stream = socket.take().unwrap();
+                let model = retained.clone();
+                let (stream, result) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let result = stream.receive(|updates| {
+                            let mut r = model.lock().unwrap();
+                            if r.epoch != epoch {
+                                return Err(StreamError::Closed);
+                            }
+                            r.model.apply(updates)?;
+                            r.valid = false;
+                            Ok(())
+                        });
+                        {
+                            let mut r = model.lock().unwrap();
+                            if r.epoch == epoch {
+                                r.cursor = stream.cursor();
+                                r.valid = true;
+                            }
+                        }
+                        (stream, result)
+                    })
+                    .await;
+                let terminal_error = result.as_ref().err().is_some_and(terminal);
+                let message = result.as_ref().err().map(ToString::to_string);
+                let changed = this
+                    .update_in(cx, |this, _, cx| {
+                        let mut r = retained.lock().unwrap();
+                        if r.epoch != epoch {
+                            return false;
+                        }
+                        let changes = r.model.take_changes();
+                        let metadata = changes.metadata.clone();
+                        let changed = changes.changed();
+                        if changed {
+                            this.feed.update(cx, |feed, cx| {
+                                feed.apply_native(changes, &this.records, cx)
+                            });
+                        }
+                        let mut notify = this.native.error != message;
+                        this.native.error = message;
+                        if let Some(metadata) = metadata {
+                            notify |= this.native.metadata != metadata;
+                            this.native.metadata = metadata;
+                        }
+                        if notify {
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !changed || terminal_error {
+                    return;
+                }
+                if result.is_ok() {
+                    failures = 0;
+                    socket = Some(stream);
+                } else {
+                    failures = failures.saturating_add(1);
+                    drop(stream);
+                    cx.background_executor().timer(delay(failures)).await;
+                }
+            }
+        }));
+    }
+    fn native_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.native.history_busy {
+            return;
+        }
+        let Some(client) = self.native.client.clone() else {
+            return;
+        };
+        let Some(retained) = self.native.retained.clone() else {
+            return;
+        };
+        let Some(request) = retained.lock().unwrap().model.history_request() else {
+            return;
+        };
+        let Some(thread) = self.chat.as_ref().map(|chat| chat.thread_id.clone()) else {
+            return;
+        };
+        self.native.history_busy = true;
+        let generation = self.generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let model = retained.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let page = client.history(&thread, request.cursor())?;
+                    model.lock().unwrap().model.apply_history(&request, page)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.native.history_busy = false;
+                match result {
+                    Ok(()) => {
+                        let mut r = retained.lock().unwrap();
+                        let changes = r.model.take_changes();
+                        if let Some(metadata) = &changes.metadata {
+                            this.native.metadata = metadata.clone();
+                        }
+                        this.feed
+                            .update(cx, |feed, cx| feed.apply_native(changes, &this.records, cx));
+                    }
+                    Err(error) => this.native.error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    pub(super) fn render_native(&self, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.native.active();
+        let more =
+            self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some();
+        let origin = self.environment.as_ref().map(Environment::origin);
+        v_flex().gap_1()
+            .child(h_flex().gap_2().child(Button::new("project-live-connect").ghost().label(if active{"Reconnect live updates"}else{"Enable live updates"}).debug_selector(||"project-live-connect".into()).disabled(self.native.busy||self.environment.is_none()).on_click(cx.listener(|this,_,window,cx|{this.native.pause();this.native_restore(true,window,cx);})))
+                .when(active,|row|row.child(Button::new("project-live-pair-again").ghost().label("Pair again").disabled(self.native.busy).on_click(cx.listener(|this,_,_,cx|{this.native.open=true;cx.notify();}))))
+                .when(more,|row|row.child(Button::new("project-live-history").ghost().label("Load earlier activity").disabled(self.native.history_busy).on_click(cx.listener(|this,_,window,cx|this.native_history(window,cx))))))
+            .when(self.native.open,|view|view.child(div().child("Live updates need a separate T3 client pairing with read/operate access. Paste its one-time pairing token; the saved connection is reused until it expires."))
+                .child(h_flex().gap_2().child(Input::new(&self.native.input).flex_1()).child(Button::new("project-live-pair").ghost().label("Pair").disabled(self.native.busy).on_click(cx.listener(|this,_,window,cx|this.native_pair(window,cx)))))
+                .when_some(origin,|view,origin|view.child(Button::new("project-live-open-browser").ghost().label("Open T3").on_click(move|_,_,cx|cx.open_url(&origin)))))
+            .when_some(self.native.expires_at,|view,expiry|view.child(div().text_color(brand::palette(cx).text_muted).child(format!("Live {}",super::expiry_note(expiry)))))
+            .when(self.native.metadata.payload_budget_exceeded,|view|view.child(div().child("The latest activity window is incomplete. Open T3 for the full thread.")))
+            .when_some(self.native.error.clone(),|view,error|view.child(div().debug_selector(||"project-live-error".into()).text_color(cx.theme().danger).child(error)))
+            .into_any_element()
+    }
+}
+fn terminal(error: &StreamError) -> bool {
+    matches!(
+        error,
+        StreamError::PairingRequired
+            | StreamError::Expired
+            | StreamError::WrongOrigin
+            | StreamError::MissingReadPermission
+            | StreamError::IncompatibleProtocol
+            | StreamError::Rejected
+            | StreamError::Protocol(_)
+            | StreamError::Http(403 | 404)
+    )
+}
+fn delay(attempt: u32) -> Duration {
+    Duration::from_secs((1u64 << attempt.saturating_sub(1).min(4)).min(15))
+}
+#[cfg(test)]
+mod tests;

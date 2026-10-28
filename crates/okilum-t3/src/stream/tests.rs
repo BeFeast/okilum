@@ -474,3 +474,27 @@ fn auth_redirects_and_unexpected_grants_are_not_followed_or_accepted() {
     ));
     assert_eq!(*calls.lock().unwrap(), 2);
 }
+
+#[test]
+fn history_uses_protocol_header_encoded_thread_path_and_opaque_cursor() {
+    let server = FakeServer::start(|request| {
+        assert_eq!(
+            request.path(),
+            "/api/orchestration/threads/thread%2Fa/history"
+        );
+        assert_eq!(request.header("x-t3-orchestration-protocol"), Some("2"));
+        let u = url::Url::parse(&format!("http://fixture{}", request.target)).unwrap();
+        assert_eq!(
+            u.query_pairs().find(|(key, _)| key == "cursor").unwrap().1,
+            "opaque+/??"
+        );
+        Response::json(
+            200,
+            json!({"snapshotSequence":12,"items":[],"nextCursor":null,"hasMoreHistory":false,"future":true}),
+        )
+    });
+    let env = Environment::new("fixture", &server.origin).unwrap();
+    let page = client(&env).history("thread/a", "opaque+/??").unwrap();
+    assert!(page.items.is_empty());
+    assert!(!page.has_more_history);
+}
