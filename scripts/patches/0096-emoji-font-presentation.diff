@@ -65,7 +65,7 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +            font_family: "Mono".into(),
 +            ..Default::default()
 +        };
-+        let color = gpui::rgb(0x287a30);
++        let color: gpui::Hsla = gpui::rgb(0x287a30).into();
 +        let highlights = [(
 +            0..text.len(),
 +            InlineHighlight::from(HighlightStyle {
@@ -458,7 +458,7 @@ new file mode 100644
 +        first.font.family = "Mono".into();
 +        let mut second = first.clone();
 +        second.len = text.len() - first.len;
-+        second.color = gpui::rgb(0xff0000);
++        second.color = gpui::rgb(0xff0000).into();
 +        let input = [first.clone(), second.clone()];
 +        let actual = font_runs(&text, &input);
 +        assert_eq!(
