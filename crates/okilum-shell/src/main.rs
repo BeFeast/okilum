@@ -324,6 +324,7 @@ actions!(
         ScrollBottom,
         ToggleNotes,
         ToggleBacklinks,
+        MaximizeNote,
         ToggleProject,
         ToggleHiddenFiles,
         ToggleSoftWrap,
@@ -376,6 +377,7 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
             MenuItem::action("Zoom Out", reader_text_zoom::ZoomOut),
             MenuItem::action("Actual Size", reader_text_zoom::Reset),
             MenuItem::separator(),
+            MenuItem::action("Maximize Note", MaximizeNote),
             MenuItem::action("Full Note Width", ToggleNoteWidth)
                 .checked(reader_ui_state::full_note_width(cx)),
         ],
@@ -558,6 +560,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("k", ListPrev, Some(&not_input)),
         KeyBinding::new("ctrl-\\", ToggleNotes, ctx),
         KeyBinding::new("ctrl-alt-\\", ToggleBacklinks, ctx),
+        KeyBinding::new("secondary-alt-f", MaximizeNote, ctx),
+        KeyBinding::new("secondary-alt-f", MaximizeNote, Some("Reader > Input")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-\\", ToggleNotes, ctx),
         #[cfg(target_os = "macos")]
@@ -2721,6 +2725,23 @@ impl Reader {
         }
     }
 
+    fn maximize_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.resizing_panel = None;
+        self.ui_state.interacted = true;
+        self.panels.toggle_maximized();
+        // Presentation only: keep the current editor, selection, draft and history.
+        if let Some(editing) = &self.editing {
+            editing.input.focus_handle(cx).focus(window, cx);
+        } else {
+            self.content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
+        }
+        cx.notify();
+    }
+
     fn select_panel_note(
         &mut self,
         panel: reader_layout::Panel,
@@ -3631,6 +3652,28 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
+                    .child(preserve_reader_selection(
+                        "reader-maximize-note-preserve",
+                        reader_icon_button(
+                            "reader-maximize-note",
+                            IconName::Maximize,
+                            reader_shortcuts::hint(
+                                if self.panels.maximized() {
+                                    "Restore panels"
+                                } else {
+                                    "Maximize note"
+                                },
+                                &MaximizeNote,
+                                cx,
+                            ),
+                            cx,
+                        )
+                        .debug_selector(|| "reader-maximize-note".into())
+                        .selected(self.panels.maximized())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.maximize_note(window, cx)),
+                        ),
+                    ))
                     .child(reader_feedback::button(cx))
                     .child(reader_more_menu(
                         self.vault_root.clone(),
@@ -6504,6 +6547,7 @@ fn reader_more_menu(
                     }),
             )
             .menu("Keyboard shortcuts", Box::new(ToggleShortcutSheet))
+            .menu("Maximize note", Box::new(MaximizeNote))
             .separator()
             .when(cfg!(any(unix, windows)), |menu| {
                 menu.menu("New note…", Box::new(NewNote))
@@ -6965,6 +7009,9 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &ToggleBacklinks, window, cx| {
                 this.toggle_panel(reader_layout::Panel::Backlinks, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &MaximizeNote, window, cx| this.maximize_note(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &CloseNote, window, cx| this.close_note(window, cx)))
             .on_action(
                 cx.listener(|this, _: &HistoryBack, window, cx| this.history_move(-1, window, cx)),
