@@ -342,8 +342,10 @@ mod tests {
     fn eviction_releases_current_and_other_window_atlases(cx: &mut gpui::TestAppContext) {
         let diagram = diagram(16);
         let image = diagram.image.clone();
-        let a = cx.add_window(|_, _| ImageHarness(image.clone()));
-        let b = cx.add_window(|_, _| ImageHarness(image.clone()));
+        // Drawing needs an unborrowed root view; typed WindowHandle::update
+        // already borrows it and would make draw re-enter that entity.
+        let a: gpui::AnyWindowHandle = cx.add_window(|_, _| ImageHarness(image.clone())).into();
+        let b: gpui::AnyWindowHandle = cx.add_window(|_, _| ImageHarness(image.clone())).into();
         cx.run_until_parked();
         for handle in [a, b] {
             handle
