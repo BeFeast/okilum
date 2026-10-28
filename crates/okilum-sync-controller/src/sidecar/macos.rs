@@ -5,6 +5,8 @@ use super::{
     authority::StopToken, safe_text, supervisor::ipc::Scope, xml, Binding, Platform, Registration,
 };
 use anyhow::{ensure, Result};
+#[cfg(unix)]
+pub mod bundle;
 pub const PLIST: &str = "com.befeast.okilum.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
