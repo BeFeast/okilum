@@ -1,5 +1,6 @@
 //! Real document/outline navigation in both local-only folder and vault modes.
 use crate::*;
+use ::core::prelude::v1::test;
 
 fn settle(visual: &mut gpui::VisualTestContext) {
     visual.run_until_parked();
