@@ -3214,6 +3214,7 @@ dependencies = [
  "tracing",
  "unicode-bidi",
  "unicode-linebreak",
+ "unicode-properties",
  "unicode-segmentation",
  "web-time",
 ]

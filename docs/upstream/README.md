@@ -68,3 +68,10 @@ gpui core remains unmodified.
 
 [0009](0009.md) binds optional original source to parsed replacements and preserves
 its whitespace in select-all Copy. It follows 0008 in the cumulative patch stack.
+
+## Pending 0096 — Unicode emoji font presentation
+
+[0096](0096.md) selects the platform color emoji face for emoji presentation
+before shaping and measures the same clusters for wrapping in Reader and
+Source/Live Preview. It uses existing TextRun/LineFragment APIs; GPUI core stays
+unmodified. Carry this candidate in the #1814 bump (Okilum #1833).
