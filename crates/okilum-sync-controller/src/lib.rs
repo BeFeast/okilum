@@ -5,10 +5,10 @@ pub mod lifecycle;
 #[cfg(target_os = "linux")]
 pub mod daemon;
 pub mod pairing;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod private;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod enrollment;
 
 #[cfg(target_os = "linux")]
