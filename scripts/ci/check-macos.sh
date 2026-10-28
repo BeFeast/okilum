@@ -109,6 +109,12 @@ cargo "${cargo_args[@]}" -p okilum-sync-controller --test enrollment_storage -- 
     | tee "${RUNNER_TEMP}/macos-test-list.txt"
 grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
 cargo "${cargo_args[@]}" -p okilum-sync-controller --test enrollment_storage -- --test-threads=1
+# #588: authenticated daemon inspection and folder state are shared Unix code.
+run_tests okilum-sync-controller --lib presentation::
+cargo "${cargo_args[@]}" -p okilum-sync-controller --test daemon_access -- --list \
+    | tee "${RUNNER_TEMP}/macos-test-list.txt"
+grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
+cargo "${cargo_args[@]}" -p okilum-sync-controller --test daemon_access -- --test-threads=1
 # #1013: the supervisor's run loop against a real process tree and real sockets (the
 # shell does not depend on this crate, so nothing else would even build it here).
 run_tests okilum-sync-supervisor --tests ""
