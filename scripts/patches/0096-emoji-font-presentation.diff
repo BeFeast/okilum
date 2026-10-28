@@ -20,37 +20,6 @@ diff --git a/crates/base/src/lib.rs b/crates/base/src/lib.rs
  mod geometry;
  mod global_state;
  mod history;
-diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
---- a/crates/base/src/text/inline_flow.rs
-+++ b/crates/base/src/text/inline_flow.rs
-@@ -896,7 +896,12 @@
-             continue;
-         }
-         if cursor < start {
--            fragments.push(WrapLineFragment::text(&text[cursor..start]));
-+            fragments.extend(crate::font_presentation::line_fragments(
-+                &text[cursor..start],
-+                &text_style.font(),
-+                font_size,
-+                window.text_system(),
-+            ));
-         }
-         let span = &text[start..end];
-         let runs = text_runs(span, text_style, &[(0..span.len(), highlight.clone())]);
-@@ -908,7 +913,12 @@
-         cursor = end;
-     }
-     if cursor < range.end {
--        fragments.push(WrapLineFragment::text(&text[cursor..range.end]));
-+        fragments.extend(crate::font_presentation::line_fragments(
-+            &text[cursor..range.end],
-+            &text_style.font(),
-+            font_size,
-+            window.text_system(),
-+        ));
-     }
- }
- 
 diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 --- a/crates/base/src/text/inline.rs
 +++ b/crates/base/src/text/inline.rs
@@ -65,9 +34,9 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +        runs
 +    }
  }
- 
+
  /// A inline element used to render a inline text and support selectable.
-@@ -1659,3 +1663,129 @@
+@@ -1645,3 +1649,129 @@
          ));
      }
  }
@@ -197,10 +166,35 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +        );
 +    }
 +}
+diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -895,7 +895,9 @@
+             continue;
+         }
+         if cursor < start {
+-            fragments.push(WrapLineFragment::text(&text[cursor..start]));
++            fragments.extend(crate::font_presentation::line_fragments(
++                &text[cursor..start], &text_style.font(), font_size, window.text_system(),
++            ));
+         }
+         let span = &text[start..end];
+         let runs = text_runs(span, text_style, &[(0..span.len(), highlight.clone())]);
+@@ -907,7 +909,9 @@
+         cursor = end;
+     }
+     if cursor < range.end {
+-        fragments.push(WrapLineFragment::text(&text[cursor..range.end]));
++        fragments.extend(crate::font_presentation::line_fragments(
++            &text[cursor..range.end], &text_style.font(), font_size, window.text_system(),
++        ));
+     }
+ }
+
 diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
 --- a/crates/base/src/input/base/movement.rs
 +++ b/crates/base/src/input/base/movement.rs
-@@ -402,8 +402,10 @@
+@@ -385,8 +385,10 @@
                  &last.font,
                  gpui::black(),
              );
@@ -215,26 +209,37 @@ diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -1635,6 +1635,7 @@
-                 "source runs must use UTF-8 byte boundaries of the shaped string"
-             );
+@@ -1561,15 +1561,16 @@
+             let aligned_runs = align_runs_to_char_boundaries(&text, runs);
+             debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
              let line_runs = aligned_runs.as_deref().unwrap_or(runs);
 +            let line_runs = crate::font_presentation::font_runs(&text, line_runs);
              let shape_start = attribution::now();
-             let shaped_line = window
+                 let shaped_line = window
                  .text_system()
-@@ -1714,6 +1715,7 @@
-                     "source runs must use UTF-8 byte boundaries of the shaped string"
-                 );
+-                .shape_line(text, font_size, line_runs, None);
++                .shape_line(text, font_size, &line_runs, None);
+             trace.shape_finished(shape_start);
+
+             let line_layout = LineLayout::new()
+                 .lines(smallvec::smallvec![shaped_line])
+-                .with_background(has_background(line_runs))
++                .with_background(has_background(&line_runs))
+                 .with_whitespaces(whitespace_indicators);
+             return vec![line_layout];
+         }
+@@ -1637,6 +1638,7 @@
+                 let aligned_runs = align_runs_to_char_boundaries(&sub_line, &line_runs);
+                 debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
                  let line_runs = aligned_runs.unwrap_or(line_runs);
 +                let line_runs = crate::font_presentation::font_runs(&sub_line, &line_runs);
                  let shape_start = attribution::now();
-                 let shaped_line =
-                     window
+                 let shaped_line = window
+                     .text_system()
 diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
-@@ -312,14 +312,23 @@
+@@ -308,14 +308,22 @@
          let mut line_wrapper = cx
              .text_system()
              .line_wrapper(self.font.clone(), self.font_size);
@@ -251,8 +256,7 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
 -                    .wrap_line(&[LineFragment::text(line_str)], wrap_width)
 -                    .collect()
 +                let fragments = if crate::font_presentation::has_emoji(line_str) {
-+                    let system = emoji_system
-+                        .get_or_insert_with(|| gpui::WindowTextSystem::new(text_system.clone()));
++                    let system = emoji_system.get_or_insert_with(|| gpui::WindowTextSystem::new(text_system.clone()));
 +                    crate::font_presentation::line_fragments(line_str, &font, font_size, system)
 +                } else {
 +                    vec![LineFragment::text(line_str)]
@@ -261,20 +265,18 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
              },
          );
      }
-@@ -449,6 +458,11 @@
+@@ -437,6 +445,9 @@
              let font_size = self.font_size * crate::input::projection::line_scale(scales, row);
              styles.advance(start..start + line.len());
              let full_runs = styles.runs(start..start + line.len(), &self.font, gpui::black());
 +            let full_runs = if crate::font_presentation::has_emoji(&line) {
 +                crate::font_presentation::font_runs(&line, &full_runs).into_owned()
-+            } else {
-+                full_runs
-+            };
++            } else { full_runs };
              let key = super::projected_cache::LineKey::new(
-                 &line,
-                 &full_runs,
-@@ -489,6 +503,7 @@
-             } else {
+                 &line, &full_runs, font_size, self.wrap_width, window.scale_factor(),
+                 crate::input::projection::line_hang(scales, row), hang_room);
+@@ -462,6 +473,7 @@
+             let runs = if hang == 0 { full_runs } else {
                  styles.runs(start + hang..start + line.len(), &self.font, gpui::black())
              };
 +            let runs = crate::font_presentation::font_runs(&line[hang..], &runs);
