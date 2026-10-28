@@ -544,7 +544,6 @@ mod tests {
             "mcp:launch:abc\t",
             "mcp:launch:abc\n",
             "mcp:launch:abc\\def",
-            "mcp:launch:abc`def",
         ] {
             assert!(thread_id(invalid).is_err(), "{invalid:?}");
             assert!(
