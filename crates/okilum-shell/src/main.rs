@@ -3055,9 +3055,8 @@ impl Reader {
     /// the title bar. `vault` is what the vault is called in Inbox locations
     /// (#1327).
     fn sidebar_items_named(&self, _vault: &str) -> Vec<SideItem> {
-        if self.single_file {
-            return self.tree.rows.iter().cloned().map(SideItem::Tree).collect();
-        }
+        // Folder mode uses the same inline creation/rename rows as a vault.
+        // Returning only Tree rows here hides the focused name input (#1823).
         // A vault without notes shows no hint: the page says how to start (#1350).
         let hints = !self.vault.notes.is_empty();
         let mut items = Vec::new();
