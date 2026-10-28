@@ -274,3 +274,119 @@ fn deleted_thread_clears_history_and_later_events_cannot_resurrect_it() {
     assert!(!p.take_changes().changed());
     assert!(p.keys().is_empty());
 }
+
+#[test]
+fn action_controls_follow_live_requests_and_capabilities_and_never_use_inherited_cards() {
+    use crate::actions::{DispatchMode, Intent};
+    let mut approval = message("approval", 1, "approval_request");
+    approval["requestId"] = json!("request");
+    approval["options"] = json!([{"decision":"accept","label":"Allow once"},{"decision":"decline","label":"Decline"}]);
+    let mut initial = snapshot(vec![approval]);
+    if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
+        projection["runtimeRequests"] =
+            json!([{"id":"request","status":"pending","responseCapability":{"type":"live"}}]);
+        projection["runs"] =
+            json!([{"id":"run","ordinal":1,"status":"running","providerThreadId":"pt"}]);
+        projection["providerThreads"] = json!([{"id":"pt","providerSessionId":"session"}]);
+        projection["providerSessions"] =
+            json!([{"id":"session","capabilities":{"turns":{"supportsActiveSteering":true}}}]);
+    }
+    let mut p = Projection::new("thread", "project");
+    p.apply(&[initial]).unwrap();
+    let state = p.take_changes().actions.unwrap();
+    assert!(state.ready);
+    assert!(!state.allows(&Intent::message(
+        "hello".into(),
+        DispatchMode::StartImmediately
+    )));
+    assert!(state.allows(&Intent::message(
+        "hello".into(),
+        DispatchMode::QueueAfterActive
+    )));
+    assert!(state.allows(&Intent::message(
+        "hello".into(),
+        DispatchMode::SteerActive {
+            target_run_id: "run".into()
+        }
+    )));
+    assert!(!state.allows(&Intent::message(
+        "hello".into(),
+        DispatchMode::SteerActive {
+            target_run_id: "old-run".into()
+        }
+    )));
+    assert!(state.allows(&Intent::Respond {
+        request_id: "request".into(),
+        decision: Some("accept".into()),
+        answers: None
+    }));
+    assert!(!state.allows(&Intent::Respond {
+        request_id: "request".into(),
+        decision: Some("acceptAlways".into()),
+        answers: None
+    }));
+    p.apply(&[
+        update(
+            "runtime-request.updated",
+            json!({"id":"request","status":"resolved","responseCapability":{"type":"live"}}),
+        ),
+        update(
+            "run.updated",
+            json!({"id":"run","ordinal":1,"status":"completed"}),
+        ),
+    ])
+    .unwrap();
+    let state = p.take_changes().actions.unwrap();
+    assert!(state.requests.is_empty());
+    assert!(state.active_run.is_none());
+    assert!(state.allows(&Intent::message(
+        "hello".into(),
+        DispatchMode::StartImmediately
+    )));
+    p.apply(&[update(
+        "thread.deleted",
+        json!({"id":"thread","projectId":"project"}),
+    )])
+    .unwrap();
+    assert!(!p.take_changes().actions.unwrap().ready);
+}
+#[test]
+fn question_answers_preserve_option_values_multi_select_and_message_dismissal() {
+    use crate::actions::{DispatchMode, Intent};
+    let mut question = message("q", 1, "user_input_request");
+    question["requestId"] = json!("request");
+    question["questions"] = json!([{"id":"one","question":"Choose","allowCustomAnswer":false,"options":[{"label":"Label","value":" value "}]},{"id":"many","question":"Choose several","multiSelect":true,"allowCustomAnswer":false,"options":[{"label":"A"},{"label":"B"}]}]);
+    let mut initial = snapshot(vec![question]);
+    if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
+        projection["runtimeRequests"] =
+            json!([{"id":"request","status":"pending","responseCapability":{"type":"message"}}]);
+        projection["providerThreads"] = json!([]);
+        projection["providerSessions"] = json!([]);
+    }
+    let mut p = Projection::new("thread", "project");
+    p.apply(&[initial]).unwrap();
+    let state = p.take_changes().actions.unwrap();
+    let answers = std::collections::BTreeMap::from([
+        ("one".into(), json!(" value ")),
+        ("many".into(), json!(["A", "B"])),
+    ]);
+    assert!(state.allows(&Intent::Respond {
+        request_id: "request".into(),
+        decision: None,
+        answers: Some(answers.clone())
+    }));
+    let mut invalid = answers;
+    invalid.insert("one".into(), json!("value"));
+    assert!(!state.allows(&Intent::Respond {
+        request_id: "request".into(),
+        decision: None,
+        answers: Some(invalid)
+    }));
+    assert!(state.allows(&Intent::Dismiss {
+        request_id: "request".into()
+    }));
+    assert!(state.allows(&Intent::message(
+        "hello".into(),
+        DispatchMode::StartImmediately
+    )));
+}

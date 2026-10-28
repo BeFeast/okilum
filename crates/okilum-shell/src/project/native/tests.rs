@@ -175,7 +175,7 @@ fn deleted_live_thread_disables_send_with_a_visible_reason(cx: &mut TestAppConte
     cx.update(gpui_component::init);
     let temp = tempfile::tempdir().unwrap();
     let env = Environment::new("fixture", "https://native.invalid").unwrap();
-    let token=NativeToken::from_secret(&env,&serde_json::to_vec(&json!({"origin":env.origin(),"access_token":"fixture-only","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read"})).unwrap()).unwrap();
+    let token=NativeToken::from_secret(&env,&serde_json::to_vec(&json!({"origin":env.origin(),"access_token":"fixture-only","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read orchestration:operate"})).unwrap()).unwrap();
     let client = Arc::new(NativeClient::new(env, token, Duration::from_secs(2)).unwrap());
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {

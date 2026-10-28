@@ -463,8 +463,8 @@ impl ProjectView {
 
     fn can_send(&self) -> bool {
         #[cfg(target_os = "linux")]
-        if self.native.active() && self.native.deleted() {
-            return false;
+        if self.native.active() {
+            return !self.native.deleted() && self.native.client_can_operate();
         }
 
         self.identity.is_some()
@@ -651,6 +651,11 @@ impl ProjectView {
     }
 
     fn send(&mut self, retry: Option<MessageRecord>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        if retry.is_none() && self.native.active() {
+            self.native_send(window, cx);
+            return;
+        }
         if self.busy || !self.can_send() {
             return;
         }
@@ -801,8 +806,13 @@ impl Render for ProjectView {
         let history = {
             self.feed
                 .update(cx, |feed, cx| feed.set_controls(enabled, self.busy, cx));
+            let native_ready = !self.native.active()
+                || (self.native.actions.read(cx).state.ready
+                    && self.native.stream_error_is_clear());
+            let can_steer = self.native.actions.read(cx).state.can_steer;
             self.composer.update(cx, |composer, cx| {
-                composer.set_controls(enabled, self.busy, cx)
+                composer.set_native(self.native.active(), can_steer, cx);
+                composer.set_controls(enabled && native_ready, self.busy, cx)
             });
             div().flex_1().min_h_0().child(
                 self.feed

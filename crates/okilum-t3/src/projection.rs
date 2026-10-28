@@ -45,12 +45,14 @@ pub struct Changes {
     pub order: Option<Vec<RowKey>>,
     pub reset: bool,
     pub metadata: Option<Metadata>,
+    pub actions: Option<crate::actions::State>,
 }
 impl Changes {
     pub fn changed(&self) -> bool {
         self.reset
             || self.order.is_some()
             || self.metadata.is_some()
+            || self.actions.is_some()
             || !self.rows.is_empty()
             || !self.removed.is_empty()
     }
@@ -62,8 +64,13 @@ pub struct Projection {
     pub metadata: Metadata,
     rows: HashMap<RowKey, Arc<TurnRow>>,
     order: Vec<RowKey>,
-    items: HashMap<String, Arc<Value>>,
-    runs: HashMap<String, Value>,
+    pub(crate) items: HashMap<String, Arc<Value>>,
+    pub(crate) runs: HashMap<String, Value>,
+    pub(crate) requests: HashMap<String, Value>,
+    pub(crate) provider_threads: HashMap<String, Value>,
+    pub(crate) provider_sessions: HashMap<String, Value>,
+    pub(crate) actions_ready: bool,
+    actions_dirty: bool,
     attempts: HashMap<String, Value>,
     dirty: HashSet<RowKey>,
     order_dirty: bool,
@@ -157,6 +164,11 @@ impl Projection {
             order: Vec::new(),
             items: HashMap::new(),
             runs: HashMap::new(),
+            requests: HashMap::new(),
+            provider_threads: HashMap::new(),
+            provider_sessions: HashMap::new(),
+            actions_ready: false,
+            actions_dirty: false,
             attempts: HashMap::new(),
             dirty: HashSet::new(),
             order_dirty: false,
@@ -174,6 +186,7 @@ impl Projection {
     pub fn take_changes(&mut self) -> Changes {
         let mut changes = Changes {
             reset: self.reset,
+            actions: self.actions_dirty.then(|| self.action_state()),
             order: self.order_dirty.then(|| self.order.clone()),
             metadata: self.metadata_dirty.then(|| self.metadata.clone()),
             ..Default::default()
@@ -192,6 +205,7 @@ impl Projection {
         self.reset = false;
         self.order_dirty = false;
         self.metadata_dirty = false;
+        self.actions_dirty = false;
         changes
     }
     /// Prepare the entire chunk before mutating the retained model. A malformed
@@ -219,6 +233,21 @@ impl Projection {
                         ..Default::default()
                     };
                     next.runs = entities(&projection["runs"])?;
+                    // Optional only for older synthetic/read-only snapshots. Missing
+                    // command context disables controls instead of inventing it.
+                    for (name, map) in [
+                        ("runtimeRequests", &mut next.requests),
+                        ("providerThreads", &mut next.provider_threads),
+                        ("providerSessions", &mut next.provider_sessions),
+                    ] {
+                        if let Some(value) = projection.get(name) {
+                            *map = entities(value)?;
+                        }
+                    }
+                    next.actions_ready = projection["runtimeRequests"].is_array()
+                        && projection["providerThreads"].is_array()
+                        && projection["providerSessions"].is_array();
+                    next.actions_dirty = true;
                     next.attempts = entities(&projection["attempts"])?;
                     for value in projection["turnItems"].as_array().ok_or_else(invalid)? {
                         if let Some(value) = item(value)? {
@@ -282,6 +311,10 @@ impl Projection {
                             | "run.updated"
                             | "run-attempt.created"
                             | "run-attempt.updated"
+                            | "runtime-request.updated"
+                            | "provider-thread.updated"
+                            | "provider-session.attached"
+                            | "provider-session.updated"
                             | "thread.deleted"
                             | "thread.metadata-updated"
                             | "thread.archived"
@@ -344,8 +377,24 @@ impl Projection {
             return;
         }
         match kind {
+            "runtime-request.updated"
+            | "provider-thread.updated"
+            | "provider-session.attached"
+            | "provider-session.updated" => {
+                let map = match kind {
+                    "runtime-request.updated" => &mut self.requests,
+                    "provider-thread.updated" => &mut self.provider_threads,
+                    _ => &mut self.provider_sessions,
+                };
+                let id = payload["id"].as_str().expect("prepared entity").to_owned();
+                if map.get(&id) != Some(&payload) {
+                    map.insert(id, payload);
+                    self.actions_dirty = true;
+                }
+            }
             "thread.deleted" => {
                 self.metadata.deleted = true;
+                self.actions_dirty = true;
                 self.metadata_dirty = true;
                 for key in self.order.clone() {
                     self.remove(&key);
@@ -370,6 +419,12 @@ impl Projection {
                 }
                 if !self.items.contains_key(&row_key.item) && self.below_partial_window(&payload) {
                     return;
+                }
+                if matches!(
+                    payload["type"].as_str(),
+                    Some("approval_request" | "user_input_request")
+                ) {
+                    self.actions_dirty = true;
                 }
                 let interrupt = payload["type"] == "run_interrupt_request"
                     || self
@@ -435,6 +490,7 @@ impl Projection {
                     return;
                 }
                 map.insert(id, payload);
+                self.actions_dirty = true;
                 self.prune();
             }
         }

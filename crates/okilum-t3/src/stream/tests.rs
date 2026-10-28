@@ -498,3 +498,179 @@ fn history_uses_protocol_header_encoded_thread_path_and_opaque_cursor() {
     assert!(page.items.is_empty());
     assert!(!page.has_more_history);
 }
+
+#[test]
+fn tier_one_commands_use_exact_effect_rpc_shapes_without_interrupting_a_subscription() {
+    use crate::actions::{Command, DispatchMode, Intent};
+    let intents = vec![
+        Intent::message("start".into(), DispatchMode::StartImmediately),
+        Intent::message("queue".into(), DispatchMode::QueueAfterActive),
+        Intent::message(
+            "steer".into(),
+            DispatchMode::SteerActive {
+                target_run_id: "run".into(),
+            },
+        ),
+        Intent::Interrupt {
+            run_id: "run".into(),
+        },
+        Intent::Respond {
+            request_id: "approval".into(),
+            decision: Some("decline".into()),
+            answers: None,
+        },
+        Intent::Respond {
+            request_id: "question".into(),
+            decision: None,
+            answers: Some(std::collections::BTreeMap::from([(
+                "q".into(),
+                json!(["A", "B"]),
+            )])),
+        },
+        Intent::Dismiss {
+            request_id: "question".into(),
+        },
+    ];
+    let commands: Vec<_> = intents
+        .into_iter()
+        .map(|i| Command::new("thread-a", i))
+        .collect();
+    let expected = commands.clone();
+    let fixture = Fixture::start(move |listener| {
+        for (index, command) in expected.iter().enumerate() {
+            ticket(&listener);
+            let mut ws = socket(&listener);
+            let request = read(&mut ws);
+            assert_eq!(
+                request,
+                json!({"_tag":"Request","id":"1","tag":"orchestration.dispatchCommand","headers":[],"payload":command.wire().unwrap()})
+            );
+            assert!(request["payload"].get("runtimeMode").is_none());
+            let payload = &request["payload"];
+            match index {
+                0..=2 => {
+                    assert_eq!(payload["type"], "message.dispatch");
+                    assert_eq!(payload["attachments"], json!([]));
+                    assert_eq!(payload["createdBy"], "user");
+                    assert_eq!(payload["creationSource"], "web");
+                    assert_eq!(
+                        payload["dispatchMode"]["type"],
+                        ["start_immediately", "queue_after_active", "steer_active"][index]
+                    );
+                    if index == 2 {
+                        assert_eq!(payload["dispatchMode"]["targetRunId"], "run");
+                    }
+                }
+                3 => {
+                    assert_eq!(payload["type"], "run.interrupt");
+                    assert_eq!(payload["runId"], "run");
+                    assert_eq!(payload["holdQueue"], true);
+                }
+                4 => {
+                    assert_eq!(payload["type"], "runtime-request.respond");
+                    assert_eq!(payload["decision"], "decline");
+                    assert_eq!(payload["requestId"], "approval");
+                }
+                5 => {
+                    assert_eq!(payload["type"], "runtime-request.respond");
+                    assert_eq!(payload["answers"], json!({"q":["A","B"]}));
+                }
+                6 => {
+                    assert_eq!(payload["type"], "thread.user-input.dismiss");
+                    assert_eq!(payload["requestId"], "question");
+                }
+                _ => unreachable!(),
+            }
+            send(&mut ws, json!({"_tag":"Ping"}));
+            assert_eq!(read(&mut ws), json!({"_tag":"Pong"}));
+            send(
+                &mut ws,
+                json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"sequence":index+1}}}),
+            );
+        }
+    });
+    let mut secret = serde_json::from_slice::<Value>(&token(&fixture.env).to_secret()).unwrap();
+    secret["scope"] = json!("orchestration:read orchestration:operate");
+    let token =
+        NativeToken::from_secret(&fixture.env, &serde_json::to_vec(&secret).unwrap()).unwrap();
+    let client = NativeClient::new(fixture.env.clone(), token, Duration::from_secs(2)).unwrap();
+    for (i, command) in commands.iter().enumerate() {
+        assert_eq!(client.dispatch(command).unwrap(), i as u64 + 1);
+    }
+    fixture.finish();
+}
+#[test]
+fn native_read_only_credentials_never_obtain_a_ticket_for_commands() {
+    let fixture = Fixture::start(|listener| {
+        thread::sleep(Duration::from_millis(100));
+        assert!(listener.accept().is_err());
+    });
+    let command = crate::actions::Command::new(
+        "thread-a",
+        crate::actions::Intent::Interrupt {
+            run_id: "run".into(),
+        },
+    );
+    assert!(client(&fixture.env).dispatch(&command).is_err());
+    fixture.finish();
+}
+
+#[test]
+fn lost_command_response_retains_the_same_wire_and_reopened_journal_never_resends_an_ack() {
+    use crate::actions::{DispatchMode, Intent, Journal};
+    let dir = std::env::temp_dir().join(format!("okilum-native-wire-{}", uuid::Uuid::new_v4()));
+    let fixture = Fixture::start(|listener| {
+        ticket(&listener);
+        let mut first = socket(&listener);
+        let original = read(&mut first);
+        assert_eq!(original["tag"], "orchestration.dispatchCommand");
+        first.close(None).unwrap();
+        drop(first);
+        ticket(&listener);
+        let mut second = socket(&listener);
+        assert_eq!(
+            read(&mut second),
+            original,
+            "explicit retry changed the command or message identity"
+        );
+        send(
+            &mut second,
+            json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"sequence":91}}}),
+        );
+    });
+    let mut secret = serde_json::from_slice::<Value>(&token(&fixture.env).to_secret()).unwrap();
+    secret["scope"] = json!("orchestration:read orchestration:operate");
+    let client = NativeClient::new(
+        fixture.env.clone(),
+        NativeToken::from_secret(&fixture.env, &serde_json::to_vec(&secret).unwrap()).unwrap(),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let journal = Journal::new(&dir, &fixture.env, "thread-a");
+    let record = journal
+        .prepare(Intent::message(
+            "hello".into(),
+            DispatchMode::QueueAfterActive,
+        ))
+        .unwrap();
+    assert!(journal.send(&record, |c| client.dispatch(c)).is_err());
+    let reopened = Journal::new(&dir, &fixture.env, "thread-a");
+    let retained = reopened.records().unwrap().pop().unwrap();
+    assert_eq!(retained, record);
+    assert_eq!(
+        reopened
+            .send(&retained, |c| client.dispatch(c))
+            .unwrap()
+            .sequence,
+        Some(91)
+    );
+    assert_eq!(
+        reopened
+            .send(&retained, |_| panic!("ack was sent again"))
+            .unwrap()
+            .sequence,
+        Some(91)
+    );
+    fixture.finish();
+    std::fs::remove_dir_all(dir).unwrap();
+}
