@@ -148,6 +148,25 @@ pub fn statuses(
 }
 
 impl Project {
+    /// Resolve the browser destination at connection time: a rotated Manager
+    /// row supersedes the project snapshot used to create the panel.
+    pub fn manager_url(
+        &self,
+        environment: &crate::Environment,
+        identity: &crate::ServerIdentity,
+    ) -> Result<url::Url> {
+        let current = Self::read(&self.folder)?;
+        ensure!(
+            current.environment == self.environment
+                && current.manager_project == self.manager_project,
+            "Project binding changed; reopen the project before connecting"
+        );
+        let Manager::Thread(thread) = current.manager else {
+            anyhow::bail!("This project has no linked Manager thread");
+        };
+        manager_url(environment, identity, &thread)
+    }
+
     /// Native fallback for knowledge projects intentionally has no executor
     /// binding. Empty internal executor/model defaults are never actionable.
     pub fn native_binding(&self) -> Result<Option<crate::manifest::AreaBinding>> {
@@ -448,6 +467,9 @@ pub fn manager_url(
         .map_err(|_| anyhow::anyhow!("invalid T3 origin"))?
         .push(&identity.environment_id)
         .push(thread);
+    // URL path segments allow literal colons; browser router parameters use
+    // percent-encoded namespace separators, including the second launch colon.
+    url.set_path(&url.path().replace(':', "%3A"));
     Ok(url)
 }
 
@@ -511,12 +533,57 @@ mod tests {
                 Some(expected),
             );
             let browser = manager_url(&environment, &identity, expected).unwrap();
-            assert_eq!(browser.path(), format!("/environment-1/{expected}"));
+            assert_eq!(
+                browser.path(),
+                format!("/environment-1/{}", expected.replace(':', "%3A"))
+            );
             assert!(browser.query().is_none() && browser.fragment().is_none());
             let desktop = url::Url::parse(&identity.thread_url(expected)).unwrap();
             assert_eq!(desktop.path(), format!("/environment-1/{expected}"));
             assert!(desktop.query().is_none() && desktop.fragment().is_none());
         }
+        std::fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn manager_panel_route_uses_the_rotated_registry_instead_of_its_old_snapshot() {
+        let vault =
+            std::env::temp_dir().join(format!("okilum-manager-route-{}", uuid::Uuid::new_v4()));
+        let ops = vault.join("ops");
+        std::fs::create_dir_all(&ops).unwrap();
+        let old = "mcp:08469571-8ef8-4470-8e2b-d533ccc90bf6";
+        std::fs::write(
+            ops.join("project.yaml"),
+            format!("name: okilum\nt3:\n  environment: maestro\n  manager: {{project_id: brain, thread_id: '{old}'}}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            ops.join("thread-ids.md"),
+            format!("| Manager | `{old}` |\n"),
+        )
+        .unwrap();
+        let panel_project = Project::read(&vault).unwrap();
+        assert_eq!(panel_project.manager, Manager::Thread(old.into()));
+        std::fs::write(
+            ops.join("thread-ids.md"),
+            format!("| Manager | `{LAUNCHED_MANAGER}` | previous `{old}` |\n"),
+        )
+        .unwrap();
+        let environment = crate::Environment::new("maestro", "https://example.com").unwrap();
+        let identity = crate::ServerIdentity {
+            environment_id: "environment-1".into(),
+            label: "test".into(),
+        };
+        let destination = panel_project.manager_url(&environment, &identity).unwrap();
+        assert_eq!(
+            destination.as_str(),
+            "https://example.com/environment-1/mcp%3Alaunch%3A13099777befea3a4729bea16bc252db454294b4b5da5e221eec148a17a4ba965"
+        );
+        assert!(!destination.as_str().contains("08469571"));
+        assert!(destination.query().is_none() && destination.fragment().is_none());
+        // An unreadable registry must not fall back to the settled snapshot or manifest.
+        std::fs::write(ops.join("thread-ids.md"), "| Manager | `mcp:../escape` |\n").unwrap();
+        assert!(panel_project.manager_url(&environment, &identity).is_err());
         std::fs::remove_dir_all(vault).unwrap();
     }
 
@@ -598,7 +665,7 @@ mod tests {
             manager_url(&env, &identity, "mcp:manager")
                 .unwrap()
                 .as_str(),
-            "https://example.com/environment-1/mcp:manager"
+            "https://example.com/environment-1/mcp%3Amanager"
         );
         assert!(manager_url(&env, &identity, "../escape").is_err());
     }
