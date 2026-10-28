@@ -1570,6 +1570,23 @@ mod tests {
             readers.push((handle, entity.unwrap(), folder));
         }
         cx.run_until_parked();
+        let mut reader_visuals = readers
+            .iter()
+            .map(|(handle, _, _)| VisualTestContext::from_window((*handle).into(), cx))
+            .collect::<Vec<_>>();
+        // Reopen through the real production path after the initial inventory is
+        // ready. No synthetic title projection: quick folders retain the actual
+        // file-name fallback, while the indexed vault has captured source titles.
+        for ((_, reader, _), reader_visual) in readers.iter().zip(&mut reader_visuals) {
+            reader.update_in(reader_visual, |reader, window, cx| {
+                reader.open_note("a.md", None, window, cx);
+            });
+            reader_visual.run_until_parked();
+            reader_visual
+                .executor()
+                .advance_clock(Duration::from_millis(300));
+            reader_visual.run_until_parked();
+        }
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(readers[0].1.downgrade()), cx);
@@ -1594,34 +1611,76 @@ mod tests {
                 .expect("real Settings control is rendered");
             visual.simulate_click(button.center(), Modifiers::default());
             visual.run_until_parked();
-            visual.update(|_, cx| {
-                assert_eq!(reader_ui_state::tree_note_titles(cx), titles);
-                for (handle, reader, folder) in &readers {
-                    handle.update(cx, |_, window, cx| {
-                        window.draw(cx).clear(cx);
-                        reader.update(cx, |reader, cx| {
-                            assert_eq!(reader.single_file, *folder, "positive control: both opener modes");
-                            let labels = reader.tree.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>();
-                            assert_eq!(labels, if titles {
-                                vec!["Index title", "Alpha metadata", "Zebra heading", "data.csv"]
-                            } else {
-                                vec!["_index", "a", "data.csv", "z"]
-                            }, "LABEL1834: Settings must update existing tree rows and their sort live");
-                            assert_eq!(reader.current_rel, "a.md");
-                            assert_eq!(reader.current_title, "Zebra heading");
-                            assert_eq!(reader.note_label("z.md"), "Alpha metadata", "other title surfaces are unchanged");
-                            reader.focus_current_folder(window, cx);
-                            assert_eq!(reader.tree.cursor.as_deref(), Some("a.md"), "Reveal follows path identity");
-                            reader.begin_rename("z.md".into(), window, cx);
-                            let rename = reader.renaming.as_ref().expect("rename targets the real file");
-                            assert_eq!(rename.path, "z.md");
-                            assert_eq!(rename.input.read(cx).value().as_str(), "z", "rename edits the filename in either mode");
-                            reader.cancel_rename(window, cx);
-                            assert_eq!(std::fs::read_to_string(reader.vault_root.join("a.md")).unwrap(), source);
-                        });
-                    }).unwrap();
-                }
-            });
+            visual.update(|_, cx| assert_eq!(reader_ui_state::tree_note_titles(cx), titles));
+            for ((_, reader, folder), reader_visual) in readers.iter().zip(&mut reader_visuals) {
+                // Draw outside WindowHandle<Root>::update: rendering Root while
+                // borrowing that entity would recursively update the same Root.
+                reader_visual.update(|window, cx| window.draw(cx).clear(cx));
+                reader.update_in(reader_visual, |reader, window, cx| {
+                    assert_eq!(
+                        reader.single_file, *folder,
+                        "positive control: both opener modes"
+                    );
+                    let labels = reader
+                        .tree
+                        .rows
+                        .iter()
+                        .map(|r| r.label.as_str())
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        labels,
+                        if titles && !folder {
+                            vec!["Index title", "Alpha metadata", "Zebra heading", "data.csv"]
+                        } else {
+                            vec!["_index", "a", "data.csv", "z"]
+                        },
+                        "LABEL1834: Settings must update existing tree rows and their sort live"
+                    );
+                    assert_eq!(reader.current_rel, "a.md");
+                    assert_eq!(
+                        reader.current_title,
+                        if *folder { "a" } else { "Zebra heading" }
+                    );
+                    assert_eq!(
+                        reader.outline[0].text, "Zebra heading",
+                        "the opened note retains its real H1"
+                    );
+                    assert_eq!(
+                        reader.note_label("z.md"),
+                        if *folder { "z" } else { "Alpha metadata" },
+                        "uncaptured quick-folder sibling titles keep the real filename fallback"
+                    );
+                    if *folder {
+                        assert!(
+                            !reader.backlink_titles.contains_key("z.md"),
+                            "quick folders do not read sibling bodies for titles"
+                        );
+                    }
+                    reader.focus_current_folder(window, cx);
+                    assert_eq!(
+                        reader.tree.cursor.as_deref(),
+                        Some("a.md"),
+                        "Reveal follows path identity"
+                    );
+                    reader.begin_rename("z.md".into(), window, cx);
+                    let rename = reader
+                        .renaming
+                        .as_ref()
+                        .expect("rename targets the real file");
+                    assert_eq!(rename.path, "z.md");
+                    assert_eq!(
+                        rename.input.read(cx).value().as_str(),
+                        "z",
+                        "rename edits the filename in either mode"
+                    );
+                    reader.cancel_rename(window, cx);
+                    assert_eq!(
+                        std::fs::read_to_string(reader.vault_root.join("a.md")).unwrap(),
+                        source
+                    );
+                });
+                reader_visual.run_until_parked();
+            }
             visual.run_until_parked();
         }
     }
