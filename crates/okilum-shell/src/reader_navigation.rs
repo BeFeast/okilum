@@ -21,3 +21,6 @@ pub(super) struct State {
     /// The highlighted block and its serial (each highlight fades once).
     pub flash: Option<(usize, u64)>,
 }
+
+#[cfg(test)]
+mod tests;
