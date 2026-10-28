@@ -177,7 +177,7 @@ impl Render for Actions {
                             json!({"decision":"decline","label":"Decline"}),
                         ]
                     });
-                let mut buttons = h_flex().flex_wrap().gap_1();
+                let mut buttons = h_flex().items_start().flex_wrap().gap_1();
                 for (n, option) in options.iter().enumerate() {
                     let Some(decision) = option["decision"].as_str() else {
                         continue;
@@ -188,7 +188,7 @@ impl Render for Actions {
                         answers: None,
                     };
                     let allowed = self.state.allows(&intent);
-                    buttons = buttons.child(
+                    let mut decision_group = v_flex().min_w_0().gap_1().child(
                         Button::new(SharedString::from(format!("approval-{request_id}-{n}")))
                             .ghost()
                             .label(option["label"].as_str().unwrap_or(decision).to_owned())
@@ -198,8 +198,10 @@ impl Render for Actions {
                             })),
                     );
                     if let Some(warning) = option["warning"].as_str() {
-                        card = card.child(div().whitespace_normal().child(warning.to_owned()));
+                        decision_group = decision_group
+                            .child(div().whitespace_normal().child(warning.to_owned()));
                     }
+                    buttons = buttons.child(decision_group);
                 }
                 card = card.child(buttons);
             } else if let Some(questions) = request.item["questions"].as_array() {
