@@ -256,16 +256,10 @@ impl Binding {
         // The current registry supersedes literal IDs retained in old cards.
         // An unreadable registry cannot establish live executor ownership.
         let mut binding = binding;
-        let needs_registry = binding
-            .issues
-            .iter()
-            .any(|scope| scope.agent_thread_id.is_some());
         let registry = match crate::executors::Registry::read(area) {
             Ok(registry) => Some(registry),
             Err(error) => {
-                if needs_registry {
-                    binding.registry_error = Some(format!("{error:#}"));
-                }
+                binding.registry_error = Some(format!("{error:#}"));
                 None
             }
         };

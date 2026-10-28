@@ -398,6 +398,12 @@ fn current_registry_rotation_supersedes_stale_card_ids() {
     assert_eq!(column(scope, Some(&open), &[thread.clone()]), Column::Queue);
     thread.thread_id = "mcp:launch:current".into();
     assert_eq!(column(scope, Some(&open), &[thread]), Column::Working);
+    // A role-only card still depends on the registry; its failure must be visible.
+    value["issues"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("agent_thread_id");
+    std::fs::write(area.join("ops/board.yaml"), value.to_string()).unwrap();
     std::fs::write(area.join("ops/thread-ids.md"), "invalid").unwrap();
     let unknown = Binding::read(&area).unwrap().unwrap();
     assert!(unknown.issues[0].agent_thread_id.is_none());
