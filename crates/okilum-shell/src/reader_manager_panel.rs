@@ -347,9 +347,9 @@ impl ManagerPanel {
         if self.loading {
             return;
         }
-        if !matches!(&self.project.manager, Manager::Thread(_)) {
+        let Manager::Thread(thread) = self.project.manager.clone() else {
             return;
-        }
+        };
         if self.closed {
             return;
         }
@@ -372,14 +372,13 @@ impl ManagerPanel {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.loading = true;
-        let project = self.project.clone();
         // The previous error stays until this attempt ends: no flicker.
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let identity = okilum_t3::projects::browser_identity(&env)?;
-                    let url = project.manager_url(&env, &identity)?;
+                    let url = okilum_t3::projects::manager_url(&env, &identity, &thread)?;
                     Ok::<_, anyhow::Error>(url)
                 })
                 .await;
