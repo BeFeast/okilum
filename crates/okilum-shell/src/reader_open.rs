@@ -4364,11 +4364,61 @@ mod entry_tests {
             before_tree,
             "file/folder opens and bulk/refresh cannot create canonical entries"
         );
+        // The preceding opens must work without write access. The explicit
+        // missing-note request below intentionally creates a file (#1835), so
+        // restore its parent's write permission for every runner identity.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let before = cx.windows().len();
         sender
             .try_send(vec![url::Url::from_file_path(root.join("missing.md"))
                 .unwrap()
                 .into()])
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            before,
+            "creation reuses the existing Reader"
+        );
+        cx.update(|cx| {
+            assert_eq!(
+                cx.global::<Readers>().0.len(),
+                1,
+                "no namesake or second Reader"
+            );
+            let reused = cx.global::<Readers>().0[0].0.upgrade().unwrap();
+            assert_eq!(reused.entity_id(), first.entity_id());
+            let reader = first.read(cx);
+            assert_eq!(reader.vault_root, root);
+            assert_eq!(reader.current_rel, "missing.md");
+            assert!(
+                reader.editing.is_some(),
+                "the newly created file opens its editor"
+            );
+        });
+        assert_eq!(std::fs::read(root.join("missing.md")).unwrap(), b"");
+        let mut after_creation = before_tree.clone();
+        assert!(after_creation
+            .insert(PathBuf::from("missing.md"), Some(Vec::new()))
+            .is_none());
+        assert_eq!(
+            tree(&root),
+            after_creation,
+            "only the requested empty file is added"
+        );
+
+        // Keep the visible-refusal coverage on the same real OS delivery path.
+        // A missing parent is never implicitly created, regardless of uid.
+        sender
+            .try_send(vec![url::Url::from_file_path(
+                root.join("missing-parent/new.md"),
+            )
+            .unwrap()
+            .into()])
             .unwrap();
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), before + 1, "visible refusal window");
@@ -4377,15 +4427,40 @@ mod entry_tests {
                 cx.global::<Readers>().0.len(),
                 1,
                 "refusal must not open a namesake"
-            )
+            );
+            assert_eq!(first.read(cx).current_rel, "missing.md");
+            let error = cx
+                .windows()
+                .iter()
+                .find_map(|handle| {
+                    handle
+                        .downcast::<Root>()?
+                        .read(cx)
+                        .ok()?
+                        .view()
+                        .clone()
+                        .downcast::<OpenError>()
+                        .ok()
+                })
+                .expect("a real refusal view was shown");
+            assert!(
+                error.read(cx).0.contains("missing-parent"),
+                "the error names the missing folder"
+            );
         });
+        assert!(!root.join("missing-parent").exists());
+        assert_eq!(
+            tree(&root),
+            after_creation,
+            "refusal adds no canonical entries"
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             "# Start\n\n[Go](sub/Ю.md#Landing)\n"
         );
         assert_eq!(
             std::fs::read_dir(&root).unwrap().count(),
-            2,
+            3,
             "no derived files in canonical folder"
         );
         #[cfg(unix)]
