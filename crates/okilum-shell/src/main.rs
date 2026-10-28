@@ -2731,7 +2731,7 @@ impl Reader {
         self.panels.toggle_maximized();
         // Presentation only: keep the current editor, selection, draft and history.
         if let Some(editing) = &self.editing {
-            editing.input.focus_handle(cx).focus(window, cx);
+            editing.input().focus_handle(cx).focus(window, cx);
         } else {
             self.content
                 .read(cx)

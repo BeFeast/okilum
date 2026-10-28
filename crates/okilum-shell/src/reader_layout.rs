@@ -400,7 +400,7 @@ mod tests {
                 r.panel_widths.set(Panel::Notes, 315.);
                 r.panel_widths.set(Panel::Backlinks, 287.);
                 if let Some(editing) = &r.editing {
-                    editing.input.focus_handle(cx).focus(window, cx);
+                    editing.input().focus_handle(cx).focus(window, cx);
                 } else {
                     r.content.read(cx).focus_handle().clone().focus(window, cx);
                 }
@@ -413,7 +413,7 @@ mod tests {
                     r.panel_widths.clone(),
                     r.editing
                         .as_ref()
-                        .map(|e| (e.input.entity_id(), e.input.read(cx).source_stamp())),
+                        .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
                 )
             });
             visual.simulate_keystrokes(shortcut);
@@ -439,7 +439,7 @@ mod tests {
                 );
                 assert_eq!(saved.widths, before.1);
                 if let Some(editing) = &r.editing {
-                    assert!(editing.input.focus_handle(cx).is_focused(window));
+                    assert!(editing.input().focus_handle(cx).is_focused(window));
                 }
             });
             visual.simulate_keystrokes("escape");
@@ -457,7 +457,7 @@ mod tests {
                 assert_eq!(
                     r.editing
                         .as_ref()
-                        .map(|e| (e.input.entity_id(), e.input.read(cx).source_stamp())),
+                        .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
                     before.2
                 );
             });
