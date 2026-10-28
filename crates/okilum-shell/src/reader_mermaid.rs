@@ -213,6 +213,7 @@ impl RenderOnce for MermaidView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn mermaid_fences_have_a_grammar_and_highlights() {
