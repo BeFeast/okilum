@@ -563,8 +563,9 @@ impl Reader {
     }
 
     pub(super) fn render_empty_vault(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = brand::palette(cx);
         let name = super::vault_name::shown(&self.vault_root, cx);
-        let mut recent = v_flex().gap_1();
+        let mut recent = v_flex().w_full().min_w_0().gap_1();
         let mut recent_notes = self
             .sidebar
             .recent
@@ -575,23 +576,91 @@ impl Reader {
         for (ix, item) in recent_notes.take(10).enumerate() {
             let rel = item.0.clone();
             let label = self.vault.note_title(&rel);
+            let folder = Path::new(&rel)
+                .parent()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned());
             recent = recent.child(
                 Button::new(("empty-recent", ix))
                     .ghost()
-                    .label(label)
+                    .w_full()
+                    .h(px(44.))
+                    .px_3()
+                    .rounded_md()
+                    .accessibility_label(label.clone())
+                    .debug_selector(move || format!("empty-recent-{ix}"))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .min_w_0()
+                            .gap_3()
+                            .child(
+                                Icon::new(IconName::FileText)
+                                    .small()
+                                    .text_color(p.text_muted),
+                            )
+                            .child(div().flex_1().min_w_0().truncate().child(label))
+                            .when_some(folder, |row, folder| {
+                                row.child(
+                                    div()
+                                        .max_w(relative(0.3))
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_right()
+                                        .text_size(px(12.))
+                                        .text_color(p.text_muted)
+                                        .child(folder),
+                                )
+                            }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_note(&rel, None, window, cx)
                     })),
             );
         }
-        v_flex()
-            .id("reader-empty-vault")
-            .debug_selector(|| "reader-empty-vault".into())
-            .size_full()
-            .overflow_y_scroll()
-            .p_8()
-            .gap_4()
-            .child(div().text_xl().child(name))
+        let page = v_flex()
+            .w_full()
+            .min_w_0()
+            .max_w(px(560.))
+            .items_start()
+            .text_left()
+            .gap_6()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .size(px(48.))
+                            .flex_none()
+                            .justify_center()
+                            .rounded_lg()
+                            .bg(p.selected)
+                            .child(
+                                Icon::new(IconName::FolderOpen)
+                                    .size_6()
+                                    .text_color(p.accent),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .debug_selector(|| "empty-vault-title".into())
+                                    .text_2xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(p.text_muted)
+                                    .child("Create a note or pick up where you left off."),
+                            ),
+                    ),
+            )
             // A vault without notes yet is new, not broken (#1123).
             .when(
                 self.vault.notes.is_empty() && self.vault.inventory_scanned,
@@ -599,49 +668,111 @@ impl Reader {
                     view.child(
                         div()
                             .debug_selector(|| "reader-empty-vault-new".into())
+                            .text_sm()
+                            .text_color(p.text_muted)
                             .child("This folder has no notes yet. Create the first one."),
                     )
                 },
             )
-            // Real buttons, each also naming its shortcut (#1348). With no
-            // notes yet, creating one comes first and searching is not offered.
             .child(
                 v_flex()
-                    .items_start()
-                    .gap_1()
+                    .w_full()
+                    .gap_2()
                     .when(cfg!(any(unix, windows)), |actions| {
                         actions.child(empty_action(
                             "empty-new-note",
-                            reader_shortcuts::hint("New note", &NewNote, cx),
+                            "New note",
+                            IconName::Plus,
                             Box::new(NewNote),
+                            cx,
                         ))
                     })
                     .when(!self.vault.notes.is_empty(), |actions| {
                         actions.child(empty_action(
                             "empty-search-notes",
-                            reader_shortcuts::hint("Search notes", &QuickOpen, cx),
+                            "Search notes",
+                            IconName::Search,
                             Box::new(QuickOpen),
+                            cx,
                         ))
                     })
                     .child(empty_action(
                         "empty-shortcuts",
-                        reader_shortcuts::hint("Keyboard shortcuts", &ToggleShortcutSheet, cx),
+                        "Keyboard shortcuts",
+                        IconName::BookOpen,
                         Box::new(ToggleShortcutSheet),
+                        cx,
                     )),
             )
             .when(has_recent, |view| {
-                view.child(div().text_sm().child("Recent")).child(recent)
-            })
+                view.child(
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_3()
+                        .child(
+                            h_flex()
+                                .debug_selector(|| "empty-recent-heading".into())
+                                .w_full()
+                                .gap_2()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.text_muted)
+                                .child(Icon::default().path(brand::READER_CLOCK_ICON).small())
+                                .child("Recent"),
+                        )
+                        .child(recent),
+                )
+            });
+        v_flex()
+            .id("reader-empty-vault")
+            .debug_selector(|| "reader-empty-vault".into())
+            .size_full()
+            .overflow_y_scroll()
+            .items_center()
+            .px_6()
+            .pt_10()
+            .pb_8()
+            .child(page)
             .into_any_element()
     }
 }
 
-/// One action on the empty-vault page: a quiet button that dispatches it.
-fn empty_action(id: &'static str, label: SharedString, action: Box<dyn Action>) -> Button {
+/// The start page uses native button affordances and the live keymap's caps.
+fn empty_action(
+    id: &'static str,
+    label: &'static str,
+    icon: IconName,
+    action: Box<dyn Action>,
+    cx: &App,
+) -> Button {
+    let p = brand::palette(cx);
+    let tokens = brand::reader_palette(cx);
+    let shortcut = reader_shortcuts::shortcut_caps(action.as_ref(), cx);
     Button::new(id)
-        .ghost()
-        .label(label)
+        .secondary()
+        .w_full()
+        .h(px(56.))
+        .px_4()
+        .rounded_lg()
+        .accessibility_label(label)
         .debug_selector(move || id.into())
+        .child(
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_3()
+                .child(Icon::new(icon).small().text_color(p.text_muted))
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .when_some(shortcut, |row, keys| {
+                    row.child(
+                        h_flex().flex_none().gap_1().children(
+                            keys.into_iter()
+                                .map(|key| reader_shortcuts::key_cap(key, p, tokens)),
+                        ),
+                    )
+                }),
+        )
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
@@ -864,6 +995,27 @@ mod tests {
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("reader-empty-vault").is_some());
+        // #1858: the Recent heading, action controls and recent rows share
+        // one column, including when the document area becomes narrow.
+        let mut column_widths = Vec::new();
+        for width in [480., 1600.] {
+            visual.simulate_resize(size(px(width), px(1000.)));
+            visual.run_until_parked();
+            let heading = visual.debug_bounds("empty-recent-heading").unwrap();
+            let recent = visual.debug_bounds("empty-recent-0").unwrap();
+            column_widths.push(recent.size.width);
+            assert!(recent.size.width > px(80.), "a visible full-width row");
+            for action in ["empty-new-note", "empty-search-notes", "empty-shortcuts"] {
+                let bounds = visual.debug_bounds(action).unwrap();
+                assert!((bounds.left() - heading.left()).abs() < px(1.), "{action}");
+                assert!((bounds.right() - recent.right()).abs() < px(1.), "{action}");
+                assert!(bounds.bottom() < heading.top(), "{action} precedes Recent");
+            }
+            assert!((heading.left() - recent.left()).abs() < px(1.));
+        }
+        assert!(column_widths[0] < px(560.), "narrow column is constrained");
+        assert!((column_widths[1] - px(560.)).abs() < px(1.));
+        assert!(column_widths[0] < column_widths[1]);
         assert_eq!(
             reader_history::ReadingHistory::last_document(&state, &root)
                 .unwrap()
