@@ -146,6 +146,25 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
             "explicit link destination wins"
         );
     });
+    // An explicit bare deep link also has a destination: the document top.
+    // It must not inherit either the remembered viewport or the heading above.
+    view.update_in(visual, |v, window, cx| {
+        v.open_link(
+            "A.md",
+            okilum_core::deep_link::Position::default(),
+            window,
+            cx,
+        );
+    });
+    settle(visual);
+    view.read_with(visual, |v, cx| {
+        assert_eq!(
+            v.current_section(cx),
+            Some(0),
+            "a bare deep link opens at the top"
+        );
+        assert!(v.navigation.flash.is_none(), "a bare deep link stays quiet");
+    });
 }
 
 #[gpui::test]

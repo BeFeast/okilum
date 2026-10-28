@@ -2154,7 +2154,7 @@ impl Reader {
         rel: &str,
         jump_term: Option<&str>,
         heading: Option<&str>,
-        line: Option<u32>,
+        landing: Option<prepared_links::Landing>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2177,8 +2177,8 @@ impl Reader {
         }
         self.clear_hover(cx);
         self.file_preview = None;
-        if line.is_some() {
-            self.prepare_link_document(rel, line, heading, window, cx);
+        if let Some(landing) = landing {
+            self.prepare_link_document(rel, landing, heading, window, cx);
         } else {
             self.prepare_document(rel, jump_term, heading, window, cx);
         }

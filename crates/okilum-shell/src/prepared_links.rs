@@ -192,6 +192,8 @@ pub(crate) struct PreparedDocument {
 
 /// Where to land once the document is rendered.
 pub(crate) enum Landing {
+    /// An explicit bare document link opens at the top, without a flash.
+    Top,
     Task(okilum_core::tasks::Task),
     /// A file line from an external link (#1049), 1-based.
     Line(u32),
@@ -235,16 +237,16 @@ impl Reader {
         );
     }
 
-    /// An external link's note, at a file line or a heading (#1049).
+    /// An external link's note, with its explicit landing (#1049).
     pub(crate) fn prepare_link_document(
         &mut self,
         rel: &str,
-        line: Option<u32>,
+        landing: Landing,
         heading: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prepare_document_target(rel, (None, heading), line.map(Landing::Line), window, cx);
+        self.prepare_document_target(rel, (None, heading), Some(landing), window, cx);
     }
 
     /// The note back in the Reader at the editor's place (#1296).
@@ -304,7 +306,7 @@ impl Reader {
             Some(Landing::Line(line)) => Some(*line),
             _ => None,
         };
-        let quiet = matches!(landing, Some(Landing::Place(_)));
+        let quiet = matches!(landing, Some(Landing::Top | Landing::Place(_)));
         let started = std::time::Instant::now();
         self.open_started = Some(started);
         let preparation_trace = reader_diagnostics::trace(cx);
@@ -375,6 +377,9 @@ impl Reader {
                         document.and_then(|document| {
                             let _phase = okilum_core::open_diagnostics::phase("target_landing");
                             let target = match landing {
+                                // Acceptance already starts a replacement at the
+                                // top; an empty document needs no pending landing.
+                                Some(Landing::Top) => None,
                                 Some(Landing::Task(task)) => {
                                     let original = document.original.as_deref().ok_or_else(|| {
                                         anyhow::anyhow!("Task navigation is unavailable in HTML mode")
