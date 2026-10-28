@@ -7,5 +7,6 @@
   "source_archive_sha256": "40d85b187d03a7dff7438ff73e43f578fded09547f1012c9b412e3d2512784e3",
   "receipt": "https://github.com/BeFeast/okilum/actions/runs/40667095248",
   "client_source": "1d6b3d868de8c66f5b400ab3389389ebd7c768b6",
-  "client_binary_sha256": "9cf9cae46434fe2b96d137346e5e0f9a1a1be20bfd8cc5e66fa6f2a1a99e9402"
+  "client_binary_sha256": "9cf9cae46434fe2b96d137346e5e0f9a1a1be20bfd8cc5e66fa6f2a1a99e9402",
+  "release_target_commit": "ce66aab13fabde01b82deac4b4b3eaae53641988"
 }
