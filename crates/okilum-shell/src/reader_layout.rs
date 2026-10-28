@@ -438,12 +438,23 @@ mod tests {
                     "temporary hiding is not a saved preference"
                 );
                 assert_eq!(saved.widths, before.1);
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
+                    before.2,
+                    "maximizing retains the current editor and canonical source stamp"
+                );
                 if let Some(editing) = &r.editing {
                     assert!(editing.input().focus_handle(cx).is_focused(window));
                 }
             });
-            visual.simulate_keystrokes("escape");
-            visual.run_until_parked();
+            // Escape intentionally leaves Source (existing #483 behavior).
+            // Keep this round-trip focused on the maximize/restore controls.
+            if !source {
+                visual.simulate_keystrokes("escape");
+                visual.run_until_parked();
+            }
             reader.read_with(visual, |r, _| assert!(r.panels.maximized()));
             let button = visual
                 .debug_bounds("reader-maximize-note")
