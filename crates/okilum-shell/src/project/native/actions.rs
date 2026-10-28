@@ -13,6 +13,7 @@ pub(crate) struct Actions {
     subscriptions: HashMap<(String, String), Subscription>,
     busy: bool,
     enabled: bool,
+    revision: u64,
     error: Option<String>,
 }
 impl Actions {
@@ -26,6 +27,7 @@ impl Actions {
             subscriptions: HashMap::new(),
             busy: false,
             enabled: false,
+            revision: 0,
             error: None,
         }
     }
@@ -397,6 +399,7 @@ impl ProjectView {
         self.busy = true;
         self.native.actions.update(cx, |a, cx| {
             a.busy = true;
+            a.revision = a.revision.wrapping_add(1);
             a.error = None;
             cx.notify();
         });
@@ -440,6 +443,7 @@ impl ProjectView {
             return;
         };
         let generation = self.generation;
+        let revision = self.native.actions.read(cx).revision;
         cx.spawn_in(window, async move |this, cx| {
             let records = cx
                 .background_executor()
@@ -450,6 +454,9 @@ impl ProjectView {
                     return;
                 }
                 this.native.actions.update(cx, |a, cx| {
+                    if a.revision != revision {
+                        return;
+                    }
                     match records {
                         Ok(r) => a.records = r,
                         Err(e) => a.error = Some(format!("{e:#}")),
@@ -640,5 +647,70 @@ mod tests {
             decision: Some("decline".into()),
             answers: None
         }));
+    }
+    #[gpui::test]
+    fn question_keystrokes_leave_cached_history_and_parent_silent(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let (root,visual)=cx.add_window_view(|window,cx| {
+            let view=cx.new(|cx| {
+                let mut view=super::super::super::fixture::view(temp.path().to_owned(),Arc::new(super::super::super::fixture::Fake::default()),window,cx);
+                view.active=false;
+                let message:okilum_t3::TimelineItem=serde_json::from_value(json!({"position":1,"itemId":"a","messageId":"m","type":"assistant_message","status":"completed","text":"Selectable retained history","updatedAt":"now"})).unwrap();
+                view.feed.update(cx,|feed,cx|feed.apply(std::iter::once(&message),Some(&[]),cx));
+                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request{id:"r".into(),item:json!({"type":"user_input_request","questions":[{"id":"q","question":"Your choice","options":[]}]}),answerable:true,dismissible:true}],..Default::default()},window,cx));
+                view
+            });Root::new(view,window,cx)
+        });
+        visual.simulate_resize(size(px(760.), px(1000.)));
+        visual.run_until_parked();
+        let view = root.read_with(visual, |r, _| {
+            r.view().clone().downcast::<ProjectView>().unwrap()
+        });
+        let (feed, actions, input) = view.read_with(visual, |v, cx| {
+            let a = v.native.actions.clone();
+            let input = a.read(cx).inputs[&("r".into(), "q".into())].clone();
+            (v.feed.clone(), a, input)
+        });
+        input.update_in(visual, |i, window, cx| i.focus_handle(cx).focus(window, cx));
+        visual.run_until_parked();
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        let before = feed.read_with(visual, |f, _| (f.row_calls.get(), f.render_calls.get()));
+        assert!(before.0 > 0);
+        let counts = Rc::new([Cell::new(0), Cell::new(0), Cell::new(0)]);
+        let _observer: Entity<()> = visual.update(|_, cx| {
+            cx.new(|cx| {
+                let c = counts.clone();
+                cx.observe(&view, move |_, _, _| c[0].set(c[0].get() + 1))
+                    .detach();
+                let c = counts.clone();
+                cx.observe(&feed, move |_, _, _| c[1].set(c[1].get() + 1))
+                    .detach();
+                let c = counts.clone();
+                cx.observe(&actions, move |_, _, _| c[2].set(c[2].get() + 1))
+                    .detach();
+            })
+        });
+        visual.simulate_input("answer");
+        visual.run_until_parked();
+        assert_eq!(
+            input.read_with(visual, |i, _| i.value().to_string()),
+            "answer"
+        );
+        assert_eq!(
+            feed.read_with(visual, |f, _| (f.row_calls.get(), f.render_calls.get())),
+            before
+        );
+        assert_eq!(counts[0].get(), 0);
+        assert_eq!(counts[1].get(), 0);
+        assert!(
+            counts[2].get() > 0,
+            "positive control: action draft changed"
+        );
     }
 }
