@@ -51,6 +51,8 @@ url = "2"
 percent-encoding = "2"
 regex = "1"
 resvg = "=0.45.1"
+# Sprint Mermaid renderer; main promotion remains gated by #1182.
+merman = "=0.9.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 # Inline PDF pages (#477). Exact pin: 0.x breaks often; an upgrade is a reviewed change.
 hayro = "=0.8.0"

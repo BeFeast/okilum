@@ -1753,7 +1753,10 @@ fn live_blocks(
                 // Each block is its own document: its position in the note
                 // keeps identical callouts' fold state apart (#1067).
                 reader_plugins_at(
-                    block.source.start.0,
+                    MarkdownScope {
+                        fold_base: block.source.start.0,
+                        live: true,
+                    },
                     root.clone(),
                     TextView::markdown(id, markdown),
                     reader.clone(),

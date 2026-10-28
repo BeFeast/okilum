@@ -1,0 +1,250 @@
+//! CPU work is isolated behind a bounded worker queue and a wall deadline.
+use gpui::RenderImage;
+use sha2::{Digest, Sha256};
+use std::sync::{mpsc, Arc, LazyLock, Mutex};
+use std::time::Duration;
+
+pub(super) const DEADLINE: Duration = Duration::from_secs(5);
+pub(super) const MAX_SOURCE: usize = 64 * 1024;
+const MAX_SVG: usize = 4 * 1024 * 1024;
+const MAX_PIXELS: u32 = 4 * 1024 * 1024;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(super) struct Key {
+    pub hash: [u8; 32],
+    pub width: u32,
+    pub dark: bool,
+}
+pub(super) fn bucket(width: f32) -> u32 {
+    (width.clamp(128., 2048.) as u32 / 128).max(1) * 128
+}
+impl Key {
+    pub fn new(source: &str, width: f32, dark: bool) -> Self {
+        Self {
+            hash: Sha256::digest(source.as_bytes()).into(),
+            width: bucket(width),
+            dark,
+        }
+    }
+}
+pub(super) struct Diagram {
+    pub image: Arc<RenderImage>,
+    pub width: f32,
+    pub bytes: usize,
+}
+type Outcome = Result<Arc<Diagram>, String>;
+struct Job {
+    work: Box<dyn FnOnce() -> Outcome + Send>,
+    reply: mpsc::SyncSender<Outcome>,
+}
+static WORKERS: LazyLock<Result<mpsc::SyncSender<Job>, String>> = LazyLock::new(|| {
+    let (sender, receiver) = mpsc::sync_channel::<Job>(32);
+    let receiver = Arc::new(Mutex::new(receiver));
+    for index in 0..2 {
+        let receiver = receiver.clone();
+        std::thread::Builder::new()
+            .name(format!("mermaid-{index}"))
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || loop {
+                let job = match receiver.lock() {
+                    Ok(queue) => queue.recv(),
+                    Err(_) => break,
+                };
+                let Ok(job) = job else { break };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.work))
+                    .unwrap_or_else(|_| Err("Mermaid renderer panicked".into()));
+                let _ = job.reply.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(sender)
+});
+
+fn bounded(work: impl FnOnce() -> Outcome + Send + 'static, deadline: Duration) -> Outcome {
+    let pool = WORKERS.as_ref().map_err(Clone::clone)?;
+    let (reply, receive) = mpsc::sync_channel(1);
+    pool.try_send(Job {
+        work: Box::new(work),
+        reply,
+    })
+    .map_err(|_| "Mermaid queue full".to_string())?;
+    receive
+        .recv_timeout(deadline)
+        .map_err(|_| "Mermaid deadline exceeded".to_string())?
+}
+pub(super) fn render(source: Arc<str>, key: Key) -> Outcome {
+    if source.len() > MAX_SOURCE || source.trim().is_empty() {
+        return Err("Mermaid source size limit".into());
+    }
+    // The same deadline covers queuing, parsing, layout and rasterization. The
+    // cooperative control stops late layout; only two worker threads can exist.
+    let control = merman::OperationControl::new().with_deadline(DEADLINE);
+    let cancel = control.clone();
+    let result = bounded(move || raster(&source, &key, control), DEADLINE);
+    if result.is_err() {
+        cancel.cancel();
+    }
+    result
+}
+
+fn fonts() -> Arc<resvg::usvg::fontdb::Database> {
+    static FONTS: LazyLock<Arc<resvg::usvg::fontdb::Database>> = LazyLock::new(|| {
+        let mut db = resvg::usvg::fontdb::Database::new();
+        for bytes in [
+            include_bytes!("../../assets/mermaid/Arimo-Regular.ttf").as_slice(),
+            include_bytes!("../../assets/mermaid/Arimo-Bold.ttf"),
+            include_bytes!("../../assets/mermaid/Arimo-Italic.ttf"),
+            include_bytes!("../../assets/mermaid/Arimo-BoldItalic.ttf"),
+        ] {
+            db.load_font_data(bytes.to_vec());
+        }
+        db.set_sans_serif_family("Arimo");
+        Arc::new(db)
+    });
+    FONTS.clone()
+}
+pub(super) fn svg(
+    source: &str,
+    key: &Key,
+    control: merman::OperationControl,
+) -> Result<String, String> {
+    let config = merman::MermaidConfig::from_value(serde_json::json!({
+        "theme": if key.dark { "dark" } else { "default" },
+        "fontFamily": "Arimo", "securityLevel": "strict",
+        "secure": ["theme", "fontFamily", "securityLevel"]
+    }));
+    let renderer =
+        merman::Renderer::new().with_engine(merman::Engine::new().with_site_config(config));
+    let request = merman::SvgRequest {
+        pipeline: Some(merman::svg::SvgPipeline::resvg_safe()),
+        layout: merman::svg::LayoutOptions::headless_svg_defaults()
+            .with_container_size(key.width as f64, 600.),
+        ..Default::default()
+    };
+    let output = renderer
+        .render(merman::RenderRequest::svg(source, control, request))
+        .map_err(|e| e.to_string())?;
+    let merman::RenderOutput::Svg(Some(output)) = output else {
+        return Err("No Mermaid diagram".into());
+    };
+    let svg = output
+        .svg()
+        .replace("url(#drop-shadow)", "url(#merman-drop-shadow)");
+    if svg.len() > MAX_SVG || svg.contains("<foreignObject") || svg.contains("<image") {
+        return Err("Unsupported or oversized Mermaid SVG".into());
+    }
+    Ok(svg)
+}
+fn raster(source: &str, key: &Key, control: merman::OperationControl) -> Outcome {
+    let vector = svg(source, key, control)?;
+    let options = resvg::usvg::Options {
+        fontdb: fonts(),
+        font_family: "Arimo".into(),
+        // SVG must never resolve a source-authored file/URL on the worker.
+        image_href_resolver: resvg::usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_str(&vector, &options).map_err(|e| e.to_string())?;
+    let size = tree.size();
+    let logical = size.width().min(key.width as f32);
+    let scale = logical / size.width() * 2.;
+    let w = (size.width() * scale).ceil().max(1.) as u32;
+    let h = (size.height() * scale).ceil().max(1.) as u32;
+    if w > 4096 || h > 4096 || w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
+        return Err("Mermaid raster size limit".into());
+    }
+    let mut pixels = resvg::tiny_skia::Pixmap::new(w, h).ok_or("Mermaid allocation failed")?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixels.as_mut(),
+    );
+    let mut pixels = pixels.take();
+    if !pixels.chunks_exact(4).any(|p| p[3] > 0) {
+        return Err("Empty Mermaid raster".into());
+    }
+    for p in pixels.as_chunks_mut::<4>().0 {
+        gpui::swap_rgba_pa_to_bgra(p);
+    }
+    let bytes = pixels.len();
+    let buffer = image::RgbaImage::from_raw(w, h, pixels).ok_or("Invalid Mermaid raster")?;
+    Ok(Arc::new(Diagram {
+        image: Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
+        width: logical,
+        bytes,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cache_key_separates_source_width_and_theme() {
+        let a = Key::new("flowchart TD\nA-->B", 650., false);
+        assert_eq!(a, Key::new("flowchart TD\nA-->B", 660., false));
+        assert_ne!(a, Key::new("flowchart TD\nA-->B", 800., false));
+        assert_ne!(a, Key::new("flowchart TD\nA-->B", 650., true));
+        assert_ne!(a, Key::new("flowchart TD\nA-->C", 650., false));
+    }
+    #[test]
+    fn worker_panic_and_deadline_return_fallback_errors() {
+        assert!(bounded(|| panic!("synthetic renderer panic"), DEADLINE).is_err());
+        let start = std::time::Instant::now();
+        assert!(bounded(
+            || {
+                std::thread::sleep(Duration::from_millis(100));
+                Err("late".into())
+            },
+            Duration::from_millis(5)
+        )
+        .is_err());
+        assert!(start.elapsed() < Duration::from_millis(90));
+    }
+    #[test]
+    fn synthetic_families_paint_both_themes_and_invalid_is_an_error() {
+        for dark in [false, true] {
+            for (name, source) in [
+                ("flowchart", "flowchart TD\nA[Start] --> B[Done]"),
+                ("sequence", "---\nconfig:\n  look: neo\n---\nsequenceDiagram\nAlice->>Bob: Hello\nNote over Bob: A note"),
+                ("mindmap", "mindmap\n  root((Ideas))\n    Reader\n    Editor"),
+                ("long-path", "flowchart LR\nA[\"memory/daily/YYYY-MM-DD.md<br/>memory/daily/archive/observations/long-unbreakable-document-reference.md\"] --> B[Next]"),
+            ] {
+                let key = Key::new(source, 640., dark);
+                let svg = svg(
+                    source,
+                    &key,
+                    merman::OperationControl::new().with_deadline(DEADLINE),
+                )
+                .unwrap();
+                assert!(!svg.contains("<foreignObject"));
+                assert!(!svg.contains("url(#drop-shadow)"));
+                let diagram = render(source.into(), key).unwrap();
+                assert!(diagram.bytes > 0);
+                if let Some(out) = std::env::var_os("OKILUM_MERMAID_EVIDENCE") {
+                    let out = std::path::PathBuf::from(out);
+                    std::fs::create_dir_all(&out).unwrap();
+                    let stem = format!("{name}-{}", if dark { "dark" } else { "light" });
+                    std::fs::write(out.join(format!("{stem}.svg")), svg).unwrap();
+                    let size = diagram.image.size(0);
+                    let mut rgba = diagram.image.as_bytes(0).unwrap().to_vec();
+                    for pixel in rgba.as_chunks_mut::<4>().0 { pixel.swap(0, 2); }
+                    image::save_buffer(out.join(format!("{stem}.png")), &rgba,
+                        u32::from(size.width), u32::from(size.height), image::ColorType::Rgba8).unwrap();
+                }
+            }
+        }
+        assert!(render(
+            "flowchart TD\nA[unclosed".into(),
+            Key::new("invalid", 640., false)
+        )
+        .is_err());
+        assert!(render(
+            "x".repeat(MAX_SOURCE + 1).into(),
+            Key::new("large", 640., false)
+        )
+        .is_err());
+    }
+}
