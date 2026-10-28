@@ -225,6 +225,57 @@ impl TablePreview {
     }
 }
 
+/// GPUI's horizontal-only div maps a vertical wheel onto X. Own both axes
+/// here instead, before the row list can remap an X-only event onto Y.
+fn table_wheel(horizontal: ScrollHandle, rows: UniformListScrollHandle) -> impl IntoElement {
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            let hitbox = hitbox.clone();
+            let horizontal = horizontal.clone();
+            let vertical = rows.0.borrow().base_handle.clone();
+            let owner = window.current_view();
+            let line_height = window.line_height();
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                if !phase.capture() || !hitbox.should_handle_scroll(window) {
+                    return;
+                }
+                let mut delta = event.delta.pixel_delta(line_height);
+                if event.modifiers.shift {
+                    // Windows already normalizes Shift+wheel to X; other
+                    // backends can deliver the original Y. Never apply both.
+                    if delta.x == px(0.) {
+                        delta.x = delta.y;
+                    }
+                    delta.y = px(0.);
+                }
+                let old_x = horizontal.offset();
+                let old_y = vertical.offset();
+                let x = point(
+                    (old_x.x + delta.x).clamp(-horizontal.max_offset().x, px(0.)),
+                    old_x.y,
+                );
+                let y = point(
+                    old_y.x,
+                    (old_y.y + delta.y).clamp(-vertical.max_offset().y, px(0.)),
+                );
+                if x != old_x || y != old_y {
+                    horizontal.set_offset(x);
+                    vertical.set_offset(y);
+                    cx.notify(owner);
+                }
+                // Consume at the edge too: an X-only wheel must never become
+                // row scrolling in the uniform_list's default listener.
+                if delta.x != px(0.) || delta.y != px(0.) {
+                    cx.stop_propagation();
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
     let scroll = ScrollHandle::new();
     let rows = Rc::new(RefCell::new(None::<(f32, Vec<TooltipRow>)>));
@@ -469,14 +520,26 @@ impl Render for TablePreview {
         }
         view = view.child(
             div()
-                .id("delimited-horizontal")
+                .id("delimited-viewport")
+                .debug_selector(|| "delimited-viewport".into())
+                .relative()
                 .flex()
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .overflow_x_scroll()
-                .track_scroll(&self.horizontal)
-                .child(grid)
+                .child(
+                    div()
+                        .id("delimited-horizontal")
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_hidden()
+                        .track_scroll(&self.horizontal)
+                        .child(grid),
+                )
+                // A sibling stays on the viewport when the wider grid moves.
+                .child(table_wheel(self.horizontal.clone(), self.scroll.clone()))
                 .horizontal_scrollbar(&self.horizontal),
         );
         if !notices.is_empty() {
@@ -531,6 +594,154 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             v_flex().size_full().min_h_0().child(self.0.clone())
         }
+    }
+
+    #[gpui::test]
+    fn wide_table_routes_wheel_axes_without_waiting_for_the_horizontal_edge(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("wheel.csv");
+        let source: String = (0..200)
+            .map(|row| {
+                (0..12)
+                    .map(|column| format!("r{row}c{column}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+                    + "\n"
+            })
+            .collect();
+        std::fs::write(&path, &source).unwrap();
+        cx.update(gpui_component::init);
+        let mut preview = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            preview = Some(entity.clone());
+            Root::new(cx.new(|_| TableSurface(entity)), window, cx)
+        });
+        let preview = preview.unwrap();
+        visual.simulate_resize(size(px(720.), px(420.)));
+        let draw = |visual: &mut gpui::VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(visual);
+        let viewport = visual.debug_bounds("delimited-viewport").unwrap();
+        let header = visual.debug_bounds("delimited-row-0").unwrap();
+        let first = visual.debug_bounds("delimited-row-1").unwrap();
+        let max_x = preview.read_with(visual, |p, _| p.horizontal.max_offset().x);
+        assert!(
+            max_x > viewport.size.width,
+            "positive control: table overflows horizontally"
+        );
+        assert!(
+            preview.read_with(visual, |p, _| p.scroll.is_scrollable()),
+            "positive control: rows overflow vertically"
+        );
+        let position = |y| point(viewport.center().x, y);
+        let reset = |visual: &mut gpui::VisualTestContext, fraction: f32| {
+            preview.update(visual, |p, cx| {
+                p.horizontal.set_offset(point(-max_x * fraction, px(0.)));
+                p.scroll.scroll_to_item_strict(0, ScrollStrategy::Top);
+                cx.notify();
+            });
+            draw(visual);
+        };
+        for fraction in [0., 0.5, 1.] {
+            for delta in [
+                ScrollDelta::Lines(point(0., -3.)),
+                ScrollDelta::Pixels(point(px(0.), px(-80.))),
+            ] {
+                // The column header must route to the rows too, not just the
+                // portion where uniform_list's own hitbox is present.
+                for y in [header.center().y, first.center().y] {
+                    reset(visual, fraction);
+                    let before = preview.read_with(visual, |p, _| p.horizontal.offset());
+                    visual.simulate_event(ScrollWheelEvent {
+                        position: position(y),
+                        delta,
+                        ..Default::default()
+                    });
+                    draw(visual);
+                    preview.read_with(visual, |p, _| {
+                        assert_eq!(
+                            p.horizontal.offset(),
+                            before,
+                            "vertical wheel must not move columns"
+                        );
+                        assert!(
+                            p.scroll.0.borrow().base_handle.offset().y < px(0.),
+                            "vertical wheel must move rows at every horizontal offset"
+                        );
+                    });
+                }
+            }
+        }
+        for (delta, shift) in [
+            (ScrollDelta::Pixels(point(px(-80.), px(0.))), false),
+            (ScrollDelta::Lines(point(-3., 0.)), false),
+            (ScrollDelta::Pixels(point(px(0.), px(-80.))), true),
+            (ScrollDelta::Lines(point(0., -3.)), true),
+            // Windows normalizes Shift+wheel into X before GPUI dispatch.
+            (ScrollDelta::Lines(point(-3., 0.)), true),
+        ] {
+            reset(visual, 0.);
+            visual.simulate_event(ScrollWheelEvent {
+                position: position(first.center().y),
+                delta,
+                modifiers: Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            draw(visual);
+            preview.read_with(visual, |p, _| {
+                assert!(
+                    p.horizontal.offset().x < px(0.),
+                    "positive control: horizontal input moves columns"
+                );
+                assert_eq!(
+                    p.scroll.0.borrow().base_handle.offset().y,
+                    px(0.),
+                    "horizontal input must not become row scrolling"
+                );
+            });
+            reset(visual, 1.);
+            visual.simulate_event(ScrollWheelEvent {
+                position: position(first.center().y),
+                delta,
+                modifiers: Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            draw(visual);
+            preview.read_with(visual, |p, _| {
+                assert_eq!(p.horizontal.offset().x, -max_x);
+                assert_eq!(
+                    p.scroll.0.borrow().base_handle.offset().y,
+                    px(0.),
+                    "horizontal edge must not remap to rows"
+                );
+            });
+        }
+        reset(visual, 0.);
+        visual.simulate_event(ScrollWheelEvent {
+            position: position(first.center().y),
+            delta: ScrollDelta::Pixels(point(px(-80.), px(-40.))),
+            ..Default::default()
+        });
+        draw(visual);
+        preview.read_with(visual, |p, _| {
+            assert!(p.horizontal.offset().x < px(0.));
+            assert!(
+                p.scroll.0.borrow().base_handle.offset().y < px(0.),
+                "a diagonal delta preserves the vertical component"
+            );
+        });
+        assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
     }
 
     #[test]
