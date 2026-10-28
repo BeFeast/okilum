@@ -85,6 +85,20 @@ pub struct NativeClient {
 }
 
 impl NativeClient {
+    pub fn history(
+        &self,
+        thread_id: &str,
+        cursor: &str,
+    ) -> StreamResult<crate::projection::HistoryPage> {
+        self.token.validate(&self.environment, crate::unix_now())?;
+        auth::history(
+            &self.http,
+            &self.environment,
+            &self.token,
+            thread_id,
+            cursor,
+        )
+    }
     /// `timeout` bounds HTTP, connect, socket I/O and heartbeat waits. DNS
     /// resolution uses the platform resolver. Never call on the UI thread.
     pub fn new(

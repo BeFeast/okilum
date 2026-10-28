@@ -20,6 +20,7 @@ pub mod manifest;
 mod mcp;
 pub mod models;
 pub mod oauth;
+pub mod projection;
 pub mod projects;
 pub mod reconnect;
 mod session;

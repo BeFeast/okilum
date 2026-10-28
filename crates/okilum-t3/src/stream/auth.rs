@@ -169,6 +169,46 @@ fn decode<T: serde::de::DeserializeOwned>(response: Response) -> StreamResult<T>
     serde_json::from_slice(&bytes).map_err(|_| StreamError::Protocol("invalid auth response"))
 }
 
+pub(super) fn history(
+    http: &Client,
+    environment: &Environment,
+    token: &NativeToken,
+    thread_id: &str,
+    cursor: &str,
+) -> StreamResult<crate::projection::HistoryPage> {
+    let mut endpoint = environment.endpoint("/api/orchestration/threads/");
+    endpoint
+        .path_segments_mut()
+        .map_err(|_| StreamError::Protocol("history URL"))?
+        .pop_if_empty()
+        .push(thread_id)
+        .push("history");
+    let response = http
+        .get(endpoint)
+        .query(&[("cursor", cursor)])
+        .header("x-t3-orchestration-protocol", "2")
+        .bearer_auth(&token.access_token)
+        .send()
+        .map_err(|_| StreamError::Unreachable)?;
+    let status = response.status().as_u16();
+    if status == 401 {
+        return Err(StreamError::PairingRequired);
+    }
+    if !(200..300).contains(&status) {
+        return Err(StreamError::Http(status));
+    }
+    let mut bytes = Vec::new();
+    // T3 bounds history pages to 1 MiB. Leave room for envelope metadata.
+    response
+        .take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| StreamError::Unreachable)?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(StreamError::Protocol("oversized history page"));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| StreamError::Protocol("invalid history page"))
+}
+
 pub(super) fn ticket(
     http: &Client,
     environment: &Environment,

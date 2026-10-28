@@ -18,6 +18,8 @@ mod executors;
 mod feed;
 mod launch;
 mod models;
+#[cfg(target_os = "linux")]
+mod native;
 
 pub(super) fn save_browser_environment(
     state: &Path,
@@ -81,6 +83,8 @@ pub(crate) struct ProjectView {
     feed: Entity<feed::Feed>,
     #[cfg(target_os = "linux")]
     composer: Entity<composer::Composer>,
+    #[cfg(target_os = "linux")]
+    native: native::Native,
 }
 
 pub(super) struct ManagerStarted;
@@ -224,11 +228,19 @@ impl ProjectView {
             feed,
             #[cfg(target_os = "linux")]
             composer,
+            #[cfg(target_os = "linux")]
+            native: native::Native::new(window, cx),
         }
     }
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
+        #[cfg(target_os = "linux")]
+        if active {
+            self.native_start(window, cx);
+        } else {
+            self.native.pause();
+        }
         if active {
             self.start_polling(window, cx);
         }
@@ -243,6 +255,8 @@ impl ProjectView {
         self.busy = false;
         match result {
             Ok((env, gateway)) => {
+                #[cfg(target_os = "linux")]
+                self.native.clear();
                 self.environment = Some(env);
                 self.gateway = Some(gateway);
                 self.chat = self
@@ -261,6 +275,8 @@ impl ProjectView {
                 self.error = None;
                 self.generation += 1;
                 self.start_polling(window, cx);
+                #[cfg(target_os = "linux")]
+                self.native_restore(false, window, cx);
             }
             Err(error) => self.error = Some(format!("{error:#}")),
         }
@@ -446,6 +462,11 @@ impl ProjectView {
     }
 
     fn can_send(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.native.active() && self.native.deleted() {
+            return false;
+        }
+
         self.identity.is_some()
             && self.gateway.as_ref().is_some_and(|gateway| {
                 matches!(
@@ -472,6 +493,11 @@ impl ProjectView {
             let job = this
                 .update_in(cx, |this, window, cx| {
                     if !this.active {
+                        this.polling = false;
+                        return None;
+                    }
+                    #[cfg(target_os = "linux")]
+                    if this.native.active() && this.identity.is_some() && !this.executors_open {
                         this.polling = false;
                         return None;
                     }
@@ -765,6 +791,13 @@ impl Render for ProjectView {
             .zip(self.chat.as_ref())
             .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
         #[cfg(target_os = "linux")]
+        let open = open.or_else(|| {
+            self.native
+                .active()
+                .then(|| self.environment.as_ref().map(Environment::origin))
+                .flatten()
+        });
+        #[cfg(target_os = "linux")]
         let history = {
             self.feed
                 .update(cx, |feed, cx| feed.set_controls(enabled, self.busy, cx));
@@ -970,6 +1003,10 @@ impl Render for ProjectView {
                     )
                 },
             )
+            .when(self.binding.is_some(),|view| {
+                #[cfg(target_os="linux")] let view=view.child(self.render_native(cx));
+                view
+            })
             .when_some(self.reason.clone(), |view, reason| {
                 view.child(
                     div()

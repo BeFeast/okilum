@@ -1,13 +1,24 @@
 //! Linux-only bounded rendering of the MCP projection. Data changes arrive by position.
 use super::*;
 use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
+use okilum_t3::projection::{
+    presentation::{self, Body},
+    Changes as NativeChanges, RowKey,
+};
 use okilum_t3::TimelineItem;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Clone, PartialEq)]
 struct Message {
     user: bool,
     text: SharedString,
+    kind: MessageKind,
+}
+#[derive(Clone, PartialEq)]
+enum MessageKind {
+    Chat,
+    Reasoning,
+    Compact(SharedString),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Row {
@@ -23,6 +34,10 @@ pub(super) struct Feed {
     rows: Vec<Row>,
     indices: HashMap<u64, usize>,
     records: Vec<MessageRecord>,
+    native_order: Option<Vec<u64>>,
+    native_positions: HashMap<RowKey, u64>,
+    expanded: HashSet<u64>,
+    next_native_position: u64,
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
     busy: bool,
@@ -44,6 +59,10 @@ impl Feed {
             rows: Vec::new(),
             indices: HashMap::new(),
             records: Vec::new(),
+            native_order: None,
+            native_positions: HashMap::new(),
+            expanded: HashSet::new(),
+            next_native_position: 1,
             scroller,
             enabled: false,
             busy: false,
@@ -61,6 +80,10 @@ impl Feed {
         self.rows.clear();
         self.indices.clear();
         self.records.clear();
+        self.native_order = None;
+        self.native_positions.clear();
+        self.expanded.clear();
+        self.next_native_position = 1;
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         cx.notify();
     }
@@ -77,7 +100,18 @@ impl Feed {
         records: Option<&[MessageRecord]>,
         cx: &mut Context<Self>,
     ) {
-        let mut topology = false;
+        // A late MCP result cannot replace an active native history.
+        let native = self.native_order.is_some();
+        self.apply_rows(items.filter(|_| !native), records, false, cx);
+    }
+    fn apply_rows<'a>(
+        &mut self,
+        items: impl Iterator<Item = &'a TimelineItem>,
+        records: Option<&[MessageRecord]>,
+        force_topology: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let mut topology = force_topology;
         let mut changed = Vec::new();
         for item in items {
             if self.ids.get(&item.position) != item.message_id.as_ref() {
@@ -95,27 +129,46 @@ impl Feed {
                 }
                 topology = true;
             }
-            let next = item
-                .text
-                .as_ref()
-                .filter(|_| matches!(item.kind.as_str(), "user_message" | "assistant_message"));
-            let same = match (self.messages.get(&item.position), next) {
-                (Some(old), Some(text)) => {
-                    old.user == (item.kind == "user_message") && old.text.as_ref() == text.as_str()
-                }
-                (None, None) => true,
-                _ => false,
+            let kind = match item.kind.as_str() {
+                "user_message" | "assistant_message" => Some(MessageKind::Chat),
+                "reasoning" => Some(MessageKind::Reasoning),
+                "command_execution"
+                | "file_change"
+                | "file_search"
+                | "web_search"
+                | "approval_request"
+                | "user_input_request"
+                | "proposed_plan"
+                | "todo_list"
+                | "checkpoint"
+                | "system_notice"
+                | "error"
+                | "notification"
+                | "secret_request"
+                | "run_interrupt_request"
+                | "run_interrupt_result"
+                | "compaction"
+                | "handoff"
+                | "fork"
+                | "thread_created"
+                | "subagent"
+                | "dynamic_tool" => Some(MessageKind::Compact(
+                    item.title
+                        .clone()
+                        .unwrap_or_else(|| item.kind.replace('_', " "))
+                        .into(),
+                )),
+                _ => None,
             };
-            if !same {
+            let next = kind.map(|kind| Message {
+                user: item.kind == "user_message",
+                text: item.text.clone().unwrap_or_default().into(),
+                kind,
+            });
+            if self.messages.get(&item.position) != next.as_ref() {
                 topology |= self.messages.contains_key(&item.position) != next.is_some();
-                if let Some(text) = next {
-                    self.messages.insert(
-                        item.position,
-                        Message {
-                            user: item.kind == "user_message",
-                            text: text.clone().into(),
-                        },
-                    );
+                if let Some(next) = next {
+                    self.messages.insert(item.position, next);
                 } else {
                     self.messages.remove(&item.position);
                 }
@@ -130,7 +183,11 @@ impl Feed {
         }
         let mut inserted = 0..0;
         if topology {
-            let mut rows: Vec<_> = self.messages.keys().copied().map(Row::Message).collect();
+            let mut rows: Vec<_> = self
+                .native_order
+                .as_ref()
+                .map(|order| order.iter().copied().map(Row::Message).collect())
+                .unwrap_or_else(|| self.messages.keys().copied().map(Row::Message).collect());
             rows.extend(
                 self.records
                     .iter()
@@ -215,6 +272,9 @@ impl Feed {
             Some(Row::Message(position)) => {
                 let message = &self.messages[position];
                 let position = *position;
+                if message.kind != MessageKind::Chat {
+                    return self.activity(position, message, cx);
+                }
                 v_flex()
                     .id(SharedString::from(format!("project-message-{position}")))
                     .debug_selector(move || format!("project-message-{position}"))
@@ -304,5 +364,6 @@ impl Render for Feed {
     }
 }
 
+mod native;
 #[cfg(test)]
 mod tests;
