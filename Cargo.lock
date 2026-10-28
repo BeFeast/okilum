@@ -6513,6 +6513,7 @@ dependencies = [
  "resvg 0.45.1",
  "rust-embed",
  "rustix",
+ "rustybuzz",
  "serde",
  "serde_json",
  "serde_yaml",

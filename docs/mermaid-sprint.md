@@ -11,7 +11,10 @@ the existing projection contract. Other code fences keep their presentation.
 
 Rendering uses `SvgPipeline::resvg_safe()`, the dangling drop-shadow reference
 repair and embedded Apache-2.0 Arimo 1.23. A dedicated resvg font database is
-independent of installed fonts; diagrams follow light/dark mode. External image
+independent of installed fonts. Merman's text-width profile uses rustybuzz and
+those same embedded faces for layout as resvg uses for painting; heuristic
+32px label viewports previously clipped wider actual glyphs. Diagrams follow
+light/dark mode. External image
 references are rejected rather than loaded from local files or the network.
 
 Two worker threads and a bounded queue contain `catch_unwind`; a five-second

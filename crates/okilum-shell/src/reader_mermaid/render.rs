@@ -103,6 +103,37 @@ fn fonts() -> Arc<resvg::usvg::fontdb::Database> {
     });
     FONTS.clone()
 }
+
+/// Merman's default deterministic widths are heuristic (e.g. Ideas was given a
+/// 32px viewport and clipped). Use the same embedded face and shaper as resvg.
+fn text_width(text: &str, style: &merman::svg::TextStyle) -> f64 {
+    let bold = style
+        .font_weight
+        .as_deref()
+        .is_some_and(|s| s == "bold" || s.parse::<u16>().is_ok_and(|n| n >= 600));
+    let italic = style
+        .font_style
+        .as_deref()
+        .is_some_and(|s| s == "italic" || s == "oblique");
+    let bytes = match (bold, italic) {
+        (false, false) => include_bytes!("../../assets/mermaid/Arimo-Regular.ttf").as_slice(),
+        (true, false) => include_bytes!("../../assets/mermaid/Arimo-Bold.ttf").as_slice(),
+        (false, true) => include_bytes!("../../assets/mermaid/Arimo-Italic.ttf").as_slice(),
+        (true, true) => include_bytes!("../../assets/mermaid/Arimo-BoldItalic.ttf").as_slice(),
+    };
+    let face = rustybuzz::Face::from_slice(bytes, 0).expect("embedded Arimo face");
+    let mut buffer = rustybuzz::UnicodeBuffer::new();
+    buffer.push_str(text);
+    buffer.guess_segment_properties();
+    let glyphs = rustybuzz::shape(&face, &[], buffer);
+    glyphs
+        .glyph_positions()
+        .iter()
+        .map(|p| p.x_advance as f64)
+        .sum::<f64>()
+        / face.units_per_em() as f64
+        * style.font_size
+}
 pub(super) fn svg(
     source: &str,
     key: &Key,
@@ -115,7 +146,18 @@ pub(super) fn svg(
     }));
     let renderer =
         merman::Renderer::new().with_engine(merman::Engine::new().with_site_config(config));
+    let identity = merman::svg::TextMeasurementProfileIdentity::new(
+        merman::svg::MeasurementProfileId::new("okilum.arimo").map_err(|e| e.to_string())?,
+        "1.23-rustybuzz-0.20.1",
+    )
+    .map_err(|e| e.to_string())?;
+    let profile = merman::svg::TextMeasurementProfile::new(
+        identity,
+        merman::svg::DeterministicTextMeasurer::default().with_width_callback(text_width),
+    );
     let request = merman::SvgRequest {
+        environment: merman::SvgEnvironment::deterministic()
+            .with_text_measurement_policy(merman::svg::TextMeasurementPolicy::uniform(profile)),
         pipeline: Some(merman::svg::SvgPipeline::resvg_safe()),
         layout: merman::svg::LayoutOptions::headless_svg_defaults()
             .with_container_size(key.width as f64, 600.),
@@ -163,7 +205,7 @@ fn raster(source: &str, key: &Key, control: merman::OperationControl) -> Outcome
         &mut pixels.as_mut(),
     );
     let mut pixels = pixels.take();
-    if !pixels.chunks_exact(4).any(|p| p[3] > 0) {
+    if !pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0) {
         return Err("Empty Mermaid raster".into());
     }
     for p in pixels.as_chunks_mut::<4>().0 {
@@ -202,6 +244,29 @@ mod tests {
         )
         .is_err());
         assert!(start.elapsed() < Duration::from_millis(90));
+    }
+    #[test]
+    fn mindmap_label_viewports_contain_the_embedded_fonts_shaped_text() {
+        let source = "mindmap\n  root((Ideas))\n    Reader\n    Editor";
+        let vector = svg(
+            source,
+            &Key::new(source, 640., false),
+            merman::OperationControl::new().with_deadline(DEADLINE),
+        )
+        .unwrap();
+        let width = regex::Regex::new(r#"\bwidth="([0-9.]+)""#).unwrap();
+        for label in ["Ideas", "Reader", "Editor"] {
+            let fragment = vector
+                .split("<svg")
+                .find(|s| s.contains(&format!(">{label}</text>")))
+                .unwrap();
+            let actual: f64 = width.captures(fragment).unwrap()[1].parse().unwrap();
+            let expected = text_width(label, &merman::svg::TextStyle::default());
+            assert!(
+                actual + 0.1 >= expected,
+                "{label}: viewport {actual} clips shaped width {expected}"
+            );
+        }
     }
     #[test]
     fn synthetic_families_paint_both_themes_and_invalid_is_an_error() {
