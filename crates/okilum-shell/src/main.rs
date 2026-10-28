@@ -2154,7 +2154,7 @@ impl Reader {
         rel: &str,
         jump_term: Option<&str>,
         heading: Option<&str>,
-        line: Option<u32>,
+        landing: Option<prepared_links::Landing>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2177,8 +2177,8 @@ impl Reader {
         }
         self.clear_hover(cx);
         self.file_preview = None;
-        if line.is_some() {
-            self.prepare_link_document(rel, line, heading, window, cx);
+        if let Some(landing) = landing {
+            self.prepare_link_document(rel, landing, heading, window, cx);
         } else {
             self.prepare_document(rel, jump_term, heading, window, cx);
         }
@@ -2249,6 +2249,16 @@ impl Reader {
         };
         self.link_notice = None;
         self.link_choices.clear();
+        // A root publication clears history before replacing its old document;
+        // do not attribute that old viewport to the newly published root.
+        if self.navigation.history.get(self.navigation.history_ix) == Some(&self.current_rel) {
+            self.navigation.places.insert(
+                (self.vault_root.clone(), self.current_rel.clone()),
+                self.navigation
+                    .pending_landing
+                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top()),
+            );
+        }
         self.cancel_pending_landing();
         self.navigation.generation = self.navigation.generation.wrapping_add(1);
         if request.history_index.is_none() {

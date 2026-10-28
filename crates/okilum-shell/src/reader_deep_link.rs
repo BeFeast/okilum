@@ -83,7 +83,12 @@ impl Reader {
             return;
         }
         let fragment = fragment.filter(|_| line.is_none());
-        self.open_note_landing(rel, None, fragment.as_deref(), line, window, cx);
+        let landing = match line {
+            Some(line) => Some(prepared_links::Landing::Line(line)),
+            None if fragment.is_none() => Some(prepared_links::Landing::Top),
+            None => None,
+        };
+        self.open_note_landing(rel, None, fragment.as_deref(), landing, window, cx);
     }
 
     /// Called after a prepared note is accepted: an editing link returns to
