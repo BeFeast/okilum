@@ -26,6 +26,9 @@ cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
 # #588: keep shared durable pairing recovery covered on both Unix platforms.
 cargo test --locked -p okilum-sync-controller --lib enrollment::
 cargo test --locked -p okilum-sync-controller --test enrollment_storage
+cargo test --locked -p okilum-sync-controller --lib daemon::
+cargo test --locked -p okilum-sync-controller --lib presentation::
+cargo test --locked -p okilum-sync-controller --test daemon_access
 # A second, explicit compiled distribution must refuse updater work even when
 # inherited AppImage/update-receipt variables would otherwise enable it.
 OKILUM_SPRINT_BUILD=1 OKILUM_RELEASE_VERSION='Sprint CI' \

@@ -574,3 +574,21 @@ This is a library prerequisite, not shipped Enable Sync. The macOS desktop still
 needs verified bundled-runtime preparation, owned SMAppService/supervisor wiring,
 and the integrated enrollment/removal loop. Native login/sleep/update acceptance
 and #589 recovery/rollout remain open; iCloud and production hubs are untouched.
+
+### Shared daemon and folder boundary
+
+Authenticated explicit-inventory inspection (`daemon::discover` and
+`DaemonIdentity::connect`), the scoped folder controller and status presentation
+are also available on macOS. Linux `/proc` discovery, package preparation and
+systemd registration remain Linux-only; there is no macOS process-discovery
+fallback or assumption that an empty explicit inventory is a complete OS scan.
+The eventual desktop adapter must provide its complete inventory before calling
+folder enrollment. No macOS Reader action calls these APIs yet.
+
+Both Unix gates run disposable loopback REST fixtures that verify authenticated
+read-only inspection, duplicate-path handling, incomplete inventory refusal,
+certificate/device/version changes, and rejection of unsupported REST addresses
+before requests. No Syncthing process or real config is accessed. The macOS gate
+also runs the shared status rules, so local idle never becomes proof of completed
+first receive. Native folder mutation/recovery and complete macOS discovery remain
+separate acceptance work; compiling the folder controller does not close them.
