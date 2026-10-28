@@ -36,7 +36,7 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
  }
 
  /// A inline element used to render a inline text and support selectable.
-@@ -1645,3 +1649,240 @@
+@@ -1645,3 +1649,247 @@
          ));
      }
  }
@@ -45,7 +45,7 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +mod font_presentation_regressions {
 +    use super::{InlineHighlight, text_runs};
 +    use gpui::{
-+        FontWeight, HighlightStyle, LineFragment, PlatformTextSystem, TextStyle, TextSystem, WindowTextSystem, px,
++        FontWeight, HighlightStyle, LineFragment, TextStyle, TextSystem, WindowTextSystem, px,
 +    };
 +    use std::sync::Arc;
 +    use unicode_segmentation::UnicodeSegmentation;
@@ -214,6 +214,13 @@ diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
 +            bounds: gpui::Bounds<gpui::DevicePixels>,
 +        ) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> {
 +            super::test_fonts::WideMonoTextSystem.rasterize_glyph(params, bounds)
++        }
++        fn recommended_rendering_mode(
++            &self,
++            id: gpui::FontId,
++            size: gpui::Pixels,
++        ) -> gpui::TextRenderingMode {
++            super::test_fonts::WideMonoTextSystem.recommended_rendering_mode(id, size)
 +        }
 +        fn layout_line(
 +            &self,
