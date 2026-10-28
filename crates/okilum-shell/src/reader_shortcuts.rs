@@ -141,6 +141,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleNotes>("Notes panel", View),
         entry::<ToggleProject>("Projects", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),
+        entry::<MaximizeNote>("Maximize / restore note", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
         entry::<ToggleSoftWrap>("Soft wrap in code files", View),
         entry::<ToggleNoteWidth>("Full / normal note width", View),

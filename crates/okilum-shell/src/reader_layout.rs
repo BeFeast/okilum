@@ -14,13 +14,49 @@ pub struct Panels {
     pub notes: bool,
     pub backlinks: bool,
     pub active: Panel,
+    /// A temporary window-local view; saved preferences retain the original sides.
+    #[serde(skip)]
+    pub(crate) maximized_restore: Option<(bool, bool, Panel)>,
 }
 impl Panels {
+    pub fn maximized(&self) -> bool {
+        self.maximized_restore.is_some()
+    }
+
+    pub fn toggle_maximized(&mut self) {
+        if self.restore_maximized() {
+            return;
+        }
+        self.maximized_restore = Some((self.notes, self.backlinks, self.active));
+        self.notes = false;
+        self.backlinks = false;
+        self.active = Panel::Closed;
+    }
+
+    fn restore_maximized(&mut self) -> bool {
+        let Some((notes, backlinks, active)) = self.maximized_restore.take() else {
+            return false;
+        };
+        self.notes = notes;
+        self.backlinks = backlinks;
+        self.active = active;
+        true
+    }
+
+    pub fn preferences(&self) -> Self {
+        let mut saved = self.clone();
+        saved.restore_maximized();
+        saved
+    }
+
     /// Automatic tiling must not turn a docked panel into an obstruction.
     /// Keep the wide choices; only explicit opens activate a compact overlay.
     pub fn viewport_changed(&mut self, previous: f32, current: f32) {
         if !overlay(previous) && overlay(current) {
             self.active = Panel::Closed;
+            if let Some((_, _, active)) = &mut self.maximized_restore {
+                *active = Panel::Closed;
+            }
         }
     }
 
@@ -33,6 +69,10 @@ impl Panels {
         enabled && (!overlay(available) || self.active == panel)
     }
     pub fn open(&mut self, panel: Panel) {
+        if panel == Panel::Closed {
+            return;
+        }
+        self.restore_maximized();
         match panel {
             Panel::Notes => self.notes = true,
             Panel::Backlinks => self.backlinks = true,
@@ -41,6 +81,10 @@ impl Panels {
         self.active = panel;
     }
     pub fn close(&mut self, panel: Panel) {
+        if panel == Panel::Closed {
+            return;
+        }
+        self.restore_maximized();
         match panel {
             Panel::Notes => self.notes = false,
             Panel::Backlinks => self.backlinks = false,
@@ -249,6 +293,202 @@ pub(crate) fn settings_path_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximize_round_trip_restores_every_panel_combination() {
+        for notes in [false, true] {
+            for backlinks in [false, true] {
+                let original = Panels {
+                    notes,
+                    backlinks,
+                    active: if backlinks {
+                        Panel::Backlinks
+                    } else if notes {
+                        Panel::Notes
+                    } else {
+                        Panel::Closed
+                    },
+                    ..Default::default()
+                };
+                let mut panels = original.clone();
+                panels.toggle_maximized();
+                assert!(panels.maximized());
+                for width in [700., 1366.] {
+                    assert!(!panels.visible(Panel::Notes, width));
+                    assert!(!panels.visible(Panel::Backlinks, width));
+                }
+                assert_eq!(panels.preferences(), original);
+                panels.close(Panel::Closed);
+                assert!(
+                    panels.maximized(),
+                    "no panel to dismiss must not exit focus mode"
+                );
+                panels.toggle_maximized();
+                assert_eq!(panels, original);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_panel_open_exits_maximize_and_tiling_does_not_restore_an_overlay() {
+        let mut panels = Panels::default();
+        panels.open(Panel::Notes);
+        panels.open(Panel::Backlinks);
+        panels.toggle_maximized();
+        panels.viewport_changed(1366., 700.);
+        panels.toggle_maximized();
+        assert!(panels.notes && panels.backlinks);
+        assert!(!panels.visible(Panel::Notes, 700.));
+        assert!(!panels.visible(Panel::Backlinks, 700.));
+        panels.toggle_maximized();
+        panels.open(Panel::Notes);
+        assert!(!panels.maximized());
+        assert!(panels.visible(Panel::Notes, 700.));
+        assert!(panels.visible(Panel::Backlinks, 1366.));
+    }
+
+    #[gpui::test]
+    fn maximize_shortcut_button_and_view_action_preserve_editor_and_saved_layout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::*;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n\nKeep reading.\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1366.), px(768.)));
+        visual.run_until_parked();
+        let shortcut = if cfg!(target_os = "macos") {
+            "cmd-alt-f"
+        } else {
+            "ctrl-alt-f"
+        };
+        for source in [false, true] {
+            reader.update_in(visual, |r, window, cx| {
+                assert_eq!(r.current_rel, "note.md", "loaded-document positive control");
+                r.panels.open(Panel::Notes);
+                r.panels.open(Panel::Backlinks);
+                if source {
+                    r.panels.close(Panel::Notes);
+                    r.toggle_source(window, cx);
+                }
+                r.panel_widths.set(Panel::Notes, 315.);
+                r.panel_widths.set(Panel::Backlinks, 287.);
+                if let Some(editing) = &r.editing {
+                    editing.input().focus_handle(cx).focus(window, cx);
+                } else {
+                    r.content.read(cx).focus_handle().clone().focus(window, cx);
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let before = reader.read_with(visual, |r, cx| {
+                (
+                    r.panels.clone(),
+                    r.panel_widths.clone(),
+                    r.editing
+                        .as_ref()
+                        .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
+                )
+            });
+            visual.simulate_keystrokes(shortcut);
+            visual.run_until_parked();
+            reader.update_in(visual, |r, window, cx| {
+                assert!(
+                    r.panels.maximized(),
+                    "shortcut must execute in Reader and Source"
+                );
+                assert_eq!(
+                    r.panels.widths(&r.panel_widths, 1366.),
+                    Widths {
+                        notes: 0.,
+                        backlinks: 0.
+                    }
+                );
+                assert_eq!(r.panel_widths, before.1);
+                r.record_ui_state(true, cx);
+                let (saved, _) = reader_ui_state::layout(&root, cx).unwrap();
+                assert_eq!(
+                    saved.panels, before.0,
+                    "temporary hiding is not a saved preference"
+                );
+                assert_eq!(saved.widths, before.1);
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
+                    before.2,
+                    "maximizing retains the current editor and canonical source stamp"
+                );
+                if let Some(editing) = &r.editing {
+                    assert!(editing.input().focus_handle(cx).is_focused(window));
+                }
+            });
+            // Escape intentionally leaves Source (existing #483 behavior).
+            // Keep this round-trip focused on the maximize/restore controls.
+            if !source {
+                visual.simulate_keystrokes("escape");
+                visual.run_until_parked();
+            }
+            reader.read_with(visual, |r, _| assert!(r.panels.maximized()));
+            let button = visual
+                .debug_bounds("reader-maximize-note")
+                .expect("restore control remains visible");
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.run_until_parked();
+            reader.read_with(visual, |r, cx| {
+                assert_eq!(r.panels, before.0);
+                assert_eq!(r.panel_widths, before.1);
+                assert_eq!(r.current_rel, "note.md");
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
+                    before.2
+                );
+            });
+        }
+        visual.update(|window, cx| {
+            let item = view_menu(cx)
+                .items
+                .into_iter()
+                .find_map(|item| match item {
+                    MenuItem::Action { action, .. } if action.partial_eq(&MaximizeNote) => {
+                        Some(action)
+                    }
+                    _ => None,
+                })
+                .expect("View menu exposes the same action");
+            window.dispatch_action(item, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.panels.maximized()));
+    }
 
     #[test]
     fn tiling_hides_panels_without_losing_wide_choices() {

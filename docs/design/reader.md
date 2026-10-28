@@ -282,6 +282,17 @@ in `reader-ui.json` (`vault_colors`) by canonical vault root, never in the
 vault. Every window of the vault repaints at once. No per-vault theme and no
 tinted rows.
 
+**Maximize note** (#1821): the title-bar glyph, View → Maximize Note and
+Option+Command+F on macOS / Ctrl+Alt+F elsewhere toggle both side panels off
+and restore their previous open/closed choices. Preferred widths and the
+separate full/normal reading-width preference remain unchanged. The same
+action works while editing and retains the editor, draft and selection.
+The toolbar stays visible and its tooltip changes to “Restore panels”.
+Explicitly opening a side panel exits this temporary view; resizing into a
+compact window retains the existing no-automatic-overlay rule. Saved layout
+preferences contain the normal panel choices, so closing a maximized note
+does not leave a later window with permanently hidden panels.
+
 ## Icons
 
 Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on
@@ -294,6 +305,7 @@ glyphs are added as Okilum assets under `icons/` and loaded with `Icon::path`.
 | Back / Forward | `ArrowLeft` / `ArrowRight` | «Back ⌥←», «Forward ⌥→», disabled at the ends |
 | Find in note | `TextSearch` | «Find in note ⌘F» |
 | Toggle right panel | `PanelRight` | «On this page ⌥⌘\\» |
+| Maximize / restore note | `Maximize` | «Maximize note ⌥⌘F» / «Restore panels ⌥⌘F» |
 | More | `Ellipsis` | menu |
 | Close find | `Close` | «Close Esc» |
 | Find previous / next | `ChevronUp` / `ChevronDown` | «⇧⏎» / «⏎» |

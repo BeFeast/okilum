@@ -73,6 +73,7 @@ impl Default for Layout {
                 notes: true,
                 backlinks: true,
                 active: reader_layout::Panel::Notes,
+                ..Default::default()
             },
             widths: Default::default(),
             collapsed: Default::default(),
@@ -1143,7 +1144,7 @@ impl Reader {
             .or(self.ui_state.source)
             .unwrap_or([0.; 2]);
         let saved = Layout {
-            panels: self.panels.clone(),
+            panels: self.panels.preferences(),
             widths: self.panel_widths.clone(),
             collapsed: self.sidebar.collapsed.clone(),
             properties_collapsed: self.sidebar.properties_collapsed,
@@ -2534,6 +2535,7 @@ mod tests {
                 notes: true,
                 backlinks: false,
                 active: reader_layout::Panel::Notes,
+                ..Default::default()
             },
             widths: reader_layout::Widths {
                 notes: 355.,
