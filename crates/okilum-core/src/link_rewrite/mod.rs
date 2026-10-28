@@ -155,15 +155,25 @@ impl Preview {
                         .into_owned(),
                     reason: entry.error.clone(),
                 })
+                .chain(vault.cloud_placeholders.iter().map(|path| {
+                    SkippedFile {
+                        path: path
+                            .strip_prefix(root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .into_owned(),
+                        reason: crate::vault::CLOUD_PENDING.into(),
+                    }
+                }))
                 .collect(),
             enumeration_skips: vault
                 .unreadable
                 .iter()
-                .map(|entry| {
-                    entry
-                        .path
-                        .strip_prefix(root)
-                        .unwrap_or(&entry.path)
+                .map(|entry| &entry.path)
+                .chain(vault.cloud_placeholders.iter())
+                .map(|path| {
+                    path.strip_prefix(root)
+                        .unwrap_or(path)
                         .to_string_lossy()
                         .into_owned()
                 })
@@ -297,11 +307,11 @@ impl Preview {
         let mut enumeration_skips: Vec<_> = vault
             .unreadable
             .iter()
-            .map(|entry| {
-                entry
-                    .path
-                    .strip_prefix(root)
-                    .unwrap_or(&entry.path)
+            .map(|entry| &entry.path)
+            .chain(vault.cloud_placeholders.iter())
+            .map(|path| {
+                path.strip_prefix(root)
+                    .unwrap_or(path)
                     .to_string_lossy()
                     .into_owned()
             })
