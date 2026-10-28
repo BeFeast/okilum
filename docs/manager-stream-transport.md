@@ -71,3 +71,29 @@ required protocol query, multi-chunk ACKs, opaque history, duplicate/unknown
 events, reconnect and snapshot replacement, atomic rejection, malformed batches,
 immediate cancellation, keepalives and incompatible upgrades. No installed app
 or live credential is used.
+
+## Native Tier 1 actions (#1787, slice 4)
+
+Linux's explicitly paired native client sends `orchestration.dispatchCommand`
+over a separate bounded WS v2 RPC socket. It does not block the live subscription
+or fall back to MCP when a native request fails. The macOS webview is unchanged.
+Send starts an idle manager and queues behind an active run. Queue is explicit;
+Steer is offered only when the active provider session advertises active steering,
+and pins that run's identity. Interrupt also targets that exact run and holds its
+queue. Runtime mode and model selection are inherited, never expanded by a send.
+
+Pending approvals show the server's offered decisions (or Allow once/Decline
+when options are absent). Questions support single/multiple choices, custom
+answers where allowed, and message-mode dismissal. A resolved, inherited or
+non-resumable request cannot grant a response control. Unsupported details,
+attachments and all non-Tier-1 features remain in Open in T3.
+
+Before network dispatch, each complete command is atomically published and synced
+under the application's durable `t3-native-commands` directory, scoped by server
+origin and bound thread. The earlier MCP message journal is preserved separately.
+Lost responses retain the same command/message/target identities. Only explicit
+Retry same action resends them; acknowledged commands return their saved sequence
+without another dispatch. Acceptance is not completion. Reconnect loads retained
+commands but never sends one automatically. Disk preparation failures keep the
+composer draft. Action drafts and composer keystrokes notify their own entities,
+without re-rendering the cached message history.

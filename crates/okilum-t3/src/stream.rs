@@ -119,24 +119,67 @@ impl NativeClient {
         })
     }
 
-    /// One explicit connection attempt. Every reconnect obtains a new ticket;
-    /// neither a refused native session nor a network error starts OAuth.
-    pub fn subscribe(
-        &self,
-        thread_id: &str,
-        resume: Option<ResumeCursor>,
-    ) -> StreamResult<ThreadSubscription> {
+    pub fn can_operate(&self) -> bool {
+        self.token.can_operate()
+            && self
+                .token
+                .validate(&self.environment, crate::unix_now())
+                .is_ok()
+    }
+
+    /// One bounded attempt on a dedicated RPC socket. The live subscription is
+    /// never interrupted by command traffic. No implicit retry or MCP fallback.
+    pub fn dispatch(&self, command: &crate::actions::Command) -> StreamResult<u64> {
         self.token.validate(&self.environment, crate::unix_now())?;
-        if thread_id.trim().is_empty() {
-            return Err(StreamError::Protocol("empty thread id"));
-        }
-        if resume.as_ref().is_some_and(|cursor| {
-            cursor.origin != self.environment.origin() || cursor.thread_id != thread_id
-        }) {
+        if !self.token.can_operate() {
             return Err(StreamError::Protocol(
-                "resume cursor belongs to another thread or server",
+                "native session needs orchestration:operate permission",
             ));
         }
+        let payload = command.wire()?;
+        let (socket, cancel) = self.open_socket()?;
+        let mut rpc = ThreadSubscription {
+            socket,
+            cancel,
+            origin: self.environment.origin(),
+            thread_id: command.thread_id.clone(),
+            cursor: None,
+            closed: false,
+        };
+        rpc.send(json!({"_tag":"Request","id":"1","tag":"orchestration.dispatchCommand","payload":payload,"headers":[]}))?;
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(StreamError::Closed);
+            }
+            let value: Value = match rpc.socket.read().map_err(|_| StreamError::Closed)? {
+                Message::Text(text) => serde_json::from_str(&text)
+                    .map_err(|_| StreamError::Protocol("invalid command response"))?,
+                Message::Ping(_) => {
+                    rpc.socket.flush().map_err(|_| StreamError::Closed)?;
+                    continue;
+                }
+                Message::Pong(_) => continue,
+                _ => return Err(StreamError::Closed),
+            };
+            match value["_tag"].as_str() {
+                Some("Ping") => rpc.send(json!({"_tag":"Pong"}))?,
+                Some("Pong") => {}
+                Some("Exit") if value["requestId"] == "1" => {
+                    if value["exit"]["_tag"] != "Success" {
+                        return Err(StreamError::Rejected);
+                    }
+                    return value["exit"]["value"]["sequence"]
+                        .as_u64()
+                        .filter(|v| *v <= 9_007_199_254_740_991)
+                        .ok_or(StreamError::Protocol("invalid command acknowledgement"));
+                }
+                _ => return Err(StreamError::Protocol("unexpected command response")),
+            }
+        }
+    }
+
+    fn open_socket(&self) -> StreamResult<(WebSocket<MaybeTlsStream<TcpStream>>, TcpStream)> {
         let ticket = auth::ticket(&self.http, &self.environment, &self.token)?;
         let mut url = self.environment.endpoint("/ws");
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
@@ -185,6 +228,28 @@ impl NativeClient {
                 }
                 _ => StreamError::Unreachable,
             })?;
+        Ok((socket, cancel))
+    }
+
+    /// One explicit connection attempt. Every reconnect obtains a new ticket;
+    /// neither a refused native session nor a network error starts OAuth.
+    pub fn subscribe(
+        &self,
+        thread_id: &str,
+        resume: Option<ResumeCursor>,
+    ) -> StreamResult<ThreadSubscription> {
+        self.token.validate(&self.environment, crate::unix_now())?;
+        if thread_id.trim().is_empty() {
+            return Err(StreamError::Protocol("empty thread id"));
+        }
+        if resume.as_ref().is_some_and(|cursor| {
+            cursor.origin != self.environment.origin() || cursor.thread_id != thread_id
+        }) {
+            return Err(StreamError::Protocol(
+                "resume cursor belongs to another thread or server",
+            ));
+        }
+        let (socket, cancel) = self.open_socket()?;
         let mut subscription = ThreadSubscription {
             socket,
             cancel,

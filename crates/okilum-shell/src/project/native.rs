@@ -1,6 +1,7 @@
 //! Linux live history. The background task owns the socket; the retained model
 //! and cursor are paired under a mutex, including during concurrent history loads.
 use super::*;
+mod actions;
 use okilum_t3::{
     projection::{Metadata, Projection},
     stream::{
@@ -18,6 +19,7 @@ struct Retained {
 }
 pub(super) struct Native {
     input: Entity<InputState>,
+    pub(super) actions: Entity<actions::Actions>,
     open: bool,
     busy: bool,
     error: Option<String>,
@@ -32,7 +34,10 @@ pub(super) struct Native {
 }
 impl Native {
     pub(super) fn new(window: &mut Window, cx: &mut Context<ProjectView>) -> Self {
+        let parent = cx.entity().downgrade();
+        let actions = cx.new(|_| actions::Actions::new(parent));
         Self {
+            actions,
             input: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("One-time T3 pairing token")
@@ -50,6 +55,9 @@ impl Native {
             history_busy: false,
             metadata: Metadata::default(),
         }
+    }
+    pub(super) fn client_can_operate(&self) -> bool {
+        self.client.as_ref().is_some_and(|c| c.can_operate())
     }
     pub(super) fn deleted(&self) -> bool {
         self.metadata.deleted
@@ -261,6 +269,7 @@ impl ProjectView {
                 epoch: 0,
             })));
         }
+        self.native_load_actions(window, cx);
         self.native_start(window, cx);
         cx.notify();
     }
@@ -358,12 +367,18 @@ impl ProjectView {
                 let terminal_error = result.as_ref().err().is_some_and(terminal);
                 let message = result.as_ref().err().map(notice);
                 let changed = this
-                    .update_in(cx, |this, _, cx| {
+                    .update_in(cx, |this, window, cx| {
                         let mut r = retained.lock().unwrap();
                         if r.epoch != epoch {
                             return false;
                         }
-                        let changes = r.model.take_changes();
+                        let mut changes = r.model.take_changes();
+                        let controls_changed = changes.actions.is_some();
+                        if let Some(state) = changes.actions.take() {
+                            this.native
+                                .actions
+                                .update(cx, |a, cx| a.set_state(state, window, cx));
+                        }
                         let metadata = changes.metadata.clone();
                         let changed = changes.changed();
                         if changed {
@@ -371,7 +386,7 @@ impl ProjectView {
                                 feed.apply_native(changes, &this.records, cx)
                             });
                         }
-                        let mut notify = this.native.stream_error != message;
+                        let mut notify = controls_changed || this.native.stream_error != message;
                         this.native.stream_error = message;
                         if let Some(metadata) = metadata {
                             notify |= this.native.metadata != metadata;
@@ -552,7 +567,7 @@ impl ProjectView {
                     .child(error),
             );
         }
-        view.into_any_element()
+        view.child(self.native.actions.clone()).into_any_element()
     }
 }
 fn notice(error: &StreamError) -> String {

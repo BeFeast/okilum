@@ -103,6 +103,10 @@ impl NativeToken {
         environment.endpoint("/ws").to_string()
     }
 
+    pub fn can_operate(&self) -> bool {
+        self.scope.split_whitespace().any(|scope| scope == OPERATE)
+    }
+
     pub fn expires_at(&self) -> u64 {
         self.expires_at
     }

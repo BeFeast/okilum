@@ -11,6 +11,7 @@
 //! [`StoredToken::to_secret`] under [`Environment::credential_url`]), never in
 //! a file or in the vault, and its `Debug` output is redacted.
 
+pub mod actions;
 pub mod chat;
 mod environment;
 pub mod executors;
