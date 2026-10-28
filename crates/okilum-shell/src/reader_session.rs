@@ -153,6 +153,8 @@ impl Reader {
         };
         if self.loading.is_none() {
             self.loading = Some(reader_loading::Loading {
+                #[cfg(any(target_os = "macos", test))]
+                cloud_download: None,
                 generation: 0,
                 cancellation: Default::default(),
                 phase: "Ready".into(),

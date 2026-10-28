@@ -155,15 +155,25 @@ impl Preview {
                         .into_owned(),
                     reason: entry.error.clone(),
                 })
+                .chain(vault.cloud_placeholders.iter().map(|path| {
+                    SkippedFile {
+                        path: path
+                            .strip_prefix(root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .into_owned(),
+                        reason: crate::vault::CLOUD_PENDING.into(),
+                    }
+                }))
                 .collect(),
             enumeration_skips: vault
                 .unreadable
                 .iter()
-                .map(|entry| {
-                    entry
-                        .path
-                        .strip_prefix(root)
-                        .unwrap_or(&entry.path)
+                .map(|entry| &entry.path)
+                .chain(vault.cloud_placeholders.iter())
+                .map(|path| {
+                    path.strip_prefix(root)
+                        .unwrap_or(path)
                         .to_string_lossy()
                         .into_owned()
                 })
@@ -297,11 +307,11 @@ impl Preview {
         let mut enumeration_skips: Vec<_> = vault
             .unreadable
             .iter()
-            .map(|entry| {
-                entry
-                    .path
-                    .strip_prefix(root)
-                    .unwrap_or(&entry.path)
+            .map(|entry| &entry.path)
+            .chain(vault.cloud_placeholders.iter())
+            .map(|path| {
+                path.strip_prefix(root)
+                    .unwrap_or(path)
                     .to_string_lossy()
                     .into_owned()
             })
@@ -1057,6 +1067,24 @@ mod tests {
             .unwrap();
         assert!(root.join("to.md").exists());
         assert_eq!(fs::read_to_string(root.join("ref.md")).unwrap(), "[[to]]");
+    }
+
+    #[test]
+    fn cloud_pending_move_preview_requires_refresh_when_pending_set_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("from.md"), "source").unwrap();
+        let stub = root.join(".Pending.md.icloud");
+        fs::write(&stub, "synthetic unavailable source").unwrap();
+        let preview = Preview::prepare(root, "from.md", "to.md").unwrap();
+        fs::remove_file(stub).unwrap();
+        assert!(preview
+            .validate(root)
+            .unwrap_err()
+            .to_string()
+            .contains("Skipped file inventory changed"));
+        assert!(root.join("from.md").exists());
+        assert!(!root.join("to.md").exists());
     }
 
     #[test]

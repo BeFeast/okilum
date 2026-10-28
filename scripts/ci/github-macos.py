@@ -113,6 +113,22 @@ def ref_name(number, sha, run_id, attempt, invocation=None):
     return f"forgejo-pr/{number}/{sha}-{run_id}-{attempt}{suffix}"
 
 
+DIAGNOSTIC_LIMIT = 4096
+
+
+def safe_diagnostic(message, token):
+    """Redact before bounding so truncation cannot expose a credential prefix."""
+    message = str(message)
+    if token:
+        for secret in (token, urllib.parse.quote(token, safe="")):
+            message = message.replace(secret, "[REDACTED]")
+    message = re.sub(r"https?://[^\s/@]+(?::[^\s/@]*)?@", "https://[REDACTED]@", message)
+    message = re.sub(r"(?i)(authorization[:=]\s*(?:bearer|basic|token)\s+)\S+",
+                     r"\1[REDACTED]", message)
+    message = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "?", message)
+    return message[:DIAGNOSTIC_LIMIT] + (" [truncated]" if len(message) > DIAGNOSTIC_LIMIT else "")
+
+
 PUSH_ATTEMPTS = 3
 PUSH_RETRY_SECONDS = 15
 
@@ -143,7 +159,7 @@ def push_head(branch, sha, token, *, sleep=time.sleep):
                 return
             except subprocess.CalledProcessError as error:
                 lines = (error.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-                reason = lines[-1] if lines else f"git exit {error.returncode}"
+                reason = safe_diagnostic("\n".join(lines), token) if lines else f"git exit {error.returncode}"
             except subprocess.TimeoutExpired:
                 reason = "git push timed out"
             if attempt + 1 < PUSH_ATTEMPTS:

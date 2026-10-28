@@ -370,3 +370,26 @@ class PushRetryTests(unittest.TestCase):
         self.assertEqual(len(calls), bridge.PUSH_ATTEMPTS)
         self.assertIn('failed to push some refs', error)
         self.assertNotIn('token', error)
+
+
+class PushDiagnosticTests(PushRetryTests):
+    def test_specific_remote_rejection_survives_generic_tail(self):
+        _, _, error = self.run_push([
+            b"remote: refusing workflow update without Workflows permission token\n"
+            b"error: failed to push some refs\n"])
+        self.assertIn("refusing workflow update without Workflows permission", error)
+        self.assertIn("failed to push some refs", error)
+        self.assertNotIn("token", error)
+
+    def test_redaction_precedes_bound_and_removes_url_and_auth_credentials(self):
+        message = "remote: https://user:password@github.com/x Authorization: Bearer abc\n" + "token" * 2000
+        result = bridge.safe_diagnostic(message, "token")
+        for secret in ("password", "abc", "token"):
+            self.assertNotIn(secret, result)
+        self.assertLessEqual(len(result), bridge.DIAGNOSTIC_LIMIT + len(" [truncated]"))
+        self.assertTrue(result.endswith(" [truncated]"))
+
+    def test_token_authorization_scheme_redacted_without_literal_token(self):
+        result = bridge.safe_diagnostic('Authorization: token ghp_example', '')
+        self.assertNotIn('ghp_example', result)
+        self.assertIn('[REDACTED]', result)
