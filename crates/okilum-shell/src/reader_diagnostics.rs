@@ -325,6 +325,41 @@ struct DiagnosticDisclosure {
     copied: bool,
 }
 
+fn item_summary(item: &okilum_core::vault::UnreadableEntry) -> Option<&'static str> {
+    if okilum_core::vault::is_cloud_placeholder_diagnostic(item.operation, &item.error) {
+        return None;
+    }
+    Some(if item.operation.contains("search") {
+        match item.operation {
+            "persist search cache" => "Search data could not be saved.",
+            "prepare search (unavailable)" => "Content search is unavailable.",
+            _ => "Saved search data could not be reused.",
+        }
+    } else if item.operation.starts_with("watch vault") {
+        "Automatic refresh is unavailable. Retry to check for changes."
+    } else {
+        match item.operation {
+            "decode note" => "This note’s text encoding could not be read.",
+            "read note" => "This note could not be read.",
+            "list siblings" => "This folder could not be listed.",
+            _ => "This item could not be read.",
+        }
+    })
+}
+
+pub(super) fn needs_attention(item: &okilum_core::vault::UnreadableEntry) -> bool {
+    item_summary(item).is_some()
+}
+
+pub(super) fn cloud_status(count: usize) -> Option<String> {
+    (count > 0).then(|| {
+        format!(
+            "{count} file{} still in iCloud",
+            if count == 1 { "" } else { "s" }
+        )
+    })
+}
+
 impl Reader {
     pub(super) fn show_unreadable_items(&self, window: &mut Window, cx: &mut Context<Self>) {
         let items: Vec<_> = self
@@ -332,24 +367,18 @@ impl Reader {
             .unreadable
             .iter()
             .chain(self.loading.iter().flat_map(|load| &load.warnings))
+            .filter(|item| needs_attention(item))
             .collect();
+        if items.is_empty() {
+            return;
+        }
         let rows: Vec<_> = items
             .iter()
             .map(|item| {
                 let (title, summary) = if item.operation.contains("search") {
-                    (
-                        "Search".to_string(),
-                        match item.operation {
-                            "persist search cache" => "Search data could not be saved.",
-                            "prepare search (unavailable)" => "Content search is unavailable.",
-                            _ => "Saved search data could not be reused.",
-                        },
-                    )
+                    ("Search".to_string(), item_summary(item).unwrap())
                 } else if item.operation.starts_with("watch vault") {
-                    (
-                        "Vault updates".to_string(),
-                        "Automatic refresh is unavailable. Retry to check for changes.",
-                    )
+                    ("Vault updates".to_string(), item_summary(item).unwrap())
                 } else {
                     let name = item
                         .path
@@ -369,15 +398,7 @@ impl Reader {
                     } else {
                         name.into_owned()
                     };
-                    (
-                        title,
-                        match item.operation {
-                            "decode note" => "This note’s text encoding could not be read.",
-                            "read note" => "This note could not be read.",
-                            "list siblings" => "This folder could not be listed.",
-                            _ => "This item could not be read.",
-                        },
-                    )
+                    (title, item_summary(item).unwrap())
                 };
                 let location = item
                     .path
@@ -679,5 +700,39 @@ mod tests {
             b"canonical body"
         );
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn cloud_placeholder_diagnostics_never_map_to_attention_rows() {
+        use okilum_core::vault::{UnreadableEntry, CLOUD_PLACEHOLDER};
+        for (operation, error) in [
+            (CLOUD_PLACEHOLDER, "not downloaded"),
+            ("read note", "iCloud placeholder is not downloaded"),
+            (
+                "previous scan",
+                "read note: iCloud placeholder is not downloaded",
+            ),
+        ] {
+            let item = UnreadableEntry {
+                path: "synthetic/Pending.md".into(),
+                operation,
+                error: error.into(),
+            };
+            assert_eq!(item_summary(&item), None);
+            assert!(!needs_attention(&item));
+        }
+        let failed = UnreadableEntry {
+            path: "synthetic/Pending.md".into(),
+            operation: "read note",
+            error: "Permission denied".into(),
+        };
+        assert_eq!(item_summary(&failed), Some("This note could not be read."));
+        assert!(
+            needs_attention(&failed),
+            "real I/O failures still have an attention row"
+        );
+        assert_eq!(cloud_status(0), None);
+        assert_eq!(cloud_status(1).as_deref(), Some("1 file still in iCloud"));
+        assert_eq!(cloud_status(2).as_deref(), Some("2 files still in iCloud"));
     }
 }

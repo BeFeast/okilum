@@ -408,7 +408,8 @@ fn prepare_first_existing_document(
                 // the first note; unreadable Markdown stays a failure (#1123).
                 None => match Vault::discover(&intent.root, &mut || cancel.check())? {
                     okilum_core::vault::Discovery::Found(rel) => Some(rel),
-                    okilum_core::vault::Discovery::Empty => Some(String::new()),
+                    okilum_core::vault::Discovery::Empty
+                    | okilum_core::vault::Discovery::CloudPending => Some(String::new()),
                     okilum_core::vault::Discovery::Unreadable => None,
                 },
             }
@@ -829,7 +830,7 @@ fn prepare_rest_with_io_and_snapshot(
         }
         drop(reconcile_phase);
         if let Some(trace) = &opts.diagnostics {
-            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused, "graph_updated_sources":if stats.graph_reused { stats.affected.len() } else { vault.notes.len() } }));
+            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "cloud_pending": vault.cloud_placeholders.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused, "graph_updated_sources":if stats.graph_reused { stats.affected.len() } else { vault.notes.len() } }));
         }
         let search_phase = opts
             .diagnostics
@@ -1666,6 +1667,14 @@ impl Reader {
         }
     }
 
+    fn current_document_is_cloud_pending(&self) -> bool {
+        let path = self.vault_root.join(&self.current_rel);
+        self.vault
+            .cloud_placeholders
+            .iter()
+            .any(|pending| reader_icloud::logical_path(pending) == path)
+    }
+
     pub(super) fn reconcile_inventory_document(
         &mut self,
         sources: &std::collections::HashMap<String, String>,
@@ -1674,6 +1683,10 @@ impl Reader {
     ) {
         // An explicitly closed selection has no document to reconcile.
         if self.current_rel.is_empty() {
+            return;
+        }
+        if self.current_document_is_cloud_pending() {
+            self.refresh_link_preparation(cx);
             return;
         }
         if self.editing.is_some() {
@@ -1723,6 +1736,10 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         if self.current_rel.is_empty() {
+            return;
+        }
+        if self.current_document_is_cloud_pending() {
+            self.refresh_link_preparation(cx);
             return;
         }
         if self.editing.is_some() {
@@ -2600,7 +2617,7 @@ impl Reader {
                                 this.refresh_quick_open(cx);
                                 this.check_stignore(window, cx);
                                 this.loading.as_mut().unwrap().phase = "Ready".into();
-                                if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("vault_ready", serde_json::json!({ "notes": this.vault.notes.len(), "unreadable": this.vault.unreadable.len() })); }
+                                if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("vault_ready", serde_json::json!({ "notes": this.vault.notes.len(), "unreadable": this.vault.unreadable.len(), "cloud_pending": this.vault.cloud_placeholders.len() })); }
                             }
                             Event::Failed(error) => {
                                 this.loading.as_mut().unwrap().active = false;
@@ -2630,11 +2647,19 @@ impl Reader {
         // active loading and failures are visible.
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
-        let issue_count = self.vault.unreadable.len();
+        let issue_count = self
+            .vault
+            .unreadable
+            .iter()
+            .filter(|item| reader_diagnostics::needs_attention(item))
+            .count();
         let warning_count = self.loading.as_ref().map_or(0, |load| {
             load.warnings
                 .iter()
-                .filter(|warning| !warning.operation.starts_with("watch vault"))
+                .filter(|warning| {
+                    !warning.operation.starts_with("watch vault")
+                        && reader_diagnostics::needs_attention(warning)
+                })
                 .count()
         });
         let network_waiting = self
@@ -2648,6 +2673,9 @@ impl Reader {
             .max_w(px(420.))
             .gap_2()
             .text_xs()
+            .when_some(reader_diagnostics::cloud_status(self.vault.cloud_placeholders.len()), |view, status| {
+                view.child(div().id("reader-cloud-pending").text_color(muted).child(status))
+            })
             .when(issue_count > 0 && !network_waiting, |view| {
                 view.child(
                     Button::new("reader-unreadable-items")

@@ -290,6 +290,21 @@ pub(crate) fn cloud_placeholder(path: &Path) -> bool {
     false
 }
 
+#[derive(Debug)]
+pub(crate) struct CloudPlaceholder;
+impl std::fmt::Display for CloudPlaceholder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(CLOUD_PENDING)
+    }
+}
+impl std::error::Error for CloudPlaceholder {}
+
+pub(crate) fn cloud_read_error(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<CloudPlaceholder>())
+}
+
 /// What a failed read of a note is called. `read_to_string` reports bytes that are not UTF-8 as
 /// `InvalidData`: the same fact a byte read followed by a UTF-8 check reports as
 /// [`DECODE_NOTE`], so a cold scan and an incremental one describe the same file the same way
@@ -306,7 +321,7 @@ pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
     if cloud_placeholder(path) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
-            "iCloud placeholder is not downloaded",
+            CloudPlaceholder,
         ));
     }
     std::fs::read_to_string(path)
@@ -329,6 +344,16 @@ pub struct VaultEntry {
 /// The `operation` of an [`UnreadableEntry`] for a note that exists under its real name
 /// but whose bytes are not valid UTF-8.
 pub const DECODE_NOTE: &str = "decode note";
+
+/// Cache tag for an unavailable cloud source, not an I/O failure.
+pub const CLOUD_PLACEHOLDER: &str = "cloud placeholder";
+pub(crate) const CLOUD_PENDING: &str = "iCloud placeholder is not downloaded";
+
+/// Recognize current cache tags and the legacy diagnostic representation.
+pub fn is_cloud_placeholder_diagnostic(operation: &str, error: &str) -> bool {
+    operation == CLOUD_PLACEHOLDER
+        || (matches!(operation, "read note" | "previous scan") && error.ends_with(CLOUD_PENDING))
+}
 
 /// A skipped entry, retained so a partial inventory is never presented as complete.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -445,6 +470,8 @@ pub enum Discovery {
     Found(String),
     /// No Markdown anywhere and nothing skipped: a new vault.
     Empty,
+    /// Only unavailable cloud sources were found; metadata scanning can proceed.
+    CloudPending,
     /// Markdown or folders that could not be read.
     Unreadable,
 }
@@ -458,6 +485,8 @@ pub struct Vault {
     /// Enumeration has finished, including a usable partial inventory.
     pub inventory_scanned: bool,
     pub unreadable: Vec<UnreadableEntry>,
+    /// Metadata-only availability state. Never a read error or a download request.
+    pub cloud_placeholders: Vec<PathBuf>,
     pub root: PathBuf,
     pub notes: Vec<Note>,
     pub entries: Vec<VaultEntry>,
@@ -501,10 +530,15 @@ impl Vault {
     ) -> Result<Vault> {
         let mut vault = Self::scan_metadata_with(root, checkpoint)?;
         let mut unreadable = Vec::new();
+        let mut cloud_placeholders = Vec::new();
         vault.build_backlinks_from(checkpoint, |path| {
             let path = root.join(path);
             match read_source(&path) {
                 Ok(source) => Some(source),
+                Err(error) if cloud_read_error(&error) || cloud_placeholder(&path) => {
+                    cloud_placeholders.push(path);
+                    None
+                }
                 Err(error) => {
                     unreadable.push(UnreadableEntry {
                         path,
@@ -516,6 +550,7 @@ impl Vault {
             }
         })?;
         vault.unreadable.extend(unreadable);
+        vault.cloud_placeholders.extend(cloud_placeholders);
         vault.finish_scan_report();
         Ok(vault)
     }
@@ -541,14 +576,11 @@ impl Vault {
         for (count, note) in vault.notes.iter().enumerate() {
             checkpoint("Reading notes", count)?;
             let path = root.join(&note.path);
-            let result = if cloud_placeholder(&path) {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "iCloud placeholder is not downloaded",
-                ))
-            } else {
-                read(&path)
-            };
+            if cloud_placeholder(&path) {
+                vault.cloud_placeholders.push(path);
+                continue;
+            }
+            let result = read(&path);
             match result {
                 Ok(bytes) => match std::str::from_utf8(&bytes) {
                     Ok(_) => {
@@ -560,6 +592,7 @@ impl Vault {
                         error: error.to_string(),
                     }),
                 },
+                Err(error) if cloud_read_error(&error) => vault.cloud_placeholders.push(path),
                 Err(error) => vault.unreadable.push(UnreadableEntry {
                     error: read_error(&path, &error),
                     operation: read_failure_operation(&error),
@@ -607,6 +640,7 @@ impl Vault {
     ) -> Result<Vault> {
         let mut inventory_complete = true;
         let mut unreadable = Vec::new();
+        let mut cloud_placeholders = Vec::new();
         let mut notes = Vec::new();
         let mut entries = Vec::new();
         let mut suffix_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -646,11 +680,7 @@ impl Vault {
                 }
             }
             if cloud_placeholder(path) {
-                unreadable.push(UnreadableEntry {
-                    path: path.to_path_buf(),
-                    operation: "read note",
-                    error: "iCloud placeholder is not downloaded".into(),
-                });
+                cloud_placeholders.push(path.to_path_buf());
                 inventory_complete = false;
                 continue;
             }
@@ -722,6 +752,7 @@ impl Vault {
             inventory_complete,
             inventory_scanned: true,
             unreadable,
+            cloud_placeholders,
             root: root.to_path_buf(),
             notes,
             entries,
@@ -750,6 +781,7 @@ impl Vault {
     pub fn paths_complete(&self) -> bool {
         self.inventory_complete
             || (self.inventory_scanned
+                && self.cloud_placeholders.is_empty()
                 && !self.unreadable.is_empty()
                 && self
                     .unreadable
@@ -760,7 +792,9 @@ impl Vault {
     fn finish_scan_report(&mut self) {
         self.unreadable.sort_by(|a, b| a.path.cmp(&b.path));
         self.unreadable.dedup_by(|a, b| a.path == b.path);
-        self.inventory_complete &= self.unreadable.is_empty();
+        self.cloud_placeholders.sort();
+        self.cloud_placeholders.dedup();
+        self.inventory_complete &= self.unreadable.is_empty() && self.cloud_placeholders.is_empty();
     }
 
     /// Apply a validated regular-note identity without a directory walk.
@@ -837,6 +871,7 @@ impl Vault {
             inventory_complete: false,
             inventory_scanned: false,
             unreadable: Vec::new(),
+            cloud_placeholders: Vec::new(),
             root: PathBuf::new(),
             notes: Vec::new(),
             entries: Vec::new(),
@@ -916,7 +951,7 @@ impl Vault {
     ) -> Result<Option<String>> {
         Ok(match Self::discover(root, checkpoint)? {
             Discovery::Found(rel) => Some(rel),
-            Discovery::Empty | Discovery::Unreadable => None,
+            Discovery::Empty | Discovery::CloudPending | Discovery::Unreadable => None,
         })
     }
 
@@ -926,6 +961,7 @@ impl Vault {
     /// a failure the user should see.
     pub fn discover(root: &Path, checkpoint: &mut impl FnMut() -> Result<()>) -> Result<Discovery> {
         let mut skipped = false;
+        let mut cloud_pending = false;
         for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
             e.depth() == 0 || !service_path(e.path().strip_prefix(root).unwrap_or(e.path()))
         }) {
@@ -934,6 +970,10 @@ impl Vault {
                 skipped = true;
                 continue;
             };
+            if cloud_placeholder(entry.path()) {
+                cloud_pending = true;
+                continue;
+            }
             if entry.file_type().is_file()
                 && entry
                     .path()
@@ -950,6 +990,8 @@ impl Vault {
         }
         Ok(if skipped {
             Discovery::Unreadable
+        } else if cloud_pending {
+            Discovery::CloudPending
         } else {
             Discovery::Empty
         })
@@ -1360,6 +1402,7 @@ impl Vault {
         let bytes = serde_json::to_vec(&(
             &self.entries,
             &self.unreadable,
+            &self.cloud_placeholders,
             self.inventory_complete,
             &self.aliases,
             sorted(&self.occupied_paths),

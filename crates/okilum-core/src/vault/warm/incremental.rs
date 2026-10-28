@@ -222,9 +222,9 @@ impl State {
                 if !known.contains_key(&child)
                     && self
                         .vault
-                        .unreadable
+                        .cloud_placeholders
                         .iter()
-                        .any(|item| item.path == entry.path())
+                        .any(|path| *path == entry.path())
                     && super::super::cloud_placeholder(&entry.path())
                 {
                     continue;
@@ -430,17 +430,29 @@ impl State {
                     .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
         });
         topology_changed |= before_unreadable != self.vault.unreadable.len();
+        let before_pending = self.vault.cloud_placeholders.len();
+        self.vault.cloud_placeholders.retain(|path| {
+            let Ok(relative) = path.strip_prefix(&self.vault.root) else {
+                return true;
+            };
+            let scoped = input_directory_scope(relative, &changes.directories, &directories);
+            !scoped
+                || !std::fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        });
+        topology_changed |= before_pending != self.vault.cloud_placeholders.len();
         for (path, present, placeholder) in identities {
             checkpoint("Reading changed notes", reads)?;
             self.vault
                 .unreadable
                 .retain(|entry| entry.path != self.vault.root.join(&path));
+            self.vault
+                .cloud_placeholders
+                .retain(|pending| *pending != self.vault.root.join(&path));
             if placeholder {
-                self.vault.unreadable.push(UnreadableEntry {
-                    path: self.vault.root.join(&path),
-                    operation: "read note",
-                    error: "iCloud placeholder is not downloaded".into(),
-                });
+                self.vault
+                    .cloud_placeholders
+                    .push(self.vault.root.join(&path));
             }
             if self.vault.notes.iter().any(|note| note.path == path) != present {
                 self.vault.set_note_identity(&path, present);
@@ -452,6 +464,9 @@ impl State {
                 let checked = check_source(&self.vault.root, &path, None, true, read);
                 reads += checked.stats.read;
                 self.vault.unreadable.extend(checked.unreadable);
+                self.vault
+                    .cloud_placeholders
+                    .extend(checked.cloud_placeholder);
                 if let Some(source) = checked.source {
                     let raw = String::from_utf8(STANDARD.decode(&source.bytes)?)?;
                     std::sync::Arc::make_mut(&mut self.candidates).update(
@@ -496,7 +511,8 @@ impl State {
         let snapshot = &self.snapshot;
         self.vault
             .refresh_backlinks_from(&affected, checkpoint, |path| snapshot.source(path))?;
-        self.vault.inventory_complete = self.vault.unreadable.is_empty();
+        self.vault.inventory_complete =
+            self.vault.unreadable.is_empty() && self.vault.cloud_placeholders.is_empty();
         self.snapshot.entries = self.vault.entries.clone();
         targets.extend(
             self.vault
@@ -514,16 +530,7 @@ impl State {
                 self.snapshot.links.insert(target.clone(), incoming.clone());
             }
         }
-        self.snapshot.unreadable = self
-            .vault
-            .unreadable
-            .iter()
-            .map(|item| CachedUnreadable {
-                path: item.path.clone(),
-                operation: item.operation.into(),
-                error: item.error.clone(),
-            })
-            .collect();
+        self.snapshot.unreadable = cached_availability(&self.vault);
         // Session search is mutable, and must never be advertised as the old
         // content-addressed, completed disk generation.
         if !affected.is_empty() {
@@ -905,6 +912,52 @@ mod tests {
     }
 
     #[test]
+    fn cloud_materialization_metadata_batch_reads_the_source_without_reopening() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("Pending.md");
+        std::fs::write(&path, "# Materialized").unwrap();
+        // Simulate a metadata-admitted note becoming dataless immediately before
+        // the guarded source read. No bytes are opened or downloaded yet.
+        let (vault, snapshot, _) =
+            reconcile_with_reader(&root, None, true, &mut |_, _| Ok(()), &mut |requested| {
+                assert_eq!(requested, path);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    super::super::super::CloudPlaceholder,
+                ))
+            })
+            .unwrap();
+        assert!(vault.unreadable.is_empty());
+        assert_eq!(vault.cloud_placeholders, [path.clone()]);
+        assert!(snapshot.source("Pending.md").is_none());
+        let mut state = State::new(vault, snapshot);
+        let mut reads = Vec::new();
+        let batch = state
+            .apply_with_reader(
+                &crate::Changes {
+                    changed: BTreeSet::from(["Pending.md".into()]),
+                    ..Default::default()
+                },
+                &mut |_, _| Ok(()),
+                &mut |requested| {
+                    reads.push(requested.to_owned());
+                    std::fs::read(requested)
+                },
+            )
+            .unwrap();
+        assert_eq!(reads, [path]);
+        assert_eq!(batch.read, 1);
+        assert!(state.vault.unreadable.is_empty() && state.vault.cloud_placeholders.is_empty());
+        assert_eq!(
+            state.snapshot.source("Pending.md").as_deref(),
+            Some("# Materialized")
+        );
+        compare(&state);
+    }
+
+    #[test]
     fn known_cloud_placeholders_and_attachment_hints_do_not_reconcile_or_admit_notes() {
         let (temp, state) = fixture();
         let root = state.vault.root.clone();
@@ -912,7 +965,8 @@ mod tests {
         std::fs::write(root.join(".DS_Store"), "metadata").unwrap();
         let (vault, snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
         let mut state = State::new(vault, snapshot);
-        assert_eq!(state.vault.unreadable.len(), 1);
+        assert!(state.vault.unreadable.is_empty());
+        assert_eq!(state.vault.cloud_placeholders.len(), 1);
         let batch = state
             .apply_with_reader(
                 &crate::Changes {
@@ -926,7 +980,8 @@ mod tests {
             )
             .unwrap();
         assert!(batch.affected.is_empty());
-        assert_eq!(state.vault.unreadable.len(), 1);
+        assert!(state.vault.unreadable.is_empty());
+        assert_eq!(state.vault.cloud_placeholders.len(), 1);
         assert!(!state
             .vault
             .entries
@@ -945,6 +1000,11 @@ mod tests {
             .unwrap();
         assert_eq!(batch.read, 1);
         assert!(state.vault.unreadable.is_empty());
+        assert!(state.vault.cloud_placeholders.is_empty());
+        assert_eq!(
+            state.snapshot.source("Note.md").as_deref(),
+            Some("# Downloaded")
+        );
         compare(&state);
         let cache = temp.path().join("cache");
         save_provisional(&state.snapshot, &state.vault, &cache, None).unwrap();

@@ -163,6 +163,30 @@ struct CachedUnreadable {
     error: String,
 }
 
+// Keep the cache wire format compatible: availability records carry their own
+// tag and are partitioned into runtime state when decoded, never into unreadable.
+fn cached_availability(vault: &Vault) -> Vec<CachedUnreadable> {
+    vault
+        .unreadable
+        .iter()
+        .map(|item| CachedUnreadable {
+            path: item.path.clone(),
+            operation: item.operation.into(),
+            error: item.error.clone(),
+        })
+        .chain(
+            vault
+                .cloud_placeholders
+                .iter()
+                .map(|path| CachedUnreadable {
+                    path: path.clone(),
+                    operation: super::CLOUD_PLACEHOLDER.into(),
+                    error: super::CLOUD_PENDING.into(),
+                }),
+        )
+        .collect()
+}
+
 /// Small first-frame cache: inventory, graph and only the last displayed source.
 /// The full source bank is loaded after publication for reconciliation.
 #[derive(Serialize, Deserialize)]
@@ -301,8 +325,14 @@ fn cached_vault(
     vault.backlink_map = links.clone();
     vault.aliases = aliases.clone();
     vault.rebuild_alias_map();
+    vault.cloud_placeholders = unreadable
+        .iter()
+        .filter(|item| super::is_cloud_placeholder_diagnostic(&item.operation, &item.error))
+        .map(|item| item.path.clone())
+        .collect();
     vault.unreadable = unreadable
         .iter()
+        .filter(|item| !super::is_cloud_placeholder_diagnostic(&item.operation, &item.error))
         .map(|item| UnreadableEntry {
             path: item.path.clone(),
             operation: "previous scan",
@@ -763,6 +793,7 @@ pub fn reconcile_with_reader(
         );
     }
     vault.unreadable.extend(bank.unreadable);
+    vault.cloud_placeholders.extend(bank.cloud_placeholders);
     finish_reconcile(
         canonical,
         vault,
@@ -892,6 +923,7 @@ fn reconcile_parallel_prioritized_with_reader(
         result
     })?;
     vault.unreadable.extend(bank.unreadable);
+    vault.cloud_placeholders.extend(bank.cloud_placeholders);
     finish_reconcile(
         canonical,
         vault,
@@ -920,6 +952,7 @@ fn begin_reconcile<'a>(
 struct CheckedSource {
     source: Option<Source>,
     unreadable: Option<UnreadableEntry>,
+    cloud_placeholder: Option<PathBuf>,
     stats: ReconcileStats,
 }
 
@@ -934,11 +967,7 @@ fn check_source(
     let stats = &mut result.stats;
     let path = root.join(relative);
     if super::cloud_placeholder(&path) {
-        result.unreadable = Some(UnreadableEntry {
-            path,
-            operation: "read note",
-            error: "iCloud placeholder is not downloaded".into(),
-        });
+        result.cloud_placeholder = Some(path);
         return result;
     }
     let before = SourceRevision::read(&path).ok();
@@ -966,6 +995,9 @@ fn check_source(
                 bytes: STANDARD.encode(bytes),
             });
         }
+        Err(error) if super::cloud_read_error(&error) => {
+            result.cloud_placeholder = Some(path);
+        }
         Err(error) => {
             result.unreadable = Some(UnreadableEntry {
                 error: super::read_error(&path, &error),
@@ -981,6 +1013,7 @@ fn check_source(
 struct CheckedSources {
     sources: BTreeMap<String, Source>,
     unreadable: Vec<UnreadableEntry>,
+    cloud_placeholders: Vec<PathBuf>,
     stats: ReconcileStats,
 }
 impl CheckedSources {
@@ -989,6 +1022,7 @@ impl CheckedSources {
             self.sources.insert(path.into(), source);
         }
         self.unreadable.extend(checked.unreadable);
+        self.cloud_placeholders.extend(checked.cloud_placeholder);
         self.stats.read += checked.stats.read;
         self.stats.reused += checked.stats.reused;
         let other = checked.stats.reuse;
@@ -1098,15 +1132,7 @@ fn finish_reconcile(
             Some(String::from_utf8_lossy(&bytes).into_owned())
         })?;
     }
-    let unreadable: Vec<_> = vault
-        .unreadable
-        .iter()
-        .map(|item| CachedUnreadable {
-            path: item.path.clone(),
-            operation: item.operation.into(),
-            error: item.error.clone(),
-        })
-        .collect();
+    let unreadable = cached_availability(&vault);
     // An unchanged vault keeps the persisted snapshot's identity, so the source
     // bank need not be re-serialised. Identical bytes alone are not enough:
     // inventory, revisions and unreadable entries must also match.
@@ -1206,6 +1232,122 @@ pub fn save_provisional(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_placeholders_stay_pending_in_cache_then_materialize_on_reconcile() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("local.md"), "local positive control").unwrap();
+        let stub = root.join(".Later.md.icloud");
+        std::fs::write(&stub, "synthetic unavailable source").unwrap();
+        let mut reads = Vec::new();
+        let (vault, snapshot, stats) =
+            reconcile_with_reader(&root, None, true, &mut |_, _| Ok(()), &mut |path| {
+                assert_ne!(
+                    path, stub,
+                    "inventory must never read/download a placeholder"
+                );
+                reads.push(path.to_owned());
+                std::fs::read(path)
+            })
+            .unwrap();
+        assert!(
+            vault.unreadable.is_empty(),
+            "CLOUD1837: pending cloud files are not unreadable"
+        );
+        assert_eq!(vault.cloud_placeholders, [stub.clone()]);
+        assert!(!vault.inventory_complete && !vault.paths_complete());
+        assert_eq!(stats.read, 1);
+        assert_eq!(
+            reads,
+            [root.join("local.md")],
+            "positive control: real source reader ran"
+        );
+        let (parallel, _, _) =
+            reconcile_parallel_with_reader(&root, None, true, &mut |_, _| Ok(()), &|path| {
+                assert_ne!(path, stub);
+                std::fs::read(path)
+            })
+            .unwrap();
+        assert_eq!(parallel.cloud_placeholders, vault.cloud_placeholders);
+        assert!(parallel.unreadable.is_empty());
+        let cache = temp.path().join("cache");
+        save_provisional(&snapshot, &vault, &cache, Some("local.md")).unwrap();
+        let loaded = Snapshot::load(&cache, &root).unwrap();
+        for cached in [
+            loaded.vault(),
+            StartupSnapshot::load(&cache, &root).unwrap().vault(),
+        ] {
+            assert!(cached.unreadable.is_empty());
+            assert_eq!(cached.cloud_placeholders, [stub.clone()]);
+        }
+        let mut legacy = loaded.clone();
+        for item in &mut legacy.unreadable {
+            if item.operation == super::super::CLOUD_PLACEHOLDER {
+                item.operation = "read note".into();
+            }
+        }
+        assert!(
+            legacy.vault().unreadable.is_empty(),
+            "old cache records migrate without false errors"
+        );
+        assert_eq!(legacy.vault().cloud_placeholders, [stub.clone()]);
+        std::fs::remove_file(&stub).unwrap();
+        std::fs::write(root.join("Later.md"), "# Materialized\n[[local]]").unwrap();
+        let (ready, current, stats) =
+            reconcile(&root, Some(&loaded), false, &mut |_, _| Ok(())).unwrap();
+        assert!(ready.unreadable.is_empty() && ready.cloud_placeholders.is_empty());
+        assert!(ready.inventory_complete && ready.paths_complete());
+        assert!(
+            stats.read > 0,
+            "positive control: materialized source was opened"
+        );
+        assert_eq!(
+            current.source("Later.md").as_deref(),
+            Some("# Materialized\n[[local]]")
+        );
+        assert_eq!(ready.backlinks("local.md").len(), 1);
+        save_provisional(&current, &ready, &cache, Some("local.md")).unwrap();
+        assert!(StartupSnapshot::load(&cache, &root)
+            .unwrap()
+            .vault()
+            .cloud_placeholders
+            .is_empty());
+    }
+
+    #[test]
+    fn cloud_pending_discovery_and_scan_do_not_hide_real_read_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let stub = temp.path().join(".Pending.md.icloud");
+        std::fs::write(&stub, "synthetic unavailable source").unwrap();
+        assert_eq!(
+            Vault::discover(temp.path(), &mut || Ok(())).unwrap(),
+            super::super::Discovery::CloudPending
+        );
+        for vault in [
+            Vault::scan(temp.path()).unwrap(),
+            Vault::scan_snapshot_with(temp.path(), &mut |_, _| Ok(()))
+                .unwrap()
+                .0,
+        ] {
+            assert!(vault.unreadable.is_empty());
+            assert_eq!(vault.cloud_placeholders, [stub.clone()]);
+        }
+        std::fs::write(temp.path().join("bad.md"), [0xff]).unwrap();
+        let vault = Vault::scan(temp.path()).unwrap();
+        assert_eq!(vault.unreadable.len(), 1);
+        assert_eq!(vault.unreadable[0].operation, super::super::DECODE_NOTE);
+        assert_eq!(vault.cloud_placeholders, [stub]);
+        assert!(
+            !vault.paths_complete(),
+            "pending identities retain incomplete-inventory safeguards"
+        );
+        assert_eq!(
+            Vault::discover(temp.path(), &mut || Ok(())).unwrap(),
+            super::super::Discovery::Unreadable
+        );
+    }
 
     #[test]
     fn parallel_reconciliation_matches_serial_sources_graph_errors_and_counters() {
