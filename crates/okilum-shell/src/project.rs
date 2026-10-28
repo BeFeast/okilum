@@ -806,7 +806,9 @@ impl Render for ProjectView {
         let history = {
             self.feed
                 .update(cx, |feed, cx| feed.set_controls(enabled, self.busy, cx));
-            let native_ready = !self.native.active() || self.native.actions.read(cx).state.ready;
+            let native_ready = !self.native.active()
+                || (self.native.actions.read(cx).state.ready
+                    && self.native.stream_error_is_clear());
             let can_steer = self.native.actions.read(cx).state.can_steer;
             self.composer.update(cx, |composer, cx| {
                 composer.set_native(self.native.active(), can_steer, cx);

@@ -12,6 +12,7 @@ pub(crate) struct Actions {
     selections: HashMap<(String, String), Vec<String>>,
     subscriptions: HashMap<(String, String), Subscription>,
     busy: bool,
+    enabled: bool,
     error: Option<String>,
 }
 impl Actions {
@@ -24,7 +25,14 @@ impl Actions {
             selections: HashMap::new(),
             subscriptions: HashMap::new(),
             busy: false,
+            enabled: false,
             error: None,
+        }
+    }
+    pub(super) fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            cx.notify();
         }
     }
     pub(super) fn set_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
@@ -125,7 +133,7 @@ impl Render for Actions {
                     .ghost()
                     .label("Interrupt")
                     .debug_selector(|| "project-interrupt".into())
-                    .disabled(self.busy || !self.state.ready)
+                    .disabled(self.busy || !self.enabled || !self.state.ready)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.dispatch(
                             Intent::Interrupt {
@@ -139,7 +147,7 @@ impl Render for Actions {
         }
         for request in &self.state.requests {
             let request_id = request.id.clone();
-            let disabled = self.busy || !self.state.ready || !request.answerable;
+            let disabled = self.busy || !self.enabled || !self.state.ready || !request.answerable;
             let mut card = v_flex()
                 .w_full()
                 .min_w_0()
@@ -274,7 +282,7 @@ impl Render for Actions {
                         Button::new(SharedString::from(format!("dismiss-{request_id}")))
                             .ghost()
                             .label("Dismiss")
-                            .disabled(self.busy || !self.state.ready)
+                            .disabled(self.busy || !self.enabled || !self.state.ready)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.dispatch(
                                     Intent::Dismiss {
@@ -310,7 +318,7 @@ impl Render for Actions {
                     )))
                     .ghost()
                     .label("Retry same action")
-                    .disabled(self.busy || !self.state.ready)
+                    .disabled(self.busy || !self.enabled || !self.state.ready)
                     .on_click(move |_, window, cx| {
                         let _ = parent.update(cx, |view, cx| {
                             view.native_command(None, Some(retry.clone()), None, window, cx)
@@ -366,7 +374,12 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || !self.native.active() || self.native.deleted() {
+        if self.busy
+            || !self.native.active()
+            || self.native.deleted()
+            || self.native.stream_error.is_some()
+            || !self.native.actions.read(cx).state.ready
+        {
             return;
         }
         let Some(client) = self.native.client.clone().filter(|c| c.can_operate()) else {

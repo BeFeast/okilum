@@ -56,6 +56,9 @@ impl Native {
             metadata: Metadata::default(),
         }
     }
+    pub(super) fn stream_error_is_clear(&self) -> bool {
+        self.stream_error.is_none()
+    }
     pub(super) fn client_can_operate(&self) -> bool {
         self.client.as_ref().is_some_and(|c| c.can_operate())
     }
@@ -463,6 +466,10 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn render_native(&self, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.native.client_can_operate() && self.native.stream_error.is_none();
+        self.native
+            .actions
+            .update(cx, |a, cx| a.set_enabled(enabled, cx));
         let mut controls = h_flex().flex_wrap().gap_2().child(
             Button::new("project-live-connect")
                 .ghost()
