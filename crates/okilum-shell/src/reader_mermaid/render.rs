@@ -8,6 +8,7 @@ pub(super) const DEADLINE: Duration = Duration::from_secs(5);
 pub(super) const MAX_SOURCE: usize = 64 * 1024;
 const MAX_SVG: usize = 4 * 1024 * 1024;
 const MAX_PIXELS: u32 = 4 * 1024 * 1024;
+const MAX_SIDE: u32 = 4096;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) struct Key {
@@ -30,6 +31,7 @@ impl Key {
 pub(super) struct Diagram {
     pub image: Arc<RenderImage>,
     pub width: f32,
+    pub height: f32,
     pub bytes: usize,
 }
 type Outcome = Result<Arc<Diagram>, String>;
@@ -177,6 +179,68 @@ pub(super) fn svg(
     }
     Ok(svg)
 }
+/// Retain the preferred 2x density when it fits. Tall/wide diagrams reduce
+/// density, not their logical document size, within the same allocation caps.
+fn raster_geometry(width: f32, height: f32, logical: f32) -> Result<(u32, u32, f32), String> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || !logical.is_finite()
+        || width <= 0.
+        || height <= 0.
+        || logical <= 0.
+    {
+        return Err("Invalid Mermaid raster dimensions".into());
+    }
+    let (width, height) = (f64::from(width), f64::from(height));
+    let dimensions = |scale: f64| {
+        (
+            (width * scale).ceil().max(1.) as u32,
+            (height * scale).ceil().max(1.) as u32,
+        )
+    };
+    let fits = |w: u32, h: u32| {
+        w <= MAX_SIDE && h <= MAX_SIDE && w.checked_mul(h).is_some_and(|area| area <= MAX_PIXELS)
+    };
+    let mut scale = f64::from(logical) / width * 2.;
+    let (mut w, mut h) = dimensions(scale);
+    if !fits(w, h) {
+        // Leave room for ceil() at both edges. This avoids clipping the final
+        // subpixel or allocating one row beyond the pixel-area budget.
+        let side = f64::from(MAX_SIDE - 1);
+        let area = f64::from(MAX_PIXELS - 2 * MAX_SIDE - 1);
+        scale = scale
+            .min(side / width)
+            .min(side / height)
+            .min((area / width / height).sqrt());
+        (w, h) = dimensions(scale);
+    }
+    if !fits(w, h) {
+        return Err("Mermaid raster size limit".into());
+    }
+    Ok((w, h, scale as f32))
+}
+
+/// Logs must not include source-authored labels from parser error messages.
+pub(super) fn fallback_reason(error: &str) -> &'static str {
+    for reason in [
+        "source size limit",
+        "raster size limit",
+        "deadline exceeded",
+        "queue full",
+        "renderer panicked",
+        "allocation failed",
+        "Empty Mermaid raster",
+        "Invalid Mermaid raster",
+        "Unsupported or oversized Mermaid SVG",
+        "No Mermaid diagram",
+    ] {
+        if error.contains(reason) {
+            return reason;
+        }
+    }
+    "parse, layout or SVG rendering error"
+}
+
 fn raster(source: &str, key: &Key, control: merman::OperationControl) -> Outcome {
     let vector = svg(source, key, control)?;
     let options = resvg::usvg::Options {
@@ -192,12 +256,7 @@ fn raster(source: &str, key: &Key, control: merman::OperationControl) -> Outcome
     let tree = resvg::usvg::Tree::from_str(&vector, &options).map_err(|e| e.to_string())?;
     let size = tree.size();
     let logical = size.width().min(key.width as f32);
-    let scale = logical / size.width() * 2.;
-    let w = (size.width() * scale).ceil().max(1.) as u32;
-    let h = (size.height() * scale).ceil().max(1.) as u32;
-    if w > 4096 || h > 4096 || w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
-        return Err("Mermaid raster size limit".into());
-    }
+    let (w, h, scale) = raster_geometry(size.width(), size.height(), logical)?;
     let mut pixels = resvg::tiny_skia::Pixmap::new(w, h).ok_or("Mermaid allocation failed")?;
     resvg::render(
         &tree,
@@ -216,6 +275,7 @@ fn raster(source: &str, key: &Key, control: merman::OperationControl) -> Outcome
     Ok(Arc::new(Diagram {
         image: Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
         width: logical,
+        height: logical * size.height() / size.width(),
         bytes,
     }))
 }
@@ -231,6 +291,69 @@ mod tests {
         assert_ne!(a, Key::new("flowchart TD\nA-->B", 650., true));
         assert_ne!(a, Key::new("flowchart TD\nA-->C", 650., false));
     }
+    #[test]
+    fn raster_density_fits_height_and_area_without_changing_small_diagrams() {
+        assert_eq!(raster_geometry(300., 400., 300.).unwrap(), (600, 800, 2.));
+        for (width, height, logical) in [(300., 12_000., 300.), (5000., 5000., 2048.)] {
+            let (w, h, scale) = raster_geometry(width, height, logical).unwrap();
+            assert!(w <= MAX_SIDE && h <= MAX_SIDE);
+            assert!(w.checked_mul(h).unwrap() <= MAX_PIXELS);
+            assert!(scale > 0. && scale < logical / width * 2.);
+            assert!((w as f32 / h as f32 - width / height).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn tall_td_and_tb_render_with_bounded_rasters_and_full_logical_height() {
+        for header in ["flowchart TD", "graph TD", "graph TB"] {
+            let mut source = format!("{header}\n");
+            for index in 0..55 {
+                source.push_str(&format!(
+                    "N{index}[Step {index}] --> N{}[Step {}]\n",
+                    index + 1,
+                    index + 1
+                ));
+            }
+            for dark in [false, true] {
+                let key = Key::new(&source, 1280., dark);
+                let vector = svg(
+                    &source,
+                    &key,
+                    merman::OperationControl::new().with_deadline(DEADLINE),
+                )
+                .unwrap();
+                let options = resvg::usvg::Options {
+                    fontdb: fonts(),
+                    ..Default::default()
+                };
+                let tree = resvg::usvg::Tree::from_str(&vector, &options).unwrap();
+                let natural = tree.size();
+                assert!(
+                    natural.height() * 2. > MAX_SIDE as f32,
+                    "positive control: old 2x raster exceeds the height cap"
+                );
+                let diagram = render(source.clone().into(), key).unwrap();
+                let pixels = diagram.image.size(0);
+                assert!(
+                    u32::from(pixels.width) <= MAX_SIDE && u32::from(pixels.height) <= MAX_SIDE
+                );
+                assert!(diagram.bytes <= MAX_PIXELS as usize * 4);
+                assert!(
+                    diagram.height > MAX_SIDE as f32,
+                    "document geometry retains the tall diagram"
+                );
+                assert!(
+                    (diagram.width / diagram.height - natural.width() / natural.height()).abs()
+                        < 0.001
+                );
+                assert!(
+                    diagram.width > u32::from(pixels.width) as f32,
+                    "positive control: logical width is independent of reduced pixel density"
+                );
+            }
+        }
+    }
+
     #[test]
     fn worker_panic_and_deadline_return_fallback_errors() {
         assert!(bounded(|| panic!("synthetic renderer panic"), DEADLINE).is_err());

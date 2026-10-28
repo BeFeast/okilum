@@ -137,6 +137,7 @@ fn evict(mut window: Option<&mut Window>, cx: &mut App) {
 #[derive(Default)]
 struct ViewState {
     last_good: Option<Key>,
+    last_fallback: Option<Key>,
     width: f32,
 }
 
@@ -168,7 +169,7 @@ impl RenderOnce for MermaidView {
             source: self.block.source.clone(),
         };
         let ready = if self.block.source.len() > render::MAX_SOURCE {
-            Some(Err(Arc::new("source limit".into())))
+            Some(Err(Arc::new("Mermaid source size limit".into())))
         } else {
             retain(&request, window, cx);
             window.use_asset::<DiagramAsset>(&request, cx)
@@ -177,12 +178,21 @@ impl RenderOnce for MermaidView {
             Some(Ok(image)) => {
                 let image = image.upgrade();
                 if image.is_some() {
-                    state.update(cx, |s, _| s.last_good = Some(request.key.clone()));
+                    state.update(cx, |s, _| {
+                        s.last_good = Some(request.key.clone());
+                        s.last_fallback = None;
+                    });
                 }
                 image
             }
-            Some(Err(_)) => {
-                state.update(cx, |s, _| s.last_good = None);
+            Some(Err(error)) => {
+                let first = state.update(cx, |s, _| {
+                    s.last_good = None;
+                    s.last_fallback.replace(request.key.clone()).as_ref() != Some(&request.key)
+                });
+                if first {
+                    eprintln!("Mermaid fallback: {}", render::fallback_reason(&error));
+                }
                 None
             }
             None => {
@@ -198,7 +208,10 @@ impl RenderOnce for MermaidView {
             div()
                 .debug_selector(|| "mermaid-diagram".into())
                 .max_w(px(image.width))
-                .child(reader_image::ReaderImage::new(image.image.clone().into()))
+                .child(
+                    reader_image::ReaderImage::new(image.image.clone().into())
+                        .with_logical_size(size(px(image.width), px(image.height))),
+                )
                 .into_any_element()
         } else {
             // Deliberately no Mermaid parser on this nested view: the exact
@@ -259,6 +272,7 @@ mod tests {
                 image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255])),
             )])),
             width: 2.,
+            height: 2.,
             bytes,
         })
     }
