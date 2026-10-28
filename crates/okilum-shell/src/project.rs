@@ -786,6 +786,13 @@ impl Render for ProjectView {
             .zip(self.chat.as_ref())
             .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
         #[cfg(target_os = "linux")]
+        let open = open.or_else(|| {
+            self.native
+                .active()
+                .then(|| self.environment.as_ref().map(Environment::origin))
+                .flatten()
+        });
+        #[cfg(target_os = "linux")]
         let history = {
             self.feed
                 .update(cx, |feed, cx| feed.set_controls(enabled, self.busy, cx));

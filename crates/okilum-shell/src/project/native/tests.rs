@@ -135,3 +135,33 @@ fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
     view.update(visual, |view, _| view.native.pause());
     server.join().unwrap();
 }
+
+#[gpui::test]
+fn pairing_token_keeps_the_full_row_width_in_a_narrow_panel(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let temp = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            view.active = false;
+            view.native.open = true;
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(320.), px(1000.)));
+    visual.run_until_parked();
+    let bounds = visual
+        .debug_bounds("project-live-token-row")
+        .expect("pairing input row missing");
+    assert!(
+        bounds.size.width > px(240.) && bounds.right() <= px(320.),
+        "pairing input shrank or escaped the panel: {bounds:?}"
+    );
+    drop(root);
+}

@@ -21,6 +21,7 @@ pub(super) struct Native {
     open: bool,
     busy: bool,
     error: Option<String>,
+    stream_error: Option<String>,
     expires_at: Option<u64>,
     client: Option<Arc<NativeClient>>,
     retained: Option<Arc<Mutex<Retained>>>,
@@ -40,6 +41,7 @@ impl Native {
             open: false,
             busy: false,
             error: None,
+            stream_error: None,
             expires_at: None,
             client: None,
             retained: None,
@@ -66,6 +68,7 @@ impl Native {
         self.client = None;
         self.retained = None;
         self.error = None;
+        self.stream_error = None;
         self.metadata = Metadata::default();
         self.busy = false;
         self.history_busy = false;
@@ -244,6 +247,7 @@ impl ProjectView {
         self.native.pause();
         self.native.client = Some(client);
         self.native.error = None;
+        self.native.stream_error = None;
         self.native.expires_at = Some(expiry);
         self.native.open = false;
         if self.native.retained.is_none() {
@@ -308,10 +312,10 @@ impl ProjectView {
                         }
                         Err(error) => {
                             let terminal = terminal(&error);
-                            let message = error.to_string();
+                            let message = notice(&error);
                             let _ = this.update_in(cx, |this, _, cx| {
-                                if this.native.error.as_ref() != Some(&message) {
-                                    this.native.error = Some(message);
+                                if this.native.stream_error.as_ref() != Some(&message) {
+                                    this.native.stream_error = Some(message);
                                     cx.notify();
                                 }
                             });
@@ -349,7 +353,7 @@ impl ProjectView {
                     })
                     .await;
                 let terminal_error = result.as_ref().err().is_some_and(terminal);
-                let message = result.as_ref().err().map(ToString::to_string);
+                let message = result.as_ref().err().map(notice);
                 let changed = this
                     .update_in(cx, |this, _, cx| {
                         let mut r = retained.lock().unwrap();
@@ -364,8 +368,8 @@ impl ProjectView {
                                 feed.apply_native(changes, &this.records, cx)
                             });
                         }
-                        let mut notify = this.native.error != message;
-                        this.native.error = message;
+                        let mut notify = this.native.stream_error != message;
+                        this.native.stream_error = message;
                         if let Some(metadata) = metadata {
                             notify |= this.native.metadata != metadata;
                             this.native.metadata = metadata;
@@ -441,23 +445,118 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn render_native(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.native.active();
-        let more =
-            self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some();
-        let origin = self.environment.as_ref().map(Environment::origin);
-        v_flex().gap_1()
-            .child(h_flex().gap_2().child(Button::new("project-live-connect").ghost().label(if active{"Reconnect live updates"}else{"Enable live updates"}).debug_selector(||"project-live-connect".into()).disabled(self.native.busy||self.environment.is_none()).on_click(cx.listener(|this,_,window,cx|{this.native.pause();this.native_restore(true,window,cx);})))
-                .when(active,|row|row.child(Button::new("project-live-pair-again").ghost().label("Pair again").disabled(self.native.busy).on_click(cx.listener(|this,_,_,cx|{this.native.open=true;cx.notify();}))))
-                .when(more,|row|row.child(Button::new("project-live-history").ghost().label("Load earlier activity").disabled(self.native.history_busy).on_click(cx.listener(|this,_,window,cx|this.native_history(window,cx))))))
-            .when(self.native.open,|view|view.child(div().child("Live updates need a separate T3 client pairing with read/operate access. Paste its one-time pairing token; the saved connection is reused until it expires."))
-                .child(h_flex().gap_2().child(Input::new(&self.native.input).flex_1()).child(Button::new("project-live-pair").ghost().label("Pair").disabled(self.native.busy).on_click(cx.listener(|this,_,window,cx|this.native_pair(window,cx)))))
-                .when_some(origin,|view,origin|view.child(Button::new("project-live-open-browser").ghost().label("Open T3").on_click(move|_,_,cx|cx.open_url(&origin)))))
-            .when_some(self.native.expires_at,|view,expiry|view.child(div().text_color(brand::palette(cx).text_muted).child(format!("Live {}",super::expiry_note(expiry)))))
-            .when(self.native.metadata.payload_budget_exceeded,|view|view.child(div().child("The latest activity window is incomplete. Open T3 for the full thread.")))
-            .when_some(self.native.error.clone(),|view,error|view.child(div().debug_selector(||"project-live-error".into()).text_color(cx.theme().danger).child(error)))
-            .into_any_element()
+        let mut controls = h_flex().flex_wrap().gap_2().child(
+            Button::new("project-live-connect")
+                .ghost()
+                .label(if self.native.active() {
+                    "Reconnect live updates"
+                } else {
+                    "Enable live updates"
+                })
+                .debug_selector(|| "project-live-connect".into())
+                .disabled(self.native.busy || self.environment.is_none())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.native.pause();
+                    this.native_restore(true, window, cx);
+                })),
+        );
+        if self.native.active() {
+            controls = controls.child(
+                Button::new("project-live-pair-again")
+                    .ghost()
+                    .label("Pair again")
+                    .disabled(self.native.busy)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.native.open = true;
+                        cx.notify();
+                    })),
+            );
+        }
+        if self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some() {
+            controls = controls.child(
+                Button::new("project-live-history")
+                    .ghost()
+                    .label("Load earlier activity")
+                    .disabled(self.native.history_busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.native_history(window, cx))),
+            );
+        }
+        let mut view = v_flex().w_full().min_w_0().gap_1().child(controls);
+        if self.native.open {
+            view=view.child(div().w_full().min_w_0().whitespace_normal()
+                .child("Live updates need a separate T3 client pairing with permission to read threads and control agents. Paste its one-time pairing token; the saved connection is reused until it expires."))
+                .child(div().w_full().min_w_0().debug_selector(||"project-live-token-row".into()).child(Input::new(&self.native.input).w_full()))
+                .child(Button::new("project-live-pair").ghost().label("Pair").disabled(self.native.busy)
+                    .on_click(cx.listener(|this,_,window,cx|this.native_pair(window,cx))));
+            if let Some(origin) = self.environment.as_ref().map(Environment::origin) {
+                view = view.child(
+                    Button::new("project-live-open-browser")
+                        .ghost()
+                        .label("Open T3")
+                        .on_click(move |_, _, cx| cx.open_url(&origin)),
+                );
+            }
+        }
+        if let Some(expiry) = self.native.expires_at {
+            let renew = expiry.saturating_sub(chrono::Utc::now().timestamp().max(0) as u64)
+                <= okilum_t3::EXPIRES_SOON_SECS;
+            view = view.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(format!(
+                        "Live {}{}",
+                        super::expiry_note(expiry).trim_start_matches("Connection "),
+                        if renew {
+                            " — pair again to renew"
+                        } else {
+                            ""
+                        }
+                    )),
+            );
+        }
+        if self.native.metadata.payload_budget_exceeded {
+            view =
+                view.child(div().w_full().min_w_0().whitespace_normal().child(
+                    "The latest activity window is incomplete. Open T3 for the full thread.",
+                ));
+        }
+        if let Some(error) = self
+            .native
+            .error
+            .clone()
+            .or_else(|| self.native.stream_error.clone())
+        {
+            view = view.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .debug_selector(|| "project-live-error".into())
+                    .text_color(cx.theme().danger)
+                    .child(error),
+            );
+        }
+        view.into_any_element()
     }
 }
+fn notice(error: &StreamError) -> String {
+    match error {
+        StreamError::Closed | StreamError::Unreachable => {
+            "Connection interrupted. Reconnecting live updates…".into()
+        }
+        StreamError::PairingRequired | StreamError::Expired => {
+            "This live connection is no longer signed in. Pair again to continue.".into()
+        }
+        StreamError::Protocol(_) | StreamError::IncompatibleProtocol => {
+            "Live updates are unavailable with this T3 server. Open T3 to continue.".into()
+        }
+        _ => error.to_string(),
+    }
+}
+
 fn terminal(error: &StreamError) -> bool {
     matches!(
         error,
