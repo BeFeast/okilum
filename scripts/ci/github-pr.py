@@ -28,6 +28,7 @@ LANES = {
 def main():
     started = time.monotonic()
     result, branch, api = 'failure', None, None
+    token = ''
     try:
         lane = os.environ['CI_LANE']
         if lane not in LANES:
@@ -39,7 +40,8 @@ def main():
         branch = branch.replace('forgejo-pr/', f'forgejo-{lane}-pr/', 1)
         api = transport.GitHub()
         api.log_quota()
-        transport.push_head(branch, sha, api.token)
+        token = api.token
+        transport.push_head(branch, sha, token)
         result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
             job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
         print(message)
@@ -52,9 +54,11 @@ def main():
             output.write(f'result={result}\n')
         if branch and api:
             try:
+                token = api.token
                 api.request('git/refs/heads/' + branch, 'DELETE')
-            except transport.Unavailable:
-                print('::warning::Temporary hosted ref cleanup failed')
+            except transport.Unavailable as error:
+                reason = transport.safe_diagnostic(error, token)
+                print(f'::warning::Temporary hosted ref cleanup failed: {reason}')
     return 0 if result == 'success' else 1
 
 
