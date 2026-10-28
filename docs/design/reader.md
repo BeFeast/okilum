@@ -122,14 +122,18 @@ are behind a technical-details disclosure and included in Copy. Details, Copy
 and Retry use compact glyphs with tooltips; Retry closes the list and refreshes.
 
 iCloud placeholders are a distinct pending-availability state, never unreadable
-items or attention rows (#1837). The header shows only a muted “N files still in
-iCloud” count while any remain. Indexing inspects metadata and never requests a
+items or attention rows (#1837). The header shows a muted “N files still in
+iCloud” count while any remain. On macOS an explicit “Download all” action submits
+the known placeholders to iCloud on a background worker. Its tooltip and completion
+notice explain Finder → “Keep Downloaded”. The action is disabled during request
+submission; submission does not claim that files have arrived. Failed requests
+report a count and can be retried. Switching vaults or closing the window stops
+submission of the remaining requests. Indexing inspects metadata and never requests a
 download; filesystem materialisation notifications reconcile the source and clear
 the count without Retry or reopening. A displayed document keeps its last readable
 content (and any editor draft) while its source is pending. Read/encoding errors
 on other files retain their normal attention UI. Existing partial-inventory and
-link-ambiguity safeguards also apply while cloud sources are pending. “Download
-all” and Finder “Keep Downloaded” guidance belong to the following slice.
+link-ambiguity safeguards also apply while cloud sources are pending.
 
 ## Typography
 

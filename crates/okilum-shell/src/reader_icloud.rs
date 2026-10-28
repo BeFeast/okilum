@@ -1,11 +1,117 @@
-//! Explicit-open hydration only. Inventory/indexing never calls this module.
+//! Explicit user-requested hydration only. Inventory/indexing never calls this module.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::Instant;
 
 pub(crate) const DOWNLOADING: &str = "Downloading from iCloud…";
+pub(crate) const KEEP_DOWNLOADED: &str =
+    "To keep files available, select this folder in Finder and choose Keep Downloaded.";
 const SF_DATALESS: u32 = 0x4000_0000;
+
+/// Request submission is independent of inventory refreshes. Dropping the owning
+/// load (vault switch/window close) stops submission of the remaining requests.
+pub(crate) struct Batch {
+    pub active: bool,
+    pub identity: std::sync::Arc<()>,
+    pub cancel: super::reader_loading::Cancellation,
+}
+impl Default for Batch {
+    fn default() -> Self {
+        Self {
+            active: true,
+            identity: Default::default(),
+            cancel: Default::default(),
+        }
+    }
+}
+impl Drop for Batch {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct BatchResult {
+    requested: usize,
+    failed: usize,
+}
+
+/// Submit each known placeholder once, without reading source bytes or waiting
+/// for one file to finish before asking iCloud for the next. FSEvents supplies
+/// materialization updates through the normal metadata-only inventory path.
+fn request_all(
+    paths: Vec<PathBuf>,
+    mut check: impl FnMut() -> anyhow::Result<()>,
+    mut request: impl FnMut(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<BatchResult> {
+    let mut result = BatchResult::default();
+    let paths: std::collections::BTreeSet<_> = paths.iter().map(|p| logical_path(p)).collect();
+    for path in paths {
+        check()?;
+        match request(&path) {
+            Ok(()) => result.requested += 1,
+            Err(_) => result.failed += 1,
+        }
+    }
+    Ok(result)
+}
+
+impl super::Reader {
+    #[cfg(target_os = "macos")]
+    pub(super) fn download_all_icloud(&mut self, cx: &mut gpui::Context<Self>) {
+        self.download_all_icloud_using(cx, |path| {
+            require_worker(objc2::MainThreadMarker::new().is_some())?;
+            request_download(path)
+        });
+    }
+
+    fn download_all_icloud_using(
+        &mut self,
+        cx: &mut gpui::Context<Self>,
+        request: impl FnMut(&Path) -> anyhow::Result<()> + Send + 'static,
+    ) {
+        let Some(load) = self.loading.as_mut() else {
+            return;
+        };
+        if load
+            .cloud_download
+            .as_ref()
+            .is_some_and(|batch| batch.active)
+            || self.vault.cloud_placeholders.is_empty()
+        {
+            return;
+        }
+        let batch = Batch::default();
+        let identity = batch.identity.clone();
+        let cancel = batch.cancel.clone();
+        load.cloud_download = Some(batch);
+        let root = self.vault_root.clone();
+        let paths = self.vault.cloud_placeholders.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                request_all(paths, || cancel.check(), request)
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(batch) = this.loading.as_mut().and_then(|load| load.cloud_download.as_mut()) else { return };
+                if this.vault_root != root || !std::sync::Arc::ptr_eq(&batch.identity, &identity) {
+                    return;
+                }
+                batch.active = false;
+                if let Ok(result) = result {
+                    let message = if result.failed == 0 {
+                        format!("Downloads requested from iCloud. {KEEP_DOWNLOADED}")
+                    } else {
+                        format!("Couldn’t request {} iCloud download{}. Check your connection and iCloud account, then try Download all again. {KEEP_DOWNLOADED}", result.failed, if result.failed == 1 { "" } else { "s" })
+                    };
+                    this.link_notice = Some(message.into());
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct DownloadError(pub String);
@@ -73,6 +179,21 @@ fn require_worker(is_main_thread: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn request_download(path: &Path) -> anyhow::Result<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    require_worker(objc2::MainThreadMarker::new().is_some())?;
+    objc2::rc::autoreleasepool(|_| {
+        let path = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("The iCloud path is not valid UTF-8"))?;
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        NSFileManager::defaultManager()
+            .startDownloadingUbiquitousItemAtURL_error(&url)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    })
+}
+
 /// Dependency-injected polling keeps timeout, cancellation and controls testable
 /// without iCloud. Called exclusively by the Reader's background executor.
 fn wait_for_download(
@@ -105,7 +226,6 @@ pub(crate) fn materialize(
     path: &Path,
     progress: impl FnMut() -> anyhow::Result<()>,
 ) -> anyhow::Result<PathBuf> {
-    use objc2_foundation::{NSFileManager, NSString, NSURL};
     use std::os::macos::fs::MetadataExt;
     // Fail before even stat/Cocoa if a future caller moves this onto the UI.
     require_worker(objc2::MainThreadMarker::new().is_some())?;
@@ -132,15 +252,7 @@ pub(crate) fn materialize(
         },
         || {
             requested.set(true);
-            objc2::rc::autoreleasepool(|_| {
-                let path = path
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("The iCloud path is not valid UTF-8"))?;
-                let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-                NSFileManager::defaultManager()
-                    .startDownloadingUbiquitousItemAtURL_error(&url)
-                    .map_err(|e| anyhow::anyhow!("{e}"))
-            })
+            request_download(&path)
         },
         progress,
         || started.elapsed(),
@@ -154,6 +266,158 @@ pub(crate) fn materialize(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn bulk_requests_normalize_stubs_once_and_continue_after_one_failure() {
+        let mut requested = Vec::new();
+        let paths = [
+            "vault/.a.md.icloud",
+            "vault/a.md",
+            "vault/b.md",
+            "vault/c.md",
+        ];
+        let result = request_all(
+            paths.map(PathBuf::from).into(),
+            || Ok(()),
+            |path| {
+                requested.push(path.to_path_buf());
+                anyhow::ensure!(path != Path::new("vault/b.md"), "offline");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            requested,
+            ["vault/a.md", "vault/b.md", "vault/c.md"].map(PathBuf::from)
+        );
+        assert_eq!(
+            result,
+            BatchResult {
+                requested: 2,
+                failed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn bulk_cancellation_stops_remaining_requests_and_owner_drop_cancels() {
+        let batch = Batch::default();
+        let cancel = batch.cancel.clone();
+        let mut count = 0;
+        let result = request_all(
+            vec!["a.md".into(), "b.md".into()],
+            || cancel.check(),
+            |_| {
+                count += 1;
+                cancel.cancel();
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(count, 1, "first request proves cancellation was exercised");
+        let batch = Batch::default();
+        let cancel = batch.cancel.clone();
+        assert!(cancel.check().is_ok());
+        drop(batch);
+        assert!(cancel.check().is_err());
+        let result = request_all(
+            Vec::new(),
+            || panic!("empty batch"),
+            |_| panic!("empty request"),
+        )
+        .unwrap();
+        assert_eq!(result, BatchResult::default());
+    }
+
+    #[gpui::test]
+    fn bulk_download_requires_explicit_action_and_blocks_duplicate_submission(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::super::*;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(fixture.path().join("local.md"), "# Local").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(fixture.path().into()),
+                        cache_base_override: Some(fixture.path().join("cache")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let count = Arc::new(AtomicUsize::new(0));
+        let path = fixture.path().join(".pending.md.icloud");
+        reader.update_in(visual, |r, _, cx| {
+            Arc::make_mut(&mut r.vault)
+                .cloud_placeholders
+                .push(path.clone());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.loading.as_ref().unwrap().cloud_download.is_none())
+        });
+        reader.update_in(visual, |r, _, cx| {
+            let count = count.clone();
+            let expected = logical_path(&path);
+            r.download_all_icloud_using(cx, move |path| {
+                assert_eq!(path, expected);
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+            assert!(
+                r.loading
+                    .as_ref()
+                    .unwrap()
+                    .cloud_download
+                    .as_ref()
+                    .unwrap()
+                    .active
+            );
+            r.download_all_icloud_using(cx, |_| panic!("duplicate batch"));
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "positive control: the explicit action submits a request"
+        );
+        reader.read_with(visual, |r, _| {
+            assert!(
+                !r.loading
+                    .as_ref()
+                    .unwrap()
+                    .cloud_download
+                    .as_ref()
+                    .unwrap()
+                    .active
+            );
+            assert!(r.link_notice.as_ref().unwrap().contains("Keep Downloaded"));
+            assert_eq!(
+                r.vault.cloud_placeholders,
+                vec![path],
+                "submission is not materialization"
+            );
+        });
+    }
 
     #[test]
     fn detects_legacy_names_and_dataless_flag_without_reading_bytes() {
