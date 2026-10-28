@@ -53,8 +53,9 @@ def main():
         if branch and api:
             try:
                 api.request('git/refs/heads/' + branch, 'DELETE')
-            except transport.Unavailable:
-                print('::warning::Temporary hosted ref cleanup failed')
+            except transport.Unavailable as error:
+                reason = transport.safe_diagnostic(error, "")
+                print(f'::warning::Temporary hosted ref cleanup failed: {reason}')
     return 0 if result == 'success' else 1
 
 

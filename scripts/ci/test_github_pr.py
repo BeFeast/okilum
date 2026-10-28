@@ -1,4 +1,6 @@
 """Hosted lanes cannot green a stale head, wrong job, or skipped acceptance step."""
+import contextlib
+import io
 import importlib.util
 import os
 from pathlib import Path
@@ -92,3 +94,21 @@ class HostedPRTests(unittest.TestCase):
                             self.assertTrue(evaluate(job, 'workflow_dispatch', setting, fork, 'false'))
                             self.assertFalse(evaluate(job, 'workflow_dispatch', setting, fork, 'true'))
                             self.assertFalse(evaluate(lane+'-github', 'workflow_dispatch', setting, fork, 'true'))
+
+
+class CleanupDiagnosticTests(unittest.TestCase):
+    def test_cleanup_http_reason_retained_without_changing_gate_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(CI_LANE='windows-release', PR_HEAD_SHA=SHA, PR_NUMBER='12',
+                       GITHUB_RUN_ID='345', GITHUB_OUTPUT=str(Path(tmp) / 'output'))
+            output = io.StringIO()
+            with patch.dict(os.environ, env), patch.object(bridge.transport, 'push_head'), \
+                    patch.object(bridge.transport, 'GitHub') as api, \
+                    patch.object(bridge.transport, 'wait_for_run', return_value=('success', 'ok')), \
+                    contextlib.redirect_stdout(output):
+                api.return_value.request.side_effect = bridge.transport.Unavailable(
+                    'GitHub DELETE git/refs/heads/x: HTTP 404 (request failed)')
+                self.assertEqual(bridge.main(), 0)
+            self.assertIn('cleanup failed: GitHub DELETE', output.getvalue())
+            self.assertIn('HTTP 404 (request failed)', output.getvalue())
+            self.assertEqual(Path(env['GITHUB_OUTPUT']).read_text(), 'result=success\n')
