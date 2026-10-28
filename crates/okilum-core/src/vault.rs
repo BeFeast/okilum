@@ -890,6 +890,25 @@ impl Vault {
         self.set_note_identity(&note_path(Path::new(path)), true);
     }
 
+    /// Publish a completed local directory creation, including any new parents,
+    /// before a lazy folder refresh replaces the visible tree (#1823).
+    pub fn register_created_directory(&mut self, path: &str) {
+        for directory in Path::new(path)
+            .ancestors()
+            .take_while(|path| !path.as_os_str().is_empty())
+        {
+            let path = note_path(directory);
+            self.occupied_paths.insert(path.to_lowercase());
+            if !self.entries.iter().any(|entry| entry.path == path) {
+                self.entries.push(VaultEntry {
+                    path,
+                    kind: EntryKind::Directory,
+                });
+            }
+        }
+        self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+
     /// Find a readable document without collecting or sorting the inventory.
     pub fn discover_document(
         root: &Path,
