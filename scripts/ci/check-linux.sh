@@ -27,6 +27,7 @@ cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
 cargo test --locked -p okilum-sync-controller --lib enrollment::
 cargo test --locked -p okilum-sync-controller --test enrollment_storage
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::bundle::
+cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connection::
 cargo test --locked -p okilum-sync-controller --lib daemon::
 cargo test --locked -p okilum-sync-controller --lib presentation::
 cargo test --locked -p okilum-sync-controller --test daemon_access
