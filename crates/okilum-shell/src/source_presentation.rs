@@ -108,7 +108,7 @@ impl CachedProvider {
             .decorations_for(&snapshot)
             .unwrap_or_default()
             .iter()
-            .filter(|m| is_block(&m.kind))
+            .filter(|m| is_rendered_block(m, &source.text))
             .filter_map(|m| {
                 Some((
                     m.range.clone(),
@@ -279,6 +279,33 @@ fn is_block(kind: &source_classifier::decorations::Kind) -> bool {
     )
 }
 
+/// Only Mermaid fences opt into S7 rendering; all other code keeps its existing
+/// editable code presentation. Classification and active-range guards stay shared.
+fn is_rendered_block(marker: &source_classifier::decorations::Marker, text: &str) -> bool {
+    if is_block(&marker.kind) {
+        return true;
+    }
+    if marker.kind != source_classifier::decorations::Kind::CodeBlock {
+        return false;
+    }
+    let Some(header) = text
+        .get(marker.range.clone())
+        .and_then(|s| s.lines().next())
+    else {
+        return false;
+    };
+    let header = header.trim_start();
+    let Some(fence) = header.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+        return false;
+    };
+    let count = header.chars().take_while(|c| *c == fence).count();
+    count >= 3
+        && header[count..]
+            .split_whitespace()
+            .next()
+            .is_some_and(|s| s.eq_ignore_ascii_case("mermaid"))
+}
+
 impl CachedProvider {
     /// Rendered block ranges (tables, images) in `text`, the current revision. The classified revision
     /// gives them exactly; a newer one, not yet classified, finds each table
@@ -288,7 +315,7 @@ impl CachedProvider {
         if let Ok(markers) = self.classified.decorations_for(current) {
             return markers
                 .iter()
-                .filter(|m| is_block(&m.kind))
+                .filter(|m| is_rendered_block(m, text))
                 .map(|m| m.range.clone())
                 .collect();
         }
@@ -1491,6 +1518,43 @@ This paragraph remains ordinary Markdown.
                 assert!(rendered.contains(&table), "{at}: the table stays rendered");
             }
         }
+    }
+
+    #[test]
+    fn mermaid_is_an_s7_block_and_active_source_reveals_only_that_block() {
+        let note = source("# Diagrams\n\n```mermaid\nflowchart TD\nA-->B\n```\n\n```rust\nfn main() {}\n```\n\nend\n");
+        let provider = CachedProvider::classify(note.clone());
+        let projected = provider.compose(&note, &inactive(&note)).unwrap();
+        assert_eq!(
+            projected.blocks().len(),
+            1,
+            "ordinary code stays editable code"
+        );
+        let block = &projected.blocks()[0];
+        assert_eq!(
+            &note.text[block.source.start.0..block.source.end.0],
+            "```mermaid\nflowchart TD\nA-->B\n```"
+        );
+        let at = SourceByte(block.source.start.0 + 15);
+        let active = ActiveSource {
+            anchor: at,
+            head: at,
+            ..Default::default()
+        };
+        assert!(provider
+            .compose(&note, &active)
+            .unwrap()
+            .blocks()
+            .is_empty());
+        let composition = ActiveSource {
+            composition: Some(at..SourceByte(at.0 + 1)),
+            ..inactive(&note)
+        };
+        assert!(provider
+            .compose(&note, &composition)
+            .unwrap()
+            .blocks()
+            .is_empty());
     }
 
     #[test]

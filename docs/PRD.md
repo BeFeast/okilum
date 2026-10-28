@@ -193,7 +193,7 @@ frequency decides order; anything at zero waits for a trigger:
 | heading links `[[a#h]]` | 50 | resolve, no scroll-to |
 | note transclusion `![[note]]` | 37 | not rendered |
 | PDF links | 24 | plain link |
-| mermaid | 20 | highlighted code block (Reader, Source, Live Preview); rendered diagrams blocked on the visual gate ([#1182](https://git.oklabs.uk/BeFeast/okilum/issues/1182)) |
+| mermaid | 20 | [rendered diagrams](mermaid.md) in Reader and Live Preview with merman 0.9.2; highlighted-code fallback on failure; Source stays code. Oleg accepted 28.10; real-corpus measurement before Stable ([#1182](https://git.oklabs.uk/BeFeast/okilum/issues/1182)) |
 | html tags | 16 | passed through |
 | footnotes | 10 | rendered with back-links ([#651](obsidian-syntax.md)) |
 | block refs `^id` | 0 | hidden, links land, block embeds ([#651](obsidian-syntax.md)) |

@@ -3,6 +3,7 @@ name = "okilum-appimage"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license = "MIT"
 
 [features]
 # Explicit, non-shipping native QA entry; no environment-based trust injection.

@@ -1093,13 +1093,27 @@ fn reader_plugins(
     states: prepared_links::States,
     identities: &[okilum_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
-    reader_plugins_at(0, root, view, entity, sel_format, states, identities)
+    reader_plugins_at(
+        MarkdownScope::default(),
+        root,
+        view,
+        entity,
+        sel_format,
+        states,
+        identities,
+    )
+}
+
+#[derive(Default)]
+struct MarkdownScope {
+    fold_base: usize,
+    live: bool,
 }
 
 /// [`reader_plugins`] for a document that is one part of a note: `fold_base`
 /// keeps its callouts' fold state apart from other parts' (#1067).
 fn reader_plugins_at(
-    fold_base: usize,
+    scope: MarkdownScope,
     root: PathBuf,
     view: TextView,
     entity: WeakEntity<Reader>,
@@ -1117,7 +1131,7 @@ fn reader_plugins_at(
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
     let view = markdown_plugins_at(
-        fold_base,
+        scope.fold_base,
         view,
         Arc::new(move |url, event, window, cx| {
             if matches!(event, ClickEvent::Mouse(e) if e.up.button == MouseButton::Right) {
@@ -1151,6 +1165,7 @@ fn reader_plugins_at(
             }
         }),
         sel_format,
+        scope.live,
     )
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
@@ -1189,7 +1204,7 @@ fn markdown_plugins(
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
 ) -> TextView {
-    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format)
+    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format, false)
 }
 
 /// [`markdown_plugins`] for one part of a note; see [`reader_plugins_at`].
@@ -1199,6 +1214,7 @@ fn markdown_plugins_at(
     link_handler: MarkdownLinkHandler,
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
+    live: bool,
 ) -> TextView {
     let link_click = link_handler.clone();
     let parse_image = image_resolver.clone();
@@ -1208,6 +1224,10 @@ fn markdown_plugins_at(
     view.selection_format(sel_format)
         .code_block_language(reader_code_language::resolver())
         .code_block_actions(reader_code::actions)
+        .markdown_block_parser(reader_mermaid::parse)
+        .markdown_block_renderer("mermaid", move |node, window, cx| {
+            reader_mermaid::render(node, live, window, cx)
+        })
         .markdown_block_parser(move |node, cx| {
             let markdown_ast::Node::Paragraph(p) = node else {
                 return None;
