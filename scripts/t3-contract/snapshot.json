@@ -156,7 +156,19 @@
         "inlineMessageContext": {
           "type": "boolean"
         },
+        "linkFence": {
+          "type": "boolean"
+        },
+        "localServerStop": {
+          "type": "boolean"
+        },
+        "mcpModeLimitHeader": {
+          "type": "boolean"
+        },
         "otlpEndpointCheck": {
+          "type": "boolean"
+        },
+        "peerLinks": {
           "type": "boolean"
         },
         "projectCloneTracking": {
@@ -272,6 +284,9 @@
           "type": "boolean"
         },
         "threadVisitedTracking": {
+          "type": "boolean"
+        },
+        "triage": {
           "type": "boolean"
         },
         "usageLimitSources": {
@@ -605,6 +620,33 @@
               ],
               "type": "string"
             },
+            "delegatedFrom": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "properties": {
+                    "environmentId": {
+                      "type": "string"
+                    },
+                    "threadId": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "environmentId",
+                    "threadId",
+                    "title"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "importedNativeThread": {
               "anyOf": [
                 {
@@ -788,6 +830,46 @@
                 "plan"
               ],
               "type": "string"
+            },
+            "linkOrigin": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "properties": {
+                    "access": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "read-only",
+                            "approval-required",
+                            "auto-accept-edits",
+                            "auto",
+                            "full-access"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "sessionId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sessionId",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "modelSelection": {
               "additionalProperties": true,
@@ -5663,6 +5745,33 @@
                         ],
                         "type": "string"
                       },
+                      "delegatedFrom": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "properties": {
+                              "environmentId": {
+                                "type": "string"
+                              },
+                              "threadId": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "environmentId",
+                              "threadId",
+                              "title"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "deletedAt": {
                         "anyOf": [
                           {
@@ -6198,6 +6307,46 @@
                           "rootThreadId"
                         ],
                         "type": "object"
+                      },
+                      "linkOrigin": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  {
+                                    "enum": [
+                                      "read-only",
+                                      "approval-required",
+                                      "auto-accept-edits",
+                                      "auto",
+                                      "full-access"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "sessionId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "sessionId",
+                              "label"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "linkedPullRequest": {
                         "anyOf": [
@@ -8220,6 +8369,33 @@
                         ],
                         "type": "string"
                       },
+                      "delegatedFrom": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "properties": {
+                              "environmentId": {
+                                "type": "string"
+                              },
+                              "threadId": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "environmentId",
+                              "threadId",
+                              "title"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "deletedAt": {
                         "anyOf": [
                           {
@@ -8755,6 +8931,46 @@
                           "rootThreadId"
                         ],
                         "type": "object"
+                      },
+                      "linkOrigin": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  {
+                                    "enum": [
+                                      "read-only",
+                                      "approval-required",
+                                      "auto-accept-edits",
+                                      "auto",
+                                      "full-access"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "sessionId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "sessionId",
+                              "label"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "linkedPullRequest": {
                         "anyOf": [
@@ -10808,6 +11024,33 @@
                   ],
                   "type": "string"
                 },
+                "delegatedFrom": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "environmentId": {
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "environmentId",
+                        "threadId",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "deletedAt": {
                   "anyOf": [
                     {
@@ -11343,6 +11586,46 @@
                     "rootThreadId"
                   ],
                   "type": "object"
+                },
+                "linkOrigin": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            {
+                              "enum": [
+                                "read-only",
+                                "approval-required",
+                                "auto-accept-edits",
+                                "auto",
+                                "full-access"
+                              ],
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "sessionId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "sessionId",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "linkedPullRequest": {
                   "anyOf": [
