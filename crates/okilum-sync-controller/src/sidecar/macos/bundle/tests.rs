@@ -219,3 +219,17 @@ fn a_fresh_guard_cannot_adopt_a_foreign_owner_or_different_bundle_path() -> Resu
     fixture.guard()?.verify(&fixture.binding)?;
     Ok(())
 }
+
+#[test]
+fn read_only_foreign_ownership_is_not_a_trusted_installation() {
+    // Both supported install modes pass, while another account cannot acquire
+    // trust by removing its own write bit. No privileged chown is needed in CI.
+    let current = 501;
+    assert!(trusted_owner(current, current));
+    assert!(trusted_owner(0, current));
+    for foreign in [1, 502, u32::MAX] {
+        assert!(!trusted_owner(foreign, current));
+    }
+    assert!(trusted_owner(0, 0));
+    assert!(!trusted_owner(501, 0));
+}

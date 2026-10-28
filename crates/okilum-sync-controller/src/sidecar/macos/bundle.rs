@@ -12,6 +12,12 @@ use std::{
 
 pub const HELPER: &str = "Contents/MacOS/okilum-sync-supervisor";
 
+// System-wide installs are root-owned; per-user installs belong to this account.
+// Read-only mode bits do not make a different file owner's code trustworthy.
+fn trusted_owner(owner: u32, current: u32) -> bool {
+    owner == 0 || owner == current
+}
+
 /// No permissive default: production must evaluate the supplied requirement
 /// with Security.framework. Tests inject a recording/refusing verifier.
 pub trait SignatureVerifier {
@@ -134,6 +140,10 @@ impl<V: SignatureVerifier> BundleGuard<V> {
             ensure!(
                 !m.file_type().is_symlink() && if directory { m.is_dir() } else { m.is_file() },
                 "bundle entry is missing, linked or has the wrong type"
+            );
+            ensure!(
+                trusted_owner(m.uid(), rustix::process::geteuid().as_raw()),
+                "bundle entry belongs to another user"
             );
             ensure!(
                 m.mode() & 0o022 == 0,

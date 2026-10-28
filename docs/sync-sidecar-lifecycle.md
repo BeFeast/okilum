@@ -599,7 +599,8 @@ separate acceptance work; compiling the folder controller does not close them.
 `OwnedSupervisor` implementation. It binds one prepared installation/instance,
 current UID, existing device identity and state path to the current app's canonical
 bundle. It refuses changed bindings, moved bundles, symlinked or group/world-writable
-bundle entries, missing executable code, state inside the install tree, and any
+bundle entries or entries owned by an account other than root/current UID,
+missing executable code, state inside the install tree, and any
 agent plist differing from the shared generated definition. Its bounded plist
 read does not repair a definition. Private-state ownership and file durability
 remain the transactional store's responsibility.
