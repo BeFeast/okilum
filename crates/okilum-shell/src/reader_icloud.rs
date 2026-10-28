@@ -19,14 +19,7 @@ impl std::error::Error for DownloadError {}
 /// Legacy iCloud stubs are `.name.ext.icloud`; the document keeps `name.ext`.
 /// Pure name handling is safe on the UI thread; metadata and Cocoa are not.
 pub(crate) fn logical_path(path: &Path) -> PathBuf {
-    let name = path.file_name().and_then(|s| s.to_str());
-    match name
-        .and_then(|s| s.strip_prefix('.'))
-        .and_then(|s| s.strip_suffix(".icloud"))
-    {
-        Some(name) if !name.is_empty() && name != "." && name != ".." => path.with_file_name(name),
-        _ => path.to_path_buf(),
-    }
+    okilum_core::vault::cloud_document_path(path)
 }
 
 /// Preserve vault-vs-file intent. Only a legacy placeholder rename changes

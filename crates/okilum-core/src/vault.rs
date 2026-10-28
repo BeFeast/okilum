@@ -268,6 +268,20 @@ pub fn service_path(path: &Path) -> bool {
     })
 }
 
+/// Map a legacy `.name.ext.icloud` stub to its document without any filesystem
+/// access. Shared by metadata reconciliation and the explicit-open UI on all OSes.
+pub fn cloud_document_path(path: &Path) -> PathBuf {
+    match path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix('.'))
+        .and_then(|name| name.strip_suffix(".icloud"))
+    {
+        Some(name) if !name.is_empty() && name != "." && name != ".." => path.with_file_name(name),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// iCloud placeholders must not be opened just to populate derived data.
 /// SF_DATALESS identifies evicted files that retain their ordinary filename.
 pub(crate) fn cloud_placeholder(path: &Path) -> bool {
@@ -1832,6 +1846,18 @@ mod context_link_tests {
 
 #[cfg(test)]
 mod browser_inventory_tests {
+    #[test]
+    fn cloud_document_paths_are_platform_neutral_and_metadata_only() {
+        use std::path::Path;
+        assert_eq!(
+            super::cloud_document_path(Path::new("folder/.Заметка.md.icloud")),
+            Path::new("folder/Заметка.md")
+        );
+        for name in ["Note.md", "note.icloud", ".icloud", "..icloud", "...icloud"] {
+            assert_eq!(super::cloud_document_path(Path::new(name)), Path::new(name));
+        }
+    }
+
     use super::*;
 
     #[test]

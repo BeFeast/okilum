@@ -1672,7 +1672,7 @@ impl Reader {
         self.vault
             .cloud_placeholders
             .iter()
-            .any(|pending| reader_icloud::logical_path(pending) == path)
+            .any(|pending| okilum_core::vault::cloud_document_path(pending) == path)
     }
 
     pub(super) fn reconcile_inventory_document(

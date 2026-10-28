@@ -438,15 +438,9 @@ impl State {
             // Legacy stubs can vanish with only the materialized document's
             // event. Match that explicit filename convention without opening
             // either source, and keep parent-directory hints working as before.
-            let logical = relative
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_prefix('.'))
-                .and_then(|name| name.strip_suffix(".icloud"))
-                .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-                .map(|name| note_path(&relative.with_file_name(name)));
+            let logical = super::super::cloud_document_path(relative);
             let scoped = input_directory_scope(relative, &changes.directories, &directories)
-                || logical.is_some_and(|path| touched.contains(&path));
+                || touched.contains(&note_path(&logical));
             !scoped
                 || !std::fs::symlink_metadata(path)
                     .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
