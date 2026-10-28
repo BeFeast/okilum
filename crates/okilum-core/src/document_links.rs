@@ -1,6 +1,8 @@
 //! Document link syntax and navigation intent shared by all reader surfaces.
 //! Comrak defines syntax; byte ranges refer to the untouched authored source.
+mod indexed;
 mod local_files;
+pub use indexed::IndexedResolver;
 mod paths;
 pub mod prepared;
 pub(crate) use paths::fallback_links;
@@ -179,9 +181,13 @@ pub(crate) fn wiki_parse_source(source: &str) -> String {
 }
 
 pub fn parse(source: &str) -> Vec<ParsedLink> {
+    crate::open_diagnostics::count("link_parse_bytes", source.len());
     let arena = Arena::new();
     let parse_source = wiki_parse_source(source);
-    let root = parse_document(&arena, &parse_source, &render::comrak_options());
+    let root = {
+        let _phase = crate::open_diagnostics::phase("parse");
+        parse_document(&arena, &parse_source, &render::comrak_options())
+    };
     let lines: Vec<_> = std::iter::once(0)
         .chain(source.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
@@ -224,7 +230,10 @@ pub fn parse(source: &str) -> Vec<ParsedLink> {
             // normal Markdown semantics rather than leaking the mask into a URL.
             let (target, title) = if !wiki && authored.contains("[[") && authored.contains('|') {
                 let link_arena = Arena::new();
-                let original = parse_document(&link_arena, authored, &render::comrak_options());
+                let original = {
+                    let _phase = crate::open_diagnostics::phase("parse");
+                    parse_document(&link_arena, authored, &render::comrak_options())
+                };
                 let original_link =
                     original
                         .descendants()
@@ -304,7 +313,11 @@ fn checked_link_end<'a>(
         // A first line that is nothing on its own is a reference definition
         // Comrak took out of this paragraph: no range in it can be trusted.
         let arena = Arena::new();
-        parse_document(&arena, first_line, &render::comrak_options()).first_child()?;
+        {
+            let _phase = crate::open_diagnostics::phase("parse");
+            parse_document(&arena, first_line, &render::comrak_options())
+        }
+        .first_child()?;
     }
     let authored = parse_source.get(range.clone())?;
     let shaped = if wiki {
@@ -332,7 +345,10 @@ fn checked_link_end<'a>(
 /// Whether `text` parses on its own as exactly one link to `url`.
 fn is_only_link(text: &str, url: &str, title: &str) -> bool {
     let arena = Arena::new();
-    let root = parse_document(&arena, text, &render::comrak_options());
+    let root = {
+        let _phase = crate::open_diagnostics::phase("parse");
+        parse_document(&arena, text, &render::comrak_options())
+    };
     let Some(paragraph) = root.first_child().filter(|p| p.next_sibling().is_none()) else {
         return false;
     };
@@ -385,7 +401,7 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
             reason: Some("File identity is pending background inventory verification."),
         });
     }
-    let root = vault.root.canonicalize().ok()?;
+    let root = crate::open_diagnostics::fs(|| vault.root.canonicalize()).ok()?;
     let mut candidates = Vec::new();
     let explicit_relative = path.starts_with("./") || path.starts_with("../");
     let from_dir = std::path::Path::new(from)
@@ -404,12 +420,12 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     for candidate in lookups {
         // Only lexical absence permits redirecting to a root/suffix namesake.
         // Dangling symlinks, denied paths and non-directory ancestors count as occupied.
-        match std::fs::symlink_metadata(&candidate) {
+        match crate::open_diagnostics::fs(|| std::fs::symlink_metadata(&candidate)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             _ => existing = true,
         }
-        if let Ok(candidate) = candidate.canonicalize() {
-            if candidate.is_file() && candidate.starts_with(&root) {
+        if let Ok(candidate) = crate::open_diagnostics::fs(|| candidate.canonicalize()) {
+            if crate::open_diagnostics::fs(|| candidate.is_file()) && candidate.starts_with(&root) {
                 candidates.push(
                     candidate
                         .strip_prefix(&root)
@@ -428,10 +444,9 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
             .filter(|e| {
                 e.kind == crate::vault::EntryKind::Attachment
                     && (e.path == path.as_ref() || e.path.ends_with(&format!("/{path}")))
-                    && root
-                        .join(&e.path)
-                        .canonicalize()
-                        .is_ok_and(|p| p.is_file() && p.starts_with(&root))
+                    && crate::open_diagnostics::fs(|| root.join(&e.path).canonicalize()).is_ok_and(
+                        |p| crate::open_diagnostics::fs(|| p.is_file()) && p.starts_with(&root),
+                    )
             })
             .map(|e| e.path.clone())
             .collect();
@@ -462,12 +477,21 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
 }
 
 pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedLink {
+    let _phase = crate::open_diagnostics::phase("resolve_links");
+    crate::open_diagnostics::count(
+        if wiki {
+            "wiki_resolutions"
+        } else {
+            "markdown_resolutions"
+        },
+        1,
+    );
     if !wiki {
         let path = decode(target.split('#').next().unwrap_or(target));
         if vault.paths_complete()
             && vault.graph_root.is_none()
             && markdown_path(vault, &path).is_none()
-            && std::path::Path::new(&path).is_file()
+            && crate::open_diagnostics::fs(|| std::path::Path::new(&path).is_file())
         {
             return ResolvedLink {
                 url: format!("okilum://outside-file/{}", encode(&path)),
@@ -512,6 +536,15 @@ pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedL
     } else {
         vault.resolve_markdown(&path, from)
     };
+    resolved_note(resolution, target, wiki, heading)
+}
+
+fn resolved_note(
+    resolution: Resolution,
+    target: &str,
+    wiki: bool,
+    heading: Option<String>,
+) -> ResolvedLink {
     let (status, url, candidates) = match resolution {
         Resolution::Resolved { path } => {
             let suffix = heading
@@ -608,7 +641,10 @@ impl HeadingInventory {
     /// Parse once per target revision, then reuse for links and the TOC.
     pub fn new(source: &str) -> Self {
         let arena = Arena::new();
-        let root = parse_document(&arena, source, &render::comrak_options());
+        let root = {
+            let _phase = crate::open_diagnostics::phase("parse");
+            parse_document(&arena, source, &render::comrak_options())
+        };
         let offsets: Vec<_> = std::iter::once(0)
             .chain(source.match_indices('\n').map(|(i, _)| i + 1))
             .collect();

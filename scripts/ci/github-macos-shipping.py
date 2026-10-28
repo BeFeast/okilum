@@ -46,7 +46,8 @@ def accepted_run(runs, tooling, label):
 
 def main():
     source, tooling, build = identity(os.environ)
-    api = bridge.GitHub(os.environ['MIRROR_TOKEN'])
+    api = bridge.GitHub()
+    api.log_quota()
     remote = api.request('git/ref/heads/main')
     if remote['object']['sha'] != tooling:
         raise ValueError('Mirror main is not the reviewed workflow SHA; no dispatch')
@@ -83,7 +84,7 @@ def main():
                                   'workflow_sha': tooling, 'build': build, 'run': run['html_url'],
                                   'artifact': matches[0], 'publication': 'NONE; QA download only'}))
                 return
-        time.sleep(20)
+        time.sleep(bridge.poll_delay())
     raise TimeoutError('Hosted shipping deadline; no cancel/retry/fallback')
 
 

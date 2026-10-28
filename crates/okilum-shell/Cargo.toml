@@ -10,6 +10,8 @@ name = "okilum"
 path = "src/main.rs"
 
 [features]
+# Dedicated Linux development distribution; guarded by build.rs, never a release feature.
+linux-sprint = []
 default = ["brain"]
 brain = ["okilum-core/brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.
@@ -49,6 +51,10 @@ url = "2"
 percent-encoding = "2"
 regex = "1"
 resvg = "=0.45.1"
+# Mermaid diagrams in Reader and Live Preview (#1739, #1182).
+merman = "=0.9.2"
+# Same shaper as resvg: layout and painting use the same embedded face metrics.
+rustybuzz = "=0.20.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 # Inline PDF pages (#477). Exact pin: 0.x breaks often; an upgrade is a reviewed change.
 hayro = "=0.8.0"
@@ -56,8 +62,8 @@ hayro = "=0.8.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "stream"] }
 serde_json = "1"
 serde_yaml = "0.9"
-# Mermaid fences highlight as code (S7e, option C): rendered diagrams failed
-# the visual gate. Same ABI as the highlighter's tree-sitter.
+# Mermaid source and rendering failures retain highlighted code (option C).
+# Same ABI as the highlighter's tree-sitter.
 tree-sitter = "0.26"
 tree-sitter-mermaid = "=0.2.0"
 serde.workspace = true
@@ -75,6 +81,7 @@ unicode-linebreak = "0.1.5"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
+tungstenite = "0.28"
 # Builds ZIP fixtures for the archive viewer tests (#1149); okilum-core already uses it.
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Reads the log CSV export back with a parser that did not write it (#1387).

@@ -1,0 +1,195 @@
+diff --git a/crates/base/src/input/projection_layout.rs b/crates/base/src/input/projection_layout.rs
+--- a/crates/base/src/input/projection_layout.rs
++++ b/crates/base/src/input/projection_layout.rs
+@@ -18,6 +18,8 @@
+     font: &Font,
+     color: Hsla,
+ ) -> Vec<TextRun> {
++    #[cfg(test)]
++    let styles = styles.inspect(|_| RUN_STYLE_VISITS.with(|visits| visits.set(visits.get() + 1)));
+     let mut boundaries = vec![range.start, range.end];
+     for style in styles.clone() {
+         if style.range.start.0 < range.end && style.range.end.0 > range.start {
+@@ -64,6 +66,12 @@
+             }
+         })
+         .collect()
++}
++
++#[cfg(test)]
++thread_local! {
++    // Actual candidate-style visits while resolving fonts/colors, not getter calls.
++    pub(super) static RUN_STYLE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+ }
+ 
+ /// One forward wrapping pass. Only the styles overlapping this logical line
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -3923,13 +3923,20 @@
+     marked_underline: Option<UnderlineStyle>,
+ ) -> Vec<TextRun> {
+     let mut runs = Vec::new();
++    if rows.is_empty() {
++        return runs;
++    }
++    // Visible logical rows arrive in source order. Share the same style sweep
++    // as wrapping, preserving provider override order and absolute IME offsets.
++    let mut styles = super::projection_layout::StyleCursor::new(projection.styles());
+     for &row in rows {
+         let start = text.line_start_offset(row);
+         // layout_lines advances by the logical line bytes plus its LF separator,
+         // including empty lines. CR remains part of the shaped line itself.
+         let end = (start + text.slice_line(row).len() + 1).min(text.len());
+         let mut offset = start;
+-        for run in super::projection_layout::projected_runs(projection, start..end, font, color) {
++        styles.advance(start..end);
++        for run in styles.runs(start..end, font, color) {
+             let range = offset..offset + run.len;
+             offset = range.end;
+             runs.extend(split_run_for_ime_underline(
+@@ -3969,6 +3976,144 @@
+         fn to_source(&self, projected: ProjectedByte, _: ConcealBias) -> Option<SourceByte> {
+             Some(SourceByte(projected.0))
+         }
++    }
++
++    #[test]
++    fn visible_projection_styles_match_full_scan_for_sparse_unicode_rows_and_ime() {
++        let text = "a\n\ne\u{301} 👩\u{200d}💻\r\nאבג\nend";
++        let style = |start, end, family: &str, color, bold| ProjectionStyle {
++            range: ProjectedByte(start)..ProjectedByte(end),
++            font_family: Some(family.into()),
++            color: Some(color),
++            bold,
++            italic: !bold,
++            strikethrough: bold,
++        };
++        let fixture = StyledFixture {
++            source: SourceSnapshot {
++                stamp: SourceStamp {
++                    document: 3,
++                    generation: 7,
++                },
++                text: Arc::from(text),
++            },
++            // Unsorted overlaps: original provider order determines overrides.
++            styles: vec![
++                style(3, text.len(), "monospace", gpui::black(), true),
++                style(0, text.len(), "sans-serif", gpui::white(), false),
++                style(3, 6, "serif", gpui::black(), true),
++                style(2, 2, "empty", gpui::black(), true),
++            ],
++        };
++        let rope = Rope::from(text);
++        let font = gpui::font("sans-serif");
++        let underline = Some(UnderlineStyle {
++            thickness: px(1.),
++            color: None,
++            wavy: false,
++        });
++        for rows in [vec![0, 1, 2, 3, 4], vec![2, 4], vec![4], vec![]] {
++            for marked in [None, Some(3..6), Some(0..text.len())] {
++                let actual = visible_buffer_lines_for_runs(
++                    &rows,
++                    &rope,
++                    &fixture,
++                    &font,
++                    gpui::black(),
++                    marked.clone(),
++                    underline,
++                );
++                let mut expected = Vec::new();
++                for &row in &rows {
++                    let start = rope.line_start_offset(row);
++                    let end = (start + rope.slice_line(row).len() + 1).min(rope.len());
++                    let mut offset = start;
++                    for run in super::super::projection_layout::projected_runs(
++                        &fixture,
++                        start..end,
++                        &font,
++                        gpui::black(),
++                    ) {
++                        let range = offset..offset + run.len;
++                        offset = range.end;
++                        expected.extend(split_run_for_ime_underline(
++                            run,
++                            range,
++                            marked.clone(),
++                            underline,
++                        ));
++                    }
++                }
++                assert_eq!(actual, expected, "rows={rows:?}, marked={marked:?}");
++            }
++        }
++    }
++
++    #[test]
++    fn visible_projection_font_resolution_does_not_rescan_offscreen_styles_per_row() {
++        use super::super::projection_layout::RUN_STYLE_VISITS;
++        let mut text = String::new();
++        let mut styles = Vec::new();
++        for row in 0..700 {
++            let start = text.len();
++            text.push_str(&format!("Line {row:03} with styled Unicode אבג and enough distinct text to form a real note.\n"));
++            styles.push(ProjectionStyle {
++                range: ProjectedByte(start)..ProjectedByte(text.len() - 1),
++                font_family: Some("sans-serif".into()),
++                color: None,
++                bold: row % 2 == 0,
++                italic: false,
++                strikethrough: false,
++            });
++        }
++        assert!(
++            (50_000..65_536).contains(&text.len()),
++            "supported long-note control"
++        );
++        let fixture = StyledFixture {
++            source: SourceSnapshot {
++                stamp: SourceStamp {
++                    document: 5,
++                    generation: 2,
++                },
++                text: Arc::from(text.as_str()),
++            },
++            styles,
++        };
++        let rope = Rope::from(text.as_str());
++        let font = gpui::font("sans-serif");
++        let rows: Vec<_> = (350..382).collect();
++        RUN_STYLE_VISITS.with(|visits| visits.set(0));
++        let runs =
++            visible_buffer_lines_for_runs(&rows, &rope, &fixture, &font, gpui::black(), None, None);
++        let actual = RUN_STYLE_VISITS.with(|visits| visits.get());
++        assert!(
++            !runs.is_empty()
++                && runs
++                    .iter()
++                    .any(|run| run.font.weight == gpui::FontWeight::BOLD)
++        );
++        RUN_STYLE_VISITS.with(|visits| visits.set(0));
++        for &row in &rows {
++            let start = rope.line_start_offset(row);
++            let end = (start + rope.slice_line(row).len() + 1).min(rope.len());
++            let _ = super::super::projection_layout::projected_runs(
++                &fixture,
++                start..end,
++                &font,
++                gpui::black(),
++            );
++        }
++        let full_scan = RUN_STYLE_VISITS.with(|visits| visits.get());
++        eprintln!("VISIBLE_STYLE_VISITS actual={actual} full_scan={full_scan} visible_rows={} total_styles={}", rows.len(), fixture.styles.len());
++        assert!(
++            full_scan >= fixture.styles.len() * rows.len(),
++            "full-scan positive control"
++        );
++        assert!(
++            actual > 0 && actual <= rows.len() * 4,
++            "visible font resolution must inspect overlapping styles, actual={actual}, full_scan={full_scan}"
++        );
+     }
+ 
+     #[test]

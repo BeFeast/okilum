@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// A token closer than this to its expiry is reported as "expires soon".
 /// T3 issues MCP tokens for 30 days and has no refresh grant, so the user
-/// has to reconnect; three days gives them warning.
+/// has to sign in again to renew; three days gives them warning.
 pub const EXPIRES_SOON_SECS: u64 = 3 * 24 * 60 * 60;
 
 /// An OAuth access token for one environment, as kept in the OS keychain.

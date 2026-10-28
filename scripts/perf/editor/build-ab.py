@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Build exact main and PR release binaries on this job, with no measurement patch."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+
+
+def run(*args, cwd=None):
+    return subprocess.check_output(args, cwd=cwd, text=True).strip()
+
+
+def build(checkout, output, commit, role, target):
+    if run("git", "rev-parse", "HEAD", cwd=checkout) != commit:
+        raise ValueError("checkout does not match pinned source")
+    if run("git", "status", "--porcelain", "--untracked-files=no", cwd=checkout):
+        raise ValueError("tracked source is dirty")
+    subprocess.run(["bash", "scripts/vendor-setup.sh"], cwd=checkout, check=True)
+    subprocess.run(["bash", "scripts/vendor-setup.sh", "--verify"], cwd=checkout, check=True)
+    build_env = {**os.environ, "CARGO_TARGET_DIR": str(target)}
+    subprocess.run(["cargo", "build", "--release", "--locked", "-p", "okilum-shell", "--bin", "okilum"],
+                   cwd=checkout, env=build_env, check=True)
+    output.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(target / "release/okilum", output / "okilum")
+    with (output / "okilum").open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if run("git", "status", "--porcelain", "--untracked-files=no", cwd=checkout):
+        raise ValueError("build changed tracked source")
+    receipt = (f"commit {commit}\nshipped-unpatched release, role {role}\n"
+               f"{run('rustc', '-Vv', cwd=checkout)}\nRUSTFLAGS={os.environ.get('RUSTFLAGS', '')}\n")
+    (output / "BUILD.txt").write_text(receipt)
+    (output / "SHA256SUMS").write_text(f"{digest}  okilum\n")
+    return {"source_commit": commit, "sha256": digest, "kind": "shipped-unpatched"}
+
+
+def product_inputs(checkout, commit):
+    # Conservative source-tree guard: unknown inputs are included by default.
+    # Exclusions are reporting/control-plane files shared by both builds in
+    # this job, never vendor setup, patches, assets or product build scripts.
+    excluded = ("docs", "design", "specs", ".github", ".forgejo", "scripts/ci",
+                "scripts/perf", "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "README.md")
+    listing = subprocess.check_output(["git", "ls-tree", "-rz", commit], cwd=checkout)
+    entries = []
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        path = entry.split(b"\t", 1)[1].decode("utf-8", errors="surrogateescape")
+        if not any(path == prefix or path.startswith(prefix + "/") for prefix in excluded):
+            entries.append(entry)
+    return hashlib.sha256(b"\0".join(entries)).hexdigest()
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("main_commit")
+    parser.add_argument("out", type=Path)
+    parser.add_argument("--require-identical-source", action="store_true",
+                        help="Calibration must compare identical product/build inputs")
+    args = parser.parse_args()
+    if not re.fullmatch("[0-9a-f]{40}", args.main_commit):
+        raise ValueError("main commit must be a pinned full SHA")
+    checkout = Path(run("git", "rev-parse", "--show-toplevel"))
+    pr = run("git", "rev-parse", "HEAD", cwd=checkout)
+    inputs = {"main": product_inputs(checkout, args.main_commit), "pr": product_inputs(checkout, pr)}
+    if args.require_identical_source and inputs["main"] != inputs["pr"]:
+        raise ValueError("unchanged-code calibration refused: main/PR product inputs differ")
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    baseline = out / "main-source"
+    run("git", "worktree", "add", "--detach", str(baseline), args.main_commit, cwd=checkout)
+    target_root = Path(os.environ.get("CARGO_TARGET_DIR", out / "target")).resolve()
+    # Role-specific directories exclude even untracked build-script outputs
+    # from crossing main/PR builds; only measurement runtime is compared.
+    targets = {role: target_root / f"ab-{role}" for role in ("main", "pr")}
+    receipts = {}
+    try:
+        receipts["main"] = build(baseline, out / "main", args.main_commit, "main", targets["main"])
+        receipts["pr"] = build(checkout, out / "pr", pr, "pr", targets["pr"])
+        for role in receipts:
+            receipts[role]["product_inputs_sha256"] = inputs[role]
+        (out / "pair.json").write_text(json.dumps(receipts, indent=2) + "\n")
+    finally:
+        # Our detached source only; no reset/clean of a caller-owned checkout.
+        run("git", "worktree", "remove", str(baseline), cwd=checkout)
+    print(json.dumps(receipts))
+
+
+if __name__ == "__main__":
+    main()

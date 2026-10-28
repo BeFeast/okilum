@@ -1,0 +1,49 @@
+# Exact-source shared CI only; no signing, publication or Forgejo secrets.
+name: forgejo-shared
+on:
+  push:
+    branches: ['forgejo-shared-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-shared-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  shared:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Sprint reporting and cache/vendor regressions (isolated)
+        run: python3 scripts/dev/test-sprint-report.py
+      - name: Install shared build dependencies
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd tini \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Verify repository toolchain and pinned vendor
+        run: |
+          rustc -Vv
+          cargo clippy --version
+          cargo fmt --version
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      # Initial measurement is deliberately cold: no compatible downloads-only
+      # baseline exists, and restoring the Linux target archive would mix flags.
+      # No cache save is introduced against the shared repository size cap.
+      - name: Run every shared suite
+        run: |
+          set -euo pipefail
+          printf 'nofile before: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
+          ulimit -n "$(ulimit -Hn)"
+          printf 'nofile for tests: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
+          tini -s -- bash scripts/ci/check-shared.sh

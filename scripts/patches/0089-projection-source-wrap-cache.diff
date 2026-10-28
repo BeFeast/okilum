@@ -1,0 +1,258 @@
+diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -32,10 +32,13 @@
+     fold_map: FoldMap,
+     source_text: Rope,
+     projection: Option<PinnedProjection>,
++    // Plain-source wrapping survives projection adoption. Its Rope/SumTree
++    // snapshots share unchanged nodes; an edit updates only affected lines.
++    source_wrap_map: Option<WrapMap>,
+     hang_room: Pixels,
+     /// Wrap time and lines wrapped again by edits since the last
+     /// [`Self::take_edit_reshape`] (#1621). An edit that drops the projection
+-    /// lays the whole note out as source here, before any prepaint runs.
++    /// restores exact Source wrapping here, before any prepaint runs.
+     edit_reshape: (std::time::Duration, usize),
+ }
+ 
+@@ -46,6 +49,7 @@
+             fold_map: FoldMap::new(),
+             source_text: Rope::new(),
+             projection: None,
++            source_wrap_map: None,
+             hang_room: Pixels::default(),
+             edit_reshape: Default::default(),
+         }
+@@ -316,8 +320,17 @@
+     ) {
+         let start = std::time::Instant::now();
+         let lines = if self.projection.take().is_some() {
+-            self.wrap_map.restore_source(changed_text, cx);
+-            changed_text.lines_len()
++            if let Some(source_wrap) = self.source_wrap_map.take() {
++                // The native edit needs exact source geometry immediately, not
++                // the previous projection's offsets. Reuse its saved raw map,
++                // then apply the same incremental edit as the Source editor.
++                self.wrap_map = source_wrap;
++                self.wrap_map.on_text_changed(changed_text, range, new_text, cx);
++                new_text.lines_len()
++            } else {
++                self.wrap_map.restore_source(changed_text, cx);
++                changed_text.lines_len()
++            }
+         } else {
+             self.wrap_map
+                 .on_text_changed(changed_text, range, new_text, cx);
+@@ -331,18 +344,27 @@
+ 
+     /// Update layout parameters (wrap width or font)
+     pub fn on_layout_changed(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {
++        if let Some(source) = &mut self.source_wrap_map {
++            source.on_layout_changed(wrap_width, cx);
++        }
+         self.wrap_map.on_layout_changed(wrap_width, cx);
+         self.rebuild_fold_projection();
+     }
+ 
+     /// Set the wrapping indent for continuation lines.
+     pub fn set_wrapping_indent(&mut self, wrapping_indent: WrappingIndent, cx: &mut App) {
++        if let Some(source) = &mut self.source_wrap_map {
++            source.set_wrapping_indent(wrapping_indent, cx);
++        }
+         self.wrap_map.set_wrapping_indent(wrapping_indent, cx);
+         self.rebuild_fold_projection();
+     }
+ 
+     /// Set font parameters
+     pub fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
++        if let Some(source) = &mut self.source_wrap_map {
++            source.set_font(font.clone(), font_size, cx);
++        }
+         self.wrap_map.set_font(font, font_size, cx);
+         self.rebuild_fold_projection();
+     }
+@@ -363,6 +385,7 @@
+     pub fn set_text(&mut self, text: &Rope, cx: &mut App) {
+         self.source_text = text.clone();
+         self.projection = None;
++        self.source_wrap_map = None;
+         self.wrap_map.set_text(text, cx);
+         self.rebuild_fold_projection();
+     }
+@@ -392,6 +415,9 @@
+         self.source_text = source.clone();
+         let lines = match projection {
+             Some(pinned) => {
++                if self.projection.is_none() {
++                    self.source_wrap_map = Some(self.wrap_map.clone());
++                }
+                 self.wrap_map.set_projected(
+                     pinned.projection.as_ref(),
+                     pinned.stamp.presentation,
+@@ -403,8 +429,7 @@
+                 lines
+             }
+             None if self.projection.take().is_some() => {
+-                self.wrap_map.restore_source(source, cx);
+-                source.lines_len()
++                self.restore_source_wrapping(source, cx)
+             }
+             None => 0,
+         };
+@@ -431,10 +456,22 @@
+         if incompatible {
+             self.source_text = source.clone();
+             self.projection = None;
++            self.restore_source_wrapping(source, cx);
++            self.rebuild_fold_projection();
++        }
++        incompatible
++    }
++
++    /// Restore a saved exact-source map when toggling or revealing raw bytes.
++    /// If a caller supplied a different source, rebuild rather than reusing it.
++    fn restore_source_wrapping(&mut self, source: &Rope, cx: &mut App) -> usize {
++        if let Some(saved) = self.source_wrap_map.take().filter(|map| map.text() == source) {
++            self.wrap_map = saved;
++            0
++        } else {
+             self.wrap_map.restore_source(source, cx);
+-            self.rebuild_fold_projection();
+-        }
+-        incompatible
++            source.lines_len()
++        }
+     }
+ 
+     fn project_offset(&self, offset: usize) -> usize {
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -142,6 +142,7 @@
+ /// Used to prepare the text with soft wrap to be get lines to displayed in the Editor.
+ ///
+ /// After use lines to calculate the scroll size of the Editor.
++#[derive(Clone)]
+ pub(crate) struct TextWrapper {
+     text: Rope,
+     font: Font,
+diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -17,6 +17,7 @@
+ /// WrapMap manages soft-wrapping and provides buffer ↔ wrap coordinate mapping.
+ ///
+ /// Buffer line ↔ wrap row mapping is backed by the [`TextWrapper`]'s `SumTree`.
++#[derive(Clone)]
+ pub(super) struct WrapMap {
+     /// The underlying text wrapper (reuses existing implementation)
+     wrapper: TextWrapper,
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -6248,6 +6248,104 @@
+     }
+ 
+     #[gpui::test]
++    fn projection_edit_reuses_source_wrap_for_undo_and_ime(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let original = "# Heading\n\n- item **bold** and `code`\n- [ ] task\n\n".repeat(700);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value(original.clone(), window, cx);
++            state.set_projection_provider(Some(Arc::new(ScaledLineProvider { hang: 0 })), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            assert!(state.last_layout.as_ref().unwrap().projection.is_some(),
++                "positive control: actual projected layout, not only a provider");
++            state.display_map.take_edit_reshape();
++            state.replace_text_in_range(Some(0..0), "x", window, cx);
++            assert_eq!(state.display_map.take_edit_reshape().1, 1,
++                "one-line input must not restore the whole source wrap");
++            assert_eq!(state.value().as_ref(), format!("x{original}"));
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.undo(&Undo, window, cx);
++            assert_eq!(state.value().as_ref(), original);
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.redo(&Redo, window, cx);
++            assert_eq!(state.value().as_ref(), format!("x{original}"));
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.display_map.take_edit_reshape();
++            state.replace_and_mark_text_in_range(Some(0..0), "かな", Some(2..2), window, cx);
++            assert_eq!(state.display_map.take_edit_reshape().1, 1);
++            assert_eq!(state.value().as_ref(), format!("かなx{original}"));
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.replace_text_in_range(Some(0..2), "漢", window, cx);
++            assert_eq!(state.value().as_ref(), format!("漢x{original}"));
++            state.undo(&Undo, window, cx);
++            assert_eq!(state.value().as_ref(), format!("x{original}"));
++        }));
++        v.run_until_parked();
++        v.update(|_, cx| {
++            let state = view.input.read(cx);
++            assert!(state.last_layout.as_ref().unwrap().projection.is_some());
++            assert_eq!(state.value().as_ref(), format!("x{original}"));
++        });
++    }
++
++    #[gpui::test]
++    fn projection_source_wrap_cache_tracks_layout_and_document_reset(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let text = Rope::from("body words wrap over several rows\n## heading words\n  - list words\nעברית\n");
++            state.set_value(text.to_string(), window, cx);
++            state.set_projection_provider(Some(Arc::new(ScaledLineProvider { hang: 0 })), cx);
++            let font = gpui::font("sans-serif");
++            let mut map = DisplayMap::new(font.clone(), px(16.), Some(px(90.)));
++            map.set_wrapping_indent(super::super::WrappingIndent::None, cx);
++            map.ensure_text_prepared(&text, cx);
++            map.install_projection(state.projection.pin(), &text, window, cx);
++            // Resizing/zoom and indent changes while projected must update the
++            // saved plain map too; its rows must match a fresh Source layout.
++            map.on_layout_changed(Some(px(140.)), cx);
++            map.set_font(font.clone(), px(18.), cx);
++            map.set_wrapping_indent(super::super::WrappingIndent::Same, cx);
++            assert_eq!(map.install_projection(None, &text, window, cx), 0,
++                "returning to Source reuses its metric-current map");
++            let mut fresh = DisplayMap::new(font.clone(), px(18.), Some(px(140.)));
++            fresh.ensure_text_prepared(&text, cx);
++            for (offset, _) in text.to_string().char_indices() {
++                assert_eq!(map.offset_to_wrap_display_point(offset),
++                    fresh.offset_to_wrap_display_point(offset));
++            }
++            map.install_projection(state.projection.pin(), &text, window, cx);
++            let replacement = Rope::from("another document\nshort\n");
++            // Native document replacement uses on_text_changed with the full
++            // previous source range (the same path as set_value/replace_all).
++            map.on_text_changed(&replacement, &(0..text.len()), &replacement, cx);
++            let mut fresh = DisplayMap::new(font, px(18.), Some(px(140.)));
++            fresh.ensure_text_prepared(&replacement, cx);
++            for (offset, _) in replacement.to_string().char_indices() {
++                assert_eq!(map.offset_to_wrap_display_point(offset),
++                    fresh.offset_to_wrap_display_point(offset),
++                    "a document reset cannot retain the old source map");
++            }
++        }));
++    }
++
++    #[gpui::test]
+     fn projection_native_edits_preserve_exact_ime_and_reject_surrogate_halves(
+         cx: &mut TestAppContext,
+     ) {

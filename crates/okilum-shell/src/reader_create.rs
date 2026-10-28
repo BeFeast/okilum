@@ -547,7 +547,9 @@ impl Reader {
             Ok((rel, None)) => {
                 self.creation = None;
                 self.close_creation_folder_picker(cx);
-                // Watcher refreshes the inventory; reveal an empty new folder now.
+                // The quick viewer may scan the new empty folder immediately.
+                // Publish its identity first so that scan cannot erase the row.
+                Arc::make_mut(&mut self.vault).register_created_directory(&rel);
                 self.tree
                     .entry_created(&rel, okilum_core::vault::EntryKind::Directory);
                 self.reveal_in_tree(&rel, window, cx);
@@ -1763,6 +1765,143 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// All public entry points must mount a name input, accept typing, and
+    /// create on disk without implicitly upgrading a plain folder to a vault.
+    fn creation_entry_points(cx: &mut TestAppContext, folder_mode: bool) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        for route in 0..5 {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("folder");
+            std::fs::create_dir_all(root.join("Child")).unwrap();
+            std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
+            let mut entity = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let reader = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: (!folder_mode).then(|| root.clone()),
+                            open_path: folder_mode.then(|| root.join("Start.md")),
+                            index_dir: (!folder_mode).then(|| temp.path().join("cache")),
+                            session_directory: Some(temp.path().join("state")),
+                            panel_settings_override: Some(temp.path().join("panels.json")),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                entity = Some(reader.clone());
+                Root::new(reader, window, cx)
+            });
+            let reader = entity.unwrap();
+            visual.simulate_resize(size(px(1400.), px(960.)));
+            visual.run_until_parked();
+            reader.update_in(visual, |r, window, cx| {
+                assert_eq!(r.single_file, folder_mode);
+                r.panels.open(reader_layout::Panel::Notes);
+                r.panel_widths.set(reader_layout::Panel::Notes, 320.);
+                if folder_mode {
+                    r.load_quick_folder(String::new(), cx);
+                }
+                r.tree.cursor = None;
+                r.tree_focus.focus(window, cx);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("tree-row-Child").is_some(),
+                "positive control: folder inventory is visible"
+            );
+            match route {
+                0 => {
+                    visual.simulate_keystrokes("secondary-n");
+                    visual.run_until_parked();
+                }
+                1 => click(visual, "sidebar-new-note"),
+                2 => click(visual, "sidebar-new-folder"),
+                3 | 4 => {
+                    let at = visual.debug_bounds("tree-row-Child").unwrap().center();
+                    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+                    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+                    visual.run_until_parked();
+                    // From the end: Collapse all, Expand all, New Folder,
+                    // New File. Exercise the real folder context menu.
+                    for _ in 0..if route == 3 { 4 } else { 3 } {
+                        visual.simulate_keystrokes("up");
+                    }
+                    visual.simulate_keystrokes("enter");
+                    visual.run_until_parked();
+                }
+                _ => unreachable!(),
+            }
+            let directory = route == 2 || route == 4;
+            reader.read_with(visual, |r, cx| {
+                let create = r.creation.as_ref().expect("action reaches its handler");
+                assert_eq!(create.directory, directory);
+                assert_eq!(create.folder, if route >= 3 { "Child" } else { "" });
+                assert!(
+                    r.sidebar_items()
+                        .iter()
+                        .any(|item| matches!(item, SideItem::Create(..))),
+                    "route {route}: focused name input must be mounted in folder mode"
+                );
+                assert!(create.input.read(cx).value().is_empty());
+            });
+            assert!(visual.debug_bounds("create-destination").is_some());
+            let name = if route == 2 {
+                "Created/Nested"
+            } else {
+                "Created"
+            };
+            visual.simulate_input(name);
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            let relative = format!(
+                "{}{name}{}",
+                if route >= 3 { "Child/" } else { "" },
+                if directory { "" } else { ".md" }
+            );
+            reader.read_with(visual, |r, cx| {
+                assert!(r.creation.is_none(), "creation must finish");
+                assert_eq!(
+                    r.single_file, folder_mode,
+                    "creation does not enroll a vault"
+                );
+                assert!(
+                    r.tree.rows.iter().any(|row| row.path == relative),
+                    "route {route}: created item exists={}, inventory={:?}, rows={:?}",
+                    root.join(&relative).exists(),
+                    r.vault.entries.iter().map(|e| &e.path).collect::<Vec<_>>(),
+                    r.tree.rows.iter().map(|e| &e.path).collect::<Vec<_>>()
+                );
+                if directory {
+                    assert!(root.join(&relative).is_dir());
+                } else {
+                    assert!(root.join(&relative).is_file());
+                    assert_eq!(r.selected_file(), relative);
+                    assert!(r.editing.is_some(), "new note opens in the editor");
+                    assert!(!r.source_is_dirty(cx));
+                }
+            });
+            reader.update_in(visual, |_, window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    fn folder_creation_entry_points_mount_and_commit(cx: &mut TestAppContext) {
+        creation_entry_points(cx, true);
+    }
+
+    #[gpui::test]
+    fn vault_creation_entry_points_mount_and_commit(cx: &mut TestAppContext) {
+        creation_entry_points(cx, false);
+    }
+
     fn click(visual: &mut VisualTestContext, selector: &'static str) {
         let bounds = visual
             .debug_bounds(selector)
@@ -1776,9 +1915,71 @@ mod tests {
             .sidebar_items()
             .into_iter()
             .find_map(|item| match item {
-                SideItem::Create(.., (label, tip)) => Some((label.to_string(), tip.to_string())),
+                SideItem::CreateOptions(.., (label, tip)) => {
+                    Some((label.to_string(), tip.to_string()))
+                }
                 _ => None,
             })
+    }
+
+    /// #1725: name entry must remain usable beside creation controls in a
+    /// normal-width sidebar, including a selected nested folder.
+    #[gpui::test]
+    fn creation_name_has_typing_space_in_nested_sidebar(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Security")).unwrap();
+        std::fs::write(root.join("Security/start.md"), "# Start").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Security/start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1580.), px(850.)));
+        reader.update(visual, |r, cx| {
+            r.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click(visual, "sidebar-new-note");
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let field = visual
+            .debug_bounds("create-name-input")
+            .expect("name field rendered");
+        assert!(
+            field.size.width >= px(120.),
+            "name field collapsed: {:?}",
+            field
+        );
+        visual.simulate_click(field.center(), gpui::Modifiers::default());
+        visual.simulate_input("Новая Security");
+        reader.update_in(visual, |r, window, cx| {
+            let create = r.creation.as_ref().unwrap();
+            assert_eq!(create.input.read(cx).value(), "Новая Security");
+            assert!(create.input.read(cx).focus_handle(cx).is_focused(window));
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(root.join("Security/Новая Security.md").is_file());
     }
 
     /// #1512: New note / New folder go next to the tree selection (a

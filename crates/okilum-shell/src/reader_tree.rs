@@ -69,9 +69,20 @@ pub struct Tree {
     revealed_hidden: Option<String>,
     templates_folder: String,
     titles: Arc<HashMap<String, String>>,
+    /// File stems are the default; note titles are an explicit app preference.
+    note_titles: bool,
 }
 
 impl Tree {
+    /// Inventory membership includes folded/hidden rows, limited to the current scope.
+    pub(crate) fn can_reveal(&self, path: &str) -> bool {
+        self.kinds.contains_key(path)
+            && (self.scope.is_empty()
+                || path
+                    .strip_prefix(&self.scope)
+                    .is_some_and(|tail| tail.starts_with('/')))
+    }
+
     pub(crate) fn is_directory(&self, path: &str) -> bool {
         self.kinds.get(path) == Some(&EntryKind::Directory)
     }
@@ -133,7 +144,10 @@ impl Tree {
 
     pub fn refresh(&mut self, root: &Path, entries: &[VaultEntry]) {
         if self.root != root {
-            *self = Self::default();
+            *self = Self {
+                note_titles: self.note_titles,
+                ..Self::default()
+            };
             self.root = root.to_path_buf();
             self.templates_folder = "_Assets/Templates".into();
         }
@@ -210,12 +224,26 @@ impl Tree {
             return;
         }
         self.titles = titles;
+        if !self.note_titles {
+            return;
+        }
         self.sort_children();
         self.flatten();
     }
 
+    pub(crate) fn set_note_titles(&mut self, enabled: bool) -> bool {
+        if self.note_titles == enabled {
+            return false;
+        }
+        self.note_titles = enabled;
+        self.sort_children();
+        self.flatten();
+        true
+    }
+
     fn sort_children(&mut self) {
         let titles = &self.titles;
+        let note_titles = self.note_titles;
         for children in self.children.values_mut() {
             // The folder's index note leads its folder, above subfolders (#1512).
             let index = match index_among(children.iter()) {
@@ -223,19 +251,7 @@ impl Tree {
                 _ => None,
             };
             children.sort_by_cached_key(|entry| {
-                let label = if entry.kind == EntryKind::Markdown {
-                    titles
-                        .get(&entry.path)
-                        .cloned()
-                        .unwrap_or_else(|| okilum_core::Vault::title_of(&entry.path))
-                } else {
-                    entry
-                        .path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&entry.path)
-                        .to_owned()
-                };
+                let label = tree_label(&entry.path, entry.kind, note_titles, titles);
                 (
                     index.as_deref() != Some(entry.path.as_str()),
                     entry.kind != EntryKind::Directory,
@@ -296,14 +312,7 @@ impl Tree {
                         && !self.template_branch(&path)
                         && !self.shown_index(&path),
                     index,
-                    label: if kind == EntryKind::Markdown {
-                        self.titles
-                            .get(&path)
-                            .cloned()
-                            .unwrap_or_else(|| okilum_core::Vault::title_of(&path))
-                    } else {
-                        path.rsplit('/').next().unwrap_or(&path).to_string()
-                    },
+                    label: tree_label(&path, kind, self.note_titles, &self.titles),
                     expanded: self.expanded.contains(&path),
                     kind,
                     archived: archived(&path),
@@ -582,6 +591,24 @@ impl Tree {
     }
 }
 
+/// Rows and sort keys share the exact same label policy. Other Reader surfaces
+/// keep their own title projection; this never changes document identity.
+fn tree_label(
+    path: &str,
+    kind: EntryKind,
+    note_titles: bool,
+    titles: &HashMap<String, String>,
+) -> String {
+    match kind {
+        EntryKind::Markdown if note_titles => titles
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| okilum_core::Vault::title_of(path)),
+        EntryKind::Markdown => okilum_core::Vault::title_of(path),
+        _ => path.rsplit('/').next().unwrap_or(path).to_owned(),
+    }
+}
+
 /// A vault-relative tree path: non-empty, `/`-separated, no empty or dot segments.
 /// A folder's index note (#1099): `_index.md` directly inside `folder`
 /// (`""` is the vault root), any letter case.
@@ -633,6 +660,96 @@ fn parent(path: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn default_tree_labels_and_sort_use_file_names() {
+        let mut tree = Tree::default();
+        tree.refresh(
+            Path::new("/no-filesystem-reads"),
+            &[
+                entry("z.md", EntryKind::Markdown),
+                entry("a.MD", EntryKind::Markdown),
+                entry("Folder", EntryKind::Directory),
+                entry("data.csv", EntryKind::Attachment),
+            ],
+        );
+        tree.set_titles(Arc::new(HashMap::from([
+            ("a.MD".into(), "Zebra title".into()),
+            ("z.md".into(), "Alpha title".into()),
+            ("data.csv".into(), "Not an attachment label".into()),
+        ])));
+        assert_eq!(
+            tree.rows
+                .iter()
+                .map(|r| (r.path.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("Folder", "Folder"),
+                ("a.MD", "a"),
+                ("data.csv", "data.csv"),
+                ("z.md", "z"),
+            ],
+            "LABEL1834: default rows and sort must match file names on disk"
+        );
+        tree.cursor = Some("z.md".into());
+        tree.set_note_titles(true);
+        assert_eq!(
+            tree.rows
+                .iter()
+                .map(|r| r.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Folder", "Alpha title", "Zebra title", "data.csv"]
+        );
+        assert_eq!(tree.cursor.as_deref(), Some("z.md"));
+        tree.set_note_titles(false);
+        assert_eq!(tree.rows[1].label, "a");
+        assert_eq!(tree.cursor.as_deref(), Some("z.md"));
+        let rows = tree.rows.clone();
+        tree.set_note_titles(false);
+        assert!(
+            Rc::ptr_eq(&rows, &tree.rows),
+            "unchanged mode must not rebuild rows"
+        );
+    }
+
+    #[test]
+    fn index_reveal_and_rename_keep_path_identity_in_both_label_modes() {
+        let mut tree = Tree::default();
+        tree.refresh(
+            Path::new("/no-filesystem-reads"),
+            &[
+                entry("Area", EntryKind::Directory),
+                entry("Area/_index.md", EntryKind::Markdown),
+                entry("Area/actual.md", EntryKind::Markdown),
+            ],
+        );
+        tree.set_titles(Arc::new(HashMap::from([
+            ("Area/_index.md".into(), "Zeta index title".into()),
+            ("Area/actual.md".into(), "Alpha title".into()),
+        ])));
+        for titles in [false, true] {
+            tree.set_note_titles(titles);
+            let ix = tree.reveal("Area/actual.md").unwrap();
+            assert_eq!(tree.rows[ix].path, "Area/actual.md");
+            assert_eq!(
+                tree.rows[ix].label,
+                if titles { "Alpha title" } else { "actual" }
+            );
+            assert_eq!(
+                tree.rows[1].path, "Area/_index.md",
+                "the index remains first"
+            );
+            assert_eq!(
+                tree.rows[1].label,
+                if titles { "Zeta index title" } else { "_index" }
+            );
+        }
+        tree.set_note_titles(false);
+        tree.note_moved("Area/actual.md", "Area/renamed.md");
+        let ix = tree.reveal("Area/renamed.md").unwrap();
+        assert_eq!(tree.rows[ix].label, "renamed");
+        assert!(!tree.can_reveal("Area/actual.md"));
+    }
+
     #[gpui::test]
     fn sidebar_titles_follow_reconciled_sources_and_keep_note_identity(
         cx: &mut gpui::TestAppContext,
@@ -651,6 +768,10 @@ mod tests {
         ] {
             std::fs::write(root.join(name), text).unwrap();
         }
+        cx.update(|cx| {
+            crate::reader_ui_state::install(&temp.path().join("state"), cx);
+            crate::reader_ui_state::set_tree_note_titles(true, cx);
+        });
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -745,6 +866,36 @@ mod tests {
     }
 
     #[test]
+    fn reveal_eligibility_includes_hidden_folded_entries_but_respects_scope() {
+        let mut tree = Tree::default();
+        tree.refresh(
+            Path::new("/fixture"),
+            &[
+                VaultEntry {
+                    path: "Project/_Hidden.md".into(),
+                    kind: EntryKind::Markdown,
+                },
+                VaultEntry {
+                    path: "Other.md".into(),
+                    kind: EntryKind::Markdown,
+                },
+            ],
+        );
+        tree.collapse_all();
+        assert!(tree.can_reveal("Project/_Hidden.md"));
+        assert!(tree.can_reveal("Other.md"));
+        assert!(!tree.can_reveal("Missing.md"));
+        tree.scope_to("Project");
+        assert!(tree.can_reveal("Project/_Hidden.md"));
+        assert!(!tree.can_reveal("Other.md"));
+        tree.scope_to("Proj");
+        assert!(
+            !tree.can_reveal("Project/_Hidden.md"),
+            "whole path segments only"
+        );
+    }
+
+    #[test]
     fn cached_titles_sort_by_display_name_keep_paths_and_refresh_without_io() {
         let mut tree = Tree::default();
         let entries = vec![
@@ -762,6 +913,7 @@ mod tests {
             ("a.md".into(), "Same.md".into()),
             ("b.md".into(), "Same.md".into()),
         ]));
+        tree.set_note_titles(true);
         tree.set_titles(titles.clone());
         assert_eq!(
             tree.rows
@@ -898,6 +1050,7 @@ mod tests {
         let mut t = Tree::default();
         t.refresh(Path::new("/v"), &entries);
         // The title would sort it after «Alpha»; the index still leads.
+        t.set_note_titles(true);
         t.set_titles(Arc::new(HashMap::from([(
             "Area/_index.md".into(),
             "Zeta".into(),

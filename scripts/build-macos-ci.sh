@@ -64,6 +64,11 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleDocumentTypes</key>
 <array><dict>
+  <key>CFBundleTypeName</key><string>Vault folder</string>
+  <key>CFBundleTypeRole</key><string>Viewer</string>
+  <key>LSHandlerRank</key><string>Alternate</string>
+  <key>LSItemContentTypes</key><array><string>public.folder</string></array>
+</dict><dict>
   <key>CFBundleTypeName</key><string>Markdown document</string>
   <key>CFBundleTypeRole</key><string>Viewer</string>
   <key>LSHandlerRank</key><string>Alternate</string>

@@ -240,3 +240,40 @@ fn http_404_is_unpublished_but_server_errors_stay_retryable() {
     assert!(fetch_notes(&client, &url, Duration::from_secs(3)).is_err());
     server.join().unwrap();
 }
+
+#[test]
+fn appimage_chain_uses_embedded_builds_and_rejects_publication_scale() {
+    let track = Track {
+        platform: "linux-appimage",
+        channel: "beta",
+    };
+    let current = build(6955, 'a');
+    let fetch = |source: &str| {
+        let (number, previous_build, previous_source) = if source == "a".repeat(40) {
+            (6955, Some(6950), Some("b".repeat(40)))
+        } else {
+            (6950, Some(6931), Some("c".repeat(40)))
+        };
+        Ok(Some(
+            serde_json::to_vec(&serde_json::json!({
+                "platform": "linux-appimage", "channel": "beta", "build": number,
+                "source": source, "previous_build": previous_build,
+                "previous_source": previous_source, "items": []
+            }))
+            .unwrap(),
+        ))
+    };
+    let range = collect(&current, Some(6931), track, fetch);
+    assert!(range.unavailable.is_none());
+    assert_eq!(
+        range.builds.iter().map(|n| n.build).collect::<Vec<_>>(),
+        [6955, 6950]
+    );
+    let wrong_scale = collect(&current, None, track, |source| {
+        let mut value: serde_json::Value = serde_json::from_slice(&fetch(source)?.unwrap())?;
+        value["build"] = serde_json::json!(18581);
+        Ok(Some(serde_json::to_vec(&value)?))
+    });
+    assert_eq!(wrong_scale.unavailable, Some(Unavailable::FetchFailed));
+    assert!(wrong_scale.builds.is_empty());
+}

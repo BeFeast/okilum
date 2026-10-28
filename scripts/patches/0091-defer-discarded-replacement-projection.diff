@@ -1,0 +1,95 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -1285,12 +1285,19 @@
+         self.projection_mouse_hold = false;
+         let mut trace = TraceSpan::new("reveal_replacement", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         trace.counts([range.start as u64, range.end as u64, self.text.len() as u64, 0]);
++        // Both native callers immediately replace the canonical bytes. A
++        // current projection already prepared this revision; composing it
++        // again for replacement would be discarded by record_source_mutation.
++        // Preserve the bridge for edits made before their revision was painted,
++        // and for single-line validation that can still refuse the replacement.
++        let prepared = self.is_multi_line() && self.projection.current.as_ref()
++            .is_some_and(|projection| projection.source().stamp == self.source_stamp());
+         self.sync_projection_active();
+         if self.projection.provider.is_some() {
+             let mut active = self.projection.active.clone();
+             active.replacement = Some(SourceByte(range.start)..SourceByte(range.end));
+             self.projection.set_active(active);
+-            if self.text.len() <= 256 * 1024 {
++            if !prepared && self.text.len() <= 256 * 1024 {
+                 self.record_layout_diagnostic(|d| d.projection_composes += 1);
+                 self.projection.compose(Arc::from(self.text.to_string()));
+             }
+@@ -6248,6 +6255,70 @@
+     }
+ 
+     #[gpui::test]
++    fn projection_edit_does_not_compose_a_prepared_old_revision(cx: &mut TestAppContext) {
++        struct CountedProvider(Arc<std::sync::Mutex<Vec<SourceStamp>>>);
++        impl ProjectionProvider for CountedProvider {
++            fn compose(
++                &self,
++                source: &super::super::projection::SourceSnapshot,
++                active: &ActiveSource,
++            ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++                self.0.lock().unwrap().push(source.stamp);
++                RevealAllProvider.compose(source, active)
++            }
++        }
++        cx.update(crate::init);
++        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let original = "👩\u{200d}💻 a\u{301} עברית\nnext row\n";
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value(original, window, cx);
++            state.set_projection_provider(Some(Arc::new(CountedProvider(calls.clone()))), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        let mut edited = None;
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let old = state.source_stamp();
++            assert!(state.last_layout.as_ref().unwrap().projection.is_some());
++            assert_eq!(state.projection.current.as_ref().unwrap().source().stamp, old);
++            assert!(!calls.lock().unwrap().is_empty(), "provider positive control");
++            calls.lock().unwrap().clear();
++            state.replace_text_in_range(Some(0..0), "x", window, cx);
++            assert!(!calls.lock().unwrap().contains(&old),
++                "a prepared revision must not be recomposed only to discard it");
++            let intermediate = state.source_stamp();
++            assert!(state.projection.current.is_none());
++            // Without a paint, the retained provider must still be allowed to
++            // visit this intermediate revision before the next replacement.
++            state.replace_text_in_range(Some(0..0), "x", window, cx);
++            assert!(calls.lock().unwrap().contains(&intermediate),
++                "unpainted edits retain their revision bridge");
++            edited = Some(state.source_stamp());
++            assert_eq!(state.value().as_ref(), format!("xx{original}"));
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let edited = edited.unwrap();
++            assert!(calls.lock().unwrap().contains(&edited),
++                "positive control: the actual new revision must compose");
++            let last = state.last_layout.as_ref().unwrap();
++            assert_eq!(last.source_stamp, edited);
++            assert_eq!(last.projection.as_ref().unwrap().projection.source().stamp, edited);
++            calls.lock().unwrap().clear();
++            // After xx, UTF-16 offset 3 splits the woman's surrogate pair.
++            // The fast path must never turn an invalid native range into an edit.
++            state.replace_text_in_range(Some(3..3), "bad", window, cx);
++            assert_eq!(state.source_stamp(), edited);
++            assert_eq!(state.value().as_ref(), format!("xx{original}"));
++            assert!(calls.lock().unwrap().is_empty());
++        }));
++    }
++
++    #[gpui::test]
+     fn projection_wrap_cache_reuses_only_unchanged_line_metrics(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+         let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)

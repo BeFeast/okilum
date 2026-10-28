@@ -4,6 +4,10 @@ The 22 October [project navigation contract](project-navigation.md) supersedes
 the current-note Project button and adds manager-only bindings for minimal
 projects. The native transport and chat behavior below remain the fallback.
 
+The approved Linux native-client work (#1787) is incremental. Its
+[WS v2 transport boundary](manager-stream-transport.md) is separate from the
+current MCP connection; feed projection and Tier 1 actions follow separately.
+
 The Project control in a vault Reader window opens the manager of the area
 containing the current note. It reuses the existing `okilum-t3` OAuth MCP
 `ManagerGateway` and the implementation from closed, unmerged PR1427. The approved
@@ -17,7 +21,9 @@ An absent binding displays “not connected”; Okilum neither creates T3 resour
 nor guesses a newer manager. A changed binding gets a separate view. Drafts for
 an unchanged binding survive note navigation and closing/reopening Project.
 
-For an already-bound area, enter its T3 HTTPS origin and choose Connect. The
+For an already-bound area, enter its T3 address and choose Connect. A bare
+hostname defaults to HTTPS; a private IP with a port defaults to HTTP. Invalid
+input shows an address example, and only the normalized origin is saved. The
 existing authorization-code/PKCE flow opens the system browser; this is an
 explicit user action. Tokens stay in OS credential storage; only alias/origin
 are saved in application state. Polling loads history and refreshes growing
@@ -121,3 +127,76 @@ request to manager acceptance and its resulting thread is not implemented in thi
 slice, and must not be inferred from queue receipts, titles or parentThreadId.
 Scheduled-task model following, manager migration and live integrated acceptance
 remain pending/blocked as described above. #1420 is not closed by request queuing.
+
+## MCP compatibility (#1759)
+
+Each authenticated MCP connection discovers its scoped `tools/list` catalog once
+(with bounded pagination). The catalog is reused by polling and refreshed after
+reconnection or a dropped session. Missing `t3_environment_read`, `t3_thread_read`
+or `t3_thread_send` gives a compatibility error naming the required tool before
+any feature call. Missing optional tools disable only their feature with a named
+explanation; no request is sent to a tool absent from that catalog.
+
+Pending questions use `t3_pending_request` with `action: list`. An unavailable
+question listing is shown as unavailable, never as a confirmed zero, while
+manager history, project verification and message sending remain available.
+Model reads use `t3_thread_configure` with only `threadId`; explicit model changes
+still require confirmation and separate configuration readback. Brain-local
+`t3_target_*` operations are unrelated to MCP tool names and remain unchanged.
+
+The checked-in 27 October input-schema fixture comes from the live manager agent
+catalog, not an Okilum OAuth `tools/list` capture. OAuth scopes can filter tools;
+real connection and response-shape acceptance remain pending until verified with
+an authorized paired client. Fixture tests do not claim live OAuth acceptance.
+
+## Reconnect and token expiry (#1773)
+
+The Manager **↻** control reads the saved credential for the entered origin and
+reconnects with initialize and tools/list while that token is valid, including
+the final three days. It does not start OAuth or replace the keychain entry after
+a successful reconnect. Expired or missing credentials, or a 401 explicitly
+reporting `invalid_mcp_credential`, start authorization after this explicit user
+action. Network errors, generic 401 responses and missing tools remain visible
+errors; they never silently start another pairing flow or discard the credential.
+Changing the T3 origin cannot reuse or transmit the previous server's token.
+
+**Sign in again** explicitly authorizes a new connection. The panel shows the
+stored token's expiry in UTC; within three days this action is labelled **Renew**.
+There is no refresh grant or automatic renewal. A successful new authorization
+is saved before subsequent polling, so a later network error does not lose it.
+Re-entering a project continues to reuse stored credentials without opening a
+browser. Keychain errors remain visible; explicit sign-in can replace a damaged
+credential after successful authorization.
+
+When browser approval needs sign-in, the panel explains that a browser sign-in
+lasts 30 days and offers **Open T3 in browser** for the entered origin. An already
+signed-in browser can approve without a pairing code. The existing 180-second
+OAuth callback path and paste-back follow-up (#1758) are separate work.
+
+## Linux virtualized feed (#1787, slice 1)
+
+The 27 October decision explicitly permits a Linux native T3 client for Tier 1.
+This first slice keeps the existing MCP gateway, authorization, durable send
+journal and question link. WebSocket v2 transport and native turn controls are
+later slices. The macOS embedded T3 webview is unchanged.
+
+On Linux the message history uses the vendored MessageScroller virtual list.
+Only viewport rows and its fixed overdraw are rendered, including for thousands
+of loaded messages. It follows the latest reply until the reader scrolls away;
+new messages preserve that choice, and Jump to latest resumes tail following.
+Growing replies invalidate only their affected row measurements. Retained send
+receipts disappear when their message is projected; unconfirmed operations keep
+their original Retry identity.
+
+Poll workers receive the cursor and growing item identities instead of cloning
+the loaded conversation. Successful reads apply only unequal items and notify
+the panel only when displayed data or connection status changes. The composer
+owns its input notifications, and the cached history entity stays independent
+of keystrokes. Tests exercise a 5,000-message thread with bounded row rendering,
+scroll and streaming behavior, unchanged polling, and real composer input; these
+are regression evidence, not live Linux/Hyprland acceptance.
+
+Vendor patch 0095 preserves selection registrations through GPUI cached paint
+using an element-state lease that expires on unmount. It also makes clearing an
+already-empty selection silent. This prevents selection cleanup from repeatedly
+invalidating the cached feed while preserving selectable Markdown and Copy.

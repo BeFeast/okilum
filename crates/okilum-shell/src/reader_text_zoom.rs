@@ -12,6 +12,26 @@ gpui::actions!(note_text_zoom, [ZoomIn, ZoomOut, Reset]);
 /// The overlay stays this long after the last change, hover or exact entry.
 const HUD_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Fenced code has its own themed font size; scale it with the document.
+/// Inline code inherits the surrounding text size, including its zoom.
+pub(super) fn document_style(cx: &App) -> TextViewStyle {
+    let mut style = reader_text_style(cx.theme());
+    style.code_block.text.font_size =
+        Some((cx.theme().mono_font_size * reader_ui_state::text_zoom(cx)).into());
+    #[cfg(test)]
+    CODE_STYLES.with(|styles| {
+        if let Some(styles) = styles.borrow_mut().as_mut() {
+            styles.push(style.code_block.text.font_size);
+        }
+    });
+    style
+}
+
+#[cfg(test)]
+thread_local! {
+    static CODE_STYLES: std::cell::RefCell<Option<Vec<Option<AbsoluteLength>>>> = const { std::cell::RefCell::new(None) };
+}
+
 pub(crate) fn bind_keys(cx: &mut App) {
     let context = Some("Reader && !ManagerWeb");
     // GPUI menus show the last binding of an action: ⌘= / Ctrl+= stays last.
@@ -707,6 +727,219 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| window.simulate_next_frame(cx));
         visual.run_until_parked();
+    }
+
+    /// Measure actual shaped text, including the mixed-font inline paragraph.
+    fn read_code_widths(reader: &Reader, cx: &App) -> [Pixels; 3] {
+        let state = reader.content.read(cx);
+        let bounds = state.bounds();
+        let mut segments = std::collections::BTreeSet::new();
+        for y in (0..f32::from(bounds.size.height).min(500.) as usize).step_by(4) {
+            if let Some((segment, _, _)) = state.rendered_source_at(Some(point(
+                bounds.left() + px(20.),
+                bounds.top() + px(y as f32),
+            ))) {
+                segments.insert(segment);
+            }
+        }
+        let mut paragraph = None;
+        let mut fence = None;
+        for segment in segments {
+            let at = |index| state.rendered_position_for_source(segment, index);
+            if let (Some(start), Some(body_end), Some(code_start), Some(code_end), Some(_)) =
+                (at(0), at(4), at(5), at(9), at(14))
+            {
+                paragraph = Some([body_end.x - start.x, code_end.x - code_start.x]);
+            } else if let (Some(start), Some(end), None) = (at(0), at(4), at(9)) {
+                fence = Some(end.x - start.x);
+            }
+        }
+        let [body, inline] = paragraph.expect("mixed-font paragraph geometry positive control");
+        let fence = fence.expect("fenced code geometry positive control");
+        assert!(body > px(0.) && inline > px(0.) && fence > px(0.));
+        [body, inline, fence]
+    }
+
+    #[gpui::test]
+    fn code_fonts_follow_document_zoom_in_read_and_live_preview(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let source = "MMMM `WWWW` MMMM\n\n```text\nWWWW\n```\n\n> [!note]\n> ```text\n> nested code\n> ```\n\nCaret here.\n";
+        std::fs::write(vault.join("start.md"), source).unwrap();
+        cx.update(|cx| {
+            reader_ui_state::install(&temp.path().join("state"), cx);
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(1000.)));
+        frame(visual);
+        let base = reader.read_with(visual, read_code_widths);
+        for zoom in [2., 0.5, 1.] {
+            CODE_STYLES.with(|styles| *styles.borrow_mut() = Some(Vec::new()));
+            reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
+            frame(visual);
+            let actual = reader.read_with(visual, read_code_widths);
+            for (label, (actual, base)) in ["body", "inline code", "fenced code"]
+                .into_iter()
+                .zip(actual.into_iter().zip(base))
+            {
+                assert!(
+                    (actual - base * zoom).abs() < px(1.),
+                    "{label} must scale with document zoom {zoom}: {actual:?} vs base {base:?}"
+                );
+            }
+            let styles = CODE_STYLES.with(|styles| styles.borrow_mut().take().unwrap());
+            let expected = visual.update(|_, cx| cx.theme().mono_font_size * zoom);
+            assert!(
+                !styles.is_empty(),
+                "actual Read code block style positive control"
+            );
+            assert!(styles.iter().all(|size| *size == Some(expected.into())),
+                "Read code block font must equal themed base code font times zoom: {styles:?}, expected={expected:?}");
+            eprintln!("READ_CODE_STYLE zoom={zoom} expected={expected:?} styles={styles:?}");
+        }
+        reader.update_in(visual, |r, window, cx| {
+            r.open_live_preview(window, cx);
+            r.editing.as_ref().unwrap().input().update(cx, |input, cx| {
+                input.set_selected_range(source.len()..source.len(), cx);
+            });
+        });
+        frame(visual);
+        // Font measurements need the measured source rows in the viewport.
+        // Keep the caret at the end so the callout remains concealed.
+        reader.update(visual, |r, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .input()
+                .update(cx, |input, cx| input.scroll_line_to_top(0, cx));
+        });
+        frame(visual);
+        let lp_identity = reader.read_with(visual, |r, cx| {
+            let input = r.editing.as_ref().unwrap().input().read(cx);
+            assert_eq!(input.value().as_ref(), source);
+            (input.source_stamp(), input.selected_range())
+        });
+        let ranges = [
+            0..4,
+            6..10,
+            source.find("\nWWWW\n").unwrap() + 1..source.find("\nWWWW\n").unwrap() + 5,
+        ];
+        let widths = |r: &Reader, cx: &App| {
+            assert!(r.source_live_preview());
+            let input = r.editing.as_ref().unwrap().input().read(cx);
+            assert_eq!(
+                input.top_visible_line(),
+                Some(0),
+                "measured LP rows must be visible"
+            );
+            assert_eq!(
+                (input.source_stamp(), input.selected_range()),
+                lp_identity.clone(),
+                "zoom and viewport preparation preserve source/selection"
+            );
+            assert_eq!(input.value().as_ref(), source);
+            ranges.clone().map(|range| {
+                let bounds = input
+                    .range_to_bounds(&range)
+                    .expect("actual LP body/inline/fence layout positive control");
+                assert!(
+                    bounds.size.width > px(0.),
+                    "visible LP glyph width positive control: {range:?}: {bounds:?}"
+                );
+                bounds.size.width
+            })
+        };
+        let base = reader.read_with(visual, widths);
+        assert!(
+            base.iter().all(|width| *width > px(0.)),
+            "LP baseline geometry positive control: {base:?}"
+        );
+        eprintln!("LP_GEOMETRY baseline={base:?}");
+        for zoom in [2., 0.5, 1.] {
+            CODE_STYLES.with(|styles| *styles.borrow_mut() = Some(Vec::new()));
+            reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
+            frame(visual);
+            let before = reader.read_with(visual, |r, cx| {
+                let input = r.editing.as_ref().unwrap().input().read(cx);
+                (
+                    input.source_stamp(),
+                    input.selected_range(),
+                    input.top_visible_line(),
+                    input.visible_row_range(),
+                    input.scroll_offset(),
+                )
+            });
+            eprintln!("LP_VIEWPORT_BEFORE zoom={zoom} state={before:?}");
+            reader.update(visual, |r, cx| {
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input()
+                    .update(cx, |input, cx| input.scroll_line_to_top(0, cx));
+            });
+            frame(visual);
+            reader.read_with(visual, |r, cx| {
+                let input = r.editing.as_ref().unwrap().input().read(cx);
+                assert_eq!(
+                    (input.source_stamp(), input.selected_range()),
+                    (before.0, before.1)
+                );
+            });
+            let actual = reader.read_with(visual, widths);
+            let styles = CODE_STYLES.with(|styles| styles.borrow_mut().take().unwrap());
+            let (font_size, stamp, epoch, painted_cursor) = reader.read_with(visual, |r, cx| {
+                let input = r.editing.as_ref().unwrap().input().read(cx);
+                (
+                    reader_ui_state::font_size(cx),
+                    input.source_stamp(),
+                    input.presentation_epoch(),
+                    input.painted_cursor(),
+                )
+            });
+            eprintln!("LP_GEOMETRY zoom={zoom} actual={actual:?} baseline={base:?} font_size={font_size} stamp={stamp:?} epoch={epoch} painted_cursor={painted_cursor:?} block_styles={styles:?}");
+            for (label, (actual, base)) in ["body", "inline code", "fenced code"]
+                .into_iter()
+                .zip(actual.into_iter().zip(base))
+            {
+                assert!(
+                    (actual - base * zoom).abs() < px(1.),
+                    "LP {label} zoom {zoom}: actual={actual:?}, base={base:?}, expected={:?}",
+                    base * zoom
+                );
+            }
+            assert!(
+                !styles.is_empty(),
+                "actual LP callout block renderer positive control"
+            );
+            let expected = visual.update(|_, cx| cx.theme().mono_font_size * zoom);
+            assert!(styles.iter().all(|size| *size == Some(expected.into())),
+                "LP code block font must equal themed base code font times zoom: {styles:?}, expected={expected:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(vault.join("start.md")).unwrap(),
+            source
+        );
     }
 
     fn zoom_is(visual: &mut gpui::VisualTestContext, expected: f32) {

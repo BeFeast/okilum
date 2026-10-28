@@ -465,3 +465,56 @@ preload. Both scenarios retained the incremental graph and exact search results:
 The unchanged launches made zero source open/read calls and did not rebuild
 search. These are correctness checks with injected latency, separate from the
 paired release benchmark above; Ready denotes the worker event, not native paint.
+
+
+### Note preparation breakdown (#1700)
+
+`note_open_core_preparation` precedes `note_open_rendered` for a background
+navigation preparation. Both carry its `generation`. The report contains no
+source text, note paths or link targets. `worker_start_ms` measures the delay
+from open to worker entry; `worker_ms` measures the background work. The gap
+between its `since_open_ms` and `note_open_rendered.since_open_ms` shows the UI
+continuation delay. Existing accept/set-text/parsed/body-painted phases follow;
+Live Preview projection and layout are downstream of this boundary.
+
+`report.phases` gives inclusive `calls` and `duration_ms` for primary source read,
+Comrak parsing, embeds, presentation preprocessing, image/link/highlight rewriting,
+Obsidian transforms, link resolution, wiki/Markdown index lookups and target landing.
+Nested stages overlap: do not sum their durations. `filesystem` counts explicitly
+instrumented Rust filesystem operations in source reading and render-time path
+resolution (read, canonicalize, metadata and is-file checks), including unsuccessful
+operations. It is **not** a syscall, physical I/O or cache-miss count. Counts include
+parsed links, attempted wiki/Markdown resolutions, matched embeds and link-parse
+input bytes. Repeated passes and nested embedded documents are included. The scope
+is the background preparation job, not startup inventory, later link-state
+publication, backlinks or layout. HTML mode is identified by `html: true`.
+
+Collection is thread-local and scoped to a preparation with a diagnostic trace;
+other core consumers retain their output and do not accumulate reports.
+
+The `platform` object on `note_open_rendered` additionally samples work through
+Okilum's existing `PlatformTextSystem` proxy while preparation is pending. It
+separates font lookup/prewarming, metrics, glyph lookup, line-layout requests
+(including cache hits), actual platform shaping on cache misses, and glyph
+raster/bounds calls. On macOS, that shaping delegates to CoreText; no GPUI-core
+changes or per-text/per-font log records are involved. It also counts Reader UI
+render/synchronization and backlink-title work during this interval.
+`note_open_body_painted.platform` samples the later parse-ready → first-layout
+interval; its existing `layout_frame_ms` remains wall time, not CPU-only layout.
+All platform counters are **process-wide, inclusive and overlapping**: another
+window or job can contribute, so they locate UI contention without assigning all
+that work to the newly opened document. Do not add nested durations together.
+Counters run only while an open/first-frame observation is alive, with no timers,
+extra frames or polling added.
+
+Code-path audit for #1700: ordinary `reader_document` preparation calls portable
+Rust/comrak transforms and path/index resolution. It does not call CoreText,
+spell checking, data detectors, or a webview. The alternate HTML renderer is
+identified by `html`; it is not selected by a macOS cfg. The direct macOS-only
+core operation is the placeholder-flag `stat` before a note read, now separately
+reported as `macos_placeholder_stat`. Platform font/shaping/layout work runs on
+the UI route, which can delay the continuation that emits `note_open_rendered`
+even when the background core report is fast. The worker/UI timestamps and
+platform snapshots distinguish these cases. Linux reproduction cannot eliminate
+macOS filesystem or scheduling costs; a non-iCloud repro eliminates an iCloud-only
+explanation, not all platform-specific I/O costs.

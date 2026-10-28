@@ -4,11 +4,13 @@ import importlib.util
 import os
 from pathlib import Path
 import uuid
+import time
 
 spec = importlib.util.spec_from_file_location('transport', Path(__file__).with_name('github-macos.py'))
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 LANES = {
+    'shared': ('shared', 'Run every shared suite', 3600),
     'linux': ('linux', 'Run full Linux gate', 5400),
     'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
     'brain': ('brain', 'Run Brain tests', 2700),
@@ -24,27 +26,28 @@ LANES = {
 
 
 def main():
+    started = time.monotonic()
     result, branch, api = 'failure', None, None
     try:
         lane = os.environ['CI_LANE']
         if lane not in LANES:
             raise transport.Unavailable('Unknown hosted lane')
         job, step, timeout = LANES[lane]
-        token = os.environ.get('MIRROR_TOKEN')
-        if not token:
-            raise transport.Unavailable('Mirror token unavailable')
         sha = os.environ['PR_HEAD_SHA']
         branch = transport.ref_name(os.environ['PR_NUMBER'], sha, os.environ['GITHUB_RUN_ID'],
                                     os.environ.get('GITHUB_RUN_ATTEMPT') or '1', uuid.uuid4().hex)
         branch = branch.replace('forgejo-pr/', f'forgejo-{lane}-pr/', 1)
-        api = transport.GitHub(token)
-        transport.push_head(branch, sha, token)
+        api = transport.GitHub()
+        api.log_quota()
+        transport.push_head(branch, sha, api.token)
         result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
             job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
         print(message)
     except transport.Unavailable as error:
         print(f'Hosted CI unavailable; no fallback success: {error}')
     finally:
+        if os.environ.get('CI_LANE') == 'shared':
+            print(f'Shared hosted bridge queue+run seconds={time.monotonic() - started:.1f}', flush=True)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'result={result}\n')
         if branch and api:

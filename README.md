@@ -56,7 +56,7 @@ Indexes and previews are rebuildable caches.
 |---|---|---|
 | macOS (Apple Silicon) | [Download DMG](https://updates.befeast.com/okilum/macos/beta/Okilum.dmg) · signed and notarized · [ZIP](https://updates.befeast.com/okilum/macos/beta/latest.zip) | [Download DMG](https://updates.befeast.com/okilum/macos/stable/Okilum.dmg) · [ZIP](https://updates.befeast.com/okilum/macos/latest.zip) |
 | Windows (x64) | [Download Setup.exe](https://updates.befeast.com/okilum/windows/beta/Setup.exe) · reading, search and editing; build not yet signed | [Download Setup.exe](https://updates.befeast.com/okilum/windows/stable/Setup.exe) |
-| Arch Linux (x86_64) | [Install signed beta pacman repository](docs/linux-releases.md) · [package on GitHub Beta](https://github.com/BeFeast/okilum/releases/tag/beta) | [Install stable repository](docs/linux-releases.md#stable-channel) |
+| Linux (x86_64) | [Signed AppImage](https://updates.befeast.com/okilum/linux/beta/Okilum-x86_64.AppImage) · [verify signature](docs/linux-releases.md) | [Signed AppImage](https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage) · available after accepted Stable promotion |
 
 [GitHub Beta release and checksums](https://github.com/BeFeast/okilum/releases/tag/beta) ·
 [all releases](https://github.com/BeFeast/okilum/releases) ·

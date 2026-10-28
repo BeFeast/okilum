@@ -48,6 +48,10 @@ class Clock:
 
 
 class BridgeTests(unittest.TestCase):
+    def setUp(self):
+        poll = patch.object(bridge, 'poll_delay', return_value=30)
+        poll.start(); self.addCleanup(poll.stop)
+
     def wait(self, api):
         clock = Clock()
         return bridge.wait_for_run(api, BRANCH, SHA, clock=clock, sleep=clock.sleep,
@@ -64,14 +68,16 @@ class BridgeTests(unittest.TestCase):
         delays = []
         self.assertEqual(bridge.hosted_request(Flaky(), 'actions/runs',
                          sleep=delays.append)['workflow_runs'][0]['id'], 1)
-        self.assertEqual(delays, [5, 10])
+        self.assertEqual(len(delays), 2)
+        self.assertTrue(all(30 <= delay <= 60 for delay in delays))
         class Offline(API):
             def request(self, *args):
                 raise bridge.Unavailable('offline')
         delays = []
         with self.assertRaises(bridge.Unavailable):
             bridge.hosted_request(Offline(), 'actions/runs', sleep=delays.append)
-        self.assertEqual(delays, [5, 10])
+        self.assertEqual(len(delays), 2)
+        self.assertTrue(all(30 <= delay <= 60 for delay in delays))
 
     def test_exact_run_and_executed_job_pass(self):
         self.assertEqual(self.wait(API()), 'success')
@@ -314,7 +320,8 @@ class TransportRetryTests(unittest.TestCase):
                     self.assertEqual(bridge.hosted_request(bridge.GitHub('secret'),
                                      'actions/runs', sleep=delays.append), {'workflow_runs': []})
                 self.assertEqual(request.call_count, 2)
-                self.assertEqual(delays, [5])
+                self.assertEqual(len(delays), 1)
+                self.assertTrue(all(30 <= delay <= 60 for delay in delays))
 
     def test_disconnect_while_reading_exhausts_existing_retry_budget(self):
         response = MagicMock()
@@ -324,7 +331,8 @@ class TransportRetryTests(unittest.TestCase):
             with self.assertRaises(bridge.Unavailable) as raised:
                 bridge.hosted_request(bridge.GitHub('secret'), 'actions/runs', sleep=delays.append)
         self.assertEqual(request.call_count, 3)
-        self.assertEqual(delays, [5, 10])
+        self.assertEqual(len(delays), 2)
+        self.assertTrue(all(30 <= delay <= 60 for delay in delays))
         self.assertNotIn('secret', str(raised.exception))
 
 

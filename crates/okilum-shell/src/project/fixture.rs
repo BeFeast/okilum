@@ -11,6 +11,7 @@ type Result<T> = std::result::Result<T, GatewayError>;
 #[derive(Default)]
 pub(super) struct Fake {
     pub revoked: bool,
+    pub connection_status: Option<GatewayStatus>,
     pub wrong_project: bool,
     pub fail_first: bool,
     pub sends: Mutex<Vec<OutgoingMessage>>,
@@ -20,11 +21,15 @@ pub(super) struct Fake {
     pub model_current: Mutex<Option<ModelSelection>>,
     pub model_failure: Mutex<Option<GatewayError>>,
     pub model_read_failure: Mutex<Option<GatewayError>>,
+    pub question_failure: Option<GatewayError>,
     pub model_writes: Mutex<Vec<ModelSelection>>,
     pub grown: Mutex<bool>,
 }
 impl ManagerGateway for Fake {
     fn status(&self) -> GatewayStatus {
+        if let Some(status) = &self.connection_status {
+            return status.clone();
+        }
         if self.revoked {
             GatewayStatus::Revoked
         } else {
@@ -94,6 +99,9 @@ impl ManagerGateway for Fake {
         })
     }
     fn pending_requests(&self, _: &str) -> Result<Vec<String>> {
+        if let Some(error) = &self.question_failure {
+            return Err(error.clone());
+        }
         Ok(vec!["question-1".into()])
     }
     fn capabilities(&self) -> Result<Capabilities> {

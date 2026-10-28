@@ -184,6 +184,9 @@ pub(crate) fn check() {
 }
 
 pub(crate) fn channel() -> &'static str {
+    if crate::linux_sprint::enabled() {
+        return "Sprint";
+    }
     #[cfg(target_os = "macos")]
     return if !macos::available() {
         "Development"

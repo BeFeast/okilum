@@ -12,13 +12,97 @@ static void Trace(NSString *event) {
     [file writeData:[[event stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding]];
     [file closeFile];
 }
+
+static BOOL RotatesGroup(void) {
+    return [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRotateGroupAfterDownload"] boolValue];
+}
+
+// Read-only instrumentation of the pinned framework's EXISTING defaults object.
+// A second defaults instance or CFPreferences receipt cannot prove what SUHost
+// actually sees. Never replace a Sparkle method, host, defaults object or value
+// through this observer. Missing layout is a fixture failure, not reproduction.
+static BOOL TSObserverIncomplete;
+static NSDictionary *GroupSnapshot(SPUUpdater *updater, NSString *role, NSString *boundary) {
+    Ivar hostSlot = class_getInstanceVariable(SPUUpdater.class, "_host");
+    id host = hostSlot && updater ? object_getIvar(updater, hostSlot) : nil;
+    Ivar defaultsSlot = host ? class_getInstanceVariable([host class], "_userDefaults") : NULL;
+    id defaults = defaultsSlot ? object_getIvar(host, defaultsSlot) : nil;
+    BOOL validDefaults = [defaults isKindOfClass:NSUserDefaults.class];
+    id group = validDefaults ? [defaults objectForKey:@"SUUpdateGroupIdentifier"] : nil;
+    BOOL number = [group isKindOfClass:NSNumber.class];
+    NSString *state = !updater ? @"updater-missing" : !hostSlot ? @"host-ivar-missing"
+        : !host ? @"host-missing" : !defaultsSlot ? @"defaults-ivar-missing"
+        : !defaults ? @"defaults-missing" : !validDefaults ? @"defaults-wrong-type"
+        : !group ? @"group-missing" : !number ? @"group-wrong-type" : @"complete";
+    // The separately tracked standard-main product finding must remain visible,
+    // but must not interrupt the real installation lifecycle being tested.
+    BOOL expectedMissing = [role isEqualToString:@"probe"] && [state isEqualToString:@"defaults-missing"]
+        && ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUDefaultsDomain"];
+    if (![state isEqualToString:@"complete"] && !expectedMissing) TSObserverIncomplete = YES;
+    NSDictionary *snapshot = @{
+        @"role": role, @"boundary": boundary, @"state": state,
+        @"updaterPresent": @((BOOL)(updater != nil)), @"hostIvarPresent": @((BOOL)(hostSlot != NULL)),
+        @"hostPresent": @((BOOL)(host != nil)), @"defaultsIvarPresent": @((BOOL)(defaultsSlot != NULL)),
+        @"defaultsPresent": @((BOOL)(defaults != nil)), @"defaultsIsNSUserDefaults": @(validDefaults),
+        @"defaultsClass": defaults ? NSStringFromClass([defaults class]) : @"unavailable",
+        @"groupType": number ? @"NSNumber" : group ? NSStringFromClass([group class]) : @"unavailable",
+        @"group": number ? group : @"unavailable",
+        @"domain": [updater.hostBundle objectForInfoDictionaryKey:@"SUDefaultsDomain"]
+            ?: (updater.hostBundle == NSBundle.mainBundle ? @"standard-main-bundle"
+                : updater.hostBundle.bundleIdentifier ?: @"unavailable")
+    };
+    NSData *json = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:NULL];
+    Trace([@"rotation observation " stringByAppendingString:[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]]);
+    return snapshot;
+}
+static NSNumber *SnapshotNumber(NSDictionary *snapshot) {
+    return [snapshot[@"state"] isEqualToString:@"complete"] ? snapshot[@"group"] : nil;
+}
+static NSString *GroupText(NSNumber *group) { return group ? group.stringValue : @"unavailable"; }
+
+static NSNumber *LastProbeGroup;
+static NSString *LastProbeSelection;
+@interface TestFreshnessProbe : TSFreshnessProbe
+@end
+@implementation TestFreshnessProbe
+- (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
+    GroupSnapshot(updater, @"probe", @"selection");
+    Trace([@"rotation probe selection=" stringByAppendingString:item.versionString]);
+    [super updater:updater didFindValidUpdate:item];
+}
+- (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
+    // Observe the real callback argument before super releases self.updater.
+    // Missing observations are evidence, never an invented group or an exit
+    // from inside Sparkle's callback. Let the real completion run first.
+    LastProbeGroup = SnapshotNumber(GroupSnapshot(updater, @"probe", @"completion"));
+    LastProbeSelection = self.selected.versionString ?: @"none";
+    BOOL invalidProductionConfig = NO;
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSProductionConfig"] boolValue]) {
+        invalidProductionConfig = !self.selected || self.selected.signingValidationStatus != SPUAppcastSigningValidationStatusSkipped;
+        if (!invalidProductionConfig) Trace(@"production-config probe signing status=Skipped");
+    }
+    NSNumber *sourceGroup = SnapshotNumber(GroupSnapshot(TSUpdater, @"source", @"completion"));
+    Trace([NSString stringWithFormat:@"rotation probe selected=%@ source-group=%@ probe-group=%@ error=%@/%ld",
+           LastProbeSelection, GroupText(sourceGroup), GroupText(LastProbeGroup),
+           error.domain ?: @"none", (long)error.code]);
+    [super updater:updater didFinishUpdateCycleForUpdateCheck:check error:error];
+    if (invalidProductionConfig) dispatch_async(dispatch_get_main_queue(), ^{
+        Trace(@"production-config probe signature assertion failed after callback completion");
+        exit(68);
+    });
+    if (TSObserverIncomplete) dispatch_async(dispatch_get_main_queue(), ^{
+        Trace(@"rotation observer-incomplete exit=62 after callback completion");
+        exit(62);
+    });
+}
+@end
 extern void fixture_record_report(int kind);
 extern bool fixture_about_retry_enabled(void);
 static BOOL TSFirstTerminationResolved;
 static BOOL TSRetryClicked;
 static void Report(int kind, const char *text) {
     fixture_record_report(kind);
-    if (kind == 7 && (TSDriver.retryTermination || okilum_updater_ready()
+    if (kind == 7 && (TSDownloadedAdmission || TSPendingAdmission || TSDriver.retryTermination || okilum_updater_ready()
         || okilum_updater_guard_requested() || TSTermination.verifiedQuit)) exit(50);
     Trace([NSString stringWithFormat:@"report %d %s", kind, text ?: ""]);
     if (kind == 7) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
@@ -69,6 +153,20 @@ static BOOL TSCompare;
 static BOOL TSComparisonForeground;
 static SUAppcastItem *TSActualSelection;
 static void FinishComparison(void) {
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSCompareSourceOnly"] boolValue]) {
+        // Standard-main probe defaults are a separately tracked product bug.
+        // Prove real source admission/exclusion without pretending the isolated
+        // probe shares that state. A pending ticket is expected after a valid
+        // signed offer; a downloaded ticket is forbidden in this metadata check.
+        NSString *actual = TSActualSelection.versionString ?: @"none";
+        NSString *expected = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSExpectedSelection"];
+        if (![actual isEqualToString:expected] || TSDownloadedAdmission) exit(64);
+        Trace([NSString stringWithFormat:@"eligibility matches source-only %@ %@ (probe defaults finding separate)",
+               TSComparisonForeground ? @"foreground" : @"background", actual]);
+        [@"eligibility matched" writeToFile:[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSReceipt"]
+            atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        exit(0);
+    }
     [TSProbe check:TSUpdater channels:TSChannels() foreground:TSComparisonForeground completion:^(SUAppcastItem *selected, NSError *error) {
         NSString *actual = TSActualSelection.versionString ?: @"none";
         NSString *probed = selected.versionString ?: @"none";
@@ -88,8 +186,66 @@ static void FinishComparison(void) {
 @end
 @implementation TestUpdaterDelegate
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
+    if (RotatesGroup()) {
+        NSNumber *group = SnapshotNumber(GroupSnapshot(updater, @"source", @"admission"));
+        Trace([NSString stringWithFormat:@"rotation admitted=%@ source-group=%@", item.versionString, GroupText(group)]);
+        if (![item.versionString isEqualToString:@"4"]) exit(58);
+    }
     if (TSCompare) TSActualSelection = item;
     [super updater:updater didFindValidUpdate:item];
+}
+- (void)updater:(SPUUpdater *)updater didDownloadUpdate:(SUAppcastItem *)item {
+    [super updater:updater didDownloadUpdate:item];
+    TSAdmission *admission = TSDownloadedAdmission;
+    BOOL productionConfig = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSProductionConfig"] boolValue];
+    if (productionConfig) {
+        if (admission || TSPendingAdmission || item.signingValidationStatus != SPUAppcastSigningValidationStatusSkipped) exit(68);
+        Trace(@"production-config source signing status=Skipped; no receipt after download");
+    } else {
+        if (!admission || ![admission covers:item feed:updater.feedURL.absoluteString channels:TSChannels()
+                signedItems:admission.items]
+            || [admission covers:item feed:@"https://invalid.example/changed" channels:TSChannels() signedItems:admission.items]
+            || [admission covers:item feed:admission.feed channels:[NSSet set] signedItems:admission.items]
+            || [admission covers:item feed:admission.feed channels:admission.channels signedItems:nil]
+            || [admission covers:item feed:admission.feed channels:admission.channels signedItems:@[]]) exit(66);
+        if (admission.items.count >= 2) {
+            NSUInteger admitted = [admission.items indexOfObject:admission.item];
+            if (admitted == NSNotFound) exit(67);
+            NSUInteger other = admitted == 0 ? 1 : 0;
+            NSMutableArray<NSDictionary *> *changed = [admission.items mutableCopy];
+            NSMutableDictionary *changedOther = [changed[other] mutableCopy];
+            changedOther[@"test:changed-other"] = @YES;
+            changed[other] = [changedOther copy];
+            NSMutableArray<NSDictionary *> *extra = [admission.items mutableCopy];
+            [extra addObject:admission.items[other]];
+            NSMutableArray<NSDictionary *> *swapped = [admission.items mutableCopy];
+            [swapped exchangeObjectAtIndex:0 withObjectAtIndex:1];
+            if (![changed[admitted] isEqual:admission.item] || [changed isEqualToArray:admission.items]
+                || [swapped isEqualToArray:admission.items]
+                || [admission covers:item feed:admission.feed channels:admission.channels signedItems:changed]
+                || [admission covers:item feed:admission.feed channels:admission.channels signedItems:extra]
+                || [admission covers:item feed:admission.feed channels:admission.channels signedItems:swapped]) exit(67);
+            Trace(@"admission full collection rejects changed-other/extra/reordered");
+        }
+        Trace(@"admission receipt bound to signed items/URL/channels after real download");
+    }
+    if (!RotatesGroup()) return;
+    if (![item.versionString isEqualToString:@"4"]) exit(59);
+    // Real public callback, after Sparkle's random post-download rotation. Make
+    // that permitted transition deterministic only in this isolated test app.
+    NSBundle *bundle = updater.hostBundle;
+    NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"];
+    NSUserDefaults *preferences = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
+                                         : NSUserDefaults.standardUserDefaults;
+    [preferences setObject:@6 forKey:@"SUUpdateGroupIdentifier"];
+    if (![preferences synchronize]) exit(60);
+    CFStringRef probeDomain = (__bridge CFStringRef)(domain ?: bundle.bundleIdentifier);
+    CFPreferencesSetAppValue(CFSTR("SUUpdateGroupIdentifier"), (__bridge CFNumberRef)@6, probeDomain);
+    if (!CFPreferencesAppSynchronize(probeDomain)) exit(60);
+    id probeGroup = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("SUUpdateGroupIdentifier"), probeDomain));
+    NSNumber *sourceGroup = SnapshotNumber(GroupSnapshot(updater, @"source", @"download"));
+    if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:@6]) exit(61);
+    Trace([NSString stringWithFormat:@"rotation didDownloadUpdate=4 transition=0->6 source-readback=%@ probe-storage-readback=6", GroupText(sourceGroup)]);
 }
 - (void)updater:(SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cycle finished check=%ld error=%@/%ld replacement=%d session=%d", (long)check, error.domain ?: @"none", (long)error.code, TSRestartAfterCycle, updater.sessionInProgress]);
@@ -121,6 +277,15 @@ static void FinishComparison(void) {
 }
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
     Trace([NSString stringWithFormat:@"cancel replacement error=%@/%ld", error.domain ?: @"none", (long)error.code]);
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSProductionConfig"] boolValue]) {
+        if (TSDownloadedAdmission || TSPendingAdmission) exit(68);
+        Trace(@"production-config no receipt at rejection");
+    }
+    if (RotatesGroup()) {
+        Trace([NSString stringWithFormat:@"rotation rejection error=%@/%ld selected=%@ source-group=%@ probe-group=%@",
+               error.domain ?: @"none", (long)error.code, LastProbeSelection,
+               GroupText(SnapshotNumber(GroupSnapshot(TSUpdater, @"source", @"rejection"))), GroupText(LastProbeGroup)]);
+    }
     [super cancelForReplacement:reply error:error];
     Trace(@"cancel reply returned");
 }
@@ -162,12 +327,26 @@ static void FinishComparison(void) {
         if (![data writeToFile:feed atomically:YES]) exit(31);
         Trace(@"published feed");
     }
+    NSString *context = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSContextChange"];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if ([context isEqualToString:@"url"]) [TSUpdater setFeedURL:[NSURL URLWithString:
+        [TSUpdater.feedURL.absoluteString stringByAppendingString:@"?context=changed"]]];
+#pragma clang diagnostic pop
+    if ([context isEqualToString:@"channel"]) okilum_updater_set_beta(false);
+    if ([context isEqualToString:@"archive"]) {
+        NSData *data = [NSData dataWithContentsOfFile:[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSPendingFeed"]];
+        if (![data writeToFile:[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSFeedPath"] atomically:YES]) exit(65);
+    }
     [super showReadyToInstallAndRelaunch:reply];
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSCancel"] isEqualToString:@"verifying"])
         okilum_updater_cancel();
 }
 - (void)presentReady:(void (^)(SPUUserUpdateChoice))reply {
     Trace([@"verified-ready " stringByAppendingString:self.item.versionString]);
+    if (RotatesGroup() && !self.foreground && [self.item.versionString isEqualToString:@"4"]
+        && [LastProbeSelection isEqualToString:@"2"] && TSDownloadedAdmission)
+        Trace(@"rotation retained admitted=4 over probe=2 at verified-ready");
     NSString *restartFeed = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRestartFeed"];
     if (restartFeed && [self.item.versionString isEqualToString:@"2"]) {
         NSData *data = [NSData dataWithContentsOfFile:restartFeed];
@@ -230,6 +409,10 @@ int main(void) {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         NSBundle *bundle = NSBundle.mainBundle;
+        if ([[bundle objectForInfoDictionaryKey:@"TSProductionConfig"] boolValue]) {
+            if ([bundle objectForInfoDictionaryKey:@"SURequireSignedFeed"]) return 68;
+            Trace(@"production-config SURequireSignedFeed absent");
+        }
         NSString *version = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"];
         if (![version isEqualToString:@"1"]) {
             Trace([@"relaunched " stringByAppendingString:version]);
@@ -249,9 +432,39 @@ int main(void) {
         TSComparisonForeground = [[bundle objectForInfoDictionaryKey:@"TSForeground"] boolValue];
         {
             // Fixture inputs for pinned Sparkle, never product-side selection.
-            NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"] ?: bundle.bundleIdentifier;
-            NSUserDefaults *preferences = [[NSUserDefaults alloc] initWithSuiteName:domain];
-            [preferences setInteger:6 forKey:@"SUUpdateGroupIdentifier"];
+            // Pinned Sparkle 2.10.0 SUHost uses standard defaults for its main
+            // bundle unless SUDefaultsDomain is explicitly supplied. Its own
+            // bundle identifier is NOT an equivalent suite name on macOS.
+            NSString *domain = [bundle objectForInfoDictionaryKey:@"SUDefaultsDomain"];
+            NSUserDefaults *preferences = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
+                                                 : NSUserDefaults.standardUserDefaults;
+            NSNumber *requestedGroup = [bundle objectForInfoDictionaryKey:@"TSPhaseGroup"];
+            if (![requestedGroup isKindOfClass:NSNumber.class]
+                || (requestedGroup.integerValue != 0 && requestedGroup.integerValue != 6)) return 33;
+            [preferences setObject:requestedGroup forKey:@"SUUpdateGroupIdentifier"];
+            [preferences synchronize];
+            // Read precisely the store SUHost will use: the same standard
+            // singleton, or a second instance for an explicit suite. This checks
+            // in-process visibility, not independent on-disk persistence.
+            NSUserDefaults *reader = domain ? [[NSUserDefaults alloc] initWithSuiteName:domain]
+                                            : NSUserDefaults.standardUserDefaults;
+            id effectiveGroup = [reader objectForKey:@"SUUpdateGroupIdentifier"];
+            if (![effectiveGroup isKindOfClass:NSNumber.class] || ![effectiveGroup isEqual:requestedGroup]) return 34;
+            Trace([NSString stringWithFormat:@"rollout group read=%@ domain=%@ before-updater-start",
+                   effectiveGroup, domain ?: @"standard-main-bundle"]);
+            // Test-only snapshot: the isolated production probe uses this suite,
+            // while the main host without SUDefaultsDomain uses standard defaults.
+            // Seed both explicitly; this does not repair production domain sharing.
+            NSString *probeDomain = domain ?: bundle.bundleIdentifier;
+            CFStringRef probeAppID = (__bridge CFStringRef)probeDomain;
+            CFPreferencesSetAppValue(CFSTR("SUUpdateGroupIdentifier"),
+                                     (__bridge CFNumberRef)requestedGroup, probeAppID);
+            if (!CFPreferencesAppSynchronize(probeAppID)) return 34;
+            id probeGroup = CFBridgingRelease(CFPreferencesCopyAppValue(
+                CFSTR("SUUpdateGroupIdentifier"), probeAppID));
+            if (![probeGroup isKindOfClass:NSNumber.class] || ![probeGroup isEqual:effectiveGroup]) return 34;
+            Trace([NSString stringWithFormat:@"rollout probe group read=%@ domain=%@ matches-source before-updater-start",
+                   probeGroup, probeDomain]);
             NSString *skip = [bundle objectForInfoDictionaryKey:@"TSSkip"];
             if (skip) [preferences setObject:skip forKey:@"SUSkippedVersion"];
             NSString *major = [bundle objectForInfoDictionaryKey:@"TSSkipMajor"];
@@ -262,6 +475,7 @@ int main(void) {
         }
         ArmWindowProbe(bundle);
         TSStart(bundle, [TestDriver new], [TestUpdaterDelegate new]);
+        if (RotatesGroup()) TSProbe = [TestFreshnessProbe new];
         if (TSUpdater.automaticallyDownloadsUpdates || !TSUpdater.automaticallyChecksForUpdates) return 32;
         TSInstallRequested = !TSCompare && ![[bundle objectForInfoDictionaryKey:@"TSDiscovery"] boolValue]; // explicit About Install intent
         if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];

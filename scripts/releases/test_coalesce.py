@@ -82,14 +82,15 @@ class LinuxWindowTests(unittest.TestCase):
         # The release checkout builds the commit select chose (main tip on a tick).
         self.assertIn("(inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source", workflow)
         self.assertIn('python3 scripts/releases/coalesce.py linux', workflow)
-        # Arch must honor coalescing, skip AppImage-only dispatches, and retain
+        # Arch must honor freeze/coalescing, skip AppImage-only dispatches, and retain
         # PR-lane routing. Match the release job's entire condition so a guard
         # elsewhere in the workflow cannot hide a regression here.
         release = workflow.split('\n  release:\n', 1)[1].split('\n  appimage-reuse:\n', 1)[0]
         self.assertIn('    needs: select', release.splitlines())
         self.assertEqual(
             [line.strip() for line in release.splitlines() if line.startswith('    if:')],
-            ["if: inputs.appimage_only != 'true' && needs.select.outputs.build == 'true' && "
+            ["if: needs.select.outputs.arch != 'false' && inputs.appimage_only != 'true' && "
+             "needs.select.outputs.build == 'true' && "
              "(github.event_name != 'pull_request' || "
              "github.event.pull_request.head.repo.full_name != github.repository || "
              "vars.OKILUM_PR_LANE == 'local')"],

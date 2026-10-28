@@ -38,6 +38,12 @@ impl Snapshot {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    pub(crate) fn check_identity(&self) -> Result<(), FallbackReason> {
+        if self.document.is_empty() || self.document.len() > MAX_DOCUMENT_ID_BYTES {
+            return Err(FallbackReason::IdentityLimit);
+        }
+        Ok(())
+    }
     fn matches(&self, other: &Self) -> bool {
         self.generation == other.generation
             && self.document == other.document
@@ -124,7 +130,7 @@ impl Plan {
 
 /// Both ranges use canonical source coordinates, including zero-width carets.
 /// A caret on a shared block boundary reveals both adjacent blocks.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Active {
     pub selection: Option<Range<usize>>,
     pub composition: Option<Range<usize>>,
@@ -281,6 +287,11 @@ fn boundaries(text: &str) -> Vec<usize> {
         .chain(std::iter::once(text.len()))
         .collect()
 }
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 fn valid_range(range: &Range<usize>, boundaries: &[usize]) -> bool {
     range.start <= range.end
         && boundaries.binary_search(&range.start).is_ok()
@@ -346,6 +357,8 @@ pub fn project_with_work_budget(
         }
         // A range allowance covers its bounded boundary searches as well as validation.
         work.charge(count * 64 + snapshot.source.len())?;
+        #[cfg(test)]
+        TEST_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
         let source_boundaries = boundaries(&snapshot.source);
         for range in [active.selection.as_ref(), active.composition.as_ref()]
             .into_iter()

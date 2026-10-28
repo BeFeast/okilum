@@ -141,5 +141,5 @@ if __name__ == '__main__':
     parser.add_argument('--source', required=True)
     parser.add_argument('--directory', type=Path, required=True)
     args = parser.parse_args()
-    token = os.environ['MIRROR_TOKEN']
-    stage(transport.GitHub(token), args.source, args.directory, lambda aid: download(token, aid))
+    api = transport.GitHub()
+    stage(api, args.source, args.directory, lambda aid: download(api.token, aid))

@@ -83,7 +83,7 @@ def draw_samples(path, start_us, end_us):
     return result
 
 
-def run_once(binary, base, name, live, rep, deadline):
+def run_once(binary, base, name, live, rep, deadline, *, input_only=False):
     raw_tail = name == "raw-tail-60k.md"
     home = base / "home"
     state = home / "okilum"
@@ -105,6 +105,8 @@ def run_once(binary, base, name, live, rep, deadline):
                OKILUM_STATE_DIR=str(state), OKILUM_FRAME_TRACE=str(trace),
                OKILUM_EDITOR_LATENCY_DIAGNOSTICS="1",
                OKILUM_EDITOR_LAYOUT_DIAGNOSTICS="1")
+    if input_only:
+        env.pop("OKILUM_FRAME_TRACE", None)
     launch_ns = time.monotonic_ns()
     app_log = (base / "app.log").open("wb")
     proc = subprocess.Popen([str(binary), "--vault", str(vault), "--index-dir",
@@ -157,6 +159,15 @@ def run_once(binary, base, name, live, rep, deadline):
             expected = source + b"\n" if raw_tail else b"x" + source
             return copied.returncode == 0 and copied.stdout == expected
         wait_for(buffer_changed, proc, deadline, "injected edit in the actual copied buffer")
+        if input_only:
+            proof = {"scenario": f"{'live' if live else 'source'}:{name}", "rep": rep,
+                     "opened": opened, "edited": edited, "pixels_changed": True,
+                     "buffer_verified": True, "binary_kind": "shipped-unpatched",
+                     "input": "Enter at EOF inside unclosed fence" if raw_tail else "x at BOF",
+                     "sent_ns": sent_ns, "edit_pixel_verified_ns": pixel_verified_ns}
+            sample = {"input_frame_ms": sample["input_frame_ms"]}
+            (base / "sample.json").write_text(json.dumps({"sample": sample, "evidence": proof}, indent=2))
+            return sample, proof
         command("xdotool", "key", "Left", "ctrl+Home", env=env)
         command("xdotool", "mousemove", "600", "400", env=env)
         time.sleep(.1)

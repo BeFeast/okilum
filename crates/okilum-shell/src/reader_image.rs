@@ -5,6 +5,7 @@ pub(crate) struct ReaderImage {
     source: ImageSource,
     error_message: Option<SharedString>,
     cache: Option<Entity<RetainAllImageCache>>,
+    logical_size: Option<Size<Pixels>>,
 }
 impl ReaderImage {
     pub(crate) fn new(source: ImageSource) -> Self {
@@ -12,6 +13,7 @@ impl ReaderImage {
             source,
             error_message: None,
             cache: None,
+            logical_size: None,
         }
     }
 
@@ -22,6 +24,13 @@ impl ReaderImage {
 
     pub(crate) fn with_cache(mut self, cache: Entity<RetainAllImageCache>) -> Self {
         self.cache = Some(cache);
+        self
+    }
+
+    /// Diagrams can reduce raster density without shrinking their document
+    /// geometry. Ordinary images continue using their intrinsic pixel size.
+    pub(crate) fn with_logical_size(mut self, size: Size<Pixels>) -> Self {
+        self.logical_size = Some(size);
         self
     }
 
@@ -80,6 +89,7 @@ impl Element for ReaderImage {
                 cx,
             )
         });
+        let intrinsic = self.logical_size.unwrap_or(intrinsic);
         let mut style = Style::default();
         style.max_size.width = intrinsic.width.into();
         let id = window.request_measured_layout(style, move |known, available, _, _| {
@@ -146,6 +156,7 @@ impl Element for ReaderImage {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    use std::sync::Arc;
     #[test]
     fn image_height_tracks_actual_width_before_and_after_loading() {
         assert_eq!(fitted_size(size(px(0.), px(0.)), px(640.)).height, px(0.));
@@ -156,6 +167,47 @@ mod tests {
             assert!((f32::from(fitted.height) - width.min(2600.) * 862. / 2600.).abs() < 0.01);
         }
     }
+    #[gpui::test]
+    fn a_reduced_density_diagram_keeps_its_logical_width_and_document_height(
+        cx: &mut TestAppContext,
+    ) {
+        struct DiagramView(Arc<RenderImage>);
+        impl Render for DiagramView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                gpui_component::v_flex()
+                    .w(px(400.))
+                    .child(
+                        div().flex_none().child(
+                            ReaderImage::new(self.0.clone().into())
+                                .with_logical_size(size(px(240.), px(6000.))),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "after-logical-diagram".into())
+                            .h(px(20.)),
+                    )
+            }
+        }
+        let raster = Arc::new(RenderImage::new(vec![image::Frame::new(
+            image::RgbaImage::from_pixel(8, 200, image::Rgba([0, 0, 255, 255])),
+        )]));
+        assert!(
+            u32::from(raster.size(0).width) < 240,
+            "positive control: reduced physical density"
+        );
+        let (_, visual) = cx.add_window_view(|_, _| DiagramView(raster));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let image = visual.debug_bounds("reader-block-image").unwrap();
+        let after = visual.debug_bounds("after-logical-diagram").unwrap();
+        assert_eq!(image.size, size(px(240.), px(6000.)));
+        assert!(
+            after.top() >= image.bottom(),
+            "the whole diagram participates in document scrolling"
+        );
+    }
+
     #[gpui::test]
     fn loaded_image_block_and_following_text_resize_together(cx: &mut TestAppContext) {
         struct ImageView {

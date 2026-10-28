@@ -82,7 +82,47 @@ jobs:
 
   # Shared Rust crates are independently required. The GUI/platform/release lanes
   # below still run in full, but cannot hold up a Mac-first merge (#1489).
-  shared:
+  shared-select:
+    runs-on: bridge
+    timeout-minutes: 3
+    outputs:
+      lane: ${{ steps.select.outputs.lane }}
+      measure: ${{ steps.select.outputs.measure }}
+    steps:
+      - name: Select shared lane once
+        id: select
+        env:
+          SHARED_LANE: ${{ vars.OKILUM_SHARED_LANE }}
+          EVENT: ${{ github.event_name }}
+          TRUSTED: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+          MEASURE_UNTIL: ${{ vars.OKILUM_SHARED_MEASURE_UNTIL }}
+          MEASURE_FIRST_RUN: ${{ vars.OKILUM_SHARED_MEASURE_FIRST_RUN }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PYSELECT'
+          import os, time
+          lane, measure = 'local', False
+          trusted = os.environ['TRUSTED'] == 'true'
+          if trusted and os.environ['EVENT'] in ('push', 'pull_request'):
+              if os.environ['SHARED_LANE'] == 'hosted':
+                  lane = 'hosted'
+              elif os.environ['SHARED_LANE'] == 'measure':
+                  try:
+                      deadline = int(os.environ['MEASURE_UNTIL'])
+                      first = int(os.environ['MEASURE_FIRST_RUN'])
+                      current = int(os.environ['RUN_NUMBER'])
+                      now = time.time()
+                      measure = now < deadline <= now + 86400 and 0 < first <= current < first + 10
+                  except ValueError:
+                      pass
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'lane={lane}\nmeasure={str(measure).lower()}\n')
+          print(f'Shared required lane={lane}; independent hosted measurement={measure}')
+          PYSELECT
+
+  shared-local:
+    needs: [shared-select]
+    if: needs.shared-select.outputs.lane == 'local'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
@@ -181,6 +221,81 @@ jobs:
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
+
+  shared-github:
+    needs: [shared-select]
+    if: needs.shared-select.outputs.lane == 'hosted'
+    runs-on: bridge
+    timeout-minutes: 100
+    outputs:
+      result: ${{ steps.remote.outputs.result }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Run exact shared source on GitHub
+        id: remote
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_LANE: shared
+        run: python3 scripts/ci/github-pr.py
+
+  shared-measure:
+    needs: [shared-select]
+    if: needs.shared-select.outputs.measure == 'true'
+    runs-on: bridge
+    timeout-minutes: 100
+    outputs:
+      result: ${{ steps.remote.outputs.result }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Run exact shared source on GitHub
+        id: remote
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_LANE: shared
+        run: python3 scripts/ci/github-pr.py
+
+  shared:
+    needs: [shared-select, shared-local, shared-github]
+    if: always()
+    runs-on: bridge
+    timeout-minutes: 3
+    steps:
+      - name: Require selected shared gate
+        env:
+          SELECTION: ${{ needs.shared-select.result }}
+          LANE: ${{ needs.shared-select.outputs.lane }}
+          LOCAL: ${{ needs.shared-local.result }}
+          HOSTED_JOB: ${{ needs.shared-github.result }}
+          HOSTED_RESULT: ${{ needs.shared-github.outputs.result }}
+        run: |
+          set -euo pipefail
+          test "$SELECTION" = success
+          case "$LANE" in
+            local) test "$LOCAL" = success ;;
+            hosted)
+              test "$LOCAL" = skipped
+              test "$HOSTED_JOB" = success
+              test "$HOSTED_RESULT" = success ;;
+            *) exit 1 ;;
+          esac
 
   linux-local:
     if: >-
@@ -305,6 +420,9 @@ jobs:
         id: remote
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/github-linux.py
@@ -386,6 +504,9 @@ jobs:
         id: remote
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/github-macos.py run
@@ -491,12 +612,15 @@ jobs:
       - name: Run the exact PR head's first-run tests on GitHub Windows
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
-  # #1639: supplementary editor latency; same-runner A/B is required before blocking merges.
+  # #1662: same-runner shipped input A/B; supplementary until calibration acceptance.
   perf-linux:
     needs: native-scope
     if: >-
@@ -512,9 +636,12 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Run the exact PR head's editor latency gate on GitHub Linux
+      - name: Run main and PR input A/B in one GitHub Linux job
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_LANE: perf-linux

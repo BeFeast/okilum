@@ -12,6 +12,15 @@ fn run(command: &mut Command) {
 
 /// Compiles the Sparkle bridge and links the vendored stock Sparkle.framework.
 fn main() {
+    println!("cargo:rerun-if-env-changed=OKILUM_SPRINT_BUILD");
+    if env::var_os("CARGO_FEATURE_LINUX_SPRINT").is_some() {
+        assert!(
+            env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+                && env::var("OKILUM_SPRINT_BUILD").as_deref() == Ok("1")
+                && env::var("OKILUM_RELEASE_VERSION").is_ok_and(|v| v.starts_with("Sprint ")),
+            "linux-sprint is reserved for the explicit Linux Sprint producer, not ordinary/release builds"
+        );
+    }
     for name in [
         "OKILUM_RELEASE_VERSION",
         "OKILUM_SOURCE_COMMIT",

@@ -21,6 +21,7 @@ mod count_label;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
+mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
 mod note_paste;
@@ -57,6 +58,8 @@ mod reader_feedback;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
+#[cfg(any(target_os = "macos", test))]
+mod reader_icloud;
 mod reader_image;
 mod reader_incremental;
 mod reader_instance;
@@ -768,6 +771,8 @@ struct Opts {
     /// be a good way to index the wrong directory.
     vault: Option<PathBuf>,
     open_path: Option<PathBuf>,
+    /// An explicit CLI/OS open created this empty Markdown file (#1835).
+    created_note: bool,
     /// More log files opened with `open_path`, in one view (#1160).
     extra_logs: Vec<PathBuf>,
     single_file: bool,
@@ -1090,13 +1095,27 @@ fn reader_plugins(
     states: prepared_links::States,
     identities: &[okilum_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
-    reader_plugins_at(0, root, view, entity, sel_format, states, identities)
+    reader_plugins_at(
+        MarkdownScope::default(),
+        root,
+        view,
+        entity,
+        sel_format,
+        states,
+        identities,
+    )
+}
+
+#[derive(Default)]
+struct MarkdownScope {
+    fold_base: usize,
+    live: bool,
 }
 
 /// [`reader_plugins`] for a document that is one part of a note: `fold_base`
 /// keeps its callouts' fold state apart from other parts' (#1067).
 fn reader_plugins_at(
-    fold_base: usize,
+    scope: MarkdownScope,
     root: PathBuf,
     view: TextView,
     entity: WeakEntity<Reader>,
@@ -1114,7 +1133,7 @@ fn reader_plugins_at(
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
     let view = markdown_plugins_at(
-        fold_base,
+        scope.fold_base,
         view,
         Arc::new(move |url, event, window, cx| {
             if matches!(event, ClickEvent::Mouse(e) if e.up.button == MouseButton::Right) {
@@ -1148,6 +1167,7 @@ fn reader_plugins_at(
             }
         }),
         sel_format,
+        scope.live,
     )
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
@@ -1186,7 +1206,7 @@ fn markdown_plugins(
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
 ) -> TextView {
-    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format)
+    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format, false)
 }
 
 /// [`markdown_plugins`] for one part of a note; see [`reader_plugins_at`].
@@ -1196,6 +1216,7 @@ fn markdown_plugins_at(
     link_handler: MarkdownLinkHandler,
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
+    live: bool,
 ) -> TextView {
     let link_click = link_handler.clone();
     let parse_image = image_resolver.clone();
@@ -1205,6 +1226,10 @@ fn markdown_plugins_at(
     view.selection_format(sel_format)
         .code_block_language(reader_code_language::resolver())
         .code_block_actions(reader_code::actions)
+        .markdown_block_parser(reader_mermaid::parse)
+        .markdown_block_renderer("mermaid", move |node, window, cx| {
+            reader_mermaid::render(node, live, window, cx)
+        })
         .markdown_block_parser(move |node, cx| {
             let markdown_ast::Node::Paragraph(p) = node else {
                 return None;
@@ -1479,6 +1504,7 @@ struct Reader {
     queued_open_note: Option<String>,
     /// Where an external link queued with `queued_open_note` lands (#1049).
     queued_landing: Option<okilum_core::deep_link::Position>,
+    queued_edit_note: Option<String>,
     /// An external link opened while editing: once its note is accepted, the
     /// editor returns there with the caret on the link's line (#1049).
     pending_link_edit: Option<reader_deep_link::EditLanding>,
@@ -1509,6 +1535,7 @@ struct Reader {
     /// The watcher lives here so it is dropped with the reader; the poll
     /// loop only borrows it through the entity.
     watcher: Option<VaultWatcher>,
+    quick_folders: std::collections::BTreeSet<String>,
     watcher_generation: u64,
     watcher_poll_active: bool,
     #[cfg(test)]
@@ -1759,6 +1786,7 @@ impl Reader {
             pending_open_document: None,
             queued_open_note: None,
             queued_landing: None,
+            queued_edit_note: None,
             pending_link_edit: None,
             side_panels: [None, None],
             outline_section: None,
@@ -1778,6 +1806,7 @@ impl Reader {
             searcher,
             vault_root: vault_root.clone(),
             watcher: None,
+            quick_folders: Default::default(),
             watcher_generation: 0,
             watcher_poll_active: false,
             #[cfg(test)]
@@ -2007,16 +2036,20 @@ impl Reader {
         self.watcher_poll_active = true;
         let generation = self.watcher_generation;
         let root = self.vault_root.clone();
+        let quick_folders = self.single_file.then(|| self.quick_folders.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let (watcher, changes) = cx
+            let (watcher, changes, error) = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     if let Some(hold) = hold {
                         let _ = hold.recv().await;
                     }
+                    let error = quick_folders
+                        .as_ref()
+                        .and_then(|folders| watcher.watch_folders(folders).err());
                     let changes = watcher.poll();
-                    (watcher, changes)
+                    (watcher, changes, error)
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
@@ -2028,6 +2061,13 @@ impl Reader {
                 }
                 this.watcher_poll_active = false;
                 this.watcher = Some(watcher);
+                if let Some(error) = error {
+                    let message = format!("Automatic folder updates unavailable: {error}");
+                    if this.link_notice.as_deref() != Some(message.as_str()) {
+                        this.link_notice = Some(message.into());
+                        cx.notify();
+                    }
+                }
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
                         this.deferred_vault_changes.rescan |= changes.rescan;
@@ -2074,6 +2114,10 @@ impl Reader {
             self.deferred_vault_changes.removed.extend(changes.removed);
             return;
         }
+        if self.single_file {
+            self.refresh_quick_folders(changes, window, cx);
+            return;
+        }
         if !changes.is_empty()
             && !changes.rescan
             && self.incremental_state.is_some()
@@ -2114,10 +2158,14 @@ impl Reader {
         rel: &str,
         jump_term: Option<&str>,
         heading: Option<&str>,
-        line: Option<u32>,
+        landing: Option<prepared_links::Landing>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "macos")]
+        let logical = reader_icloud::logical_path(Path::new(rel));
+        #[cfg(target_os = "macos")]
+        let rel = logical.to_str().unwrap_or(rel);
         if self.project_navigation.active.is_none() {
             self.close_project(window, cx);
         }
@@ -2133,8 +2181,8 @@ impl Reader {
         }
         self.clear_hover(cx);
         self.file_preview = None;
-        if line.is_some() {
-            self.prepare_link_document(rel, line, heading, window, cx);
+        if let Some(landing) = landing {
+            self.prepare_link_document(rel, landing, heading, window, cx);
         } else {
             self.prepare_document(rel, jump_term, heading, window, cx);
         }
@@ -2172,6 +2220,12 @@ impl Reader {
             Ok(document) => document,
             Err(error) => {
                 eprintln!("Document unavailable: {error:#}");
+                #[cfg(target_os = "macos")]
+                if let Some(error) = error.downcast_ref::<reader_icloud::DownloadError>() {
+                    self.link_notice = Some(error.to_string().into());
+                    cx.notify();
+                    return;
+                }
                 self.link_notice = Some("This note couldn’t be opened. Check that it is available and you have permission to read it.".into());
                 cx.notify();
                 return;
@@ -2199,6 +2253,16 @@ impl Reader {
         };
         self.link_notice = None;
         self.link_choices.clear();
+        // A root publication clears history before replacing its old document;
+        // do not attribute that old viewport to the newly published root.
+        if self.navigation.history.get(self.navigation.history_ix) == Some(&self.current_rel) {
+            self.navigation.places.insert(
+                (self.vault_root.clone(), self.current_rel.clone()),
+                self.navigation
+                    .pending_landing
+                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top()),
+            );
+        }
         self.cancel_pending_landing();
         self.navigation.generation = self.navigation.generation.wrapping_add(1);
         if request.history_index.is_none() {
@@ -3005,9 +3069,8 @@ impl Reader {
     /// the title bar. `vault` is what the vault is called in Inbox locations
     /// (#1327).
     fn sidebar_items_named(&self, _vault: &str) -> Vec<SideItem> {
-        if self.single_file {
-            return self.tree.rows.iter().cloned().map(SideItem::Tree).collect();
-        }
+        // Folder mode uses the same inline creation/rename rows as a vault.
+        // Returning only Tree rows here hides the focused name input (#1823).
         // A vault without notes shows no hint: the page says how to start (#1350).
         let hints = !self.vault.notes.is_empty();
         let mut items = Vec::new();
@@ -3294,11 +3357,15 @@ impl Reader {
         cx.notify();
     }
 
-    /// Sidebar header «Reveal current» (#410): only the path to the
+    /// Document toolbar «Reveal in sidebar» (#1756): only the path to the
     /// open note stays expanded, and the note is selected; a folder's index
     /// note selects its folder unless it was opened from its own row (#1512).
     fn focus_current_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() {
+            return;
+        }
+        self.sync_tree();
+        if !self.tree.can_reveal(self.selected_file()) {
             return;
         }
         self.resizing_panel = None;
@@ -3310,7 +3377,6 @@ impl Reader {
         {
             self.save_sidebar(cx);
         }
-        self.sync_tree();
         let current = self.selected_file().to_owned();
         let ix = self.tree.focus(&current);
         if let Some(ix) = self.select_index_folder(&current, ix) {
@@ -3671,10 +3737,12 @@ impl Reader {
             .children(folders.into_iter().filter(|_| !collapse_parents).flat_map(
                 |(folder, path)| {
                     let menu_path = path.clone();
+                    let selector = path.clone();
                     let menu_root = self.vault_root.clone();
                     [
                         div()
                             .id(SharedString::from(format!("reader-crumb-{path}")))
+                            .debug_selector(move || format!("reader-crumb-{selector}"))
                             .flex_shrink(1.)
                             .min_w(px(24.))
                             .overflow_hidden()
@@ -3886,7 +3954,10 @@ impl Reader {
             .overflow_hidden()
             .rounded(px(6.))
             .font_weight(FontWeight::SEMIBOLD)
-            .tooltip(title)
+            .tooltip(project.as_ref().map_or_else(
+                || vault_name::path_tooltip(&self.vault_root),
+                |_| title.to_string(),
+            ))
             .debug_selector(|| "sidebar-vault-title".into())
             .dropdown_menu(move |menu, _, _| {
                 name_items.iter().fold(menu, |menu, item| {
@@ -4232,15 +4303,10 @@ impl Reader {
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
                 #[cfg(any(unix, windows))]
-                SideItem::Create(input, depth, directory, templates, selected, destination) => {
-                    let (destination, destination_tip) = destination;
-                    let destination_entity = entity.clone();
-                    let destination_act = act.clone();
+                SideItem::Create(input, depth, directory, ..) => {
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
-                        // Consume Input's propagated submit before text fallback can
-                        // replace a selected filename with an empty newline.
                         .on_action(|_: &gpui_component::input::Enter, _, cx| {
                             cx.stop_propagation();
                         })
@@ -4253,7 +4319,23 @@ impl Reader {
                             })
                             .small(),
                         )
-                        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .debug_selector(|| "create-name-input".into())
+                                .child(Input::new(&input).small()),
+                        )
+                        .into_any_element()
+                }
+                #[cfg(any(unix, windows))]
+                SideItem::CreateOptions(depth, directory, templates, selected, destination) => {
+                    let (destination, destination_tip) = destination;
+                    let destination_entity = entity.clone();
+                    let destination_act = act.clone();
+                    row_base("inline-create-options".into())
+                        .debug_selector(|| "inline-create-options".into())
+                        .pl(px(18. + depth as f32 * 14.))
                         .when(!directory, |row| {
                             row.child(
                                 Button::new("create-template-picker")
@@ -4858,7 +4940,7 @@ impl Reader {
             return view;
         }
         let entity = cx.entity().downgrade();
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
@@ -5042,7 +5124,7 @@ impl Reader {
     fn render_table_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.table_overlay.clone()?;
         let p = brand::palette(cx);
-        let mut style = reader_text_style(cx.theme());
+        let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         let entity = cx.entity().downgrade();
         let scrim = brand::reader_palette(cx).scrim;
@@ -6063,11 +6145,11 @@ enum SideItem {
     },
     Empty(&'static str),
     Tree(reader_tree::Row),
-    /// Input, depth, folder?, templates, chosen template, and where the
-    /// item lands as «in: …» label and tooltip (#1512).
+    /// The name gets its own full-width row; options cannot shrink its input.
     #[cfg(any(unix, windows))]
-    Create(
-        Entity<InputState>,
+    Create(Entity<InputState>, usize, bool),
+    #[cfg(any(unix, windows))]
+    CreateOptions(
         usize,
         bool,
         Vec<String>,
@@ -6089,6 +6171,10 @@ fn append_creation_rows(
 ) {
     items.push(SideItem::Create(
         create.input.clone(),
+        depth,
+        create.directory,
+    ));
+    items.push(SideItem::CreateOptions(
         depth,
         create.directory,
         create
@@ -6173,7 +6259,7 @@ const SIDEBAR_NAME_GAP: f32 = 4.;
 const SIDEBAR_NAME_CHROME: f32 = 30.;
 /// The name keeps at least this much, caret included, before an action
 /// moves into ⋯; a longer name is cut with an ellipsis first (#1512). At the
-/// default 280 px width all five actions fit, vault colour dot included.
+/// default 280 px width all four actions fit, vault colour dot included.
 const SIDEBAR_NAME_MIN: f32 = 80.;
 
 /// The sidebar header's actions, in their fixed order (#1512). The order is
@@ -6183,32 +6269,27 @@ enum SidebarAction {
     NewNote,
     NewFolder,
     CollapseAll,
-    RevealCurrent,
     ShowHidden,
 }
 
 impl SidebarAction {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::NewNote,
         Self::NewFolder,
         Self::CollapseAll,
-        Self::RevealCurrent,
         Self::ShowHidden,
     ];
 
     /// Only these leave the row for ⋯ on a narrow sidebar; they trail the
     /// fixed ones, so the spilled tail is always a run of them.
     fn spills(self) -> bool {
-        matches!(self, Self::RevealCurrent | Self::ShowHidden)
+        matches!(self, Self::ShowHidden)
     }
 
     /// Creating files needs the platform file layer.
     fn available() -> &'static [Self] {
-        const WITHOUT_FILES: [SidebarAction; 3] = [
-            SidebarAction::CollapseAll,
-            SidebarAction::RevealCurrent,
-            SidebarAction::ShowHidden,
-        ];
+        const WITHOUT_FILES: [SidebarAction; 2] =
+            [SidebarAction::CollapseAll, SidebarAction::ShowHidden];
         if cfg!(any(unix, windows)) {
             &Self::ALL
         } else {
@@ -6221,7 +6302,6 @@ impl SidebarAction {
             Self::NewNote => "sidebar-new-note",
             Self::NewFolder => "sidebar-new-folder",
             Self::CollapseAll => "sidebar-collapse-all",
-            Self::RevealCurrent => "sidebar-reveal-current",
             Self::ShowHidden => "sidebar-show-hidden",
         }
     }
@@ -6231,7 +6311,6 @@ impl SidebarAction {
             Self::NewNote => "New note",
             Self::NewFolder => "New folder",
             Self::CollapseAll => "Collapse all folders",
-            Self::RevealCurrent => "Reveal current note",
             Self::ShowHidden => HIDDEN_FILES_MENU,
         }
     }
@@ -6241,7 +6320,6 @@ impl SidebarAction {
             Self::NewNote => Box::new(NewNote),
             Self::NewFolder => Box::new(NewFolder),
             Self::CollapseAll => Box::new(CollapseFolders),
-            Self::RevealCurrent => Box::new(FocusCurrentFolder),
             Self::ShowHidden => Box::new(ToggleHiddenFiles),
         }
     }
@@ -6256,7 +6334,6 @@ impl SidebarAction {
             Self::NewNote => Icon::default().path("icons/square-pen.svg"),
             Self::NewFolder => Icon::default().path("icons/folder-plus.svg"),
             Self::CollapseAll => Icon::default().path(brand::READER_COLLAPSE_ICON),
-            Self::RevealCurrent => Icon::default().path(brand::READER_FOCUS_ICON),
             Self::ShowHidden if show_hidden => Icon::new(IconName::Eye),
             Self::ShowHidden => Icon::new(IconName::EyeOff),
         }
@@ -6269,7 +6346,6 @@ impl SidebarAction {
             #[cfg(any(unix, windows))]
             Self::NewFolder => reader.new_folder(None, window, cx),
             Self::CollapseAll => reader.collapse_folders(cx),
-            Self::RevealCurrent => reader.focus_current_folder(window, cx),
             Self::ShowHidden => reader.toggle_hidden_files(cx),
             #[cfg(not(any(unix, windows)))]
             Self::NewNote | Self::NewFolder => {}
@@ -6287,7 +6363,7 @@ fn sidebar_action_click(
 }
 
 /// How many header actions fit beside the name (#1512). New note, New
-/// folder and Collapse all always stay; only Reveal current and Show hidden
+/// folder and Collapse all always stay; only Show hidden
 /// move into ⋯, which then takes a slot of its own. The name gives way
 /// first, down to its minimum; below that it is cut with an ellipsis.
 fn sidebar_visible_actions(available: f32, name: f32, actions: &[SidebarAction]) -> usize {
@@ -6500,6 +6576,8 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_timing =
+            platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
@@ -6511,13 +6589,27 @@ impl Render for Reader {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let sync_started = std::time::Instant::now();
+        let sync_timing =
+            platform::text_diagnostics::time(platform::text_diagnostics::Work::ReaderUiSync);
+        if self
+            .tree
+            .set_note_titles(reader_ui_state::tree_note_titles(cx))
+        {
+            self.tree_sticky.clear();
+            self.tree_revealed.clear();
+        }
         self.sync_tree();
         self.sync_sidebar(cx);
         self.restore_ui_tree();
         self.restore_ui_source(window, cx);
         self.record_ui_state(window.is_window_active(), cx);
-        self.sync_backlink_titles();
+        {
+            let _timing =
+                platform::text_diagnostics::time(platform::text_diagnostics::Work::BacklinkTitles);
+            self.sync_backlink_titles();
+        }
         self.sync_outline_section(cx);
+        drop(sync_timing);
         let diagnostics = self
             .loading
             .as_ref()
@@ -7156,6 +7248,10 @@ OPTIONS:
 ";
 
 fn main() {
+    if let Err(error) = linux_sprint::initialize() {
+        eprintln!("Linux Sprint isolation: {error:#}");
+        std::process::exit(1);
+    }
     #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
     if let Some(result) = okilum_appimage::acceptance_entry(
         env!("OKILUM_BUILD_VERSION"),
@@ -7291,6 +7387,10 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    #[cfg(target_os = "linux")]
+    if _instance_lock.is_some() {
+        app_footprint::install_appimage_desktop();
+    }
 
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();
@@ -7415,7 +7515,7 @@ fn main() {
                 kind: WindowKind::Normal,
                 // Wayland app id. Also the handle test tooling keys on, so it
                 // is part of the contract, not decoration.
-                app_id: Some("okilum".into()),
+                app_id: Some(linux_sprint::app_id().into()),
                 #[cfg(target_os = "linux")]
                 window_background: WindowBackgroundAppearance::Opaque,
                 ..TitleBar::window_options()
@@ -9451,7 +9551,7 @@ mod document_link_landing_tests {
 
     /// #1512, #1474: the sidebar has one header row. The vault name sits on
     /// the left and opens the vault menu; New note, New folder, Collapse all,
-    /// Reveal current and Show hidden keep fixed slots on the right, idle and
+    /// Show hidden keep fixed slots on the right, idle and
     /// hovered. There is no Folders row: root entries follow the header.
     #[gpui::test]
     fn sidebar_header_is_one_row_with_fixed_actions_and_no_folders_row(
@@ -9499,15 +9599,10 @@ mod document_link_landing_tests {
                 "sidebar-new-note",
                 "sidebar-new-folder",
                 "sidebar-collapse-all",
-                "sidebar-reveal-current",
                 "sidebar-show-hidden",
             ]
         } else {
-            &[
-                "sidebar-collapse-all",
-                "sidebar-reveal-current",
-                "sidebar-show-hidden",
-            ]
+            &["sidebar-collapse-all", "sidebar-show-hidden"]
         };
         assert_eq!(
             SidebarAction::available()
@@ -9634,31 +9729,21 @@ mod document_link_landing_tests {
         );
     }
 
-    /// #1512: a narrow sidebar sends only Reveal current and Show hidden
-    /// into ⋯; the others never leave the row, and the name gives way first.
+    /// #1756: Reveal moved to the note toolbar; only Show hidden can spill.
     #[test]
-    fn narrow_sidebar_spills_only_reveal_and_show_hidden() {
+    fn narrow_sidebar_spills_only_show_hidden() {
         let all = &SidebarAction::ALL;
         let min = SIDEBAR_NAME_MIN;
         let slot = SIDEBAR_ACTION_SLOT;
-        assert_eq!(sidebar_visible_actions(400., 120., all), 5);
-        // The name gives way down to its minimum before anything spills.
-        assert_eq!(sidebar_visible_actions(min + 5. * slot, 300., all), 5);
-        assert_eq!(sidebar_visible_actions(min + 5. * slot - 1., 300., all), 3);
-        assert_eq!(
-            sidebar_visible_actions(min + 4. * slot + 1., min, all),
-            3,
-            "four in the row plus ⋯ does not fit beside the name"
-        );
-        // At the narrowest the three fixed ones stay.
+        assert_eq!(sidebar_visible_actions(400., 120., all), 4);
+        assert_eq!(sidebar_visible_actions(min + 4. * slot, 300., all), 4);
+        assert_eq!(sidebar_visible_actions(min + 4. * slot - 1., 300., all), 3);
         assert_eq!(sidebar_visible_actions(60., min, all), 3);
-        assert!(all[3..].iter().all(|action| action.spills()));
+        assert!(all[3].spills());
         assert!(!all[..3].iter().any(|action| action.spills()));
-        // Default width (280 px, 12 px padding, two gaps), with and without
-        // the vault colour dot: every action stays in the row.
         for dot in [0., VAULT_DOT_SLOT] {
             let room = 280. - 24. - dot - 2. * SIDEBAR_NAME_GAP;
-            assert_eq!(sidebar_visible_actions(room, 200., all), 5, "dot {dot}");
+            assert_eq!(sidebar_visible_actions(room, 200., all), 4, "dot {dot}");
         }
     }
 

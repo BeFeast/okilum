@@ -692,6 +692,88 @@ mod tests {
             assert!(bad.validate("beta").is_err(), "{field}");
         }
     }
+    // A concurrent test can fork while fs::write still owns its writable fd.
+    // CLOEXEC closes it on exec, but Linux can reject our probe before that.
+    // Retry only kernel ETXTBSY; never hide permissions/noexec/fixture failures.
+    fn retry_text_busy<T>(operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        let start = std::time::Instant::now();
+        retry_text_busy_with(operation, || start.elapsed(), std::thread::sleep)
+    }
+
+    fn retry_text_busy_with<T>(
+        mut operation: impl FnMut() -> std::io::Result<T>,
+        elapsed: impl Fn() -> Duration,
+        mut sleep: impl FnMut(Duration),
+    ) -> std::io::Result<T> {
+        loop {
+            match operation() {
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ETXTBSY)
+                        && elapsed() < Duration::from_secs(1) =>
+                {
+                    sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    #[test]
+    fn probe_retries_only_transient_text_busy_and_bounds_persistent_failure() {
+        let mut attempts = 0;
+        let result = retry_text_busy(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 3);
+        let mut attempts = 0;
+        let error = retry_text_busy::<()>(|| {
+            attempts += 1;
+            Err(std::io::Error::from_raw_os_error(libc::EACCES))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+        assert_eq!(attempts, 1);
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let mut attempts = 0;
+        let error = retry_text_busy_with::<()>(
+            || {
+                attempts += 1;
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            },
+            || elapsed.get(),
+            |delay| elapsed.set(elapsed.get() + delay),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ETXTBSY));
+        assert_eq!(elapsed.get(), Duration::from_secs(1));
+        assert_eq!(attempts, 101);
+    }
+
+    #[test]
+    fn probe_recovers_after_real_writable_descriptor_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("probe");
+        executable(&path, b"#!/bin/sh\nexit 0\n");
+        let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        assert_eq!(
+            Command::new(&path).output().unwrap_err().raw_os_error(),
+            Some(libc::ETXTBSY)
+        );
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(writer);
+        });
+        let output = retry_text_busy(|| Command::new(&path).output()).unwrap();
+        closer.join().unwrap();
+        assert!(output.status.success());
+    }
+
     fn executable(path: &Path, contents: &[u8]) {
         fs::write(path, contents).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -967,10 +1049,12 @@ sync() {
         let payload = payload.as_slice();
         executable(&stage.join("new.AppImage"), payload);
         let clock = std::time::Instant::now();
-        let probe = Command::new(stage.join("new.AppImage"))
-            .arg("--probe-exec")
-            .output()
-            .expect("fixture executable spawn failed (check path, mode, noexec/sandbox)");
+        let probe = retry_text_busy(|| {
+            Command::new(stage.join("new.AppImage"))
+                .arg("--probe-exec")
+                .output()
+        })
+        .expect("fixture executable spawn failed (check path, mode, noexec/sandbox)");
         assert!(
             probe.status.success(),
             "fixture executable preflight: {:?}",

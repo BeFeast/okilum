@@ -133,3 +133,39 @@ The bundle id is read from the app's `Info.plist` (a build that is not inside an
 cannot clean these up. There are no LaunchAgents or keychain items;
 LaunchServices forgets the document types and the `okilum:` URL scheme with
 the app.
+
+### AppImage desktop payload (#1716)
+
+Ordinary primary-instance AppImage launches silently refresh the owned launcher
+and icon off the UI thread through `okilum_appimage::desktop::install`. Help,
+build-info and active AppImage acceptance fixtures do not install them. A moved
+or updated image refreshes the quoted original `APPIMAGE` path on next launch.
+
+`--uninstall-data` lists and removes only the helper-owned files after its
+existing running-instance/Sync checks and confirmation, even if the image moved:
+
+- `~/.local/share/applications/okilum-appimage.desktop`
+- `~/.local/share/icons/hicolor/scalable/apps/okilum-appimage.svg`
+
+These exact paths follow the existing helper contract rather than XDG_DATA_HOME.
+Foreign payloads are refused and reported; distribution launchers are preserved.
+The optional desktop database refresh does not change default handlers.
+
+## Linux Sprint (explicit development build)
+
+The `linux-sprint` feature requires `OKILUM_SPRINT_BUILD=1` and a `Sprint `
+release version; default/release builds do not enable it. Before other startup
+work, it sets state to `~/.local/state/okilum-sprint` and XDG config/cache/state/data
+and temporary sessions to subdirectories there. The existing `roots()` inventory
+therefore resolves only these private roots. Credential keys have their own
+`okilum-sprint:` prefix. This build neither starts the AppImage updater nor
+installs the ordinary desktop registration. Its ordinary `--uninstall-data`
+entry refuses, so it cannot remove production registrations or Sync services.
+
+The Linux Sprint installer owns only `~/Applications/OkilumSprint.AppImage` and
+`~/.local/share/applications/okilum-sprint.desktop`. To retire Sprint, quit it,
+remove those two files, and preserve/export any unsaved drafts before deciding
+whether to remove its private state tree. `~/Applications/Okilum.AppImage` and
+ordinary Okilum data/registrations are outside that inventory. Vaults opened
+explicitly in Sprint remain the user's canonical files, with ordinary editing
+and save/recovery guards.

@@ -1,13 +1,14 @@
 //! [`ManagerGateway`] over T3's MCP endpoint: MCP Streamable HTTP, JSON-RPC
 //! 2.0, protocol 2025-06-18, with the OAuth bearer token from [`crate::oauth`].
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, WWW_AUTHENTICATE};
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -34,11 +35,30 @@ pub struct McpGateway {
     http: Client,
     token: Mutex<Option<StoredToken>>,
     /// `None` until `initialize` succeeded; then the session id, if T3 issued one.
-    session: Mutex<Option<Option<String>>>,
+    session: Mutex<Option<Session>>,
     /// The last failure that says something about the connection, and the
     /// token it was seen with. A new token clears it.
     observed: Mutex<Option<(String, GatewayStatus)>>,
     next_id: AtomicU64,
+}
+
+// Discovery is bound to the initialized session and credential. A new pairing
+// or a dropped session gets a fresh catalog; polling reuses it.
+#[derive(Clone)]
+struct Session {
+    id: Option<String>,
+    tools: BTreeSet<String>,
+}
+const REQUIRED_TOOLS: &[&str] = &["t3_environment_read", "t3_thread_read", "t3_thread_send"];
+impl Session {
+    fn check_required(&self) -> GatewayResult<()> {
+        for &tool in REQUIRED_TOOLS {
+            if !self.tools.contains(tool) {
+                return Err(GatewayError::Compatibility { tool: tool.into() });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Why one HTTP round trip failed.
@@ -84,6 +104,31 @@ impl McpGateway {
         *self.observed.lock().unwrap() = None;
     }
 
+    /// Verify the saved credential with initialize + tools/list, without
+    /// invoking a feature or starting browser authorization.
+    pub fn connect(&self) -> GatewayResult<()> {
+        let token = self.current_token()?;
+        let result = self
+            .ensure_session(&token)
+            .and_then(|session| session.check_required());
+        self.observe(&token, &result);
+        result
+    }
+
+    fn observe(&self, token: &StoredToken, result: &GatewayResult<impl Sized>) {
+        let observed = match result {
+            Err(GatewayError::Revoked | GatewayError::InvalidCredential) => {
+                Some(GatewayStatus::Revoked)
+            }
+            Err(GatewayError::Unreachable(detail)) => Some(GatewayStatus::Unreachable {
+                detail: detail.clone(),
+            }),
+            _ => None,
+        };
+        *self.observed.lock().unwrap() =
+            observed.map(|status| (token.access_token.clone(), status));
+    }
+
     fn current_token(&self) -> GatewayResult<StoredToken> {
         let token = self
             .token
@@ -107,17 +152,13 @@ impl McpGateway {
         let token = self.current_token()?;
         let params = json!({ "name": tool, "arguments": arguments });
         let result = self.with_session(&token, |session| {
-            self.request(&token, session, "tools/call", params.clone())
+            session.check_required()?;
+            if !session.tools.contains(tool) {
+                return Err(GatewayError::Unsupported { tool: tool.into() }.into());
+            }
+            self.request(&token, session.id.as_deref(), "tools/call", params.clone())
         });
-        let observed = match &result {
-            Err(GatewayError::Revoked) => Some(GatewayStatus::Revoked),
-            Err(GatewayError::Unreachable(detail)) => Some(GatewayStatus::Unreachable {
-                detail: detail.clone(),
-            }),
-            _ => None,
-        };
-        *self.observed.lock().unwrap() =
-            observed.map(|status| (token.access_token.clone(), status));
+        self.observe(&token, &result);
         tool_result(result?)
     }
 
@@ -126,11 +167,11 @@ impl McpGateway {
     fn with_session(
         &self,
         token: &StoredToken,
-        exchange: impl Fn(Option<&str>) -> Result<Value, Failure>,
+        exchange: impl Fn(&Session) -> Result<Value, Failure>,
     ) -> GatewayResult<Value> {
         for _ in 0..2 {
             let session = self.ensure_session(token)?;
-            match exchange(session.as_deref()) {
+            match exchange(&session) {
                 Ok(value) => return Ok(value),
                 Err(Failure::Gateway(error)) => return Err(error),
                 Err(Failure::SessionGone) => *self.session.lock().unwrap() = None,
@@ -141,7 +182,7 @@ impl McpGateway {
         ))
     }
 
-    fn ensure_session(&self, token: &StoredToken) -> GatewayResult<Option<String>> {
+    fn ensure_session(&self, token: &StoredToken) -> GatewayResult<Session> {
         let mut session = self.session.lock().unwrap();
         if let Some(id) = session.as_ref() {
             return Ok(id.clone());
@@ -164,8 +205,58 @@ impl McpGateway {
         let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         self.post(token, session_id.as_deref(), true, &note)
             .map_err(gateway_error)?;
-        *session = Some(session_id.clone());
-        Ok(session_id)
+        let tools = self.discover_tools(token, session_id.as_deref())?;
+        let connected = Session {
+            id: session_id,
+            tools,
+        };
+        *session = Some(connected.clone());
+        Ok(connected)
+    }
+
+    fn discover_tools(
+        &self,
+        token: &StoredToken,
+        session: Option<&str>,
+    ) -> GatewayResult<BTreeSet<String>> {
+        #[derive(Deserialize)]
+        struct Tool {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Tools {
+            tools: Vec<Tool>,
+            next_cursor: Option<String>,
+        }
+        let mut names = BTreeSet::new();
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        for _ in 0..MAX_PAGES {
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({"cursor": cursor}));
+            let reply = self
+                .request(token, session, "tools/list", params)
+                .map_err(gateway_error)?;
+            let page: Tools = serde_json::from_value(reply)
+                .map_err(|e| GatewayError::Protocol(format!("tools/list: {e}")))?;
+            names.extend(page.tools.into_iter().map(|tool| tool.name));
+            match page.next_cursor {
+                Some(next) => {
+                    if !seen.insert(next.clone()) {
+                        return Err(GatewayError::Protocol(
+                            "tools/list cursor did not advance".into(),
+                        ));
+                    }
+                    cursor = Some(next);
+                }
+                None => return Ok(names),
+            }
+        }
+        Err(GatewayError::Protocol(
+            "tools/list exceeds the discovery page limit".into(),
+        ))
     }
 
     fn request(
@@ -219,7 +310,29 @@ impl McpGateway {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("text/event-stream"));
         match status {
-            StatusCode::UNAUTHORIZED => return Err(GatewayError::Revoked.into()),
+            StatusCode::UNAUTHORIZED => {
+                let rejected_challenge = response
+                    .headers()
+                    .get_all(WWW_AUTHENTICATE)
+                    .iter()
+                    .filter_map(|value| value.to_str().ok())
+                    .any(invalid_credential_challenge);
+                let body = response.text().unwrap_or_default();
+                let rejected = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .is_some_and(|body| {
+                        ["error", "code"].iter().any(|key| {
+                            body.get(key).and_then(Value::as_str) == Some("invalid_mcp_credential")
+                        })
+                    })
+                    || rejected_challenge;
+                return Err(if rejected {
+                    GatewayError::InvalidCredential
+                } else {
+                    GatewayError::Revoked
+                }
+                .into());
+            }
             StatusCode::NOT_FOUND if session.is_some() => return Err(Failure::SessionGone),
             StatusCode::FORBIDDEN => {
                 return Err(GatewayError::Tool {
@@ -323,6 +436,14 @@ impl ManagerGateway for McpGateway {
         self.call("t3_environment_read", json!({}))
     }
 
+    fn token_expires_at(&self) -> Option<u64> {
+        self.token
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|token| token.expires_at)
+    }
+
     fn status(&self) -> GatewayStatus {
         let Some(token) = self.token.lock().unwrap().clone() else {
             return GatewayStatus::NotConnected;
@@ -399,14 +520,19 @@ impl ManagerGateway for McpGateway {
     }
 
     fn pending_requests(&self, thread_id: &str) -> GatewayResult<Vec<String>> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Pending {
-            request_ids: Vec<String>,
-        }
-        let pending: Pending =
-            self.call("t3_pending_request_list", json!({ "threadId": thread_id }))?;
-        Ok(pending.request_ids)
+        let pending = self.call_value(
+            "t3_pending_request",
+            json!({ "action": "list", "threadId": thread_id }),
+        )?;
+        // The consolidated tool promises ids, not a count or question bodies.
+        // Keep the previous requestIds response and tolerate the equivalent
+        // bare-array/ids projections. Unknown shapes remain visibly unavailable.
+        let ids = pending
+            .get("requestIds")
+            .or_else(|| pending.get("ids"))
+            .unwrap_or(&pending);
+        serde_json::from_value(ids.clone())
+            .map_err(|error| GatewayError::Protocol(format!("t3_pending_request ids: {error}")))
     }
 
     fn capabilities(&self) -> GatewayResult<Capabilities> {
@@ -414,7 +540,7 @@ impl ManagerGateway for McpGateway {
     }
 
     fn thread_configuration(&self, thread_id: &str) -> GatewayResult<ThreadConfiguration> {
-        self.call("t3_thread_configuration", json!({ "threadId": thread_id }))
+        self.call("t3_thread_configure", json!({ "threadId": thread_id }))
     }
 
     fn configure_model(
@@ -426,6 +552,56 @@ impl ManagerGateway for McpGateway {
         self.call_value("t3_thread_configure", args)?;
         self.thread_configuration(thread_id)
     }
+}
+
+// Challenge parameters belong to their authentication scheme. Commas inside
+// quoted values are data, so a realm cannot manufacture an error parameter.
+fn invalid_credential_challenge(header: &str) -> bool {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    for (index, ch) in header.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch == ',' && !quoted {
+            parts.push(header[start..index].trim());
+            start = index + 1;
+        }
+    }
+    if quoted || escaped {
+        return false;
+    }
+    parts.push(header[start..].trim());
+    let mut bearer = false;
+    for part in parts {
+        let boundary = part
+            .find(|ch: char| ch.is_ascii_whitespace() || ch == '=')
+            .unwrap_or(part.len());
+        let (name, tail) = part.split_at(boundary);
+        let tail = tail.trim_start();
+        let parameter = if tail.starts_with('=') {
+            part
+        } else {
+            bearer = name.eq_ignore_ascii_case("Bearer");
+            tail
+        };
+        if bearer {
+            if let Some((name, value)) = parameter.split_once('=') {
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .unwrap_or(value);
+                if name.trim().eq_ignore_ascii_case("error") && value == "invalid_mcp_credential" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn gateway_error(failure: Failure) -> GatewayError {

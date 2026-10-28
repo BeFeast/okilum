@@ -1,5 +1,6 @@
 //! Navigation owned by one document surface, never shared with sibling panes.
 use gpui::ListOffset;
+use std::{collections::HashMap, path::PathBuf};
 
 /// Keep history and in-flight landing/load generations together when moving a
 /// document between pane hosts. Vault indexes and window layout do not belong here.
@@ -16,8 +17,14 @@ pub(super) struct State {
     pub history_positions: Vec<ListOffset>,
     pub history_ix: usize,
     pub history_nav: Option<usize>,
+    /// Latest reading place per canonical root/document, independent of the
+    /// Back/Forward branch. Contents derives its active section from this viewport.
+    pub places: HashMap<(PathBuf, String), ListOffset>,
     /// A link's line landing highlights its block once it is reached (#1049).
     pub flash_pending: Option<usize>,
     /// The highlighted block and its serial (each highlight fades once).
     pub flash: Option<(usize, u64)>,
 }
+
+#[cfg(test)]
+mod tests;

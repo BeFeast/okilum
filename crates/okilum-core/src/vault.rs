@@ -280,7 +280,10 @@ pub(crate) fn cloud_placeholder(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         const SF_DATALESS: u32 = 0x4000_0000;
-        if rustix::fs::stat(path).is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0) {
+        let _phase = crate::open_diagnostics::phase("macos_placeholder_stat");
+        if crate::open_diagnostics::fs(|| rustix::fs::stat(path))
+            .is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0)
+        {
             return true;
         }
     }
@@ -887,6 +890,25 @@ impl Vault {
         self.set_note_identity(&note_path(Path::new(path)), true);
     }
 
+    /// Publish a completed local directory creation, including any new parents,
+    /// before a lazy folder refresh replaces the visible tree (#1823).
+    pub fn register_created_directory(&mut self, path: &str) {
+        for directory in Path::new(path)
+            .ancestors()
+            .take_while(|path| !path.as_os_str().is_empty())
+        {
+            let path = note_path(directory);
+            self.occupied_paths.insert(path.to_lowercase());
+            if !self.entries.iter().any(|entry| entry.path == path) {
+                self.entries.push(VaultEntry {
+                    path,
+                    kind: EntryKind::Directory,
+                });
+            }
+        }
+        self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+
     /// Find a readable document without collecting or sorting the inventory.
     pub fn discover_document(
         root: &Path,
@@ -944,7 +966,8 @@ impl Vault {
 
     pub fn read_note(&self, rel: &str) -> Result<String> {
         anyhow::ensure!(!service_path(Path::new(rel)), "Service files are not notes");
-        read_source(&self.root.join(rel)).with_context(|| format!("read {rel}"))
+        crate::open_diagnostics::fs(|| read_source(&self.root.join(rel)))
+            .with_context(|| format!("read {rel}"))
     }
 
     /// Resolve a wikilink target ("Note", "Dir/Note", "Note#Heading", with any
@@ -981,6 +1004,7 @@ impl Vault {
 
     /// Same identity rules as `resolve_from`, with borrowed candidate storage.
     pub fn resolve_from_ref(&self, target: &str, from_note: &str) -> ResolutionRef<'_> {
+        let _phase = crate::open_diagnostics::phase("wiki_index_lookup");
         let t = target.split(['#', '^']).next().unwrap_or("").trim();
         let key = t.to_lowercase();
         let key = key.trim_end_matches(".md").trim_matches('/');
@@ -1047,10 +1071,21 @@ impl Vault {
     /// Ordinary Markdown is relative-first; existing but unreadable/invalid
     /// local entries must never redirect to a root or suffix namesake.
     pub fn resolve_markdown(&self, path: &str, from: &str) -> Resolution {
+        let _phase = crate::open_diagnostics::phase("markdown_index_lookup");
         let Some(path) = crate::document_links::markdown_path(self, path) else {
             return Resolution::Unresolved;
         };
-        let path = path.as_ref();
+        self.resolve_markdown_path(path.as_ref(), from, false)
+    }
+
+    /// Render-time identity lookup over the captured inventory. Never probes a
+    /// filesystem path; local-file verification remains a separate operation.
+    pub(crate) fn resolve_markdown_indexed(&self, path: &str, from: &str) -> Resolution {
+        let _phase = crate::open_diagnostics::phase("markdown_index_lookup");
+        self.resolve_markdown_path(path, from, true)
+    }
+
+    fn resolve_markdown_path(&self, path: &str, from: &str, indexed: bool) -> Resolution {
         let key = path.to_lowercase();
         let key = key.strip_suffix(".md").unwrap_or(&key);
         let exact = |key: &str| {
@@ -1073,7 +1108,7 @@ impl Vault {
                 _ => Resolution::Ambiguous { candidates },
             }
         };
-        if self.single_file {
+        if self.single_file && !indexed {
             let candidate = if path.starts_with('/') {
                 self.root.join(path.trim_start_matches('/'))
             } else {
@@ -1085,8 +1120,10 @@ impl Vault {
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
             {
-                if let Ok(canonical) = candidate.canonicalize() {
-                    if canonical.is_file() && canonical.starts_with(&self.root) {
+                if let Ok(canonical) = crate::open_diagnostics::fs(|| candidate.canonicalize()) {
+                    if crate::open_diagnostics::fs(|| canonical.is_file())
+                        && canonical.starts_with(&self.root)
+                    {
                         return Resolution::Resolved {
                             path: note_path(canonical.strip_prefix(&self.root).unwrap()),
                         };
@@ -1114,14 +1151,14 @@ impl Vault {
         }
         // The complete graph uses metadata captured by enumeration, including
         // dangling links and non-directory ancestors, rather than probing per link.
-        let local_occupied = if self.graph_root.is_some() {
+        let local_occupied = if indexed || self.graph_root.is_some() {
             self.indexed_occupied(&format!("{relative}.md"))
         } else {
             let candidate = self
                 .root
                 .join(Path::new(from).parent().unwrap_or(Path::new("")))
                 .join(path);
-            !matches!(std::fs::symlink_metadata(candidate), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            !matches!(crate::open_diagnostics::fs(|| std::fs::symlink_metadata(candidate)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         };
         if local_occupied {
             return Resolution::Unresolved;
@@ -1133,10 +1170,10 @@ impl Vault {
         if root != Resolution::Unresolved {
             return root;
         }
-        let root_occupied = if self.graph_root.is_some() {
+        let root_occupied = if indexed || self.graph_root.is_some() {
             self.indexed_occupied(&format!("{key}.md"))
         } else {
-            !matches!(std::fs::symlink_metadata(self.root.join(path)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            !matches!(crate::open_diagnostics::fs(|| std::fs::symlink_metadata(self.root.join(path))), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         };
         if root_occupied {
             return Resolution::Unresolved;
@@ -1171,7 +1208,7 @@ impl Vault {
                 .any(|part| self.symlink_paths.contains(&note_path(part).to_lowercase()))
     }
 
-    fn indexed_occupied(&self, path: &str) -> bool {
+    pub(crate) fn indexed_occupied(&self, path: &str) -> bool {
         self.occupied_paths.contains(path)
             || Path::new(path)
                 .ancestors()
@@ -1181,7 +1218,7 @@ impl Vault {
 
     /// Apply a `./` `../` target to the directory of `from_note`, yielding a
     /// lowercased vault-relative key, or `None` if it walks above the root.
-    fn walk_relative(&self, key: &str, from_note: &str) -> Option<String> {
+    pub(crate) fn walk_relative(&self, key: &str, from_note: &str) -> Option<String> {
         let from = from_note.to_lowercase();
         let mut parts: Vec<&str> = from
             .trim_end_matches(".md")
@@ -1291,7 +1328,21 @@ impl Vault {
             }
             // bare filename lookup
             let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
-            self.asset_map.get(&name).cloned()
+            self.asset_map.get(&name).cloned().or_else(|| {
+                if !self.single_file {
+                    return None;
+                }
+                // Quick mode has no recursive asset map. Resolve only a unique
+                // already-admitted attachment, including completed local copies.
+                let mut known = self.entries.iter().filter(|entry| {
+                    entry.kind == EntryKind::Attachment
+                        && Path::new(&entry.path)
+                            .file_name()
+                            .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
+                });
+                let first = known.next()?;
+                known.next().is_none().then(|| self.root.join(&first.path))
+            })
         }
     }
 
@@ -2088,3 +2139,53 @@ mod preimage_visibility_tests {
 #[cfg(test)]
 #[path = "vault/alias_tests.rs"]
 mod alias_tests;
+
+#[cfg(test)]
+mod quick_attachment_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn quick_assets_use_only_unique_admitted_paths_without_scanning_other_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for folder in ["attachments", "unexpanded"] {
+            std::fs::create_dir(root.join(folder)).unwrap();
+            std::fs::write(root.join(folder).join("image.png"), b"attachment").unwrap();
+        }
+        let mut vault = Vault::from_note_paths(std::iter::empty());
+        vault.root = root.to_owned();
+        vault.single_file = true;
+        vault.entries.push(VaultEntry {
+            path: "attachments/image.png".into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("image.png", "note.md"),
+            Some(root.join("attachments/image.png"))
+        );
+        vault.entries.push(VaultEntry {
+            path: "unexpanded/image.png".into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("image.png", "note.md"),
+            None,
+            "known duplicates must not pick a winner"
+        );
+        assert_eq!(
+            vault.resolve_asset("attachments/image.png", "note.md"),
+            Some(root.join("attachments/image.png"))
+        );
+        let unicode = "attachments/Снимок экрана.PNG";
+        std::fs::write(root.join(unicode), b"unicode attachment").unwrap();
+        vault.entries.push(VaultEntry {
+            path: unicode.into(),
+            kind: EntryKind::Attachment,
+        });
+        assert_eq!(
+            vault.resolve_asset("Снимок экрана.PNG", "note.md"),
+            Some(root.join(unicode)),
+            "match the full-vault Unicode filename lookup while retaining exact path bytes"
+        );
+    }
+}

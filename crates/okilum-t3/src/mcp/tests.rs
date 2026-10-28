@@ -24,6 +24,27 @@ fn gateway(server: &FakeServer, token: Option<StoredToken>) -> McpGateway {
 /// A T3 `/mcp` endpoint: accepts the bearer `good`, issues one session and
 /// answers `tools/call` with `tool(name, arguments)`.
 fn fake_t3(tool: impl Fn(&str, &Value) -> Value + Send + Sync + 'static) -> FakeServer {
+    fake_t3_with_tools(current_tools(), tool)
+}
+
+fn current_tools() -> Value {
+    let mut fixture: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/t3-tools-2026-10-27.json"
+    ))
+    .unwrap();
+    // Catalog/model support is optional; this unchanged, no-argument tool is
+    // independently exposed by the live agent tool catalog.
+    fixture["tools"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"orchestrator_capabilities", "inputSchema":{"type":"object"}}));
+    fixture
+}
+
+fn fake_t3_with_tools(
+    catalog: Value,
+    tool: impl Fn(&str, &Value) -> Value + Send + Sync + 'static,
+) -> FakeServer {
     FakeServer::start(move |request| {
         if request.header("authorization") != Some("Bearer good") {
             return Response::empty(401)
@@ -39,6 +60,10 @@ fn fake_t3(tool: impl Fn(&str, &Value) -> Value + Send + Sync + 'static) -> Fake
             )
             .with_header(SESSION_HEADER, SESSION),
             "notifications/initialized" => Response::empty(202),
+            "tools/list" => Response::json(
+                200,
+                json!({"jsonrpc":"2.0", "id":message["id"], "result": catalog}),
+            ),
             "tools/call" => {
                 let params = &message["params"];
                 let result = tool(params["name"].as_str().unwrap(), &params["arguments"]);
@@ -91,6 +116,7 @@ fn initialises_once_and_sends_session_and_protocol_headers() {
         [
             "initialize",
             "notifications/initialized",
+            "tools/list",
             "tools/call",
             "tools/call"
         ]
@@ -108,7 +134,7 @@ fn initialises_once_and_sends_session_and_protocol_headers() {
     }
     assert_eq!(
         tool_calls(&requests)[0]["arguments"],
-        json!({ "threadId": "mcp:manager" })
+        json!({ "action": "list", "threadId": "mcp:manager" })
     );
     assert!(matches!(gateway.status(), GatewayStatus::Connected { .. }));
 }
@@ -306,6 +332,10 @@ fn a_reply_as_an_event_stream_is_read() {
                 json!({ "jsonrpc": "2.0", "id": message["id"], "result": {} }),
             ),
             "notifications/initialized" => Response::empty(202),
+            "tools/list" => Response::json(
+                200,
+                json!({"jsonrpc":"2.0", "id":message["id"], "result": current_tools()}),
+            ),
             _ => {
                 let reply = json!({ "jsonrpc": "2.0", "id": message["id"],
                                     "result": structured(json!({ "requestIds": ["q"] })) });
@@ -350,9 +380,11 @@ fn a_dropped_session_is_restarted_once() {
         [
             "initialize",
             "notifications/initialized",
+            "tools/list",
             "tools/call",
             "initialize",
             "notifications/initialized",
+            "tools/list",
             "tools/call"
         ]
     );
@@ -361,12 +393,12 @@ fn a_dropped_session_is_restarted_once() {
 #[test]
 fn configure_model_returns_the_configuration_read_back() {
     let server = fake_t3(|name, arguments| match name {
-        "t3_thread_configure" => {
+        "t3_thread_configure" if arguments.get("modelSelection").is_some() => {
             assert_eq!(arguments["modelSelection"]["model"], "claude-fable-5-1");
             structured(json!({ "sequence": 7 }))
         }
         // The server kept the old model: the UI must show what is true.
-        "t3_thread_configuration" => structured(configuration("claude-opus-5-5")),
+        "t3_thread_configure" => structured(configuration("claude-opus-5-5")),
         other => panic!("unexpected tool {other}"),
     });
     let selection = ModelSelection {
@@ -402,7 +434,7 @@ fn project_model_control_uses_live_catalog_and_confirms_actual_configuration() {
         structured(match name {
             "t3_thread_read" => model_page("managers"),
             "orchestrator_capabilities" => model_catalog(),
-            "t3_thread_configuration" => {
+            "t3_thread_configure" if args.get("modelSelection").is_none() => {
                 json!({"threadId":"mcp:manager","modelSelection":*retained.lock().unwrap(),
             "runtimeMode":"full-access","interactionMode":"default"})
             }
@@ -429,11 +461,12 @@ fn project_model_control_uses_live_catalog_and_confirms_actual_configuration() {
     assert_eq!(confirmed.configuration.model_selection, selection);
     let calls = tool_calls(&server.requests());
     assert_eq!(calls[calls.len() - 2]["name"], "t3_thread_configure");
-    assert_eq!(calls[calls.len() - 1]["name"], "t3_thread_configuration");
+    assert_eq!(calls[calls.len() - 1]["name"], "t3_thread_configure");
     assert_eq!(
         calls
             .iter()
-            .filter(|c| c["name"] == "t3_thread_configure")
+            .filter(|c| c["name"] == "t3_thread_configure"
+                && c["arguments"].get("modelSelection").is_some())
             .count(),
         1
     );
@@ -442,15 +475,17 @@ fn project_model_control_uses_live_catalog_and_confirms_actual_configuration() {
 #[test]
 fn project_model_control_never_claims_a_configure_ack_or_permission_error_as_confirmation() {
     for deny in [false, true] {
-        let server = fake_t3(move |name, _| {
-            if name == "t3_thread_configure" && deny {
+        let server = fake_t3(move |name, args| {
+            if name == "t3_thread_configure" && args.get("modelSelection").is_some() && deny {
                 return json!({"isError":true,"structuredContent":{"code":"capability_denied","message":"Credential cannot configure this full-access thread"}});
             }
             structured(match name {
                 "t3_thread_read" => model_page("managers"),
                 "orchestrator_capabilities" => model_catalog(),
                 // Even a successful configure ACK does not establish the new model.
-                "t3_thread_configuration" => configuration("old"),
+                "t3_thread_configure" if args.get("modelSelection").is_none() => {
+                    configuration("old")
+                }
                 "t3_thread_configure" => json!({"success":true}),
                 other => panic!("unexpected {other}"),
             })
@@ -480,7 +515,8 @@ fn project_model_control_never_claims_a_configure_ack_or_permission_error_as_con
         assert_eq!(
             tool_calls(&server.requests())
                 .iter()
-                .filter(|c| c["name"] == "t3_thread_configure")
+                .filter(|c| c["name"] == "t3_thread_configure"
+                    && c["arguments"].get("modelSelection").is_some())
                 .count(),
             1,
             "an unconfirmed write must not trigger another write"
@@ -491,11 +527,13 @@ fn project_model_control_never_claims_a_configure_ack_or_permission_error_as_con
 #[test]
 fn project_model_control_refuses_moved_targets_and_models_removed_from_live_catalog() {
     for moved in [false, true] {
-        let server = fake_t3(move |name, _| {
+        let server = fake_t3(move |name, args| {
             structured(match name {
                 "t3_thread_read" => model_page(if moved { "elsewhere" } else { "managers" }),
                 "orchestrator_capabilities" => model_catalog(),
-                "t3_thread_configuration" => configuration("old"),
+                "t3_thread_configure" if args.get("modelSelection").is_none() => {
+                    configuration("old")
+                }
                 other => panic!("no write is permitted here: {other}"),
             })
         });
@@ -512,7 +550,8 @@ fn project_model_control_refuses_moved_targets_and_models_removed_from_live_cata
         assert!(target.configure(&gateway, &selection).is_err());
         assert!(tool_calls(&server.requests())
             .iter()
-            .all(|c| c["name"] != "t3_thread_configure"));
+            .all(|c| c["name"] != "t3_thread_configure"
+                || c["arguments"].get("modelSelection").is_none()));
     }
 }
 
@@ -580,7 +619,7 @@ fn an_sse_reply_returns_before_the_server_closes_the_stream() {
     .unwrap();
     let (returned, wait) = mpsc::channel();
     let server = std::thread::spawn(move || {
-        for step in 0..3 {
+        for step in 0..4 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut line = String::new();
@@ -611,6 +650,8 @@ fn an_sse_reply_returns_before_the_server_closes_the_stream() {
             }
             let result = if step == 0 {
                 json!({})
+            } else if step == 2 {
+                current_tools()
             } else {
                 structured(json!({"requestIds": ["q"]}))
             };
@@ -1026,4 +1067,32 @@ fn a_refused_or_unmatched_icon_save_is_an_error_and_writes_nothing() {
         );
     }
     std::fs::remove_dir_all(vault).unwrap();
+}
+
+#[path = "compatibility_tests.rs"]
+mod compatibility_tests;
+
+#[test]
+fn invalid_credential_code_is_scoped_to_a_bearer_challenge() {
+    for valid in [
+        "Bearer error=\"invalid_mcp_credential\"",
+        "bEaReR realm=\"T3\", error = \"invalid_mcp_credential\"",
+        "Basic realm=\"legacy\", Bearer realm=\"T3\", error=invalid_mcp_credential",
+    ] {
+        assert!(invalid_credential_challenge(valid), "{valid}");
+    }
+    for unrelated in [
+        "Basic realm=\"legacy\", error=\"invalid_mcp_credential\"",
+        "Bearer realm=\"T3\", Basic realm=\"legacy\", error=\"invalid_mcp_credential\"",
+        "error=\"invalid_mcp_credential\"",
+        "Bearer realm=\"T3, error=invalid_mcp_credential\"",
+        "Bearer realm=\"T3, \\\"quoted\\\", error=invalid_mcp_credential\"",
+        "Bearer error=\"invalid_token\"",
+        "Bearer realm=\"unterminated, error=invalid_mcp_credential",
+    ] {
+        assert!(
+            !invalid_credential_challenge(unrelated),
+            "AUTH_SCHEME1773: {unrelated}"
+        );
+    }
 }

@@ -6,6 +6,8 @@ result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
 import http.client
+import importlib.util
+import random
 import json
 import os
 from pathlib import Path
@@ -27,34 +29,75 @@ class Unavailable(Exception):
     """The remote service could not provide a native result."""
 
 
+spec = importlib.util.spec_from_file_location('github_bridge_auth', Path(__file__).with_name('github_auth.py'))
+auth = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(auth)
+
+
+class RateLimitExhausted(Unavailable):
+    pass
+
+
+def poll_delay():
+    return random.uniform(30, 60)
+
+
 class GitHub:
-    def __init__(self, token):
-        self.token = token
+    def __init__(self, token=None):
+        self.quota_exhausted = False
+        try:
+            self.credentials = auth.Credentials(fallback=token) if token is None or isinstance(token, str) else token
+        except auth.CredentialError as error:
+            raise Unavailable(str(error)) from None
+
+    @property
+    def token(self):
+        try:
+            return self.credentials.token
+        except auth.RateLimitError as error:
+            self.quota_exhausted = True
+            raise RateLimitExhausted(str(error)) from None
+        except auth.CredentialError as error:
+            raise Unavailable(str(error)) from None
+
+    def log_quota(self):
+        try:
+            self.credentials.log_quota()
+        except auth.RateLimitError as error:
+            self.quota_exhausted = True
+            raise RateLimitExhausted(str(error)) from None
+        except auth.CredentialError as error:
+            raise Unavailable(str(error)) from None
 
     def request(self, path, method="GET", data=None):
+        if self.quota_exhausted:
+            raise RateLimitExhausted('GitHub API quota exhausted earlier in this job; no further request')
         request_path = path
         headers = {"Authorization": f"Bearer {self.token}",
                    "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": "2022-11-28"}
         if method == "GET" and path.startswith("actions/"):
-            # Actions projections can disagree after completion. Repeating one
-            # cacheable URL three times in 20s can replay the same 60s response.
             separator = "&" if "?" in path else "?"
             request_path += f"{separator}_bridge_read={uuid.uuid4().hex}"
             headers["Cache-Control"] = "no-cache"
         request = urllib.request.Request(
             f"https://api.github.com/repos/{REPOSITORY}/{request_path}",
             data=json.dumps(data).encode() if data is not None else None,
-            method=method,
-            headers=headers,
-        )
+            method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
+                self.credentials.note_quota(getattr(response, 'headers', {}))
                 body = response.read()
                 return json.loads(body) if body else None
+        except urllib.error.HTTPError as error:
+            self.credentials.note_quota(error.headers)
+            reason = auth.http_error(error, f"GitHub {method} {path.split('?')[0]}")
+            if isinstance(reason, auth.RateLimitError):
+                self.quota_exhausted = True
+                raise RateLimitExhausted(str(reason)) from None
+            raise Unavailable(str(reason)) from None
         except (urllib.error.URLError, TimeoutError,
                 http.client.RemoteDisconnected, ConnectionResetError) as error:
-            # Avoid printing HTTP response bodies or credential-bearing commands.
             raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}") from None
 
 
@@ -113,10 +156,12 @@ def hosted_request(api, path, *, sleep=time.sleep):
     for attempt in range(3):
         try:
             return api.request(path)
+        except RateLimitExhausted:
+            raise
         except Unavailable:
             if attempt == 2:
                 raise
-            sleep(5 * (2 ** attempt))
+            sleep(poll_delay())
 
 
 # GitHub's hosted macOS pool is small and queues for well over an hour when
@@ -181,7 +226,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                         f"expected_job={job_name!r} expected_step={build_step!r} "
                         f"jobs={evidence!r} — {url}", flush=True)
                     if attempt < 2:
-                        sleep(10)
+                        sleep(poll_delay())
                 # A persistently missing, skipped or failed gate must still fail.
                 return "failure", f"GitHub did not execute the native gate: {url}"
             if run["status"] == "in_progress":
@@ -212,10 +257,10 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     # never turn a live run into an unavailable/fallback result.
                     running_until = clock() + run_timeout
                     never_started = matches[0]["status"] == "queued"
-                    sleep(20)
+                    sleep(poll_delay())
                     continue
             raise Unavailable(f"GitHub did not start the gate within {queue_timeout} seconds")
-        sleep(20)
+        sleep(poll_delay())
 
 
 def cleanup(api, number):
@@ -233,21 +278,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["run", "cleanup"])
     args = parser.parse_args()
-    token = os.environ.get("MIRROR_TOKEN", "")
     if args.command == "cleanup":
-        if not token:
-            raise Unavailable("GitHub mirror token is unavailable")
-        cleanup(GitHub(token), os.environ["PR_NUMBER"])
+        api = GitHub()
+        api.log_quota()
+        cleanup(api, os.environ["PR_NUMBER"])
         return
     result = "failure"
     try:
-        if not token:
-            raise Unavailable("GitHub mirror token is unavailable")
+        api = GitHub()
         sha = os.environ["PR_HEAD_SHA"]
         branch = ref_name(os.environ["PR_NUMBER"], sha, os.environ["GITHUB_RUN_ID"],
                           (os.environ.get("GITHUB_RUN_ATTEMPT") or "1"), uuid.uuid4().hex)
-        push_head(branch, sha, token)
-        result, message = wait_for_run(GitHub(token), branch, sha)
+        api.log_quota()
+        push_head(branch, sha, api.token)
+        result, message = wait_for_run(api, branch, sha)
         print(message)
     except Unavailable as error:
         result = "unavailable"

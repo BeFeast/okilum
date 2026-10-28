@@ -4,11 +4,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context as _, Result};
 use sha2::{Digest, Sha256};
 
+mod missing_note;
+pub(crate) use missing_note::resolve_explicit_path;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OpenIntent {
     pub root: PathBuf,
     pub single_file: bool,
     pub note: Option<String>,
+    /// Only an explicit open may create a note; validation itself stays read-only.
+    pub created_note: bool,
 }
 
 impl OpenIntent {
@@ -60,6 +65,7 @@ impl OpenIntent {
                 root: path,
                 single_file: false,
                 note: None,
+                created_note: false,
             });
         }
         let log = okilum_core::log::is_log_path(&path);
@@ -99,6 +105,7 @@ impl OpenIntent {
             single_file,
             root,
             note: Some(note),
+            created_note: false,
         })
     }
 
@@ -153,6 +160,7 @@ mod tests {
             root: root.to_path_buf(),
             single_file: false,
             note: None,
+            created_note: false,
         };
 
         // Not isolated: the OS cache (positive control that the two scopes differ).
@@ -524,6 +532,7 @@ pub(crate) fn cache_candidate_path(root: &Path) -> Result<PathBuf> {
         root: root.to_path_buf(),
         single_file: false,
         note: None,
+        created_note: false,
     }
     .cache_path(&cache_base()?))
 }
@@ -538,6 +547,7 @@ pub(crate) fn cache_path_for(root: &Path, opts: &super::Opts) -> Result<PathBuf>
             root: root.to_owned(),
             single_file: false,
             note: None,
+            created_note: false,
         }
         .cache_path(base));
     }
@@ -962,8 +972,14 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
                 })
             })
             .context("No file or vault was requested")?;
-        let path = okilum_core::vault::canonical_root(&path)
-            .context("This file or folder couldn’t be opened.")?;
+        let path = if opts.open_path.is_some() {
+            let (path, created) = resolve_explicit_path(&path, opts.vault.as_deref())?;
+            opts.created_note |= created;
+            path
+        } else {
+            okilum_core::vault::canonical_root(&path)
+                .context("This file or folder couldn’t be opened.")?
+        };
         let intent = OpenIntent::validate_cached(
             &path,
             opts.vault.as_deref(),
@@ -1215,11 +1231,13 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
                     if reader.document_ready() {
                         match &opts.landing {
                             Some(position) => reader.open_link(note, position.clone(), window, cx),
+                            None if opts.created_note => reader.open_created_note(note, window, cx),
                             None => reader.open_note(note, None, window, cx),
                         }
                     } else {
                         reader.queued_open_note = Some(note.clone());
                         reader.queued_landing = opts.landing.clone();
+                        reader.queued_edit_note = opts.created_note.then(|| note.clone());
                     }
                 }
             });
@@ -1413,7 +1431,7 @@ pub(crate) fn window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         window_min_size: Some(size(px(600.), px(400.))),
-        app_id: Some("okilum".into()),
+        app_id: Some(crate::linux_sprint::app_id().into()),
         #[cfg(target_os = "linux")]
         window_background: WindowBackgroundAppearance::Opaque,
         titlebar: Some(super::reader_titlebar_options()),
@@ -1693,6 +1711,9 @@ impl Render for OpenError {
 /// The open-failure text: plain words for the common OS errors, otherwise
 /// the outermost, human-written context. The full chain stays in stderr.
 fn open_error_text(error: &anyhow::Error) -> String {
+    if let Some(parent) = error.downcast_ref::<missing_note::MissingParent>() {
+        return parent.to_string();
+    }
     use std::io::ErrorKind;
     let io = error
         .chain()
@@ -1899,7 +1920,7 @@ mod entry_tests {
         ));
     }
     #[gpui::test]
-    fn another_vault_destination_asks_replaces_and_remembers(cx: &mut TestAppContext) {
+    fn dock_folder_urls_ask_replace_and_remember(cx: &mut TestAppContext) {
         use super::super::{reader_ui_state, Opts};
         let fixture = tempfile::tempdir().unwrap();
         let state = fixture.path().join("state");
@@ -1921,6 +1942,9 @@ mod entry_tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             install(cx);
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_ui_state::install(&state, cx);
             assert_eq!(reader_ui_state::vault_open(cx), "ask");
             finish_open(Ok(opts(0)), cx);
@@ -1928,7 +1952,13 @@ mod entry_tests {
         cx.run_until_parked();
         let source = cx.update(|cx| readers(cx)[0].downgrade());
         let original = cx.update(|cx| source.upgrade().unwrap().read(cx).reader_window);
-        cx.update(|cx| finish_open_from(Ok(opts(1)), Some(source.clone()), cx));
+        cx.update(|cx| {
+            focused(source.clone(), cx);
+            dispatch_urls(
+                vec![url::Url::from_directory_path(&roots[1]).unwrap().into()],
+                cx,
+            );
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.windows().len(),
@@ -1969,7 +1999,10 @@ mod entry_tests {
                 "remember survives reload"
             );
             reader_ui_state::set_vault_open("new", cx);
-            finish_open_from(Ok(opts(2)), Some(source.clone()), cx);
+            dispatch_urls(
+                vec![url::Url::from_directory_path(&roots[2]).unwrap().into()],
+                cx,
+            );
         });
         cx.run_until_parked();
         cx.update(|cx| {
@@ -4331,11 +4364,61 @@ mod entry_tests {
             before_tree,
             "file/folder opens and bulk/refresh cannot create canonical entries"
         );
+        // The preceding opens must work without write access. The explicit
+        // missing-note request below intentionally creates a file (#1835), so
+        // restore its parent's write permission for every runner identity.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let before = cx.windows().len();
         sender
             .try_send(vec![url::Url::from_file_path(root.join("missing.md"))
                 .unwrap()
                 .into()])
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            before,
+            "creation reuses the existing Reader"
+        );
+        cx.update(|cx| {
+            assert_eq!(
+                cx.global::<Readers>().0.len(),
+                1,
+                "no namesake or second Reader"
+            );
+            let reused = cx.global::<Readers>().0[0].0.upgrade().unwrap();
+            assert_eq!(reused.entity_id(), first.entity_id());
+            let reader = first.read(cx);
+            assert_eq!(reader.vault_root, root);
+            assert_eq!(reader.current_rel, "missing.md");
+            assert!(
+                reader.editing.is_some(),
+                "the newly created file opens its editor"
+            );
+        });
+        assert_eq!(std::fs::read(root.join("missing.md")).unwrap(), b"");
+        let mut after_creation = before_tree.clone();
+        assert!(after_creation
+            .insert(PathBuf::from("missing.md"), Some(Vec::new()))
+            .is_none());
+        assert_eq!(
+            tree(&root),
+            after_creation,
+            "only the requested empty file is added"
+        );
+
+        // Keep the visible-refusal coverage on the same real OS delivery path.
+        // A missing parent is never implicitly created, regardless of uid.
+        sender
+            .try_send(vec![url::Url::from_file_path(
+                root.join("missing-parent/new.md"),
+            )
+            .unwrap()
+            .into()])
             .unwrap();
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), before + 1, "visible refusal window");
@@ -4344,15 +4427,40 @@ mod entry_tests {
                 cx.global::<Readers>().0.len(),
                 1,
                 "refusal must not open a namesake"
-            )
+            );
+            assert_eq!(first.read(cx).current_rel, "missing.md");
+            let error = cx
+                .windows()
+                .iter()
+                .find_map(|handle| {
+                    handle
+                        .downcast::<Root>()?
+                        .read(cx)
+                        .ok()?
+                        .view()
+                        .clone()
+                        .downcast::<OpenError>()
+                        .ok()
+                })
+                .expect("a real refusal view was shown");
+            assert!(
+                error.read(cx).0.contains("missing-parent"),
+                "the error names the missing folder"
+            );
         });
+        assert!(!root.join("missing-parent").exists());
+        assert_eq!(
+            tree(&root),
+            after_creation,
+            "refusal adds no canonical entries"
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             "# Start\n\n[Go](sub/Ю.md#Landing)\n"
         );
         assert_eq!(
             std::fs::read_dir(&root).unwrap().count(),
-            2,
+            3,
             "no derived files in canonical folder"
         );
         #[cfg(unix)]

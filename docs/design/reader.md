@@ -33,8 +33,10 @@ original combined titlebar and document controls:
   loading feedback, app More and right-panel toggle at the right. Native window
   controls and dragging remain unchanged. Appearance and Settings are in app
   More rather than separate toolbar buttons.
-- **Document header (48 px, pinned).** Back/Forward precede folder breadcrumbs
-  and the note title. Clicking the title renames inline. Read/Edit use book/pencil;
+- **Document header (48 px, pinned).** Back/Forward and Reveal in sidebar precede folder breadcrumbs
+  and the note title (#1756). Clicking a folder breadcrumb reveals and expands
+  that folder in the tree; Reveal opens a collapsed sidebar and selects the note.
+  The Reveal button is disabled for a document outside the current tree. Clicking the title renames inline. Read/Edit use book/pencil;
   Edit also has Live Preview/Source (eye/code). Find and note More follow. Save
   appears only while dirty; save/conflict feedback keeps its existing behavior.
 - **Labels.** Glyphs are the default. Settings → Appearance → “Show labels on
@@ -313,6 +315,13 @@ mode or query state. Beneath the header is the tree of real folders and notes
 grouping). Top-level folders are labelled in weight 600 without a folder icon;
 deeper folders have `Folder`/`FolderOpen`; notes have `FileText`. The current note
 is highlighted with `selected` and weight 500, and its ancestors are expanded.
+Markdown tree rows use the file stem by default (#1834). Settings → Appearance →
+File tree labels can select Title (first H1 → frontmatter title → file stem);
+the row label and its sort key change together, live in every Reader window.
+Non-Markdown files retain their full name. The folder's `_index.md` still leads
+its folder, but its label follows the same setting. Reveal and rename continue
+to use the path identity; note headings, Quick Open, search and Linked from keep
+their titles in either mode.
 There is no flat note-list mode in the sidebar and no item cap (#369). Folders whose name starts with `_` or `.` are
 not shown; their notes stay reachable through links and search. Archive folders
 (`Archive`, `4 Archive`, `Архив`) are muted and open only on request or to reveal
@@ -321,11 +330,12 @@ hidden rows use subdued styling without a text badge, and the current row keeps
 its normal selection contrast. The tree never highlights a neighbour instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
 them all and is remembered per vault (#395). Recent, Pinned and Inbox follow the
 same rule and update as soon as it changes; quick open and search still find
-hidden notes (#635). The Folders header always shows its five actions in fixed
-slots — New note, New folder, «Collapse all», «Focus current» (only the path to
-the open note stays expanded) and the eye — idle and hovered alike; hover only
+hidden notes (#635). The sidebar header shows four actions in fixed
+slots — New note, New folder, «Collapse all» and the eye (#1756) — idle and hovered alike; hover only
 raises their contrast and never adds, hides or moves an icon (#1512). A narrow
-sidebar folds them into one ⋯ menu. ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
+sidebar moves only Show hidden into ⋯; New note, New folder and Collapse all
+stay visible. Reveal belongs beside the document breadcrumb, including when
+the sidebar is closed. ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
 folder context menu («Expand/Collapse all subfolders») act on the folder and
 everything below it, as in Finder. There is no global «Expand all» (#410).
 F2/Enter starts inline rename for notes and folders (#578); Right/Left expands/
@@ -564,7 +574,7 @@ it calls `org.freedesktop.FileManager1.ShowItems` and falls back to `xdg-open`
 on the containing folder. Shortcut hints use ⌘/⌥/⇧ glyphs only on macOS and
 spell out Ctrl/Alt/Shift elsewhere; both come from `platform::labels` (#612).
 
-Document More contains Reveal in sidebar (the sidebar crosshair action),
+Document More contains Reveal in sidebar (the document breadcrumb crosshair action),
 Edit/Preview, Rename/move, Note history, Reveal,
 Copy path, Open in new window, Move to Trash and Close note.
 The app More menu contains New note, Open file/folder, recovery, appearance,
@@ -650,7 +660,7 @@ preview. Thumbnails are memory-only derived data; they never write to the vault.
 The preview is a GPUI image, so palettes and menus retain normal overlay ordering.
 
 “Reveal in sidebar” opens the Notes panel if hidden, expands Folders and focuses
-the current note or file using the same action as the sidebar crosshair.
+the current note or file using the same action as the document breadcrumb crosshair.
 
 ### UI state and new windows (#592)
 

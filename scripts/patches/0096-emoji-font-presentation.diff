@@ -1,0 +1,597 @@
+diff --git a/crates/base/Cargo.toml b/crates/base/Cargo.toml
+--- a/crates/base/Cargo.toml
++++ b/crates/base/Cargo.toml
+@@ -45,6 +45,7 @@
+ tracing.workspace = true
+ unicode-linebreak = "0.1.5"
+ unicode-segmentation = "1.12.0"
++unicode-properties = "0.1.4"
+ unicode-bidi = "0.3.18"
+ web-time = "1"
+ syntect.workspace = true
+diff --git a/crates/base/src/lib.rs b/crates/base/src/lib.rs
+--- a/crates/base/src/lib.rs
++++ b/crates/base/src/lib.rs
+@@ -25,6 +25,7 @@
+ mod element_ext;
+ mod event;
+ mod focus_trap;
++pub(crate) mod font_presentation;
+ mod geometry;
+ mod global_state;
+ mod history;
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -201,7 +201,11 @@
+     if ix < text.len() {
+         runs.push(default_style.to_run(text.len() - ix));
+     }
+-    runs
++    if crate::font_presentation::has_emoji(text) {
++        crate::font_presentation::font_runs(text, &runs).into_owned()
++    } else {
++        runs
++    }
+ }
+
+ /// A inline element used to render a inline text and support selectable.
+@@ -1645,3 +1649,247 @@
+         ));
+     }
+ }
++
++#[cfg(test)]
++mod font_presentation_regressions {
++    use super::{InlineHighlight, text_runs};
++    use gpui::{
++        FontWeight, HighlightStyle, LineFragment, TextStyle, TextSystem, WindowTextSystem, px,
++    };
++    use std::sync::Arc;
++    use unicode_segmentation::UnicodeSegmentation;
++
++    fn system() -> WindowTextSystem {
++        // Both faces cover every code point, but Mono is twice as wide. A
++        // missing-glyph-only policy cannot accidentally pass these controls.
++        WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(
++            super::test_fonts::WideMonoTextSystem,
++        ))))
++    }
++
++    #[test]
++    fn code_block_emoji_gets_color_font_despite_primary_coverage() {
++        let text = "// ✅ ❌ ✔ ✅︎";
++        let style = TextStyle {
++            font_family: "Mono".into(),
++            ..Default::default()
++        };
++        let color: gpui::Hsla = gpui::rgb(0x287a30).into();
++        let highlights = [(
++            0..text.len(),
++            InlineHighlight::from(HighlightStyle {
++                color: Some(color),
++                font_weight: Some(FontWeight::BOLD),
++                ..Default::default()
++            }),
++        )];
++        let runs = text_runs(text, &style, &highlights);
++        let mut offset = 0;
++        let mut colored = Vec::new();
++        for run in &runs {
++            let span = &text[offset..offset + run.len];
++            if run.font.family.as_ref() != "Mono" {
++                colored.push(span);
++                assert_eq!(run.font.weight, FontWeight::NORMAL);
++                let expected = if cfg!(target_os = "macos") {
++                    "Apple Color Emoji"
++                } else if cfg!(target_os = "windows") {
++                    "Segoe UI Emoji"
++                } else {
++                    "Noto Color Emoji"
++                };
++                assert_eq!(run.font.family.as_ref(), expected);
++            }
++            assert_eq!(run.color, color);
++            offset += run.len;
++        }
++        assert_eq!(
++            colored,
++            ["✅", "❌"],
++            "code emoji presentation must override primary glyph coverage"
++        );
++        assert_eq!(offset, text.len());
++        let system = system();
++        let actual = system.layout_line(text, px(20.), &runs, None).width;
++        let old = system
++            .layout_line(text, px(20.), &[style.to_run(text.len())], None)
++            .width;
++        assert!(
++            actual < old,
++            "positive control: chosen font changes real shaping metrics"
++        );
++    }
++
++    #[test]
++    fn emoji_wrap_width_matches_shaped_width_without_splitting_clusters() {
++        let text = "x👩🏽‍💻✅❌z";
++        let style = TextStyle {
++            font_family: "Mono".into(),
++            ..Default::default()
++        };
++        let system = system();
++        let size = px(20.);
++        let runs = text_runs(text, &style, &[]);
++        let drawn = system.layout_line(text, size, &runs, None).width;
++        let fragments =
++            crate::font_presentation::line_fragments(text, &style.font(), size, &system);
++        let measured = fragments
++            .iter()
++            .map(|f| match f {
++                LineFragment::Text { text } => {
++                    system
++                        .layout_line(text, size, &[style.to_run(text.len())], None)
++                        .width
++                }
++                LineFragment::Element { width, .. } => *width,
++            })
++            .sum::<gpui::Pixels>();
++        assert_eq!(
++            measured, drawn,
++            "wrapping and painting must resolve the same fonts"
++        );
++        assert_eq!(
++            fragments
++                .iter()
++                .filter(|f| matches!(f, LineFragment::Element { .. }))
++                .count(),
++            3
++        );
++        let mut wrapper = system.line_wrapper(style.font(), size);
++        let boundaries = wrapper
++            .wrap_line(&fragments, px(60.))
++            .map(|b| b.ix)
++            .collect::<Vec<_>>();
++        let valid = text
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain(std::iter::once(text.len()))
++            .collect::<Vec<_>>();
++        assert!(
++            !boundaries.is_empty(),
++            "positive control: narrow width must wrap"
++        );
++        assert!(
++            boundaries.iter().all(|b| valid.contains(b)),
++            "wrap must keep a complete emoji sequence"
++        );
++    }
++
++    struct MissingEmojiFont(std::sync::Arc<std::sync::atomic::AtomicUsize>);
++
++    impl gpui::PlatformTextSystem for MissingEmojiFont {
++        fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> {
++            super::test_fonts::WideMonoTextSystem.add_fonts(fonts)
++        }
++        fn all_font_names(&self) -> Vec<String> {
++            vec!["Body".into(), "Mono".into()]
++        }
++        fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> {
++            if descriptor.family.as_ref().contains("Emoji") {
++                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                anyhow::bail!("synthetic platform has no emoji font");
++            }
++            super::test_fonts::WideMonoTextSystem.font_id(descriptor)
++        }
++        fn font_metrics(&self, id: gpui::FontId) -> gpui::FontMetrics {
++            super::test_fonts::WideMonoTextSystem.font_metrics(id)
++        }
++        fn typographic_bounds(
++            &self,
++            id: gpui::FontId,
++            glyph: gpui::GlyphId,
++        ) -> anyhow::Result<gpui::Bounds<f32>> {
++            super::test_fonts::WideMonoTextSystem.typographic_bounds(id, glyph)
++        }
++        fn advance(
++            &self,
++            id: gpui::FontId,
++            glyph: gpui::GlyphId,
++        ) -> anyhow::Result<gpui::Size<f32>> {
++            super::test_fonts::WideMonoTextSystem.advance(id, glyph)
++        }
++        fn glyph_for_char(&self, id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> {
++            super::test_fonts::WideMonoTextSystem.glyph_for_char(id, ch)
++        }
++        fn glyph_raster_bounds(
++            &self,
++            params: &gpui::RenderGlyphParams,
++        ) -> anyhow::Result<gpui::Bounds<gpui::DevicePixels>> {
++            super::test_fonts::WideMonoTextSystem.glyph_raster_bounds(params)
++        }
++        fn rasterize_glyph(
++            &self,
++            params: &gpui::RenderGlyphParams,
++            bounds: gpui::Bounds<gpui::DevicePixels>,
++        ) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> {
++            super::test_fonts::WideMonoTextSystem.rasterize_glyph(params, bounds)
++        }
++        fn recommended_rendering_mode(
++            &self,
++            id: gpui::FontId,
++            size: gpui::Pixels,
++        ) -> gpui::TextRenderingMode {
++            super::test_fonts::WideMonoTextSystem.recommended_rendering_mode(id, size)
++        }
++        fn layout_line(
++            &self,
++            text: &str,
++            size: gpui::Pixels,
++            runs: &[gpui::FontRun],
++        ) -> gpui::LineLayout {
++            super::test_fonts::WideMonoTextSystem.layout_line(text, size, runs)
++        }
++    }
++
++    #[test]
++    fn unavailable_emoji_font_uses_gpui_fallback_for_shaping_and_wrapping() {
++        use gpui::{GlyphId, LineFragment, TextSystem};
++        use std::sync::{
++            Arc,
++            atomic::{AtomicUsize, Ordering},
++        };
++        let rejected = Arc::new(AtomicUsize::new(0));
++        let system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(MissingEmojiFont(
++            rejected.clone(),
++        )))));
++        let style = TextStyle {
++            font_family: "Mono".into(),
++            ..Default::default()
++        };
++        let text = "x✅❌y";
++        let runs = [style.to_run(text.len())];
++        let runs = crate::font_presentation::font_runs(text, &runs);
++        let size = gpui::px(20.);
++        let shaped = system.layout_line(text, size, &runs, None);
++        assert!(
++            rejected.load(Ordering::Relaxed) > 0,
++            "positive control: requested emoji face was unavailable"
++        );
++        let glyphs = shaped
++            .runs
++            .iter()
++            .flat_map(|r| &r.glyphs)
++            .map(|g| g.id)
++            .collect::<Vec<_>>();
++        assert_eq!(
++            glyphs,
++            text.chars().map(|c| GlyphId(c as u32)).collect::<Vec<_>>(),
++            "fallback retains every glyph instead of a missing-glyph box"
++        );
++        let measured = crate::font_presentation::line_fragments(text, &style.font(), size, &system)
++            .iter()
++            .map(|f| match f {
++                LineFragment::Text { text } => {
++                    system
++                        .layout_line(text, size, &[style.to_run(text.len())], None)
++                        .width
++                }
++                LineFragment::Element { width, .. } => *width,
++            })
++            .sum::<gpui::Pixels>();
++        assert_eq!(
++            measured, shaped.width,
++            "both paths use the same upstream fallback"
++        );
++    }
++}
+diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -895,7 +895,9 @@
+             continue;
+         }
+         if cursor < start {
+-            fragments.push(WrapLineFragment::text(&text[cursor..start]));
++            fragments.extend(crate::font_presentation::line_fragments(
++                &text[cursor..start], &text_style.font(), font_size, window.text_system(),
++            ));
+         }
+         let span = &text[start..end];
+         let runs = text_runs(span, text_style, &[(0..span.len(), highlight.clone())]);
+@@ -907,7 +909,9 @@
+         cursor = end;
+     }
+     if cursor < range.end {
+-        fragments.push(WrapLineFragment::text(&text[cursor..range.end]));
++        fragments.extend(crate::font_presentation::line_fragments(
++            &text[cursor..range.end], &text_style.font(), font_size, window.text_system(),
++        ));
+     }
+ }
+
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -385,8 +385,10 @@
+                 &last.font,
+                 gpui::black(),
+             );
++            let subtext = text[range.clone()].to_string();
++            let runs = crate::font_presentation::font_runs(&subtext, &runs);
+             shaped.push(window.text_system().shape_line(
+-                text[range.clone()].to_string().into(),
++                subtext.into(),
+                 last.font_size * map.line_scale(row),
+                 &runs,
+                 None,
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1561,15 +1561,16 @@
+             let aligned_runs = align_runs_to_char_boundaries(&text, runs);
+             debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
+             let line_runs = aligned_runs.as_deref().unwrap_or(runs);
++            let line_runs = crate::font_presentation::font_runs(&text, line_runs);
+             let shape_start = attribution::now();
+                 let shaped_line = window
+                 .text_system()
+-                .shape_line(text, font_size, line_runs, None);
++                .shape_line(text, font_size, &line_runs, None);
+             trace.shape_finished(shape_start);
+
+             let line_layout = LineLayout::new()
+                 .lines(smallvec::smallvec![shaped_line])
+-                .with_background(has_background(line_runs))
++                .with_background(has_background(&line_runs))
+                 .with_whitespaces(whitespace_indicators);
+             return vec![line_layout];
+         }
+@@ -1637,6 +1638,7 @@
+                 let aligned_runs = align_runs_to_char_boundaries(&sub_line, &line_runs);
+                 debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
+                 let line_runs = aligned_runs.unwrap_or(line_runs);
++                let line_runs = crate::font_presentation::font_runs(&sub_line, &line_runs);
+                 let shape_start = attribution::now();
+                 let shaped_line = window
+                     .text_system()
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -308,14 +308,22 @@
+         let mut line_wrapper = cx
+             .text_system()
+             .line_wrapper(self.font.clone(), self.font_size);
++        let font = self.font.clone();
++        let font_size = self.font_size;
++        let text_system = cx.text_system().clone();
++        let mut emoji_system = None;
+         self._update(
+             changed_text,
+             range,
+             new_text,
+             &mut |line_str, wrap_width| {
+-                line_wrapper
+-                    .wrap_line(&[LineFragment::text(line_str)], wrap_width)
+-                    .collect()
++                let fragments = if crate::font_presentation::has_emoji(line_str) {
++                    let system = emoji_system.get_or_insert_with(|| gpui::WindowTextSystem::new(text_system.clone()));
++                    crate::font_presentation::line_fragments(line_str, &font, font_size, system)
++                } else {
++                    vec![LineFragment::text(line_str)]
++                };
++                line_wrapper.wrap_line(&fragments, wrap_width).collect()
+             },
+         );
+     }
+@@ -437,6 +445,9 @@
+             let font_size = self.font_size * crate::input::projection::line_scale(scales, row);
+             styles.advance(start..start + line.len());
+             let full_runs = styles.runs(start..start + line.len(), &self.font, gpui::black());
++            let full_runs = if crate::font_presentation::has_emoji(&line) {
++                crate::font_presentation::font_runs(&line, &full_runs).into_owned()
++            } else { full_runs };
+             let key = super::projected_cache::LineKey::new(
+                 &line, &full_runs, font_size, self.wrap_width, window.scale_factor(),
+                 crate::input::projection::line_hang(scales, row), hang_room);
+@@ -460,7 +471,8 @@
+                 0
+             };
+             let runs = if hang == 0 { full_runs } else {
+-                styles.runs(start + hang..start + line.len(), &self.font, gpui::black())
++                let runs = styles.runs(start + hang..start + line.len(), &self.font, gpui::black());
++                crate::font_presentation::font_runs(&line[hang..], &runs).into_owned()
+             };
+             let shape_start = attribution::now();
+             let shaped = window
+diff --git a/crates/base/src/font_presentation.rs b/crates/base/src/font_presentation.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/base/src/font_presentation.rs
+@@ -0,0 +1,187 @@
++//! Unicode emoji presentation is a font choice, not a missing-glyph fallback.
++use gpui::{
++    Font, FontFeatures, FontStyle, FontWeight, LineFragment, Pixels, TextRun, TextStyle,
++    WindowTextSystem,
++};
++use std::{borrow::Cow, ops::Range};
++use unicode_properties::{EmojiStatus, UnicodeEmoji};
++use unicode_segmentation::UnicodeSegmentation;
++
++// GPUI resolves an unavailable family through its existing system fallback
++// stack, then uses platform glyph fallback. Do not duplicate OS font discovery.
++fn family() -> &'static str {
++    if cfg!(target_os = "macos") {
++        "Apple Color Emoji"
++    } else if cfg!(target_os = "windows") {
++        "Segoe UI Emoji"
++    } else {
++        "Noto Color Emoji"
++    }
++}
++
++fn emoji(grapheme: &str) -> bool {
++    // Explicit text presentation takes precedence over the default property.
++    if grapheme.contains('\u{fe0e}') {
++        return false;
++    }
++    if grapheme.contains('\u{fe0f}') {
++        return true;
++    }
++    let first = grapheme.chars().next().unwrap_or('\0');
++    matches!(
++        first.emoji_status(),
++        EmojiStatus::EmojiPresentation
++            | EmojiStatus::EmojiPresentationAndModifierBase
++            | EmojiStatus::EmojiPresentationAndEmojiComponent
++            | EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
++    ) || (grapheme.contains('\u{200d}') && grapheme.chars().any(UnicodeEmoji::is_emoji_char))
++        || (grapheme.contains('\u{20e3}') && matches!(first, '0'..='9' | '#' | '*'))
++}
++
++fn ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
++    text.grapheme_indices(true)
++        .filter_map(|(start, cluster)| emoji(cluster).then_some(start..start + cluster.len()))
++}
++
++pub(crate) fn has_emoji(text: &str) -> bool {
++    !text.is_ascii() && ranges(text).next().is_some()
++}
++
++fn emoji_font(original: &Font) -> Font {
++    Font {
++        family: family().into(),
++        weight: FontWeight::NORMAL,
++        style: FontStyle::Normal,
++        features: FontFeatures::default(),
++        ..original.clone()
++    }
++}
++
++/// Apply presentation before shaping, even if the authored font covers a glyph.
++/// Emoji clusters use the decoration at their start; a syntax/IME run boundary
++/// inside a ZWJ sequence must not split its font run. Text and byte offsets stay exact.
++pub(crate) fn font_runs<'a>(text: &str, runs: &'a [TextRun]) -> Cow<'a, [TextRun]> {
++    if text.is_ascii() {
++        return Cow::Borrowed(runs);
++    }
++    let mut emojis = ranges(text).peekable();
++    if emojis.peek().is_none() {
++        return Cow::Borrowed(runs);
++    }
++    debug_assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
++    if runs.is_empty() || runs.iter().map(|r| r.len).sum::<usize>() != text.len() {
++        return Cow::Borrowed(runs);
++    }
++    let mut result = Vec::with_capacity(runs.len() + 2);
++    let (mut offset, mut index, mut end) = (0, 0, runs[0].len);
++    for range in emojis {
++        while offset < range.start {
++            while offset >= end {
++                index += 1;
++                end += runs[index].len;
++            }
++            let next = range.start.min(end);
++            result.push(TextRun {
++                len: next - offset,
++                ..runs[index].clone()
++            });
++            offset = next;
++        }
++        while offset >= end {
++            index += 1;
++            end += runs[index].len;
++        }
++        result.push(TextRun {
++            len: range.len(),
++            font: emoji_font(&runs[index].font),
++            ..runs[index].clone()
++        });
++        offset = range.end;
++    }
++    while offset < text.len() {
++        while offset >= end {
++            index += 1;
++            end += runs[index].len;
++        }
++        let next = text.len().min(end);
++        result.push(TextRun {
++            len: next - offset,
++            ..runs[index].clone()
++        });
++        offset = next;
++    }
++    Cow::Owned(result)
++}
++
++/// Measure each emoji as the same shaped cluster that will be painted. Feed it
++/// to GPUI's upstream wrapper as one atomic element, preserving UTF-8 lengths.
++pub(crate) fn line_fragments<'a>(
++    text: &'a str,
++    font: &Font,
++    size: Pixels,
++    system: &WindowTextSystem,
++) -> Vec<LineFragment<'a>> {
++    if text.is_ascii() {
++        return vec![LineFragment::text(text)];
++    }
++    let mut fragments = Vec::new();
++    let mut offset = 0;
++    for range in ranges(text) {
++        if offset < range.start {
++            fragments.push(LineFragment::text(&text[offset..range.start]));
++        }
++        let run = TextRun {
++            font: emoji_font(font),
++            ..TextStyle::default().to_run(range.len())
++        };
++        let width = system
++            .layout_line(&text[range.clone()], size, &[run], None)
++            .width;
++        fragments.push(LineFragment::element(width, range.len()));
++        offset = range.end;
++    }
++    if offset < text.len() || fragments.is_empty() {
++        fragments.push(LineFragment::text(&text[offset..]));
++    }
++    fragments
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use core::prelude::v1::test;
++
++    #[test]
++    fn unicode_presentation_overrides_coverage_but_respects_text_selectors() {
++        for text in ["✅", "❌", "⚠️", "✔️", "👍🏽", "👩🏽‍💻", "🇮🇱", "1️⃣", "1⃣"]
++        {
++            assert!(has_emoji(text), "{text}");
++        }
++        for text in ["✔", "⚠", "©", "1", "#", "✅︎", "A", "ב‍ב", "क्‍ष"] {
++            assert!(!has_emoji(text), "{text}");
++        }
++    }
++
++    #[test]
++    fn cluster_font_runs_keep_source_bytes_and_surrounding_decorations() {
++        let cluster = "👩🏽‍💻";
++        let text = format!("a{cluster}b");
++        let mut first = TextStyle::default().to_run(1 + '👩'.len_utf8());
++        first.font.family = "Mono".into();
++        let mut second = first.clone();
++        second.len = text.len() - first.len;
++        second.color = gpui::rgb(0xff0000).into();
++        let input = [first.clone(), second.clone()];
++        let actual = font_runs(&text, &input);
++        assert_eq!(
++            actual.iter().map(|r| r.len).collect::<Vec<_>>(),
++            [1, cluster.len(), 1]
++        );
++        assert_eq!(actual[0].font, first.font);
++        assert_eq!(actual[0].color, first.color);
++        assert_eq!(actual[1].font.family.as_ref(), family());
++        assert_eq!(actual[2].font, second.font);
++        assert_eq!(actual[2].color, second.color);
++        assert_eq!(actual.iter().map(|r| r.len).sum::<usize>(), text.len());
++    }
++}

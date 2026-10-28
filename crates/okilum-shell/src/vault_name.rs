@@ -150,6 +150,12 @@ pub(crate) fn folder_name(root: &Path) -> String {
         .unwrap_or_else(|| okilum_core::vault::display_path(root))
 }
 
+/// A vault tooltip identifies its folder without abbreviating the home
+/// directory or truncating long paths. Vault roots are already absolute.
+pub(crate) fn path_tooltip(root: &Path) -> String {
+    okilum_core::vault::display_path(root)
+}
+
 /// The name a person gave, trimmed; `None` for an empty or blank one.
 pub(crate) fn clean(name: &str) -> Option<String> {
     let name = name.trim();
@@ -336,6 +342,37 @@ mod tests {
         assert_eq!(window_title(Some(""), Some("Work")), "Okilum — Work");
         assert_eq!(window_title(Some("log.txt"), None), "Okilum — log.txt");
         assert_eq!(window_title(None, None), "Okilum");
+    }
+
+    #[gpui::test]
+    fn vault_tooltip_keeps_the_full_absolute_path_and_name_separate(cx: &mut TestAppContext) {
+        let home = PathBuf::from(
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .expect("absolute home directory"),
+        );
+        let root = home
+            .join("Library")
+            .join("Mobile Documents")
+            .join("Long folder with spaces and Заметки 🧠".repeat(12))
+            .join("Obsidian Vault");
+        assert!(root.is_absolute());
+        let expected = okilum_core::vault::plain_path(&root)
+            .to_string_lossy()
+            .into_owned();
+        assert!(expected.chars().count() > 300, "long-path control");
+        cx.update(|cx| {
+            remember(vec![(root.clone(), "Main Brain".into())], cx);
+            assert_eq!(
+                shown(&root, cx),
+                "Main Brain",
+                "the switcher label stays a name"
+            );
+            assert_eq!(
+                path_tooltip(&root),
+                expected,
+                "no home alias or middle truncation"
+            );
+        });
     }
 
     #[test]

@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   macos:
-    runs-on: macos-15 # GitHub's standard public-repository arm64 runner.
+    runs-on: ${{ vars.OKILUM_GITHUB_MACOS_RUNNER || 'macos-15' }} # Unset restores the free lane.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4

@@ -14,6 +14,14 @@ use okilum_core::{
     source_projection::{Active, Bias, Projection, Snapshot},
 };
 
+#[allow(dead_code)] // Full authored metadata is separate from display backend selection.
+#[path = "source_presentation/navigation_inventory.rs"]
+pub(crate) mod navigation_inventory;
+
+#[allow(dead_code)] // Explicitly unselected until the consumer activation contract is proven.
+#[path = "source_presentation/publication_adapter.rs"]
+pub(crate) mod publication_adapter;
+
 pub const BODY_FONT: &str = "Noto Sans";
 pub const CODE_FONT: &str = "Cascadia Code";
 
@@ -65,8 +73,8 @@ impl CachedProvider {
         })
     }
     /// Call only from a background classification task.
+    #[allow(dead_code)] // Legacy entry for standalone projection fixtures and tests.
     pub fn classify(source: SourceSnapshot) -> Self {
-        let snapshot = core_snapshot(&source);
         let links = if source.text.len() <= source_classifier::MAX_BYTES {
             okilum_core::document_links::parse(&source.text)
                 .into_iter()
@@ -80,12 +88,27 @@ impl CachedProvider {
         } else {
             Vec::new()
         };
+        Self::from_links(source, links)
+    }
+    /// One authored-link producer for the Brain's actual worker. Reading a
+    /// completion here checks its immutable input; UI admission remains separate.
+    #[allow(dead_code)] // Standalone projection examples still use classify.
+    pub(crate) fn classify_navigation(
+        request: navigation_inventory::Request,
+        input: navigation_inventory::Input,
+    ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
+        let completion = request.compute();
+        let links = completion.view(&input)?.legacy_links().to_vec();
+        Ok((Self::from_links(input.source, links), completion))
+    }
+    fn from_links(source: SourceSnapshot, links: Vec<source_classifier::NoteLink>) -> Self {
+        let snapshot = core_snapshot(&source);
         let classified = source_classifier::classify(&snapshot);
         let tables = classified
             .decorations_for(&snapshot)
             .unwrap_or_default()
             .iter()
-            .filter(|m| is_block(&m.kind))
+            .filter(|m| is_rendered_block(m, &source.text))
             .filter_map(|m| {
                 Some((
                     m.range.clone(),
@@ -205,39 +228,44 @@ impl CachedProvider {
             source: source.clone(),
             // Retained with the styles, so a revision not yet classified keeps
             // its quote bars, bullets and task boxes (#1295).
-            markers: retained
-                .decorations()
-                .iter()
-                .filter(|m| !is_block(&m.kind))
-                .map(|m| ProjectionMarker {
-                    range: SourceByte(m.range.start)..SourceByte(m.range.end),
-                    scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
-                    kind: match m.kind {
-                        source_classifier::decorations::Kind::Unordered { depth } => {
-                            MarkerKind::Bullet { depth }
-                        }
-                        source_classifier::decorations::Kind::Quote { depth } => {
-                            MarkerKind::Quote { depth }
-                        }
-                        source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
-                        source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
-                        source_classifier::decorations::Kind::Task { checked } => {
-                            MarkerKind::Task { checked }
-                        }
-                        source_classifier::decorations::Kind::Table
-                        | source_classifier::decorations::Kind::Image
-                        | source_classifier::decorations::Kind::Callout => {
-                            unreachable!("filtered")
-                        }
-                    },
-                })
-                .collect(),
+            markers: projection_markers(retained.decorations()),
             reveal: reveal_snapshot,
             styles,
             line_scales,
             blocks,
         }))
     }
+}
+
+fn projection_markers(
+    decorations: &[source_classifier::decorations::Marker],
+) -> Vec<ProjectionMarker> {
+    decorations
+        .iter()
+        .filter(|m| !is_block(&m.kind))
+        .map(|m| ProjectionMarker {
+            range: SourceByte(m.range.start)..SourceByte(m.range.end),
+            scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
+            kind: match m.kind {
+                source_classifier::decorations::Kind::Unordered { depth } => {
+                    MarkerKind::Bullet { depth }
+                }
+                source_classifier::decorations::Kind::Quote { depth } => {
+                    MarkerKind::Quote { depth }
+                }
+                source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
+                source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
+                source_classifier::decorations::Kind::Task { checked } => {
+                    MarkerKind::Task { checked }
+                }
+                source_classifier::decorations::Kind::Table
+                | source_classifier::decorations::Kind::Image
+                | source_classifier::decorations::Kind::Callout => {
+                    unreachable!("filtered")
+                }
+            },
+        })
+        .collect()
 }
 
 /// Decorations Live Preview draws as rendered blocks: tables, images and
@@ -251,6 +279,33 @@ fn is_block(kind: &source_classifier::decorations::Kind) -> bool {
     )
 }
 
+/// Only Mermaid fences opt into S7 rendering; all other code keeps its existing
+/// editable code presentation. Classification and active-range guards stay shared.
+fn is_rendered_block(marker: &source_classifier::decorations::Marker, text: &str) -> bool {
+    if is_block(&marker.kind) {
+        return true;
+    }
+    if marker.kind != source_classifier::decorations::Kind::CodeBlock {
+        return false;
+    }
+    let Some(header) = text
+        .get(marker.range.clone())
+        .and_then(|s| s.lines().next())
+    else {
+        return false;
+    };
+    let header = header.trim_start();
+    let Some(fence) = header.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+        return false;
+    };
+    let count = header.chars().take_while(|c| *c == fence).count();
+    count >= 3
+        && header[count..]
+            .split_whitespace()
+            .next()
+            .is_some_and(|s| s.eq_ignore_ascii_case("mermaid"))
+}
+
 impl CachedProvider {
     /// Rendered block ranges (tables, images) in `text`, the current revision. The classified revision
     /// gives them exactly; a newer one, not yet classified, finds each table
@@ -260,7 +315,7 @@ impl CachedProvider {
         if let Ok(markers) = self.classified.decorations_for(current) {
             return markers
                 .iter()
-                .filter(|m| is_block(&m.kind))
+                .filter(|m| is_rendered_block(m, text))
                 .map(|m| m.range.clone())
                 .collect();
         }
@@ -391,22 +446,50 @@ pub(crate) fn heading_scale(level: u8) -> f32 {
     }
 }
 
+// Shared conversion consumes a checked read view, not mutable parser authority.
+trait PresentationMap {
+    fn display_text(&self) -> &str;
+    fn map_source(&self, offset: usize) -> Option<usize>;
+}
+impl PresentationMap for Projection {
+    fn display_text(&self) -> &str {
+        self.display()
+    }
+    fn map_source(&self, offset: usize) -> Option<usize> {
+        self.source_to_display(self.snapshot(), offset).ok()
+    }
+}
+impl<T: PresentationMap> PresentationMap for Arc<T> {
+    fn display_text(&self) -> &str {
+        self.as_ref().display_text()
+    }
+    fn map_source(&self, offset: usize) -> Option<usize> {
+        self.as_ref().map_source(offset)
+    }
+}
+impl PresentationMap for okilum_core::source_classifier::presentation::View<'_> {
+    fn display_text(&self) -> &str {
+        self.display()
+    }
+    fn map_source(&self, offset: usize) -> Option<usize> {
+        self.source_to_display(offset).ok()
+    }
+}
+
 /// One entry per projected heading line: its scale, and the revealed marker
 /// (`## `) that hangs in the margin so the heading text does not move when the
 /// caret reveals it.
 fn heading_line_scales(
-    projection: &Projection,
+    projection: &impl PresentationMap,
     styles: &[source_classifier::StyleSpan],
 ) -> Vec<LineScale> {
-    let display = projection.display();
+    let display = projection.display_text();
     let newlines: Vec<usize> = display.match_indices('\n').map(|(at, _)| at).collect();
     let mut scales: Vec<LineScale> = styles
         .iter()
         .filter_map(|style| match style.style {
             Style::Heading(level) => {
-                let start = projection
-                    .source_to_display(projection.snapshot(), style.range.start)
-                    .ok()?;
+                let start = projection.map_source(style.range.start)?;
                 let line = newlines.partition_point(|&at| at < start);
                 let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
                 let scale = heading_scale(level);
@@ -437,6 +520,23 @@ struct MappedProjection {
     blocks: Vec<ProjectionBlock>,
 }
 impl SourceProjection for MappedProjection {
+    fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
+        if self.source.stamp != current.stamp
+            || (!Arc::ptr_eq(&self.source.text, &current.text) && self.source.text != current.text)
+        {
+            return None;
+        }
+        // Remap/reveal already validated this immutable source index. A mapping
+        // query checks it without rebuilding a second whole-source index for
+        // marker painting. Source boundaries do not depend on active/reveal.
+        let projection = self.reveal.projection();
+        match projection.source_to_display(projection.snapshot(), offset.0) {
+            Ok(_) => Some(true),
+            Err(okilum_core::source_projection::MapError::InvalidBoundary) => Some(false),
+            Err(_) => None,
+        }
+    }
+
     fn blocks(&self) -> &[ProjectionBlock] {
         &self.blocks
     }
@@ -482,7 +582,7 @@ impl SourceProjection for MappedProjection {
 
 /// Sweep canonical nested style intervals into disjoint projected metric runs.
 fn projected_styles(
-    projection: &Projection,
+    projection: &impl PresentationMap,
     styles: &[source_classifier::StyleSpan],
     colors: Option<ProjectionColors>,
 ) -> Option<Vec<ProjectionStyle>> {
@@ -497,12 +597,8 @@ fn projected_styles(
             Style::Link | Style::WikiLink => 5,
             Style::Definition => 6,
         };
-        let start = projection
-            .source_to_display(projection.snapshot(), style.range.start)
-            .ok()?;
-        let end = projection
-            .source_to_display(projection.snapshot(), style.range.end)
-            .ok()?;
+        let start = projection.map_source(style.range.start)?;
+        let end = projection.map_source(style.range.end)?;
         if start < end {
             events.extend([(start, slot, 1i32), (end, slot, -1)]);
         }
@@ -566,6 +662,106 @@ mod tests {
             anchor: SourceByte(source.text.len()),
             head: SourceByte(source.text.len()),
             ..ActiveSource::default()
+        }
+    }
+
+    #[test]
+    fn boundary_reuse_preserves_exact_ranges_across_reveal_and_unpainted_edits() {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let original = source("prefix **e\u{301}** 🧠\r\n- [ ] task\n> quote\n");
+        let provider = CachedProvider::classify(original.clone());
+        let pinned = provider.compose(&original, &inactive(&original)).unwrap();
+        let old_display = pinned.text().to_owned();
+        let old_markers = format!("{:?}", pinned.markers());
+        let mut current = original.clone();
+        // No layout/paint between successive revisions: each remap must retain
+        // the previous revision's exact semantic ranges, never its boundary lease.
+        for prefix in ["x", "xx"] {
+            current.stamp.generation += 1;
+            current.text = Arc::from(format!("{prefix}{}", original.text));
+            let fresh = CachedProvider::classify(current.clone());
+            let hidden = provider.compose(&current, &inactive(&current)).unwrap();
+            let at = current.text.find("e\u{301}").unwrap();
+            let active = ActiveSource {
+                anchor: SourceByte(at),
+                head: SourceByte(at),
+                composition: Some(SourceByte(at)..SourceByte(at + "e\u{301}".len())),
+                ..ActiveSource::default()
+            };
+            let revealed = provider.compose(&current, &active).unwrap();
+            assert_ne!(
+                hidden.text(),
+                revealed.text(),
+                "active reveal positive control"
+            );
+            let boundaries: Vec<_> = current
+                .text
+                .grapheme_indices(true)
+                .map(|(i, _)| i)
+                .chain(std::iter::once(current.text.len()))
+                .collect();
+            for (actual, state) in [(&hidden, inactive(&current)), (&revealed, active)] {
+                let expected = fresh.compose(&current, &state).unwrap();
+                assert_eq!(actual.text(), expected.text());
+                assert_eq!(
+                    format!("{:?}", actual.markers()),
+                    format!("{:?}", expected.markers())
+                );
+                for offset in 0..=current.text.len() + 1 {
+                    let valid = boundaries.contains(&offset);
+                    assert_eq!(
+                        actual.source_boundary(&current, SourceByte(offset)),
+                        Some(valid)
+                    );
+                    for bias in [ConcealBias::Left, ConcealBias::Right] {
+                        assert_eq!(
+                            actual.to_projected(SourceByte(offset), bias),
+                            expected.to_projected(SourceByte(offset), bias)
+                        );
+                    }
+                }
+                for offset in 0..=actual.text().len() + 1 {
+                    for bias in [ConcealBias::Left, ConcealBias::Right] {
+                        assert_eq!(
+                            actual.to_source(ProjectedByte(offset), bias),
+                            expected.to_source(ProjectedByte(offset), bias)
+                        );
+                    }
+                }
+                for foreign in [
+                    SourceSnapshot {
+                        stamp: gpui_component::input::projection::SourceStamp {
+                            document: current.stamp.document + 1,
+                            ..current.stamp
+                        },
+                        ..current.clone()
+                    },
+                    SourceSnapshot {
+                        stamp: gpui_component::input::projection::SourceStamp {
+                            generation: current.stamp.generation + 1,
+                            ..current.stamp
+                        },
+                        ..current.clone()
+                    },
+                    SourceSnapshot {
+                        text: Arc::from("different bytes"),
+                        ..current.clone()
+                    },
+                ] {
+                    assert_eq!(actual.source_boundary(&foreign, SourceByte(0)), None);
+                }
+                assert_eq!(pinned.source_boundary(&current, SourceByte(0)), None);
+            }
+            // Retained paint data and its boundary authority remain immutable.
+            assert_eq!(pinned.text(), old_display);
+            assert_eq!(format!("{:?}", pinned.markers()), old_markers);
+            assert_eq!(pinned.source_boundary(&original, SourceByte(0)), Some(true));
+            let emoji = original.text.find('🧠').unwrap();
+            assert_eq!(
+                pinned.source_boundary(&original, SourceByte(emoji + 1)),
+                Some(false)
+            );
         }
     }
     #[test]
@@ -1325,6 +1521,43 @@ This paragraph remains ordinary Markdown.
     }
 
     #[test]
+    fn mermaid_is_an_s7_block_and_active_source_reveals_only_that_block() {
+        let note = source("# Diagrams\n\n```mermaid\nflowchart TD\nA-->B\n```\n\n```rust\nfn main() {}\n```\n\nend\n");
+        let provider = CachedProvider::classify(note.clone());
+        let projected = provider.compose(&note, &inactive(&note)).unwrap();
+        assert_eq!(
+            projected.blocks().len(),
+            1,
+            "ordinary code stays editable code"
+        );
+        let block = &projected.blocks()[0];
+        assert_eq!(
+            &note.text[block.source.start.0..block.source.end.0],
+            "```mermaid\nflowchart TD\nA-->B\n```"
+        );
+        let at = SourceByte(block.source.start.0 + 15);
+        let active = ActiveSource {
+            anchor: at,
+            head: at,
+            ..Default::default()
+        };
+        assert!(provider
+            .compose(&note, &active)
+            .unwrap()
+            .blocks()
+            .is_empty());
+        let composition = ActiveSource {
+            composition: Some(at..SourceByte(at.0 + 1)),
+            ..inactive(&note)
+        };
+        assert!(provider
+            .compose(&note, &composition)
+            .unwrap()
+            .blocks()
+            .is_empty());
+    }
+
+    #[test]
     fn explicit_replacement_reveals_without_changing_selection() {
         let source = source("**first**\n\n**second**\n\nend");
         let provider = CachedProvider::classify(source.clone());
@@ -1375,5 +1608,57 @@ This paragraph remains ordinary Markdown.
         let bare = "a | b\n--|--\nc | d\n";
         assert!(bare[table_cell_offset(bare, 1, 1).unwrap()..].starts_with("d\n"));
         assert!(bare[table_cell_offset(bare, 0, 0).unwrap()..].starts_with("a |"));
+    }
+
+    #[test]
+    fn shared_navigation_worker_keeps_normal_factory_output_with_one_authored_producer() {
+        use super::navigation_inventory as nav;
+        for text in [
+            "# Heading\n\n[**label**](target.md 'title') [[note|alias]]\n\n- item\n\nend\n",
+            "[r]: /u\npara [a](x.md) [b](y.md)\n",
+            "| a | b |\n| - | - |\n| [[note|alias]] | [literal](path \"[[not|wiki]]\") |\n\nend\n",
+        ] {
+            let source = source(text);
+            let owner = nav::Owner::new(gpui::EntityId::from(1_u64));
+            let input = nav::Input {
+                binding: nav::Binding {
+                    owner: owner.clone(),
+                    workspace: serde_json::json!({"brain_id":"test","root":"/isolated"}),
+                    path: "note.md".into(),
+                },
+                source: source.clone(),
+            };
+            let mut session = nav::Session::new(owner);
+            let request = session.begin(Some(input.clone())).unwrap();
+            let ((provider, completion), report) = okilum_core::open_diagnostics::capture(|| {
+                CachedProvider::classify_navigation(request, input.clone()).unwrap()
+            });
+            let (legacy, baseline_work) =
+                okilum_core::open_diagnostics::capture(|| CachedProvider::classify(source.clone()));
+            assert_eq!(report.counts["link_parse_bytes"], text.len() as u64);
+            assert_eq!(report.counts, baseline_work.counts);
+            assert_eq!(
+                report.phases["parse"].calls,
+                baseline_work.phases["parse"].calls
+            );
+            assert!(report.phases["parse"].calls > 0);
+            assert_eq!(
+                completion.view(&input).unwrap().parsed_links(),
+                okilum_core::document_links::parse(text)
+            );
+            assert_eq!(provider.note_links(), legacy.note_links());
+            assert_eq!(provider.limited(), legacy.limited());
+            let active = inactive(&source);
+            let actual = provider.compose(&source, &active).unwrap();
+            let expected = legacy.compose(&source, &active).unwrap();
+            assert_eq!(actual.text(), expected.text());
+            assert_eq!(actual.styles(), expected.styles());
+            assert_eq!(actual.line_scales(), expected.line_scales());
+            assert_eq!(actual.blocks(), expected.blocks());
+            assert_eq!(
+                format!("{:?}", actual.markers()),
+                format!("{:?}", expected.markers())
+            );
+        }
     }
 }

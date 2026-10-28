@@ -260,7 +260,10 @@ fn layout_frames_name_the_raw_edit_frame_and_its_anchor(cx: &mut TestAppContext)
     assert_eq!(frames.len(), 2, "{frames:?}");
     let (edit, adopted) = (&frames[0], &frames[1]);
     assert!(edit.edit && edit.raw && edit.anchor == "edit", "{edit:?}");
-    assert!(edit.reshaped_lines > HEADINGS, "{edit:?}");
+    // #1679 keeps the prepared Source wrap map: Enter wraps its two resulting
+    // lines instead of the entire note. The raw-frame and scroll-anchor
+    // assertions below must still hold while projection is unavailable.
+    assert_eq!(edit.reshaped_lines, 2, "{edit:?}");
     // The headings lost half their height above the caret: the anchor
     // scrolled up by that, and caret-follow down by up to one row.
     let line = f32::from(input.read_with(visual, |state, _| state.cursor_layout().unwrap().1));

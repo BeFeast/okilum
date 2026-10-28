@@ -26,6 +26,9 @@ PATCHES="$ROOT/scripts/patches"
 verify_only=0
 [ "${1:-}" = "--verify" ] && verify_only=1
 
+# Canonical Markdown parser API patch; independently pinned and verified.
+python3 "$ROOT/scripts/comrak-setup.py" "$@"
+
 if [ ! -d "$VENDOR/.git" ]; then
     if [ "$verify_only" = 1 ]; then
         echo "vendor-setup --verify: $VENDOR is missing; run scripts/vendor-setup.sh" >&2

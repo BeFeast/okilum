@@ -6,6 +6,8 @@ use okilum_core::document_links::{
     prepared::{LinkPreparation, LinkState, TargetSnapshot},
 };
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) type States = Arc<BTreeMap<String, LinkState>>;
 pub(crate) type SnippetLinks = Vec<(std::ops::Range<usize>, String)>;
@@ -190,6 +192,8 @@ pub(crate) struct PreparedDocument {
 
 /// Where to land once the document is rendered.
 pub(crate) enum Landing {
+    /// An explicit bare document link opens at the top, without a flash.
+    Top,
     Task(okilum_core::tasks::Task),
     /// A file line from an external link (#1049), 1-based.
     Line(u32),
@@ -233,16 +237,16 @@ impl Reader {
         );
     }
 
-    /// An external link's note, at a file line or a heading (#1049).
+    /// An external link's note, with its explicit landing (#1049).
     pub(crate) fn prepare_link_document(
         &mut self,
         rel: &str,
-        line: Option<u32>,
+        landing: Landing,
         heading: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prepare_document_target(rel, (None, heading), line.map(Landing::Line), window, cx);
+        self.prepare_document_target(rel, (None, heading), Some(landing), window, cx);
     }
 
     /// The note back in the Reader at the editor's place (#1296).
@@ -279,7 +283,21 @@ impl Reader {
             restore_position: self
                 .navigation
                 .history_nav
-                .map(|index| self.navigation.history_positions[index]),
+                .map(|index| self.navigation.history_positions[index])
+                .or_else(|| {
+                    // Plain file-list/Quick Open returns restore the last reading
+                    // place. Explicit search, heading, line and task landings win.
+                    if location.0.is_some() || location.1.is_some() || landing.is_some() {
+                        return None;
+                    }
+                    if rel == self.current_rel {
+                        return Some(self.content.read(cx).list_state().logical_scroll_top());
+                    }
+                    self.navigation
+                        .places
+                        .get(&(self.vault_root.clone(), rel.to_owned()))
+                        .copied()
+                }),
         };
         let vault = self.vault.clone();
         let rel = rel.to_owned();
@@ -288,64 +306,131 @@ impl Reader {
             Some(Landing::Line(line)) => Some(*line),
             _ => None,
         };
-        let quiet = matches!(landing, Some(Landing::Place(_)));
+        let quiet = matches!(landing, Some(Landing::Top | Landing::Place(_)));
         let started = std::time::Instant::now();
         self.open_started = Some(started);
+        let preparation_trace = reader_diagnostics::trace(cx);
+        let platform_probe = preparation_trace
+            .as_ref()
+            .map(|_| platform::text_diagnostics::Probe::start());
+        #[cfg(target_os = "macos")]
+        let (cloud_send, cloud_receive) = async_channel::unbounded::<()>();
+        #[cfg(target_os = "macos")]
+        let cloud_done = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "macos")]
+        let cloud_progress_done = cloud_done.clone();
+        #[cfg(target_os = "macos")]
+        cx.spawn_in(window, async move |this, cx| {
+            while cloud_receive.recv().await.is_ok() {
+                if cloud_progress_done.load(Ordering::Acquire) {
+                    break;
+                }
+                let current = this
+                    .update_in_own_window(cx, |this, _, cx| {
+                        if this.navigation.preparation_generation != generation {
+                            return false;
+                        }
+                        if this.link_notice.as_deref() != Some(reader_icloud::DOWNLOADING) {
+                            this.link_notice = Some(reader_icloud::DOWNLOADING.into());
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !current {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| {
             let document = cx
                 .background_executor()
                 .spawn(async move {
-                    let document = if html && !Path::new(&rel).is_absolute() {
-                        okilum_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
-                            PreparedDocument {
-                                source: html,
-                                canonical_source: None,
-                                original: None,
-                                identities: Vec::new(),
-                                frontmatter: None,
-                            }
-                        })
-                    } else {
-                        okilum_core::render::reader_document(&vault, &rel).map(|document| {
-                            PreparedDocument {
-                                canonical_source: Some(document.canonical_source),
-                                source: document.rendered,
-                                original: Some(document.original_body),
-                                identities: document.links,
-                                frontmatter: document.frontmatter,
-                            }
+                    let worker_started = std::time::Instant::now();
+                    let prepare = || {
+                        #[cfg(target_os = "macos")]
+                        reader_icloud::materialize(&vault.root.join(&rel), || {
+                            cloud_send.send_blocking(()).map_err(|_| anyhow::anyhow!("Opening cancelled"))
+                        })?;
+                        let document = if html && !Path::new(&rel).is_absolute() {
+                            okilum_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
+                                PreparedDocument {
+                                    source: html,
+                                    canonical_source: None,
+                                    original: None,
+                                    identities: Vec::new(),
+                                    frontmatter: None,
+                                }
+                            })
+                        } else {
+                            okilum_core::render::reader_document(&vault, &rel).map(|document| {
+                                PreparedDocument {
+                                    canonical_source: Some(document.canonical_source),
+                                    source: document.rendered,
+                                    original: Some(document.original_body),
+                                    identities: document.links,
+                                    frontmatter: document.frontmatter,
+                                }
+                            })
+                        };
+                        document.and_then(|document| {
+                            let _phase = okilum_core::open_diagnostics::phase("target_landing");
+                            let target = match landing {
+                                // Acceptance already starts a replacement at the
+                                // top; an empty document needs no pending landing.
+                                Some(Landing::Top) => None,
+                                Some(Landing::Task(task)) => {
+                                    let original = document.original.as_deref().ok_or_else(|| {
+                                        anyhow::anyhow!("Task navigation is unavailable in HTML mode")
+                                    })?;
+                                    let target =
+                                        okilum_core::tasks::target(&task, original, &document.source)?;
+                                    Some(Ok((target.block, Some(target.text.unwrap_or_default()))))
+                                }
+                                // A line that cannot be placed opens the note at the
+                                // top and says so; it never lands on a guess.
+                                Some(Landing::Line(line) | Landing::Place(line)) => Some(
+                                    document
+                                        .canonical_source
+                                        .as_deref()
+                                        .and_then(|source| {
+                                            okilum_core::deep_link::reader_block(
+                                                source,
+                                                &document.source,
+                                                line,
+                                            )
+                                        })
+                                        .map(|block| (block, None))
+                                        .ok_or(line),
+                                ),
+                                None => None,
+                            };
+                            Ok((document, target))
                         })
                     };
-                    document.and_then(|document| {
-                        let target = match landing {
-                            Some(Landing::Task(task)) => {
-                                let original = document.original.as_deref().ok_or_else(|| {
-                                    anyhow::anyhow!("Task navigation is unavailable in HTML mode")
-                                })?;
-                                let target =
-                                    okilum_core::tasks::target(&task, original, &document.source)?;
-                                Some(Ok((target.block, Some(target.text.unwrap_or_default()))))
-                            }
-                            // A line that cannot be placed opens the note at the
-                            // top and says so; it never lands on a guess.
-                            Some(Landing::Line(line) | Landing::Place(line)) => Some(
-                                document
-                                    .canonical_source
-                                    .as_deref()
-                                    .and_then(|source| {
-                                        okilum_core::deep_link::reader_block(
-                                            source,
-                                            &document.source,
-                                            line,
-                                        )
-                                    })
-                                    .map(|block| (block, None))
-                                    .ok_or(line),
-                            ),
-                            None => None,
-                        };
-                        Ok((document, target))
-                    })
+                    let result = if let Some(trace) = preparation_trace {
+                        let (document, report) = okilum_core::open_diagnostics::capture(prepare);
+                        trace.event(
+                            "note_open_core_preparation",
+                            serde_json::json!({
+                                "generation": generation,
+                                "since_open_ms": started.elapsed().as_secs_f64() * 1000.,
+                                "worker_ms": worker_started.elapsed().as_secs_f64() * 1000.,
+                                "worker_start_ms": worker_started.duration_since(started).as_secs_f64() * 1000.,
+                                "note_count": vault.notes.len(),
+                                "html": html,
+                                "success": document.is_ok(),
+                                "report": report,
+                            }),
+                        );
+                        document
+                    } else {
+                        prepare()
+                    };
+                    #[cfg(target_os = "macos")]
+                    cloud_done.store(true, Ordering::Release);
+                    result
                 })
                 .await;
             let mut request = request;
@@ -378,12 +463,14 @@ impl Reader {
                 if let Some(trace) = reader_diagnostics::trace(cx) {
                     trace.event(
                         "note_open_rendered",
-                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000. }),
+                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000., "generation": generation, "platform": platform_probe.as_ref().map(|probe| probe.report()) }),
                     );
                 }
+                drop(platform_probe);
                 let task_landing = document.is_ok().then_some(task_text).flatten();
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
+                let navigation = this.navigation.generation;
                 this.accept_prepared_document(request, document, window, cx);
                 this.navigation.flash_pending = flash_block;
                 if let Some(line) = landing_line {
@@ -393,6 +480,20 @@ impl Reader {
                     this.land_task_text(text, cx);
                 }
                 this.finish_link_edit(generation, window, cx);
+                // Only a successfully accepted current request may reopen the
+                // chosen editor. Explicit link landings above keep ownership.
+                if this.navigation.generation != navigation
+                    && this.ui_state.source_mode
+                    && this.editing.is_none()
+                {
+                    let tree_had_focus = this.tree_focus.contains_focused(window, cx);
+                    this.toggle_source(window, cx);
+                    // An asynchronous mode restore must keep tree navigation
+                    // and rename keys in the navigator that opened the note.
+                    if tree_had_focus {
+                        this.tree_focus.focus(window, cx);
+                    }
+                }
                 if let Some(line) = unplaced_line {
                     this.link_notice = Some(
                         format!(
