@@ -30,7 +30,8 @@ SVG 4 MiB, raster 4 megapixels/4096 pixels per axis. A stuck worker cannot spawn
 replacement threads without bound.
 
 The cache uses source SHA-256, 128 CSS-pixel width buckets and theme. At most 32
-entries/64 MiB of rasters are retained, with matching GPUI asset eviction. A
+entries/64 MiB of rasters are retained, with matching all-window GPU atlas eviction. Worker completions account for raster
+bytes even after navigation; GPUI asset outputs hold only weak references. A
 block retains its previous good image while its replacement is pending. Parse,
 render, resource-limit, panic and timeout errors display the original highlighted
 Mermaid fence, never an empty placeholder. Source and code-copy remain exact.

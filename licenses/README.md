@@ -36,6 +36,12 @@ components; this is a conservative superset of any individual release.
   and a CC0 CMYK profile. Foxit-PDFium.txt retains the PDFium/Foxit notice;
   about.toml clarifies hayro-interpret so cargo-about lists both licences.
   Source: https://github.com/LaurenzV/hayro/tree/main/hayro-interpret/assets
+- Mermaid diagrams: merman 0.9.2 includes the EPL-2.0 ELK layout implementation
+  (merman-elk-layered). Corresponding unmodified sources are available at
+  https://crates.io/crates/merman-elk-layered/0.9.2. EPL-2.0 remains applicable to
+  that component; Okilum's own code remains MIT.
+- Arimo 1.23: Apache-2.0, embedded without modification for Mermaid layout and
+  painting. Its license and provenance are in crates/okilum-shell/assets/mermaid/.
 - Sparkle 2.10.0: Sparkle.txt includes its bundled third-party notices.
   Source: https://github.com/sparkle-project/Sparkle/blob/2.10.0/LICENSE
 
