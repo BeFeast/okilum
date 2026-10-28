@@ -3822,7 +3822,7 @@ impl Reader {
             self.vault.inventory_scanned,
             notes,
             places,
-            !self.vault.unreadable.is_empty(),
+            !self.vault.unreadable.is_empty() || !self.vault.cloud_placeholders.is_empty(),
         )
     }
 

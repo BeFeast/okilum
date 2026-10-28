@@ -525,4 +525,28 @@ mod topology_tests {
         watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
         assert!(watcher.poll().unwrap().rescan);
     }
+
+    #[test]
+    fn cloud_materialization_metadata_is_forwarded_as_a_source_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Pending.md");
+        std::fs::write(&path, [0xff]).unwrap();
+        let mut watcher = VaultWatcher::new(temp.path()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        watcher.rx = rx;
+        // Metadata routing uses only the path/file metadata, not source bytes
+        // (these bytes deliberately are not a valid Markdown UTF-8 source).
+        tx.send(Ok(Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Metadata(notify::event::MetadataKind::Any),
+        ))
+        .add_path(path)))
+            .unwrap();
+        watcher.poll();
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        let changes = watcher
+            .poll()
+            .expect("metadata notification must reach reconciliation");
+        assert_eq!(changes.changed, BTreeSet::from(["Pending.md".into()]));
+        assert!(!changes.rescan);
+    }
 }

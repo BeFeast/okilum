@@ -121,6 +121,16 @@ in plain language. Full paths, original errors and the diagnostic log location
 are behind a technical-details disclosure and included in Copy. Details, Copy
 and Retry use compact glyphs with tooltips; Retry closes the list and refreshes.
 
+iCloud placeholders are a distinct pending-availability state, never unreadable
+items or attention rows (#1837). The header shows only a muted “N files still in
+iCloud” count while any remain. Indexing inspects metadata and never requests a
+download; filesystem materialisation notifications reconcile the source and clear
+the count without Retry or reopening. A displayed document keeps its last readable
+content (and any editor draft) while its source is pending. Read/encoding errors
+on other files retain their normal attention UI. Existing partial-inventory and
+link-ambiguity safeguards also apply while cloud sources are pending. “Download
+all” and Finder “Keep Downloaded” guidance belong to the following slice.
+
 ## Typography
 
 Fonts stay the brand pair: Noto Sans (UI and text) and Cascadia Code (code).
