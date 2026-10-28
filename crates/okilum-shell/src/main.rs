@@ -2254,9 +2254,9 @@ impl Reader {
         if self.navigation.history.get(self.navigation.history_ix) == Some(&self.current_rel) {
             self.navigation.places.insert(
                 (self.vault_root.clone(), self.current_rel.clone()),
-                self.navigation.pending_landing.unwrap_or_else(|| {
-                    self.content.read(cx).list_state().logical_scroll_top()
-                }),
+                self.navigation
+                    .pending_landing
+                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top()),
             );
         }
         self.cancel_pending_landing();

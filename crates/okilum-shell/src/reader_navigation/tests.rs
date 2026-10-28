@@ -62,7 +62,11 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     visual.simulate_click(third.center(), Modifiers::default());
     settle(visual);
     view.read_with(visual, |v, cx| {
-        assert_eq!(v.current_section(cx), Some(2), "positive control: section 3 selected");
+        assert_eq!(
+            v.current_section(cx),
+            Some(2),
+            "positive control: section 3 selected"
+        );
     });
     // Preserve an intra-block offset too, not just the heading number.
     view.update(visual, |v, cx| {
@@ -83,14 +87,24 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     });
     let open_row = |v: &mut Reader, window: &mut Window, cx: &mut Context<Reader>, rel: &str| {
         v.sync_tree();
-        let row = v.tree.rows.iter().find(|row| row.path == rel).unwrap().clone();
+        let row = v
+            .tree
+            .rows
+            .iter()
+            .find(|row| row.path == rel)
+            .unwrap()
+            .clone();
         v.activate_tree_row(&row, window, cx);
     };
     view.update_in(visual, |v, window, cx| open_row(v, window, cx, "B.md"));
     settle(visual);
     view.read_with(visual, |v, cx| {
         assert_eq!(v.current_rel, "B.md");
-        assert_eq!(v.current_section(cx), Some(0), "new note starts at its own top");
+        assert_eq!(
+            v.current_section(cx),
+            Some(0),
+            "new note starts at its own top"
+        );
     });
     view.update_in(visual, |v, window, cx| {
         if history {
@@ -102,7 +116,11 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     settle(visual);
     view.read_with(visual, |v, cx| {
         assert_eq!(v.current_rel, "A.md");
-        assert_eq!(v.current_section(cx), Some(2), "RETURN1827: section 3 must remain active");
+        assert_eq!(
+            v.current_section(cx),
+            Some(2),
+            "RETURN1827: section 3 must remain active"
+        );
         let restored = v.content.read(cx).list_state().logical_scroll_top();
         assert_eq!(restored.item_ix, position.item_ix);
         assert_eq!(restored.offset_in_item, position.offset_in_item);
@@ -121,7 +139,11 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     });
     settle(visual);
     view.read_with(visual, |v, cx| {
-        assert_eq!(v.current_section(cx), Some(1), "explicit link destination wins");
+        assert_eq!(
+            v.current_section(cx),
+            Some(1),
+            "explicit link destination wins"
+        );
     });
 }
 
