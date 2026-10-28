@@ -113,3 +113,13 @@ jobs:
         }
         cargo test --locked -p okilum-shell --bin okilum owned_ -- --nocapture --test-threads=1
         exit $LASTEXITCODE
+
+    - name: Retain the exact-source unsigned QA executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-shell-qa-${{ github.sha }}
+        path: |
+          target/debug/okilum.exe
+          target/debug/*.dll
+        if-no-files-found: error
+        retention-days: 1
