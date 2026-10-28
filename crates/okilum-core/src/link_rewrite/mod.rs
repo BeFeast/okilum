@@ -1070,6 +1070,24 @@ mod tests {
     }
 
     #[test]
+    fn cloud_pending_move_preview_requires_refresh_when_pending_set_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("from.md"), "source").unwrap();
+        let stub = root.join(".Pending.md.icloud");
+        fs::write(&stub, "synthetic unavailable source").unwrap();
+        let preview = Preview::prepare(root, "from.md", "to.md").unwrap();
+        fs::remove_file(stub).unwrap();
+        assert!(preview
+            .validate(root)
+            .unwrap_err()
+            .to_string()
+            .contains("Skipped file inventory changed"));
+        assert!(root.join("from.md").exists());
+        assert!(!root.join("to.md").exists());
+    }
+
+    #[test]
     fn partial_inventory_updates_exact_links_but_not_suffix_guesses() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
