@@ -33,6 +33,12 @@ impl Reader {
                 if reader.encoding_repair_pending.as_ref() == Some(&path) {
                     reader.encoding_repair_pending = None;
                 }
+                if reader.vault_root == root && matches!(&result, Ok(Save::Saved)) {
+                    reader.queue_vault_mutation(okilum_core::Changes {
+                        changed: std::collections::BTreeSet::from([rel.clone()]),
+                        ..Default::default()
+                    }, cx);
+                }
                 if reader.vault_root != root || reader.current_rel != rel { cx.notify(); return; }
                 match result {
                     Ok(Save::Saved) => {
@@ -85,6 +91,7 @@ impl Reader {
             result == Save::Saved,
             "The note changed after preview; open History again"
         );
+        self.queue_saved_source(cx);
         let rel = self.current_rel.clone();
         self.prepare_document(&rel, None, None, window, cx);
         Ok(())
