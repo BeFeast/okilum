@@ -56,7 +56,7 @@ pub struct Version {
 }
 impl Version {
     pub fn bytes(&self) -> &[u8] {
-        self.raw.as_deref().unwrap_or_else(|| self.text.as_bytes())
+        self.raw.as_deref().unwrap_or(self.text.as_bytes())
     }
 }
 #[derive(Default)]

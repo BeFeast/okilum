@@ -209,7 +209,7 @@ mod tests {
                     .is_some_and(|extension| extension == "json")
             })
             .collect();
-        assert_eq!(legacy_paths, [legacy.clone()]);
+        assert_eq!(legacy_paths.as_slice(), std::slice::from_ref(&legacy));
         assert_eq!(Preimage::load(&legacy).unwrap().text, "legacy text");
         assert_eq!(fs::read(&legacy).unwrap(), legacy_bytes);
         let listing = super::list(&drafts, &root).unwrap();
