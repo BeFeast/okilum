@@ -13,8 +13,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(args, root, *, success=True):
-    result = subprocess.run(args, cwd=root, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, timeout=180)
+    try:
+        result = subprocess.run(args, cwd=root, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=180)
+    except subprocess.TimeoutExpired as error:
+        output = error.stdout or b""
+        print(output.decode(errors="replace") if isinstance(output, bytes) else output,
+              end="", flush=True)
+        raise RuntimeError(f"Vendor generation command timed out after 180s: {args}") from error
     print(result.stdout, end="", flush=True)
     if (result.returncode == 0) != success:
         raise RuntimeError(f"Unexpected exit {result.returncode}: {args}")
@@ -31,6 +37,11 @@ def main():
             if not name:
                 continue
             source = ROOT / name
+            if source.is_symlink():
+                # Preserve checkout-relative links, but never follow host paths.
+                link = Path(source.readlink())
+                if link.is_absolute() or not source.resolve().is_relative_to(ROOT):
+                    raise RuntimeError(f"Tracked symlink escapes the source checkout: {name}")
             target = fresh / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target, follow_symlinks=False)
