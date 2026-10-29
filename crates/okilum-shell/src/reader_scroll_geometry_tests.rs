@@ -1,5 +1,6 @@
 //! Reader wheel regressions assert painted text, not only the list's offset.
-use super::*;
+use super::{bind_keys, reader_ui_state, Opts, Reader, Root};
+use gpui::{point, px, size, ScrollDelta, ScrollWheelEvent, TouchPhase};
 
 #[gpui::test]
 fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::TestAppContext) {
