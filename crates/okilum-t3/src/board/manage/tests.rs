@@ -68,12 +68,7 @@ fn create_add_edit_remove_roundtrip_is_readable_toml_without_legacy_migration() 
     assert!(removed.cards().is_empty());
     assert!(Binding::read(&a.0).unwrap().unwrap().issues.is_empty());
     let original_doc = edited.document.unwrap();
-    removed
-        .document
-        .as_ref()
-        .unwrap()
-        .replace(&original_doc.source)
-        .unwrap();
+    removed.undo(&original_doc.source).unwrap();
     assert_eq!(a.session().cards()[0]["number"], 42);
     assert_eq!(std::fs::read(a.file("project.yaml")).unwrap(), original);
 }
@@ -132,6 +127,9 @@ fn changed_revision_or_format_or_project_refuses_writes_and_undo() {
     assert_eq!(a.session().cards().len(), 1);
     std::fs::write(a.file("project.yaml"), "name: Changed\n").unwrap();
     assert!(added.save(&Change::Remove(0)).is_err());
+    assert!(added
+        .undo(&added.document.as_ref().unwrap().source)
+        .is_err());
     assert_eq!(
         std::fs::read_to_string(a.file("board.toml")).unwrap(),
         added.document.unwrap().source

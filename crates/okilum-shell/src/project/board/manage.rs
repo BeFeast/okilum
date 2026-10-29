@@ -223,18 +223,15 @@ impl Board {
         if editor.busy {
             return;
         }
-        let Some((document, source)) = editor.undo.clone() else {
+        let Some((_, source)) = editor.undo.clone() else {
             return;
         };
         editor.busy = true;
-        let area = self.area.clone();
+        let session = editor.session.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    document.replace(&source)?;
-                    Session::load(&area)
-                })
+                .spawn(async move { session.undo(&source) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if let Some(editor) = &mut this.editor {

@@ -435,14 +435,32 @@ impl Session {
         );
         Ok(source)
     }
-    pub fn save(&self, change: &Change) -> Result<Self> {
-        let source = self.preview(change)?;
+    fn check_project(&self) -> Result<()> {
         let project =
             area_files::read(&self.area, "project")?.context("Project manifest disappeared")?;
         ensure!(
             project.path == self.project.path && project.source == self.project.source,
             "Project changed; reload before saving"
         );
+        Ok(())
+    }
+    pub fn undo(&self, previous: &str) -> Result<Self> {
+        self.check_project()?;
+        let document = self.document.as_ref().context("No saved Board to undo")?;
+        let parsed = match document.format {
+            Format::Toml => Binding::parse_toml(previous)?,
+            Format::Yaml => Binding::parse(previous)?,
+        };
+        ensure!(
+            Some(parsed.repository.as_str()) == self.value["repository"].as_str(),
+            "Undo belongs to a different repository"
+        );
+        document.replace(previous)?;
+        Self::load(&self.area)
+    }
+    pub fn save(&self, change: &Change) -> Result<Self> {
+        let source = self.preview(change)?;
+        self.check_project()?;
         if let Some(document) = &self.document {
             document.replace(&source)?;
         } else {
