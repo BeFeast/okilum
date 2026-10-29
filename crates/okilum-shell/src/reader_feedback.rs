@@ -25,6 +25,8 @@ pub(crate) fn install(cx: &mut App) {
     cx.set_global(Drafts::default());
     cx.bind_keys([
         KeyBinding::new("secondary-v", Paste, Some("OkilumFeedback")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("shift-insert", Paste, Some("OkilumFeedback")),
         KeyBinding::new("secondary-w", CloseFeedback, Some("OkilumFeedbackWindow")),
         KeyBinding::new("escape", CloseFeedback, Some("OkilumFeedbackWindow")),
     ]);
