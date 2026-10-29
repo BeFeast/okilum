@@ -209,7 +209,9 @@ AND, and C5 could not otherwise pass honestly.
 
 **Bare dates are widened.** A reader writes `date:[2026-01-01 TO 2026-12-31]`;
 tantivy stores RFC 3339. The query layer widens the bare form rather than making
-the reader learn the storage format.
+the reader learn the storage format. Only values of the `date` field are
+widened: elsewhere a date is text, so `2026-01-01`, `"2026-01-01"` and
+`path:2026-01-01` find a daily note by its name (#1933).
 
 ### Two tests were wrong, and were fixed as tests
 

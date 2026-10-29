@@ -253,7 +253,15 @@ impl Searcher {
                         if let Err(error) = checkpoint.borrow_mut()(count) {
                             return Some(Err(error));
                         }
-                        Self::document_for(fields, vault, &note.path, &note.title).map(Ok)
+                        // A full build has no earlier document to keep, so an
+                        // unreadable note is left out; the scan that made
+                        // `vault` already reports it in `vault.unreadable`.
+                        // Failing the build would cost every other note its
+                        // search over one bad file.
+                        Self::document_for(fields, vault, &note.path, &note.title)
+                            .ok()
+                            .flatten()
+                            .map(Ok)
                     })
                     .collect()
             },
@@ -423,9 +431,30 @@ impl Searcher {
     /// The index document for one note — the single place that knows how a
     /// note becomes fields. Both the full build and a single-note update go
     /// through here, so they cannot disagree about what gets indexed.
-    fn document_for(f: Fields, vault: &Vault, rel: &str, title: &str) -> Option<TantivyDocument> {
-        let raw = vault.read_note(rel).ok()?;
-        Some(Self::document_for_text(f, vault, rel, title, &raw))
+    ///
+    /// `None` only when there is no note to index: the file is gone, or the
+    /// path is a service file. Any other read failure is an error (#1933); a
+    /// note that is on disk but unreadable right now is not a deletion.
+    fn document_for(
+        f: Fields,
+        vault: &Vault,
+        rel: &str,
+        title: &str,
+    ) -> Result<Option<TantivyDocument>> {
+        if crate::vault::service_path(Path::new(rel)) {
+            return Ok(None);
+        }
+        match vault.read_note(rel) {
+            Ok(raw) => Ok(Some(Self::document_for_text(f, vault, rel, title, &raw))),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn document_for_text(
@@ -691,8 +720,13 @@ impl Searcher {
     /// outbound links is read from it, and a stale scan would index stale
     /// links. Rescanning the vault is the caller's decision (#6), not this
     /// method's — a watcher knows which change it is reacting to.
+    ///
+    /// The note is read before the index is touched. A note that is on disk but
+    /// cannot be read is an error and keeps its indexed document (#1933); only
+    /// a missing file is removed.
     pub fn update_note(&self, vault: &Vault, rel: &str) -> Result<()> {
         let title = vault.note_title(rel);
+        let document = Self::document_for(self.f, vault, rel, &title)?;
         let mut guard = self
             .writer
             .lock()
@@ -701,12 +735,21 @@ impl Searcher {
             *guard = Some(self.index.writer(32_000_000)?);
         }
         let writer = guard.as_mut().unwrap();
-        writer.delete_term(tantivy::Term::from_field_text(self.f.path_id, rel));
-        if let Some(document) = Self::document_for(self.f, vault, rel, &title) {
-            writer.add_document(document)?;
+        // The writer is shared: a delete left staged by a failed add or commit
+        // would be published by the next caller's commit. Roll back, as the
+        // batch update does.
+        let result = (|| -> Result<()> {
+            writer.delete_term(tantivy::Term::from_field_text(self.f.path_id, rel));
+            if let Some(document) = document {
+                writer.add_document(document)?;
+            }
+            writer.commit()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            writer.rollback()?;
         }
-        writer.commit()?;
-        Ok(())
+        result
     }
 
     /// Each query opens the current commit synchronously. A delayed reload is
@@ -882,33 +925,127 @@ impl Searcher {
             .collect()
     }
 
-    /// tantivy wants RFC 3339 on both ends of a date range; a reader writes
-    /// `date:[2026-01-01 TO 2026-12-31]`. Widen the bare form rather than
-    /// making the reader learn the storage format.
+    /// tantivy wants RFC 3339 for a date value; a reader writes
+    /// `date:[2026-01-01 TO 2026-12-31]` or `date:2026-03-01`. Widen the bare
+    /// form rather than making the reader learn the storage format.
     ///
-    /// No look-ahead: Rust's `regex` has none, and the first version of this
-    /// used `(?![T\d])`, which is a *runtime* pattern error — compiled on every
-    /// call and unwrapped, so it panicked every single query. Hence both the
-    /// manual boundary check and the compile-once static.
+    /// Only values of the `date` field (#1933). Anywhere else a date is text,
+    /// and widened it tokenizes into `01t00` and `00z`, which no note contains:
+    /// a daily note could not be found by its own name. Quoted text is a
+    /// phrase, never a field, and is skipped whole.
     fn widen_bare_dates(query: &str) -> String {
-        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| regex::Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
         let bytes = query.as_bytes();
         let mut out = String::with_capacity(query.len());
         let mut last = 0;
-        for m in re.find_iter(query) {
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'\\' => at += 2,
+                quote @ (b'"' | b'\'') => at = Self::past_closing(bytes, at + 1, &[quote]),
+                _ => match Self::date_value(query, at) {
+                    Some(value) => {
+                        out.push_str(&query[last..value.start]);
+                        Self::widen_dates_in(&query[value.clone()], &mut out);
+                        last = value.end;
+                        at = value.end;
+                    }
+                    None => at += 1,
+                },
+            }
+        }
+        out.push_str(&query[last..]);
+        out
+    }
+
+    /// The value of a `date` field whose name starts at `at`, if it does: bare,
+    /// quoted, a `[…]`/`{…}` range, `>…`/`<=…`, `IN […]` or a `(…)` group. The
+    /// name must start a term, so `frontmatter.date:` and `update:` stay other
+    /// fields.
+    fn date_value(query: &str, at: usize) -> Option<std::ops::Range<usize>> {
+        let bytes = query.as_bytes();
+        if !bytes[at..].starts_with(b"date") {
+            return None;
+        }
+        let boundary =
+            |i: usize| i == 0 || bytes[i - 1] == b'(' || bytes[i - 1].is_ascii_whitespace();
+        // An occur sign (`-date:`, `+date:`) still starts the term.
+        if !boundary(at) && !(matches!(bytes[at - 1], b'+' | b'-') && boundary(at - 1)) {
+            return None;
+        }
+        let skip_space = |mut i: usize| {
+            while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                i += 1;
+            }
+            i
+        };
+        let colon = skip_space(at + 4);
+        if bytes.get(colon) != Some(&b':') {
+            return None;
+        }
+        let start = skip_space(colon + 1);
+        let end = match *bytes.get(start)? {
+            b'[' | b'{' => Self::past_closing(bytes, start + 1, b"]}"),
+            b'(' => Self::past_closing(bytes, start + 1, b")"),
+            quote @ (b'"' | b'\'') => Self::past_closing(bytes, start + 1, &[quote]),
+            b'I' if bytes[start..].starts_with(b"IN")
+                && bytes.get(start + 2).is_some_and(u8::is_ascii_whitespace) =>
+            {
+                Self::past_closing(bytes, start + 2, b"]")
+            }
+            first => {
+                // `>=` and the like may be spaced from their bound.
+                let bound = match first {
+                    b'>' | b'<' => {
+                        skip_space(start + 1 + usize::from(bytes.get(start + 1) == Some(&b'=')))
+                    }
+                    _ => start,
+                };
+                query[bound..]
+                    .find(|c: char| c.is_whitespace() || c == ')')
+                    .map_or(query.len(), |end| bound + end)
+            }
+        };
+        Some(start..end)
+    }
+
+    /// Just past the first unescaped byte of `ends` at or after `at`, or the
+    /// end of the query when there is none.
+    fn past_closing(bytes: &[u8], mut at: usize, ends: &[u8]) -> usize {
+        while at < bytes.len() {
+            match bytes[at] {
+                b'\\' => at += 2,
+                byte if ends.contains(&byte) => return at + 1,
+                _ => at += 1,
+            }
+        }
+        bytes.len()
+    }
+
+    /// Append `value` with each bare `YYYY-MM-DD` in it widened to midnight UTC.
+    ///
+    /// No look-around: Rust's `regex` has none, and the first version of this
+    /// used `(?![T\d])`, which is a *runtime* pattern error — compiled on every
+    /// call and unwrapped, so it panicked every single query. Hence both the
+    /// manual boundary checks and the compile-once static.
+    fn widen_dates_in(value: &str, out: &mut String) {
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| regex::Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
+        let bytes = value.as_bytes();
+        let mut last = 0;
+        for m in re.find_iter(value) {
             // Already a datetime (`…T…`) or part of a longer number: leave it.
+            let before = m.start().checked_sub(1).map(|at| bytes[at]);
             let next = bytes.get(m.end()).copied();
-            let widen = !matches!(next, Some(b'T') | Some(b't'))
+            let widen = !before.is_some_and(|c| c.is_ascii_digit())
+                && !matches!(next, Some(b'T') | Some(b't'))
                 && !next.is_some_and(|c| c.is_ascii_digit());
-            out.push_str(&query[last..m.end()]);
+            out.push_str(&value[last..m.end()]);
             if widen {
                 out.push_str("T00:00:00Z");
             }
             last = m.end();
         }
-        out.push_str(&query[last..]);
-        out
+        out.push_str(&value[last..]);
     }
 
     /// Search, or say why the query could not be understood.
@@ -1345,6 +1482,61 @@ mod hidden_link_context_tests {
             source_confirmed_snippet_html(fragment.into(), fragment, "[a](target) [a](target"),
             fragment
         );
+    }
+}
+
+#[cfg(test)]
+mod date_query_tests {
+    use super::Searcher;
+
+    /// #1933: a bare date is widened only where it is a `date` value.
+    #[test]
+    fn only_values_of_the_date_field_are_widened() {
+        let widen = Searcher::widen_bare_dates;
+        for (query, widened) in [
+            (
+                "date:[2026-01-01 TO 2026-12-31]",
+                "date:[2026-01-01T00:00:00Z TO 2026-12-31T00:00:00Z]",
+            ),
+            (
+                "date:{2026-01-01 TO *] plan",
+                "date:{2026-01-01T00:00:00Z TO *] plan",
+            ),
+            ("date:2026-03-01", "date:2026-03-01T00:00:00Z"),
+            (
+                "plan date: >= 2026-03-01",
+                "plan date: >= 2026-03-01T00:00:00Z",
+            ),
+            ("(-date:<2026-03-01)", "(-date:<2026-03-01T00:00:00Z)"),
+            (
+                "date: IN [2026-03-01 2026-07-15]",
+                "date: IN [2026-03-01T00:00:00Z 2026-07-15T00:00:00Z]",
+            ),
+            (
+                "date:(2026-03-01 OR 2026-07-15) 2026-01-01",
+                "date:(2026-03-01T00:00:00Z OR 2026-07-15T00:00:00Z) 2026-01-01",
+            ),
+            (
+                "date:\"2026-03-01\" \"date 2026-01-01\"",
+                "date:\"2026-03-01T00:00:00Z\" \"date 2026-01-01\"",
+            ),
+        ] {
+            assert_eq!(widen(query), widened, "{query}");
+        }
+        // Text, quotes, other fields, datetimes and longer numbers stay as typed.
+        for query in [
+            "2026-01-01",
+            "\"2026-01-01\"",
+            "path:2026-01-01",
+            "frontmatter.date:2026-01-01",
+            "update:2026-01-01",
+            "\"due date:2026-01-01\"",
+            "date:2026-03-01T10:00:00Z",
+            "date:12026-01-01",
+            "date:2026-01-012",
+        ] {
+            assert_eq!(widen(query), query);
+        }
     }
 }
 

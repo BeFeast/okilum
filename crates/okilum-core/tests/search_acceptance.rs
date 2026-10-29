@@ -209,6 +209,48 @@ fn c7_notes_can_be_filtered_by_frontmatter_date() {
 }
 
 #[test]
+fn a_date_outside_the_date_field_is_searched_as_text() {
+    // #1933. Only a `date:` value is widened to RFC 3339 (C7). Widening every
+    // date in the query turned `2026-01-01` into `2026-01-01T00:00:00Z`, whose
+    // `01t00` and `00z` tokens no note contains, so a daily note could not be
+    // found by its own name.
+    let f = Fixture::new(
+        "dates-as-text",
+        &[
+            ("Daily/2026-01-01.md", "Planned the year.\n"),
+            (
+                "notes/log.md",
+                "# Log\n\nShipped on 2026-02-14 after review.\n",
+            ),
+            (
+                "notes/other.md",
+                "# Other\n\nShipped on 2025-02-14, a year earlier.\n",
+            ),
+        ],
+    );
+    assert_eq!(
+        f.paths("2026-01-01"),
+        vec!["Daily/2026-01-01.md"],
+        "a daily note by its name"
+    );
+    assert_eq!(
+        f.paths("path:2026-01-01"),
+        vec!["Daily/2026-01-01.md"],
+        "a daily note by its path"
+    );
+    assert_eq!(
+        f.paths("2026-02-14"),
+        vec!["notes/log.md"],
+        "a date in the text"
+    );
+    assert_eq!(
+        f.paths("\"2026-02-14\""),
+        vec!["notes/log.md"],
+        "a quoted date"
+    );
+}
+
+#[test]
 fn c8_a_single_character_typo_still_finds_the_note() {
     let f = corpus();
     let hits = f.paths("zarqon");
@@ -464,6 +506,42 @@ fn c16_editing_one_note_updates_the_index_without_a_full_rebuild() {
     assert!(
         elapsed.as_secs() < 5,
         "a one-note update took rebuild-scale time: {elapsed:?}"
+    );
+}
+
+#[test]
+fn a_note_that_cannot_be_read_keeps_its_indexed_document() {
+    // #1933. update_note deleted first and took any read error for "the note
+    // is gone": a note with invalid UTF-8 vanished from search, and the call
+    // still returned Ok.
+    let f = corpus();
+    assert!(
+        f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
+        "positive control: the note is indexed"
+    );
+    fs::write(
+        f.root.join("notes/alpha.md"),
+        b"# Alpha\n\nnot UTF-8 \xff\n".as_slice(),
+    )
+    .unwrap();
+    let vault = Vault::scan(&f.root).unwrap();
+    assert!(
+        f.searcher.update_note(&vault, "notes/alpha.md").is_err(),
+        "a failed read is an error, not a deletion"
+    );
+    assert!(
+        f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
+        "the last indexed document stays"
+    );
+    // Only a real deletion removes it.
+    fs::remove_file(f.root.join("notes/alpha.md")).unwrap();
+    let vault = Vault::scan(&f.root).unwrap();
+    f.searcher
+        .update_note(&vault, "notes/alpha.md")
+        .expect("a missing file is a removal");
+    assert!(
+        !f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
+        "a deleted note must not be a hit"
     );
 }
 
