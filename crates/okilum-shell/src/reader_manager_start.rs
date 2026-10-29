@@ -22,15 +22,10 @@ pub(super) fn start(
             && project.manager_project.as_deref() == Some(connected_project),
         "Project T3 binding changed; reconnect before starting a manager"
     );
-    let saved: std::collections::BTreeMap<String, String> = serde_json::from_slice(
-        &std::fs::read(state.join("t3-connections.json"))
-            .context("Saved T3 connection is unavailable; reconnect")?,
-    )?;
-    let origin = saved
-        .get(&connected_environment.alias)
+    let origin = project::prefill_browser_origin(area, &connected_environment.alias, Some(state))?
         .context("T3 connection changed; reconnect")?;
     ensure!(
-        okilum_t3::Environment::new(&connected_environment.alias, origin)?
+        okilum_t3::Environment::new(&connected_environment.alias, &origin)?
             == *connected_environment,
         "T3 connection origin changed; reconnect before starting a manager"
     );
@@ -357,6 +352,37 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&manifest).unwrap(), source);
         }
+    }
+
+    #[test]
+    fn app_sign_in_can_start_a_new_project_and_changed_default_blocks_old_gateway() {
+        let (_temp, area, state, _) = fixture();
+        std::fs::create_dir_all(&state).unwrap();
+        let env = okilum_t3::Environment::new("test", "https://shared.example").unwrap();
+        project::save_browser_environment(&state, &env).unwrap();
+        let gateway = FakeGateway::default();
+        assert_eq!(
+            start(&area, "Music/Areas/Studio", &state, &gateway, &env, "brain").unwrap(),
+            "mcp:created"
+        );
+        assert!(!state.join("t3-connections.json").exists());
+        let new_env = okilum_t3::Environment::new("test", "https://changed.example").unwrap();
+        project::save_browser_environment(&state, &new_env).unwrap();
+        let before = gateway.requests.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            start(&area, "Music/Areas/Studio", &state, &gateway, &env, "brain")
+                .unwrap_err()
+                .to_string()
+                .contains("origin changed")
+        );
+        assert_eq!(
+            gateway.requests.load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
+        assert_eq!(
+            gateway.launches.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     #[test]

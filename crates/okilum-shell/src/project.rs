@@ -1,6 +1,8 @@
 //! The area's remote manager in the existing Reader window (#1418).
 //! Network work stays off the UI thread; questionnaires remain in T3.
 use super::*;
+#[cfg(target_os = "linux")]
+use anyhow::Context as _;
 use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
     chat::{Conversation, MessageJournal, MessageRecord},
@@ -62,6 +64,7 @@ pub(crate) struct ProjectView {
     context_path: String,
     state: Option<PathBuf>,
     environment: Option<Environment>,
+    project_override: bool,
     gateway: Option<Arc<dyn ManagerGateway>>,
     identity: Option<ServerIdentity>,
     chat: Option<Conversation>,
@@ -113,33 +116,33 @@ impl ProjectView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let env = match (&binding, &state_copy) {
+                    let (env, project_override) = match (&binding, &state_copy) {
                         (Some(binding), Some(state)) => {
-                            let origin = connections::prefill_origin(
+                            let explicit = connections::project_origin(
                                 area_copy.as_deref().unwrap(),
                                 &binding.environment,
                                 Some(state),
                             )?;
-                            let env = origin
-                                .map(|origin| {
-                                    Environment::from_input(&binding.environment, &origin)
-                                })
-                                .transpose()?;
-                            if let Some(env) = &env {
-                                if connections::load(state, binding)?.as_ref() != Some(env) {
-                                    connections::save(state, env)?;
-                                }
-                            }
-                            env
+                            let project_override = explicit.is_some();
+                            let origin = explicit.or(connections::last_origin(Some(state))?);
+                            (
+                                origin
+                                    .map(|origin| {
+                                        Environment::from_input(&binding.environment, &origin)
+                                    })
+                                    .transpose()?,
+                                project_override,
+                            )
                         }
-                        _ => None,
+                        _ => (None, false),
                     };
-                    Ok::<_, anyhow::Error>((binding, env))
+                    Ok::<_, anyhow::Error>((binding, env, project_override))
                 })
                 .await;
             let env = this
                 .update_in(cx, |this, window, cx| match result {
-                    Ok((binding, env)) => {
+                    Ok((binding, env, project_override)) => {
+                        this.project_override = project_override;
                         this.reason = match &binding {
                             None => Some("This area is not connected to T3.".into()),
                             Some(binding) if binding.manager.thread_id.is_none() => {
@@ -167,6 +170,19 @@ impl ProjectView {
             let Some(env) = env else {
                 return;
             };
+            let reused = this
+                .update_in(cx, |this, window, cx| {
+                    if let Some(gateway) = reader_t3_settings::gateway(&env, cx) {
+                        this.finish_connection(Ok((env.clone(), gateway)), window, cx);
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if reused {
+                return;
+            }
             let url = env.credential_url();
             let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
                 Ok(task) => task,
@@ -229,16 +245,17 @@ impl ProjectView {
                 let _ = weak.update(cx, |this, cx| {
                     if let Some(origin) = origin {
                         // A project's explicit different server must not inherit another token.
-                        if this
-                            .environment
-                            .as_ref()
-                            .is_some_and(|env| env.origin() != origin)
+                        if this.project_override
+                            && this
+                                .environment
+                                .as_ref()
+                                .is_some_and(|env| env.origin() != origin)
                         {
                             return;
                         }
                         this.origin
                             .update(cx, |input, cx| input.set_value(origin, window, cx));
-                        this.connect(window, cx);
+                        this.connect_mode(false, window, cx);
                     }
                 });
             });
@@ -248,6 +265,7 @@ impl ProjectView {
             context_path: String::new(),
             state,
             environment: None,
+            project_override: true,
             gateway: None,
             identity: None,
             chat: None,
@@ -340,6 +358,7 @@ impl ProjectView {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_override = true;
         self.connect_mode(false, window, cx);
     }
 
@@ -360,7 +379,7 @@ impl ProjectView {
             }
         };
         self.busy = true;
-        let state = self.state.clone();
+        let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
             let Some(task) = this
                 .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))

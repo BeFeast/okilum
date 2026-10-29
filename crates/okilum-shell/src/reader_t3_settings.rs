@@ -10,6 +10,19 @@ pub(super) struct Connection {
 }
 impl Global for Connection {}
 
+pub(super) fn gateway(
+    env: &okilum_t3::Environment,
+    cx: &App,
+) -> Option<Arc<dyn okilum_t3::ManagerGateway>> {
+    auth::entry(&env.origin(), cx).gateway.filter(|gateway| {
+        matches!(
+            gateway.status(),
+            okilum_t3::GatewayStatus::Connected { .. }
+                | okilum_t3::GatewayStatus::ExpiresSoon { .. }
+        )
+    })
+}
+
 pub(super) struct T3Settings {
     origin: Entity<InputState>,
     callback: Entity<InputState>,

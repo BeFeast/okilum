@@ -5,7 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use okilum_t3::{manifest::AreaBinding, Environment};
+#[cfg(test)]
+use okilum_t3::manifest::AreaBinding;
+use okilum_t3::Environment;
 
 #[cfg(test)]
 pub(super) fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
@@ -28,6 +30,7 @@ pub(super) fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
     Ok(vault.to_owned())
 }
 
+#[cfg(test)]
 pub(super) fn load(state: &Path, binding: &AreaBinding) -> Result<Option<Environment>> {
     let source = match std::fs::read(state.join("t3-connections.json")) {
         Ok(source) => source,
