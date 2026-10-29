@@ -139,6 +139,8 @@ mod reader_tasks;
 #[cfg(any(unix, windows))]
 mod reader_templates;
 mod reader_text_zoom;
+#[cfg(test)]
+mod reader_scroll_geometry_tests;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod reader_thumbnail;
 #[cfg(any(unix, windows))]
