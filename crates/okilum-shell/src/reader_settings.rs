@@ -40,6 +40,11 @@ pub(crate) fn show_vault(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, Some(Section::Vault), cx);
 }
 
+#[cfg(any(
+    target_os = "macos",
+    test,
+    all(target_os = "linux", feature = "appimage-acceptance-harness")
+))]
 pub(crate) fn show_about(cx: &mut App) {
     show_section(None, Some(Section::About), cx);
 }
@@ -90,8 +95,18 @@ fn show_section_from(
                 .retain(|_, handle| alive.contains(&handle.window_id()));
         }
         let existing = cx
-            .try_global::<SettingsOwners>()
-            .and_then(|windows| windows.0.get(&owner_id).copied());
+            .try_global::<SettingsWindow>()
+            .and_then(|latest| latest.0)
+            .filter(|handle| {
+                alive.contains(&handle.window_id())
+                    && owner.is_some_and(|owner| {
+                        reader_owned_windows::owner((*handle).into(), cx) == owner
+                    })
+            })
+            .or_else(|| {
+                cx.try_global::<SettingsOwners>()
+                    .and_then(|windows| windows.0.get(&owner_id).copied())
+            });
         if let Some(handle) = existing {
             if handle
                 .update(cx, |root, window, cx| {
@@ -2766,10 +2781,12 @@ mod tests {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
         });
+        let mut first = first.clone();
         let (_, second) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
         });
+        let mut second = second.clone();
         first.update(about::show_about);
         first.run_until_parked();
         let first_about = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
@@ -2777,7 +2794,7 @@ mod tests {
         second.run_until_parked();
         let second_about = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
         assert_ne!(first_about, second_about, "each Reader needs its own About");
-        for (reader, about) in [(first.clone(), first_about), (second.clone(), second_about)] {
+        for (mut reader, about) in [(first.clone(), first_about), (second.clone(), second_about)] {
             reader.update(|window, cx| {
                 assert_eq!(
                     reader_owned_windows::owner(about.into(), cx),
