@@ -1,4 +1,5 @@
 //! Downstream regressions execute in Okilum CI (the vendor workspace is excluded).
+#[rustfmt::skip]
 #[path = "../../../vendor/gpui-component/crates/base/src/text/table_wrap.rs"]
 mod table_wrap;
 

@@ -164,14 +164,17 @@ mod updater;
 // Search labels reuse the editor's glyph-cluster selection geometry. Keep this
 // adapter unchanged here; #780 owns editor layout and geometry refinements.
 #[allow(dead_code)]
+#[rustfmt::skip]
 #[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
 mod vendor_bidi_geometry;
 #[cfg(test)]
 #[allow(dead_code)]
+#[rustfmt::skip]
 #[path = "../../../vendor/gpui-component/crates/base/src/input/document_newlines.rs"]
 mod vendor_document_newlines;
 #[cfg(test)]
 #[allow(dead_code)]
+#[rustfmt::skip]
 #[path = "../../../vendor/gpui-component/crates/base/src/text_boundary.rs"]
 mod vendor_text_boundary;
 mod window_state;
