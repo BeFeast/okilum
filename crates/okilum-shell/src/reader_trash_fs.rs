@@ -1,11 +1,41 @@
 //! System Trash transport and collision-safe, identity-checked session Undo.
 use anyhow::{ensure, Context, Result};
-use rustix::fs::{open, openat, renameat_with, Mode, OFlags, RenameFlags};
+use rustix::fs::{open, openat, Mode, OFlags};
 use std::{
     fs,
     os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
 };
+
+#[cfg(test)]
+thread_local! { static FLAG_ERROR: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) }; }
+fn publish(
+    a: impl rustix::fd::AsFd,
+    b: &std::ffi::OsStr,
+    c: impl rustix::fd::AsFd,
+    d: &std::ffi::OsStr,
+) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if let Some(error) = FLAG_ERROR.with(|v| v.get()) {
+        if okilum_core::unix_publish::unsupported(error) {
+            return okilum_core::unix_publish::no_replace_compatible(a, b, c, d);
+        }
+        return Err(error);
+    }
+    okilum_core::unix_publish::no_replace(a, b, c, d)
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct TrashUnavailable;
+#[cfg(target_os = "macos")]
+impl std::fmt::Display for TrashUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Trash is unavailable on this disk. The note was not deleted.")
+    }
+}
+#[cfg(target_os = "macos")]
+impl std::error::Error for TrashUnavailable {}
 
 #[derive(Clone, Debug)]
 pub struct Trashed {
@@ -95,7 +125,7 @@ impl Trashed {
             Mode::empty(),
         )
         .context("Cannot open the Trash folder for Undo; the item remains in system Trash")?;
-        renameat_with(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name, RenameFlags::NOREPLACE)
+        publish(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name)
             .context("Cannot Undo: the original path is occupied, unavailable, or on a different filesystem. The item remains in system Trash")?;
         if let Some(info) = &self.info {
             let _ = fs::remove_file(info);
@@ -228,12 +258,11 @@ fn freedesktop_trash_at(
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )?;
-        renameat_with(
+        publish(
             source_parent,
             source_name,
             &destination,
-            name.as_str(),
-            RenameFlags::NOREPLACE,
+            std::ffi::OsStr::new(&name),
         )
         .context("Cannot move to system Trash on this filesystem; the original item was kept")?;
         Ok(())
@@ -276,9 +305,19 @@ fn system_trash(
         "The source changed before Trash; try again"
     );
     let mut resulting = None;
-    NSFileManager::defaultManager()
+    if let Err(error) = NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, Some(&mut resulting))
-        .map_err(|error| anyhow::anyhow!("Cannot move to system Trash: {error}"))?;
+    {
+        // No permanent-delete or vault-local fallback (#1924). Only claim the
+        // note was kept when the original identity/revision remains at source.
+        let retained = fs::symlink_metadata(source)?;
+        ensure!(
+            stamp(source, &retained) == stamp(source, &object),
+            "Trash failed and the source changed; inspect it before continuing: {error}"
+        );
+        eprintln!("Native Trash refused without moving source: {error}");
+        return Err(TrashUnavailable.into());
+    }
     let location = resulting
         .and_then(|url| url.path())
         .context("The item reached Trash; restore it through Finder")?;
@@ -288,6 +327,48 @@ fn system_trash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_flags_trash_and_restore_files_and_folders_without_clobber() {
+        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            for folder in [false, true] {
+                struct Reset;
+                impl Drop for Reset {
+                    fn drop(&mut self) {
+                        FLAG_ERROR.with(|v| v.set(None));
+                    }
+                }
+                FLAG_ERROR.with(|v| v.set(Some(error)));
+                let _reset = Reset;
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("vault");
+                fs::create_dir(&root).unwrap();
+                let name = if folder { "Folder" } else { "note.md" };
+                let source = root.join(name);
+                if folder {
+                    fs::create_dir(&source).unwrap();
+                    fs::write(source.join("note.md"), b"exact").unwrap();
+                } else {
+                    fs::write(&source, b"exact").unwrap();
+                }
+                let trashed =
+                    Trashed::test_move(&root, Path::new(name), &temp.path().join("Trash"));
+                assert!(!source.exists());
+                fs::write(&source, b"external").unwrap();
+                assert!(trashed.restore().is_err());
+                assert_eq!(fs::read(&source).unwrap(), b"external");
+                fs::remove_file(&source).unwrap();
+                trashed.restore().unwrap();
+                let note = if folder {
+                    source.join("note.md")
+                } else {
+                    source
+                };
+                assert_eq!(fs::read(note).unwrap(), b"exact");
+                assert!(!trashed.location.exists());
+            }
+        }
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn undo_needs_search_but_not_read_access_to_the_trash_parent() {

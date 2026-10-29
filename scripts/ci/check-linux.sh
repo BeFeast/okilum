@@ -24,6 +24,10 @@ python3 -m unittest discover -s scripts/perf -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
 cargo test -p okilum-appimage --all-features
 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
+# #1915: explicit filters make unsupported-flag coverage inspectable in CI.
+cargo test --locked -p okilum-core --lib unix_publish::
+cargo test --locked -p okilum-core --lib file_editor::network_save_tests::
+cargo test --locked -p okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber -- --exact
 # #588: keep shared durable pairing recovery covered on both Unix platforms.
 cargo test --locked -p okilum-sync-controller --lib enrollment::
 cargo test --locked -p okilum-sync-controller --test enrollment_storage

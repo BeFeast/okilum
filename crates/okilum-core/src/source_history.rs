@@ -282,6 +282,37 @@ impl Preimage {
         );
         Ok(entry)
     }
+    /// Network-compatible saves keep the exact preimage in the flushed JSON
+    /// snapshot before removing its temporary hard link from the synced folder.
+    #[cfg(unix)]
+    pub(crate) fn finish_compatible(path: &Path, directory: &File) -> Result<()> {
+        use std::io::Read;
+        let mut entry = Self::load(path)?;
+        let name = entry
+            .displaced
+            .file_name()
+            .context("Missing preimage name")?;
+        let mut source = crate::file_editor::open_regular_at(directory, name)?;
+        let identity = source.metadata()?;
+        let mut bytes = Vec::new();
+        source.read_to_end(&mut bytes)?;
+        ensure!(
+            bytes == entry.text.as_bytes(),
+            "Preimage changed; recovery is protected"
+        );
+        entry.pending = false;
+        entry.snapshot_only = true;
+        entry.external_inode = None;
+        persist(path, &entry)?;
+        let current = rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+        ensure!(
+            crate::unix_publish::same_identity(&current, &identity),
+            "Preimage changed before cleanup; retained"
+        );
+        rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::empty())?;
+        directory.sync_all()?;
+        Ok(())
+    }
     /// Archive the displaced inode through the editor's pinned directory. Its
     /// old absolute name may now resolve to an entirely different directory.
     #[cfg(unix)]

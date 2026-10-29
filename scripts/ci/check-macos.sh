@@ -144,3 +144,16 @@ fi
 # #1691: release fixture must use canonical macOS /var -> /private/var roots.
 # Exercise the same vault-switch save/conflict guard before beta publication.
 run_tests okilum-shell --bins reader_editor::tests::replacing_vault_saves_dirty_source_and_refuses_conflict --exact
+
+# #1915: unsupported rename flags must exercise the compatible path on every Mac.
+run_tests okilum-core --lib unix_publish::
+run_tests okilum-core --lib file_editor::network_save_tests::
+run_tests okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --exact
+# Manager-authorized native mount gate only on the local M4 runner. Hosted Macs
+# have no corporate mount; never substitute local APFS for this acceptance.
+if [[ "${OKILUM_NETWORK_WRITE_QA:-0}" == 1 ]]; then
+    [[ "${GITHUB_SERVER_URL:-}" == https://git.oklabs.uk ]]
+    test -d /Volumes/Maestro/okilum-nfs-qa
+    cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell \
+        --example network_write_acceptance -- /Volumes/Maestro/okilum-nfs-qa
+fi

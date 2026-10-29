@@ -558,6 +558,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
       - name: Compile Reader and run quick native regressions
         shell: bash
+        env:
+          # #1915 dedicated mount gate, only for this manager-approved P1 branch.
+          OKILUM_NETWORK_WRITE_QA: ${{ github.event.pull_request.head.ref == 'fix/1915-network-writes' && '1' || '0' }}
         run: bash scripts/ci/check-macos.sh
       - name: Prepare the pinned upload action from the runner server
         if: always()

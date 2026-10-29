@@ -149,12 +149,11 @@ impl DirectoryMovePlan {
             DirectorySnapshot::at(&self.source_dir, &self.source_name)? == self.expected,
             "Folder changed after preview; nothing was moved"
         );
-        renameat_with(
+        crate::unix_publish::no_replace(
             &self.source_dir,
             &self.source_name,
             &self.target_dir,
             &self.target_name,
-            RenameFlags::NOREPLACE,
         )
         .context(
             "Nothing was moved: destination exists or the filesystem refused a safe folder move",

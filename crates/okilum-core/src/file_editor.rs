@@ -6,12 +6,32 @@ mod directory;
 #[cfg(windows)]
 #[path = "file_editor/directory_windows.rs"]
 mod directory;
+#[cfg(unix)]
+use crate::unix_publish::flagged_rename as renameat_with;
 use anyhow::{bail, Context, Result};
 #[cfg(unix)]
 pub(crate) use directory::open_regular_at;
 use directory::Directory;
 #[cfg(unix)]
-use rustix::fs::{renameat_with, RenameFlags};
+use rustix::fs::RenameFlags;
+/// The public note was written, but its preimage changed before verification.
+/// Distinct from Conflict: callers must not claim that nothing was published.
+#[derive(Debug)]
+pub struct PublishedSaveNeedsAttention;
+impl std::fmt::Display for PublishedSaveNeedsAttention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The save was published, but recovery changed during verification. Your draft and recovery were retained; inspect the file before saving again.")
+    }
+}
+impl std::error::Error for PublishedSaveNeedsAttention {}
+#[cfg(unix)]
+fn missing(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| {
+        e.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT)
+            || e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    })
+}
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
@@ -534,14 +554,29 @@ impl FileEditor {
         )?;
         self.directory.validate(parent)?;
         before_exchange();
-        renameat_with(
+        let mut compatible = false;
+        match renameat_with(
             directory,
             backup.file_name().unwrap(),
             directory,
             self.draft.path.file_name().unwrap(),
             RenameFlags::EXCHANGE,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(error) if crate::unix_publish::unsupported(error) => {
+                compatible = true;
+                if !self.compatible_replace(directory, &backup)? {
+                    return Ok(Save::Conflict);
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
         directory.sync_all()?;
+        #[cfg(test)]
+        if compatible && network_save_tests::ALTER_PREIMAGE_AFTER_PUBLISH.with(|v| v.replace(false))
+        {
+            fs::write(&backup, b"external preimage write")?;
+        }
         let displaced =
             open_regular_at(directory, backup.file_name().unwrap()).and_then(|mut file| {
                 // A racing writer may not have synced its replacement yet.
@@ -552,6 +587,11 @@ impl FileEditor {
                 Ok(bytes)
             });
         if !displaced.is_ok_and(|bytes| bytes == self.draft.base.as_bytes()) {
+            if compatible {
+                // Plain rename cannot safely roll back a third-party change.
+                // Both the draft and pending displaced preimage stay protected.
+                return Err(PublishedSaveNeedsAttention.into());
+            }
             // A racing replacement is restored, and the displaced version from
             // this second exchange also remains on disk. Never delete either.
             renameat_with(
@@ -564,7 +604,11 @@ impl FileEditor {
             directory.sync_all()?;
             return Ok(Save::Conflict);
         }
-        crate::source_history::Preimage::finish_bound(&history, directory)?;
+        if compatible {
+            crate::source_history::Preimage::finish_compatible(&history, directory)?;
+        } else {
+            crate::source_history::Preimage::finish_bound(&history, directory)?;
+        }
         self.directory.validate(parent)?;
         self.draft.base = self.draft.text.clone();
         // The note is now the inode written above; its stamp after the
@@ -574,6 +618,95 @@ impl FileEditor {
         // Cleanup is best effort; a retention error never reverses a saved note.
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
+    }
+    /// NFS/SMB do not implement RENAME_SWAP. Preserve the old inode before
+    /// atomic plain replacement, rechecking exact revision immediately before
+    /// publication. Unlike EXCHANGE, POSIX cannot detect a replacement in the
+    /// last check→rename window; no post-publication rollback is attempted.
+    #[cfg(unix)]
+    fn compatible_replace(&self, directory: &File, backup: &Path) -> Result<bool> {
+        use rustix::fs::{linkat, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
+        let note = self.draft.path.file_name().unwrap();
+        let old_name = backup.file_name().unwrap();
+        let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
+        // A private UUID name alone never authorizes deletion: exact bytes
+        // and the opened inode are rechecked before cleanup.
+        let clean = |name: &std::ffi::OsStr, expected: &[u8]| -> Result<()> {
+            let fd = match openat(
+                directory,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(fd) => fd,
+                Err(rustix::io::Errno::NOENT) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+            let mut file = File::from(fd);
+            let metadata = file.metadata()?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                metadata.is_file() && bytes == expected,
+                "Recovery file changed; retained for inspection"
+            );
+            let current = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
+            anyhow::ensure!(
+                crate::unix_publish::same_identity(&current, &metadata),
+                "Recovery file replaced; retained for inspection"
+            );
+            unlinkat(directory, name, AtFlags::empty())?;
+            Ok(())
+        };
+        let current = match self.directory.read(note) {
+            Ok((text, _)) => Some(text),
+            Err(e) if missing(&e) => None,
+            Err(e) => return Err(e),
+        };
+        if current.as_deref() != Some(self.draft.base.as_str()) {
+            clean(old_name, self.draft.text.as_bytes())?;
+            return Ok(false);
+        }
+        renameat(directory, old_name, directory, prepared.as_str())?;
+        // No symlink following; private UUID backup name is created exclusively.
+        match linkat(directory, note, directory, old_name, AtFlags::empty()) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::NOENT) => {
+                clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        #[cfg(test)]
+        if network_save_tests::DELETE_AFTER_LINK.with(|v| v.replace(false)) {
+            unlinkat(directory, note, AtFlags::empty())?;
+        }
+        let original = openat(
+            directory,
+            note,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        let mut original = match original {
+            Ok(fd) => File::from(fd),
+            Err(rustix::io::Errno::NOENT) => {
+                clean(old_name, self.draft.base.as_bytes())?;
+                clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let mut bytes = Vec::new();
+        original.read_to_end(&mut bytes)?;
+        if bytes != self.draft.base.as_bytes() {
+            clean(old_name, self.draft.base.as_bytes())?;
+            clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
+            return Ok(false);
+        }
+        directory.sync_all()?;
+        self.directory.validate(self.draft.path.parent().unwrap())?;
+        renameat(directory, prepared.as_str(), directory, note)?;
+        Ok(true)
     }
     #[cfg(windows)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
@@ -1319,5 +1452,68 @@ mod windows_editor_tests {
             .file_name()
             .to_string_lossy()
             .ends_with(".raced")));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod network_save_tests {
+    use super::*;
+    thread_local! {
+        pub(super) static DELETE_AFTER_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static ALTER_PREIMAGE_AFTER_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[test]
+    fn unsupported_exchange_handles_deletion_and_reports_publication_truthfully() {
+        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            for published in [false, true] {
+                crate::unix_publish::inject(error, || {
+                    let root = tempfile::tempdir().unwrap();
+                    let note = root.path().join("note.md");
+                    fs::write(&note, b"base").unwrap();
+                    let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+                    editor.set_text("mine".into()).unwrap();
+                    DELETE_AFTER_LINK.with(|v| v.set(!published));
+                    ALTER_PREIMAGE_AFTER_PUBLISH.with(|v| v.set(published));
+                    let result = editor.save();
+                    if published {
+                        assert!(result.unwrap_err().is::<PublishedSaveNeedsAttention>());
+                        assert_eq!(fs::read(&note).unwrap(), b"mine");
+                    } else {
+                        assert_eq!(result.unwrap(), Save::Conflict);
+                        assert!(!note.exists());
+                        assert!(fs::read_dir(root.path()).unwrap().all(|e| !e
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".okilum-save-")));
+                    }
+                    assert_eq!(editor.text(), "mine");
+                    assert!(editor.dirty());
+                });
+            }
+        }
+    }
+    #[test]
+    fn unsupported_exchange_rechecks_external_write_at_publication_boundary() {
+        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            crate::unix_publish::inject(error, || {
+                let root = tempfile::tempdir().unwrap();
+                let note = root.path().join("note.md");
+                fs::write(&note, b"base").unwrap();
+                let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+                editor.set_text("mine".into()).unwrap();
+                let outcome = editor
+                    .save_before_exchange(|| fs::write(&note, b"external").unwrap())
+                    .unwrap();
+                assert_eq!(outcome, Save::Conflict);
+                assert_eq!(fs::read(&note).unwrap(), b"external");
+                assert_eq!(editor.text(), "mine");
+                assert!(fs::read_dir(root.path()).unwrap().all(|e| !e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".okilum-save-")));
+            });
+        }
     }
 }
