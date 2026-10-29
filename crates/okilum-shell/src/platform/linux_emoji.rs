@@ -121,6 +121,12 @@ mod tests {
     use std::{borrow::Cow, sync::Arc};
 
     fn fixture() -> Arc<dyn PlatformTextSystem> {
+        fixture_with_emoji(include_bytes!(
+            "../../tests/fixtures/fonts/noto-color-emoji-cbdt.ttf"
+        ))
+    }
+
+    fn fixture_with_emoji(emoji: &'static [u8]) -> Arc<dyn PlatformTextSystem> {
         let system = gpui_wgpu::CosmicTextSystem::new_without_system_fonts("Noto Sans");
         system
             .add_fonts(vec![
@@ -128,12 +134,45 @@ mod tests {
                 Cow::Borrowed(include_bytes!(
                     "../../assets/brand/fonts/cascadia-code-400.ttf"
                 )),
-                Cow::Borrowed(include_bytes!(
-                    "../../tests/fixtures/fonts/noto-color-emoji-cbdt.ttf"
-                )),
+                Cow::Borrowed(emoji),
             ])
             .unwrap();
         Arc::new(system)
+    }
+
+    #[test]
+    fn color_font_without_brain_still_resolves_its_available_emoji() {
+        let inner = fixture_with_emoji(include_bytes!(
+            "../../tests/fixtures/fonts/noto-color-emoji-no-brain-cbdt.ttf"
+        ));
+        let body = inner.font_id(&font("Noto Sans")).unwrap();
+        let line = inner.layout_line(
+            "🐕",
+            px(18.),
+            &[FontRun {
+                len: "🐕".len(),
+                font_id: body,
+            }],
+        );
+        let fallback = line
+            .runs
+            .iter()
+            .find(|run| {
+                run.glyphs
+                    .iter()
+                    .any(|glyph| glyph.id.0 != 0 && glyph.is_emoji)
+            })
+            .expect("positive control: the real CBDT face supplies dog fallback");
+        assert!(inner.glyph_for_char(fallback.font_id, '🧠').is_none());
+        assert!(inner.glyph_for_char(fallback.font_id, '😀').is_none());
+        assert!(inner.glyph_for_char(fallback.font_id, 'm').is_none());
+
+        let system = super::super::text_platform::shaper(inner);
+        let emoji = system
+            .font_id(&font("Noto Color Emoji"))
+            .expect("one unavailable probe glyph must not disable the color font");
+        assert!(system.glyph_for_char(emoji, '🐕').is_some());
+        assert_eq!(system.font_id(&font("Noto Color Emoji")).unwrap(), emoji);
     }
 
     #[test]
