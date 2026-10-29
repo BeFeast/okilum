@@ -11,6 +11,7 @@ pub mod bundle;
 pub mod connection;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod payload;
+pub mod recovery;
 pub const PLIST: &str = "com.befeast.okilum.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -153,3 +154,28 @@ impl<A: SmApi> Platform for SmAppService<A> {
 
 #[cfg(target_os = "macos")]
 pub mod native;
+
+/// One production authority root per account, independent of HOME and CLI flags.
+#[cfg(target_os = "macos")]
+pub fn account_state_directory() -> Result<std::path::PathBuf> {
+    use std::{ffi::CStr, ffi::OsStr, os::unix::ffi::OsStrExt};
+    let mut buffer = vec![0u8; 4096];
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    anyhow::ensure!(
+        status == 0 && !found.is_null() && !entry.pw_dir.is_null(),
+        "cannot determine the home directory"
+    );
+    let home = unsafe { CStr::from_ptr(entry.pw_dir) };
+    Ok(std::path::PathBuf::from(OsStr::from_bytes(home.to_bytes()))
+        .join("Library/Application Support/Okilum/Sync"))
+}

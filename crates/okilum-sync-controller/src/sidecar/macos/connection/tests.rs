@@ -558,3 +558,45 @@ fn native_stop_authenticates_one_socket_and_confirms_the_same_helper_exited() ->
         .authorize(&token, &token.operation.scope)?;
     Ok(())
 }
+
+#[test]
+fn managed_status_requires_durable_claim_and_authenticated_answer_and_survives_damage() -> Result<()>
+{
+    use crate::sidecar::macos::recovery::ManagedStatus;
+    let fixture = Fixture::new()?;
+    fixture
+        .store
+        .begin(soon())?
+        .commit(Envelope::first_with_launch(fixture.binding.clone()))?;
+    let script = Script::default();
+    let connection = fixture.connection(script.clone())?;
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    fixture
+        .store
+        .dispatch_launch(&fixture.binding, soon())?
+        .execute(|_| Ok(()))?;
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    let generation = fixture.store.claim_launch(&fixture.binding, soon())?;
+    // A registration/claim alone is still not a live helper.
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    fixture
+        .store
+        .publish_hint(soon(), &Hint::new(generation, 1)?)?;
+    assert_eq!(connection.managed_status(), ManagedStatus::Running); // positive control
+    script.refuse.set(true);
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    script.refuse.set(false);
+    script.status.set(Status::Stopped);
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    script.status.set(Status::Running);
+    fixture.hint()?; // genuine answer, but for a different generation
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    fixture.store.clear_hint(soon())?;
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    let journal = Path::new(&fixture.binding.state_directory).join("sidecar.json");
+    fs::write(&journal, b"{")?;
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    fs::remove_file(journal)?;
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    Ok(())
+}

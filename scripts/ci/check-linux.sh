@@ -27,6 +27,8 @@ cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3
 # #588: keep shared durable pairing recovery covered on both Unix platforms.
 cargo test --locked -p okilum-sync-controller --lib enrollment::
 cargo test --locked -p okilum-sync-controller --test enrollment_storage
+cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority::
+cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::bundle::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connection::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::payload::
