@@ -15,7 +15,7 @@ contract is the vault spec `specs/2026-10-18-okilum-t3-managers.md`, including i
 18 October decision24 limitation. Okilum remains a remote control; the manager
 and its executors run in T3. Ordinary notes remain available when Project closes.
 
-The nearest area's `ops/project.yaml` must already contain the explicit version1
+The nearest area's `ops/project.toml` (legacy `ops/project.yaml` while TOML is absent) must already contain the explicit version1
 `t3` binding with environment alias, manager project/thread and executor project.
 An absent binding displays “not connected”; Okilum neither creates T3 resources
 nor guesses a newer manager. A changed binding gets a separate view. Drafts for

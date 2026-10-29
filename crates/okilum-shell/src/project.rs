@@ -11,6 +11,7 @@ use okilum_t3::{
 };
 use std::time::Duration;
 
+pub(crate) mod board;
 #[cfg(target_os = "linux")]
 mod composer;
 mod connections;
@@ -297,6 +298,28 @@ impl ProjectView {
             #[cfg(target_os = "linux")]
             native: native::Native::new(window, cx),
         }
+    }
+
+    /// Append one undoable context block; this never prepares or sends a message intent.
+    pub(super) fn append_board_context(
+        &mut self,
+        area: &Path,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.area.as_deref() != Some(area) {
+            return false;
+        }
+        self.executors_open = false;
+        self.compose.update(cx, |input, cx| {
+            let end = input.value().len();
+            input.set_selected_range(end..end, cx);
+            input.insert(format!("\n\n---\n{text}"), window, cx);
+            window.focus(&input.focus_handle(cx), cx);
+        });
+        cx.notify();
+        true
     }
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1238,6 +1261,7 @@ impl Reader {
                         view
                     }),
                 };
+                this.connect_project_board(project.clone(), window, cx);
                 this.project = Some(project);
                 cx.notify();
             });

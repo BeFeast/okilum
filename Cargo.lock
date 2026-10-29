@@ -6601,6 +6601,8 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "toml 0.8.23",
+ "toml_edit 0.22.27",
  "tungstenite",
  "url",
  "uuid",

@@ -779,30 +779,24 @@ pub fn write_manifest_icon(source: &str, icon: Option<&ProjectIcon>) -> Result<S
 /// Write `icon:` into `<folder>/ops/project.yaml` through a temporary file
 /// in the same folder, so a reader never sees half a manifest.
 pub fn save_manifest_icon(folder: &Path, icon: Option<&ProjectIcon>) -> Result<()> {
-    let ops = folder.join("ops");
-    ensure!(
-        std::fs::symlink_metadata(&ops)?.is_dir(),
-        "Project ops must not be a symlink"
-    );
-    let manifest = ops.join("project.yaml");
-    ensure!(
-        std::fs::symlink_metadata(&manifest)?.is_file(),
-        "Project manifest must not be a symlink"
-    );
-    let source = std::fs::read_to_string(&manifest)?;
-    let updated = write_manifest_icon(&source, icon)?;
-    if updated == source {
-        return Ok(());
-    }
-    let temp = ops.join(format!(".project.yaml.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, updated.as_bytes())?;
-    if let Ok(metadata) = std::fs::metadata(&manifest) {
-        let _ = std::fs::set_permissions(&temp, metadata.permissions());
-    }
-    std::fs::rename(&temp, &manifest).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })?;
-    Ok(())
+    let document =
+        crate::area_files::read(folder, "project")?.context("Area has no project manifest")?;
+    let updated = match document.format {
+        crate::area_files::Format::Yaml => write_manifest_icon(&document.source, icon)?,
+        crate::area_files::Format::Toml => {
+            let value = icon
+                .map(|icon| serde_yaml::from_str::<serde_yaml::Value>(&icon.to_yaml_flow()))
+                .transpose()?;
+            let updated = document.set_toml_field("icon", value.as_ref())?;
+            let after = crate::area_files::parse(&updated, crate::area_files::Format::Toml)?;
+            ensure!(
+                after.get("icon").and_then(ProjectIcon::from_yaml).as_ref() == icon,
+                "The TOML icon did not read back as written"
+            );
+            updated
+        }
+    };
+    document.replace(&updated)
 }
 
 /// The dialog's three tabs, T3's «Choose project icon» plus Monogram.

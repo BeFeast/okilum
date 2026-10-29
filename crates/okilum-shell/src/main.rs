@@ -2363,6 +2363,7 @@ impl Reader {
         if rel != self.reminder_prefs.note {
             self.reminders_view = false;
         }
+        self.project_navigation.board_visible = false; // Accepted note; all existing save/navigation guards have passed.
         self.current_rel = rel.to_string();
         self.file_preview = if okilum_core::excalidraw::is_drawing(rel) {
             reader_files::FilePreview::load(&self.vault_root, rel).ok()
@@ -6677,6 +6678,7 @@ impl Render for Reader {
         self.panels
             .viewport_changed(f32::from(self.body_bounds.size.width), available);
         let panel_widths = self.panels.widths(&self.panel_widths, available);
+        self.sync_project_board_visibility(window, cx);
         if let Some(panel) = &self.project_navigation.manager_panel {
             let visible = self.project_navigation.active.is_some()
                 && self
@@ -6704,7 +6706,7 @@ impl Render for Reader {
                     .when(self.restoring_source() || self.restoring_reader(), |view| {
                         view.opacity(0.)
                     })
-                    .child(self.render_document_surface(window, cx)),
+                    .child(self.render_project_center(window, cx)),
             )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)))
             .children(reader_text_zoom::hud(self, cx));

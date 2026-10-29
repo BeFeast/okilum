@@ -27,7 +27,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold zstd tini \
+            build-essential cmake pkg-config curl git mold zstd tini python3-venv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
       - name: Verify repository toolchain and pinned vendor

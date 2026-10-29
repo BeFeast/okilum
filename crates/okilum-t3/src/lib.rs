@@ -12,6 +12,7 @@
 //! a file or in the vault, and its `Debug` output is redacted.
 
 pub mod actions;
+pub mod area_files;
 pub mod board;
 pub mod chat;
 mod environment;

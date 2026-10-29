@@ -118,6 +118,8 @@ pub(super) struct State {
     pub discovered: bool,
     pub generation: u64,
     pub active: Option<Project>,
+    pub boards: std::collections::BTreeMap<PathBuf, Entity<project::board::Board>>,
+    pub board_visible: bool,
     saved: Option<Saved>,
     pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
     /// The shared #1520 picker is the Projects section surface.
@@ -512,7 +514,7 @@ impl Reader {
         let kind = icon.as_ref().map_or("reset", ProjectIcon::kind);
         let target = match project.environment.as_deref() {
             Some(alias) => format!("t3:{alias}"),
-            None => "project.yaml".into(),
+            None => "project manifest".into(),
         };
         eprintln!(
             "Project icon: saving project={:?} folder={} kind={kind} target={target}",
@@ -559,7 +561,7 @@ impl Reader {
                 .await;
             let result = match &saved {
                 Ok(IconSaved::T3(link)) => format!("ok t3 project={}", link.project_id),
-                Ok(IconSaved::Manifest(_)) => "ok project.yaml".into(),
+                Ok(IconSaved::Manifest(_)) => "ok project manifest".into(),
                 Err(error) => format!("error: {error:#}"),
             };
             eprintln!(
@@ -818,6 +820,7 @@ impl Reader {
         self.record_recent_project(&project.folder, cx);
         self.release_picker_focus(window, cx);
         self.refresh_project_icon(project.clone(), window, cx);
+        self.ensure_project_board(project.folder.clone(), window, cx);
         self.open_project_area(project.folder, window, cx);
         cx.notify();
     }

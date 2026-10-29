@@ -1,6 +1,130 @@
 use super::*;
 
-const CONFIG: &str = include_str!("../../../../docs/examples/okilum-board.yaml");
+const CONFIG: &str = include_str!("../../tests/fixtures/board-legacy.yaml");
+
+#[test]
+fn toml_example_matches_legacy_stage_and_links() {
+    let toml =
+        Binding::parse_toml(include_str!("../../../../docs/examples/okilum-board.toml")).unwrap();
+    assert_eq!(toml, Binding::parse(CONFIG).unwrap());
+}
+
+#[test]
+fn a_bad_card_keeps_healthy_cards_and_identifies_the_exact_problem() {
+    let original: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
+    for (field, bad, expected) in [
+        ("expected", serde_json::json!(""), "expected"),
+        ("executor", serde_json::json!(true), "executor"),
+        ("stage", serde_json::json!("imaginary"), "stage"),
+        ("notes", serde_json::json!(["../private.md"]), "notes[0]"),
+        (
+            "builds",
+            serde_json::json!([{"label":"Build", "url":"javascript:run()"}]),
+            "builds[0].url",
+        ),
+    ] {
+        let mut source = original.clone();
+        source["issues"][0][field] = bad;
+        let binding = Binding::parse(&source.to_string()).unwrap();
+        assert_eq!(binding.issues.len(), 13, "{field}");
+        assert!(binding.issues.iter().any(|s| s.number == 1733));
+        let problem = &binding.card_problems[0];
+        assert_eq!(problem.number, Some(1731));
+        assert_eq!(problem.field, "issues[0]");
+        assert!(problem.detail.contains(expected), "{}", problem.detail);
+    }
+    let mut source = original;
+    source["issues"][0]["notes"] = serde_json::json!([
+        "https://git.oklabs.uk/BeFeast/okilum/issues/1833",
+        "design/plan.md"
+    ]);
+    assert!(Binding::parse(&source.to_string())
+        .unwrap()
+        .card_problems
+        .is_empty());
+    source["issues"][1]["number"] = serde_json::json!(1731);
+    let binding = Binding::parse(&source.to_string()).unwrap();
+    assert_eq!(binding.issues.len(), 12);
+    assert_eq!(binding.card_problems.len(), 2);
+    assert!(binding
+        .card_problems
+        .iter()
+        .all(|p| p.detail.contains("duplicate")));
+    source["issues"] = serde_json::json!([{"number": 1}]);
+    let binding = Binding::parse(&source.to_string()).unwrap();
+    assert!(binding.issues.is_empty());
+    assert_eq!(binding.card_problems.len(), 1);
+    assert!(super::read_issues(&binding).is_empty());
+}
+
+#[test]
+fn board_read_prefers_toml_without_migrating_or_falling_back_on_parse_failure() {
+    let area = std::env::temp_dir().join(format!("okilum-board-format-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(area.join("ops")).unwrap();
+    let project = "[repo]\nhost = 'git.oklabs.uk'\nfull_name = 'BeFeast/okilum'\n";
+    std::fs::write(area.join("ops/project.toml"), project).unwrap();
+    std::fs::write(area.join("ops/board.yaml"), CONFIG).unwrap();
+    assert_eq!(Binding::read(&area).unwrap().unwrap().issues.len(), 14);
+    assert!(!area.join("ops/board.toml").exists());
+    let toml = include_str!("../../../../docs/examples/okilum-board.toml")
+        .replace("Okilum · current stage", "Preferred stage");
+    std::fs::write(area.join("ops/board.toml"), toml).unwrap();
+    assert_eq!(
+        Binding::read(&area).unwrap().unwrap().title,
+        "Preferred stage"
+    );
+    std::fs::write(area.join("ops/board.toml"), "version = [broken").unwrap();
+    let error = format!("{:#}", Binding::read(&area).unwrap_err());
+    assert!(error.contains("board.toml") && error.contains("Invalid TOML"));
+    assert_eq!(
+        std::fs::read_to_string(area.join("ops/board.yaml")).unwrap(),
+        CONFIG
+    );
+    std::fs::remove_dir_all(area).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn one_related_note_escape_is_a_card_problem_not_a_board_failure() {
+    let area = std::env::temp_dir().join(format!("okilum-board-links-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(area.join("ops")).unwrap();
+    std::fs::write(
+        area.join("ops/project.yaml"),
+        "repo: {host: git.oklabs.uk, full_name: BeFeast/okilum}",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(std::env::temp_dir(), area.join("outside")).unwrap();
+    let mut source: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
+    source["issues"][0]["notes"] = serde_json::json!(["outside/escape.md"]);
+    // An existing directory symlink to an outside note must be detectable.
+    let note = std::env::temp_dir().join(format!("okilum-outside-{}.md", uuid::Uuid::new_v4()));
+    std::fs::write(&note, "# Outside").unwrap();
+    source["issues"][0]["notes"] = serde_json::json!([format!(
+        "outside/{}",
+        note.file_name().unwrap().to_str().unwrap()
+    )]);
+    std::fs::write(area.join("ops/board.yaml"), source.to_string()).unwrap();
+    let binding = Binding::read(&area).unwrap().unwrap();
+    assert_eq!(binding.issues.len(), 13);
+    assert_eq!(binding.card_problems[0].number, Some(1731));
+    assert!(binding.card_problems[0].detail.contains("escapes"));
+    // Broken links fail canonicalization deterministically, exercising the
+    // same per-child error branch as a removal/permissions race after metadata.
+    std::os::unix::fs::symlink(area.join("missing.md"), area.join("broken.md")).unwrap();
+    source["issues"][0]["notes"] = serde_json::json!([]);
+    source["attention"] = serde_json::json!([
+        {"kind":"try", "title":"Healthy", "subline":"Safe public link", "link":"https://git.oklabs.uk/BeFeast/okilum/issues/1859"},
+        {"kind":"try", "title":"Broken", "subline":"Needs repair", "link":"broken.md"}
+    ]);
+    std::fs::write(area.join("ops/board.yaml"), source.to_string()).unwrap();
+    let binding = Binding::read(&area).unwrap().unwrap();
+    assert_eq!(binding.issues.len(), 14);
+    assert_eq!(binding.attention.len(), 1);
+    assert_eq!(binding.card_problems[0].field, "attention[1].link");
+    assert!(binding.card_problems[0].detail.contains("unreadable"));
+    std::fs::remove_file(note).unwrap();
+    std::fs::remove_dir_all(area).unwrap();
+}
 fn issue(number: u64, state: &str) -> Issue {
     Issue {
         number,
@@ -151,11 +275,6 @@ fn malformed_bindings_and_unsafe_note_or_build_targets_are_visible_errors() {
         ),
         CONFIG.replace("planning/stage-06-defects-t3-poc-logs.md", "../private.md"),
         CONFIG.replace("\"refresh_seconds\": 30", "\"refresh_seconds\": 0"),
-        CONFIG.replace("\"number\": 1733", "\"number\": 1731"),
-        CONFIG.replace(
-            "https://git.oklabs.uk/BeFeast/okilum/actions/runs/13697",
-            "javascript:run()",
-        ),
     ] {
         assert!(Binding::parse(&edit).is_err(), "accepted unsafe binding");
     }
@@ -225,10 +344,10 @@ fn attention_is_explicit_and_cannot_supply_an_unsafe_destination() {
         "https://user:secret@example.org/action",
     ] {
         source["attention"][0]["link"] = serde_json::json!(link);
-        assert!(
-            Binding::parse(&source.to_string()).is_err(),
-            "accepted {link}"
-        );
+        let binding = Binding::parse(&source.to_string()).unwrap();
+        assert_eq!(binding.attention.len(), 2, "accepted {link}");
+        assert_eq!(binding.card_problems.len(), 1);
+        assert!(binding.card_problems[0].detail.contains("link:"));
     }
 }
 

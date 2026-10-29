@@ -1,8 +1,8 @@
-# Project Board — Sprint slice 1 (#1767)
+# Native project Board (#1767, #1859)
 
-The shared Board model is upstreamed for #1860. The native project-center UI
-described below remains in `sprint/board`; this model change does not activate it
-in main. Native UI follow-ups are tracked separately.
+The accepted Sprint Board UI and shared model now use the compatible Area
+manifest readers. The Board remains a read-only projection; in-app authoring is
+tracked separately in #1862.
 
 Entering a project opens a native Board in its existing center pane. Notes and
 Board share that center. Returning with **Board** retains the executor filter,
@@ -23,16 +23,17 @@ The event is refused after switching away from the originating project.
 
 ## Explicit binding
 
-`ops/board.yaml` is an optional companion to `ops/project.yaml`. The latter's T3
+`ops/board.toml` is an optional companion to `ops/project.toml`. The latter's T3
 and project fields are preserved. The Board's HTTPS repository must match the
 manifest's `repo.host` and `repo.full_name`. Missing/invalid configuration is
 visible; there is no directory-name inference or repository-wide issue query.
 
-[The initial selection](examples/okilum-board.yaml) is a schema/test example of
-the first fourteen-issue slice. The manager-maintained canonical `ops/board.yaml`
+[The initial selection](examples/okilum-board.toml) is a schema/test example of
+the first fourteen-issue slice. The manager-maintained canonical `ops/board.toml`
 is authoritative and may select a newer explicit scope; never overwrite it with
-this historical example. Stage and related note paths are relative to that area, must be
-Markdown paths, and cannot escape through `..`, absolute paths or symlinks.
+this historical example. Stage note paths are area-relative Markdown. Related notes may also be public
+HTTPS links without credentials. Local notes cannot escape through `..`, absolute
+paths or symlinks.
 
 The version-1 binding contains `title`, `goal`, `repository`, `stage_note`,
 `refresh_seconds` (default 30, configurable), and ordered `issues`. Each issue has
@@ -57,8 +58,9 @@ reread on refresh. A failed source retains its previous snapshot and successful
 read time; partial Forgejo reads retain issues that failed. A different source's
 success does not make that failed source fresh. The UI is silent while sources
 are healthy or refreshing. A failed or stale
-source shows one compact line with its last successful read time. Internal error
-text and polling counters are not presented as ordinary Board content.
+source shows one compact line with its last successful read time. Manifest failures show the exact file/parser detail in the problem line and app
+log. Invalid cards show their issue number, field and error beside healthy cards;
+they do not hide the entire Board. Transport counters remain hidden.
 
 Open issues need a verified open PR reference or current-task/active-run evidence
 to enter In progress. Otherwise they stay in Queue. Closed issues stay in Checks:
@@ -106,23 +108,23 @@ Columns have zero minimum width and equal flexible bases. The Verified toggle is
 a narrow native icon/count strip with a full accessible label and tooltip; opening
 it adds the fifth flexible column instead of forcing the first column off-screen.
 `stage: ready` and `stage: verified` on an issue are optional, explicit human-owned
-marks in `ops/board.yaml`. Issue closure alone still means Checks. No current
+marks in `ops/board.toml`. Issue closure alone still means Checks. No current
 binding is marked ready/verified by this implementation. The optional `stuck: true`
 marker supplies amber styling; elapsed-time status is the separate third push.
 The attention list and live-agent gateway details remain pushes 2 and 3.
 
 ## Explicit attention list, push 2
 
-The optional `attention` list in the same human-edited `ops/board.yaml` supplies
+The optional `attention` list in the same human-edited `ops/board.toml` supplies
 **Waiting for you** above the kanban. An empty or absent list renders no lane.
 Each entry has `kind` (`decision`, `try` or `hands`), `title`, `subline` and `link`:
 
-```yaml
-attention:
-  - kind: decision
-    title: Choose the next slice
-    subline: Read the proposed decision first
-    link: decisions/next-slice.md
+```toml
+[[attention]]
+kind = "decision"
+title = "Choose the next slice"
+subline = "Read the proposed decision first"
+link = "decisions/next-slice.md"
 ```
 
 A link is either an area-relative Markdown note or a public HTTPS URL without
@@ -146,7 +148,7 @@ card actions; a note equal to `stage_note` does not reintroduce that removed act
 its own intrinsic width. There is no full-width command strip.
 
 The manager-owned attention source is
-`/home/god/Obsidian Vault/Dev/Areas/okilum/ops/board.yaml`, field `attention`.
+`Dev/Areas/okilum/ops/board.toml`, field `attention`.
 This change leaves that vault file untouched; the manager authors the real list.
 Issue #1795 stays open until Oleg approves the resulting build.
 
@@ -176,15 +178,15 @@ Unavailable progress is omitted. Source errors keep the existing one-line notice
 and retained snapshot. Agent activity alone never promotes an entire backlog. Only its explicit current
 task can use active-run evidence; neither branch marks a build/issue accepted.
 
-The manager may maintain the same canonical `ops/board.yaml`, for example:
+The manager may maintain the same canonical `ops/board.toml`, for example:
 
-```yaml
-stuck_after_seconds: 1800
-issues:
-  - number: 1767
-    expected: Project work is visible on the Board
-    executor: Editing
-    agent_thread_id: mcp:ccd5df8a-17e0-4e4c-8aae-cdffd5524537
+```toml
+stuck_after_seconds = 1800
+[[issues]]
+number = 1767
+expected = "Project work is visible on the Board"
+executor = "Editing"
+# Optional literal thread ID; the current registry takes precedence.
 ```
 
 This is an explicit binding example, not automatic registry/role resolution.
@@ -206,7 +208,7 @@ Closed issues and explicit human delivery/acceptance stages retain their precede
 Without an open PR, an optional **Current task** column in `ops/thread-ids.md`
 marks the executor's one current issue, as a positive number or `#number`.
 Blank/`—` means unknown. The existing registry remains valid without the column;
-older builds ignore that extra column, and `board.yaml` gains no incompatible field.
+older builds ignore that extra column, and `board.toml` gains no incompatible field.
 This stable issue-level mark changes when the executor changes task, never with
 each run. Other cards assigned to the same busy executor remain in Queue. The
 current registry supersedes stale card IDs for an exact matching executor role;
@@ -216,3 +218,11 @@ unsettled current thread, an `activeRunId`, and preparing/starting/running/waiti
 status. A queued future turn, latest completed run, display title or executor name
 alone cannot establish current work. `execution` remains optional historical
 context for cached progress text; column classification does not require it.
+
+## Compatible manifest transition (#1859)
+
+Both manifests select TOML first and legacy YAML only when TOML is absent.
+Malformed, unreadable or symlinked TOML is an explicit error; it cannot silently
+select an older YAML copy. Readers never convert files. See the
+[conversion and rollout guide](area-manifests.md). Existing YAML remains usable
+unchanged until the manager completes the rollout on every channel and OS.

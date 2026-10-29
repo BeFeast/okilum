@@ -15,7 +15,7 @@ vault-relative) and calls `record_opened`, so recents survive relaunch. Live
 statuses from `projects::statuses` are fed through `update_statuses`; the dot
 tooltip carries the live reason (for example "not connected to T3").
 
-Manifest problems never print raw red text: a folder whose `ops/project.yaml`
+Manifest problems never print raw red text: a folder whose `ops/project.toml` (legacy `ops/project.yaml` while TOML is absent)
 cannot be read is a muted row with a small warning sign inside its domain, the
 reason in a tooltip (hidden under a kind filter, since its kind is unknown). A
 manifest whose `kind` is not a project kind (`operating-area` in Dev intake) is

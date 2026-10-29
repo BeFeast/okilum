@@ -1,0 +1,109 @@
+version = 1
+title = "Okilum · current stage"
+repository = "https://git.oklabs.uk/BeFeast/okilum"
+stage_note = "planning/stage-06-defects-t3-poc-logs.md"
+refresh_seconds = 30
+goal = "Daily-use fixes, reliable Manager access and the first project-to-Manager Board route."
+attention = []
+
+[[issues]]
+number = 1731
+expected = "Rename case-only paths on APFS without collisions or lost links."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = [1745]
+
+[[issues]]
+number = 1733
+expected = "Copy the right-clicked tree row path while its menu is open."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1734
+expected = "Show a clear notice when a file action is refused or fails."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1756
+expected = "Reveal the open note from its own toolbar without opening an unrelated tree."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1759
+expected = "Use the current T3 MCP tools and keep optional failures local."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = [1766]
+
+[[issues]]
+number = 1760
+expected = "Deliver and gracefully relaunch a separate Linux Sprint on idunn workspace 3."
+executor = "Editing"
+notes = ["planning/stage-06-defects-t3-poc-logs.md", "design/2026-10-27-project-board-in-okilum.md"]
+pull_requests = [1761]
+
+[[issues.builds]]
+label = "Linux Sprint delivery run"
+url = "https://git.oklabs.uk/BeFeast/okilum/actions/runs/13697"
+
+[[issues]]
+number = 1762
+expected = "Offer optional automatic reveal without fighting manual tree scrolling."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1767
+expected = "Open the project Board, inspect an issue or note, and prepare a Manager draft."
+executor = "Editing"
+notes = ["planning/stage-06-defects-t3-poc-logs.md", "design/2026-10-27-project-board-in-okilum.md"]
+pull_requests = []
+
+[[issues]]
+number = 1713
+expected = "Keep the update freshness probe consistent with the real rollout preferences."
+executor = "Tests"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1727
+expected = "Wrap long update status text in Settings About."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1729
+expected = "Restore basic Trash and Undo behavior without losing notes."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1732
+expected = "Request evicted iCloud notes and open them once downloaded."
+executor = "Tests"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1746
+expected = "Wait for real retrieval readiness and preserve complete cache reuse."
+executor = "Tests"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = []
+
+[[issues]]
+number = 1755
+expected = "Accept a Manager hostname without a URL scheme."
+executor = "UI"
+notes = ["planning/stage-06-defects-t3-poc-logs.md"]
+pull_requests = [1757]
