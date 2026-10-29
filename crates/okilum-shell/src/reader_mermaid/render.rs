@@ -452,9 +452,10 @@ mod tests {
             Budget::WorkUnits.control(),
             request,
         ));
-        let error = result
-            .err()
-            .expect("tiny work budget must reject the fixture");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("tiny work budget must reject the fixture"),
+        };
         assert!(
             error.to_string().contains("max_layout_work_units"),
             "{error}"
