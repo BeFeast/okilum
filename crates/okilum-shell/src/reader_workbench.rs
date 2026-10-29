@@ -82,6 +82,7 @@ pub(super) fn update_index(
         index.replace_snapshot(snapshot, path);
     }
     let (now, midnight, yesterday) = clock();
+    index.observed_at = now;
     index.refresh(now, midnight, yesterday);
 }
 
@@ -110,27 +111,85 @@ fn short_domain(domain: &str) -> &str {
 }
 
 impl Reader {
+    pub(super) fn refresh_workbench_clock(&mut self, cx: &mut Context<Self>) {
+        let minute = reader_sidebar::now() / 60;
+        if self.workbench_ready.is_none() || minute == self.workbench_clock_minute {
+            return;
+        }
+        self.workbench_clock_minute = minute;
+        let original = self.workbench.clone();
+        let root = self.vault_root.clone();
+        let generation = self.watcher_generation;
+        let index = original.clone();
+        let task = cx.background_executor().spawn(async move {
+            let mut index = (*index).clone();
+            let (now, midnight, yesterday) = clock();
+            index.refresh(now, midnight, yesterday);
+            Arc::new(index)
+        });
+        cx.spawn(async move |this, cx| {
+            let next = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.vault_root == root
+                    && this.watcher_generation == generation
+                    && Arc::ptr_eq(&this.workbench, &original)
+                {
+                    this.publish_workbench(next, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn publish_workbench(&mut self, index: Arc<Index>, cx: &mut Context<Self>) {
         self.workbench = index.clone();
+        self.workbench_clock_minute = index.view.built_at / 60;
         self.workbench_pending = self.workbench_pending.wrapping_add(1);
         let pending = self.workbench_pending;
         let root = self.vault_root.clone();
         let generation = self.watcher_generation;
+        let prepared = index.clone();
+        let labels = cx.background_executor().spawn(async move {
+            // Local timezone lookup/formatting stays off the render path too.
+            let mut labels = std::collections::BTreeMap::new();
+            labels.insert(prepared.observed_at, shown_time(prepared.observed_at));
+            for row in prepared
+                .view
+                .days
+                .iter()
+                .flat_map(|day| &day.places)
+                .flat_map(|place| &place.rows)
+            {
+                labels
+                    .entry(row.modified)
+                    .or_insert_with(|| shown_time(row.modified));
+            }
+            labels
+        });
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(500))
                 .await;
+            let labels = labels.await;
             let _ = this.update(cx, |this, cx| {
                 if this.vault_root == root
                     && this.watcher_generation == generation
                     && this.workbench_pending == pending
                 {
                     this.workbench_ready = Some(index);
+                    this.workbench_times = labels;
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    fn workbench_time(&self, seconds: u64) -> String {
+        self.workbench_times
+            .get(&seconds)
+            .cloned()
+            .unwrap_or_else(|| "—".into())
     }
 
     pub(super) fn set_left_mode(
@@ -319,7 +378,7 @@ impl Reader {
         };
         let view = &index.view;
         let network = self.loading.as_ref().is_some_and(|load| load.network);
-        let time = shown_time(view.built_at);
+        let time = self.workbench_time(index.observed_at);
         let freshness = if network {
             format!("NFS · snapshot {time}")
         } else {
@@ -422,7 +481,11 @@ impl Reader {
                             content = content.child(self.now_note_row(
                                 &row.path,
                                 title,
-                                format!("{} · {}", shown_time(row.modified), location(&place.path)),
+                                format!(
+                                    "{} · {}",
+                                    self.workbench_time(row.modified),
+                                    location(&place.path)
+                                ),
                                 cx,
                             ));
                         }
@@ -591,8 +654,13 @@ mod tests {
         let before = std::fs::read(&note).unwrap();
         let before_time = std::fs::metadata(&note).unwrap().modified().unwrap();
         let mut index = Index::default();
-        index.replace("Dev/Projects/App/Plan.md", "", 100);
-        index.refresh(101, 0, 0);
+        let now = reader_sidebar::now();
+        index.replace("Dev/Projects/App/Plan.md", "", now);
+        index.refresh(
+            now,
+            now.saturating_sub(1000),
+            now.saturating_sub(workbench::DAY),
+        );
         reader.update(visual, |r, cx| {
             r.publish_workbench(Arc::new(index.clone()), cx)
         });

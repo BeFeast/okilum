@@ -1710,6 +1710,8 @@ struct Reader {
     workbench: Arc<okilum_core::workbench::Index>,
     workbench_ready: Option<Arc<okilum_core::workbench::Index>>,
     workbench_pending: u64,
+    workbench_clock_minute: u64,
+    workbench_times: std::collections::BTreeMap<u64, String>,
     workbench_scroll: ScrollHandle,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
@@ -2008,6 +2010,8 @@ impl Reader {
             workbench: Arc::default(),
             workbench_ready: None,
             workbench_pending: 0,
+            workbench_clock_minute: 0,
+            workbench_times: Default::default(),
             workbench_scroll: ScrollHandle::new(),
             inbox_source: None,
             recent_expanded: false,
@@ -2097,6 +2101,7 @@ impl Reader {
     /// Drain/coalesce notifications off the UI thread. Known note batches use
     /// the reconciled baseline, including directory hints. Overflow needs reconcile.
     fn poll_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_workbench_clock(cx);
         if self.shared_session.is_some() {
             if !self.loading.as_ref().is_some_and(|load| load.active) {
                 self.poll_shared_session(window, cx);
@@ -2967,6 +2972,7 @@ impl Reader {
         }
         self.sidebar = state;
         self.sidebar_path = path;
+        self.workbench_scroll = ScrollHandle::new();
         self.inbox.clear();
         self.inbox_source = None;
         self.recent_expanded = false;

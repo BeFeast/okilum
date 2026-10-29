@@ -33,6 +33,8 @@ pub struct Index {
     notes: BTreeMap<String, Row>,
     discovered: Vec<Unit>,
     pub view: View,
+    /// Time of the last accepted source publication, independent of window aging.
+    pub observed_at: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -99,16 +101,19 @@ pub fn terminal(value: &str) -> bool {
 pub fn noise(path: &str) -> bool {
     let parts: Vec<_> = path.split('/').collect();
     let file = parts.last().copied().unwrap_or_default();
-    parts.iter().any(|p| {
-        p.starts_with('.')
-            || matches!(
-                p.to_lowercase().as_str(),
-                "pokutan" | "transcripts" | "archive" | "архив" | "_schema"
-            )
-    }) || matches!(
-        file,
-        "CLAUDE.md" | "AGENTS.md" | "GEMINI.md" | "ANTIGRAVITY.md" | "CONTEXT.md"
-    ) || file.starts_with("._")
+    crate::projects::archived(path)
+        || parts.iter().any(|p| {
+            p.starts_with('.')
+                || matches!(
+                    p.to_lowercase().as_str(),
+                    "pokutan" | "transcripts" | "archive" | "архив" | "_schema"
+                )
+        })
+        || matches!(
+            file,
+            "CLAUDE.md" | "AGENTS.md" | "GEMINI.md" | "ANTIGRAVITY.md" | "CONTEXT.md"
+        )
+        || file.starts_with("._")
         || path.ends_with("ops/thread-ids.md")
         || path.ends_with("ops/board.md")
         || path.ends_with("ops/manager-state.md")
@@ -164,6 +169,7 @@ impl Index {
     ) -> Self {
         let mut index = Self {
             discovered: units,
+            observed_at: now,
             ..Self::default()
         };
         for path in snapshot.source_paths() {
@@ -289,11 +295,20 @@ impl Index {
             .filter(|r| !r.noise && r.mtime <= now)
         {
             row.unit = para_unit(&row.path).unwrap_or_else(|| place(&row.path));
-            if let Some(unit) = units
-                .values()
-                .filter(|unit| under(&row.path, &unit.path))
-                .max_by_key(|u| u.path.len())
-            {
+            // Look up ancestors rather than comparing every note to every unit.
+            let mut ancestor = row.path.trim_end_matches(".md");
+            let owner = loop {
+                if let Some(unit) = units.get(ancestor) {
+                    if under(&row.path, &unit.path) {
+                        break Some(unit);
+                    }
+                }
+                let Some((parent, _)) = ancestor.rsplit_once('/') else {
+                    break None;
+                };
+                ancestor = parent;
+            };
+            if let Some(unit) = owner {
                 row.unit.clone_from(&unit.path);
                 if !unit.terminal && !noise(&unit.path) {
                     let a = activity
@@ -495,5 +510,28 @@ mod tests {
             full.as_secs_f64() * 1000.,
             batch.as_secs_f64() * 1000.
         );
+    }
+
+    #[test]
+    fn time_windows_age_without_a_new_file_or_a_new_snapshot_timestamp() {
+        let now = 20 * DAY;
+        let mut index = Index {
+            observed_at: now,
+            ..Index::default()
+        };
+        index.replace("Dev/Projects/App/Plan.md", "", now);
+        index.refresh(now, now, now - DAY);
+        assert_eq!(index.view.days[0].count, 1);
+        index.refresh(now + DAY, now + DAY, now);
+        assert_eq!(index.view.days[0].count, 0);
+        assert_eq!(index.view.days[1].count, 1);
+        assert_eq!(
+            index.observed_at, now,
+            "aging is not a new network snapshot"
+        );
+        index.refresh(now + 15 * DAY, now + 15 * DAY, now + 14 * DAY);
+        assert!(index.view.active.is_empty());
+        assert_eq!(index.view.older, 0);
+        assert!(noise("Dev/4 Archive/Old/plan.md"));
     }
 }
