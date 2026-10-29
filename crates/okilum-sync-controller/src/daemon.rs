@@ -30,11 +30,7 @@ pub struct DaemonIdentity {
 impl DaemonIdentity {
     /// Re-read the credential locally and authenticate the same instance.
     pub fn connect(&self) -> Result<Syncthing> {
-        let config = read_config(&self.config_file)?;
-        ensure!(
-            fingerprint(&self.config_file)? == self.certificate_hash,
-            "daemon certificate changed"
-        );
+        let config = self.checked_config()?;
         let api = Syncthing::connect(config.address, &config.key)?;
         api.verify_identity(&self.device_id)?;
         ensure!(
@@ -42,6 +38,19 @@ impl DaemonIdentity {
             "unsupported Syncthing version"
         );
         Ok(api)
+    }
+    /// Offline identity/configuration verification only: no REST request,
+    /// process launch, discovery, service registration, or credential output.
+    pub fn verify_local(&self) -> Result<()> {
+        self.checked_config().map(|_| ())
+    }
+    fn checked_config(&self) -> Result<RestConfig> {
+        let config = read_config(&self.config_file)?;
+        ensure!(
+            fingerprint(&self.config_file)? == self.certificate_hash,
+            "daemon certificate changed"
+        );
+        Ok(config)
     }
 }
 pub struct Candidate {
