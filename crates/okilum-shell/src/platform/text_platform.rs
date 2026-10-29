@@ -1,10 +1,11 @@
 //! GPUI's own platform with Okilum's text system in front of it. Everything
 //! is delegated except `text_system`, which returns the shaped-line cache
-//! (#1312) over, on Windows, the right-to-left repair (#1121). Delegation
+//! (#1312) over the platform compatibility adapter. Delegation
 //! only: when GPUI's `Platform` trait changes, this file fails to compile
 //! instead of drifting.
 //!
-//! Text system order: `ShapedLineCache` -> (Windows: `BidiTextSystem`) ->
+//! Text system order: `ShapedLineCache` -> (Windows: `BidiTextSystem`,
+//! Linux: `EmojiTextSystem`) ->
 //! the platform shaper. The cache sits outermost, so it stores the repaired
 //! layout and a hit returns exactly what the repair returned.
 use super::shaped_line_cache::ShapedLineCache;
@@ -33,11 +34,14 @@ pub(crate) fn application() -> gpui::Application {
 }
 
 /// The platform's shaper as the cache sees it: on Windows with the
-/// right-to-left repair applied, elsewhere as it is.
+/// right-to-left repair applied, on Linux with color-emoji resolution.
 pub(crate) fn shaper(platform: Arc<dyn PlatformTextSystem>) -> Arc<dyn PlatformTextSystem> {
     #[cfg(windows)]
     let platform: Arc<dyn PlatformTextSystem> =
         Arc::new(super::windows_bidi::BidiTextSystem(platform));
+    #[cfg(target_os = "linux")]
+    let platform: Arc<dyn PlatformTextSystem> =
+        Arc::new(super::linux_emoji::EmojiTextSystem::new(platform));
     platform
 }
 
