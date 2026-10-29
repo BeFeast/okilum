@@ -147,3 +147,34 @@ the absent hint without launching them, and refuses a wrong helper requirement.
 Existing native audit-token/socket tests cover signed peer authentication. This
 is not a native login/sleep/stop/uninstall acceptance claim; OwnedSupervisor,
 pinned Syncthing preparation and desktop orchestration remain work under #588.
+
+## Authenticated supervisor exit observation (#588, next slice)
+
+`supervisor::ipc::macos_exit::ExitWatch` captures a kernel `EVFILT_PROC/NOTE_EXIT`
+observation from the connected, expected signed supervisor. It authenticates UID,
+audit token, code requirement and executable path before subscribing, then repeats
+authentication and compares the full audit token after subscription. A PID reused
+during capture cannot substitute a different process. There is no API accepting a
+caller-supplied PID and no signal, process adoption, registration or unregistration.
+The queue descriptor is close-on-exec and closes when the observer is dropped.
+
+Waiting uses one caller-supplied absolute deadline, including across EINTR.
+A timeout means exit was not confirmed; it does not assert liveness or authorize
+cleanup. A confirmed event remains confirmed on repeat reads. This only certifies
+the captured supervisor process exited: the lifecycle layer still needs an
+authenticated owned-tree Stop acknowledgement and current durable authority before
+unregistering. Missing sockets/hints and arbitrary process scans are not substitutes.
+
+The macOS tests start only an owned subprocess of the test executable, connect over a
+scratch private socket and prove that the intended helper fixture ran before
+capturing it. A live-child timeout is the positive control before the exact child
+exits; another test refuses the wrong signing requirement and confirms that dropping
+the observer leaves the child alive. Cleanup kills/waits only the spawned child.
+These are process-observer fixtures, not launchd/login/update or complete Sync QA.
+
+A deterministic capture-boundary regression exits the child after event registration
+and before the second signature check. It first verifies the original socket audit
+token remains readable and unchanged, then requires capture refusal. The second
+`SignedPeer` check performs a fresh `SecCodeCopyGuestWithAttributes` lookup using
+`kSecGuestAttributeAudit`; token equality alone is never liveness evidence. This
+exercises a stale connected-socket credential, not a forced PID-reuse stress run.
