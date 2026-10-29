@@ -1059,7 +1059,9 @@ fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn reconnect_expiry_has_a_three_day_renew_reminder(cx: &mut TestAppContext) {
+fn connected_controls_collapse_until_requested_and_keep_the_renew_reminder(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let state = tempfile::tempdir().unwrap();
     let expiry = chrono::DateTime::parse_from_rfc3339("2026-10-30T15:00:00Z")
@@ -1078,10 +1080,25 @@ fn reconnect_expiry_has_a_three_day_renew_reminder(cx: &mut TestAppContext) {
             connection_status: Some(status),
             ..Default::default()
         });
-        let (_, visual) = cx.add_window_view(|window, cx| {
+        let (root, visual) = cx.add_window_view(|window, cx| {
             let view =
                 cx.new(|cx| fixture::view(state.path().to_owned(), gateway.clone(), window, cx));
             Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("project-connected-line").is_some());
+        assert!(visual.debug_bounds("project-connection-menu").is_some());
+        assert!(visual.debug_bounds("project-token-expiry").is_none());
+        assert!(visual.debug_bounds("project-renew").is_none());
+        assert!(visual.debug_bounds("project-sign-in-again").is_none());
+        assert!(visual.debug_bounds("project-live-connect").is_none());
+        let view = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ProjectView>().unwrap()
+        });
+        // The menu's explicit Change/Renew request reveals the existing form.
+        view.update_in(visual, |view, _, cx| {
+            view.connection_details = true;
+            cx.notify();
         });
         visual.run_until_parked();
         assert!(
@@ -1099,7 +1116,77 @@ fn reconnect_expiry_has_a_three_day_renew_reminder(cx: &mut TestAppContext) {
             None,
             "a reminder cannot open OAuth automatically"
         );
+        let done = visual.debug_bounds("project-connection-done").unwrap();
+        visual.simulate_click(done.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("project-connected-line").is_some());
+        assert!(visual.debug_bounds("project-token-expiry").is_none());
     }
+}
+
+#[gpui::test]
+fn shared_sign_out_stops_matching_panels_and_preserves_drafts(cx: &mut TestAppContext) {
+    struct Panels(Vec<Entity<ProjectView>>);
+    impl Render for Panels {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            h_flex().size_full().children(self.0.iter().cloned())
+        }
+    }
+    cx.update(gpui_component::init);
+    let state = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let panels = [
+            "https://t3.example.test",
+            "https://t3.example.test",
+            "https://other.example.test",
+        ]
+        .into_iter()
+        .map(|origin| {
+            cx.new(|cx| {
+                let mut view = fixture::view(
+                    state.path().to_owned(),
+                    Arc::new(fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                view.environment = Some(Environment::new("example", origin).unwrap());
+                view.compose.update(cx, |input, cx| {
+                    input.set_value("Keep this draft", window, cx)
+                });
+                view
+            })
+        })
+        .collect();
+        let group = cx.new(|_| Panels(panels));
+        Root::new(group, window, cx)
+    });
+    visual.run_until_parked();
+    let group = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Panels>().unwrap()
+    });
+    let panels = group.read_with(visual, |group, _| group.0.clone());
+    for panel in &panels {
+        panel.read_with(visual, |view, _| assert!(view.can_send()));
+    }
+    visual.update(|_, cx| {
+        reader_t3_settings::sign_out(
+            Environment::new("example", "https://t3.example.test").unwrap(),
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    for panel in &panels[..2] {
+        panel.read_with(visual, |view, cx| {
+            assert!(view.gateway.is_none());
+            assert!(!view.can_send());
+            assert!(view.chat.is_some());
+            assert_eq!(view.compose.read(cx).value().as_ref(), "Keep this draft");
+        });
+    }
+    panels[2].read_with(visual, |view, cx| {
+        assert!(view.can_send(), "another origin must stay connected");
+        assert_eq!(view.compose.read(cx).value().as_ref(), "Keep this draft");
+    });
 }
 
 #[gpui::test]

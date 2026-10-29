@@ -68,6 +68,12 @@ impl Native {
     pub(super) fn active(&self) -> bool {
         self.client.is_some()
     }
+    pub(super) fn renew_due(&self) -> bool {
+        self.expires_at.is_some_and(|expiry| {
+            expiry.saturating_sub(chrono::Utc::now().timestamp().max(0) as u64)
+                <= okilum_t3::EXPIRES_SOON_SECS
+        })
+    }
     pub(super) fn pause(&mut self) {
         if let Some(retained) = &self.retained {
             retained.lock().unwrap().epoch += 1;
@@ -466,6 +472,10 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn render_native(&self, cx: &mut Context<Self>) -> AnyElement {
+        let compact = self
+            .gateway
+            .as_ref()
+            .is_some_and(|gateway| self.connection_is_compact(&gateway.status()));
         let enabled = self.native.client_can_operate() && self.native.stream_error.is_none();
         self.native
             .actions
@@ -497,8 +507,12 @@ impl ProjectView {
                     })),
             );
         }
+        let mut view = v_flex().w_full().min_w_0().gap_1();
+        if !compact {
+            view = view.child(controls);
+        }
         if self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some() {
-            controls = controls.child(
+            view = view.child(
                 Button::new("project-live-history")
                     .ghost()
                     .label("Load earlier activity")
@@ -506,8 +520,7 @@ impl ProjectView {
                     .on_click(cx.listener(|this, _, window, cx| this.native_history(window, cx))),
             );
         }
-        let mut view = v_flex().w_full().min_w_0().gap_1().child(controls);
-        if self.native.open {
+        if self.native.open && !compact {
             view=view.child(div().w_full().min_w_0().whitespace_normal()
                 .child("Live updates need a separate T3 client pairing with permission to read threads and control agents. Paste its one-time pairing token; the saved connection is reused until it expires."))
                 .child(div().w_full().min_w_0().debug_selector(||"project-live-token-row".into()).child(Input::new(&self.native.input).w_full()))
@@ -522,7 +535,7 @@ impl ProjectView {
                 );
             }
         }
-        if let Some(expiry) = self.native.expires_at {
+        if let Some(expiry) = self.native.expires_at.filter(|_| !compact) {
             let renew = expiry.saturating_sub(chrono::Utc::now().timestamp().max(0) as u64)
                 <= okilum_t3::EXPIRES_SOON_SECS;
             view = view.child(
