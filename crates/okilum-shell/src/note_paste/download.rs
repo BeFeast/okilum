@@ -196,7 +196,10 @@ mod tests {
         let responder = std::thread::spawn(move || {
             let (mut stream, _) = server.accept().unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).unwrap();
+            assert!(
+                stream.read(&mut request).unwrap() > 0,
+                "actual HTTP request"
+            );
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", original.len()).unwrap();
             stream.write_all(&original).unwrap();
         });
