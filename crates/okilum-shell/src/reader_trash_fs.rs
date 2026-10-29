@@ -25,6 +25,18 @@ fn publish(
     okilum_core::unix_publish::no_replace(a, b, c, d)
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct TrashUnavailable;
+#[cfg(target_os = "macos")]
+impl std::fmt::Display for TrashUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Trash is unavailable on this disk. The note was not deleted.")
+    }
+}
+#[cfg(target_os = "macos")]
+impl std::error::Error for TrashUnavailable {}
+
 #[derive(Clone, Debug)]
 pub struct Trashed {
     pub root: PathBuf,
@@ -293,9 +305,19 @@ fn system_trash(
         "The source changed before Trash; try again"
     );
     let mut resulting = None;
-    NSFileManager::defaultManager()
+    if let Err(error) = NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, Some(&mut resulting))
-        .map_err(|error| anyhow::anyhow!("Cannot move to system Trash: {error}"))?;
+    {
+        // No permanent-delete or vault-local fallback (#1924). Only claim the
+        // note was kept when the original identity/revision remains at source.
+        let retained = fs::symlink_metadata(source)?;
+        ensure!(
+            stamp(source, &retained) == stamp(source, &object),
+            "Trash failed and the source changed; inspect it before continuing: {error}"
+        );
+        eprintln!("Native Trash refused without moving source: {error}");
+        return Err(TrashUnavailable.into());
+    }
     let location = resulting
         .and_then(|url| url.path())
         .context("The item reached Trash; restore it through Finder")?;

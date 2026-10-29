@@ -233,16 +233,45 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     })?;
     let relative = Path::new("MovedFolder/moved.md");
-    let trashed = stages.run("trash", 30, || trash::move_to_trash(&vault, relative))?;
-    stages.run("verify-trash", 30, || {
-        ensure!(!vault.join(relative).exists(), "trash retained source");
-        Ok(())
+    let before_trash = stages.run("trash-preimage", 30, || {
+        Ok((
+            fs::read(vault.join(relative))?,
+            trash::stamp(&vault.join(relative), &fs::metadata(vault.join(relative))?),
+        ))
     })?;
-    stages.run("undo", 30, || trashed.restore())?;
-    stages.run("verify-undo", 30, || {
+    // This network volume has no system Trash. An explicit, typed refusal with
+    // an intact source is acceptance; permanent deletion never is (#1924).
+    let trashed = stages.run("trash-or-safe-refusal", 30, || {
+        match trash::move_to_trash(&vault, relative) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => {
+                #[cfg(target_os = "macos")]
+                if error.is::<trash::TrashUnavailable>() {
+                    stages.line("EXPECTED Trash unavailable; source must remain unchanged")?;
+                    return Ok(None);
+                }
+                Err(error)
+            }
+        }
+    })?;
+    if let Some(trashed) = trashed {
+        stages.run("verify-trash", 30, || {
+            ensure!(!vault.join(relative).exists(), "trash retained source");
+            Ok(())
+        })?;
+        stages.run("undo", 30, || trashed.restore())?;
+    } else {
+        stages.line("Undo not applicable: no deletion occurred")?;
+    }
+    stages.run("verify-trash-undo-or-refusal", 30, || {
         ensure!(
-            fs::read(vault.join(relative))? == b"external\r\n",
-            "trash/Undo bytes differ"
+            fs::read(vault.join(relative))? == before_trash.0,
+            "Trash/Undo/refusal changed source bytes"
+        );
+        ensure!(
+            trash::stamp(&vault.join(relative), &fs::metadata(vault.join(relative))?)
+                == before_trash.1,
+            "Trash/Undo/refusal changed source identity or revision"
         );
         Ok(())
     })?;
@@ -260,10 +289,45 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
     stages.run("no-tails", 30, || no_tails(&vault))?;
+    stages.run("cleanup-r2-child", 30, || {
+        let prior = root.join("run-1915-HXNtBM");
+        match fs::symlink_metadata(&prior) {
+            Ok(meta) => {
+                ensure!(
+                    meta.is_dir() && !meta.file_type().is_symlink(),
+                    "prior QA child replaced"
+                );
+                fs::remove_dir_all(prior)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    })?;
     stages.run("cleanup-own-child", 30, || Ok(fs::remove_dir_all(&run)?))?;
     stages.line(
         "PASS create/save/move/rename/trash/Undo/external-conflict/no-tails; own QA child removed",
     )?;
+    stages.run("cleanup-local-stage-logs", 30, || {
+        use std::os::unix::fs::MetadataExt;
+        for entry in fs::read_dir("/tmp")? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("okilum-1915-stages-") && name.ends_with(".log") {
+                let metadata = fs::symlink_metadata(entry.path())?;
+                ensure!(
+                    metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && metadata.uid() == unsafe { libc::geteuid() },
+                    "foreign QA log retained"
+                );
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    })?;
+    // END is flushed through the still-open unlinked log descriptor and stdout.
     Ok(())
 }
 #[cfg(not(unix))]
