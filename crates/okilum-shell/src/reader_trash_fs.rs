@@ -91,9 +91,10 @@ impl Trashed {
         let (destination, name) = parent(&self.root, &self.relative)?;
         let source_parent = open(
             self.location.parent().context("Missing Trash folder")?,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            trash_parent_flags(),
             Mode::empty(),
-        )?;
+        )
+        .context("Cannot open the Trash folder for Undo; the item remains in system Trash")?;
         renameat_with(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name, RenameFlags::NOREPLACE)
             .context("Cannot Undo: the original path is occupied, unavailable, or on a different filesystem. The item remains in system Trash")?;
         if let Some(info) = &self.info {
@@ -101,6 +102,18 @@ impl Trashed {
         }
         Ok(())
     }
+}
+
+fn trash_parent_flags() -> OFlags {
+    // macOS protects directory reads of the user's Trash. Undo only needs a
+    // directory descriptor for renameatx_np, so request search access instead
+    // of permission to enumerate Trash. Keep the no-symlink and no-replace
+    // guards; no Full Disk Access or copy/unlink fallback is needed.
+    #[cfg(target_os = "macos")]
+    let access = OFlags::from_bits_retain(libc::O_SEARCH as u32);
+    #[cfg(not(target_os = "macos"))]
+    let access = OFlags::RDONLY;
+    access | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
 }
 
 #[cfg(target_os = "linux")]
@@ -275,6 +288,45 @@ fn system_trash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn undo_needs_search_but_not_read_access_to_the_trash_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        fs::create_dir_all(root.join("Folder/Nested")).unwrap();
+        fs::write(root.join("Folder/Nested/Note.md"), b"original\r\n").unwrap();
+        fs::write(root.join("Folder/image.bin"), [0, 255, 42]).unwrap();
+        let trashed = Trashed::test_move(&root, Path::new("Folder"), &temp.path().join("Trash"));
+        let trash_parent = trashed.location.parent().unwrap();
+        fs::set_permissions(trash_parent, fs::Permissions::from_mode(0o300)).unwrap();
+        // Positive control: the old read-open requires a permission that Undo
+        // must not need. Restore permissions before asserting, even on failure.
+        let read_open = open(
+            trash_parent,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        let restored = trashed.restore();
+        fs::set_permissions(trash_parent, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            read_open.is_err(),
+            "positive control: directory read denied"
+        );
+        restored.unwrap();
+        assert_eq!(
+            fs::read(root.join("Folder/Nested/Note.md")).unwrap(),
+            b"original\r\n"
+        );
+        assert_eq!(
+            fs::read(root.join("Folder/image.bin")).unwrap(),
+            [0, 255, 42]
+        );
+        assert!(!trashed.location.exists());
+        assert!(!trashed.info.unwrap().exists());
+    }
+
     #[test]
     fn trash_and_undo_preserve_bytes_and_never_replace_a_new_destination() {
         let temp = tempfile::tempdir().unwrap();
