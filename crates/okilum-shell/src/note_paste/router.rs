@@ -63,6 +63,7 @@ pub enum Mode {
 /// Where the paste lands.
 #[derive(Clone, Debug)]
 pub struct RouteContext<'a> {
+    pub image_options: super::image_import::Options,
     pub mode: Mode,
     /// The editor's whole source.
     pub source: &'a str,
@@ -122,6 +123,7 @@ pub enum FollowUp {
         vault_root: PathBuf,
         note_rel: String,
         stamp: String,
+        image_options: super::image_import::Options,
         anchor: Anchor,
     },
     /// Download the remote images of pasted rich text into `folder`, then
@@ -134,6 +136,7 @@ pub enum FollowUp {
         /// The vault, for links that stay unambiguous.
         vault_root: PathBuf,
         stamp: String,
+        image_options: super::image_import::Options,
     },
     /// Convert HTML too large for the UI thread, then insert it at `anchor`
     /// and download its remote images.
@@ -151,6 +154,7 @@ pub struct RemoteImage {
 /// Rich text converted in the background.
 #[derive(Debug)]
 pub struct RichJob {
+    pub image_options: super::image_import::Options,
     /// Empty: only the plain flavor, tried as a TSV table.
     pub html: String,
     pub base_url: Option<String>,
@@ -235,12 +239,15 @@ fn finish(mut routed: Routed, cx: &RouteContext) -> Routed {
     };
     routed.bytes = image.bytes.len();
     let at = selection(cx).start;
-    if image.kind == offer::ImageKind::Tiff && image.bytes.len() > BACKGROUND_TIFF_BYTES {
+    if cx.image_options.enabled
+        || (image.kind == offer::ImageKind::Tiff && image.bytes.len() > BACKGROUND_TIFF_BYTES)
+    {
         routed.follow_up = Some(FollowUp::Image {
             image,
             vault_root: cx.vault_root.to_path_buf(),
             note_rel: note_rel.to_string(),
             stamp: cx.stamp.to_string(),
+            image_options: cx.image_options,
             anchor: Anchor::at(cx.source, at),
         });
         return routed;
@@ -397,6 +404,7 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
                 vault_root: cx.vault_root.to_path_buf(),
                 note_rel: note_rel.to_string(),
                 stamp: cx.stamp.to_string(),
+                image_options: cx.image_options,
             },
             anchor: Anchor::at(cx.source, sel.start),
         });
@@ -502,7 +510,8 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
 
 /// Step 1: files linked in place or copied in the background.
 fn file_paste(paths: &[PathBuf], note_rel: &str, types: &[String], cx: &RouteContext) -> Routed {
-    let plan = files::plan(paths, cx.vault_root, note_rel, cx.stamp, cx.ask_above);
+    let mut plan = files::plan(paths, cx.vault_root, note_rel, cx.stamp, cx.ask_above);
+    plan.image_options = cx.image_options;
     let mut routed = Routed::new(Route::Files, types);
     if let Some(skipped) = plan.skipped_text() {
         routed = routed.notice(skipped, false);
@@ -732,6 +741,24 @@ pub fn rich_text(
     note_rel: &str,
     stamp: &str,
 ) -> Option<RichText> {
+    rich_text_with(
+        converted,
+        plain,
+        vault_root,
+        note_rel,
+        stamp,
+        super::image_import::Options::disabled(),
+    )
+}
+
+fn rich_text_with(
+    converted: Converted,
+    plain: Option<&str>,
+    vault_root: &Path,
+    note_rel: &str,
+    stamp: &str,
+    options: super::image_import::Options,
+) -> Option<RichText> {
     let plain = plain.filter(|text| !text.trim().is_empty());
     // One line of code (a JetBrains `<pre>`, a page's one-command block):
     // the plain flavor, never a fence in the middle of a sentence.
@@ -787,12 +814,12 @@ pub fn rich_text(
                 }
             }
             AssetSource::Data { mime, bytes } => {
-                let saved = save_data_image(&mime, bytes, vault_root, note_rel, stamp);
+                let saved = save_data_image(&mime, bytes, vault_root, note_rel, stamp, options);
                 let text = rich.account(saved, &asset.alt);
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
             AssetSource::LocalFile(path) => {
-                let saved = save_local_image(&path, vault_root, note_rel, stamp);
+                let saved = save_local_image(&path, vault_root, note_rel, stamp, options);
                 let text = rich.account(saved, &asset.alt);
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
@@ -804,11 +831,11 @@ pub fn rich_text(
 
 impl RichText {
     /// The text for one saved (or failed) image.
-    fn account(&mut self, saved: Option<(String, PathBuf)>, alt: &str) -> String {
+    fn account(&mut self, saved: Option<(String, Vec<PathBuf>)>, alt: &str) -> String {
         match saved {
             Some((embed, path)) => {
                 self.saved += 1;
-                self.files.push(path);
+                self.files.extend(path);
                 embed
             }
             None => {
@@ -851,40 +878,43 @@ fn save_data_image(
     vault_root: &Path,
     note_rel: &str,
     stamp: &str,
-) -> Option<(String, PathBuf)> {
+    options: super::image_import::Options,
+) -> Option<(String, Vec<PathBuf>)> {
     if bytes.is_empty() {
         return None;
     }
-    if mime.trim().eq_ignore_ascii_case("image/svg+xml") {
-        let folder = attachments::attachment_folder(vault_root, note_rel);
-        let name = attachments::pasted_name(stamp, 0, "svg");
-        return files::write_into(&folder, &name, &bytes)
-            .ok()
-            .map(|name| (files::wikilink(&name), folder.join(name)));
-    }
-    let kind = attachments::sniff_image(&bytes[..bytes.len().min(16)]).or(kind_of_mime(mime))?;
-    let image = PastedImage {
-        bytes,
-        kind,
-        source: None,
+    let extension = if mime.trim().eq_ignore_ascii_case("image/svg+xml") {
+        "svg"
+    } else {
+        attachments::sniff_image(&bytes)
+            .or(kind_of_mime(mime))?
+            .extension()
     };
-    match attachments::save_pasted_image(vault_root, note_rel, &image, stamp) {
-        Ok(saved) => Some((saved.embed, saved.path)),
-        Err(error) => {
-            eprintln!("Paste: a data image was not saved ({error:?})");
-            None
-        }
-    }
+    let folder = attachments::attachment_folder(vault_root, note_rel);
+    let wanted = attachments::pasted_name(stamp, 0, extension);
+    super::image_import::save(&folder, &wanted, &bytes, options)
+        .ok()
+        .map(|saved| {
+            let target = if options.enabled {
+                folder
+                    .join(&saved.name)
+                    .strip_prefix(vault_root)
+                    .map(files::slash_path)
+                    .unwrap_or_else(|_| saved.name.clone())
+            } else {
+                saved.name.clone()
+            };
+            (files::wikilink(&target), saved.paths)
+        })
 }
 
-/// Save a `file://` image of pasted HTML (Word's `msohtmlclip` files): a
-/// temporary file is named like a pasted image, any other keeps its name.
 fn save_local_image(
     path: &Path,
     vault_root: &Path,
     note_rel: &str,
     stamp: &str,
-) -> Option<(String, PathBuf)> {
+    options: super::image_import::Options,
+) -> Option<(String, Vec<PathBuf>)> {
     let metadata = std::fs::metadata(path).ok()?;
     if !metadata.is_file() || metadata.len() > MAX_LOCAL_IMAGE_BYTES {
         return None;
@@ -892,40 +922,41 @@ fn save_local_image(
     let bytes = std::fs::read(path).ok()?;
     let extension = path
         .extension()
-        .and_then(|extension| extension.to_str())
+        .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
-    let kind = attachments::sniff_image(&bytes[..bytes.len().min(16)])
+    let kind = attachments::sniff_image(&bytes)
         .or_else(|| extension.as_deref().and_then(ImageKind::from_extension));
-    let cache = attachments::is_clipboard_cache(path);
-    match kind {
-        Some(kind) if cache => {
-            let image = PastedImage {
-                bytes,
-                kind,
-                source: Some(path.to_path_buf()),
-            };
-            attachments::save_pasted_image(vault_root, note_rel, &image, stamp)
-                .ok()
-                .map(|saved| (saved.embed, saved.path))
-        }
-        _ => {
-            let is_image = kind.is_some()
-                || extension
-                    .as_deref()
-                    .is_some_and(attachments::is_image_extension);
-            if !is_image {
-                return None;
-            }
-            let name = match (cache, extension.as_deref()) {
-                (true, Some(extension)) => attachments::pasted_name(stamp, 0, extension),
-                _ => files::sanitize_name(&path.file_name()?.to_string_lossy()),
-            };
-            let folder = attachments::attachment_folder(vault_root, note_rel);
-            files::write_into(&folder, &name, &bytes)
-                .ok()
-                .map(|name| (files::wikilink(&name), folder.join(name)))
-        }
+    if kind.is_none()
+        && !extension
+            .as_deref()
+            .is_some_and(attachments::is_image_extension)
+    {
+        return None;
     }
+    let name = if attachments::is_clipboard_cache(path) {
+        attachments::pasted_name(
+            stamp,
+            0,
+            kind.map(|k| k.extension()).or(extension.as_deref())?,
+        )
+    } else {
+        files::sanitize_name(&path.file_name()?.to_string_lossy())
+    };
+    let folder = attachments::attachment_folder(vault_root, note_rel);
+    super::image_import::save(&folder, &name, &bytes, options)
+        .ok()
+        .map(|saved| {
+            let target = if options.enabled {
+                folder
+                    .join(&saved.name)
+                    .strip_prefix(vault_root)
+                    .map(files::slash_path)
+                    .unwrap_or_else(|_| saved.name.clone())
+            } else {
+                saved.name.clone()
+            };
+            (files::wikilink(&target), saved.paths)
+        })
 }
 
 /// The routed result of converted rich text, fitted to the caret, with its
@@ -965,6 +996,7 @@ fn rich_routed(
             folder: attachments::attachment_folder(cx.vault_root, note_rel),
             vault_root: cx.vault_root.to_path_buf(),
             stamp: cx.stamp.to_string(),
+            image_options: cx.image_options,
         });
     }
     routed
@@ -996,12 +1028,13 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
             html: &job.html,
             base_url: job.base_url.as_deref(),
         });
-        rich_text(
+        rich_text_with(
             converted,
             job.plain.as_deref(),
             &job.vault_root,
             &job.note_rel,
             &job.stamp,
+            job.image_options,
         )
     };
     let convert_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1038,6 +1071,89 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
 mod tests {
     use super::*;
     use crate::note_paste::files::FileAction;
+
+    #[test]
+    fn webp_policy_is_captured_for_raw_file_and_rich_image_jobs() {
+        use super::super::image_import::{fixture_png, Options};
+        use base64::Engine as _;
+        let note = Note::new();
+        let options = Options {
+            quality: 60,
+            keep_original: true,
+            ..Default::default()
+        };
+        let png = fixture_png();
+        let board = Board::with(&[("public.png", &png)]);
+        let mut context = note.cx(Mode::Smart, "", 0..0);
+        context.image_options = options;
+        let routed = route(&board, &context).unwrap();
+        assert!(
+            routed.insert.is_none(),
+            "encoding never runs on the UI thread"
+        );
+        let Some(FollowUp::Image { image_options, .. }) = routed.follow_up else {
+            panic!("raw image job")
+        };
+        assert_eq!(image_options, options);
+        assert!(!note.vault.path().join("attachments").exists());
+
+        let external = tempfile::tempdir().unwrap();
+        let source = external.path().join("image.png");
+        std::fs::write(&source, &png).unwrap();
+        let routed = route(
+            &crate::note_paste::DroppedFiles(vec![source.clone()]),
+            &context,
+        )
+        .unwrap();
+        let Some(FollowUp::Files { plan, .. }) = routed.follow_up else {
+            panic!("import job")
+        };
+        assert_eq!(plan.image_options, options);
+        // A file already inside the vault is still linked without conversion.
+        let existing = note.vault.path().join("old.png");
+        std::fs::write(&existing, &png).unwrap();
+        let before = std::fs::metadata(&existing).unwrap().modified().unwrap();
+        let routed = route(
+            &crate::note_paste::DroppedFiles(vec![existing.clone()]),
+            &context,
+        )
+        .unwrap();
+        assert!(routed.follow_up.is_none());
+        assert_eq!(routed.insert.as_deref(), Some("![[old.png]]"));
+        assert_eq!(std::fs::read(&existing).unwrap(), png);
+        assert_eq!(
+            std::fs::metadata(&existing).unwrap().modified().unwrap(),
+            before
+        );
+
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+        let html = format!(
+            "<p>Data<img src=\"data:image/png;base64,{data}\"> Local<img src=\"{}\"></p>",
+            url::Url::from_file_path(&source).unwrap()
+        );
+        let board = Board::with(&[("public.html", html.as_bytes())]);
+        let routed = route(&board, &context).unwrap();
+        let Some(FollowUp::Rich { job, .. }) = routed.follow_up else {
+            panic!("rich image job")
+        };
+        assert_eq!(job.image_options, options);
+        assert!(!note.vault.path().join("attachments").exists());
+        let done = run_rich_job(job);
+        assert_eq!((done.saved, done.failed, done.files.len()), (2, 0, 4));
+        assert_eq!(done.text.matches(".webp]]").count(), 2);
+        for path in &done.files {
+            let bytes = std::fs::read(path).unwrap();
+            if path.extension().unwrap() == "webp" {
+                assert_eq!(
+                    image::guess_format(&bytes).unwrap(),
+                    image::ImageFormat::WebP
+                );
+            } else {
+                assert_eq!(bytes, png);
+            }
+        }
+        assert_eq!(std::fs::read(source).unwrap(), png);
+    }
     use crate::note_paste::offer::FILE_URL;
     use std::collections::BTreeMap;
 
@@ -1100,6 +1216,7 @@ mod tests {
             selection: Range<usize>,
         ) -> RouteContext<'a> {
             RouteContext {
+                image_options: super::super::image_import::Options::disabled(),
                 mode,
                 source,
                 selection,

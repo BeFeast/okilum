@@ -170,6 +170,7 @@ mod tests {
     }
     fn context(root: &std::path::Path) -> RouteContext<'_> {
         RouteContext {
+            image_options: crate::note_paste::image_import::Options::disabled(),
             mode: router::Mode::Smart,
             source: "",
             selection: 0..0,

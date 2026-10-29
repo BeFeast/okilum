@@ -164,6 +164,66 @@ fn paste_size_stepper(cx: &App) -> impl IntoElement {
         )
 }
 
+fn image_quality_stepper(cx: &App) -> impl IntoElement {
+    let options = reader_ui_state::image_import_options(cx);
+    h_flex()
+        .gap_1()
+        .items_center()
+        .debug_selector(|| "settings-image-quality".into())
+        .child(
+            Button::new("settings-image-quality-less")
+                .ghost()
+                .icon(IconName::Minus)
+                .tooltip("Lower image quality")
+                .disabled(!options.enabled || options.quality <= 1)
+                .on_click(move |_, _, cx| {
+                    let mut current = reader_ui_state::image_import_options(cx);
+                    current.quality = current.quality.saturating_sub(5).max(1);
+                    reader_ui_state::set_image_import_options(current, cx);
+                }),
+        )
+        .child(
+            div()
+                .min_w(px(60.))
+                .text_center()
+                .child(format!("{}%", options.quality)),
+        )
+        .child(
+            Button::new("settings-image-quality-more")
+                .ghost()
+                .icon(IconName::Plus)
+                .tooltip("Higher image quality")
+                .disabled(!options.enabled || options.quality >= 100)
+                .on_click(move |_, _, cx| {
+                    let mut current = reader_ui_state::image_import_options(cx);
+                    current.quality = (current.quality + 5).min(100);
+                    reader_ui_state::set_image_import_options(current, cx);
+                }),
+        )
+}
+
+fn image_import_settings(cx: &App) -> impl IntoElement {
+    let options = reader_ui_state::image_import_options(cx);
+    v_flex().gap_4()
+        .child(setting_row("Convert images to WebP",
+            "Compress pasted and imported images for all vaults. Animations, vectors and unsupported formats keep their original format.",
+            Switch::new("settings-image-webp").accessibility_label("Convert images to WebP")
+                .checked(options.enabled).on_click(|value, _, cx| {
+                    let mut current = reader_ui_state::image_import_options(cx);
+                    current.enabled = *value;
+                    reader_ui_state::set_image_import_options(current, cx);
+                }), cx))
+        .child(setting_row("Image quality", "Higher quality keeps more detail and uses more space.", image_quality_stepper(cx), cx))
+        .child(setting_row("Keep original images",
+            "Save a separate original beside each converted image. Files imported from outside the vault are always left untouched.",
+            Switch::new("settings-image-original").accessibility_label("Keep original images")
+                .checked(options.keep_original).disabled(!options.enabled).on_click(|value, _, cx| {
+                    let mut current = reader_ui_state::image_import_options(cx);
+                    current.keep_original = *value;
+                    reader_ui_state::set_image_import_options(current, cx);
+                }), cx))
+}
+
 pub(super) fn setting_row(
     label: &'static str,
     help: &'static str,
@@ -935,6 +995,7 @@ impl Settings {
                     .into_any_element()
             }
             Section::Editor => content
+                .child(image_import_settings(cx))
                 .child(setting_row(
                     "Ask before copying files larger than",
                     "Pasting or dropping a file larger than this asks whether to copy it into the vault or link to the original.",

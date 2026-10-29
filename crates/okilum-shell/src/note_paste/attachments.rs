@@ -27,12 +27,14 @@ pub enum SaveError {
     NoFreeName,
     /// A copied file couldn't be copied into the vault.
     CopyFile(String, io::Error),
+    Webp(String),
 }
 
 impl SaveError {
     /// What the toast says; nothing was inserted.
     pub fn user_text(&self) -> String {
         match self {
+            Self::Webp(error) => format!("The image wasn’t inserted: {error}"),
             Self::TooLarge => "The image is too large to paste (64 MB at most).".into(),
             Self::Convert => "The image couldn’t be converted to PNG, so it wasn’t pasted.".into(),
             Self::Folder(error) => {
@@ -59,6 +61,7 @@ pub struct SavedImage {
     pub file_name: String,
     /// `![[Pasted image ….png]]`, inserted at the caret.
     pub embed: String,
+    pub paths: Vec<PathBuf>,
 }
 
 /// The folder a pasted image is saved in, for `note_rel` (vault-relative,
@@ -150,6 +153,39 @@ pub fn save_pasted_image(
     image: &PastedImage,
     stamp: &str,
 ) -> Result<SavedImage, SaveError> {
+    save_pasted_image_with(
+        vault_root,
+        note_rel,
+        image,
+        stamp,
+        super::image_import::Options::disabled(),
+    )
+}
+
+pub fn save_pasted_image_with(
+    vault_root: &Path,
+    note_rel: &str,
+    image: &PastedImage,
+    stamp: &str,
+    options: super::image_import::Options,
+) -> Result<SavedImage, SaveError> {
+    if options.enabled {
+        let folder = attachment_folder(vault_root, note_rel);
+        let wanted = pasted_name(stamp, 0, image.kind.extension());
+        let saved = super::image_import::save(&folder, &wanted, &image.bytes, options)
+            .map_err(SaveError::Webp)?;
+        let path = folder.join(&saved.name);
+        let target = path
+            .strip_prefix(vault_root)
+            .map(super::files::slash_path)
+            .unwrap_or_else(|_| saved.name.clone());
+        return Ok(SavedImage {
+            path,
+            embed: embed(&target),
+            file_name: saved.name,
+            paths: saved.paths,
+        });
+    }
     let (bytes, kind) = normalize(image)?;
     let folder = attachment_folder(vault_root, note_rel);
     std::fs::create_dir_all(&folder).map_err(SaveError::Folder)?;
@@ -170,6 +206,7 @@ pub fn save_pasted_image(
             Ok(_) => {
                 sync_folder(&folder);
                 return Ok(SavedImage {
+                    paths: vec![path.clone()],
                     path,
                     embed: embed(&file_name),
                     file_name,

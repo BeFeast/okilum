@@ -8,7 +8,7 @@
 //! content type.
 
 use super::attachments::{pasted_name, sniff_image};
-use super::files::{self, sanitize_name, CopyError};
+use super::files::sanitize_name;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -63,6 +63,16 @@ fn client() -> Option<&'static reqwest::blocking::Client> {
 
 /// Download the image at `url` into `folder` and return the saved file name.
 pub fn save_remote_image(url: &str, folder: &Path, stamp: &str) -> Result<String, DownloadError> {
+    save_remote_image_with(url, folder, stamp, super::image_import::Options::disabled())
+        .map(|saved| saved.name)
+}
+
+pub fn save_remote_image_with(
+    url: &str,
+    folder: &Path,
+    stamp: &str,
+    options: super::image_import::Options,
+) -> Result<super::image_import::Imported, DownloadError> {
     let response = client()
         .ok_or(DownloadError::Request)?
         .get(url)
@@ -91,12 +101,7 @@ pub fn save_remote_image(url: &str, folder: &Path, stamp: &str) -> Result<String
     }
     let extension = image_extension(content_type.as_deref(), &bytes)?;
     let name = file_name(url, extension, stamp);
-    files::write_into(folder, &name, &bytes).map_err(|error| match error {
-        CopyError::Folder(error) | CopyError::Read(error) | CopyError::Write(error) => {
-            DownloadError::Save(error.to_string())
-        }
-        CopyError::NoFreeName => DownloadError::Save("no free name".into()),
-    })
+    super::image_import::save(folder, &name, &bytes, options).map_err(DownloadError::Save)
 }
 
 /// The file extension for a response: from its `image/*` content type, or
@@ -180,6 +185,44 @@ pub fn file_name(url: &str, extension: &str, stamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloaded_images_use_the_same_webp_policy_and_preserve_requested_original() {
+        use std::io::Write as _;
+        let png = super::super::image_import::fixture_png();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let original = png.clone();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut request = [0; 4096];
+            assert!(
+                stream.read(&mut request).unwrap() > 0,
+                "actual HTTP request"
+            );
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", original.len()).unwrap();
+            stream.write_all(&original).unwrap();
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let saved = save_remote_image_with(
+            &format!("http://{address}/picture.png"),
+            temp.path(),
+            "1743",
+            super::super::image_import::Options {
+                keep_original: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        responder.join().unwrap();
+        assert_eq!(saved.name, "picture.webp");
+        assert_eq!(saved.paths.len(), 2);
+        assert_eq!(std::fs::read(&saved.paths[0]).unwrap(), png);
+        assert_eq!(
+            image::guess_format(&std::fs::read(&saved.paths[1]).unwrap()).unwrap(),
+            image::ImageFormat::WebP
+        );
+    }
 
     #[test]
     fn extensions_come_from_the_content_type_or_the_bytes() {
