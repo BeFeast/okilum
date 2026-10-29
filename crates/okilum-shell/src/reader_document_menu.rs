@@ -3,6 +3,7 @@ use super::*;
 use crate::platform::labels::Os;
 
 impl Reader {
+    #[cfg(test)]
     fn document_at_top(&self, cx: &App) -> bool {
         if let Some(offset) = self.source_scroll_offset(cx) {
             return offset.y >= px(-0.5);
