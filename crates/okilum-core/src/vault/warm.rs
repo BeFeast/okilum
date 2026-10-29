@@ -332,14 +332,23 @@ fn cached_vault(
     vault.unreadable = unreadable
         .iter()
         .filter(|item| !super::is_cloud_placeholder_diagnostic(&item.operation, &item.error))
-        .map(|item| UnreadableEntry {
-            path: item.path.clone(),
-            operation: if super::is_note_encoding_diagnostic(&item.operation, &item.error) {
-                super::DECODE_NOTE
-            } else {
-                "previous scan"
-            },
-            error: format!("{}: {}", item.operation, item.error),
+        .map(|item| {
+            let encoding = super::is_note_encoding_diagnostic(&item.operation, &item.error);
+            UnreadableEntry {
+                path: item.path.clone(),
+                operation: if encoding {
+                    super::DECODE_NOTE
+                } else {
+                    "previous scan"
+                },
+                // Encoding is retained as an operation, so its diagnostic is already
+                // self-describing. Republishing it must not add another prefix.
+                error: if encoding {
+                    item.error.clone()
+                } else {
+                    format!("{}: {}", item.operation, item.error)
+                },
+            }
         })
         .collect();
     for entry in entries
@@ -1272,6 +1281,30 @@ pub fn save_provisional(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoding_diagnostics_remain_stable_across_repeated_cache_publications() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let bytes = b"# Synthetic\n\nBefore \xff After\n";
+        let path = root.join("Damaged.md");
+        std::fs::write(&path, bytes).unwrap();
+        let (_, mut snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        let diagnostic = snapshot.unreadable[0].error.clone();
+        for _ in 0..8 {
+            let restored = snapshot.vault();
+            assert!(restored.note_encoding_damaged("Damaged.md"));
+            assert_eq!(restored.unreadable[0].error, diagnostic);
+            snapshot.unreadable = cached_availability(&restored);
+            snapshot.save(&cache).unwrap();
+            snapshot = Snapshot::load(&cache, &root).unwrap();
+            assert_eq!(snapshot.unreadable[0].error, diagnostic);
+            assert_eq!(snapshot.sources().unwrap()["Damaged.md"], bytes);
+        }
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 
     #[test]
     fn malformed_utf8_is_displayed_and_indexed_without_rewriting_its_raw_snapshot() {
