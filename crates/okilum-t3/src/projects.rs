@@ -238,7 +238,12 @@ impl Project {
         let manifest_manager = &doc["t3"]["manager"];
         // A present role registry is authoritative, including explicit not-started.
         let manager = match std::fs::read_to_string(folder.join("ops/thread-ids.md")) {
-            Ok(registry) => manager_role(&registry)?,
+            Ok(registry) => manager_role(&registry).with_context(|| {
+                format!(
+                    "Check Manager registry {}",
+                    folder.join("ops/thread-ids.md").display()
+                )
+            })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 match manifest_manager.get("thread_id").and_then(|v| v.as_str()) {
                     Some(id) => Manager::Thread(thread_id(id)?),
@@ -303,17 +308,30 @@ fn manager_cell(source: &str) -> Result<std::ops::Range<usize>> {
 /// Exact role + leading inline-code id; links and historical IDs elsewhere in
 /// the cell cannot select a thread. Duplicate roles are explicit ambiguity.
 pub fn manager_role(registry: &str) -> Result<Manager> {
-    let cell = registry[manager_cell(registry)?].trim();
+    let range = manager_cell(registry)?;
+    let line = registry[..range.start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let cell = registry[range].trim();
     if cell == "— (not started)" {
         return Ok(Manager::NotStarted);
     }
-    let value = cell
-        .strip_prefix('`')
-        .context("Manager cell must start with an inline-code thread id")?;
-    let (id, _) = value
-        .split_once('`')
-        .context("unterminated Manager thread id")?;
-    Ok(Manager::Thread(thread_id(id)?))
+    let parse = || -> Result<Manager> {
+        let value = cell
+            .strip_prefix('`')
+            .context("Manager cell must start with an inline-code thread id")?;
+        let (id, _) = value
+            .split_once('`')
+            .context("unterminated Manager thread id")?;
+        Ok(Manager::Thread(thread_id(id)?))
+    };
+    parse().with_context(|| {
+        format!(
+            "Manager row, line {line}: start the thread cell with the current thread ID in backticks, then any title or link. Expected: | Manager | `mcp:<thread-id>` … |"
+        )
+    })
 }
 
 /// Replace only the current Manager cell, preserving all unrelated source bytes.
@@ -622,6 +640,47 @@ mod tests {
         ] {
             assert!(manager_role(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn malformed_manager_cell_names_the_registry_row_and_expected_form() {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("Synthetic project");
+        let ops = folder.join("ops");
+        std::fs::create_dir_all(&ops).unwrap();
+        std::fs::write(
+            ops.join("project.yaml"),
+            "name: Synthetic\nkind: knowledge\n",
+        )
+        .unwrap();
+        let registry = "# Synthetic registry 🧠\r\n\r\n```markdown\r\n| Manager | `mcp:example` |\r\n```\r\n| Role | Thread |\r\n| --- | --- |\r\n| Manager | [Current manager](t3-thread://example) |\r\n";
+        let path = ops.join("thread-ids.md");
+        std::fs::write(&path, registry).unwrap();
+        let error = Project::read(&folder).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains(path.to_str().unwrap()), "{detail}");
+        assert!(detail.contains("Manager row, line 8"), "{detail}");
+        assert!(
+            detail.contains("current thread ID in backticks"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("| Manager | `mcp:<thread-id>` … |"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("must start with an inline-code thread id"),
+            "{detail}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), registry.as_bytes());
+        let corrected = registry.replace(
+            "[Current manager](t3-thread://example)",
+            "`mcp:current` [Current manager](t3-thread://example)",
+        );
+        assert_eq!(
+            manager_role(&corrected).unwrap(),
+            Manager::Thread("mcp:current".into())
+        );
     }
 
     #[test]
