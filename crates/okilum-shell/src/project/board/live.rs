@@ -131,7 +131,7 @@ mod tests {
     use okilum_t3::board::Binding;
     fn fixture() -> (Scope, ThreadSummary) {
         let scope = Binding::parse(include_str!(
-            "../../../../../docs/examples/okilum-board.yaml"
+            "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
         ))
         .unwrap()
         .issues
