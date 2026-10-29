@@ -7,6 +7,7 @@ use comrak::{format_html_with_plugins, parse_document, Arena, Options};
 use regex::Regex;
 
 pub mod block_embed;
+pub mod image_reference;
 
 pub const WIKI_SCHEME: &str = "okilum://open/";
 pub const UNRESOLVED_SCHEME: &str = "okilum://unresolved/";

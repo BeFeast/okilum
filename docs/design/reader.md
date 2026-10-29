@@ -928,3 +928,22 @@ The document title receives space before optional header controls. At narrow wid
 ### Edit pencil (#871, Oleg 2026-10-09)
 
 The note-header pencil toggles Edit/Read and is a primary action: optional controls overflow first; the pencil stays visible alongside Read. Its label and accessible name are Edit. Edit restores the last Live Preview/Source choice. Escape dismisses local transient UI first, then returns to Reader through the existing safe save/conflict path. Rename remains title click, F2 and the document menu.
+
+### Image file actions (#1897)
+
+Reader and Live Preview image blocks offer a context menu for the image itself:
+Show in Finder / Show in Explorer / Show in folder, Open in default app, Show in
+sidebar, Copy path and Copy image. The source editor offers the same actions when
+its caret is inside a Markdown image or image wikilink embed. Cmd-click on Mac
+and Ctrl-click elsewhere opens the image in the system default app. Ordinary
+Live Preview presses still return to source editing.
+
+The menu uses the rendered image's captured resolver identity. Missing or ambiguous
+images have disabled actions and an explanation. A cloud placeholder can be revealed
+and explicitly downloaded; Open and Copy image remain disabled until download.
+Remote HTTP(S) images offer Open in browser and Copy image only. Copy runs in the
+background through bounded local reads or the existing image downloader, and never
+creates a vault attachment. Commands captured for a note cannot act after changing
+that note or its publication generation. Source-menu construction reads an observed
+snapshot rather than re-entering EditorState. Brain previews retain their own image
+authority. Native file-manager/default-app acceptance is recorded per OS and build.
