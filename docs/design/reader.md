@@ -36,7 +36,9 @@ original combined titlebar and document controls:
 - **Document header (48 px, pinned).** Back/Forward and Reveal in sidebar precede folder breadcrumbs
   and the note title (#1756). Clicking a folder breadcrumb reveals and expands
   that folder in the tree; Reveal opens a collapsed sidebar and selects the note.
-  The Reveal button is disabled for a document outside the current tree. Clicking the title renames inline. Read/Edit use book/pencil;
+  The Reveal button is disabled for a document outside the current tree. At narrow
+  widths it yields to the title; Reveal remains in note More. Clicking the title
+  renames inline. Read/Edit use book/pencil;
   Edit also has Live Preview/Source (eye/code). Find, width, Maximize/Restore
   and note More follow (#1909). Maximize sits beside width in this document
   header; its shortcut and reversible panel state remain unchanged. Save

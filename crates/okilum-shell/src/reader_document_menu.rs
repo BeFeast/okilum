@@ -103,8 +103,14 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let fixed_width = 240. + if dirty { 32. } else { 0. };
+        let fixed_width = 208. + if dirty { 32. } else { 0. };
         let mut spare = document_width - fixed_width - title_width - compact_parent;
+        // Reveal also lives in Document actions. Let it yield its toolbar slot
+        // before the title, while Maximize remains directly available (#1909).
+        let show_reveal = spare >= 32.;
+        if show_reveal {
+            spare -= 32.;
+        }
         // One toggle to the other editor mode (#992).
         let show_presentation = !is_file && self.editing.is_some() && spare >= 32.;
         if show_presentation {
@@ -177,17 +183,21 @@ impl Reader {
                 .disabled(self.navigation.history_ix + 1 >= self.navigation.history.len())
                 .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
             )
-            .child(
-                reader_icon_button(
-                    "reader-reveal-current",
-                    Icon::default().path(brand::READER_FOCUS_ICON),
-                    reader_shortcuts::hint("Reveal in sidebar", &FocusCurrentFolder, cx),
-                    cx,
+            .when(show_reveal, |row| {
+                row.child(
+                    reader_icon_button(
+                        "reader-reveal-current",
+                        Icon::default().path(brand::READER_FOCUS_ICON),
+                        reader_shortcuts::hint("Reveal in sidebar", &FocusCurrentFolder, cx),
+                        cx,
+                    )
+                    .debug_selector(|| "reader-reveal-current".into())
+                    .disabled(!self.tree.can_reveal(self.selected_file()))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx)),
+                    ),
                 )
-                .debug_selector(|| "reader-reveal-current".into())
-                .disabled(!self.tree.can_reveal(self.selected_file()))
-                .on_click(cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx))),
-            )
+            })
             .child(self.render_breadcrumbs(collapse_parents, cx));
         if rel.is_empty() {
             return row;
@@ -855,10 +865,12 @@ mod tests {
             );
             assert!(title.size.width > px(180.), "positive title-space control");
             assert!(visual.debug_bounds("reader-edit").is_none());
+            assert!(visual.debug_bounds("reader-reveal-current").is_none());
             for id in [
                 "reader-history-back",
                 "reader-history-forward",
                 "reader-read",
+                "reader-maximize-note",
                 "document-more",
             ] {
                 let bounds = visual.debug_bounds(id).unwrap();
@@ -882,6 +894,12 @@ mod tests {
             }
             reader.read_with(visual, |this, cx| assert!(this.source_is_dirty(cx)));
         }
+        visual.simulate_resize(size(px(1400.), px(900.)));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("reader-reveal-current").is_some(),
+            "Reveal returns when there is room beside the title"
+        );
     }
 
     /// #1123: a folder without notes opens as an empty vault that invites
