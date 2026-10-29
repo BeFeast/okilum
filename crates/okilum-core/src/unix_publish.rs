@@ -71,6 +71,19 @@ fn no_replace_with(
         Err(e) if unsupported(e) => {}
         Err(e) => return Err(e),
     }
+    no_replace_compatible(a, source, b, target)
+}
+
+/// Exclusive link-based publication when flag support was already refused.
+/// Callers must handle both names remaining if source unlink fails.
+pub fn no_replace_compatible(
+    source_dir: impl AsFd,
+    source: &OsStr,
+    target_dir: impl AsFd,
+    target: &OsStr,
+) -> Result<()> {
+    let a = source_dir.as_fd();
+    let b = target_dir.as_fd();
     let metadata = rustix::fs::statat(a, source, AtFlags::SYMLINK_NOFOLLOW)?;
     if rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Directory {
         match rustix::fs::statat(b, target, AtFlags::SYMLINK_NOFOLLOW) {
