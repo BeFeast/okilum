@@ -109,6 +109,9 @@ const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
 
 fn file_access_notice(error: &anyhow::Error) -> &'static str {
+    if error.is::<okilum_core::file_editor::PublishedSaveNeedsAttention>() {
+        return "The save was published, but recovery changed during verification. Your draft is preserved. Inspect the file before saving again.";
+    }
     #[cfg(unix)]
     if error.chain().any(|cause| {
         cause

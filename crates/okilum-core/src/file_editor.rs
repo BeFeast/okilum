@@ -14,6 +14,24 @@ pub(crate) use directory::open_regular_at;
 use directory::Directory;
 #[cfg(unix)]
 use rustix::fs::RenameFlags;
+/// The public note was written, but its preimage changed before verification.
+/// Distinct from Conflict: callers must not claim that nothing was published.
+#[derive(Debug)]
+pub struct PublishedSaveNeedsAttention;
+impl std::fmt::Display for PublishedSaveNeedsAttention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The save was published, but recovery changed during verification. Your draft and recovery were retained; inspect the file before saving again.")
+    }
+}
+impl std::error::Error for PublishedSaveNeedsAttention {}
+#[cfg(unix)]
+fn missing(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| {
+        e.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT)
+            || e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    })
+}
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
@@ -554,6 +572,11 @@ impl FileEditor {
             Err(error) => return Err(error.into()),
         }
         directory.sync_all()?;
+        #[cfg(test)]
+        if compatible && network_save_tests::ALTER_PREIMAGE_AFTER_PUBLISH.with(|v| v.replace(false))
+        {
+            fs::write(&backup, b"external preimage write")?;
+        }
         let displaced =
             open_regular_at(directory, backup.file_name().unwrap()).and_then(|mut file| {
                 // A racing writer may not have synced its replacement yet.
@@ -567,7 +590,7 @@ impl FileEditor {
             if compatible {
                 // Plain rename cannot safely roll back a third-party change.
                 // Both the draft and pending displaced preimage stay protected.
-                return Ok(Save::Conflict);
+                return Err(PublishedSaveNeedsAttention.into());
             }
             // A racing replacement is restored, and the displaced version from
             // this second exchange also remains on disk. Never delete either.
@@ -606,25 +629,79 @@ impl FileEditor {
         let note = self.draft.path.file_name().unwrap();
         let old_name = backup.file_name().unwrap();
         let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
-        let (current, _) = self.directory.read(note)?;
-        if current != self.draft.base {
-            unlinkat(directory, old_name, AtFlags::empty())?;
+        // A private UUID name alone never authorizes deletion: exact bytes
+        // and the opened inode are rechecked before cleanup.
+        let clean = |name: &std::ffi::OsStr, expected: &[u8]| -> Result<()> {
+            use std::os::unix::fs::MetadataExt;
+            let fd = match openat(
+                directory,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(fd) => fd,
+                Err(rustix::io::Errno::NOENT) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+            let mut file = File::from(fd);
+            let metadata = file.metadata()?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                metadata.is_file() && bytes == expected,
+                "Recovery file changed; retained for inspection"
+            );
+            let current = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
+            anyhow::ensure!(
+                current.st_dev == metadata.dev() && current.st_ino == metadata.ino(),
+                "Recovery file replaced; retained for inspection"
+            );
+            unlinkat(directory, name, AtFlags::empty())?;
+            Ok(())
+        };
+        let current = match self.directory.read(note) {
+            Ok((text, _)) => Some(text),
+            Err(e) if missing(&e) => None,
+            Err(e) => return Err(e),
+        };
+        if current.as_deref() != Some(self.draft.base.as_str()) {
+            clean(old_name, self.draft.text.as_bytes())?;
             return Ok(false);
         }
         renameat(directory, old_name, directory, prepared.as_str())?;
         // No symlink following; private UUID backup name is created exclusively.
-        linkat(directory, note, directory, old_name, AtFlags::empty())?;
-        let mut original = File::from(openat(
+        match linkat(directory, note, directory, old_name, AtFlags::empty()) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::NOENT) => {
+                clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        #[cfg(test)]
+        if network_save_tests::DELETE_AFTER_LINK.with(|v| v.replace(false)) {
+            unlinkat(directory, note, AtFlags::empty())?;
+        }
+        let original = openat(
             directory,
             note,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
-        )?);
+        );
+        let mut original = match original {
+            Ok(fd) => File::from(fd),
+            Err(rustix::io::Errno::NOENT) => {
+                clean(old_name, self.draft.base.as_bytes())?;
+                clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
         let mut bytes = Vec::new();
         original.read_to_end(&mut bytes)?;
         if bytes != self.draft.base.as_bytes() {
-            unlinkat(directory, old_name, AtFlags::empty())?;
-            unlinkat(directory, prepared.as_str(), AtFlags::empty())?;
+            clean(old_name, self.draft.base.as_bytes())?;
+            clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
             return Ok(false);
         }
         directory.sync_all()?;
@@ -1382,6 +1459,41 @@ mod windows_editor_tests {
 #[cfg(all(test, unix))]
 mod network_save_tests {
     use super::*;
+    thread_local! {
+        pub(super) static DELETE_AFTER_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static ALTER_PREIMAGE_AFTER_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[test]
+    fn unsupported_exchange_handles_deletion_and_reports_publication_truthfully() {
+        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            for published in [false, true] {
+                crate::unix_publish::inject(error, || {
+                    let root = tempfile::tempdir().unwrap();
+                    let note = root.path().join("note.md");
+                    fs::write(&note, b"base").unwrap();
+                    let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+                    editor.set_text("mine".into()).unwrap();
+                    DELETE_AFTER_LINK.with(|v| v.set(!published));
+                    ALTER_PREIMAGE_AFTER_PUBLISH.with(|v| v.set(published));
+                    let result = editor.save();
+                    if published {
+                        assert!(result.unwrap_err().is::<PublishedSaveNeedsAttention>());
+                        assert_eq!(fs::read(&note).unwrap(), b"mine");
+                    } else {
+                        assert_eq!(result.unwrap(), Save::Conflict);
+                        assert!(!note.exists());
+                        assert!(fs::read_dir(root.path()).unwrap().all(|e| !e
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".okilum-save-")));
+                    }
+                    assert_eq!(editor.text(), "mine");
+                    assert!(editor.dirty());
+                });
+            }
+        }
+    }
     #[test]
     fn unsupported_exchange_rechecks_external_write_at_publication_boundary() {
         for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
