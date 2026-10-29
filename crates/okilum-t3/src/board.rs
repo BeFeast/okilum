@@ -7,6 +7,7 @@ use std::{
     path::{Component, Path},
     time::Duration,
 };
+pub mod manage;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -225,7 +226,7 @@ impl Binding {
                         .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))),
             "Expected a Forgejo owner/repository URL"
         );
-        ensure!(!raw_issues.is_empty(), "Board stage has no explicit issues");
+        // An explicitly created empty Board has no cards until its first add.
         ensure!(
             binding.stuck_after_seconds > 0,
             "stuck_after_seconds must be positive"

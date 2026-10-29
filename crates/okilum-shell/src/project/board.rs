@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod appearance;
 mod live;
+mod manage;
 
 type IssueReader = fn(&Binding) -> Vec<(u64, Result<okilum_t3::board::Issue, String>)>;
 
@@ -25,6 +26,8 @@ pub(crate) struct Board {
     filter: Option<String>,
     selected: Option<u64>,
     notice: Option<String>,
+    editor: Option<manage::Editor>,
+    editor_loading: bool,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -105,6 +108,8 @@ impl Board {
             filter: None,
             selected: None,
             notice: None,
+            editor: None,
+            editor_loading: false,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -778,7 +783,10 @@ impl Board {
     }
 }
 impl Render for Board {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.editor.is_some() {
+            return self.render_management(window, cx);
+        }
         let colors = brand::palette(cx);
         let mut root = v_flex()
             .id("project-board")
@@ -808,6 +816,16 @@ impl Render for Board {
             );
         }
         let Some(binding) = self.binding.as_ref() else {
+            if !self.binding_loading && self.binding_error.is_none() {
+                root = root.child(
+                    v_flex().flex_1().items_center().justify_center().gap_3()
+                        .debug_selector(|| "board-empty".into())
+                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Keep project work in view"))
+                        .child(div().text_size(px(13.)).text_color(colors.text_muted).child("A Board brings the project's issues, expected results and executors together."))
+                        .child(Button::new("board-create").debug_selector(|| "board-create".into()).primary().label("Create board")
+                            .disabled(self.editor_loading).on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))))
+                );
+            }
             return root.into_any_element();
         };
         if let Some(attention) = self.attention(binding, cx) {
@@ -955,6 +973,17 @@ impl Render for Board {
                 cx.notify();
             }));
         let mut end = v_flex().w(px(36.)).flex_none().gap_2();
+        end = end.child(
+            Button::new("board-manage")
+                .debug_selector(|| "board-manage".into())
+                .ghost()
+                .small()
+                .child(appearance::icon("settings-2", colors.text_muted))
+                .tooltip("Manage board")
+                .accessibility_label("Manage board")
+                .disabled(self.editor_loading)
+                .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
+        );
         if binding.attention.is_empty() {
             end = end.child(self.agent_filter(binding, true, cx));
         }
