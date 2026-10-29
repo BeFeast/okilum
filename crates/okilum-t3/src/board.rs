@@ -344,8 +344,8 @@ impl Binding {
         binding.attention = healthy_attention;
         // The current registry supersedes literal IDs retained in old cards.
         // An unreadable registry cannot establish live executor ownership.
-        let registry = match crate::executors::Registry::read(area) {
-            Ok(registry) => Some(registry),
+        let registry = match crate::executors::Registry::read_optional(area) {
+            Ok(registry) => registry,
             Err(error) => {
                 binding.registry_error = Some(format!("{error:#}"));
                 None

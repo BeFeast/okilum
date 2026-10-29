@@ -527,6 +527,16 @@ fn current_registry_rotation_supersedes_stale_card_ids() {
     let unknown = Binding::read(&area).unwrap().unwrap();
     assert!(unknown.issues[0].agent_thread_id.is_none());
     assert!(unknown.registry_error.is_some());
+    std::fs::remove_file(area.join("ops/thread-ids.md")).unwrap();
+    let unregistered = Binding::read(&area).unwrap().unwrap();
+    assert!(
+        unregistered.registry_error.is_none(),
+        "absence is a normal project state"
+    );
+    assert!(unregistered
+        .issues
+        .iter()
+        .all(|scope| scope.agent_thread_id.is_none() && !scope.current_task));
     std::fs::remove_dir_all(area).unwrap();
 }
 

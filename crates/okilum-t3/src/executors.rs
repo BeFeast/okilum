@@ -26,12 +26,31 @@ pub struct Registry {
 
 impl Registry {
     pub fn read(area: &Path) -> Result<Self> {
+        Self::read_optional(area)?.context("This area has no ops/thread-ids.md executor registry")
+    }
+
+    /// Absence is a normal project state; a present invalid/unreadable registry
+    /// remains an error and cannot establish live executor ownership.
+    pub fn read_optional(area: &Path) -> Result<Option<Self>> {
+        let path = area.join("ops/thread-ids.md");
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && std::fs::symlink_metadata(&path)
+                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("Cannot read this area's ops/thread-ids.md executor registry");
+            }
+        };
         let mut source = String::new();
-        std::fs::File::open(area.join("ops/thread-ids.md"))
-            .context("Cannot read this area's ops/thread-ids.md executor registry")?
-            .take((MAX_REGISTRY_BYTES + 1) as u64)
+        file.take((MAX_REGISTRY_BYTES + 1) as u64)
             .read_to_string(&mut source)?;
-        Self::parse(&source)
+        Self::parse(&source).map(Some)
     }
 
     /// Supported existing registry: one Current threads / Текущие threads

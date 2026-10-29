@@ -395,6 +395,43 @@ fn healthy_and_initial_board_sources_are_silent() {
     assert!(problem_line(Vec::new()).is_none());
 }
 
+#[gpui::test]
+fn board_without_registered_agents_does_not_request_a_separate_t3_connection(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let area = tempfile::tempdir().unwrap();
+    let mut binding = Binding::parse(include_str!(
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+    ))
+    .unwrap();
+    for scope in &mut binding.issues {
+        scope.agent_thread_id = None;
+        scope.current_task = false;
+    }
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| {
+            let mut board = Board::with_reader(area.path().into(), |_| Vec::new(), window, cx);
+            board.binding = Some(binding);
+            board.active = true;
+            board.refresh(window, cx);
+            assert!(board.snapshot.t3.last_success.is_some());
+            assert!(board.snapshot.t3.error.is_none());
+            assert!(
+                board.manager.is_none(),
+                "no independent Manager/MCP sign-in is needed"
+            );
+            board
+        });
+        Root::new(board, window, cx)
+    });
+    visual.run_until_parked();
+    let board = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Board>().unwrap()
+    });
+    board.read_with(visual, |board, _| assert!(board.problem(now()).is_none()));
+}
+
 #[test]
 fn failed_or_stale_sources_share_one_line_without_claiming_a_new_read() {
     let mut forgejo = Source {
@@ -408,8 +445,7 @@ fn failed_or_stale_sources_share_one_line_without_claiming_a_new_read() {
     assert_eq!(failure.1, Some(100));
     assert!(source_problem("Forgejo", &forgejo, 30, 160).is_none());
     let line = problem_line(vec![failure]).unwrap();
-    assert!(line.starts_with("T3 unavailable · data from "));
-    assert!(!line.contains("transport"));
+    assert!(line.starts_with("T3: internal transport detail second line · data from "));
     assert!(!line.contains('\n'));
     forgejo.accept(Ok(vec![()]), 160);
     let stale = source_problem("T3", &t3, 30, 161).unwrap();
@@ -420,7 +456,8 @@ fn failed_or_stale_sources_share_one_line_without_claiming_a_new_read() {
         "T3 out of date"
     );
     let line = problem_line(vec![("Board unavailable".into(), Some(90)), stale]).unwrap();
-    assert!(line.starts_with("Board unavailable · T3 unavailable · data from "));
+    assert!(line
+        .starts_with("Board unavailable · T3: internal transport detail second line · data from "));
     assert_eq!(t3.last_success, Some(100));
 }
 

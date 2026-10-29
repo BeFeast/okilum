@@ -55,13 +55,19 @@ fn source_problem<T>(
     let stale = source
         .last_success
         .is_some_and(|read| at.saturating_sub(read) > interval.saturating_mul(2));
-    if source.error.is_some() {
-        Some((format!("{name} unavailable"), source.last_success))
+    if let Some(error) = &source.error {
+        Some((
+            format!("{name}: {}", status_detail(error)),
+            source.last_success,
+        ))
     } else if stale {
         Some((format!("{name} out of date"), source.last_success))
     } else {
         None
     }
+}
+fn status_detail(detail: &str) -> String {
+    detail.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 fn problem_line(problems: Vec<(String, Option<u64>)>) -> Option<String> {
     if problems.is_empty() {
@@ -138,6 +144,16 @@ impl Board {
                             this.selected = None;
                         }
                         if let Some(next) = &binding {
+                            if next.registry_error.as_ref()
+                                != this
+                                    .binding
+                                    .as_ref()
+                                    .and_then(|old| old.registry_error.as_ref())
+                            {
+                                if let Some(detail) = &next.registry_error {
+                                    eprintln!("Board executor registry error: {detail}");
+                                }
+                            }
                             if this
                                 .binding
                                 .as_ref()
@@ -237,6 +253,10 @@ impl Board {
         }; // Coalesce overlapping refreshes.
         let forgejo_ticket = ticket.clone();
         let read_issues = self.read_issues;
+        let needs_threads = binding
+            .issues
+            .iter()
+            .any(|scope| live::thread_id(scope).is_some());
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -248,28 +268,60 @@ impl Board {
             });
         })
         .detach();
-        let connection = self.manager.as_ref().and_then(|manager| {
-            let manager = manager.read(cx);
-            Some((
-                manager.gateway.clone()?,
-                manager.binding.as_ref()?.executor.project_id.clone(),
-            ))
-        });
+        // A project without registered agents needs only Forgejo/notes. Do not
+        // report a transport failure for a source the Board does not use.
+        if !needs_threads {
+            self.snapshot.threads(&ticket, Ok(Vec::new()), now());
+            cx.notify();
+            return;
+        }
+        let connection =
+            self.manager
+                .as_ref()
+                .ok_or_else(|| "The Manager connection is still loading".to_owned())
+                .and_then(|manager| {
+                    let manager = manager.read(cx);
+                    let binding = manager.binding.as_ref().ok_or_else(|| {
+                        "No T3 project is configured for Board executors".to_owned()
+                    })?;
+                    let project = if binding.executor.project_id.is_empty() {
+                        binding
+                            .manager
+                            .project_id
+                            .clone()
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| {
+                                "No T3 project is configured for Board executors".to_owned()
+                            })?
+                    } else {
+                        binding.executor.project_id.clone()
+                    };
+                    Ok((
+                        manager.gateway.clone().ok_or_else(|| {
+                            manager.error.clone().unwrap_or_else(|| {
+                                "The Manager connection is not connected; open Settings › T3".into()
+                            })
+                        })?,
+                        project,
+                    ))
+                });
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    connection
-                        .ok_or_else(|| {
-                            "T3 not connected; Forgejo and notes remain available".to_owned()
-                        })
-                        .and_then(|(gateway, project)| {
-                            gateway.list_threads(&project).map_err(|e| e.to_string())
-                        })
+                    connection.and_then(|(gateway, project)| {
+                        gateway.list_threads(&project).map_err(|e| e.to_string())
+                    })
                 })
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
+                let previous = this.snapshot.t3.error.clone();
                 this.snapshot.threads(&ticket, result, now());
+                if this.snapshot.t3.error != previous {
+                    if let Some(detail) = &this.snapshot.t3.error {
+                        eprintln!("Board T3 error: {detail}");
+                    }
+                }
                 cx.notify();
             });
         })
@@ -281,12 +333,15 @@ impl Board {
         if let Some(detail) = &self.binding_error {
             problems.push((format!("Board: {detail}"), self.binding_read));
         }
-        if self
+        if let Some(detail) = self
             .binding
             .as_ref()
-            .is_some_and(|binding| binding.registry_error.is_some())
+            .and_then(|binding| binding.registry_error.as_ref())
         {
-            problems.push(("Executor registry unavailable".into(), self.binding_read));
+            problems.push((
+                format!("Executor registry: {}", status_detail(detail)),
+                self.binding_read,
+            ));
         }
         let interval = self
             .binding
