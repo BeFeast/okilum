@@ -541,19 +541,31 @@ impl FileEditor {
         let parent = self.draft.path.parent().unwrap();
         let directory = &self.directory.file;
         let (mut temp, name) = self.directory.temporary()?;
-        temp.set_permissions(metadata.permissions())?;
-        temp.write_all(self.draft.text.as_bytes())?;
-        temp.sync_all()?;
-        let backup = parent.join(name);
-        directory.sync_all()?;
-        let history = crate::source_history::Preimage::begin(
-            self.journal.parent().unwrap(),
-            &self.draft.path,
-            &self.draft.base,
-            &backup,
-        )?;
-        self.directory.validate(parent)?;
-        before_exchange();
+        let backup = parent.join(&name);
+        let preparation: Result<_> = (|| {
+            temp.set_permissions(metadata.permissions())?;
+            temp.write_all(self.draft.text.as_bytes())?;
+            temp.sync_all()?;
+            directory.sync_all()?;
+            let history = crate::source_history::Preimage::begin(
+                self.journal.parent().unwrap(),
+                &self.draft.path,
+                &self.draft.base,
+                &backup,
+            )?;
+            self.directory.validate(parent)?;
+            before_exchange();
+            Ok(history)
+        })();
+        let history = match preparation {
+            Ok(history) => history,
+            Err(error) => {
+                return Err(with_cleanup(
+                    error,
+                    clean_owned_temp(directory, name.as_ref(), &temp),
+                ))
+            }
+        };
         let mut compatible = false;
         match renameat_with(
             directory,
@@ -569,7 +581,12 @@ impl FileEditor {
                     return Ok(Save::Conflict);
                 }
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(with_cleanup(
+                    error.into(),
+                    clean_owned_temp(directory, name.as_ref(), &temp),
+                ))
+            }
         }
         directory.sync_all()?;
         #[cfg(test)]
@@ -625,88 +642,142 @@ impl FileEditor {
     /// last check→rename window; no post-publication rollback is attempted.
     #[cfg(unix)]
     fn compatible_replace(&self, directory: &File, backup: &Path) -> Result<bool> {
-        use rustix::fs::{linkat, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
+        use rustix::fs::{linkat, openat, renameat, AtFlags, Mode, OFlags};
         let note = self.draft.path.file_name().unwrap();
         let old_name = backup.file_name().unwrap();
         let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
-        // A private UUID name alone never authorizes deletion: exact bytes
-        // and the opened inode are rechecked before cleanup.
-        let clean = |name: &std::ffi::OsStr, expected: &[u8]| -> Result<()> {
-            let fd = match openat(
-                directory,
-                name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                Ok(fd) => fd,
-                Err(rustix::io::Errno::NOENT) => return Ok(()),
-                Err(e) => return Err(e.into()),
-            };
-            let mut file = File::from(fd);
-            let metadata = file.metadata()?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            anyhow::ensure!(
-                metadata.is_file() && bytes == expected,
-                "Recovery file changed; retained for inspection"
-            );
-            let current = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
-            anyhow::ensure!(
-                crate::unix_publish::same_identity(&current, &metadata),
-                "Recovery file replaced; retained for inspection"
-            );
-            unlinkat(directory, name, AtFlags::empty())?;
-            Ok(())
-        };
         let current = match self.directory.read(note) {
             Ok((text, _)) => Some(text),
             Err(e) if missing(&e) => None,
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Err(with_cleanup(
+                    e,
+                    clean_recovery_file(directory, old_name, self.draft.text.as_bytes()),
+                ))
+            }
         };
         if current.as_deref() != Some(self.draft.base.as_str()) {
-            clean(old_name, self.draft.text.as_bytes())?;
+            clean_recovery_file(directory, old_name, self.draft.text.as_bytes())?;
             return Ok(false);
         }
-        renameat(directory, old_name, directory, prepared.as_str())?;
-        // No symlink following; private UUID backup name is created exclusively.
-        match linkat(directory, note, directory, old_name, AtFlags::empty()) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::NOENT) => {
-                clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
+        if let Err(error) = renameat(directory, old_name, directory, prepared.as_str()) {
+            return Err(with_cleanup(
+                error.into(),
+                clean_recovery_file(directory, old_name, self.draft.text.as_bytes()),
+            ));
+        }
+        let mut linked = false;
+        let mut publication_attempted = false;
+        let result = (|| -> Result<bool> {
+            // No symlink following; private UUID backup name is created exclusively.
+            #[cfg(test)]
+            let link_error = network_save_tests::LINK_ERROR.with(|v| v.take());
+            #[cfg(not(test))]
+            let link_error: Option<rustix::io::Errno> = None;
+            match link_error.map_or_else(
+                || linkat(directory, note, directory, old_name, AtFlags::empty()),
+                Err,
+            ) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::NOENT) => {
+                    clean_recovery_file(
+                        directory,
+                        std::ffi::OsStr::new(&prepared),
+                        self.draft.text.as_bytes(),
+                    )?;
+                    return Ok(false);
+                }
+                Err(e) => return Err(e.into()),
+            }
+            linked = true;
+            #[cfg(test)]
+            if let Some(error) = network_save_tests::ERROR_AFTER_LINK.with(|v| v.take()) {
+                return Err(error.into());
+            }
+            #[cfg(test)]
+            if network_save_tests::DELETE_AFTER_LINK.with(|v| v.replace(false)) {
+                rustix::fs::unlinkat(directory, note, AtFlags::empty())?;
+            }
+            let original = openat(
+                directory,
+                note,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            );
+            let mut original = match original {
+                Ok(fd) => File::from(fd),
+                Err(rustix::io::Errno::NOENT) => {
+                    clean_recovery_file(directory, old_name, self.draft.base.as_bytes())?;
+                    clean_recovery_file(
+                        directory,
+                        std::ffi::OsStr::new(&prepared),
+                        self.draft.text.as_bytes(),
+                    )?;
+                    return Ok(false);
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let mut bytes = Vec::new();
+            original.read_to_end(&mut bytes)?;
+            if bytes != self.draft.base.as_bytes() {
+                clean_recovery_file(directory, old_name, self.draft.base.as_bytes())?;
+                clean_recovery_file(
+                    directory,
+                    std::ffi::OsStr::new(&prepared),
+                    self.draft.text.as_bytes(),
+                )?;
                 return Ok(false);
             }
-            Err(e) => return Err(e.into()),
-        }
-        #[cfg(test)]
-        if network_save_tests::DELETE_AFTER_LINK.with(|v| v.replace(false)) {
-            unlinkat(directory, note, AtFlags::empty())?;
-        }
-        let original = openat(
-            directory,
-            note,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        );
-        let mut original = match original {
-            Ok(fd) => File::from(fd),
-            Err(rustix::io::Errno::NOENT) => {
-                clean(old_name, self.draft.base.as_bytes())?;
-                clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
-                return Ok(false);
+            directory.sync_all()?;
+            self.directory.validate(self.draft.path.parent().unwrap())?;
+            publication_attempted = true;
+            renameat(directory, prepared.as_str(), directory, note)?;
+            Ok(true)
+        })();
+        match result {
+            Ok(true) => Ok(true),
+            outcome => {
+                // A server can publish a rename but lose its reply. Once the
+                // prepared name disappeared, retain the preimage for recovery.
+                if publication_attempted {
+                    match rustix::fs::statat(
+                        directory,
+                        prepared.as_str(),
+                        AtFlags::SYMLINK_NOFOLLOW,
+                    ) {
+                        Err(rustix::io::Errno::NOENT) => return outcome,
+                        Err(error) => {
+                            return outcome.map_err(|original| {
+                                original.context(format!("Cannot verify unpublished save: {error}"))
+                            })
+                        }
+                        Ok(_) => {}
+                    }
+                }
+                let draft_cleanup = clean_recovery_file(
+                    directory,
+                    std::ffi::OsStr::new(&prepared),
+                    self.draft.text.as_bytes(),
+                );
+                let preimage_cleanup = if linked {
+                    clean_recovery_file(directory, old_name, self.draft.base.as_bytes())
+                } else {
+                    Ok(())
+                };
+                match outcome {
+                    Err(error) => Err(with_cleanup(
+                        with_cleanup(error, draft_cleanup),
+                        preimage_cleanup,
+                    )),
+                    Ok(false) => {
+                        draft_cleanup?;
+                        preimage_cleanup?;
+                        Ok(false)
+                    }
+                    Ok(true) => unreachable!(),
+                }
             }
-            Err(e) => return Err(e.into()),
-        };
-        let mut bytes = Vec::new();
-        original.read_to_end(&mut bytes)?;
-        if bytes != self.draft.base.as_bytes() {
-            clean(old_name, self.draft.base.as_bytes())?;
-            clean(std::ffi::OsStr::new(&prepared), self.draft.text.as_bytes())?;
-            return Ok(false);
         }
-        directory.sync_all()?;
-        self.directory.validate(self.draft.path.parent().unwrap())?;
-        renameat(directory, prepared.as_str(), directory, note)?;
-        Ok(true)
     }
     #[cfg(windows)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
@@ -1455,12 +1526,141 @@ mod windows_editor_tests {
     }
 }
 
+#[cfg(unix)]
+fn with_cleanup(error: anyhow::Error, cleanup: Result<()>) -> anyhow::Error {
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup) => error.context(format!("Save cleanup needs attention: {cleanup:#}")),
+    }
+}
+
+#[cfg(unix)]
+fn clean_owned_temp(directory: &File, name: &std::ffi::OsStr, temp: &File) -> Result<()> {
+    use rustix::fs::{statat, unlinkat, AtFlags};
+    let metadata = temp.metadata()?;
+    let current = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(current) => current,
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(
+        crate::unix_publish::same_identity(&current, &metadata),
+        "Temporary save replaced; retained for inspection"
+    );
+    unlinkat(directory, name, AtFlags::empty())?;
+    directory.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn clean_recovery_file(directory: &File, name: &std::ffi::OsStr, expected: &[u8]) -> Result<()> {
+    use rustix::fs::{openat, unlinkat, AtFlags, Mode, OFlags};
+    let fd = match openat(
+        directory,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut file = File::from(fd);
+    let metadata = file.metadata()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        metadata.is_file() && bytes == expected,
+        "Recovery file changed; retained for inspection"
+    );
+    let current = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
+    anyhow::ensure!(
+        crate::unix_publish::same_identity(&current, &metadata),
+        "Recovery file replaced; retained for inspection"
+    );
+    unlinkat(directory, name, AtFlags::empty())?;
+    directory.sync_all()?;
+    Ok(())
+}
+
 #[cfg(all(test, unix))]
 mod network_save_tests {
     use super::*;
     thread_local! {
+        pub(super) static LINK_ERROR: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) };
+        pub(super) static ERROR_AFTER_LINK: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) };
         pub(super) static DELETE_AFTER_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         pub(super) static ALTER_PREIMAGE_AFTER_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    fn assert_unpublished(editor: &FileEditor, root: &Path, note: &Path) {
+        assert_eq!(fs::read(note).unwrap(), b"base");
+        assert_eq!(fs::metadata(note).unwrap().nlink(), 1);
+        assert!(fs::read_dir(root).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".okilum-save-")));
+        assert_eq!(editor.text(), "mine");
+        assert!(editor.dirty());
+        FileEditor::open(note, &root.join("reopen-state")).unwrap();
+    }
+    #[test]
+    fn link_failure_leaves_no_service_files() {
+        for flag in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            for error in [rustix::io::Errno::PERM, rustix::io::Errno::NOTSUP] {
+                crate::unix_publish::inject(flag, || {
+                    let root = tempfile::tempdir().unwrap();
+                    let note = root.path().join("note.md");
+                    fs::write(&note, b"base").unwrap();
+                    let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+                    editor.set_text("mine".into()).unwrap();
+                    LINK_ERROR.with(|v| v.set(Some(error)));
+                    let failure = editor.save().unwrap_err();
+                    assert_eq!(failure.downcast_ref::<rustix::io::Errno>(), Some(&error));
+                    assert_unpublished(&editor, root.path(), &note);
+                    assert_eq!(editor.save().unwrap(), Save::Saved);
+                    assert_eq!(fs::read(&note).unwrap(), b"mine");
+                });
+            }
+        }
+    }
+    #[test]
+    fn failure_after_link_keeps_note_editable() {
+        for flag in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            crate::unix_publish::inject(flag, || {
+                let root = tempfile::tempdir().unwrap();
+                let note = root.path().join("note.md");
+                fs::write(&note, b"base").unwrap();
+                let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+                editor.set_text("mine".into()).unwrap();
+                ERROR_AFTER_LINK.with(|v| v.set(Some(rustix::io::Errno::IO)));
+                let error = editor.save().unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<rustix::io::Errno>(),
+                    Some(&rustix::io::Errno::IO)
+                );
+                assert_unpublished(&editor, root.path(), &note);
+                assert_eq!(editor.save().unwrap(), Save::Saved);
+                assert_eq!(fs::read(&note).unwrap(), b"mine");
+            });
+        }
+    }
+    #[test]
+    fn unpublished_exchange_error_removes_temp() {
+        let root = tempfile::tempdir().unwrap();
+        let note = root.path().join("note.md");
+        fs::write(&note, b"base").unwrap();
+        let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+        editor.set_text("mine".into()).unwrap();
+        crate::unix_publish::inject(rustix::io::Errno::IO, || {
+            let error = editor.save().unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<rustix::io::Errno>(),
+                Some(&rustix::io::Errno::IO)
+            );
+        });
+        assert_unpublished(&editor, root.path(), &note);
+        assert_eq!(editor.save().unwrap(), Save::Saved);
     }
     #[test]
     fn unsupported_exchange_handles_deletion_and_reports_publication_truthfully() {
