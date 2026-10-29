@@ -175,7 +175,7 @@ impl Render for Picker {
                         label,
                         help,
                         div().debug_selector(move || id.into()).child(
-                            Select::new(id, &choices[role.index()])
+                            Select::new(&choices[role.index()])
                                 .w(px(240.))
                                 .menu_width(px(360.))
                                 .menu_max_h(px(280.))
