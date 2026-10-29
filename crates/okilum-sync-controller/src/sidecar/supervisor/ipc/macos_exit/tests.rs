@@ -151,3 +151,26 @@ fn wrong_signed_peer_is_refused_and_dropping_a_watch_does_not_stop_the_child() -
     assert!(child.finish()?.success());
     Ok(())
 }
+
+#[test]
+fn exit_between_registration_and_recheck_rejects_the_retained_socket_token() -> Result<()> {
+    let (_root, mut child, stream, peer) = child_peer()?;
+    let original = peer_audit_token(&stream)?;
+    let mut control = stream.try_clone()?;
+    let result = ExitWatch::capture_after_registration(&stream, &peer, || {
+        control.write_all(b"x")?;
+        ensure!(child.finish()?.success(), "fixture did not exit cleanly");
+        // The connected socket retains its original credential record. Merely
+        // comparing it would succeed even though its process has already exited.
+        ensure!(
+            peer_audit_token(&stream)? == original,
+            "socket token was not retained"
+        );
+        Ok(())
+    });
+    assert!(
+        result.is_err(),
+        "cached socket credentials became live process authority"
+    );
+    Ok(())
+}

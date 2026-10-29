@@ -24,6 +24,16 @@ impl ExitWatch {
     /// Capture only from an established connection to the expected signed helper.
     /// No caller-supplied PID, image guess, hint PID, signal or service operation.
     pub fn capture(stream: &UnixStream, peer: &SignedPeer) -> Result<Self> {
+        Self::capture_after_registration(stream, peer, || Ok(()))
+    }
+
+    // The private hook makes the exit-between-registration-and-recheck boundary
+    // deterministic in tests; production supplies an inert closure.
+    fn capture_after_registration(
+        stream: &UnixStream,
+        peer: &SignedPeer,
+        after_registration: impl FnOnce() -> Result<()>,
+    ) -> Result<Self> {
         peer.verify(stream, PeerEnd::Server)?;
         let token = peer_audit_token(stream)?;
         // audit_token_t.val[5] is pid; val[7] is the PID version used by the
@@ -71,6 +81,9 @@ impl ExitWatch {
         // The registration pins the kernel process object, but its numeric PID
         // was read before registering. Re-authenticate the original audit token
         // after registration. A dead/reused PID or changed image is a refusal.
+        after_registration()?;
+        // SignedPeer performs a NEW SecCodeCopyGuestWithAttributes lookup with
+        // kSecGuestAttributeAudit; the retained socket token alone is not liveness.
         peer.verify(stream, PeerEnd::Server)?;
         ensure!(
             peer_audit_token(stream)? == token,

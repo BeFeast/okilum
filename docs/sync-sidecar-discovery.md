@@ -171,3 +171,10 @@ capturing it. A live-child timeout is the positive control before the exact chil
 exits; another test refuses the wrong signing requirement and confirms that dropping
 the observer leaves the child alive. Cleanup kills/waits only the spawned child.
 These are process-observer fixtures, not launchd/login/update or complete Sync QA.
+
+A deterministic capture-boundary regression exits the child after event registration
+and before the second signature check. It first verifies the original socket audit
+token remains readable and unchanged, then requires capture refusal. The second
+`SignedPeer` check performs a fresh `SecCodeCopyGuestWithAttributes` lookup using
+`kSecGuestAttributeAudit`; token equality alone is never liveness evidence. This
+exercises a stale connected-socket credential, not a forced PID-reuse stress run.
