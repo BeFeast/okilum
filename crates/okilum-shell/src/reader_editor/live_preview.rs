@@ -1151,8 +1151,13 @@ mod tests {
 
     #[gpui::test]
     fn document_fonts_relayout_open_source_and_live_without_changing_text(cx: &mut TestAppContext) {
+        let mut font_context = TestAppContext::build_with_text_system(
+            cx.dispatcher.clone(),
+            Some("document-font-relayout"),
+            Arc::new(reader_fonts::test_text_system::FontAware),
+        );
         let note = "iiiiiiiiiiii\n\n`code`\n\nTail\n";
-        let (reader, visual, directory) = fixture(cx, note);
+        let (reader, visual, directory) = fixture(&mut font_context, note);
         visual.update(|_, cx| {
             brand::load_fonts(cx).unwrap();
             reader_fonts::install(cx);
