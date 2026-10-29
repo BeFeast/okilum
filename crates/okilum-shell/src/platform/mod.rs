@@ -10,6 +10,8 @@ pub mod labels;
 /// Right-to-left glyph order for the Windows text system (#1121).
 #[cfg(any(windows, test))]
 pub(crate) mod bidi_layout;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_emoji;
 pub mod reveal;
 /// The shaped-line cache in front of the platform shaper (#1312).
 pub(crate) mod shaped_line_cache;
