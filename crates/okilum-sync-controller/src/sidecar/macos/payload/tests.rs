@@ -18,6 +18,10 @@ impl Fixture {
     fn new() -> Result<Self> {
         let root = tempfile::tempdir()?;
         let state = root.path().canonicalize()?;
+        // Tempdir uses the host umask; explicitly prepare the private state root,
+        // just as the real preparation layer must, on both Unix platforms.
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
+        assert_eq!(fs::metadata(&state)?.mode() & 0o7777, 0o700);
         for relative in ["config", "data", "runtime", "runtime/2.1.6"] {
             let path = state.join(relative);
             fs::create_dir(&path)?;
