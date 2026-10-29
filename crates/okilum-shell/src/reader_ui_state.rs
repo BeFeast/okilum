@@ -142,6 +142,7 @@ struct Saved {
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
+    image_import: crate::note_paste::image_import::Options,
     /// JSON files show their raw text instead of a pretty-printed view (#1131).
     json_raw: bool,
     /// Where log source locations open (#1165): vscode, cursor, zed,
@@ -198,6 +199,7 @@ impl Default for Saved {
             auto_pair_brackets: true,
             auto_pair_markdown: false,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
+            image_import: Default::default(),
             json_raw: false,
             log_editor: "vscode".into(),
             log_editor_command: String::new(),
@@ -237,6 +239,7 @@ struct Store {
     settings_section_changed: bool,
     auto_pair_changed: bool,
     paste_ask_changed: bool,
+    image_import_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -336,6 +339,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         settings_section_changed: false,
         auto_pair_changed: false,
         paste_ask_changed: false,
+        image_import_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
         source_maps_changed: Default::default(),
@@ -565,6 +569,7 @@ struct WriteJob {
     settings_section_changed: bool,
     auto_pair_changed: bool,
     paste_ask_changed: bool,
+    image_import_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
@@ -662,6 +667,9 @@ impl WriteJob {
         if self.auto_pair_changed {
             latest.auto_pair_brackets = self.saved.auto_pair_brackets;
             latest.auto_pair_markdown = self.saved.auto_pair_markdown;
+        }
+        if self.image_import_changed {
+            latest.image_import = self.saved.image_import;
         }
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
@@ -788,6 +796,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.settings_section_changed
             && !state.code_soft_wrap_changed
             && !state.auto_pair_changed
+            && !state.image_import_changed
             && !state.paste_ask_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
@@ -826,6 +835,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         settings_section_changed: state.settings_section_changed,
         auto_pair_changed: state.auto_pair_changed,
         paste_ask_changed: state.paste_ask_changed,
+        image_import_changed: state.image_import_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
         source_maps_changed: state.source_maps_changed.clone(),
@@ -1427,6 +1437,27 @@ pub(crate) fn set_paste_ask_above_mb(value: u32, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Application-wide, independent of the current vault. Snapshot at paste start.
+pub(crate) fn image_import_options(cx: &App) -> crate::note_paste::image_import::Options {
+    cx.try_global::<Store>()
+        .map_or_else(Default::default, |s| s.saved.image_import.normalized())
+}
+
+pub(crate) fn set_image_import_options(
+    value: crate::note_paste::image_import::Options,
+    cx: &mut App,
+) {
+    let value = value.normalized();
+    if !installed(cx) || image_import_options(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.image_import = value;
+    state.image_import_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Pretty-printed JSON is the default (#1131); this remembers Raw.
 pub(crate) fn json_raw(cx: &App) -> bool {
     cx.try_global::<Store>()
@@ -1850,6 +1881,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.settings_section_changed = false;
         state.auto_pair_changed = false;
         state.paste_ask_changed = false;
+        state.image_import_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
         state.source_maps_changed.clear();
@@ -1868,6 +1900,40 @@ fn mark_saved(generation: u64, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[gpui::test]
+    fn image_import_preferences_are_global_persisted_and_merged(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert_eq!(
+                image_import_options(cx),
+                crate::note_paste::image_import::Options::default()
+            );
+            let mut options = image_import_options(cx);
+            options.quality = 999;
+            options.keep_original = true;
+            set_image_import_options(options, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert_eq!(image_import_options(cx).quality, 100);
+            assert!(image_import_options(cx).keep_original);
+            // A layout write from a process with old defaults must merge the
+            // latest app-wide image policy, not reset it for another vault.
+            let path = directory.join("reader-ui.json");
+            let mut other = read(&path).unwrap();
+            other.image_import.quality = 40;
+            std::fs::write(&path, serde_json::to_vec(&other).unwrap()).unwrap();
+            record(
+                &temp.path().join("another-vault"),
+                Layout::default(),
+                true,
+                cx,
+            );
+            flush(cx);
+            assert_eq!(read(&path).unwrap().image_import.quality, 40);
+        });
+    }
     use super::*;
 
     #[gpui::test]
@@ -2298,6 +2364,7 @@ mod tests {
                 settings_section_changed: false,
                 auto_pair_changed: false,
                 paste_ask_changed: false,
+                image_import_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
                 source_maps_changed: Default::default(),

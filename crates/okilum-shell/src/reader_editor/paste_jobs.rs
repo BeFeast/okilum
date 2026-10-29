@@ -127,6 +127,7 @@ impl Reader {
             vault_root: &self.vault_root,
             note_rel: note_rel.as_deref(),
             stamp: &stamp,
+            image_options: crate::reader_ui_state::image_import_options(cx),
             ask_above: crate::note_paste::ask_above_bytes(cx),
         };
         let started = std::time::Instant::now();
@@ -205,12 +206,19 @@ impl Reader {
                 vault_root,
                 note_rel,
                 stamp,
+                image_options,
                 anchor,
             } => {
                 let work = move || {
-                    attachments::save_pasted_image(&vault_root, &note_rel, &image, &stamp)
-                        .map(|saved| (saved.embed, vec![saved.path]))
-                        .map_err(|error| error.user_text())
+                    attachments::save_pasted_image_with(
+                        &vault_root,
+                        &note_rel,
+                        &image,
+                        &stamp,
+                        image_options,
+                    )
+                    .map(|saved| (saved.embed, saved.paths))
+                    .map_err(|error| error.user_text())
                 };
                 run_job(input, anchor, "Saving the pasted image…", work, window, cx);
             }
@@ -220,7 +228,18 @@ impl Reader {
                 folder,
                 vault_root,
                 stamp,
-            } => download_images(input, images, region, folder, vault_root, stamp, window, cx),
+                image_options,
+            } => download_images(
+                input,
+                images,
+                region,
+                folder,
+                vault_root,
+                stamp,
+                image_options,
+                window,
+                cx,
+            ),
             FollowUp::Rich { job, anchor } => convert_in_background(input, job, anchor, window, cx),
         }
     }
@@ -322,14 +341,28 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             let FileAction::Copy { file_name } = &item.action else {
                 continue;
             };
-            let result = files::copy_into(&item.source, &work_plan.folder, file_name, &mut |n| {
-                progress.store(base + n, Ordering::Relaxed)
+            let result = crate::note_paste::image_import::import_file(
+                &item.source,
+                &work_plan.folder,
+                file_name,
+                work_plan.image_options,
+            )
+            .and_then(|imported| match imported {
+                Some(saved) => Ok((saved.name, saved.paths)),
+                None => files::copy_into(&item.source, &work_plan.folder, file_name, &mut |n| {
+                    progress.store(base + n, Ordering::Relaxed)
+                })
+                .map(|name| {
+                    let paths = vec![work_plan.folder.join(&name)];
+                    (name, paths)
+                })
+                .map_err(|error| error.user_text(file_name)),
             });
             base += item.size;
             progress.store(base, Ordering::Relaxed);
             match result {
-                Ok(name) => {
-                    saved_files.push(work_plan.folder.join(&name));
+                Ok((name, paths)) => {
+                    saved_files.extend(paths);
                     copied.push(Some(files::link_target(
                         &name,
                         &work_plan.folder_rel,
@@ -337,7 +370,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
                     )));
                 }
                 Err(error) => {
-                    errors.push(error.user_text(file_name));
+                    errors.push(error);
                     copied.push(None);
                 }
             }
@@ -519,6 +552,7 @@ fn convert_in_background(
     let folder = attachments::attachment_folder(&job.vault_root, &job.note_rel);
     let vault_root = job.vault_root.clone();
     let stamp = job.stamp.clone();
+    let image_options = job.image_options;
     let html_bytes = job.html.len();
     let started = std::time::Instant::now();
     let task = cx
@@ -570,6 +604,7 @@ fn convert_in_background(
                     folder,
                     vault_root,
                     stamp,
+                    image_options,
                     window,
                     cx,
                 );
@@ -592,6 +627,7 @@ fn download_images(
     folder: PathBuf,
     vault_root: PathBuf,
     stamp: String,
+    image_options: crate::note_paste::image_import::Options,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -629,8 +665,10 @@ fn download_images(
                 .join("/")
         })
         .unwrap_or_default();
-    let (sender, receiver) =
-        async_channel::unbounded::<(usize, Result<(String, String), DownloadError>)>();
+    let (sender, receiver) = async_channel::unbounded::<(
+        usize,
+        Result<(String, crate::note_paste::image_import::Imported), DownloadError>,
+    )>();
     for _ in 0..total.min(download::PARALLEL) {
         let images = images.clone();
         let next = next.clone();
@@ -649,8 +687,18 @@ fn download_images(
                     let Some(image) = images.get(index) else {
                         break;
                     };
-                    let result = download::save_remote_image(&image.url, &folder, &stamp)
-                        .map(|name| (files::link_target(&name, &folder_rel, existing), name));
+                    let result = download::save_remote_image_with(
+                        &image.url,
+                        &folder,
+                        &stamp,
+                        image_options,
+                    )
+                    .map(|saved| {
+                        (
+                            files::link_target(&saved.name, &folder_rel, existing),
+                            saved,
+                        )
+                    });
                     if sender.send((index, result)).await.is_err() {
                         break;
                     }
@@ -702,7 +750,9 @@ fn download_images(
                 .unwrap_or(0);
             if hits == 0 {
                 // The remote image was edited away: no file without a link.
-                let _ = std::fs::remove_file(folder.join(&name));
+                for path in name.paths {
+                    let _ = std::fs::remove_file(path);
+                }
             }
             replaced += hits;
         }
@@ -780,6 +830,136 @@ mod attachment_refresh_tests {
     use ::core::prelude::v1::test;
 
     #[gpui::test]
+    fn webp_paste_and_import_links_survive_undo_redo_without_losing_files(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n\n").unwrap();
+        let png = crate::note_paste::image_import::fixture_png();
+        let source = temp.path().join("import.png");
+        std::fs::write(&source, &png).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_live_preview(window, cx)
+        });
+        visual.run_until_parked();
+        for raw_clipboard in [true, false] {
+            reader.update_in(visual, |reader, window, cx| {
+                let input = reader.source_input().unwrap();
+                input.focus_handle(cx).focus(window);
+                let source_text = input.read(cx).value().to_string();
+                let anchor = Anchor::at(&source_text, source_text.len());
+                let options = crate::note_paste::image_import::Options {
+                    keep_original: true,
+                    ..Default::default()
+                };
+                let follow_up = if raw_clipboard {
+                    FollowUp::Image {
+                        image: crate::note_paste::offer::PastedImage {
+                            bytes: png.clone(),
+                            kind: crate::note_paste::offer::ImageKind::Png,
+                            source: None,
+                        },
+                        vault_root: root.clone(),
+                        note_rel: "note.md".into(),
+                        stamp: "1743".into(),
+                        anchor,
+                        image_options: options,
+                    }
+                } else {
+                    let mut plan = files::plan(
+                        std::slice::from_ref(&source),
+                        &root,
+                        "note.md",
+                        "1743",
+                        None,
+                    );
+                    plan.image_options = options;
+                    FollowUp::Files { plan, anchor }
+                };
+                reader.run_paste_follow_up(input, follow_up, window, cx);
+            });
+            visual.run_until_parked();
+            let (input, pasted) = reader.read_with(visual, |r, cx| {
+                let input = r.source_input().unwrap();
+                let value = input.read(cx).value().to_string();
+                (input, value)
+            });
+            let last = pasted
+                .rsplit("![[")
+                .next()
+                .unwrap()
+                .split("]]")
+                .next()
+                .unwrap();
+            assert!(last.ends_with(".webp"), "actual converted embed: {pasted}");
+            let attachment = if last.contains('/') {
+                root.join(last)
+            } else {
+                root.join("attachments").join(last)
+            };
+            let bytes = std::fs::read(&attachment).unwrap();
+            assert_eq!(
+                image::guess_format(&bytes).unwrap(),
+                image::ImageFormat::WebP
+            );
+            visual.dispatch_action(gpui_component::input::Undo);
+            visual.run_until_parked();
+            assert_ne!(
+                input.read_with(visual, |i, _| i.value().to_string()),
+                pasted,
+                "Undo changed the actual paste"
+            );
+            assert_eq!(
+                std::fs::read(&attachment).unwrap(),
+                bytes,
+                "Undo must retain the image"
+            );
+            visual.dispatch_action(gpui_component::input::Redo);
+            visual.run_until_parked();
+            assert_eq!(
+                input.read_with(visual, |i, _| i.value().to_string()),
+                pasted
+            );
+            assert_eq!(
+                std::fs::read(&source).unwrap(),
+                png,
+                "external import source is untouched"
+            );
+            assert_eq!(std::fs::read(&attachment).unwrap(), bytes);
+        }
+        assert_eq!(
+            std::fs::read_dir(root.join("attachments")).unwrap().count(),
+            4,
+            "two WebP files and two requested originals"
+        );
+    }
+
+    #[gpui::test]
     fn completed_drop_updates_inventory_without_waiting_for_native_events(cx: &mut TestAppContext) {
         check_drop(cx, false);
     }
@@ -844,10 +1024,10 @@ mod attachment_refresh_tests {
                 .map(|entry| entry.unwrap().path())
                 .collect();
             assert_eq!(copied.len(), 1, "DROP_CONTROL1742: real copy must complete");
-            assert_eq!(
-                std::fs::read(&copied[0]).unwrap(),
-                std::fs::read(&original).unwrap()
-            );
+            assert_eq!(copied[0].extension().unwrap(), "webp");
+            let converted = image::open(&copied[0]).unwrap();
+            assert_eq!((converted.width(), converted.height()), (2, 2));
+            assert_eq!(image::open(&original).unwrap().width(), 2);
             assert!(
                 source.contains("![["),
                 "DROP_CONTROL1742: real drop must insert its embed"

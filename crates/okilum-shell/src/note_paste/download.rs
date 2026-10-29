@@ -8,7 +8,7 @@
 //! content type.
 
 use super::attachments::{pasted_name, sniff_image};
-use super::files::{self, sanitize_name, CopyError};
+use super::files::sanitize_name;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -63,6 +63,16 @@ fn client() -> Option<&'static reqwest::blocking::Client> {
 
 /// Download the image at `url` into `folder` and return the saved file name.
 pub fn save_remote_image(url: &str, folder: &Path, stamp: &str) -> Result<String, DownloadError> {
+    save_remote_image_with(url, folder, stamp, super::image_import::Options::disabled())
+        .map(|saved| saved.name)
+}
+
+pub fn save_remote_image_with(
+    url: &str,
+    folder: &Path,
+    stamp: &str,
+    options: super::image_import::Options,
+) -> Result<super::image_import::Imported, DownloadError> {
     let response = client()
         .ok_or(DownloadError::Request)?
         .get(url)
@@ -91,12 +101,7 @@ pub fn save_remote_image(url: &str, folder: &Path, stamp: &str) -> Result<String
     }
     let extension = image_extension(content_type.as_deref(), &bytes)?;
     let name = file_name(url, extension, stamp);
-    files::write_into(folder, &name, &bytes).map_err(|error| match error {
-        CopyError::Folder(error) | CopyError::Read(error) | CopyError::Write(error) => {
-            DownloadError::Save(error.to_string())
-        }
-        CopyError::NoFreeName => DownloadError::Save("no free name".into()),
-    })
+    super::image_import::save(folder, &name, &bytes, options).map_err(DownloadError::Save)
 }
 
 /// The file extension for a response: from its `image/*` content type, or

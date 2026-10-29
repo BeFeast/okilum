@@ -52,6 +52,7 @@ pub struct FileItem {
 /// only; the copying happens later.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FilePlan {
+    pub image_options: super::image_import::Options,
     pub items: Vec<FileItem>,
     /// The attachment folder copies go to.
     pub folder: PathBuf,
@@ -117,6 +118,7 @@ pub fn plan(
         .map(Path::to_path_buf)
         .unwrap_or_default();
     let mut plan = FilePlan {
+        image_options: super::image_import::Options::disabled(),
         items: Vec::new(),
         folder,
         vault_root: vault_root.to_path_buf(),
@@ -334,7 +336,7 @@ fn has_link_syntax(target: &str) -> bool {
 }
 
 /// A relative path with `/` separators.
-fn slash_path(rel: &Path) -> String {
+pub(super) fn slash_path(rel: &Path) -> String {
     rel.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()

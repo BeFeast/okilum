@@ -11,6 +11,7 @@ pub mod context;
 pub mod download;
 pub mod fetch;
 pub mod files;
+pub mod image_import;
 pub mod offer;
 pub mod rich;
 pub mod router;
@@ -294,6 +295,7 @@ impl ExactClipboardProvider for NotePaste {
             vault_root: &self.vault_root,
             note_rel: self.note_rel.as_deref(),
             stamp: &stamp,
+            image_options: crate::reader_ui_state::image_import_options(cx),
             ask_above: ask_above_bytes(cx),
         };
         let routed = self.clipboard.route_in_command(&route_context, cx);

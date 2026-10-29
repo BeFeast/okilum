@@ -46,6 +46,10 @@ Windows ownership and explicit platform limitations.
 
 ## 1. What Okilum is
 
+**Image import (#1743, 2026-10-29):** [WebP image paste and import](image-import.md)
+defines app-wide conversion, quality and optional original retention, with
+native disk/link/Undo acceptance before merge. JPEG XL remains separate.
+
 **Project manager extension (2026-10-21, #1418 / #1415):**
 [Project manager chat](project-manager.md) connects an area's explicit T3 binding
 to the existing Reader window through `ManagerGateway`. Managers remain in T3;
