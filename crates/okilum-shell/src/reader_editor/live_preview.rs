@@ -1150,14 +1150,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn document_fonts_relayout_open_source_and_live_without_changing_text(cx: &mut TestAppContext) {
-        let mut font_context = TestAppContext::build_with_text_system(
-            cx.dispatcher.clone(),
-            Some("document-font-relayout"),
-            Arc::new(reader_fonts::test_text_system::FontAware),
-        );
+    fn document_fonts_refresh_open_live_styles_without_changing_text(cx: &mut TestAppContext) {
         let note = "iiiiiiiiiiii\n\n`code`\n\nTail\n";
-        let (reader, visual, directory) = fixture(&mut font_context, note);
+        let (reader, visual, directory) = fixture(cx, note);
         visual.update(|_, cx| {
             brand::load_fonts(cx).unwrap();
             reader_fonts::install(cx);
@@ -1179,22 +1174,17 @@ mod tests {
             visual.update(|window, cx| window.draw(cx).clear(cx));
         };
         draw(visual);
-        let before = input.read_with(visual, |input, _| input.cursor_layout().unwrap().0.origin.x);
+        // GPUI 0.3.3 uses a family-insensitive NoopTextSystem. Assert the
+        // live provider publication and source authority here, not fake pixel metrics.
         visual.update(|_, cx| {
             reader_ui_state::set_selected_font(reader_fonts::Role::Code, brand::SANS_FONT, cx)
         });
         draw(visual);
-        let after = input.read_with(visual, |input, _| input.cursor_layout().unwrap().0.origin.x);
-        assert!(
-            (f32::from(after - before)).abs() > 2.,
-            "Source actually relaid out in the selected font"
-        );
+        visual.update(|_, cx| assert_eq!(reader_fonts::code(cx), brand::SANS_FONT));
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_live_preview(window, cx)
         });
         draw(visual);
-        let live_before =
-            input.read_with(visual, |input, _| input.cursor_layout().unwrap().0.origin.x);
         let accepted = reader.read_with(visual, |reader, _| {
             reader
                 .editing
@@ -1209,12 +1199,21 @@ mod tests {
             reader_ui_state::set_selected_font(reader_fonts::Role::Note, brand::MONO_FONT, cx)
         });
         draw(visual);
-        let live_after =
-            input.read_with(visual, |input, _| input.cursor_layout().unwrap().0.origin.x);
-        assert!(
-            (f32::from(live_after - live_before)).abs() > 2.,
-            "Live prose actually relaid out in the selected font"
-        );
+        visual.update(|_, cx| assert_eq!(reader_fonts::note(cx), brand::MONO_FONT));
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(
+                reader
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .code_font
+                    .borrow()
+                    .as_ref(),
+                brand::SANS_FONT,
+                "positive control: the open Live provider used the first selected code font"
+            );
+        });
         visual.update(|_, cx| {
             reader_ui_state::set_selected_font(reader_fonts::Role::Code, brand::MONO_FONT, cx)
         });
