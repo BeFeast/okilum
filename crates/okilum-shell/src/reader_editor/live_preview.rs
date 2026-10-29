@@ -59,6 +59,7 @@ pub(super) struct LivePreview {
     needs_compute: bool,
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
+    code_font: std::cell::RefCell<SharedString>,
     #[cfg(target_os = "linux")]
     latency_subscriptions: Option<(Subscription, Subscription, Subscription)>,
     #[cfg(test)]
@@ -94,6 +95,7 @@ impl LivePreview {
             needs_compute: false,
             accepted: None,
             colors: Cell::new(None),
+            code_font: Default::default(),
             #[cfg(target_os = "linux")]
             latency_subscriptions: None,
             #[cfg(test)]
@@ -227,16 +229,20 @@ impl Reader {
             return;
         };
         let colors = projection_colors(cx);
-        if editing.live_preview.colors.get() == Some(colors) {
+        let code_font = reader_fonts::code(cx);
+        if editing.live_preview.colors.get() == Some(colors)
+            && *editing.live_preview.code_font.borrow() == code_font
+        {
             return;
         }
         let Some(provider) = self.checked_live_provider(cx.entity_id(), cx) else {
             return;
         };
-        // Publish the palette before notifying the input: the resulting render
+        // Publish presentation before notifying the input: the resulting render
         // observes it and cannot reinstall the same provider recursively.
         editing.live_preview.colors.set(Some(colors));
-        let provider = provider.with_colors(colors);
+        *editing.live_preview.code_font.borrow_mut() = code_font.clone();
+        let provider = provider.with_code_font(colors, code_font.to_string());
         editing.input.update(cx, |input, cx| {
             input.set_projection_provider(Some(provider), cx)
         });
@@ -349,7 +355,7 @@ impl Reader {
             input.set_searchable(!enabled, cx);
         });
         let provider = if enabled {
-            held.map(|p| p.with_colors(colors))
+            held.map(|p| p.with_code_font(colors, reader_fonts::code(cx).to_string()))
         } else {
             None
         };
@@ -550,7 +556,10 @@ impl Reader {
                                 state.colors.set(Some(colors));
                                 input.update(cx, |input, cx| {
                                     input.set_projection_provider(
-                                        Some(provider.with_colors(colors)),
+                                        Some(provider.with_code_font(
+                                            colors,
+                                            reader_fonts::code(cx).to_string(),
+                                        )),
                                         cx,
                                     )
                                 });
@@ -1097,7 +1106,7 @@ mod tests {
 
     use super::*;
     use ::core::prelude::v1::test;
-    use gpui_component::input::projection::ActiveSource;
+    use gpui_component::input::projection::{ActiveSource, SourceByte};
 
     const ORIGINAL: &str =
         "\u{feff}# Привет 🧠\r\n\r\n**Жирный** e\u{301} и `code` [[target|ссылка]]\r\n\r\nTail\r\n";
@@ -1138,6 +1147,112 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         (reader, visual, directory)
+    }
+
+    #[gpui::test]
+    fn document_fonts_refresh_open_live_styles_without_changing_text(cx: &mut TestAppContext) {
+        let note = "iiiiiiiiiiii\n\n`code`\n\nTail\n";
+        let (reader, visual, directory) = fixture(cx, note);
+        visual.update(|_, cx| {
+            brand::load_fonts(cx).unwrap();
+            reader_fonts::install(cx);
+            reader_ui_state::install(&directory.path().join("font-state"), cx);
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            if reader.editing.as_ref().unwrap().live_preview.enabled {
+                reader.toggle_live_preview(window, cx);
+            }
+        });
+        let input = reader.read_with(visual, |reader, _| {
+            reader.editing.as_ref().unwrap().input.clone()
+        });
+        input.update(visual, |input, cx| input.set_selected_range(12..12, cx));
+        let draw = |visual: &mut VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(visual);
+        // GPUI 0.3.3 uses a family-insensitive NoopTextSystem. Assert the
+        // live provider publication and source authority here, not fake pixel metrics.
+        visual.update(|_, cx| {
+            reader_ui_state::set_selected_font(reader_fonts::Role::Code, brand::SANS_FONT, cx)
+        });
+        draw(visual);
+        visual.update(|_, cx| assert_eq!(reader_fonts::code(cx), brand::SANS_FONT));
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_live_preview(window, cx)
+        });
+        draw(visual);
+        let accepted = reader.read_with(visual, |reader, _| {
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .accepted
+                .clone()
+                .unwrap()
+        });
+        visual.update(|_, cx| {
+            reader_ui_state::set_selected_font(reader_fonts::Role::Note, brand::MONO_FONT, cx)
+        });
+        draw(visual);
+        visual.update(|_, cx| assert_eq!(reader_fonts::note(cx), brand::MONO_FONT));
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(
+                reader
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .code_font
+                    .borrow()
+                    .as_ref(),
+                brand::SANS_FONT,
+                "positive control: the open Live provider used the first selected code font"
+            );
+        });
+        visual.update(|_, cx| {
+            reader_ui_state::set_selected_font(reader_fonts::Role::Code, brand::MONO_FONT, cx)
+        });
+        draw(visual);
+        reader.read_with(visual, |reader, cx| {
+            let live = &reader.editing.as_ref().unwrap().live_preview;
+            assert!(
+                Arc::ptr_eq(live.accepted.as_ref().unwrap(), &accepted),
+                "font change reuses classification"
+            );
+            assert_eq!(live.code_font.borrow().as_ref(), brand::MONO_FONT);
+            let display = accepted
+                .clone()
+                .with_code_font(projection_colors(cx), reader_fonts::code(cx).to_string())
+                .compose(
+                    accepted.source(),
+                    &ActiveSource {
+                        anchor: SourceByte(note.len()),
+                        head: SourceByte(note.len()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(
+                display
+                    .styles()
+                    .iter()
+                    .any(|style| style.font_family.as_deref() == Some(brand::MONO_FONT)),
+                "inline code is a positive control"
+            );
+        });
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.value().as_ref(), note);
+            assert_eq!(input.selected_range(), 12..12);
+        });
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+            note
+        );
     }
 
     /// #1192: in Live Preview a callout's chevron folds and unfolds the

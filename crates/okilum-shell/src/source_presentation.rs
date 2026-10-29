@@ -39,6 +39,7 @@ pub struct ProjectionColors {
 struct ColoredProvider {
     provider: Arc<CachedProvider>,
     colors: ProjectionColors,
+    code_font: String,
 }
 impl ProjectionProvider for ColoredProvider {
     fn compose(
@@ -47,7 +48,7 @@ impl ProjectionProvider for ColoredProvider {
         active: &ActiveSource,
     ) -> Option<Arc<dyn SourceProjection>> {
         self.provider
-            .compose_colored(source, active, Some(self.colors))
+            .compose_colored(source, active, Some(self.colors), &self.code_font)
     }
 }
 
@@ -67,9 +68,18 @@ impl CachedProvider {
     // The standalone projection fixture deliberately uses the unthemed provider.
     #[allow(dead_code)]
     pub fn with_colors(self: Arc<Self>, colors: ProjectionColors) -> Arc<dyn ProjectionProvider> {
+        self.with_code_font(colors, CODE_FONT.to_owned())
+    }
+    /// Change presentation without reclassifying or replacing the source buffer.
+    pub fn with_code_font(
+        self: Arc<Self>,
+        colors: ProjectionColors,
+        code_font: String,
+    ) -> Arc<dyn ProjectionProvider> {
         Arc::new(ColoredProvider {
             provider: self,
             colors,
+            code_font,
         })
     }
     /// Call only from a background classification task.
@@ -167,7 +177,7 @@ impl ProjectionProvider for CachedProvider {
         source: &SourceSnapshot,
         active: &ActiveSource,
     ) -> Option<Arc<dyn SourceProjection>> {
-        self.compose_colored(source, active, None)
+        self.compose_colored(source, active, None, CODE_FONT)
     }
 }
 impl CachedProvider {
@@ -176,6 +186,7 @@ impl CachedProvider {
         source: &SourceSnapshot,
         active: &ActiveSource,
         colors: Option<ProjectionColors>,
+        code_font: &str,
     ) -> Option<Arc<dyn SourceProjection>> {
         // #214's stricter cap is a presentation limit, not a buffer limit.
         if source.text.len() > source_classifier::MAX_BYTES {
@@ -215,7 +226,7 @@ impl CachedProvider {
         }
         let reveal_snapshot = retained.prepare_reveal(&reveal).ok()?;
         let projection = reveal_snapshot.projection().clone();
-        let styles = projected_styles(&projection, retained.styles(), colors)?;
+        let styles = projected_styles(&projection, retained.styles(), colors, code_font)?;
         let line_scales = heading_line_scales(&projection, retained.styles());
         let blocks = table_blocks(
             &source.text,
@@ -585,6 +596,7 @@ fn projected_styles(
     projection: &impl PresentationMap,
     styles: &[source_classifier::StyleSpan],
     colors: Option<ProjectionColors>,
+    code_font: &str,
 ) -> Option<Vec<ProjectionStyle>> {
     let mut events = Vec::new();
     for style in styles {
@@ -622,7 +634,7 @@ fn projected_styles(
         if start < end && counts.iter().any(|&n| n != 0) {
             runs.push(ProjectionStyle {
                 range: ProjectedByte(start)..ProjectedByte(end),
-                font_family: (counts[3] > 0).then(|| CODE_FONT.to_owned()),
+                font_family: (counts[3] > 0).then(|| code_font.to_owned()),
                 color: colors.and_then(|colors| {
                     // Links retain their affordance inside bold headings.
                     if counts[5] > 0 {

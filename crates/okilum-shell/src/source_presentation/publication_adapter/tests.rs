@@ -53,7 +53,7 @@ fn actual_trait_consumer_matches_all_legacy_metadata_and_mapping_with_positive_c
         ] {
             for colors in [None, Some(ProjectionColors { heading: gpui::hsla(0., 1., 0.5, 1.), link: gpui::hsla(0.66, 1., 0.5, 1.), muted: gpui::hsla(0.33, 1., 0.5, 1.) })] {
                 let provider = provider(&source, &active, colors);
-                let expected = legacy.compose_colored(&source, &active, colors).unwrap();
+                let expected = legacy.compose_colored(&source, &active, colors, crate::source_presentation::CODE_FONT).unwrap();
                 let actual = ProjectionProvider::compose(&provider, &source, &active).unwrap();
                 assert_eq!(actual.text(), expected.text());
                 assert_eq!(actual.styles(), expected.styles());

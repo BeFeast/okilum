@@ -44,6 +44,13 @@ property chips, with existing canonical-path precedence and explicit ambiguity.
 defines owner-relative positioning, lifecycle, singleton reuse and Esc, with native
 Windows ownership and explicit platform limitations.
 
+**Document font settings (2026-10-29, #1836):** Settings → Appearance offers
+system font families with previews for note text and code, applied immediately
+to Reader, Live Preview, Source, code files and CSV tables. Choices persist in
+application settings; unavailable fonts quietly use the embedded Noto Sans /
+Cascadia Code defaults. Reset restores both defaults. UI chrome and the independent
+color emoji fallback keep their existing typography.
+
 ## 1. What Okilum is
 
 **Project manager extension (2026-10-21, #1418 / #1415):**

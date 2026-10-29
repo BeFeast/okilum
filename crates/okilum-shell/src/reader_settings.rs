@@ -340,6 +340,7 @@ struct Settings {
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
     theme_picker: Entity<theme_picker::ThemePicker>,
+    font_picker: Entity<reader_fonts::Picker>,
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     preview_beta: Option<bool>,
     reader: Option<WeakEntity<Reader>>,
@@ -388,6 +389,7 @@ impl Settings {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             sync: None,
             theme_picker: cx.new(|cx| theme_picker::ThemePicker::new(None, cx)),
+            font_picker: cx.new(|_| reader_fonts::Picker::default()),
             #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
             preview_beta: match std::env::var("OKILUM_DEBUG_UPDATER_UI").as_deref() {
                 Ok("sparkle" | "velopack") => Some(false),
@@ -929,6 +931,7 @@ impl Settings {
                             .child("Color theme")
                             .child(self.theme_picker.clone()),
                     )
+                    .child(self.font_picker.clone())
                     .into_any_element()
             }
             Section::Editor => content

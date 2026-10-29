@@ -118,7 +118,7 @@ impl Reader {
             input
         });
         let reader = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let save_reader = reader.clone();
             let save_version = version.clone();
             let save_root = root.clone();
@@ -130,7 +130,7 @@ impl Reader {
                     Editor::new(&input)
                         .readonly(true)
                         .context_menu(|menu, _, _| crate::reader_code_file::text_menu(menu, false))
-                        .font_family("Cascadia Code")
+                        .font_family(reader_fonts::code(cx))
                         .h(px(320.)),
                 )
                 .footer(

@@ -526,6 +526,8 @@ impl Reader {
         let body = if let Some(state) = &h.content {
             preview_plugins(
                 TextView::new(state)
+                    .style(reader_fonts::text_style(cx))
+                    .font_family(reader_fonts::note(cx))
                     .scrollable(true)
                     .selectable(true)
                     .text_size(px(BODY_FONT_SIZE))
