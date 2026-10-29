@@ -314,6 +314,15 @@ fn native_open_checks_real_signatures_and_existing_state_without_starting_a_help
         Duration::from_secs(1),
     )?;
     assert_eq!(connection.inspect()?, Discovered::Absent);
+    let supervisor = super::NativeSupervisor::open(
+        &fixture.app,
+        "reader",
+        fixture.binding.clone(),
+        app.clone(),
+        helper.clone(),
+        Duration::from_secs(1),
+    )?;
+    assert_eq!(supervisor.inspect()?, Discovered::Absent);
     assert!(fixture.store.peek_hint()?.is_none());
     let wrong = CodeRequirement::team_and_identifier("ABCDE12345", "org.example.fixture.sync")?;
     assert!(NativeConnection::open(
@@ -326,5 +335,65 @@ fn native_open_checks_real_signatures_and_existing_state_without_starting_a_help
     )
     .is_err());
     // No registration API or process launcher is reachable from this connection.
+    Ok(())
+}
+
+#[test]
+fn stop_completion_requires_both_receipt_and_exit_and_rechecks_authority_after_wait() -> Result<()>
+{
+    let fixture = Fixture::new()?;
+    fixture.prepare()?;
+    let script = Script::default();
+    let connection = fixture.connection(script.clone())?;
+    let scope = fixture.hint()?;
+    let token = {
+        let mut tx = fixture.store.begin(soon())?;
+        let (next, token) = tx.current()?.unwrap().disable(scope)?;
+        tx.commit(next)?;
+        token
+    };
+    let confirmed = Cell::new(0);
+    script.status.set(Status::Stopping);
+    assert!(connection
+        .stop_and_confirm(&token, soon(), |_| {
+            confirmed.set(confirmed.get() + 1);
+            Ok(true)
+        })
+        .is_err());
+    assert_eq!(
+        confirmed.get(),
+        0,
+        "incomplete Stop reached exit completion"
+    );
+    script.status.set(Status::Stopped);
+    assert!(connection
+        .stop_and_confirm(&token, soon(), |_| Ok(false))
+        .is_err());
+    let deadline = soon();
+    connection.stop_and_confirm(&token, deadline, |received| {
+        assert_eq!(received, deadline, "exit phase renewed the deadline");
+        // No journal lock may be held while awaiting process exit.
+        let transaction = fixture.store.begin(deadline)?;
+        assert!(transaction.current()?.is_some());
+        Ok(true)
+    })?;
+    assert!(
+        connection
+            .stop_and_confirm(&token, soon(), |_| {
+                let mut tx = fixture.store.begin(soon())?;
+                let next = tx.current()?.unwrap().enable()?;
+                tx.commit(next)?;
+                Ok(true)
+            })
+            .is_err(),
+        "concurrent Enable was overwritten by old stop/exit evidence"
+    );
+    let calls = script.calls.get();
+    assert!(connection
+        .stop_and_confirm(&token, Instant::now(), |_| {
+            panic!("expired stop reached exit observation")
+        })
+        .is_err());
+    assert_eq!(script.calls.get(), calls);
     Ok(())
 }
