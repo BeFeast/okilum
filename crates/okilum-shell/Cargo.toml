@@ -107,6 +107,7 @@ zbus = { version = "5.19", default-features = false, features = ["async-io"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 gpui-wry = { path = "../../vendor/gpui-component/crates/webview" }
 wry = { package = "lb-wry", version = "=0.53.3" }
 objc2 = "=0.6.4"
