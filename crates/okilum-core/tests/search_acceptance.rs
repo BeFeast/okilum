@@ -250,6 +250,30 @@ fn a_date_outside_the_date_field_is_searched_as_text() {
     );
 }
 
+// #1933. Outside a range bound tantivy reads a term as a plain word, which ends
+// at `:`: an unquoted `2026-03-01T00:00:00Z` there is a syntax error, so these
+// three forms found nothing while C7's range worked. One test per form, so each
+// is shown failing on its own.
+
+#[test]
+fn a_date_value_finds_its_note_by_exact_value() {
+    assert_eq!(corpus().paths("date:2026-03-01"), vec!["notes/alpha.md"]);
+}
+
+#[test]
+fn a_date_value_finds_its_notes_in_an_in_set() {
+    let mut paths = corpus().paths("date: IN [2026-03-01 2025-01-09]");
+    paths.sort();
+    assert_eq!(paths, vec!["archive/gamma.md", "notes/alpha.md"]);
+}
+
+#[test]
+fn a_date_value_finds_its_notes_in_a_group() {
+    let mut paths = corpus().paths("date:(2026-03-01 OR 2026-07-15)");
+    paths.sort();
+    assert_eq!(paths, vec!["notes/alpha.md", "notes/beta.md"]);
+}
+
 #[test]
 fn c8_a_single_character_typo_still_finds_the_note() {
     let f = corpus();
@@ -512,29 +536,38 @@ fn c16_editing_one_note_updates_the_index_without_a_full_rebuild() {
 #[test]
 fn a_note_that_cannot_be_read_keeps_its_indexed_document() {
     // #1933. update_note deleted first and took any read error for "the note
-    // is gone": a note with invalid UTF-8 vanished from search, and the call
+    // is gone": a note that failed to read vanished from search, and the call
     // still returned Ok.
     let f = corpus();
     assert!(
         f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
         "positive control: the note is indexed"
     );
-    fs::write(
-        f.root.join("notes/alpha.md"),
-        b"# Alpha\n\nnot UTF-8 \xff\n".as_slice(),
-    )
-    .unwrap();
+    // A directory in the note's place: its read fails with an IO error other
+    // than "not found" on every platform, and even for root, which ignores
+    // permission bits.
+    let note = f.root.join("notes/alpha.md");
+    fs::remove_file(&note).unwrap();
+    fs::create_dir(&note).unwrap();
     let vault = Vault::scan(&f.root).unwrap();
+    let error = f
+        .searcher
+        .update_note(&vault, "notes/alpha.md")
+        .expect_err("a failed read is an error, not a deletion");
+    assert_eq!(error.to_string(), "read notes/alpha.md", "{error:#}");
+    let kind = error
+        .downcast_ref::<std::io::Error>()
+        .map(std::io::Error::kind);
     assert!(
-        f.searcher.update_note(&vault, "notes/alpha.md").is_err(),
-        "a failed read is an error, not a deletion"
+        kind.is_some_and(|kind| kind != std::io::ErrorKind::NotFound),
+        "the read's own IO error: {error:#}"
     );
     assert!(
         f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
         "the last indexed document stays"
     );
     // Only a real deletion removes it.
-    fs::remove_file(f.root.join("notes/alpha.md")).unwrap();
+    fs::remove_dir(&note).unwrap();
     let vault = Vault::scan(&f.root).unwrap();
     f.searcher
         .update_note(&vault, "notes/alpha.md")

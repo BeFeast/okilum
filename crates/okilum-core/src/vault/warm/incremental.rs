@@ -470,10 +470,12 @@ impl State {
                 self.vault
                     .cloud_placeholders
                     .extend(checked.cloud_placeholder);
-                // A note that is on disk but cannot be read now (bad UTF-8, an
-                // IO error, a placeholder found by the read) keeps its last
-                // good source, and with it its search document and links. It
-                // is reported above; only a deletion drops it (#1933).
+                // A note that is on disk but whose read fails now (an IO
+                // error, a placeholder found by the read) keeps its last good
+                // source, and with it its search document and links; it is
+                // reported above. In an incremental update only a deletion
+                // drops a source (#1933). A full reconcile reads the note
+                // again and leaves it out while it still cannot be read.
                 if let Some(source) = checked.source {
                     let raw = String::from_utf8(STANDARD.decode(&source.bytes)?)?;
                     std::sync::Arc::make_mut(&mut self.candidates).update(
@@ -1340,8 +1342,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(batch.read, 1);
-        // A denied read is not a deletion (#1933): the last good source, and
-        // the graph built from it, stay until the note reads again or is gone.
+        // A denied read is not a deletion (#1933): through incremental
+        // updates the last good source, and the graph built from it, stay
+        // until the note reads again or is gone.
         assert!(batch.removed.is_empty());
         assert_eq!(state.snapshot.source("A.md"), before);
         assert_eq!(state.vault.unreadable.len(), 1);
@@ -1373,8 +1376,11 @@ mod tests {
         let search =
             crate::Searcher::build_snapshot_in_memory(&state.vault, &documents, &mut |_, _| Ok(()))
                 .unwrap();
-        // What the shell does with a batch (reader_incremental.rs): an affected
-        // path with a source is indexed again, one without is removed.
+        // A copy of what the shell does with a batch: the loop over
+        // `batch.affected` in crates/okilum-shell/src/reader_incremental.rs
+        // (the `documents`/`removed` lists handed to `update_snapshot_batch`).
+        // An affected path with a source is indexed again, one without it is
+        // removed. Keep the two in step.
         let publish = |state: &State, batch: &Batch| {
             let mut documents = Vec::new();
             let mut removed: Vec<_> = batch.removed.iter().cloned().collect();
@@ -1399,17 +1405,25 @@ mod tests {
         let original = state.snapshot.source("A.md");
         assert_eq!(hits("missing"), ["A.md"], "positive control: indexed");
 
-        std::fs::write(state.vault.root.join("A.md"), b"# A\n\nnot UTF-8 \xff").unwrap();
+        // The note is saved, and reading it back fails with an IO error.
+        std::fs::write(state.vault.root.join("A.md"), "# A\n\nnew text\n").unwrap();
         let changed = crate::Changes {
             changed: BTreeSet::from(["A.md".into()]),
             ..Default::default()
         };
-        let batch = state.apply(&changed, &mut |_, _| Ok(())).unwrap();
+        let mut attempts = 0;
+        let batch = state
+            .apply_with_reader(&changed, &mut |_, _| Ok(()), &mut |_| {
+                attempts += 1;
+                Err(std::io::Error::other("injected read failure"))
+            })
+            .unwrap();
         publish(&state, &batch);
-        assert_eq!(batch.read, 1, "the failing read actually happened");
+        assert_eq!(attempts, 1, "the failing read actually happened");
+        assert_eq!(batch.read, 1);
         assert!(batch.affected.contains("A.md") && batch.removed.is_empty());
         assert_eq!(state.vault.unreadable.len(), 1);
-        assert_eq!(state.vault.unreadable[0].operation, "decode note");
+        assert_eq!(state.vault.unreadable[0].operation, "read note");
         assert!(!state.vault.inventory_complete);
         assert_eq!(
             state.snapshot.source("A.md"),

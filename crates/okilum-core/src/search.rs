@@ -254,10 +254,13 @@ impl Searcher {
                             return Some(Err(error));
                         }
                         // A full build has no earlier document to keep, so an
-                        // unreadable note is left out; the scan that made
-                        // `vault` already reports it in `vault.unreadable`.
-                        // Failing the build would cost every other note its
-                        // search over one bad file.
+                        // unreadable note is left out. The scan that made
+                        // `vault` read the same file and normally lists it in
+                        // `vault.unreadable`; a note that broke between scan
+                        // and build is only reported by its next update.
+                        // okilum-core has no logger to send it to, and failing
+                        // the build would cost every other note its search
+                        // over one bad file.
                         Self::document_for(fields, vault, &note.path, &note.title)
                             .ok()
                             .flatten()
@@ -726,11 +729,14 @@ impl Searcher {
     /// a missing file is removed.
     pub fn update_note(&self, vault: &Vault, rel: &str) -> Result<()> {
         let title = vault.note_title(rel);
-        let document = Self::document_for(self.f, vault, rel, &title)?;
         let mut guard = self
             .writer
             .lock()
             .map_err(|_| anyhow::anyhow!("index writer poisoned"))?;
+        // Read under the lock: of two updates racing on one note, the one that
+        // commits last must also be the one that read last, or the index keeps
+        // the older bytes.
+        let document = Self::document_for(self.f, vault, rel, &title)?;
         if guard.is_none() {
             *guard = Some(self.index.writer(32_000_000)?);
         }
@@ -941,7 +947,7 @@ impl Searcher {
         while at < bytes.len() {
             match bytes[at] {
                 b'\\' => at += 2,
-                quote @ (b'"' | b'\'') => at = Self::past_closing(bytes, at + 1, &[quote]),
+                quote @ (b'"' | b'\'') => at = Self::past_quote(bytes, at + 1, quote),
                 _ => match Self::date_value(query, at) {
                     Some(value) => {
                         out.push_str(&query[last..value.start]);
@@ -986,7 +992,7 @@ impl Searcher {
         let end = match *bytes.get(start)? {
             b'[' | b'{' => Self::past_closing(bytes, start + 1, b"]}"),
             b'(' => Self::past_closing(bytes, start + 1, b")"),
-            quote @ (b'"' | b'\'') => Self::past_closing(bytes, start + 1, &[quote]),
+            quote @ (b'"' | b'\'') => Self::past_quote(bytes, start + 1, quote),
             b'I' if bytes[start..].starts_with(b"IN")
                 && bytes.get(start + 2).is_some_and(u8::is_ascii_whitespace) =>
             {
@@ -1008,12 +1014,37 @@ impl Searcher {
         Some(start..end)
     }
 
-    /// Just past the first unescaped byte of `ends` at or after `at`, or the
-    /// end of the query when there is none.
-    fn past_closing(bytes: &[u8], mut at: usize, ends: &[u8]) -> usize {
+    /// Just past the unescaped `quote` that closes quoted text starting at
+    /// `at`, or the end of the query when nothing closes it.
+    fn past_quote(bytes: &[u8], mut at: usize, quote: u8) -> usize {
         while at < bytes.len() {
             match bytes[at] {
                 b'\\' => at += 2,
+                byte if byte == quote => return at + 1,
+                _ => at += 1,
+            }
+        }
+        bytes.len()
+    }
+
+    /// Just past the first unescaped byte of `ends` at or after `at`, or the
+    /// end of the query when there is none. Quoted text is skipped, and so is
+    /// a nested group when the `)` closing a group is wanted.
+    fn past_closing(bytes: &[u8], mut at: usize, ends: &[u8]) -> usize {
+        let group = ends == b")";
+        let mut depth = 0usize;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'\\' => at += 2,
+                quote @ (b'"' | b'\'') => at = Self::past_quote(bytes, at + 1, quote),
+                b'(' if group => {
+                    depth += 1;
+                    at += 1;
+                }
+                b')' if group && depth > 0 => {
+                    depth -= 1;
+                    at += 1;
+                }
                 byte if ends.contains(&byte) => return at + 1,
                 _ => at += 1,
             }
@@ -1021,31 +1052,91 @@ impl Searcher {
         bytes.len()
     }
 
-    /// Append `value` with each bare `YYYY-MM-DD` in it widened to midnight UTC.
+    /// Append the `date` value `value` with each bare `YYYY-MM-DD` widened to
+    /// midnight UTC, in the form tantivy's grammar accepts where it stands.
     ///
-    /// No look-around: Rust's `regex` has none, and the first version of this
-    /// used `(?![T\d])`, which is a *runtime* pattern error — compiled on every
-    /// call and unwrapped, so it panicked every single query. Hence both the
-    /// manual boundary checks and the compile-once static.
+    /// A range bound (`[A TO B]`, `{…}`, `>=A`) is a relaxed word that may hold
+    /// `:` and may not be quoted, so it is widened as is. A term (the exact
+    /// value, an `IN […]` element, a member of a `(…)` group) is a plain word
+    /// that ends at `:`, so an unquoted `2026-03-01T00:00:00Z` does not parse
+    /// there: it is quoted, as tantivy's own date terms are. A date already in
+    /// quotes is widened inside them. Only a whole word that is exactly a date
+    /// is touched, so a datetime or a longer number stays as typed.
     fn widen_dates_in(value: &str, out: &mut String) {
-        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| regex::Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
+        const MIDNIGHT: &str = "T00:00:00Z";
         let bytes = value.as_bytes();
         let mut last = 0;
-        for m in re.find_iter(value) {
-            // Already a datetime (`…T…`) or part of a longer number: leave it.
-            let before = m.start().checked_sub(1).map(|at| bytes[at]);
-            let next = bytes.get(m.end()).copied();
-            let widen = !before.is_some_and(|c| c.is_ascii_digit())
-                && !matches!(next, Some(b'T') | Some(b't'))
-                && !next.is_some_and(|c| c.is_ascii_digit());
-            out.push_str(&value[last..m.end()]);
-            if widen {
-                out.push_str("T00:00:00Z");
+        let mut at = 0;
+        // Inside `[…]`/`{…}` opened as a range, not as an `IN […]` set.
+        let mut range = false;
+        // Right after `>`, `>=`, `<` or `<=`: the next word is a bound.
+        let mut bound = false;
+        // The last word was `IN`, so the next `[` opens a set.
+        let mut set_next = false;
+        while at < bytes.len() {
+            match bytes[at] {
+                byte if byte.is_ascii_whitespace() => at += 1,
+                quote @ (b'"' | b'\'') => {
+                    let end = Self::past_quote(bytes, at + 1, quote);
+                    let closed = end >= at + 2 && bytes[end - 1] == quote;
+                    if closed && Self::is_bare_date(&value[at + 1..end - 1]) {
+                        out.push_str(&value[last..end - 1]);
+                        out.push_str(MIDNIGHT);
+                        last = end - 1;
+                    }
+                    (bound, set_next) = (false, false);
+                    at = end;
+                }
+                b'[' | b'{' => {
+                    (range, bound, set_next) = (!set_next, false, false);
+                    at += 1;
+                }
+                b']' | b'}' => {
+                    range = false;
+                    at += 1;
+                }
+                b'>' | b'<' => {
+                    bound = true;
+                    at += 1 + usize::from(bytes.get(at + 1) == Some(&b'='));
+                }
+                b'(' | b')' | b'^' => at += 1,
+                sign => {
+                    // A word, possibly behind an occur sign.
+                    let start = at + usize::from(matches!(sign, b'+' | b'-'));
+                    let mut end = start;
+                    while end < bytes.len()
+                        && !bytes[end].is_ascii_whitespace()
+                        && !b"()[]{}\"'^".contains(&bytes[end])
+                    {
+                        end += if bytes[end] == b'\\' { 2 } else { 1 };
+                    }
+                    let end = end.min(bytes.len());
+                    let word = &value[start..end];
+                    if Self::is_bare_date(word) {
+                        out.push_str(&value[last..start]);
+                        let quote = if range || bound { "" } else { "\"" };
+                        out.push_str(quote);
+                        out.push_str(word);
+                        out.push_str(MIDNIGHT);
+                        out.push_str(quote);
+                        last = end;
+                    }
+                    (bound, set_next) = (false, word == "IN");
+                    at = end;
+                }
             }
-            last = m.end();
         }
         out.push_str(&value[last..]);
+    }
+
+    /// Exactly `YYYY-MM-DD`.
+    fn is_bare_date(word: &str) -> bool {
+        let bytes = word.as_bytes();
+        bytes.len() == 10
+            && bytes.iter().enumerate().all(|(at, byte)| match at {
+                4 | 7 => *byte == b'-',
+                _ => byte.is_ascii_digit(),
+            })
     }
 
     /// Search, or say why the query could not be understood.
@@ -1489,11 +1580,13 @@ mod hidden_link_context_tests {
 mod date_query_tests {
     use super::Searcher;
 
-    /// #1933: a bare date is widened only where it is a `date` value.
+    /// #1933: a bare date is widened only where it is a `date` value, and in a
+    /// form tantivy's strict grammar parses there.
     #[test]
     fn only_values_of_the_date_field_are_widened() {
         let widen = Searcher::widen_bare_dates;
         for (query, widened) in [
+            // Range and comparison bounds may not be quoted.
             (
                 "date:[2026-01-01 TO 2026-12-31]",
                 "date:[2026-01-01T00:00:00Z TO 2026-12-31T00:00:00Z]",
@@ -1502,26 +1595,44 @@ mod date_query_tests {
                 "date:{2026-01-01 TO *] plan",
                 "date:{2026-01-01T00:00:00Z TO *] plan",
             ),
-            ("date:2026-03-01", "date:2026-03-01T00:00:00Z"),
             (
                 "plan date: >= 2026-03-01",
                 "plan date: >= 2026-03-01T00:00:00Z",
             ),
             ("(-date:<2026-03-01)", "(-date:<2026-03-01T00:00:00Z)"),
+            // A term ends at `:` unless it is quoted.
+            ("date:2026-03-01", r#"date:"2026-03-01T00:00:00Z""#),
+            (
+                "-date:2026-03-01 plan",
+                r#"-date:"2026-03-01T00:00:00Z" plan"#,
+            ),
             (
                 "date: IN [2026-03-01 2026-07-15]",
-                "date: IN [2026-03-01T00:00:00Z 2026-07-15T00:00:00Z]",
+                r#"date: IN ["2026-03-01T00:00:00Z" "2026-07-15T00:00:00Z"]"#,
+            ),
+            (
+                r#"date:IN ["2026-03-01"]"#,
+                r#"date:IN ["2026-03-01T00:00:00Z"]"#,
             ),
             (
                 "date:(2026-03-01 OR 2026-07-15) 2026-01-01",
-                "date:(2026-03-01T00:00:00Z OR 2026-07-15T00:00:00Z) 2026-01-01",
+                r#"date:("2026-03-01T00:00:00Z" OR "2026-07-15T00:00:00Z") 2026-01-01"#,
             ),
             (
-                "date:\"2026-03-01\" \"date 2026-01-01\"",
-                "date:\"2026-03-01T00:00:00Z\" \"date 2026-01-01\"",
+                "date:((2026-03-01) OR [2026-07-01 TO 2026-08-01])",
+                r#"date:(("2026-03-01T00:00:00Z") OR [2026-07-01T00:00:00Z TO 2026-08-01T00:00:00Z])"#,
+            ),
+            (
+                r#"date:"2026-03-01" "date 2026-01-01""#,
+                r#"date:"2026-03-01T00:00:00Z" "date 2026-01-01""#,
             ),
         ] {
-            assert_eq!(widen(query), widened, "{query}");
+            let got = widen(query);
+            assert_eq!(got, widened, "{query}");
+            assert!(
+                tantivy::query_grammar::parse_query(&got).is_ok(),
+                "tantivy cannot parse {got}"
+            );
         }
         // Text, quotes, other fields, datetimes and longer numbers stay as typed.
         for query in [
@@ -1534,6 +1645,7 @@ mod date_query_tests {
             "date:2026-03-01T10:00:00Z",
             "date:12026-01-01",
             "date:2026-01-012",
+            "date:x2026-01-01",
         ] {
             assert_eq!(widen(query), query);
         }
