@@ -1594,7 +1594,7 @@ impl Reader {
                             .context_menu(|menu, _, _| {
                                 crate::reader_code_file::text_menu(menu, false)
                             })
-                            .font_family("Cascadia Code")
+                            .font_family(reader_fonts::code(cx))
                             .h(px(220.)),
                     )
             })
@@ -1610,9 +1610,9 @@ impl Reader {
                         move |menu, _, cx| reader_reminder::editor_menu(menu, &facts, cx)
                     })
                     .font_family(if editing.live_preview.enabled {
-                        crate::source_presentation::BODY_FONT
+                        reader_fonts::note(cx)
                     } else {
-                        crate::source_presentation::CODE_FONT
+                        reader_fonts::code(cx)
                     })
                     .text_size(px(if editing.live_preview.enabled {
                         reader_ui_state::font_size(cx)
@@ -1768,6 +1768,7 @@ fn live_blocks(
                 .on_table_cell_press(on_cell)
                 .on_link_click(|_, _, _, _| {})
                 .style(style)
+                .font_family(reader_fonts::note(cx))
                 .text_size(font_size)
                 .w_full(),
             )

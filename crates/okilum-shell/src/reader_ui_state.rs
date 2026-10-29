@@ -119,6 +119,8 @@ struct Saved {
     appearance: String,
     theme: String,
     font_size: f32,
+    note_font: String,
+    code_font: String,
     text_zoom: f32,
     reading_width: f32,
     /// The note column spans the whole note pane instead of the reading
@@ -185,6 +187,8 @@ impl Default for Saved {
             appearance: "system".into(),
             theme: brand::ThemeId::default().key().into(),
             font_size: BODY_FONT_SIZE,
+            note_font: brand::SANS_FONT.into(),
+            code_font: brand::MONO_FONT.into(),
             text_zoom: 1.,
             reading_width: READER_MAX_WIDTH,
             full_note_width: false,
@@ -226,6 +230,7 @@ struct Store {
     appearance_changed: bool,
     theme_changed: bool,
     font_changed: bool,
+    font_families_changed: [bool; 2],
     zoom_changed: bool,
     width_changed: bool,
     find_changed: bool,
@@ -323,6 +328,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         appearance_changed: !path.exists(),
         theme_changed: !path.exists(),
         font_changed: !path.exists(),
+        font_families_changed: [false; 2],
         zoom_changed: !path.exists(),
         width_changed: !path.exists(),
         find_changed: false,
@@ -554,6 +560,7 @@ struct WriteJob {
     appearance_changed: bool,
     theme_changed: bool,
     font_changed: bool,
+    font_families_changed: [bool; 2],
     zoom_changed: bool,
     width_changed: bool,
     find_changed: bool,
@@ -626,6 +633,12 @@ impl WriteJob {
         }
         if self.font_changed {
             latest.font_size = self.saved.font_size;
+        }
+        if self.font_families_changed[0] {
+            latest.note_font = self.saved.note_font.clone();
+        }
+        if self.font_families_changed[1] {
+            latest.code_font = self.saved.code_font.clone();
         }
         if self.typed_views_changed {
             latest.typed_views = self.saved.typed_views.clone();
@@ -779,6 +792,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.theme_changed
             && !state.zoom_changed
             && !state.font_changed
+            && !state.font_families_changed.iter().any(|changed| *changed)
             && !state.width_changed
             && !state.find_changed
             && !state.typed_views_changed
@@ -815,6 +829,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         appearance_changed: state.appearance_changed,
         theme_changed: state.theme_changed,
         font_changed: state.font_changed,
+        font_families_changed: state.font_families_changed,
         zoom_changed: state.zoom_changed,
         width_changed: state.width_changed,
         find_changed: state.find_changed,
@@ -1739,6 +1754,29 @@ pub(crate) fn set_delimited_header(path: PathBuf, header: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Keep the requested name even when this machine cannot provide it: another
+/// OS may have that font. Resolution is presentation-only, never a disk rewrite.
+pub(crate) fn selected_font(role: reader_fonts::Role, cx: &App) -> &str {
+    cx.try_global::<Store>()
+        .map_or(role.default_family(), |state| match role {
+            reader_fonts::Role::Note => state.saved.note_font.as_str(),
+            reader_fonts::Role::Code => state.saved.code_font.as_str(),
+        })
+}
+pub(crate) fn set_selected_font(role: reader_fonts::Role, name: &str, cx: &mut App) {
+    if !installed(cx) || selected_font(role, cx) == name {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    match role {
+        reader_fonts::Role::Note => state.saved.note_font = name.into(),
+        reader_fonts::Role::Code => state.saved.code_font = name.into(),
+    }
+    state.font_families_changed[role.index()] = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn font_size(cx: &App) -> f32 {
     base_font_size(cx) * text_zoom(cx)
 }
@@ -1839,6 +1877,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.appearance_changed = false;
         state.theme_changed = false;
         state.font_changed = false;
+        state.font_families_changed = [false; 2];
         state.zoom_changed = false;
         state.width_changed = false;
         state.find_changed = false;
@@ -1869,6 +1908,30 @@ fn mark_saved(generation: u64, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn independent_font_changes_merge_without_resetting_other_role(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            set_selected_font(reader_fonts::Role::Note, "Example Text", cx);
+            let mut other = job(cx).unwrap();
+            other.saved.note_font = "Stale Text".into();
+            other.saved.code_font = "Example Code".into();
+            other.font_families_changed = [false, true];
+            other.serial = Arc::new(AtomicU64::new(other.generation));
+            flush(cx);
+            other.run().unwrap();
+            install(directory.path(), cx);
+            assert_eq!(selected_font(reader_fonts::Role::Note, cx), "Example Text");
+            assert_eq!(selected_font(reader_fonts::Role::Code, cx), "Example Code");
+            set_toolbar_labels(true, cx);
+            flush(cx);
+            let saved = read(&directory.path().join("reader-ui.json")).unwrap();
+            assert_eq!(saved.note_font, "Example Text");
+            assert_eq!(saved.code_font, "Example Code");
+        });
+    }
 
     #[gpui::test]
     fn delimited_header_preferences_survive_restart_and_merge_per_file(cx: &mut TestAppContext) {
@@ -2287,6 +2350,7 @@ mod tests {
                 appearance_changed: false,
                 theme_changed: false,
                 font_changed: true,
+                font_families_changed: [false; 2],
                 zoom_changed: false,
                 width_changed: false,
                 find_changed: false,

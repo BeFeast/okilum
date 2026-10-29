@@ -56,6 +56,7 @@ mod reader_embeds;
 mod reader_external_changes;
 mod reader_feedback;
 mod reader_files;
+mod reader_fonts;
 mod reader_history;
 mod reader_hover;
 #[cfg(any(target_os = "macos", test))]
@@ -5077,6 +5078,7 @@ impl Reader {
                                 reader_plugins(
                                     self.vault_root.clone(),
                                     TextView::new(&self.content)
+                                        .font_family(reader_fonts::note(cx))
                                         .scrollable(true)
                                         .selectable(true)
                                         // The element pushes its flags into the state every frame
@@ -5234,6 +5236,7 @@ impl Reader {
                             div().flex_1().min_h_0().child(reader_plugins(
                                 self.vault_root.clone(),
                                 TextView::new(&state)
+                                    .font_family(reader_fonts::note(cx))
                                     .scrollable(true)
                                     .selectable(true)
                                     .selection_format(self.sel_format)
@@ -7510,6 +7513,7 @@ fn main() {
         if let Err(error) = brand::load_fonts(cx) {
             eprintln!("Embedded typography unavailable: {error}");
         }
+        reader_fonts::install(cx);
         drop(fonts_phase);
         let appearance_phase = diagnostics.phase("appearance_load");
         let (appearance, theme) = load_appearance(cx);

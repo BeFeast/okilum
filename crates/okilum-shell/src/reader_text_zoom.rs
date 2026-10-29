@@ -15,7 +15,7 @@ const HUD_TIMEOUT: Duration = Duration::from_secs(3);
 /// Fenced code has its own themed font size; scale it with the document.
 /// Inline code inherits the surrounding text size, including its zoom.
 pub(super) fn document_style(cx: &App) -> TextViewStyle {
-    let mut style = reader_text_style(cx.theme());
+    let mut style = reader_fonts::text_style(cx);
     style.code_block.text.font_size =
         Some((cx.theme().mono_font_size * reader_ui_state::text_zoom(cx)).into());
     #[cfg(test)]

@@ -278,7 +278,7 @@ fn table_wheel(horizontal: ScrollHandle, rows: UniformListScrollHandle) -> impl 
 
 fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
     let scroll = ScrollHandle::new();
-    let rows = Rc::new(RefCell::new(None::<(f32, Vec<TooltipRow>)>));
+    let rows = Rc::new(RefCell::new(None::<(f32, SharedString, Vec<TooltipRow>)>));
     gpui_component::tooltip::Tooltip::element(move |window, cx| {
         // Leave room for the tooltip's padding/margin and the window edges.
         // A retained field can be 64 KiB, so wrapping alone is insufficient:
@@ -288,10 +288,13 @@ fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
         let height = (f32::from(viewport.height) - 64.).clamp(1., 360.);
         // GPUI's wrapped text loses RTL-first paragraphs (one stray glyph, the
         // rest off-row), so each row is wrapped here and shaped as one line.
-        let family = cx.theme().font_family.clone();
+        let family = reader_fonts::note(cx);
         let font_size = rems(0.875).to_pixels(window.rem_size());
         let mut cached = rows.borrow_mut();
-        if cached.as_ref().is_none_or(|(at, _)| *at != width) {
+        if cached
+            .as_ref()
+            .is_none_or(|(at, font, _)| *at != width || *font != family)
+        {
             let font = Font {
                 family: family.clone(),
                 ..window.text_style().font()
@@ -309,11 +312,15 @@ fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
                 f32::from(text_system.layout_line(text, font_size, &[run], None).width)
             };
             // A pixel of slack absorbs kerning across measured segments.
-            *cached = Some((width, tooltip_rows(&value, width - 1., measure)));
+            *cached = Some((
+                width,
+                family.clone(),
+                tooltip_rows(&value, width - 1., measure),
+            ));
         }
         let rows = cached
             .as_ref()
-            .map(|(_, rows)| rows.clone())
+            .map(|(_, _, rows)| rows.clone())
             .unwrap_or_default();
         div()
             .id("delimited-cell-tooltip")
@@ -446,6 +453,7 @@ impl Render for TablePreview {
         let palette = brand::palette(cx);
         let mut view = v_flex()
             .id("reader-delimited")
+            .font_family(reader_fonts::note(cx))
             .key_context("ReaderDelimited")
             .track_focus(&self.focus)
             .flex_1()

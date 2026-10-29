@@ -434,7 +434,7 @@ impl Render for CodePreview {
                     .readonly(true)
                     .context_menu(|menu, _, _| text_menu(menu, false))
                     .appearance(false)
-                    .font_family(crate::source_presentation::CODE_FONT)
+                    .font_family(reader_fonts::code(cx))
                     .text_size(text_size(cx))
                     .size_full(),
             ),
