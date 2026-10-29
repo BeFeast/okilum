@@ -82,8 +82,10 @@ Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
 Cmd+Alt+V / Ctrl+Alt+V. Files dropped onto the editor take the files path.
 Background results land only in the editing session of the note they were
 pasted into; otherwise a toast names the saved file. macOS supports rich-text, image and file offers. Linux also routes native
-PNG/JPEG and other supported image MIME offers, plus local `text/uri-list`
-files, through the note attachment pipeline. The Wayland data-control read
+PNG/JPEG and other supported image MIME offers, local `text/uri-list` files,
+and `text/html` alongside its plain-text fallback through the common Smart paste
+router. HTML images use the same attachment pipeline before an embed is inserted;
+Paste as Plain Text keeps the plain flavor. The Wayland data-control read
 keeps the same pinned-offer checks, deadline and payload limits; self-owned
 selections, X11 and unsupported compositors use GPUI's typed clipboard on the
 UI thread. Windows (#1619) still pastes text as described above. Completed
