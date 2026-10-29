@@ -37,7 +37,9 @@ original combined titlebar and document controls:
   and the note title (#1756). Clicking a folder breadcrumb reveals and expands
   that folder in the tree; Reveal opens a collapsed sidebar and selects the note.
   The Reveal button is disabled for a document outside the current tree. Clicking the title renames inline. Read/Edit use book/pencil;
-  Edit also has Live Preview/Source (eye/code). Find and note More follow. Save
+  Edit also has Live Preview/Source (eye/code). Find, width, Maximize/Restore
+  and note More follow (#1909). Maximize sits beside width in this document
+  header; its shortcut and reversible panel state remain unchanged. Save
   appears only while dirty; save/conflict feedback keeps its existing behavior.
 - **Labels.** Glyphs are the default. Settings → Appearance → “Show labels on
   toolbar buttons” persists globally; mode labels appear only when the measured

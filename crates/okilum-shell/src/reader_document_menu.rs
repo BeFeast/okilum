@@ -103,7 +103,7 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let fixed_width = 208. + if dirty { 32. } else { 0. };
+        let fixed_width = 240. + if dirty { 32. } else { 0. };
         let mut spare = document_width - fixed_width - title_width - compact_parent;
         // One toggle to the other editor mode (#992).
         let show_presentation = !is_file && self.editing.is_some() && spare >= 32.;
@@ -329,6 +329,26 @@ impl Reader {
                 .on_click(|_, _, cx| toggle_note_width(cx)),
             );
         }
+        row = row.child(preserve_reader_selection(
+            "reader-maximize-note-preserve",
+            reader_icon_button(
+                "reader-maximize-note",
+                IconName::Maximize,
+                reader_shortcuts::hint(
+                    if self.panels.maximized() {
+                        "Restore panels"
+                    } else {
+                        "Maximize note"
+                    },
+                    &MaximizeNote,
+                    cx,
+                ),
+                cx,
+            )
+            .debug_selector(|| "reader-maximize-note".into())
+            .selected(self.panels.maximized())
+            .on_click(cx.listener(|this, _, window, cx| this.maximize_note(window, cx))),
+        ));
         let width_label = (width_applies && !show_width).then(|| note_width_label(cx));
         row.child(
             reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)

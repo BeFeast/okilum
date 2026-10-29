@@ -3580,6 +3580,7 @@ impl Reader {
             .visible(reader_layout::Panel::Backlinks, available);
         h_flex()
             .id("reader-header")
+            .debug_selector(|| "reader-header".into())
             .w_full()
             .when(cfg!(windows) && !self.embedded_in_workspace, |row| {
                 // The toolkit's bar content does not shrink. Reserve its native
@@ -3662,28 +3663,6 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
-                    .child(preserve_reader_selection(
-                        "reader-maximize-note-preserve",
-                        reader_icon_button(
-                            "reader-maximize-note",
-                            IconName::Maximize,
-                            reader_shortcuts::hint(
-                                if self.panels.maximized() {
-                                    "Restore panels"
-                                } else {
-                                    "Maximize note"
-                                },
-                                &MaximizeNote,
-                                cx,
-                            ),
-                            cx,
-                        )
-                        .debug_selector(|| "reader-maximize-note".into())
-                        .selected(self.panels.maximized())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.maximize_note(window, cx)),
-                        ),
-                    ))
                     .child(reader_feedback::button(cx))
                     .child(reader_more_menu(
                         self.vault_root.clone(),

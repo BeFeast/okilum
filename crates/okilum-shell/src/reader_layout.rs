@@ -407,6 +407,18 @@ mod tests {
                 cx.notify();
             });
             visual.run_until_parked();
+            // #1909: the document owns maximize beside its width control.
+            // A hit in the application titlebar would fail these bounds even
+            // if it dispatched the same action successfully.
+            let document = visual.debug_bounds("document-header").unwrap();
+            let application = visual.debug_bounds("reader-header").unwrap();
+            let maximize = visual.debug_bounds("reader-maximize-note").unwrap();
+            let width = visual.debug_bounds("note-width").unwrap();
+            assert!(maximize.left() >= document.left() && maximize.right() <= document.right());
+            assert!(maximize.top() >= document.top() && maximize.bottom() <= document.bottom());
+            assert!(maximize.top() >= application.bottom());
+            assert_eq!(maximize.center().y, width.center().y);
+            assert!(maximize.left() >= width.right() && maximize.left() <= width.right() + px(5.));
             let before = reader.read_with(visual, |r, cx| {
                 (
                     r.panels.clone(),
