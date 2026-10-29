@@ -12,6 +12,10 @@
 //! one Undo step; Backspace right after a typed autoformat takes back only
 //! the autoformat (patch 0088). Keys are matched by key position, so Russian
 //! and Hebrew layouts reach them too.
+// Test-first container contract; activated with the fence hook in #1893.
+#[cfg(test)]
+mod fences;
+
 use super::ime_guard::Trigger;
 use super::lists::{self, Edit, ListEdit};
 use super::*;
