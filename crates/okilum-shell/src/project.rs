@@ -109,9 +109,9 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = Self::empty(state.clone(), window, cx);
+        let area_copy = area.clone();
         view.area = Some(area);
         let state_copy = state.clone();
-        let area_copy = view.area.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -119,7 +119,7 @@ impl ProjectView {
                     let (env, project_override) = match (&binding, &state_copy) {
                         (Some(binding), Some(state)) => {
                             let explicit = connections::project_origin(
-                                area_copy.as_deref().unwrap(),
+                                &area_copy,
                                 &binding.environment,
                                 Some(state),
                             )?;

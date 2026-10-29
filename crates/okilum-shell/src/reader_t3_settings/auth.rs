@@ -59,6 +59,11 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
     if current.busy || current.pending.is_some() {
         return;
     }
+    let renew = authorize
+        && matches!(
+            current.gateway.as_ref().map(|g| g.status()),
+            Some(GatewayStatus::ExpiresSoon { .. } | GatewayStatus::Expired)
+        );
     edit(&origin, cx, |e| {
         e.busy = true;
         e.error = None;
@@ -120,10 +125,10 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                         });
                     }
                     let saved = token.map(|t| (worker_env.credential_url(), t));
-                    okilum_t3::reconnect::connect(&worker_env, saved, false, || {
+                    okilum_t3::reconnect::connect(&worker_env, saved, renew, || {
                         let authorization = Authorization::prepare(&worker_env, "Okilum")?;
                         let (send, receive) = std::sync::mpsc::channel();
-                        events.send_blocking(Event::Ready(Pending {
+                        events.try_send(Event::Ready(Pending {
                             url: authorization.url().to_string(),
                             input: send,
                             remaining: Some(DEFAULT_WAIT.as_secs()),
@@ -131,13 +136,15 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                         authorization.wait(
                             receive,
                             |p| {
-                                let _ = events.send_blocking(Event::Progress(p));
+                                let _ = events.try_send(Event::Progress(p));
                             },
                             DEFAULT_WAIT,
                         )
                     })
                 })
                 .await?;
+            // The worker owns the sole event sender; completion drops it.
+            // Drain the nonblocking unbounded stream before publishing success.
             updates_job.await;
             if let Some(token) = &connected.issued_token {
                 cx.update(|cx| {
@@ -213,9 +220,21 @@ mod tests {
 
     #[gpui::test]
     fn pending_sign_in_is_shared_across_aliases_and_survives_the_form(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let form = cx.new(|cx| T3Settings::new(None, window, cx));
+            Root::new(form, window, cx)
+        });
+        let initiating =
+            visual.update(|window, cx| cx.new(|cx| T3Settings::new(None, window, cx)).downgrade());
+        visual.run_until_parked();
+        assert!(
+            initiating.upgrade().is_none(),
+            "the initiating form has closed before authorization completes"
+        );
         let env = Environment::new("first-project", "https://t3.example").unwrap();
         let (send, receive) = std::sync::mpsc::channel();
-        cx.update(|cx| {
+        visual.update(|_, cx| {
             edit(&env.origin(), cx, |entry| {
                 entry.busy = true;
                 entry.pending = Some(Pending {
@@ -241,7 +260,7 @@ mod tests {
             matches!(receive.try_recv(), Ok(AuthInput::WaitLonger)),
             "the original attempt, not a replacement, owns the controls"
         );
-        cx.update(|cx| {
+        visual.update(|_, cx| {
             let token = StoredToken {
                 access_token: "fixture-only".into(),
                 expires_at: u64::MAX,

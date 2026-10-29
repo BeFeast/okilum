@@ -128,9 +128,13 @@ impl Authorization {
             if matches!(&command, Some(Input::WaitLonger)) {
                 if listener.is_none() {
                     let address = Url::parse(&redirect_uri)?.socket_addrs(|| None)?[0];
-                    let reopened = TcpListener::bind(address).context(
-                        "Cannot resume browser return; paste its callback URL or start again",
-                    )?;
+                    let reopened = match TcpListener::bind(address) {
+                        Ok(listener) => listener,
+                        Err(_) => {
+                            progress(Progress::InvalidCallback("Cannot resume the browser return on this port. Paste its callback URL or cancel and sign in again.".into()));
+                            continue;
+                        }
+                    };
                     reopened.set_nonblocking(true)?;
                     listener = Some(reopened);
                 }

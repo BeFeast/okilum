@@ -10,6 +10,7 @@ impl Global for Shown {}
 struct SignIn {
     view: Entity<gpui_wry::WebView>,
     _session: Subscription,
+    routing: crate::reader_manager_focus::FocusRouting,
 }
 impl Render for SignIn {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -40,20 +41,30 @@ pub(super) fn show(
         window.set_window_title("Sign in to T3 — Okilum");
         let store = crate::reader_manager_store::application_identifier();
         let handle = HasWindowHandle::window_handle(window).expect("sign-in window handle");
-        let browser = (|| -> anyhow::Result<wry::WebView> {
-            let browser = wry::WebViewBuilder::new()
-                .with_incognito(false)
-                .with_data_store_identifier(store)
-                .with_url(&url_owned)
-                .with_focused(true)
-                .build_as_child(&handle)?;
-            crate::reader_manager_store::verify(&browser, &store)?;
-            Ok(browser)
-        })();
+        let (events, receive) = async_channel::unbounded::<String>();
+        let page_events = events.clone();
+        let browser =
+            (|| -> anyhow::Result<(wry::WebView, crate::reader_manager_focus::FocusRouting)> {
+                let browser = wry::WebViewBuilder::new()
+                    .with_incognito(false)
+                    .with_data_store_identifier(store)
+                    .with_url(&url_owned)
+                    .with_focused(true)
+                    .with_on_page_load_handler(move |event, _| {
+                        if matches!(event, wry::PageLoadEvent::Finished) {
+                            let _ = page_events.try_send("loaded".into());
+                        }
+                    })
+                    .build_as_child(&handle)?;
+                crate::reader_manager_store::verify(&browser, &store)?;
+                let routing =
+                    crate::reader_manager_focus::FocusRouting::new(&browser, window, events)?;
+                Ok((browser, routing))
+            })();
         // Keep failures in the ordinary Settings error path rather than using
         // a temporary store which would require a second pairing.
         let content = match browser {
-            Ok(browser) => {
+            Ok((browser, routing)) => {
                 let view = cx.new(|cx| gpui_wry::WebView::new(browser, window, cx));
                 let sign_in = cx.new(|cx| {
                     let session = window.observe_global::<auth::Sessions>(cx, move |window, cx| {
@@ -62,9 +73,29 @@ pub(super) fn show(
                             window.remove_window();
                         }
                     });
+                    cx.spawn_in(window, async move |this, cx| {
+                        while let Ok(event) = receive.recv().await {
+                            if this
+                                .update_in(cx, |this, window, cx| {
+                                    this.routing.refresh();
+                                    if event == "loaded" {
+                                        this.routing.document_loaded();
+                                    }
+                                    if event == "native-focus" && this.routing.focused() {
+                                        window.blur(cx);
+                                    }
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
                     SignIn {
                         view,
                         _session: session,
+                        routing,
                     }
                 });
                 BrowserContent {
