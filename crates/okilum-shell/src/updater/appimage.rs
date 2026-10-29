@@ -92,6 +92,7 @@ pub(super) fn check() {
     status::set(CheckStatus::Checking);
     std::thread::spawn(|| {
         let result = (|| -> anyhow::Result<()> {
+            okilum_appimage::recover_interrupted()?;
             let target = okilum_appimage::Target::detect()?;
             let beta = beta();
             let current = env!("OKILUM_BUILD_VERSION").parse()?;

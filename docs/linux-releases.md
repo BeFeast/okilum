@@ -403,3 +403,19 @@ one channel. Archive-only older payload publication does not invent a historical
 notes predecessor or change the current channel. Beta and Stable chains are
 independent. Notes errors fail publication visibly; executable bytes and signing
 rules remain unchanged.
+
+### Interrupted AppImage updates and rollback retention
+
+The updater uses private `.okilum-update-*` directories beside the installed
+AppImage. Before replacement, a failed or interrupted helper removes its backup
+hard link when it still names the installed inode, retaining `apply.log` for
+diagnostics. Before checking for another update, recovery removes abandoned
+`previous.AppImage` links only from user-owned mode-0700 stage directories while
+holding the nonblocking update lock. Unrelated hard-linked installs remain
+unsupported; the regular-file/owner/single-link checks are unchanged.
+
+A completed stage retains `previous.AppImage` as a manual rollback copy. The next
+update preparation preserves only the newest completed stage and removes older
+private stages; the current transaction is created afterward. Symlinked and
+non-private directories are never pruned. Thus the preceding completed rollback
+and the current transaction may coexist until the following preparation.

@@ -91,6 +91,120 @@ fn stage_directory(parent: &Path) -> Result<tempfile::TempDir> {
         .tempdir_in(parent)?)
 }
 
+fn update_lock(path: &Path) -> Result<File> {
+    let parent = path.parent().context("Missing AppImage parent")?;
+    let name = path.file_name().context("Missing AppImage name")?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(parent.join(format!(".{}.update-lock", name.to_string_lossy())))?;
+    let metadata = lock.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.nlink() == 1
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0,
+        "Unsafe AppImage update lock"
+    );
+    ensure!(
+        unsafe {
+            libc::flock(
+                std::os::fd::AsRawFd::as_raw_fd(&lock),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        } == 0,
+        "Another AppImage updater is active"
+    );
+    Ok(lock)
+}
+
+fn private_stages(parent: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".okilum-update-")
+        {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o777 == 0o700
+        {
+            paths.push(entry.path());
+        }
+    }
+    Ok(paths)
+}
+
+/// Remove only an abandoned updater-created link, never an arbitrary hard link.
+/// The transaction lock excludes an active helper. Target::open still enforces
+/// the original no-hard-links policy after recovery.
+pub fn recover_interrupted() -> Result<()> {
+    let path = PathBuf::from(std::env::var_os("APPIMAGE").context("Not an AppImage launch")?);
+    recover_interrupted_at(&path)
+}
+fn recover_interrupted_at(path: &Path) -> Result<()> {
+    ensure!(path.is_absolute(), "APPIMAGE path must be absolute");
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && metadata.uid() == unsafe { libc::geteuid() },
+        "AppImage must be a regular file owned by you, without links"
+    );
+    if metadata.nlink() == 1 {
+        return Ok(());
+    }
+    let _lock = update_lock(path)?;
+    for stage in private_stages(path.parent().context("Missing AppImage parent")?)? {
+        let previous = stage.join("previous.AppImage");
+        let old = match fs::symlink_metadata(&previous) {
+            Ok(old) => old,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("Read {}", previous.display()))
+            }
+        };
+        let current = fs::symlink_metadata(path)?;
+        if old.is_file() && old.dev() == current.dev() && old.ino() == current.ino() {
+            fs::remove_file(&previous)
+                .with_context(|| format!("Remove abandoned update link {}", previous.display()))?;
+            File::open(&stage)?.sync_all()?;
+        }
+    }
+    Ok(())
+}
+
+// Called only while holding the update lock, before creating a new stage.
+// Preserve the newest completed transaction as one manual rollback generation.
+fn prune_stages(parent: &Path) -> Result<()> {
+    let stages = private_stages(parent)?;
+    let mut completed = Vec::new();
+    for stage in &stages {
+        if let Ok(metadata) = fs::symlink_metadata(stage.join("completed")) {
+            if metadata.is_file() {
+                completed.push((metadata.modified()?, stage));
+            }
+        }
+    }
+    completed.sort();
+    let retained = completed.last().map(|(_, stage)| *stage);
+    for stage in &stages {
+        if Some(stage) != retained {
+            fs::remove_dir_all(stage)
+                .with_context(|| format!("Remove old update stage {}", stage.display()))?;
+        }
+    }
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 /// APPIMAGE must designate the original regular user-owned file, never the
 /// extracted executable. Symlinks and hardlinked installs require manual updates.
 #[derive(Debug)]
@@ -246,7 +360,8 @@ pub fn check(beta: bool, current: u64, gpgv: &Path) -> Result<Option<Release>> {
 
 /// Staging is ephemeral until an explicit restart. Crash before restart leaves
 /// the installed file intact. The private sibling directory survives apply and
-/// holds the old executable plus a recovery log.
+/// holds the old executable plus a recovery log. The next preparation retains
+/// only the newest completed transaction and removes older private stages.
 pub struct Staged {
     directory: tempfile::TempDir,
     target: Target,
@@ -267,28 +382,9 @@ impl Staged {
         fetch: impl Fn(&str, &Path, u64) -> Result<()>,
     ) -> Result<Self> {
         let parent = target.path.parent().context("Missing AppImage parent")?;
-        let lockpath = parent.join(format!(
-            ".{}.update-lock",
-            target.path.file_name().unwrap().to_string_lossy()
-        ));
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(lockpath)?;
-        ensure!(
-            unsafe {
-                libc::flock(
-                    std::os::fd::AsRawFd::as_raw_fd(&lock),
-                    libc::LOCK_EX | libc::LOCK_NB,
-                )
-            } == 0,
-            "Another AppImage updater is active"
-        );
+        let lock = update_lock(&target.path)?;
         target.unchanged()?;
+        prune_stages(parent)?;
         let directory = stage_directory(parent)?;
         let image = directory.path().join("new.AppImage");
         let sig = directory.path().join("payload.sig");
@@ -393,6 +489,14 @@ impl Staged {
 const APPLY: &str = r#"
 set -eu
 pid=$1; target=$2; stage=$3; digest=$4; original=$5; shift 5
+cleanup_unapplied() {
+    if test "$target" -ef "$stage/previous.AppImage"; then
+        rm -- "$stage/previous.AppImage"
+        sync -- "$stage"
+    fi
+}
+trap cleanup_unapplied EXIT
+trap 'exit 1' HUP INT TERM
 n=0
 while kill -0 "$pid" 2>/dev/null; do
     n=$((n+1)); test "$n" -le 120 || { echo 'Shutdown timed out; original retained'; exit 1; }
@@ -409,6 +513,7 @@ test "$actual" = "$digest" || exit 1
 # With explicit operands and no -f, coreutils sync uses fsync per file,
 # never syncfs of the entire busy filesystem. Persist the rename directory too.
 mv -f -- "$stage/new.AppImage" "$target"
+trap - EXIT HUP INT TERM
 sync -- "$target" "$(dirname -- "$target")"
 echo 'Applied; previous.AppImage is the manual rollback copy'
 unset APPIMAGE APPDIR LD_LIBRARY_PATH APPIMAGE_EXTRACT_AND_RUN
@@ -800,6 +905,152 @@ mod tests {
         assert!(Target::open(&path).is_err());
     }
 
+    #[test]
+    fn abandoned_link_recovery_requires_private_stage_and_free_lock() {
+        for (name, mode, previous, busy, recovered) in [
+            (
+                ".okilum-update-valid",
+                0o700,
+                "previous.AppImage",
+                false,
+                true,
+            ),
+            (
+                ".okilum-update-busy",
+                0o700,
+                "previous.AppImage",
+                true,
+                false,
+            ),
+            (
+                ".okilum-update-public",
+                0o755,
+                "previous.AppImage",
+                false,
+                false,
+            ),
+            ("unrelated", 0o700, "previous.AppImage", false, false),
+            (
+                ".okilum-update-wrong",
+                0o700,
+                "other.AppImage",
+                false,
+                false,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("Okilum.AppImage");
+            executable(&target, b"original");
+            let stage = dir.path().join(name);
+            fs::create_dir(&stage).unwrap();
+            fs::set_permissions(&stage, fs::Permissions::from_mode(mode)).unwrap();
+            fs::hard_link(&target, stage.join(previous)).unwrap();
+            assert_eq!(fs::metadata(&target).unwrap().nlink(), 2);
+            assert!(Target::open(&target)
+                .unwrap_err()
+                .to_string()
+                .contains("without links"));
+            let lock = busy.then(|| update_lock(&target).unwrap());
+            let result = recover_interrupted_at(&target);
+            assert_eq!(result.is_ok(), !busy);
+            assert_eq!(Target::open(&target).is_ok(), recovered, "{name}");
+            assert_eq!(
+                fs::metadata(&target).unwrap().nlink(),
+                if recovered { 1 } else { 2 }
+            );
+            drop(lock);
+        }
+    }
+
+    #[test]
+    fn stage_retention_keeps_only_newest_completed_and_ignores_unsafe_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = stage_directory(dir.path()).unwrap().keep();
+        fs::write(first.join("completed"), b"committed").unwrap();
+        // Resolve equal timestamps deterministically by the same path tie-breaker.
+        let second = stage_directory(dir.path()).unwrap().keep();
+        fs::write(second.join("completed"), b"committed").unwrap();
+        let unfinished = stage_directory(dir.path()).unwrap().keep();
+        let public = dir.path().join(".okilum-update-public");
+        fs::create_dir(&public).unwrap();
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o755)).unwrap();
+        let alias = dir.path().join(".okilum-update-symlink");
+        symlink(&public, &alias).unwrap();
+        assert_eq!(private_stages(dir.path()).unwrap().len(), 3);
+        let mut ordered = [first.clone(), second.clone()];
+        ordered.sort_by_key(|p| {
+            (
+                fs::metadata(p.join("completed"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                p.clone(),
+            )
+        });
+        let newest = ordered.last().unwrap();
+        prune_stages(dir.path()).unwrap();
+        assert_eq!(private_stages(dir.path()).unwrap(), vec![newest.clone()]);
+        assert!(!unfinished.exists());
+        assert!(public.is_dir());
+        assert!(fs::symlink_metadata(alias)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn shutdown_timeout_and_term_remove_only_the_unapplied_backup_link() {
+        for signal in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("Okilum.AppImage");
+            executable(&target, b"original");
+            let stage = stage_directory(dir.path()).unwrap();
+            fs::hard_link(&target, stage.path().join("previous.AppImage")).unwrap();
+            let ready = "trap 'exit 1' HUP INT TERM\nn=0";
+            assert!(APPLY.contains(ready));
+            let mut body = APPLY.replace(
+                ready,
+                "trap 'exit 1' HUP INT TERM\nprintf ready > \"$stage/ready\"\nn=0",
+            );
+            if !signal {
+                assert!(body.contains("test \"$n\" -le 120"));
+                body = body
+                    .replace("-le 120", "-le 2")
+                    .replace("sleep 1", "sleep 0.01");
+            }
+            let log = File::create(stage.path().join("apply.log")).unwrap();
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", &body, "test", &std::process::id().to_string()])
+                .arg(&target)
+                .arg(stage.path())
+                .args(["unused", "unused"])
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .unwrap();
+            if signal {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !stage.path().join("ready").exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "helper did not install traps"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+            }
+            assert!(!child.wait().unwrap().success());
+            let log = fs::read_to_string(stage.path().join("apply.log")).unwrap();
+            if !signal {
+                assert!(log.contains("Shutdown timed out"));
+            }
+            assert_eq!(fs::read(&target).unwrap(), b"original");
+            assert_eq!(fs::metadata(&target).unwrap().nlink(), 1);
+            assert!(!stage.path().join("previous.AppImage").exists());
+            Target::open(&target).unwrap();
+        }
+    }
+
     const FILE_SYNC_ONLY: &str = r#"
 # A whole-filesystem flush represents unrelated blocked I/O. Fail immediately
 # rather than sleeping past the unchanged helper deadline. Positive controls
@@ -895,7 +1146,12 @@ sync() {
             assert_eq!(calls, expected, "exact commit/rollback fsync operands");
         }
 
-        if fs::read(&original).unwrap() != b"original" && !changed {
+        if tamper || changed {
+            assert_eq!(fs::metadata(&original).unwrap().nlink(), 1);
+            assert!(!stage.join("previous.AppImage").exists());
+            Target::open(&original).unwrap();
+        }
+        if !tamper && fs::read(&original).unwrap() != b"original" && !changed {
             assert_eq!(
                 fs::read(stage.join("previous.AppImage")).unwrap(),
                 b"original"
