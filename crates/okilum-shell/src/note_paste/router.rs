@@ -1071,6 +1071,89 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
 mod tests {
     use super::*;
     use crate::note_paste::files::FileAction;
+
+    #[test]
+    fn webp_policy_is_captured_for_raw_file_and_rich_image_jobs() {
+        use super::super::image_import::{fixture_png, Options};
+        use base64::Engine as _;
+        let note = Note::new();
+        let options = Options {
+            quality: 60,
+            keep_original: true,
+            ..Default::default()
+        };
+        let png = fixture_png();
+        let board = Board::with(&[("public.png", &png)]);
+        let mut context = note.cx(Mode::Smart, "", 0..0);
+        context.image_options = options;
+        let routed = route(&board, &context).unwrap();
+        assert!(
+            routed.insert.is_none(),
+            "encoding never runs on the UI thread"
+        );
+        let Some(FollowUp::Image { image_options, .. }) = routed.follow_up else {
+            panic!("raw image job")
+        };
+        assert_eq!(image_options, options);
+        assert!(!note.vault.path().join("attachments").exists());
+
+        let external = tempfile::tempdir().unwrap();
+        let source = external.path().join("image.png");
+        std::fs::write(&source, &png).unwrap();
+        let routed = route(
+            &crate::note_paste::DroppedFiles(vec![source.clone()]),
+            &context,
+        )
+        .unwrap();
+        let Some(FollowUp::Files { plan, .. }) = routed.follow_up else {
+            panic!("import job")
+        };
+        assert_eq!(plan.image_options, options);
+        // A file already inside the vault is still linked without conversion.
+        let existing = note.vault.path().join("old.png");
+        std::fs::write(&existing, &png).unwrap();
+        let before = std::fs::metadata(&existing).unwrap().modified().unwrap();
+        let routed = route(
+            &crate::note_paste::DroppedFiles(vec![existing.clone()]),
+            &context,
+        )
+        .unwrap();
+        assert!(routed.follow_up.is_none());
+        assert_eq!(routed.insert.as_deref(), Some("![[old.png]]"));
+        assert_eq!(std::fs::read(&existing).unwrap(), png);
+        assert_eq!(
+            std::fs::metadata(&existing).unwrap().modified().unwrap(),
+            before
+        );
+
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+        let html = format!(
+            "<p>Data<img src=\"data:image/png;base64,{data}\"> Local<img src=\"{}\"></p>",
+            url::Url::from_file_path(&source).unwrap()
+        );
+        let board = Board::with(&[("public.html", html.as_bytes())]);
+        let routed = route(&board, &context).unwrap();
+        let Some(FollowUp::Rich { job, .. }) = routed.follow_up else {
+            panic!("rich image job")
+        };
+        assert_eq!(job.image_options, options);
+        assert!(!note.vault.path().join("attachments").exists());
+        let done = run_rich_job(job);
+        assert_eq!((done.saved, done.failed, done.files.len()), (2, 0, 4));
+        assert_eq!(done.text.matches(".webp]]").count(), 2);
+        for path in &done.files {
+            let bytes = std::fs::read(path).unwrap();
+            if path.extension().unwrap() == "webp" {
+                assert_eq!(
+                    image::guess_format(&bytes).unwrap(),
+                    image::ImageFormat::WebP
+                );
+            } else {
+                assert_eq!(bytes, png);
+            }
+        }
+        assert_eq!(std::fs::read(source).unwrap(), png);
+    }
     use crate::note_paste::offer::FILE_URL;
     use std::collections::BTreeMap;
 

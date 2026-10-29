@@ -187,6 +187,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn downloaded_images_use_the_same_webp_policy_and_preserve_requested_original() {
+        use std::io::Write as _;
+        let png = super::super::image_import::fixture_png();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let original = png.clone();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", original.len()).unwrap();
+            stream.write_all(&original).unwrap();
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let saved = save_remote_image_with(
+            &format!("http://{address}/picture.png"),
+            temp.path(),
+            "1743",
+            super::super::image_import::Options {
+                keep_original: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        responder.join().unwrap();
+        assert_eq!(saved.name, "picture.webp");
+        assert_eq!(saved.paths.len(), 2);
+        assert_eq!(std::fs::read(&saved.paths[0]).unwrap(), png);
+        assert_eq!(
+            image::guess_format(&std::fs::read(&saved.paths[1]).unwrap()).unwrap(),
+            image::ImageFormat::WebP
+        );
+    }
+
+    #[test]
     fn extensions_come_from_the_content_type_or_the_bytes() {
         assert_eq!(image_extension(Some("image/png"), b""), Ok("png"));
         assert_eq!(
