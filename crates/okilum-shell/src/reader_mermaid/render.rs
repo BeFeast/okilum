@@ -62,7 +62,27 @@ static WORKERS: LazyLock<Result<mpsc::SyncSender<Job>, String>> = LazyLock::new(
     Ok(sender)
 });
 
-fn bounded(work: impl FnOnce() -> Outcome + Send + 'static, deadline: Duration) -> Outcome {
+#[derive(Clone, Copy)]
+enum Budget {
+    Wall(Duration),
+    // Functional fixtures retain Merman's finite interactive resource policy
+    // and our source/SVG/pixel caps; host scheduling is not a work measurement.
+    #[cfg(test)]
+    WorkUnits,
+}
+
+impl Budget {
+    fn control(self) -> merman::OperationControl {
+        let control = merman::OperationControl::new();
+        match self {
+            Self::Wall(deadline) => control.with_deadline(deadline),
+            #[cfg(test)]
+            Self::WorkUnits => control,
+        }
+    }
+}
+
+fn bounded(work: impl FnOnce() -> Outcome + Send + 'static, budget: Budget) -> Outcome {
     let pool = WORKERS.as_ref().map_err(Clone::clone)?;
     let (reply, receive) = mpsc::sync_channel(1);
     pool.try_send(Job {
@@ -70,19 +90,32 @@ fn bounded(work: impl FnOnce() -> Outcome + Send + 'static, deadline: Duration) 
         reply,
     })
     .map_err(|_| "Mermaid queue full".to_string())?;
-    receive
-        .recv_timeout(deadline)
-        .map_err(|_| "Mermaid deadline exceeded".to_string())?
+    match budget {
+        Budget::Wall(deadline) => receive
+            .recv_timeout(deadline)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => "Mermaid deadline exceeded".to_string(),
+                mpsc::RecvTimeoutError::Disconnected => "Mermaid worker disconnected".to_string(),
+            })?,
+        #[cfg(test)]
+        Budget::WorkUnits => receive
+            .recv()
+            .map_err(|_| "Mermaid worker disconnected".to_string())?,
+    }
 }
 pub(super) fn render(source: Arc<str>, key: Key) -> Outcome {
+    render_with_budget(source, key, Budget::Wall(DEADLINE))
+}
+
+fn render_with_budget(source: Arc<str>, key: Key, budget: Budget) -> Outcome {
     if source.len() > MAX_SOURCE || source.trim().is_empty() {
         return Err("Mermaid source size limit".into());
     }
     // The same deadline covers queuing, parsing, layout and rasterization. The
     // cooperative control stops late layout; only two worker threads can exist.
-    let control = merman::OperationControl::new().with_deadline(DEADLINE);
+    let control = budget.control();
     let cancel = control.clone();
-    let result = bounded(move || raster(&source, &key, control), DEADLINE);
+    let result = bounded(move || raster(&source, &key, control), budget);
     if result.is_err() {
         cancel.cancel();
     }
@@ -283,6 +316,11 @@ fn raster(source: &str, key: &Key, control: merman::OperationControl) -> Outcome
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_fixture(source: Arc<str>, key: Key) -> Outcome {
+        render_with_budget(source, key, Budget::WorkUnits)
+    }
+
     #[test]
     fn cache_key_separates_source_width_and_theme() {
         let a = Key::new("flowchart TD\nA-->B", 650., false);
@@ -316,12 +354,7 @@ mod tests {
             }
             for dark in [false, true] {
                 let key = Key::new(&source, 1280., dark);
-                let vector = svg(
-                    &source,
-                    &key,
-                    merman::OperationControl::new().with_deadline(DEADLINE),
-                )
-                .unwrap();
+                let vector = svg(&source, &key, Budget::WorkUnits.control()).unwrap();
                 let options = resvg::usvg::Options {
                     fontdb: fonts(),
                     ..Default::default()
@@ -332,7 +365,7 @@ mod tests {
                     natural.height() * 2. > MAX_SIDE as f32,
                     "positive control: old 2x raster exceeds the height cap"
                 );
-                let diagram = render(source.clone().into(), key).unwrap();
+                let diagram = render_fixture(source.clone().into(), key).unwrap();
                 let pixels = diagram.image.size(0);
                 assert!(
                     u32::from(pixels.width) <= MAX_SIDE && u32::from(pixels.height) <= MAX_SIDE
@@ -356,25 +389,86 @@ mod tests {
 
     #[test]
     fn worker_panic_and_deadline_return_fallback_errors() {
-        assert!(bounded(|| panic!("synthetic renderer panic"), DEADLINE).is_err());
-        let start = std::time::Instant::now();
-        assert!(bounded(
-            || {
-                std::thread::sleep(Duration::from_millis(100));
+        let panic = bounded(|| panic!("synthetic renderer panic"), Budget::WorkUnits);
+        assert_eq!(panic.err().as_deref(), Some("Mermaid renderer panicked"));
+
+        // Keep work pending until the zero-deadline receive has returned. No
+        // sleep or wall-time assertion can race a loaded host scheduler.
+        let (release, wait) = mpsc::sync_channel(1);
+        let timeout = bounded(
+            move || {
+                wait.recv().unwrap();
                 Err("late".into())
             },
-            Duration::from_millis(5)
+            Budget::Wall(Duration::ZERO),
+        );
+        release.send(()).unwrap();
+        assert_eq!(timeout.err().as_deref(), Some("Mermaid deadline exceeded"));
+
+        // Production keeps its five-second budget; an already-expired control
+        // must still stop actual parsing/layout without accepting a diagram.
+        assert_eq!(DEADLINE, Duration::from_secs(5));
+        let source = "flowchart TD\nA-->B";
+        assert!(svg(
+            source,
+            &Key::new(source, 640., false),
+            Budget::Wall(Duration::ZERO).control(),
         )
         .is_err());
-        assert!(start.elapsed() < Duration::from_millis(90));
     }
+    #[test]
+    fn work_budget_waits_for_completion_and_rejects_exhaustion() {
+        let (started, observed) = mpsc::sync_channel(1);
+        let (release, wait) = mpsc::sync_channel(1);
+        let caller = std::thread::spawn(move || {
+            bounded(
+                move || {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                    Err("completed after controlled scheduling delay".into())
+                },
+                Budget::WorkUnits,
+            )
+        });
+        observed.recv().unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            caller.join().unwrap().err().as_deref(),
+            Some("completed after controlled scheduling delay"),
+        );
+
+        // A non-wall budget still rejects real excessive layout work. Exercise
+        // Merman's same interactive resource policy with a deliberately tiny
+        // ceiling, rather than replacing bounded resources with trusted input.
+        let policy = merman::svg::RenderResourcePolicy::interactive()
+            .with_limit(merman::svg::ResourceLimitId::MaxLayoutWorkUnits, 1)
+            .unwrap();
+        let request = merman::SvgRequest {
+            environment: merman::SvgEnvironment::deterministic().with_resource_policy(policy),
+            ..Default::default()
+        };
+        let result = merman::Renderer::new().render(merman::RenderRequest::svg(
+            "flowchart TD\nsubgraph Cluster\nA\nend\nA-->B",
+            Budget::WorkUnits.control(),
+            request,
+        ));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("tiny work budget must reject the fixture"),
+        };
+        assert!(
+            error.to_string().contains("max_layout_work_units"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn mindmap_label_viewports_contain_the_embedded_fonts_shaped_text() {
         let source = "mindmap\n  root((Ideas))\n    Reader\n    Editor";
         let vector = svg(
             source,
             &Key::new(source, 640., false),
-            merman::OperationControl::new().with_deadline(DEADLINE),
+            Budget::WorkUnits.control(),
         )
         .unwrap();
         let width = regex::Regex::new(r#"\bwidth="([0-9.]+)""#).unwrap();
@@ -404,12 +498,12 @@ mod tests {
                 let svg = svg(
                     source,
                     &key,
-                    merman::OperationControl::new().with_deadline(DEADLINE),
+                    Budget::WorkUnits.control(),
                 )
                 .unwrap();
                 assert!(!svg.contains("<foreignObject"));
                 assert!(!svg.contains("url(#drop-shadow)"));
-                let diagram = render(source.into(), key).unwrap();
+                let diagram = render_fixture(source.into(), key).unwrap();
                 assert!(diagram.bytes > 0);
                 if let Some(out) = std::env::var_os("OKILUM_MERMAID_EVIDENCE") {
                     let out = std::path::PathBuf::from(out);
@@ -424,12 +518,12 @@ mod tests {
                 }
             }
         }
-        assert!(render(
+        assert!(render_fixture(
             "flowchart TD\nA[unclosed".into(),
             Key::new("invalid", 640., false)
         )
         .is_err());
-        assert!(render(
+        assert!(render_fixture(
             "x".repeat(MAX_SOURCE + 1).into(),
             Key::new("large", 640., false)
         )
