@@ -834,6 +834,20 @@ fn close_keys_wait_while_feedback_is_sending(cx: &mut TestAppContext) {
 #[cfg(not(target_os = "macos"))]
 #[gpui::test]
 fn insert_clipboard_shortcuts_work_in_feedback_and_source_editor(cx: &mut TestAppContext) {
+    use gpui_component::input::clipboard::{
+        ClipboardReadError, ClipboardReadRequest, ExactClipboardProvider,
+    };
+    // The test platform owns an in-memory clipboard; it has no OS exact provider.
+    struct TestClipboard;
+    impl ExactClipboardProvider for TestClipboard {
+        fn read_text(
+            &self,
+            _: ClipboardReadRequest,
+            cx: &App,
+        ) -> Task<Result<Option<String>, ClipboardReadError>> {
+            Task::ready(Ok(cx.read_from_clipboard().and_then(|item| item.text())))
+        }
+    }
     with_reader(cx, |reader| {
         let (view, mut feedback) = open_from_button(reader);
         feedback.simulate_input("Feedback clipboard");
@@ -881,6 +895,10 @@ fn insert_clipboard_shortcuts_work_in_feedback_and_source_editor(cx: &mut TestAp
                     .source_input()
                     .unwrap()
                     .update(cx, |input, cx| {
+                        input.set_exact_clipboard_provider(
+                            Some(std::sync::Arc::new(TestClipboard)),
+                            cx,
+                        );
                         input.set_value("Editor copy source", window, cx);
                         input.focus_handle(cx).focus(window, cx);
                     });
