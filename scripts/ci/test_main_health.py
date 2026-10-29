@@ -131,7 +131,7 @@ class MainHealthTests(unittest.TestCase):
                  '2026-10-10T23:02:51Z test result: FAILED. 817 passed; 1 failed\n')
         self.assertEqual(health.classify(cargo), ('code', ['platform::clip::tests::pipe']))
         self.assertEqual(health.classify('2026Z error[E0425]: cannot find value\n')[0], 'code')
-        self.assertEqual(health.classify('2026Z Error response from daemon: no such image\n'),
+        self.assertEqual(health.classify('2026Z ⚙️ [runner]: Error response from daemon: no such image\n'),
                          ('infra', 'Error response from daemon'))
         self.assertEqual(health.classify('2026Z Run Main checkout\n2026Z Job failed\n')[0], 'infra')
         self.assertEqual(health.classify('2026Z    Compiling x\n2026Z Job failed\n')[0], 'unknown')
@@ -225,6 +225,125 @@ class MainHealthTests(unittest.TestCase):
         self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed')
         self.assertIn('looks like infrastructure', api.writes[0][2]['body'])
         self.assertNotIn('Lane log unreadable', api.writes[0][2]['body'])
+
+    # Lines of saved red-main logs (#1962): each fixture takes a few lines of one run, in their
+    # order, long lines shortened. test_github_pr.py passes and prints 'Hosted CI unavailable'
+    # in nearly every linux-local run (check-linux.sh runs scripts/ci before cargo test).
+    HOSTED_TEST_OUTPUT = ('2026-10-29T10:18:48.4324503Z Hosted CI unavailable; '
+                          'no fallback success: Unknown hosted lane\n')  # run 15255
+
+    def red_on_log(self, log):
+        """red() for c3 when the failed linux-local job's log is `log`."""
+        jobs = {'jobs': [{'name': 'linux-local', 'status': 'failure', 'id': 41}]}
+        api, out = self.red_reading({'/actions/runs/7/jobs': jobs, '/actions/jobs/41/logs': log})
+        self.assertEqual(out, '', 'the log was read')
+        return api, next(w[2]['body'] for w in api.writes if w[1] == '/issues')
+
+    def assert_blamed(self, api, body):
+        self.assertIn('/issues/3/comments', [w[1] for w in api.writes], 'the suspect merge is told')
+        self.assertNotIn('looks like infrastructure', body)
+        self.assertIn('- #3 by @ana (c3c3c3c3)', body)
+
+    def test_a_python_unittest_failure_blames_the_merges(self):
+        # Run 11737 (shared lane, the same scripts/ci suite): the hosted test output, then a failure.
+        log = ('2026-10-24T18:34:57.6383365Z Hosted CI unavailable; no fallback success: Unknown hosted lane\n'
+               '2026-10-24T18:34:57.6438674Z FAIL: test_every_patch_has_a_unique_four_digit_number '
+               '(test_patch_numbers.PatchNumberTests.test_every_patch_has_a_unique_four_digit_number)\n'
+               '2026-10-24T18:34:57.6439652Z Ran 126 tests in 18.918s\n'
+               '2026-10-24T18:34:57.6439863Z FAILED (failures=1)\n'
+               "2026-10-24T18:34:59.3278955Z ⚙️ [runner]: exitcode '1': failure\n"
+               '2026-10-24T18:35:02.0829698Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', []))
+        self.assert_blamed(*self.red_on_log(log))
+
+    def test_a_python_test_error_blames_the_merges(self):
+        # Run 10711: a test of scripts/windows timed out (an error, not a failure).
+        log = ('2026-10-23T08:53:33.2590259Z ERROR: test_inventory_timeout_at_each_boundary '
+               '(test_sign_code_guard.GuardTests.test_inventory_timeout_at_each_boundary)\n'
+               '2026-10-23T08:53:33.2592724Z Ran 45 tests in 17.267s\n'
+               '2026-10-23T08:53:33.2592982Z FAILED (errors=1)\n'
+               "2026-10-23T08:54:26.8027996Z ⚙️ [runner]: exitcode '1': failure\n"
+               '2026-10-23T08:54:29.4699068Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', []))
+        self.assert_blamed(*self.red_on_log(log))
+
+    def test_a_log_cut_off_mid_compile_is_not_infrastructure(self):
+        # Run 7379 stops while compiling, with no runner line: nothing says why it ended.
+        log = ('2026-10-12T12:12:22.1383254Z Hosted CI unavailable; no fallback success: Unknown hosted lane\n'
+               '2026-10-12T12:21:37.1393568Z    Compiling enum-iterator v2.3.0\n'
+               '2026-10-12T12:21:37.3137073Z    Compiling itertools v0.13.0\n')
+        self.assertEqual(health.classify(log), ('unknown', []))
+        self.assert_blamed(*self.red_on_log(log))
+
+    def test_the_runner_line_names_the_infrastructure(self):
+        # Run 10907 (shared lane): out of time while still making progress; every test that
+        # cargo called slow finished, so the host was slow.
+        log = ('2026-10-23T15:15:17.4195730Z test file_editor::tests::destination_reservation_protects_'
+               'orphaned_drafts_and_active_writers has been running for over 60 seconds\n'
+               '2026-10-23T15:16:58.3124316Z test file_editor::tests::destination_reservation_protects_'
+               'orphaned_drafts_and_active_writers ... ok\n'
+               '2026-10-23T15:16:58.7151823Z      Running tests/desktop_editor.rs '
+               '(target/debug/deps/desktop_editor-f13e251d373dbd2a)\n'
+               '2026-10-23T15:17:01.7730118Z test windows_vault_paths_nested_creation_templates_and_identity ... ok\n'
+               '2026-10-23T15:17:05.6098885Z ⚙️ [runner]: context deadline exceeded\\nunable to copy '
+               '"/var/run/act/workflow/SUMMARY.md" from container to host: context deadline exceeded\n'
+               '2026-10-23T15:17:08.3923882Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('infra', 'context deadline exceeded'))
+        api, body = self.red_on_log(log)
+        self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed')
+        self.assertIn('**This looks like infrastructure, not a merge**: context deadline exceeded.', body)
+        # The same words printed by a step, or a step echoing the runner's line, are output.
+        self.assertEqual(health.classify(log.replace('⚙️ [runner]: ', '')), ('unknown', []))
+        self.assertEqual(health.classify(log.replace('⚙️ [runner]: ', '  > ⚙️ [runner]: ')), ('unknown', []))
+        self.assertEqual(health.classify(log.replace('⚙️ [runner]: ', '[runner]: ')), ('unknown', []))
+        # act's cleanup error is the runner's too: the only line run 14845 has (no container).
+        # The cause is in "(original error: ...)".
+        cleanup = ('2026-10-29T00:14:24.6053384Z Error occurred running finally: All attempts fail:\\n#1: Error '
+                   'response from daemon: remove c9009af5ff4d-env: volume is in use (original error: failed to '
+                   'create container: Post "http://%2Fvar%2Frun%2Fdocker.sock/v1.55/containers/create")\n')
+        self.assertEqual(health.classify(cleanup), ('infra', 'failed to create container'))
+
+    def test_a_test_still_running_at_the_time_limit_hung(self):
+        # Run 10704: one test never finished; 38 minutes of silence until the job's 80 minutes ran out.
+        hung = 'platform::reveal::tests::show_items_selects_the_item_and_fails_without_a_file_manager'
+        log = ('2026-10-23T08:44:04.8550919Z Hosted CI unavailable; no fallback success: Unknown hosted lane\n'
+               '2026-10-23T08:56:34.9206331Z test file_editor::tests::completed_exchange_before_journal_'
+               'acknowledgement_recovers_without_conflict has been running for over 60 seconds\n'
+               '2026-10-23T09:01:17.3720824Z test file_editor::tests::completed_exchange_before_journal_'
+               'acknowledgement_recovers_without_conflict ... ok\n'
+               '2026-10-23T09:13:22.4042256Z      Running unittests src/main.rs '
+               '(target/debug/deps/okilum-2092075bda669346)\n'
+               f'2026-10-23T09:15:32.0294418Z test {hung} has been running for over 60 seconds\n'
+               '2026-10-23T09:19:24.5656896Z test workspace::tests::local_entry_native_pickers_open_exact_'
+               'results_and_cancel_neutrally ... ok\n'
+               '2026-10-23T09:57:07.5539393Z ⚙️ [runner]: context deadline exceeded\\nunable to copy '
+               '"/var/run/act/workflow/SUMMARY.md" from container to host: context deadline exceeded\n'
+               '2026-10-23T09:57:07.7051936Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', [hung]))
+        # One hung test is how a flake looks: the issue names it and waits for a second red.
+        api, body = self.red_on_log(log)
+        self.assertEqual([w[1] for w in api.writes], ['/issues'])
+        self.assertNotIn('looks like infrastructure', body)
+        self.assertIn(f'Failing tests:\n- `{hung}`', body)
+        self.assertIn(health.AWAITING, body)
+
+    def test_a_cargo_failure_after_the_hosted_test_output_names_its_tests(self):
+        # Reverse control from run 15255: the 32 saved cargo reds must keep their tests.
+        names = ['reader_mermaid::render::tests::tall_td_and_tb_render_with_bounded_rasters_and_full_logical_height',
+                 'reader_mermaid::render::tests::synthetic_families_paint_both_themes_and_invalid_is_an_error']
+        log = (self.HOSTED_TEST_OUTPUT +
+               '2026-10-29T10:54:04.8015865Z failures:\n'
+               f'2026-10-29T10:54:04.8016068Z ---- {names[0]} stdout ----\n'
+               '2026-10-29T10:54:04.8016471Z called `Result::unwrap()` on an `Err` value: "operation cancelled"\n'
+               f'2026-10-29T10:54:04.8016673Z ---- {names[1]} stdout ----\n'
+               '2026-10-29T10:54:04.8016980Z synthetic renderer panic\n'
+               '2026-10-29T10:54:04.8018075Z test result: FAILED. 1393 passed; 2 failed; 9 ignored; 0 measured\n'
+               "2026-10-29T10:54:05.5062550Z ⚙️ [runner]: exitcode '101': failure\n"
+               '2026-10-29T10:54:09.7440131Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', names))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertIn(''.join(f'\n- `{name}`' for name in names), body)
 
 
 if __name__ == '__main__':

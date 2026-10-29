@@ -11,8 +11,10 @@ comment per red episode, addressed to its author, and a single "main is red"
 issue carries the current state for the manager. A green main closes that issue.
 
 A failure that never reached the build or tests (runner, Docker, network, disk) is
-reported as likely infrastructure and blames no merge; Forgejo has no API to re-run a
-job, so a human re-runs it or the next merge retests. For real failures the failing
+reported as likely infrastructure and blames no merge. Its error markers count only on
+the runner's own lines, never in test or script output. A job that hit its time limit
+with a test still running hung in that test, which is code. Forgejo has no API to re-run a job,
+so a human re-runs it or the next merge retests. For real failures the failing
 tests are listed. A lane log that cannot be read proves nothing: the merges are blamed
 and the issue says why the log was not read.
 
@@ -68,12 +70,33 @@ class Api:
         return next((i for i in self.call('GET', f'/issues?{query}') if i['title'] == ISSUE_TITLE), None)
 
 
-INFRA_MARKERS = ('Hosted CI unavailable', 'Cannot connect to the Docker daemon', 'Error response from daemon',
-                 'No space left on device', 'Could not resolve host', 'Connection reset by peer',
-                 'context deadline exceeded', 'lost communication with the server',
-                 'The runner has received a shutdown signal', 'failed to create container')
+# The runner's words when the job's timeout-minutes run out, not a runner fault (#1962).
+DEADLINE = 'context deadline exceeded'
+# Counted only on the runner's own lines (#1962): tests and scripts print the same words,
+# and a passing test_github_pr.py prints 'Hosted CI unavailable' in nearly every linux-local run.
+# 'failed to create container' goes before 'Error response from daemon': act's cleanup error
+# names the daemon first and the cause in "(original error: ...)".
+INFRA_MARKERS = ('Cannot connect to the Docker daemon', 'failed to create container',
+                 'Error response from daemon', 'No space left on device', 'Could not resolve host',
+                 'Connection reset by peer', DEADLINE)
+# The runner's step and job errors, and act's cleanup error: the only line that carries a
+# Docker failure when the job container was never created. The runner always writes the gear;
+# a bare "[runner]: " is a step echoing one.
+RUNNER_LINE = re.compile(r'^⚙️ \[runner\]: .*$|^Error occurred running finally: .*$', re.M)
 FAILED_TEST = re.compile(r'^---- (\S+) stdout ----$', re.M)
+SLOW_TEST = re.compile(r'^test (\S+) has been running for over 60 seconds$', re.M)
 LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
+
+
+def unfinished_tests(text):
+    """Tests that cargo reported as slow and that never printed a result."""
+    names = []
+    for slow in SLOW_TEST.finditer(text):
+        name = slow.group(1)
+        result = re.compile(rf'^test {re.escape(name)} \.\.\. ', re.M)
+        if name not in names and not result.search(text, slow.end()):
+            names.append(name)
+    return names
 
 
 def classify(log):
@@ -84,11 +107,16 @@ def classify(log):
     tests = FAILED_TEST.findall(text)
     if tests or 'test result: FAILED' in text:
         return 'code', tests
-    if re.search(r'^error(\[E\d+\])?: ', text, re.M):
+    # A compiler error, or a Python unittest suite that failed.
+    if re.search(r'^error(\[E\d+\])?: |^FAILED \(', text, re.M):
         return 'code', []
-    for marker in INFRA_MARKERS:
-        if marker in text:
-            return 'infra', marker
+    for line in RUNNER_LINE.findall(text):
+        for marker in INFRA_MARKERS:
+            if marker in line:
+                # Out of time with a test still running: the test hung (run 10704). When every
+                # slow test finished, the job was still making progress and the host was slow.
+                hung = unfinished_tests(text) if marker == DEADLINE else []
+                return ('code', hung) if hung else ('infra', marker)
     if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
         return 'infra', 'the job ended before any build or test output'
     return 'unknown', []
