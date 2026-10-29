@@ -157,3 +157,6 @@ if [[ "${OKILUM_NETWORK_WRITE_QA:-0}" == 1 ]]; then
     cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell \
         --example network_write_acceptance -- /Volumes/Maestro/okilum-nfs-qa
 fi
+# #1924: no-Trash fallback, collision-safe Undo/Redo, and hidden tree/search.
+run_tests okilum-shell --bins reader_trash_fs::vault_fallback_tests::
+run_tests okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests::

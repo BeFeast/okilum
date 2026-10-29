@@ -550,13 +550,22 @@ impl Reader {
         self.trash_undo.visible = visible.clone();
         let reader = cx.entity().downgrade();
         let announced = self.trash_undo.items.last().map(|t| t.root.clone());
+        #[cfg(unix)]
+        let vault_fallback = self
+            .trash_undo
+            .items
+            .last()
+            .is_some_and(|item| item.in_vault_trash());
+        #[cfg(not(unix))]
+        let vault_fallback = false;
         window.push_notification(
             Notification::new()
                 .id::<TrashToast>()
-                .message(format!(
-                    "Moved to the {}",
-                    platform::labels::Os::CURRENT.trash()
-                ))
+                .message(if vault_fallback {
+                    "This disk has no system Trash. Moved to .trash in the vault.".to_owned()
+                } else {
+                    format!("Moved to the {}", platform::labels::Os::CURRENT.trash())
+                })
                 .autohide(false)
                 .py_2()
                 .placement(Anchor::BottomRight)
