@@ -50,7 +50,16 @@ pub(crate) fn show_about(cx: &mut App) {
 }
 
 fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx: &mut App) {
-    show_section_from(reader, section, cx.active_window(), cx);
+    // An application-menu command can arrive with no active native window.
+    // Reuse the last Settings family then; explicit desktop entries pass their
+    // actual caller and must never switch to another Reader's family.
+    let active = cx.active_window().or_else(|| {
+        cx.try_global::<SettingsWindow>()
+            .and_then(|latest| latest.0)
+            .filter(|handle| cx.windows().contains(&(*handle).into()))
+            .map(Into::into)
+    });
+    show_section_from(reader, section, active, cx);
 }
 
 pub(crate) fn show_about_in(window: &Window, cx: &mut App) {
