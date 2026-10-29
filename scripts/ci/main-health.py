@@ -13,7 +13,8 @@ issue carries the current state for the manager. A green main closes that issue.
 A failure that never reached the build or tests (runner, Docker, network, disk) is
 reported as likely infrastructure and blames no merge; Forgejo has no API to re-run a
 job, so a human re-runs it or the next merge retests. For real failures the failing
-tests are listed.
+tests are listed. A lane log that cannot be read proves nothing: the merges are blamed
+and the issue says why the log was not read.
 
 Environment: FORGEJO_URL, REPOSITORY, FORGEJO_TOKEN, SHA, RUN_URL, RUN_ID, and an optional
 DRY_RUN=1 that prints instead of writing.
@@ -77,7 +78,9 @@ LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
 
 def classify(log):
     """('code', failing tests), ('infra', reason) or ('unknown', []) for a failed lane log."""
-    text = LOG_PREFIX.sub('', log or '')
+    if log is None:  # not read: only a log that was read can clear the merges
+        return 'unknown', []
+    text = LOG_PREFIX.sub('', log)
     tests = FAILED_TEST.findall(text)
     if tests or 'test result: FAILED' in text:
         return 'code', tests
@@ -92,15 +95,13 @@ def classify(log):
 
 
 def lane_log(api, run_id):
-    """The failed Linux lane's log in this run, or None when it cannot be read."""
-    try:
-        jobs = api.call('GET', f'/actions/runs/{run_id}/jobs')
-        jobs = jobs if isinstance(jobs, list) else jobs.get('jobs', [])
-        job = next(j for j in jobs if j['name'] == 'linux-local' and j['status'] == 'failure')
-        return api.text(f"/actions/jobs/{job['id']}/logs")
-    except Exception as error:  # a missing permission or log must not hide the red main
-        print(f'Cannot read the lane log: {error}')
-        return None
+    """The failed Linux lane's log in this run; raises when it cannot be read."""
+    jobs = api.call('GET', f'/actions/runs/{run_id}/jobs')
+    jobs = jobs if isinstance(jobs, list) else jobs.get('jobs', [])
+    job = next((j for j in jobs if j['name'] == 'linux-local' and j['status'] == 'failure'), None)
+    if job is None:
+        raise LookupError(f'no failed linux-local job in run {run_id}')
+    return api.text(f"/actions/jobs/{job['id']}/logs")
 
 
 def lane_passed(statuses):
@@ -165,7 +166,14 @@ def red(api, sha, run_url, run_id=None):
     if superseded(api, sha):
         print(f'{sha[:8]} is red, but a newer main commit containing it is green')
         return
-    kind, detail = classify(lane_log(api, run_id)) if run_id else ('unknown', [])
+    log = unread = None
+    if run_id:
+        try:
+            log = lane_log(api, run_id)
+        except Exception as error:  # a missing permission or log must not hide the red main
+            unread = str(error) or type(error).__name__
+            print(f'Cannot read the lane log: {unread}')
+    kind, detail = classify(log)
     if kind == 'infra':
         body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\n'
                 f'**This looks like infrastructure, not a merge**: {detail}. No merge is blamed. '
@@ -212,6 +220,7 @@ def red(api, sha, run_url, run_id=None):
             f'{marker}\n@{author} main is red at {sha[:8]} ({run_url}). This merge landed after the '
             f'last green main ({episode[:8]}), so it is a suspect.\n\n{RULE}')})
     body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\n'
+            + (f'Lane log unreadable: {unread}; classified as unknown.\n\n' if unread else '')
             + (f'Failing tests:{failing}' if failing else '') +
             f'Last green main: {episode[:8]}. Merges since then:\n' + '\n'.join(lines) + f'\n\n{RULE}\n'
             'This issue closes itself when main is green again.')
