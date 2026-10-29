@@ -53,6 +53,11 @@ color emoji fallback keep their existing typography.
 
 ## 1. What Okilum is
 
+**Now sidebar (#1927, 2026-10-29):** [Now and Tree](now-sidebar.md) adds a
+read-only activity projection as the default vault sidebar, with the existing
+folder tree one toggle away and its state retained. Project mode and single-folder
+viewers keep their existing tree. No note metadata changes are required.
+
 **Image import (#1743, 2026-10-29):** [WebP image paste and import](image-import.md)
 defines app-wide conversion, quality and optional original retention, with
 native disk/link/Undo acceptance before merge. JPEG XL remains separate.

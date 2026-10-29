@@ -1,6 +1,6 @@
 //! Vault sidebar state: the folder tree's collapse and hidden-file settings,
 //! plus the Recent and Pinned stores the title bar reads (#1508). The sidebar
-//! itself shows only the tree. Inbox remains an inventory projection consumed
+//! offers Now and Tree. Inbox remains an inventory projection consumed
 //! by the application section, never a sidebar.
 use anyhow::{Context, Result};
 use okilum_core::Vault;
@@ -40,6 +40,14 @@ pub enum Section {
 /// The only section the left sidebar renders (#1508): the folder tree.
 pub const LEFT_SECTIONS: [Section; 1] = [Section::Folders];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LeftMode {
+    #[default]
+    Now,
+    Tree,
+}
+
 impl Section {
     pub fn label(self) -> &'static str {
         match self {
@@ -55,6 +63,12 @@ impl Section {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub left_mode: LeftMode,
+    #[serde(default)]
+    pub now_collapsed: BTreeSet<String>,
+    #[serde(default)]
+    pub now_expanded: BTreeSet<String>,
     /// Most recent first: (root-relative note, unix seconds).
     #[serde(default)]
     pub recent: Vec<(String, u64)>,
@@ -308,7 +322,7 @@ mod tests {
     const DAY: u64 = 86_400;
 
     #[test]
-    fn sidebar_is_only_the_tree_and_its_toggle_spares_the_right_panel() {
+    fn tree_mode_is_only_the_tree_and_its_toggle_spares_the_right_panel() {
         assert_eq!(LEFT_SECTIONS, [Section::Folders]);
         let mut state = State {
             properties_collapsed: true,

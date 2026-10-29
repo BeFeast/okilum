@@ -11,6 +11,7 @@ struct Published {
     vault: Arc<Vault>,
     searcher: Arc<Searcher>,
     tasks: Arc<okilum_core::tasks::Index>,
+    workbench: Arc<okilum_core::workbench::Index>,
     #[cfg(any(unix, windows))]
     candidates: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
     titles: Arc<std::collections::HashMap<String, String>>,
@@ -77,6 +78,7 @@ impl Reader {
                 vault: self.vault.clone(),
                 searcher,
                 tasks: self.tasks_index.clone().unwrap_or_default(),
+                workbench: self.workbench.clone(),
                 #[cfg(any(unix, windows))]
                 candidates: self.move_index.clone(),
                 titles: self.backlink_titles.clone(),
@@ -182,6 +184,7 @@ impl Reader {
         self.vault = published.vault;
         self.searcher = Some(published.searcher);
         self.tasks_index = Some(published.tasks);
+        self.publish_workbench(published.workbench, cx);
         #[cfg(any(unix, windows))]
         {
             self.move_index = published.candidates;
@@ -224,6 +227,7 @@ impl Reader {
             vault: self.vault.clone(),
             searcher,
             tasks: self.tasks_index.clone().unwrap_or_default(),
+            workbench: self.workbench.clone(),
             #[cfg(any(unix, windows))]
             candidates: self.move_index.clone(),
             titles: self.backlink_titles.clone(),
@@ -419,6 +423,14 @@ fn update(
     }
     published.vault = Arc::new(state.vault.clone());
     published.tasks = Arc::new(tasks);
+    let mut workbench = (*published.workbench).clone();
+    reader_workbench::update_index(
+        &mut workbench,
+        &state.snapshot,
+        &batch.removed,
+        &batch.changed,
+    );
+    published.workbench = Arc::new(workbench);
     #[cfg(any(unix, windows))]
     {
         published.candidates = Some(state.candidates.clone());

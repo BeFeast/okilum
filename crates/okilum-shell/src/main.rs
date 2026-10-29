@@ -117,6 +117,7 @@ mod reader_split;
 mod reader_stignore;
 mod reader_t3_settings;
 mod reader_title_nav;
+mod reader_workbench;
 #[cfg(windows)]
 mod url_protocol;
 mod vault_name;
@@ -352,6 +353,7 @@ actions!(
         TreeCollapseSubtree,
         CollapseFolders,
         FocusCurrentFolder,
+        ToggleLeftMode,
         PdfZoomIn,
         PdfZoomOut,
         PdfZoomFit,
@@ -391,6 +393,8 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
             MenuItem::action("Zoom Out", reader_text_zoom::ZoomOut),
             MenuItem::action("Actual Size", reader_text_zoom::Reset),
             MenuItem::separator(),
+            MenuItem::action("Now / Tree", ToggleLeftMode),
+            MenuItem::action("Reveal in Tree", FocusCurrentFolder),
             MenuItem::action("Maximize Note", MaximizeNote),
             MenuItem::action("Full Note Width", ToggleNoteWidth)
                 .checked(reader_ui_state::full_note_width(cx)),
@@ -572,6 +576,25 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-up", ListPrev, ctx),
         KeyBinding::new("j", ListNext, Some(&not_input)),
         KeyBinding::new("k", ListPrev, Some(&not_input)),
+        KeyBinding::new("secondary-shift-l", FocusCurrentFolder, ctx),
+        KeyBinding::new(
+            "secondary-shift-l",
+            FocusCurrentFolder,
+            Some("Reader > Input"),
+        ),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-\\", ToggleLeftMode, ctx),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-|", ToggleLeftMode, ctx),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-\\", ToggleLeftMode, Some("Reader > Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-|", ToggleLeftMode, Some("Reader > Input")),
+        // macOS folds Shift into punctuation: Cmd+Shift+backslash is cmd-|.
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-|", ToggleLeftMode, ctx),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-|", ToggleLeftMode, Some("Reader > Input")),
         KeyBinding::new("ctrl-\\", ToggleNotes, ctx),
         KeyBinding::new("ctrl-alt-\\", ToggleBacklinks, ctx),
         KeyBinding::new("secondary-alt-f", MaximizeNote, ctx),
@@ -1684,6 +1707,10 @@ struct Reader {
     sidebar_path: Option<PathBuf>,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
+    workbench: Arc<okilum_core::workbench::Index>,
+    workbench_ready: Option<Arc<okilum_core::workbench::Index>>,
+    workbench_pending: u64,
+    workbench_scroll: ScrollHandle,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
     sidebar_save_sequence: Arc<std::sync::atomic::AtomicU64>,
@@ -1978,6 +2005,10 @@ impl Reader {
             sidebar_path: None,
             inbox: Vec::new(),
             projects: Arc::default(),
+            workbench: Arc::default(),
+            workbench_ready: None,
+            workbench_pending: 0,
+            workbench_scroll: ScrollHandle::new(),
             inbox_source: None,
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),
@@ -2719,6 +2750,8 @@ impl Reader {
 
     fn focus_sidebar_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.resizing_panel = None;
+        self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
+        self.save_sidebar(cx);
         self.panels.open(reader_layout::Panel::Notes);
         cx.notify();
         self.sidebar_search_focus.focus(window, cx);
@@ -3320,6 +3353,8 @@ impl Reader {
     /// `path`; a folder is also expanded, the current note is revealed.
     fn reveal_in_tree(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.resizing_panel = None;
+        self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
+        self.save_sidebar(cx);
         self.panels.open(reader_layout::Panel::Notes);
         if self
             .sidebar
@@ -3444,6 +3479,8 @@ impl Reader {
             return;
         }
         self.resizing_panel = None;
+        self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
+        self.save_sidebar(cx);
         self.panels.open(reader_layout::Panel::Notes);
         if self
             .sidebar
@@ -4004,7 +4041,14 @@ impl Reader {
         } else {
             0.
         };
-        let actions = SidebarAction::available();
+        let actions = if self.sidebar.left_mode == reader_sidebar::LeftMode::Now
+            && !self.single_file
+            && project.is_none()
+        {
+            &SidebarAction::ALL[..usize::from(cfg!(any(unix, windows)))]
+        } else {
+            SidebarAction::available()
+        };
         let room = width - 24. - dot - 2. * SIDEBAR_NAME_GAP;
         let name = toolbar_text_width(&title, FontWeight::SEMIBOLD, window) + SIDEBAR_NAME_CHROME;
         let visible = sidebar_visible_actions(room, name, actions);
@@ -4115,7 +4159,7 @@ impl Reader {
         #[cfg(any(unix, windows))]
         let drop_root = self.vault_root.clone();
         let header_reader = reader.clone();
-        h_flex()
+        let row = h_flex()
             .id("sidebar-header")
             .debug_selector(|| "sidebar-header".into())
             .h(px(READER_HEADER_HEIGHT))
@@ -4179,7 +4223,17 @@ impl Reader {
                     })
                 };
                 menu.item(item("New note in vault root", false))
-                    .item(item("New folder in vault root", true))
+                    .when(actions.contains(&SidebarAction::NewFolder), |menu| {
+                        menu.item(item("New folder in vault root", true))
+                    })
+            })
+            .into_any_element();
+        v_flex()
+            .debug_selector(|| "sidebar-mode-header".into())
+            .flex_none()
+            .child(row)
+            .when(!self.single_file && project.is_none(), |header| {
+                header.child(self.render_left_modes(cx))
             })
             .into_any_element()
     }
@@ -4275,7 +4329,14 @@ impl Reader {
 
     /// `![alt](relative path)` → `![alt](file:///abs%20path)` via resolve_asset.
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        self.render_tree(window, cx)
+        if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree
+            || self.single_file
+            || self.project_navigation.active.is_some()
+        {
+            self.render_tree(window, cx)
+        } else {
+            self.render_workbench(window, cx)
+        }
     }
 
     /// docs/design/reader.md §Sidebar: the real folder hierarchy only
@@ -7028,6 +7089,11 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &TreeCollapseSubtree, w, cx| {
                 this.tree_key(TreeKey::CollapseSubtree, w, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleLeftMode, window, cx| {
+                    this.toggle_left_mode(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &CollapseFolders, _, cx| this.collapse_folders(cx)))
             .on_action(
                 cx.listener(|this, _: &FocusCurrentFolder, w, cx| this.focus_current_folder(w, cx)),
@@ -9190,7 +9256,7 @@ mod document_link_landing_tests {
     /// #1508: the sidebar is the folder tree only. Recent and Pinned keep their
     /// stores (the title bar reads them) but never come back as sidebar rows.
     #[gpui::test]
-    fn sidebar_is_the_folder_tree_only_even_with_recent_and_pins(cx: &mut gpui::TestAppContext) {
+    fn tree_mode_is_the_folder_tree_only_even_with_recent_and_pins(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -9219,6 +9285,7 @@ mod document_link_landing_tests {
         view.update(visual, |v, _| {
             v.loading = None;
             v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.sync_tree();
             v.sidebar.recent.clear();
             v.sidebar.pinned.clear();
@@ -9273,6 +9340,7 @@ mod document_link_landing_tests {
             v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
             assert_eq!(hints(v), ["Notes and folders appear here."]);
             // Positive control: a populated tree drops its hint.
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.sync_tree();
             assert!(hints(v).is_empty());
         });
@@ -9301,7 +9369,9 @@ mod document_link_landing_tests {
                 (0..1000).map(|i| format!("Big/Sub/Note {i}.md")),
             ));
             v.current_rel = "Big/Sub/Note 0.md".into();
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.sync_tree();
             v.tree.set_subtree("Big", true);
             cx.notify();
@@ -9385,6 +9455,7 @@ mod document_link_landing_tests {
             view.update(&mut visual, |v, cx| {
                 v.loading = None;
                 v.vault_root = vault.to_owned();
+                v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.panels.open(reader_layout::Panel::Notes);
                 cx.notify();
             });
@@ -9462,7 +9533,9 @@ mod document_link_landing_tests {
             v.vault = Arc::new(Vault::from_note_paths(
                 (0..300).map(|i| format!("Note {i}.md")),
             ));
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.sync_tree();
             v.sidebar.pinned = (0..200).map(|i| format!("Note {i}.md")).collect();
             v.sidebar.record_open("Note 0.md", 1);
@@ -9487,7 +9560,10 @@ mod document_link_landing_tests {
             assert!(visual.debug_bounds(gone).is_none(), "{gone} is retired");
         }
         // The tree takes everything below its header.
-        assert_eq!(before[2].top(), before[1].bottom());
+        assert_eq!(
+            before[2].top(),
+            visual.debug_bounds("sidebar-mode-header").unwrap().bottom()
+        );
         assert!(before[2].bottom() >= before[0].bottom() - px(16.));
         view.update(visual, |v, cx| {
             v.tree_scroll
@@ -9553,6 +9629,7 @@ mod document_link_landing_tests {
             visual.run_until_parked();
             if launch == 0 {
                 view.update(visual, |v, cx| {
+                    v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                     v.panels.open(reader_layout::Panel::Notes);
                     v.toggle_pin("Note 001.md", cx);
                     v.toggle_section(Section::Folders, cx);
@@ -9611,6 +9688,7 @@ mod document_link_landing_tests {
         visual.simulate_resize(size(px(1400.), px(960.)));
         view.update(visual, |v, cx| {
             assert!(v.single_file, "exercise the non-vault launch path");
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             v.panel_widths.set(reader_layout::Panel::Notes, 320.);
             v.load_quick_folder(String::new(), cx);
@@ -9698,6 +9776,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         visual.simulate_resize(size(px(1400.), px(960.)));
         view.update(visual, |v, cx| {
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             v.panel_widths.set(reader_layout::Panel::Notes, 320.);
             cx.notify();
@@ -9793,7 +9872,8 @@ mod document_link_landing_tests {
             ));
         });
         let first = visual.debug_bounds("tree-row-Folder").unwrap();
-        assert!(first.top() >= header.bottom() && first.top() < header.bottom() + px(4.));
+        let mode_header = visual.debug_bounds("sidebar-mode-header").unwrap();
+        assert!(first.top() >= mode_header.bottom() && first.top() < mode_header.bottom() + px(4.));
         visual.simulate_mouse_move(title.center(), None, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(slots(visual), idle, "hovering the name moves nothing");
@@ -9897,6 +9977,7 @@ mod document_link_landing_tests {
         visual.simulate_resize(size(px(1400.), px(960.)));
         visual.run_until_parked();
         view.update(visual, |v, cx| {
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             cx.notify();
         });
@@ -10012,7 +10093,9 @@ mod document_link_landing_tests {
         visual.simulate_resize(size(px(1400.), px(960.)));
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.sync_tree();
             cx.notify();
             let _ = window;
@@ -10073,12 +10156,14 @@ mod document_link_landing_tests {
         visual.simulate_resize(size(px(1400.), px(860.)));
         visual.run_until_parked();
         view.update(visual, |v, cx| {
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             cx.notify();
         });
         visual.run_until_parked();
         let row = |visual: &mut gpui::VisualTestContext, path: &str| {
             view.update_in(visual, |v, _, _| {
+                v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.sync_tree();
                 v.tree.rows.iter().find(|r| r.path == path).cloned()
             })
@@ -10087,6 +10172,7 @@ mod document_link_landing_tests {
         // caught up with the open note.
         let state = |visual: &mut gpui::VisualTestContext| {
             view.update_in(visual, |v, _, _| {
+                v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.sync_tree();
                 (
                     v.current_rel.clone(),
@@ -10384,12 +10470,14 @@ mod document_link_landing_tests {
         visual.simulate_resize(size(px(1400.), px(860.)));
         visual.run_until_parked();
         view.update(visual, |v, cx| {
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             cx.notify();
         });
         visual.run_until_parked();
         let expanded = |visual: &mut gpui::VisualTestContext, path: &str| {
             view.update_in(visual, |v, _, _| {
+                v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.sync_tree();
                 v.tree
                     .rows
@@ -10401,6 +10489,7 @@ mod document_link_landing_tests {
         };
         let state = |visual: &mut gpui::VisualTestContext| {
             view.update_in(visual, |v, _, _| {
+                v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.sync_tree();
                 (v.current_rel.clone(), v.tree.cursor.clone())
             })
@@ -10789,6 +10878,7 @@ mod document_link_landing_tests {
         visual.simulate_resize(size(px(1400.), px(860.)));
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
+            v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             v.panels.open(reader_layout::Panel::Backlinks);
             let width = f32::from(v.body_bounds.size.width);
