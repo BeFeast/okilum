@@ -98,7 +98,6 @@ fn stage_notes(area: &Path) -> Result<Vec<String>> {
     let planning = area.join("planning");
     let mut pending = vec![planning];
     let mut notes = Vec::new();
-    let mut visited = 0;
     while let Some(folder) = pending.pop() {
         let meta = match std::fs::symlink_metadata(&folder) {
             Ok(meta) => meta,
@@ -114,11 +113,6 @@ fn stage_notes(area: &Path) -> Result<Vec<String>> {
         );
         for entry in std::fs::read_dir(folder)? {
             let entry = entry?;
-            visited += 1;
-            ensure!(
-                visited <= 4096,
-                "Planning has too many entries; choose a stage note explicitly"
-            );
             let kind = entry.file_type()?;
             if kind.is_symlink() {
                 continue;

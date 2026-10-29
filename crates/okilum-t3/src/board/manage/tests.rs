@@ -141,6 +141,24 @@ fn changed_revision_or_format_or_project_refuses_writes_and_undo() {
     std::fs::write(b.file("board.yaml"), "human file").unwrap();
     assert!(draft.save(&Change::Details(draft.details())).is_err());
     assert!(!b.file("board.toml").exists());
+    let c = Area::new();
+    let created = c.create();
+    let source = created.document.unwrap().source;
+    std::fs::remove_file(c.file("board.toml")).unwrap();
+    std::fs::write(
+        c.file("board.yaml"),
+        serde_json::to_string_pretty(&c.session().value).unwrap(),
+    )
+    .unwrap();
+    let legacy = c.session();
+    let old_yaml = std::fs::read(c.file("board.yaml")).unwrap();
+    std::fs::write(c.file("board.toml"), &source).unwrap();
+    assert!(legacy.save(&Change::Add(card("7"))).is_err());
+    assert_eq!(std::fs::read(c.file("board.yaml")).unwrap(), old_yaml);
+    assert_eq!(
+        std::fs::read_to_string(c.file("board.toml")).unwrap(),
+        source
+    );
 }
 
 #[test]
