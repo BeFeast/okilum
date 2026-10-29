@@ -130,3 +130,30 @@ preserves focus in an already active form while a button is pressed, after page
 handlers run, so WebKit does not blur the composer and unmount the image X before
 mouseup. Disabled/draggable buttons, other forms and cancelled events retain
 normal behavior. Pointer diagnostics are not included.
+
+### One authenticated connection per app (#1758)
+
+Settings → T3 distinguishes a saved server address from an authenticated connection.
+Sign in checks and reuses an origin-bound credential before asking for approval.
+The resulting OS-keychain token serves every project alias on that origin;
+explicit project overrides keep their own origin. Existing native panels reload
+the shared credential after sign-in. Tokens and browser storage remain isolated
+between Okilum and Okilum Sprint.
+
+On macOS approval opens in an app-owned WebKit sign-in view using the exact
+persistent store of the Manager panel. An already paired Manager session therefore
+serves authorization too, and a new sign-in pairs the store used by future panels.
+On other platforms the system browser opens; it cannot donate its browser cookies
+to an embedded view. The separate Linux WS native-client audience is unchanged:
+an MCP token is never treated as a native-session token.
+
+The browser-return wait is ten minutes and shows its remaining time. Wait longer
+extends it; after timeout it reopens the original loopback port. Paste callback URL
+remains available after the listener closes: the original redirect URI, state,
+issuer and PKCE verifier still govern the exchange. Wrong-origin/state/issuer and
+duplicate parameters are rejected without exchanging a code. Cancel discards the
+attempt; expired authorization codes require a new sign-in. Merely entering a
+reachable address never displays “Signed in”.
+
+Regression tests use a loopback fake T3 server and isolated app state. They do not
+establish live pairing, WebKit interaction or Oleg's acceptance on a delivered build.

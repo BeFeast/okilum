@@ -21,12 +21,12 @@ An absent binding displays “not connected”; Okilum neither creates T3 resour
 nor guesses a newer manager. A changed binding gets a separate view. Drafts for
 an unchanged binding survive note navigation and closing/reopening Project.
 
-For an already-bound area, enter its T3 address and choose Connect. A bare
-hostname defaults to HTTPS; a private IP with a port defaults to HTTP. Invalid
-input shows an address example, and only the normalized origin is saved. The
-existing authorization-code/PKCE flow opens the system browser; this is an
-explicit user action. Tokens stay in OS credential storage; only alias/origin
-are saved in application state. Polling loads history and refreshes growing
+Settings → T3 owns the app-wide sign-in (#1758), described in the
+[connection contract](project-navigation.md#one-authenticated-connection-per-app-1758).
+It checks and reuses the origin-bound OS credential, offers authorization and
+retains callback recovery after timeout. Mac sign-in shares the Manager panel's
+app-specific WebKit store; other platforms use the system browser. Only origins
+are saved in application state, and explicit project server overrides stay separate. Polling loads history and refreshes growing
 replies by item ID, including text chunks. Before enabling Send, the server must
 confirm that the manager belongs to the manifest's project. Expired/revoked
 credentials stop polling and disable sends with a reconnect explanation. An

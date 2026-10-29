@@ -29,6 +29,9 @@ use crate::unix_now;
 pub const SCOPE: &str = "orchestration:read orchestration:operate";
 pub const CALLBACK_PATH: &str = "/callback";
 
+mod pending;
+pub use pending::{Authorization, Input, Progress, DEFAULT_WAIT};
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct AuthServerMetadata {
     pub issuer: String,
