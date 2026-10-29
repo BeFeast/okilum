@@ -1,0 +1,11 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -279,5 +279,7 @@
+         #[cfg(not(target_os = "macos"))]
+         KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
++        #[cfg(not(target_os = "macos"))]
++        KeyBinding::new("ctrl-insert", Copy, Some(CONTEXT)),
+         #[cfg(target_os = "macos")]
+         KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
+         #[cfg(not(target_os = "macos"))]

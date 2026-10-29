@@ -830,3 +830,108 @@ fn close_keys_wait_while_feedback_is_sending(cx: &mut TestAppContext) {
         }
     });
 }
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn insert_clipboard_shortcuts_work_in_feedback_and_source_editor(cx: &mut TestAppContext) {
+    use gpui_component::input::clipboard::{
+        ClipboardReadError, ClipboardReadRequest, ExactClipboardProvider,
+    };
+    // The test platform owns an in-memory clipboard; it has no OS exact provider.
+    struct TestClipboard;
+    impl ExactClipboardProvider for TestClipboard {
+        fn read_text(
+            &self,
+            _: ClipboardReadRequest,
+            cx: &App,
+        ) -> Task<Result<Option<String>, ClipboardReadError>> {
+            Task::ready(Ok(cx.read_from_clipboard().and_then(|item| item.text())))
+        }
+    }
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        feedback.simulate_input("Feedback clipboard");
+        for shortcut in ["ctrl-c", "ctrl-insert"] {
+            feedback.simulate_keystrokes("ctrl-a");
+            feedback.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("COPY-CANARY".into()));
+            });
+            feedback.simulate_keystrokes(shortcut);
+            feedback.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("Feedback clipboard")
+                );
+            });
+        }
+        for (shortcut, text) in [
+            ("ctrl-v", "Control paste"),
+            ("shift-insert", "Insert paste"),
+        ] {
+            feedback.simulate_keystrokes("ctrl-a");
+            feedback.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
+            });
+            feedback.simulate_keystrokes(shortcut);
+            view.read_with(&feedback, |view, cx| {
+                assert_eq!(view.text.read(cx).value(), text);
+            });
+        }
+        feedback.simulate_keystrokes("escape");
+        reader.run_until_parked();
+        reader.update(|window, cx| {
+            window.activate_window();
+            let root = window.root::<Root>().flatten().unwrap();
+            let entity = root.read(cx).view().clone().downcast::<Reader>().unwrap();
+            entity.update(cx, |reader, cx| reader.toggle_source(window, cx));
+        });
+        reader.run_until_parked();
+        for (copy, paste) in [("ctrl-c", "ctrl-v"), ("ctrl-insert", "shift-insert")] {
+            reader.update(|window, cx| {
+                let root = window.root::<Root>().flatten().unwrap();
+                let entity = root.read(cx).view().clone().downcast::<Reader>().unwrap();
+                entity
+                    .read(cx)
+                    .source_input()
+                    .unwrap()
+                    .update(cx, |input, cx| {
+                        input.set_exact_clipboard_provider(
+                            Some(std::sync::Arc::new(TestClipboard)),
+                            cx,
+                        );
+                        input.set_value("Editor copy source", window, cx);
+                        input.focus_handle(cx).focus(window, cx);
+                    });
+            });
+            reader.run_until_parked();
+            reader.simulate_keystrokes("ctrl-a");
+            reader.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("COPY-CANARY".into()))
+            });
+            reader.simulate_keystrokes(copy);
+            reader.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("Editor copy source")
+                );
+                cx.write_to_clipboard(ClipboardItem::new_string("Editor pasted result".into()));
+            });
+            reader.simulate_keystrokes(paste);
+            reader.run_until_parked();
+            reader.update(|window, cx| {
+                let root = window.root::<Root>().flatten().unwrap();
+                let entity = root.read(cx).view().clone().downcast::<Reader>().unwrap();
+                assert_eq!(
+                    entity
+                        .read(cx)
+                        .source_input()
+                        .unwrap()
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "Editor pasted result"
+                );
+            });
+        }
+    });
+}
