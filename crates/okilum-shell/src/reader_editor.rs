@@ -3912,11 +3912,10 @@ mod tests {
             ));
         });
         // Read mode uses rendered link ranges over Unicode label text.
-        let bounds = reader.read_with(visual, |reader, cx| reader.content.read(cx).bounds());
-        visual.simulate_click(
-            bounds.origin + point(px(25.), px(10.)),
-            gpui::Modifiers::default(),
-        );
+        let origin = reader.read_with(visual, |reader, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(reader, cx, 0)
+        });
+        visual.simulate_click(origin + point(px(25.), px(10.)), gpui::Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.current_rel, "target.md")

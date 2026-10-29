@@ -1,0 +1,124 @@
+diff --git a/crates/base/src/text/style.rs b/crates/base/src/text/style.rs
+--- a/crates/base/src/text/style.rs
++++ b/crates/base/src/text/style.rs
+@@ -19,6 +19,8 @@
+     code_background: Hsla,
+     border: Hsla,
+     paragraph_gap: Rems,
++    /// Space before the first block, included in its scrollable height.
++    top_padding: Pixels,
+     /// Scrollable space after the final document block.
+     bottom_padding: Pixels,
+     heading_base_font_size: Pixels,
+@@ -35,6 +37,7 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.top_padding == other.top_padding
+             && self.bottom_padding == other.bottom_padding
+             && self.foreground == other.foreground
+             && self.muted_foreground == other.muted_foreground
+@@ -91,6 +94,7 @@
+             code_background: colors.accent,
+             border: colors.border,
+             paragraph_gap: rems(1.),
++            top_padding: px(0.),
+             bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
+@@ -107,6 +111,16 @@
+         }
+     }
+ 
++    /// Sets space before the first block, scrolling with that block.
++    pub fn with_top_padding(mut self, padding: Pixels) -> Self {
++        self.top_padding = padding.max(px(0.));
++        self
++    }
++
++    pub fn top_padding(&self) -> Pixels {
++        self.top_padding
++    }
++
+     /// Sets scrollable space after the final document block.
+     pub fn with_bottom_padding(mut self, padding: Pixels) -> Self {
+         self.bottom_padding = padding.max(px(0.));
+diff --git a/crates/component/src/text/style.rs b/crates/component/src/text/style.rs
+--- a/crates/component/src/text/style.rs
++++ b/crates/component/src/text/style.rs
+@@ -13,6 +13,8 @@
+ pub struct TextViewStyle {
+     /// Gap of each paragraphs, default is 1 rem.
+     pub paragraph_gap: Rems,
++    /// Space before the first block, included in its scrollable height.
++    pub top_padding: Pixels,
+     /// Scrollable space after the final document block.
+     pub bottom_padding: Pixels,
+     /// Base font size for headings, default is 14px.
+@@ -62,6 +64,7 @@
+     fn default() -> Self {
+         Self {
+             paragraph_gap: rems(1.),
++            top_padding: px(0.),
+             bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
+@@ -80,6 +83,7 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.top_padding == other.top_padding
+             && self.bottom_padding == other.bottom_padding
+             && self.heading_base_font_size == other.heading_base_font_size
+             && match (&self.heading_font_size, &other.heading_font_size) {
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -312,6 +312,7 @@
+ 
+     let mut style = themed
+         .with_paragraph_gap(legacy.paragraph_gap)
++        .with_top_padding(legacy.top_padding)
+         .with_bottom_padding(legacy.bottom_padding)
+         .with_heading_base_font_size(legacy.heading_base_font_size)
+         .with_code_block(code_block)
+diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
+--- a/crates/base/src/text/document.rs
++++ b/crates/base/src/text/document.rs
+@@ -196,6 +196,7 @@
+             let blocks_len = self.blocks.len();
+             return div()
+                 .id("document")
++                .pt(node_cx.style.top_padding())
+                 .children(self.blocks.iter().enumerate().map(move |(ix, node)| {
+                     let is_last = ix + 1 == blocks_len;
+                     node.render_block(
+@@ -226,7 +227,7 @@
+             let blocks = blocks.clone();
+             move |ix, window, cx| {
+                 let is_last = ix + 1 == blocks.len();
+-                blocks[ix]
++                let block = blocks[ix]
+                     .render_block(
+                         NodeRenderOptions {
+                             ix,
+@@ -237,7 +238,18 @@
+                         window,
+                         cx,
+                     )
+-                    .into_any_element()
++                    .into_any_element();
++                // Opening space belongs to the first measured list item. A
++                // viewport inset would stay on screen; toggling it on scroll
++                // would move every painted block without an input delta.
++                if ix == 0 && node_cx.style.top_padding() > px(0.) {
++                    div()
++                        .pt(node_cx.style.top_padding())
++                        .child(block)
++                        .into_any_element()
++                } else {
++                    block
++                }
+             }
+         });
+ 

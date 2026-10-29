@@ -3,22 +3,13 @@ use super::*;
 use crate::platform::labels::Os;
 
 impl Reader {
+    #[cfg(test)]
     fn document_at_top(&self, cx: &App) -> bool {
         if let Some(offset) = self.source_scroll_offset(cx) {
             return offset.y >= px(-0.5);
         }
         let offset = self.content.read(cx).list_state().logical_scroll_top();
         offset.item_ix == 0 && offset.offset_in_item <= px(0.5)
-    }
-
-    pub(super) fn reader_top_inset(&self, cx: &App) -> Pixels {
-        // Keep opening breathing room at the top without a stationary blank
-        // band over scrolled text. The separate header always stays visible.
-        if self.document_at_top(cx) {
-            px(44.)
-        } else {
-            px(0.)
-        }
     }
 
     pub(super) fn render_document_surface(

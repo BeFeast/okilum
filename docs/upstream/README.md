@@ -75,3 +75,9 @@ its whitespace in select-all Copy. It follows 0008 in the cumulative patch stack
 before shaping and measures the same clusters for wrapping in Reader and
 Source/Live Preview. It uses existing TextRun/LineFragment APIs; GPUI core stays
 unmodified. Carry this candidate in the #1814 bump (Okilum #1833).
+
+## Pending 0097 — scrollable document opening space
+
+[0097](0097.md) adds optional TextView opening space inside the first measured
+block, avoiding jumps from changing viewport padding. GPUI core stays unmodified.
+Carry it in the #1814 vendor update (Okilum #1901).

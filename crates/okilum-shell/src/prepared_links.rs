@@ -1182,8 +1182,9 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
-        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
-        let link = bounds.origin + point(px(25.), px(10.));
+        let link = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
+        }) + point(px(25.), px(10.));
         visual.simulate_click(link, Modifiers::default());
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
@@ -1211,8 +1212,12 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         visual.run_until_parked();
         let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
-        let link = bounds.origin + point(px(25.), px(10.));
-        let start = bounds.origin + point(px(5.), px(50.));
+        let link = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
+        }) + point(px(25.), px(10.));
+        let start = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 1)
+        }) + point(px(5.), px(10.));
         let end = start + point(px(90.), px(0.));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
@@ -1336,8 +1341,13 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
-        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
-        let link = bounds.origin + point(px(25.), px(10.));
+        let link_origin = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
+        });
+        let word_origin = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 1)
+        });
+        let link = link_origin + point(px(25.), px(10.));
         // A real double-click: the first press and release, then the second with click_count 2.
         let double_click = |visual: &mut VisualTestContext, at: Point<Pixels>| {
             for click_count in [1, 2] {
@@ -1357,8 +1367,8 @@ mod tests {
             }
             visual.run_until_parked();
         };
-        // The paragraph is the second block; its first row is a little below the link row.
-        let word = |dx: f32| bounds.origin + point(px(dx), px(50.));
+        // Target the actual second paragraph, independently of opening space.
+        let word = |dx: f32| word_origin + point(px(dx), px(10.));
         double_click(visual, word(10.));
         let first = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
         assert!(
@@ -1442,9 +1452,14 @@ mod tests {
             });
             let reader = reader.unwrap();
             visual.run_until_parked();
-            let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
-            let link = bounds.origin + point(px(25.), px(10.));
-            let start = bounds.origin + point(px(5.), px(50.));
+            let link_origin = reader.read_with(visual, |v, cx| {
+                crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
+            });
+            let word_origin = reader.read_with(visual, |v, cx| {
+                crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 1)
+            });
+            let link = link_origin + point(px(25.), px(10.));
+            let start = word_origin + point(px(5.), px(10.));
             let events = [
                 PlatformInput::MouseMove(MouseMoveEvent {
                     position: start,

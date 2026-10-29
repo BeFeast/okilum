@@ -529,13 +529,15 @@ mod visual_tests {
         .unwrap();
         let (reader, visual) = mount(cx, &root, &state);
 
-        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let origin = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
+        });
         // A selection that is more than a date must not offer the action. The
         // positive case below proves this probe would see the item if present.
         reader.update(visual, |v, cx| {
             v.content.update(cx, |content, cx| content.select_all(cx))
         });
-        let at = bounds.origin + point(px(20.), px(10.));
+        let at = origin + point(px(20.), px(10.));
         visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
         visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
         visual.run_until_parked();
@@ -544,8 +546,8 @@ mod visual_tests {
         visual.run_until_parked();
 
         // Positive control: a real drag selects exactly the date line.
-        let start = bounds.origin + point(px(2.), px(10.));
-        let end = bounds.origin + point(px(400.), px(10.));
+        let start = origin + point(px(2.), px(10.));
+        let end = origin + point(px(400.), px(10.));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -554,7 +556,7 @@ mod visual_tests {
         assert_eq!(selected.trim(), "2026-11-01", "drag precondition");
 
         // The right click that opens the menu must not discard the selection.
-        let inside = bounds.origin + point(px(20.), px(10.));
+        let inside = origin + point(px(20.), px(10.));
         visual.simulate_mouse_down(inside, MouseButton::Right, Modifiers::default());
         visual.simulate_mouse_up(inside, MouseButton::Right, Modifiers::default());
         visual.run_until_parked();
@@ -619,8 +621,11 @@ mod visual_tests {
         .unwrap();
         let (reader, visual) = mount(cx, &root, &state);
         let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
-        let start = bounds.origin + point(px(2.), px(10.));
-        let end = bounds.origin + point(px(400.), px(10.));
+        let origin = reader.read_with(visual, |v, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
+        });
+        let start = origin + point(px(2.), px(10.));
+        let end = origin + point(px(400.), px(10.));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -661,7 +666,7 @@ mod visual_tests {
                 v.navigation.preparation_generation.wrapping_sub(1)
         });
         // Positive control: on the selection the reminder is still offered.
-        let inside = bounds.origin + point(px(20.), px(10.));
+        let inside = origin + point(px(20.), px(10.));
         visual.simulate_mouse_move(inside, None, Modifiers::default());
         visual.run_until_parked();
         visual.simulate_mouse_down(inside, MouseButton::Right, Modifiers::default());

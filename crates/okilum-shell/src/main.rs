@@ -129,6 +129,8 @@ mod reader_recovery_rows;
 mod reader_reminder;
 mod reader_reminder_notify;
 mod reader_reminder_settings;
+#[cfg(test)]
+mod reader_scroll_geometry_tests;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
@@ -4993,6 +4995,7 @@ impl Reader {
         let entity = cx.entity().downgrade();
         let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
+        style.top_padding = px(44.);
         style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
         let measured_column = column_bounds.clone();
@@ -5092,7 +5095,6 @@ impl Reader {
                                         .text_size(px(reader_ui_state::font_size(cx)))
                                         .pl(note_gutter(window))
                                         .pr(px(READER_SIDE_PADDING))
-                                        .pt(self.reader_top_inset(cx))
                                         .w_full()
                                         .flex_1()
                                         .min_h_0(),
