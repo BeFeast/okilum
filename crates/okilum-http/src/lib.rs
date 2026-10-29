@@ -164,3 +164,6 @@ pub fn http_reason(status: u16) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "updates")]
+pub mod updates;
