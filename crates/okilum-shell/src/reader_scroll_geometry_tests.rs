@@ -55,7 +55,13 @@ fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::Test
     let document = visual.debug_bounds("reader-document").unwrap();
     let column = visual.debug_bounds("reader-column").unwrap();
     let anchor = reader.read_with(visual, |reader, cx| {
-        reader.content.read(cx).rendered_source_at(None).unwrap()
+        let state = reader.content.read(cx);
+        let anchor = state.rendered_source_at(None).unwrap();
+        assert!(
+            anchor.2.y - state.bounds().top() >= px(44.),
+            "opening-space control: padding must reach the painted document"
+        );
+        anchor
     });
     // Exercise both the TextView handler and the document-margin forwarding
     // handler, moving away from and back across the opening-space boundary.
