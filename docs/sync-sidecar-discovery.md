@@ -178,3 +178,38 @@ token remains readable and unchanged, then requires capture refusal. The second
 `SignedPeer` check performs a fresh `SecCodeCopyGuestWithAttributes` lookup using
 `kSecGuestAttributeAudit`; token equality alone is never liveness evidence. This
 exercises a stale connected-socket credential, not a forced PID-reuse stress run.
+
+## Native Stop acknowledgement plus exit (#588, following slice)
+
+`macos::connection::NativeSupervisor` composes the existing signed connection with
+`ExitWatch`. Its peer gate captures the process observer on the same authenticated
+socket used for the Stop exchange, before sending any request bytes. Each Stop
+discards prior status/exit observations. An incomplete or failed Stop reply never
+reaches completion; an unconfirmed process exit leaves removal pending. After both
+owned-tree acknowledgement and kernel process-exit observation, the exact durable
+token is revalidated. A concurrent Enable or changed epoch/revision cannot become
+successful removal through an older receipt. There is one absolute deadline across
+all phases, and no journal lock is held during IPC or the process-exit wait.
+
+This connector never kills by PID, falls back to process scans, unregisters a
+service or repairs a missing hint. The lifecycle controller must still revalidate
+at its actual native mutation; this result is not a permanent lease. Missing or
+unreachable supervisors require a separate explicit recovery path rather than
+assuming their processes exited. Replaying Stop after its old peer disappeared is
+not silently promoted to success.
+
+Portable regressions cover receipt/exit ordering, incomplete exit, journal-lock
+release, a shared deadline and concurrent Enable during confirmation. The real
+macOS signature/store factory fixture also opens the composed NativeSupervisor
+without launching it. Kernel capture/exit behavior is tested separately by the
+owned-child fixtures; this is not launchd/desktop/whole-Sync native acceptance.
+
+The native composition fixture also launches an ad-hoc signed copy of the test
+executable at the actual bundled helper path, serves the public IPC protocol over
+its private socket, and exercises `NativeSupervisor::inspect` then
+`stop_and_wait`. The server uses the real transactional token authorizer and an
+injected tree-stop acknowledgement; the client uses the real signed peer and
+kernel exit observer. The test confirms the same helper process exited, its hint
+was cleared and the token remains authorized. This covers the client composition,
+not a real Syncthing child tree or launchd. The test server's SameUser client gate
+is fixture-only; production supervisor client signing checks are unchanged.

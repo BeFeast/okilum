@@ -108,7 +108,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Result<Self> {
-        let root = tempfile::tempdir()?;
+        let root = tempfile::tempdir_in("/tmp")?;
         let base = root.path().canonicalize()?;
         let app = base.join("Fixture.app");
         for relative in ["Contents/MacOS", "Contents/Library/LaunchAgents"] {
@@ -270,8 +270,105 @@ fn stop_needs_current_durable_authority_and_exact_generation_and_complete_reply(
 #[test]
 fn native_open_checks_real_signatures_and_existing_state_without_starting_a_helper() -> Result<()> {
     use super::NativeConnection;
-    use std::process::Command;
     let fixture = Fixture::new()?;
+    let (app, helper) = sign_fixture(&fixture)?;
+    fixture.prepare()?;
+    let connection = NativeConnection::open(
+        &fixture.app,
+        "reader",
+        fixture.binding.clone(),
+        app.clone(),
+        helper.clone(),
+        Duration::from_secs(1),
+    )?;
+    assert_eq!(connection.inspect()?, Discovered::Absent);
+    let supervisor = super::NativeSupervisor::open(
+        &fixture.app,
+        "reader",
+        fixture.binding.clone(),
+        app.clone(),
+        helper.clone(),
+        Duration::from_secs(1),
+    )?;
+    assert_eq!(supervisor.inspect()?, Discovered::Absent);
+    assert!(fixture.store.peek_hint()?.is_none());
+    let wrong = CodeRequirement::team_and_identifier("ABCDE12345", "org.example.fixture.sync")?;
+    assert!(NativeConnection::open(
+        &fixture.app,
+        "reader",
+        fixture.binding.clone(),
+        app,
+        wrong,
+        Duration::from_secs(1)
+    )
+    .is_err());
+    // No registration API or process launcher is reachable from this connection.
+    Ok(())
+}
+
+#[test]
+fn stop_completion_requires_both_receipt_and_exit_and_rechecks_authority_after_wait() -> Result<()>
+{
+    let fixture = Fixture::new()?;
+    fixture.prepare()?;
+    let script = Script::default();
+    let connection = fixture.connection(script.clone())?;
+    let scope = fixture.hint()?;
+    let token = {
+        let mut tx = fixture.store.begin(soon())?;
+        let (next, token) = tx.current()?.unwrap().disable(scope)?;
+        tx.commit(next)?;
+        token
+    };
+    let confirmed = Cell::new(0);
+    script.status.set(Status::Stopping);
+    assert!(connection
+        .stop_and_confirm(&token, soon(), |_| {
+            confirmed.set(confirmed.get() + 1);
+            Ok(true)
+        })
+        .is_err());
+    assert_eq!(
+        confirmed.get(),
+        0,
+        "incomplete Stop reached exit completion"
+    );
+    script.status.set(Status::Stopped);
+    assert!(connection
+        .stop_and_confirm(&token, soon(), |_| Ok(false))
+        .is_err());
+    let deadline = soon();
+    connection.stop_and_confirm(&token, deadline, |received| {
+        assert_eq!(received, deadline, "exit phase renewed the deadline");
+        // No journal lock may be held while awaiting process exit.
+        let transaction = fixture.store.begin(deadline)?;
+        assert!(transaction.current()?.is_some());
+        Ok(true)
+    })?;
+    assert!(
+        connection
+            .stop_and_confirm(&token, soon(), |_| {
+                let mut tx = fixture.store.begin(soon())?;
+                let next = tx.current()?.unwrap().enable()?;
+                tx.commit(next)?;
+                Ok(true)
+            })
+            .is_err(),
+        "concurrent Enable was overwritten by old stop/exit evidence"
+    );
+    let calls = script.calls.get();
+    assert!(connection
+        .stop_and_confirm(&token, Instant::now(), |_| {
+            panic!("expired stop reached exit observation")
+        })
+        .is_err());
+    assert_eq!(script.calls.get(), calls);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sign_fixture(fixture: &Fixture) -> Result<(CodeRequirement, CodeRequirement)> {
+    use std::process::Command;
     for relative in ["Contents/MacOS/reader", HELPER] {
         fs::copy(std::env::current_exe()?, fixture.app.join(relative))?;
     }
@@ -302,29 +399,162 @@ fn native_open_checks_real_signatures_and_existing_state_without_starting_a_help
             .context("fixture has no code directory hash")?;
         CodeRequirement::code_directory_hash(hash.trim())
     };
-    fixture.prepare()?;
-    let app = requirement(&fixture.app)?;
-    let helper = requirement(&fixture.app.join(HELPER))?;
-    let connection = NativeConnection::open(
-        &fixture.app,
-        "reader",
-        fixture.binding.clone(),
-        app.clone(),
-        helper.clone(),
-        Duration::from_secs(1),
+    Ok((
+        requirement(&fixture.app)?,
+        requirement(&fixture.app.join(HELPER))?,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "owned subprocess fixture for the native Stop/exit composition test"]
+fn native_stop_peer_fixture() -> Result<()> {
+    use crate::sidecar::supervisor::{
+        ipc::{
+            unix_transport::{PeerEnd, SameUser, UnixEndpoint, UnixTransport},
+            Server,
+        },
+        runtime::{OwnedTree, StoreRuntime},
+    };
+    // Only tree-stop acknowledgement is injected here. The client authenticates
+    // a real signed helper process, sends the durable token and observes its exit.
+    struct Tree;
+    impl OwnedTree for Tree {
+        fn status(&mut self) -> Result<Status> {
+            Ok(Status::Running)
+        }
+        fn stop(&mut self) -> Result<Status> {
+            Ok(Status::Stopped)
+        }
+    }
+    let state =
+        PathBuf::from(std::env::var_os("OKILUM_STOP_FIXTURE").context("fixture state missing")?);
+    let generation = std::env::var("OKILUM_STOP_GENERATION")?.parse()?;
+    let store = UnixStore::open_existing(&state)?;
+    let binding = store
+        .begin(soon())?
+        .current()?
+        .context("fixture journal missing")?
+        .binding()
+        .clone();
+    let scope = Scope {
+        installation: binding.installation,
+        instance: binding.instance,
+        generation,
+    };
+    let endpoint = UnixEndpoint::create(&state, &scope)?;
+    store.publish_hint(
+        soon(),
+        &Hint::new(
+            generation,
+            crate::sidecar::supervisor::process_group::process_start_time(std::process::id())?,
+        )?,
     )?;
-    assert_eq!(connection.inspect()?, Discovered::Absent);
-    assert!(fixture.store.peek_hint()?.is_none());
-    let wrong = CodeRequirement::team_and_identifier("ABCDE12345", "org.example.fixture.sync")?;
-    assert!(NativeConnection::open(
+    let mut server = Server::with_generation(
+        binding.clone(),
+        StoreRuntime::new(store.clone(), Tree),
+        generation,
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !server.has_stopped() {
+        let stream = endpoint
+            .try_accept(deadline)?
+            .context("fixture accept deadline elapsed")?;
+        let mut transport = UnixTransport::new(
+            stream,
+            PeerEnd::Client,
+            binding.clone(),
+            scope.clone(),
+            deadline,
+            SameUser,
+        )?;
+        server.runtime_mut().begin_exchange(deadline);
+        server.serve_one(&mut transport)?;
+    }
+    drop(endpoint);
+    store.clear_hint(soon())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_stop_authenticates_one_socket_and_confirms_the_same_helper_exited() -> Result<()> {
+    use std::process::{Child, Command, Stdio};
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = Fixture::new()?;
+    let (app, helper) = sign_fixture(&fixture)?;
+    fixture.prepare()?;
+    let generation = Uuid::new_v4();
+    let mut child = ChildGuard(
+        Command::new(fixture.app.join(HELPER))
+            .args([
+                "--ignored",
+                "--exact",
+                "sidecar::macos::connection::tests::native_stop_peer_fixture",
+                "--test-threads=1",
+            ])
+            .env_clear()
+            .env("OKILUM_STOP_FIXTURE", &fixture.binding.state_directory)
+            .env("OKILUM_STOP_GENERATION", generation.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let ready = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(hint) = fixture.store.peek_hint()? {
+            ensure!(
+                hint.generation() == generation,
+                "unexpected fixture generation"
+            );
+            break;
+        }
+        ensure!(
+            child.0.try_wait()?.is_none(),
+            "fixture exited before publishing its endpoint"
+        );
+        ensure!(Instant::now() < ready, "fixture setup deadline elapsed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let supervisor = super::NativeSupervisor::open(
         &fixture.app,
         "reader",
         fixture.binding.clone(),
         app,
-        wrong,
-        Duration::from_secs(1)
-    )
-    .is_err());
-    // No registration API or process launcher is reachable from this connection.
+        helper,
+        Duration::from_secs(2),
+    )?;
+    let scope = Scope {
+        installation: fixture.binding.installation,
+        instance: fixture.binding.instance,
+        generation,
+    };
+    assert_eq!(supervisor.inspect()?, Discovered::Live(scope.clone()));
+    assert!(
+        child.0.try_wait()?.is_none(),
+        "live positive control was already gone"
+    );
+    let token = {
+        let mut tx = fixture.store.begin(soon())?;
+        let (next, token) = tx.current()?.unwrap().disable(scope)?;
+        tx.commit(next)?;
+        token
+    };
+    supervisor.stop_and_wait(&token)?;
+    assert!(child.0.wait()?.success()); // ExitWatch already confirmed this process exited.
+    assert!(fixture.store.peek_hint()?.is_none());
+    fixture
+        .store
+        .begin(soon())?
+        .current()?
+        .unwrap()
+        .authorize(&token, &token.operation.scope)?;
     Ok(())
 }
