@@ -203,3 +203,13 @@ release, a shared deadline and concurrent Enable during confirmation. The real
 macOS signature/store factory fixture also opens the composed NativeSupervisor
 without launching it. Kernel capture/exit behavior is tested separately by the
 owned-child fixtures; this is not launchd/desktop/whole-Sync native acceptance.
+
+The native composition fixture also launches an ad-hoc signed copy of the test
+executable at the actual bundled helper path, serves the public IPC protocol over
+its private socket, and exercises `NativeSupervisor::inspect` then
+`stop_and_wait`. The server uses the real transactional token authorizer and an
+injected tree-stop acknowledgement; the client uses the real signed peer and
+kernel exit observer. The test confirms the same helper process exited, its hint
+was cleared and the token remains authorized. This covers the client composition,
+not a real Syncthing child tree or launchd. The test server's SameUser client gate
+is fixture-only; production supervisor client signing checks are unchanged.
