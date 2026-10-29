@@ -309,6 +309,7 @@ impl Board {
                         .child(div().flex_1())
                         .child(
                             Button::new("board-management-close")
+                                .debug_selector(|| "board-management-close".into())
                                 .ghost()
                                 .small()
                                 .disabled(busy)
