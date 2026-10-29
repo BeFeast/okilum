@@ -79,6 +79,16 @@ fn show_section_from(
             Some(reader.downgrade())
         });
         let owner_id = owner.map(|owner| owner.window_id());
+        let alive: std::collections::HashSet<_> = cx
+            .windows()
+            .iter()
+            .map(|window| window.window_id())
+            .collect();
+        if cx.has_global::<SettingsOwners>() {
+            cx.global_mut::<SettingsOwners>()
+                .0
+                .retain(|_, handle| alive.contains(&handle.window_id()));
+        }
         let existing = cx
             .try_global::<SettingsOwners>()
             .and_then(|windows| windows.0.get(&owner_id).copied());
@@ -127,14 +137,7 @@ fn show_section_from(
                 if !cx.has_global::<SettingsOwners>() {
                     cx.set_global(SettingsOwners::default());
                 }
-                let alive: std::collections::HashSet<_> = cx
-                    .windows()
-                    .iter()
-                    .map(|window| window.window_id())
-                    .collect();
-                let windows = &mut cx.global_mut::<SettingsOwners>().0;
-                windows.retain(|_, handle| alive.contains(&handle.window_id()));
-                windows.insert(owner_id, handle);
+                cx.global_mut::<SettingsOwners>().0.insert(owner_id, handle);
                 cx.set_global(SettingsWindow(Some(handle)));
             }
             Err(error) => eprintln!("Could not open Settings: {error}"),
