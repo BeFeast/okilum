@@ -27,6 +27,16 @@ impl Payload {
         }
     }
 
+    /// Registration must retain the exact selected receipt, not merely a valid
+    /// binary left on disk after another selection has been committed.
+    pub fn verify_selected(&self, binding: &Binding, selected: &Selection) -> Result<Launch> {
+        ensure!(
+            selected == &self.selection,
+            "prepared runtime selection changed"
+        );
+        self.verify(binding)
+    }
+
     /// Validate the same immutable selection and existing identity immediately
     /// before lifecycle effects. This never creates a certificate or starts REST.
     pub fn verify(&self, binding: &Binding) -> Result<Launch> {

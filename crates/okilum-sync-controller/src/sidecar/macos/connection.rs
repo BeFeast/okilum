@@ -54,7 +54,13 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
     /// Recheck the bundle before authenticating a live process. Absent means no
     /// hint; Unreachable remains visible, never converted into "stopped".
     pub fn inspect(&self) -> Result<Discovered> {
-        let deadline = Instant::now() + self.budget;
+        self.inspect_until(Instant::now() + self.budget)
+    }
+    pub fn inspect_until(&self, deadline: Instant) -> Result<Discovered> {
+        ensure!(
+            Instant::now() < deadline,
+            "supervisor inspection deadline elapsed"
+        );
         self.bundle.verify(&self.binding)?;
         Ok(self.link.detailed_until(&self.binding, deadline))
     }
@@ -240,6 +246,9 @@ mod native {
         }
         pub fn inspect(&self) -> Result<Discovered> {
             self.connection.inspect()
+        }
+        pub fn inspect_until(&self, deadline: Instant) -> Result<Discovered> {
+            self.connection.inspect_until(deadline)
         }
         /// One deadline covers authentication, owned-tree Stop, captured-process
         /// exit and final authority revalidation. No PID kill/unregister fallback.
