@@ -141,6 +141,8 @@ struct Saved {
     /// `*`, `_` and `` ` `` close themselves too (#1636); off by default,
     /// as in Typora.
     auto_pair_markdown: bool,
+    /// Fenced code closes independently of inline Markdown pairing (#1893).
+    close_code_fences: bool,
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
@@ -202,6 +204,7 @@ impl Default for Saved {
             settings_section: String::new(),
             auto_pair_brackets: true,
             auto_pair_markdown: false,
+            close_code_fences: true,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             image_import: Default::default(),
             json_raw: false,
@@ -243,6 +246,7 @@ struct Store {
     vault_open_changed: bool,
     settings_section_changed: bool,
     auto_pair_changed: bool,
+    close_code_fences_changed: bool,
     paste_ask_changed: bool,
     image_import_changed: bool,
     json_raw_changed: bool,
@@ -344,6 +348,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         vault_open_changed: false,
         settings_section_changed: false,
         auto_pair_changed: false,
+        close_code_fences_changed: false,
         paste_ask_changed: false,
         image_import_changed: false,
         json_raw_changed: false,
@@ -575,6 +580,7 @@ struct WriteJob {
     vault_open_changed: bool,
     settings_section_changed: bool,
     auto_pair_changed: bool,
+    close_code_fences_changed: bool,
     paste_ask_changed: bool,
     image_import_changed: bool,
     json_raw_changed: bool,
@@ -683,6 +689,9 @@ impl WriteJob {
         }
         if self.image_import_changed {
             latest.image_import = self.saved.image_import;
+        }
+        if self.close_code_fences_changed {
+            latest.close_code_fences = self.saved.close_code_fences;
         }
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
@@ -811,6 +820,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.code_soft_wrap_changed
             && !state.auto_pair_changed
             && !state.image_import_changed
+            && !state.close_code_fences_changed
             && !state.paste_ask_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
@@ -849,6 +859,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         vault_open_changed: state.vault_open_changed,
         settings_section_changed: state.settings_section_changed,
         auto_pair_changed: state.auto_pair_changed,
+        close_code_fences_changed: state.close_code_fences_changed,
         paste_ask_changed: state.paste_ask_changed,
         image_import_changed: state.image_import_changed,
         json_raw_changed: state.json_raw_changed,
@@ -1408,6 +1419,22 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Enabled independently of inline Markdown pairing; legacy settings default on.
+pub(crate) fn close_code_fences(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_none_or(|state| state.saved.close_code_fences)
+}
+pub(crate) fn set_close_code_fences(value: bool, cx: &mut App) {
+    if !installed(cx) || close_code_fences(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.close_code_fences = value;
+    state.close_code_fences_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Settings → Editor (#1636): whether brackets and quotes, and `*` `_` `` ` ``,
 /// close themselves as they are typed in a note. Without the store (tests,
 /// a failed install) the defaults hold.
@@ -1919,6 +1946,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.vault_open_changed = false;
         state.settings_section_changed = false;
         state.auto_pair_changed = false;
+        state.close_code_fences_changed = false;
         state.paste_ask_changed = false;
         state.image_import_changed = false;
         state.json_raw_changed = false;
@@ -2000,6 +2028,32 @@ mod tests {
         assert_eq!(upgraded.text_zoom, 1.25);
         assert_eq!(upgraded.reading_width, 960.);
         assert!(upgraded.toolbar_labels);
+    }
+
+    #[gpui::test]
+    fn code_fence_setting_defaults_on_and_persists_independently(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        std::fs::write(&path, br#"{"version":1,"auto_pair_markdown":false}"#).unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            assert!(
+                close_code_fences(cx),
+                "legacy profiles default to closed code fences"
+            );
+            set_close_code_fences(false, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(!close_code_fences(cx));
+            set_auto_pair(false, true, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert_eq!(auto_pair(cx), (false, true));
+            assert!(
+                !close_code_fences(cx),
+                "inline pairing cannot reset the fence preference"
+            );
+        });
     }
 
     #[gpui::test]
@@ -2454,6 +2508,7 @@ mod tests {
                 vault_open_changed: false,
                 settings_section_changed: false,
                 auto_pair_changed: false,
+                close_code_fences_changed: false,
                 paste_ask_changed: false,
                 image_import_changed: false,
                 json_raw_changed: false,

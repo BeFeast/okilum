@@ -1093,6 +1093,16 @@ impl Settings {
                         ),
                     cx,
                 ))
+                .child(setting_row(
+                    "Close code fences",
+                    "Typing three backticks or tildes at a line start adds the matching closing fence.",
+                    div().debug_selector(|| "settings-close-code-fences-control".into()).child(
+                        Switch::new("settings-close-code-fences")
+                            .accessibility_label("Close code fences")
+                            .checked(reader_ui_state::close_code_fences(cx))
+                            .on_click(|value, _, cx| reader_ui_state::set_close_code_fences(*value, cx)),
+                    ), cx,
+                ))
                 .into_any_element(),
             Section::Vault => {
                 if let Some(reader) = self.vault(cx) {

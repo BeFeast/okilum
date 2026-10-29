@@ -21,6 +21,17 @@ New note temporarily opens Live Preview for typing without changing the window's
 chosen mode for other notes. Restoring an editor after a sidebar selection keeps
 keyboard focus in the tree (#1730).
 
+Typing a third backtick or tilde at a Markdown line start adds its closing
+fence (#1893). The caret stays at the opener for the language; Enter enters the
+empty block. An adjacent empty closer grows with a longer opening fence.
+Existing code bodies/closers and nonempty line suffixes stay literal. One Undo
+removes the assistance while retaining the typed opening marks. The independent
+Settings → Editor → Close code fences switch defaults on, including in older
+profiles without that key. Quote markers and original indentation are retained;
+each list marker, including an ordered marker or task box, becomes continuation
+spaces at its own nesting level. Source and Live Preview use the same hook and
+existing IME guards, exact line endings and native Undo transactions.
+
 Document zoom scales code together with prose in Read and Live Preview (#1737).
 Inline code inherits the surrounding text size; rendered fenced blocks scale
 their themed monospace size by the same zoom factor, including inside callouts.

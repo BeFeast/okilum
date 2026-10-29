@@ -984,7 +984,10 @@ impl Reader {
             let state = input.read(cx);
             (state.value(), state.selected_range())
         };
-        if let Some(edit) = enter(&text, selection, action.shift) {
+        let fence = reader_ui_state::close_code_fences(cx)
+            .then(|| super::format::fences::enter(&text, selection.clone()))
+            .flatten();
+        if let Some(edit) = fence.or_else(|| enter(&text, selection, action.shift)) {
             if self.apply_list_edit(&input, edit, window, cx) {
                 cx.stop_propagation();
             }
