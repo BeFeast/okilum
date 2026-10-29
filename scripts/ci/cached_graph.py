@@ -49,9 +49,12 @@ def verify(root, out):
     names = json.loads((out / 'graph.json').read_text())
     if names != graph_paths(root):
         raise ValueError('Manifest inventory changed after snapshot')
-    for name in names:
+    protected = json.loads((out / 'protected.json').read_text())
+    if not set(names).issubset(protected):
+        raise ValueError('Graph inventory is missing protected snapshots')
+    for name in protected:
         if digest(root / name) != digest(out / 'originals' / name):
-            raise ValueError(f'Graph input changed: {name}')
+            raise ValueError(f'Protected input changed: {name}')
 
 
 def main():

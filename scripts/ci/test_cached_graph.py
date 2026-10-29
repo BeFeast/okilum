@@ -40,7 +40,7 @@ class CachedGraphTests(unittest.TestCase):
         self.assertEqual(saved.stat().st_mtime_ns, original.stat().st_mtime_ns)
         # Positive control: the receipt really detects a graph mutation.
         original.write_text('changed graph')
-        with self.assertRaisesRegex(ValueError, 'Graph input changed: crates/okilum-t3/Cargo.toml'):
+        with self.assertRaisesRegex(ValueError, 'Protected input changed: crates/okilum-t3/Cargo.toml'):
             graph.verify(self.root, self.out)
 
     def test_new_manifest_is_not_silently_outside_the_receipt(self):
@@ -71,3 +71,16 @@ class CachedGraphTests(unittest.TestCase):
             graph.save(self.root, self.out, self.contract)
         self.assertEqual(saved.read_bytes(), before)
         self.assertFalse((self.out / 'originals/vendor/gpui-component/target').exists())
+
+    def test_vendor_and_contract_source_drift_are_detected(self):
+        graph.save(self.root, self.out, self.contract)
+        for name in ['vendor/gpui-component/crates/base/src/lib.rs',
+                     'crates/okilum-t3/src/lib.rs']:
+            with self.subTest(name=name):
+                source = self.root / name
+                original = source.read_bytes()
+                source.write_text('unexpected source change')
+                with self.assertRaisesRegex(ValueError, 'Protected input changed'):
+                    graph.verify(self.root, self.out)
+                source.write_bytes(original)
+                graph.verify(self.root, self.out)

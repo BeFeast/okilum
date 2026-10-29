@@ -20,7 +20,8 @@ these calls. `save` verifies changed-file contract hashes, then snapshots their
 union with root manifests/locks, every crate manifest, the vendor lock and vendor
 Rust sources. `graph.json` and `protected.json` come from that same inventory.
 Snapshots preserve file mtimes and cannot overwrite an existing originals folder.
-A changed manifest or a newly added/removed crate fails the receipt.
+A changed protected input (including vendor/source files) or a newly
+added/removed crate fails the receipt.
 
 Keep the packet's existing source-identity, original-release snapshot, restoration
 and final byte/mtime checks. The old-release snapshot is saved separately;
