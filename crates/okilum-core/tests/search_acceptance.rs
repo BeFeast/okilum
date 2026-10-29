@@ -209,6 +209,72 @@ fn c7_notes_can_be_filtered_by_frontmatter_date() {
 }
 
 #[test]
+fn a_date_outside_the_date_field_is_searched_as_text() {
+    // #1933. Only a `date:` value is widened to RFC 3339 (C7). Widening every
+    // date in the query turned `2026-01-01` into `2026-01-01T00:00:00Z`, whose
+    // `01t00` and `00z` tokens no note contains, so a daily note could not be
+    // found by its own name.
+    let f = Fixture::new(
+        "dates-as-text",
+        &[
+            ("Daily/2026-01-01.md", "Planned the year.\n"),
+            (
+                "notes/log.md",
+                "# Log\n\nShipped on 2026-02-14 after review.\n",
+            ),
+            (
+                "notes/other.md",
+                "# Other\n\nShipped on 2025-02-14, a year earlier.\n",
+            ),
+        ],
+    );
+    assert_eq!(
+        f.paths("2026-01-01"),
+        vec!["Daily/2026-01-01.md"],
+        "a daily note by its name"
+    );
+    assert_eq!(
+        f.paths("path:2026-01-01"),
+        vec!["Daily/2026-01-01.md"],
+        "a daily note by its path"
+    );
+    assert_eq!(
+        f.paths("2026-02-14"),
+        vec!["notes/log.md"],
+        "a date in the text"
+    );
+    assert_eq!(
+        f.paths("\"2026-02-14\""),
+        vec!["notes/log.md"],
+        "a quoted date"
+    );
+}
+
+// #1933. Outside a range bound tantivy reads a term as a plain word, which ends
+// at `:`: an unquoted `2026-03-01T00:00:00Z` there is a syntax error, so these
+// three forms found nothing while C7's range worked. One test per form, so each
+// is shown failing on its own.
+
+#[test]
+fn a_date_value_finds_its_note_by_exact_value() {
+    assert_eq!(corpus().paths("date:2026-03-01"), vec!["notes/alpha.md"]);
+}
+
+#[test]
+fn a_date_value_finds_its_notes_in_an_in_set() {
+    let mut paths = corpus().paths("date: IN [2026-03-01 2025-01-09]");
+    paths.sort();
+    assert_eq!(paths, vec!["archive/gamma.md", "notes/alpha.md"]);
+}
+
+#[test]
+fn a_date_value_finds_its_notes_in_a_group() {
+    let mut paths = corpus().paths("date:(2026-03-01 OR 2026-07-15)");
+    paths.sort();
+    assert_eq!(paths, vec!["notes/alpha.md", "notes/beta.md"]);
+}
+
+#[test]
 fn c8_a_single_character_typo_still_finds_the_note() {
     let f = corpus();
     let hits = f.paths("zarqon");
@@ -464,6 +530,51 @@ fn c16_editing_one_note_updates_the_index_without_a_full_rebuild() {
     assert!(
         elapsed.as_secs() < 5,
         "a one-note update took rebuild-scale time: {elapsed:?}"
+    );
+}
+
+#[test]
+fn a_note_that_cannot_be_read_keeps_its_indexed_document() {
+    // #1933. update_note deleted first and took any read error for "the note
+    // is gone": a note that failed to read vanished from search, and the call
+    // still returned Ok.
+    let f = corpus();
+    assert!(
+        f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
+        "positive control: the note is indexed"
+    );
+    // A directory in the note's place: its read fails with an IO error other
+    // than "not found" on every platform, and even for root, which ignores
+    // permission bits.
+    let note = f.root.join("notes/alpha.md");
+    fs::remove_file(&note).unwrap();
+    fs::create_dir(&note).unwrap();
+    let vault = Vault::scan(&f.root).unwrap();
+    let error = f
+        .searcher
+        .update_note(&vault, "notes/alpha.md")
+        .expect_err("a failed read is an error, not a deletion");
+    assert_eq!(error.to_string(), "read notes/alpha.md", "{error:#}");
+    let kind = error
+        .downcast_ref::<std::io::Error>()
+        .map(std::io::Error::kind);
+    assert!(
+        kind.is_some_and(|kind| kind != std::io::ErrorKind::NotFound),
+        "the read's own IO error: {error:#}"
+    );
+    assert!(
+        f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
+        "the last indexed document stays"
+    );
+    // Only a real deletion removes it.
+    fs::remove_dir(&note).unwrap();
+    let vault = Vault::scan(&f.root).unwrap();
+    f.searcher
+        .update_note(&vault, "notes/alpha.md")
+        .expect("a missing file is a removal");
+    assert!(
+        !f.paths("zarquon").contains(&"notes/alpha.md".to_string()),
+        "a deleted note must not be a hit"
     );
 }
 
