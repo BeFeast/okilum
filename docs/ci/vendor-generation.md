@@ -10,7 +10,7 @@ and text sources, and the next vendor verification correctly rejects the drift.
 Ordinary workspace formatting can also traverse generated files imported with
 `#[path]`. Workspace exclusion alone does not protect either route.
 
-Patch 0097 sets stable rustfmt's `disable_all_formatting` in the generated
+Patch 0098 sets stable rustfmt's `disable_all_formatting` in the generated
 clone's own config. Direct downstream vendor module declarations use
 `#[rustfmt::skip]`. This is a local generation policy, not an upstream behavior
 patch. Format intentional changes before producing a patch; never format the
