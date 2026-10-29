@@ -138,10 +138,26 @@ impl Document {
                 wrapper.insert(Value::from("field"), omit_nulls(value)?);
                 let serialized = toml::to_string(&wrapper)?;
                 let mut item = serialized.parse::<toml_edit::DocumentMut>()?;
-                document.insert(
-                    key,
-                    item.remove("field").context("Missing serialized field")?,
-                );
+                let mut replacement = item.remove("field").context("Missing serialized field")?;
+                if let Some(original) = document.get(key) {
+                    if let (Some(old), Some(new)) =
+                        (original.as_value(), replacement.as_value_mut())
+                    {
+                        *new.decor_mut() = old.decor().clone();
+                    }
+                    if let (Some(old), Some(new)) =
+                        (original.as_table(), replacement.as_table_mut())
+                    {
+                        *new.decor_mut() = old.decor().clone();
+                    }
+                }
+                if let Some(original_key) = document.as_table().key(key).cloned() {
+                    document
+                        .as_table_mut()
+                        .insert_formatted(&original_key, replacement);
+                } else {
+                    document.insert(key, replacement);
+                }
             }
             None => {
                 document.remove(key);

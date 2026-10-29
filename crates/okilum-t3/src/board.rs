@@ -223,6 +223,12 @@ impl Binding {
             let number = value.get("number").and_then(serde_yaml::Value::as_u64);
             let field = format!("issues[{index}]");
             let parsed = (|| -> Result<Scope> {
+                for field in ["expected", "executor"] {
+                    ensure!(
+                        value.get(field).is_some_and(serde_yaml::Value::is_string),
+                        "{field}: expected text"
+                    );
+                }
                 let scope: Scope = serde_yaml::from_str(&serde_yaml::to_string(&value)?)?;
                 ensure!(scope.number > 0, "number: expected a positive issue number");
                 ensure!(
