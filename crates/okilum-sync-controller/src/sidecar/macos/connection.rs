@@ -159,7 +159,7 @@ mod native {
     impl PeerCheck for WatchingPeer {
         fn verify(&self, stream: &UnixStream, end: PeerEnd) -> Result<()> {
             ensure!(
-                end == PeerEnd::Server,
+                matches!(end, PeerEnd::Server),
                 "exit capture requires the supervisor endpoint"
             );
             let watch = ExitWatch::capture(stream, &self.peer)?;
