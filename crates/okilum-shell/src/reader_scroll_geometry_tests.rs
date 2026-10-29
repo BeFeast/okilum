@@ -1,6 +1,33 @@
 //! Reader wheel regressions assert painted text, not only the list's offset.
 use super::{bind_keys, reader_ui_state, Opts, Reader, Root};
-use gpui::{point, px, size, AppContext as _, ScrollDelta, ScrollWheelEvent, TouchPhase};
+use gpui::{
+    point, px, size, App, AppContext as _, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase,
+};
+
+/// Locate the actual painted text in a short paragraph fixture. A viewport
+/// origin can be blank opening space and is not a text hit-test position.
+pub(crate) fn paragraph_origin(reader: &Reader, cx: &App, paragraph: usize) -> Point<Pixels> {
+    let state = reader.content.read(cx);
+    let bounds = state.bounds();
+    let mut seen = Vec::new();
+    for y in (0..f32::from(bounds.size.height).ceil() as usize).step_by(4) {
+        let Some((segment, _, _)) =
+            state.rendered_source_at(Some(bounds.origin + point(px(1.), px(y as f32))))
+        else {
+            continue;
+        };
+        if seen.contains(&segment) {
+            continue;
+        }
+        if seen.len() == paragraph {
+            return state
+                .rendered_position_for_source(segment, 0)
+                .expect("paragraph start has painted geometry");
+        }
+        seen.push(segment);
+    }
+    panic!("paragraph {paragraph} must have painted geometry");
+}
 
 #[gpui::test]
 fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::TestAppContext) {

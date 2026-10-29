@@ -937,12 +937,10 @@ mod tests {
                     .is_some()
             );
         });
-        let bounds = reader.read_with(visual, |r, cx| r.content.read(cx).bounds());
-        visual.simulate_mouse_move(
-            bounds.origin + point(px(25.), px(10.)),
-            None,
-            Modifiers::default(),
-        );
+        let origin = reader.read_with(visual, |r, cx| {
+            crate::reader_scroll_geometry_tests::paragraph_origin(r, cx, 0)
+        });
+        visual.simulate_mouse_move(origin + point(px(25.), px(10.)), None, Modifiers::default());
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(350));
         visual.run_until_parked();
