@@ -46,6 +46,7 @@ pub(super) struct T3Settings {
     state: Option<PathBuf>,
     error: Option<String>,
     edited: bool,
+    error_details_open: bool,
     _input: Subscription,
     _auth: Subscription,
 }
@@ -82,6 +83,7 @@ impl T3Settings {
             if let InputEvent::Change = event {
                 this.edited = true;
                 this.error = None;
+                this.error_details_open = false;
                 cx.notify();
             }
         });
@@ -127,6 +129,7 @@ impl T3Settings {
             state,
             error: None,
             edited: false,
+            error_details_open: false,
             _input: input,
             _auth: observer,
         }
@@ -142,6 +145,7 @@ impl T3Settings {
                 self.origin
                     .update(cx, |input, cx| input.set_value(env.origin(), window, cx));
                 self.error = None;
+                self.error_details_open = false;
                 auth::connect(env, self.state.clone(), true, cx);
             }
             Err(e) => self.error = Some(format!("{e:#}")),
@@ -246,7 +250,37 @@ impl Render for T3Settings {
                         ),
                 )
             })
-            .children(error.map(|e| div().text_color(cx.theme().danger).child(e)))
+            .children(error.map(|e| {
+                div()
+                    .debug_selector(|| "t3-connection-error".into())
+                    .text_color(cx.theme().danger)
+                    .child(e)
+            }))
+            .when_some(entry.error_details, |view, details| {
+                view.child(
+                    Button::new("t3-connection-details")
+                        .debug_selector(|| "t3-connection-details".into())
+                        .ghost()
+                        .small()
+                        .label("Details")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.error_details_open = !this.error_details_open;
+                            cx.notify();
+                        })),
+                )
+                .when(self.error_details_open, |view| {
+                    view.child(
+                        div()
+                            .debug_selector(|| "t3-connection-error-details".into())
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(details),
+                    )
+                })
+            })
     }
 }
 

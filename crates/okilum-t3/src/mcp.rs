@@ -294,9 +294,9 @@ impl McpGateway {
         if let Some(session) = session {
             request = request.header(SESSION_HEADER, session);
         }
-        let response = request
-            .send()
-            .map_err(|error| GatewayError::Unreachable(error.without_url().to_string()))?;
+        let response = request.send().map_err(|error| {
+            GatewayError::Unreachable(format!("{:#}", anyhow::Error::new(error.without_url())))
+        })?;
         let status = response.status();
         let session_id = response
             .headers()
@@ -352,9 +352,9 @@ impl McpGateway {
         let reply = if event_stream {
             reply_from_events(BufReader::new(response), id)?
         } else {
-            let text = response
-                .text()
-                .map_err(|error| GatewayError::Unreachable(error.without_url().to_string()))?;
+            let text = response.text().map_err(|error| {
+                GatewayError::Unreachable(format!("{:#}", anyhow::Error::new(error.without_url())))
+            })?;
             serde_json::from_str(&text).ok()
         };
         let reply = reply.ok_or_else(|| {

@@ -15,6 +15,8 @@ pub(super) struct Entry {
     pub pending: Option<Pending>,
     pub busy: bool,
     pub error: Option<String>,
+    pub error_details: Option<String>,
+    pub notice: Option<String>,
     pub signed_out: bool,
 }
 #[derive(Clone, Default)]
@@ -56,7 +58,9 @@ pub(super) fn status(origin: &str, cx: &App) -> String {
         };
     }
     if entry.busy {
-        return "Checking your T3 connection…".into();
+        return entry
+            .notice
+            .unwrap_or_else(|| "Checking your T3 connection…".into());
     }
     match entry.gateway.as_ref().map(|g| g.status()) {
         Some(GatewayStatus::Connected { .. }) => {
@@ -91,6 +95,8 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
     edit(&origin, cx, |e| {
         e.busy = true;
         e.error = None;
+        e.error_details = None;
+        e.notice = None;
         e.signed_out = false;
     });
     cx.spawn(async move |cx| {
@@ -113,6 +119,9 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                             cx.open_url(&pending.url);
                         }
                         edit(&progress_origin, cx, |entry| match event {
+                            Event::NetworkRetry => {
+                                entry.notice = Some(okilum_t3::connection::RETRY_NOTICE.into());
+                            }
                             Event::Ready(pending) => {
                                 entry.pending = Some(pending);
                                 entry.error = None;
@@ -134,44 +143,65 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                     });
                 }
             });
-            let connected = cx
+            let final_events = events.clone();
+            let (connected, mut retry) = cx
                 .background_executor()
                 .spawn(async move {
+                    let mut retry = okilum_t3::connection::Retry::default();
+                    let notice = || {
+                        let _ = events.try_send(Event::NetworkRetry);
+                    };
                     if !authorize {
-                        let gateway = McpGateway::new(worker_env, token)?;
+                        let gateway = McpGateway::new(worker_env.clone(), token)?;
                         if matches!(
                             gateway.status(),
                             GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
                         ) {
-                            gateway.connect()?;
+                            retry.run(
+                                &worker_env,
+                                || gateway.connect().map_err(Into::into),
+                                notice,
+                            )?;
                         }
-                        return Ok(okilum_t3::reconnect::Connected {
-                            gateway,
-                            issued_token: None,
-                        });
+                        return Ok((
+                            okilum_t3::reconnect::Connected {
+                                gateway,
+                                issued_token: None,
+                            },
+                            retry,
+                        ));
                     }
                     let saved = token.map(|t| (worker_env.credential_url(), t));
-                    okilum_t3::reconnect::connect(&worker_env, saved, renew, || {
-                        let authorization = Authorization::prepare(&worker_env, "Okilum")?;
-                        let (send, receive) = std::sync::mpsc::channel();
-                        events.try_send(Event::Ready(Pending {
-                            url: authorization.url().to_string(),
-                            input: send,
-                            remaining: Some(DEFAULT_WAIT.as_secs()),
-                        }))?;
-                        authorization.wait(
-                            receive,
-                            |p| {
-                                let _ = events.try_send(Event::Progress(p));
-                            },
-                            DEFAULT_WAIT,
-                        )
-                    })
+                    let connected = okilum_t3::reconnect::connect_with_retry(
+                        &worker_env,
+                        saved,
+                        renew,
+                        |retry| {
+                            let authorization = retry.run(
+                                &worker_env,
+                                || Authorization::prepare(&worker_env, "Okilum"),
+                                notice,
+                            )?;
+                            let (send, receive) = std::sync::mpsc::channel();
+                            events.try_send(Event::Ready(Pending {
+                                url: authorization.url().to_string(),
+                                input: send,
+                                remaining: Some(DEFAULT_WAIT.as_secs()),
+                            }))?;
+                            authorization.wait(
+                                receive,
+                                |p| {
+                                    let _ = events.try_send(Event::Progress(p));
+                                },
+                                DEFAULT_WAIT,
+                            )
+                        },
+                        &mut retry,
+                        notice,
+                    )?;
+                    Ok::<_, anyhow::Error>((connected, retry))
                 })
                 .await?;
-            // The worker owns the sole event sender; completion drops it.
-            // Drain the nonblocking unbounded stream before publishing success.
-            updates_job.await;
             if let Some(token) = &connected.issued_token {
                 cx.update(|cx| {
                     cx.write_credentials(&env.credential_url(), "Okilum", &token.to_secret())
@@ -184,11 +214,19 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                 .background_executor()
                 .spawn(async move {
                     if authorize {
-                        connected.gateway.connect()?;
+                        retry.run(
+                            connected.gateway.environment(),
+                            || connected.gateway.connect().map_err(Into::into),
+                            || {
+                                let _ = final_events.try_send(Event::NetworkRetry);
+                            },
+                        )?;
                     }
                     Ok::<_, anyhow::Error>(connected)
                 })
                 .await?;
+            // Both setup workers have dropped their progress senders.
+            updates_job.await;
             publish = authorize && cx.update(|cx| selected_origin(cx).as_deref() == Some(&origin));
             if publish {
                 let saved_env = env.clone();
@@ -221,6 +259,8 @@ pub(super) fn sign_out(env: Environment, cx: &mut App) {
         entry.busy = true;
         entry.signed_out = true;
         entry.error = None;
+        entry.error_details = None;
+        entry.notice = None;
     });
     cx.set_global(Connection {
         origin: Some(origin.clone()),
@@ -274,6 +314,8 @@ fn finish(
     edit(origin, cx, |entry| {
         entry.busy = false;
         entry.pending = None;
+        entry.notice = None;
+        entry.error_details = None;
         match result {
             Ok(gateway) => {
                 entry.gateway = Some(gateway);
@@ -281,7 +323,12 @@ fn finish(
             }
             Err(error) => {
                 entry.gateway = None;
-                entry.error = Some(format!("{error:#}. Choose Sign in to continue."));
+                if let Some(help) = okilum_t3::connection::permission_help(&error) {
+                    entry.error = Some(help.into());
+                    entry.error_details = okilum_t3::connection::permission_details(&error);
+                } else {
+                    entry.error = Some(format!("{error:#}. Choose Sign in to continue."));
+                }
             }
         }
     });
@@ -293,6 +340,7 @@ fn finish(
 }
 
 enum Event {
+    NetworkRetry,
     Ready(Pending),
     Progress(Progress),
 }
@@ -301,6 +349,42 @@ enum Event {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn local_network_diagnostics_stay_under_details(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let form = cx.new(|cx| {
+                let mut form = T3Settings::new(None, window, cx);
+                form.edited = true;
+                form.origin.update(cx, |input, cx| {
+                    input.set_value("https://10.10.0.23", window, cx)
+                });
+                form
+            });
+            Root::new(form, window, cx)
+        });
+        visual.update(|_, cx| {
+            edit("https://10.10.0.23", cx, |entry| {
+                entry.error = Some(okilum_t3::connection::PERMISSION_HELP.into());
+                entry.error_details = Some("No route to host (os error 65)".into());
+            })
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("t3-connection-error").is_some());
+        assert!(visual.debug_bounds("t3-connection-error-details").is_none());
+        let details = visual.debug_bounds("t3-connection-details").unwrap();
+        visual.simulate_click(details.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("t3-connection-error-details").is_some());
+        let details = visual.debug_bounds("t3-connection-details").unwrap();
+        visual.simulate_click(details.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("t3-connection-error-details").is_none());
+        root.read_with(visual, |_, cx| {
+            assert!(entry("https://10.10.0.23", cx).pending.is_none())
+        });
+    }
 
     #[gpui::test]
     fn pending_sign_in_is_shared_across_aliases_and_survives_the_form(cx: &mut TestAppContext) {
