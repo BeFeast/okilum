@@ -39,11 +39,15 @@ impl Directory {
         Ok(())
     }
     pub fn read(&self, name: &OsStr) -> Result<(String, (u32, u32, u32))> {
-        let native = self.pin()?;
-        let (_, bytes, info) = native.read(name)?;
+        let (bytes, identity) = self.read_bytes(name)?;
         Ok((
             String::from_utf8(bytes).context("Only lossless UTF-8 source editing is supported")?,
-            crate::windows_files::identity(&info),
+            identity,
         ))
+    }
+    pub fn read_bytes(&self, name: &OsStr) -> Result<(Vec<u8>, (u32, u32, u32))> {
+        let native = self.pin()?;
+        let (_, bytes, info) = native.read(name)?;
+        Ok((bytes, crate::windows_files::identity(&info)))
     }
 }

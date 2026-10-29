@@ -6,6 +6,7 @@ mod directory;
 #[cfg(windows)]
 #[path = "file_editor/directory_windows.rs"]
 mod directory;
+mod raw_transaction;
 #[cfg(unix)]
 use crate::unix_publish::flagged_rename as renameat_with;
 use anyhow::{bail, Context, Result};
@@ -161,6 +162,7 @@ impl DiskStamp {
 pub struct DiskStamp(());
 
 pub struct FileEditor {
+    raw_transaction: Option<Arc<raw_transaction::ByteTransaction>>,
     directory: Directory,
     draft: Draft,
     /// The file as this editor last read or wrote it while it held
@@ -374,6 +376,7 @@ impl FileEditor {
             journal,
             lock: Arc::new(lock),
             writes: Arc::default(),
+            raw_transaction: None,
         })
     }
     /// Canonical identity held by this editor, for root-bound mutation callers.
@@ -384,7 +387,7 @@ impl FileEditor {
         &self.draft.text
     }
     pub fn dirty(&self) -> bool {
-        self.draft.text != self.draft.base
+        self.base_bytes() != self.proposed_bytes()
     }
     pub fn current(&self) -> Result<String> {
         Ok(self.read_current()?.0)
@@ -432,6 +435,11 @@ impl FileEditor {
         }
     }
     fn persist(&self) -> Result<()> {
+        // Explicit byte transactions persist their complete snapshots in the new
+        // History record before publication, never in a lossy text Draft.
+        if self.raw_transaction.is_some() {
+            return Ok(());
+        }
         self.pending_write().persist()
     }
     /// Refresh only a clean buffer. Dirty source is never replaced by a watcher.
@@ -502,6 +510,7 @@ impl FileEditor {
             journal: self.journal.clone(),
             lock: self.lock.clone(),
             writes: self.writes.clone(),
+            raw_transaction: self.raw_transaction.clone(),
         })
     }
     /// A copy saved `text`: that is the file now, so it becomes the base.
@@ -527,15 +536,20 @@ impl FileEditor {
         }
         self.persist()?;
         self.directory.validate(self.draft.path.parent().unwrap())?;
-        let (current, metadata) = self.directory.read(self.draft.path.file_name().unwrap())?;
-        if current == self.draft.text {
+        let (current, metadata) = self
+            .directory
+            .read_bytes(self.draft.path.file_name().unwrap())?;
+        if self.raw_transaction.is_some() && current != self.base_bytes() {
+            return Ok(Save::Conflict);
+        }
+        if current == self.proposed_bytes() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
-            self.draft.base = current;
+            self.draft.base = self.draft.text.clone();
             self.on_disk = Some(DiskStamp::of(&metadata));
             self.persist()?;
             return Ok(Save::Saved);
         }
-        if current != self.draft.base {
+        if current != self.base_bytes() {
             return Ok(Save::Conflict);
         }
         let parent = self.draft.path.parent().unwrap();
@@ -543,16 +557,14 @@ impl FileEditor {
         let (mut temp, name) = self.directory.temporary()?;
         let backup = parent.join(&name);
         let preparation: Result<_> = (|| {
+            self.track_raw_temporary(&name, &temp)?;
             temp.set_permissions(metadata.permissions())?;
-            temp.write_all(self.draft.text.as_bytes())?;
+            #[cfg(test)]
+            self.inject_partial_raw_write(&mut temp)?;
+            temp.write_all(self.proposed_bytes())?;
             temp.sync_all()?;
             directory.sync_all()?;
-            let history = crate::source_history::Preimage::begin(
-                self.journal.parent().unwrap(),
-                &self.draft.path,
-                &self.draft.base,
-                &backup,
-            )?;
+            let history = self.begin_save_history(&backup, None)?;
             self.directory.validate(parent)?;
             before_exchange();
             Ok(history)
@@ -603,7 +615,7 @@ impl FileEditor {
                 file.read_to_end(&mut bytes)?;
                 Ok(bytes)
             });
-        if !displaced.is_ok_and(|bytes| bytes == self.draft.base.as_bytes()) {
+        if !displaced.is_ok_and(|bytes| bytes == self.base_bytes()) {
             if compatible {
                 // Plain rename cannot safely roll back a third-party change.
                 // Both the draft and pending displaced preimage stay protected.
@@ -620,6 +632,14 @@ impl FileEditor {
             )?;
             directory.sync_all()?;
             return Ok(Save::Conflict);
+        }
+        // Complete all fallible publication checks while the preimage remains
+        // available for a raw transaction rollback.
+        if self.raw_transaction.is_some() {
+            self.directory.validate(parent)?;
+            let _ = temp.metadata()?;
+            self.finish_raw_history_unix(&history)?;
+            return Ok(Save::Saved);
         }
         if compatible {
             crate::source_history::Preimage::finish_compatible(&history, directory)?;
@@ -787,28 +807,29 @@ impl FileEditor {
         }
         self.persist()?;
         self.directory.validate(self.draft.path.parent().unwrap())?;
-        let current = self.current()?;
-        if current == self.draft.text {
-            self.draft.base = current;
+        let (current, _) = self
+            .directory
+            .read_bytes(self.draft.path.file_name().unwrap())?;
+        if self.raw_transaction.is_some() && current != self.base_bytes() {
+            return Ok(Save::Conflict);
+        }
+        if current == self.proposed_bytes() {
+            self.draft.base = self.draft.text.clone();
             self.persist()?;
             return Ok(Save::Saved);
         }
         let directory = self.directory.pin()?;
-        let Some(plan) = directory.prepare_replace(
+        let Some(plan) = directory.prepare_replace_tracked(
             self.draft.path.file_name().unwrap(),
-            self.draft.base.as_bytes(),
-            self.draft.text.as_bytes(),
+            self.base_bytes(),
+            self.proposed_bytes(),
+            |path, identity| self.track_raw_windows_identity(path, identity),
         )?
         else {
             return Ok(Save::Conflict);
         };
-        let history = crate::source_history::Preimage::begin_windows(
-            self.journal.parent().unwrap(),
-            &self.draft.path,
-            &self.draft.base,
-            plan.preimage_path(),
-            plan.prepared_path(),
-        )?;
+        self.track_raw_windows_preimage(plan.preimage_path(), plan.preimage_identity())?;
+        let history = self.begin_save_history(plan.preimage_path(), Some(plan.prepared_path()))?;
         before_exchange();
         let preimage_identity = plan.preimage_identity();
         let committed = plan.commit();
@@ -820,11 +841,17 @@ impl FileEditor {
             committed.as_ref(),
             Ok(crate::windows_files::Replacement::Saved { .. })
         ) {
-            let _ = crate::source_history::Preimage::archive_prepared_windows(&history);
+            if self.raw_transaction.is_none() {
+                let _ = crate::source_history::Preimage::archive_prepared_windows(&history);
+            }
         }
         match committed? {
             crate::windows_files::Replacement::Conflict => return Ok(Save::Conflict),
             crate::windows_files::Replacement::Saved { .. } => {}
+        }
+        if self.raw_transaction.is_some() {
+            self.finish_raw_history_windows(&history, &directory, preimage_identity)?;
+            return Ok(Save::Saved);
         }
         crate::source_history::Preimage::finish_windows(&history, &directory, preimage_identity)?;
         self.draft.base = self.draft.text.clone();

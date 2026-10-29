@@ -49,13 +49,35 @@ impl Reader {
             )
             .when(self.note_encoding_damaged, |view| {
                 view.child(
-                    div()
+                    h_flex()
                         .debug_selector(|| "note-encoding-notice".into())
                         .px_4()
                         .py_1()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child(reader_loading::ENCODING_NOTICE),
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(reader_loading::ENCODING_NOTICE),
+                        )
+                        .child(
+                            Button::new("note-encoding-repair")
+                                .debug_selector(|| "note-encoding-repair".into())
+                                .small()
+                                .label(if self.encoding_repair_pending.is_some() {
+                                    "Repairing…"
+                                } else {
+                                    "Repair"
+                                })
+                                .disabled(
+                                    self.encoding_repair_pending.is_some() || self.move_applying,
+                                )
+                                .on_click(cx.listener(|reader, _, window, cx| {
+                                    reader.repair_note_encoding(window, cx)
+                                })),
+                        ),
                 )
             })
             .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))

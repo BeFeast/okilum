@@ -14,6 +14,7 @@ pub(super) struct Timeline {
     versions: Vec<Version>,
     pub(super) selected: Option<usize>,
     current: Option<String>,
+    current_bytes: Option<Vec<u8>>,
     content: Option<Entity<TextViewState>>,
     source: Option<Entity<EditorState>>,
     states: prepared_links::States,
@@ -116,6 +117,7 @@ impl Reader {
             versions: Vec::new(),
             selected: None,
             current: None,
+            current_bytes: None,
             content: None,
             source: None,
             states: Arc::default(),
@@ -147,8 +149,9 @@ impl Reader {
                     listing
                         .versions
                         .sort_by_key(|v| std::cmp::Reverse(v.created));
-                    let current = std::fs::read_to_string(path).ok();
-                    Ok::<_, anyhow::Error>((listing, current))
+                    let current_bytes = std::fs::read(path).ok();
+                    let current = current_bytes.as_ref().map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+                    Ok::<_, anyhow::Error>((listing, current, current_bytes))
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |r, _, cx| {
@@ -158,9 +161,10 @@ impl Reader {
                 let t = r.timeline.as_mut().unwrap();
                 t.loading = false;
                 match loaded {
-                    Ok((listing, current)) => {
+                    Ok((listing, current, current_bytes)) => {
                         t.versions = listing.versions;
                         t.current = current;
+                        t.current_bytes = current_bytes;
                         if !listing.warnings.is_empty() {
                             t.message = Some(listing.warnings.join("\n"));
                         }
@@ -388,8 +392,18 @@ impl Reader {
         }
         let root = t.root.clone();
         let rel = t.rel.clone();
+        let reviewed_bytes = t
+            .current_bytes
+            .clone()
+            .unwrap_or_else(|| reviewed.as_bytes().to_vec());
+        let raw_restore = version.raw.is_some() || std::str::from_utf8(&reviewed_bytes).is_err();
+        let restored_bytes = version.bytes().to_vec();
         let result = if root.join(&rel).canonicalize().ok().as_ref() == Some(&version.note) {
-            self.restore_source_version(&reviewed, &version.text, window, cx)
+            if raw_restore {
+                self.restore_source_bytes(&reviewed_bytes, &restored_bytes, window, cx)
+            } else {
+                self.restore_source_version(&reviewed, &version.text, window, cx)
+            }
         } else {
             Err(anyhow::anyhow!("The note path changed; open history again"))
         };
@@ -407,6 +421,7 @@ impl Reader {
                     .action(move |_,_,cx| {
                         let reader = reader.clone(); let root = root.clone(); let rel = rel.clone();
                         let restored = version.text.clone(); let replaced = reviewed.clone(); let note = version.note.clone();
+                        let restored_bytes = restored_bytes.clone(); let replaced_bytes = reviewed_bytes.clone();
                         Button::new("history-undo").small().label("Undo")
                             .debug_selector(|| "history-undo".into())
                             .on_click(cx.listener(move |notice,_,window,cx| {
@@ -414,7 +429,8 @@ impl Reader {
                                     anyhow::ensure!(r.vault_root == root && r.current_rel == rel,
                                         "Open the restored note before undoing");
                                     anyhow::ensure!(root.join(&rel).canonicalize().ok().as_ref() == Some(&note), "The note path changed; open history again");
-                                    r.restore_source_version(&restored, &replaced, window, cx)
+                                    if raw_restore { r.restore_source_bytes(&restored_bytes, &replaced_bytes, window, cx) }
+                                    else { r.restore_source_version(&restored, &replaced, window, cx) }
                                 });
                                 match result.and_then(|result| result) {
                                     Ok(()) => { notice.dismiss(window,cx); reader_toast::transient("Restore undone",window,cx); }
@@ -600,6 +616,7 @@ impl Reader {
                                         "Restore this version",
                                         cx,
                                     )
+                                    .debug_selector(|| "history-restore".into())
                                     .disabled(t.loading || version.link_move || t.current.is_none())
                                     .on_click(cx.listener(|r, _, w, cx| r.restore_timeline(w, cx))),
                                 )
@@ -672,6 +689,7 @@ impl Reader {
                                         },
                                     )),
                                 )
+                                .when(version.raw.is_some(), |d| d.child(div().text_sm().child("Preview replaces unreadable characters; Restore and Save copy preserve exact bytes.")))
                                 .when(version.link_move, |d| {
                                     d.child(
                                         reader_icon_button(

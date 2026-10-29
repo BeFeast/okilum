@@ -1,5 +1,7 @@
 //! Durable source preimages, distinct from the rebuildable index.
+mod raw;
 use anyhow::{ensure, Context, Result};
+pub(crate) use raw::RawRecord;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::fs::File;
@@ -45,10 +47,17 @@ pub struct Preimage {
 pub struct Version {
     pub note: PathBuf,
     pub text: String,
+    /// Exact original bytes for an explicit encoding-repair history entry.
+    pub raw: Option<Vec<u8>>,
     pub created: u64,
     pub label: String,
     pub protected: bool,
     pub link_move: bool,
+}
+impl Version {
+    pub fn bytes(&self) -> &[u8] {
+        self.raw.as_deref().unwrap_or_else(|| self.text.as_bytes())
+    }
 }
 #[derive(Default)]
 pub struct Listing {
@@ -486,7 +495,7 @@ fn prepared_text(file: fs::File) -> Result<String> {
 }
 
 pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
-    let mut result = Listing::default();
+    let mut result = raw::list(drafts, root)?;
     let root = root.canonicalize()?;
     let history = directory(drafts);
     if !history.exists() {
@@ -514,6 +523,7 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                     .into(),
                     protected: is_protected,
                     link_move: false,
+                    raw: None,
                 });
                 #[cfg(windows)]
                 if entry.pending {
@@ -525,6 +535,7 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                             label: "Prepared save — protected".into(),
                             protected: true,
                             link_move: false,
+                            raw: None,
                         });
                     }
                 }
@@ -554,6 +565,7 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                                 .into(),
                                 protected: true,
                                 link_move: false,
+                                raw: None,
                             })
                         }
                         Ok(_) => {}
@@ -596,6 +608,7 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                         label: "Unexpected displaced version — protected".into(),
                         protected: true,
                         link_move: false,
+                        raw: None,
                     }),
                     Err(error)
                         if error
@@ -708,60 +721,97 @@ fn prune_at(drafts: &Path, now: u64) -> Result<()> {
     if !folder.exists() {
         return journal_cleanup;
     }
+    enum Retained {
+        Text(Preimage),
+        Raw(RawRecord),
+    }
     let mut records = vec![];
     for item in fs::read_dir(&folder)? {
         let path = item?.path();
+        if RawRecord::is_path(&path) {
+            if let Ok(entry) = RawRecord::load(&path) {
+                if entry.completed
+                    && fs::symlink_metadata(&entry.displaced)
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    records.push((path, Retained::Raw(entry)));
+                }
+            }
+            continue;
+        }
         if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
         if let Ok(entry) = Preimage::load(&path) {
-            // Native vault-side cleanup uses its checked DELETE handle, never a
-            // path-based unlink. Pending/legacy inodes await explicit cleanup.
             #[cfg(windows)]
             if entry.external_inode.is_some() {
                 continue;
             }
-            // Only prune inodes owned by this record. Never trust an arbitrary
-            // path from old/edited metadata as permission to delete a file.
             if !protected(&entry) && owned_displaced(&path, &entry) {
-                records.push((path, entry));
+                records.push((path, Retained::Text(entry)));
             }
         }
     }
-    records.sort_by_key(|(_, e)| std::cmp::Reverse(e.created));
+    records.sort_by_key(|(_, entry)| {
+        std::cmp::Reverse(match entry {
+            Retained::Text(entry) => entry.created,
+            Retained::Raw(entry) => entry.created,
+        })
+    });
     let mut counts = BTreeMap::new();
     let mut total = 0usize;
     for (path, entry) in records {
-        let count = counts.entry(entry.note.clone()).or_insert(0usize);
+        let (note, created, source_bytes) = match &entry {
+            Retained::Text(entry) => (
+                &entry.note,
+                entry.created,
+                if entry.snapshot_only {
+                    0
+                } else {
+                    fs::metadata(&entry.displaced)?.len() as usize
+                },
+            ),
+            Retained::Raw(entry) => (&entry.note, entry.created, 0),
+        };
+        let count = counts.entry(note.clone()).or_insert(0usize);
         *count += 1;
         total = total
             .saturating_add(fs::metadata(&path)?.len() as usize)
-            .saturating_add(if entry.snapshot_only {
-                0
-            } else {
-                fs::metadata(&entry.displaced)?.len() as usize
-            });
-        if now.saturating_sub(entry.created) > MAX_AGE || *count > MAX_VERSIONS || total > MAX_BYTES
-        {
-            if protected(&entry) {
-                continue;
-            }
-            // The JSON contains a full copy. Remove the inode first so a crash
-            // still leaves identifiable source bytes in a protected record.
-            if !entry.snapshot_only {
-                match fs::remove_file(&entry.displaced) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
+            .saturating_add(source_bytes);
+        if now.saturating_sub(created) > MAX_AGE || *count > MAX_VERSIONS || total > MAX_BYTES {
+            match entry {
+                Retained::Text(entry) => {
+                    if protected(&entry) {
+                        continue;
+                    }
+                    // The JSON contains a full copy. Remove the inode first so a
+                    // crash still leaves identifiable bytes in a protected record.
+                    if !entry.snapshot_only {
+                        match fs::remove_file(&entry.displaced) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                        #[cfg(unix)]
+                        File::open(
+                            entry
+                                .displaced
+                                .parent()
+                                .context("Missing archive directory")?,
+                        )?
+                        .sync_all()?;
+                    }
                 }
-                #[cfg(unix)]
-                File::open(
-                    entry
-                        .displaced
-                        .parent()
-                        .context("Missing archive directory")?,
-                )?
-                .sync_all()?;
+                Retained::Raw(entry) => {
+                    // A changed or interrupted raw record is recovery, never an
+                    // ordinary expirable item. Both kinds share one quota.
+                    if RawRecord::load(&path)? != entry
+                        || !entry.completed
+                        || entry.displaced.try_exists()?
+                    {
+                        continue;
+                    }
+                }
             }
             fs::remove_file(path)?;
         }
@@ -871,6 +921,7 @@ pub fn drafts(drafts: &Path, root: &Path) -> Result<Listing> {
                     label: "Unsaved draft — protected".into(),
                     protected: true,
                     link_move: false,
+                    raw: None,
                 });
             }
             Ok(_) => {}
@@ -931,6 +982,7 @@ pub fn move_versions(state: &Path, root: &Path) -> Result<Listing> {
                 label: format!("Before link move: {} → {}", op.from, op.to),
                 protected: !op.complete,
                 link_move: true,
+                raw: None,
             });
         }
     }
@@ -1000,8 +1052,12 @@ pub fn restore(
 }
 
 pub fn save_copy(root: &Path, relative: &Path, drafts: &Path, text: &str) -> Result<()> {
+    save_copy_bytes(root, relative, drafts, text.as_bytes())
+}
+
+pub fn save_copy_bytes(root: &Path, relative: &Path, drafts: &Path, bytes: &[u8]) -> Result<()> {
     let _guard = crate::file_editor::FileEditor::reserve_destination(&root.join(relative), drafts)?;
-    crate::note_files::create_with_source(root, relative, text.as_bytes())
+    crate::note_files::create_with_source(root, relative, bytes)
 }
 
 /// Old releases did not record which note a displaced inode belonged to.
@@ -1058,6 +1114,7 @@ pub fn legacy_preimages(drafts: &Path, root: &Path) -> Result<Listing> {
                 label: "Unassigned displaced source — save a copy to inspect".into(),
                 protected: true,
                 link_move: false,
+                raw: None,
             }),
             Err(error) => listing.warnings.push(format!(
                 "Cannot read {}: {error}; retained",

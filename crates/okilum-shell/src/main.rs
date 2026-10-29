@@ -52,6 +52,7 @@ mod reader_drawing;
 #[cfg(any(unix, windows))]
 mod reader_editor;
 mod reader_embeds;
+mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
@@ -1623,6 +1624,7 @@ struct Reader {
     note_source: String,
     note_canonical_source: Option<Arc<str>>,
     note_encoding_damaged: bool,
+    encoding_repair_pending: Option<PathBuf>,
     find_input: Entity<InputState>,
     find_open: bool,
     /// Top-level headings of the open document (docs/design/reader.md §Right
@@ -1913,6 +1915,7 @@ impl Reader {
             note_source: String::new(),
             note_canonical_source: None,
             note_encoding_damaged: false,
+            encoding_repair_pending: None,
             find_input,
             find_open: false,
             outline: Vec::new(),

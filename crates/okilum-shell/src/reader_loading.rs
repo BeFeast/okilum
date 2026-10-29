@@ -1,5 +1,5 @@
 //! Progressive Reader preparation. Workers own data, never GPUI entities.
-pub(super) const ENCODING_NOTICE: &str = "Some characters could not be read. This note is read-only until its text encoding is repaired.";
+pub(super) const ENCODING_NOTICE: &str = "Some characters could not be read. This note is read-only. Repair saves UTF-8 and keeps the original in Note history.";
 use super::*;
 use anyhow::{bail, Context as _, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
