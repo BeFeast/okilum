@@ -76,6 +76,8 @@ fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
 
 impl Reader {
     fn trace_trash(&self, phase: &'static str, path: &str, reason: Option<&str>, cx: &App) {
+        #[cfg(test)]
+        eprintln!("Trash diagnostic: phase={phase}, path={path:?}, reason={reason:?}");
         if let Some(trace) = self
             .loading
             .as_ref()
@@ -1228,6 +1230,21 @@ mod tests {
             .expect("visible Undo after direct folder Trash");
         visual.simulate_click(undo.center(), Modifiers::default());
         visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                !r.trash_pending,
+                "Undo must finish before checking restored bytes"
+            );
+            assert!(
+                !r.trash_undo.visible.get(),
+                "The actual Undo button must dispatch its action"
+            );
+            assert!(
+                r.trash_undo.items.is_empty(),
+                "Undo must succeed before checking restored bytes: {:?}",
+                r.trash_undo.items
+            );
+        });
         assert_eq!(
             std::fs::read(root.join("Folder/Nested/Note.md")).unwrap(),
             b"original\r\n"
