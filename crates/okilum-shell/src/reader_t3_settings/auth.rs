@@ -17,18 +17,33 @@ pub(super) struct Entry {
     pub error: Option<String>,
 }
 #[derive(Clone, Default)]
-pub(super) struct Sessions(std::collections::BTreeMap<String, Entry>);
+pub(super) struct Sessions {
+    entries: std::collections::BTreeMap<String, Entry>,
+    selected: Option<String>,
+}
 impl Global for Sessions {}
 
 pub(super) fn entry(origin: &str, cx: &App) -> Entry {
     cx.try_global::<Sessions>()
-        .and_then(|s| s.0.get(origin))
+        .and_then(|s| s.entries.get(origin))
         .cloned()
         .unwrap_or_default()
 }
+pub(super) fn selected_origin(cx: &App) -> Option<String> {
+    cx.try_global::<Sessions>().and_then(|s| s.selected.clone())
+}
+pub(super) fn pending_origin(cx: &App) -> Option<String> {
+    let sessions = cx.try_global::<Sessions>()?;
+    let origin = sessions.selected.as_ref()?;
+    sessions
+        .entries
+        .get(origin)
+        .filter(|e| e.busy)
+        .map(|_| origin.clone())
+}
 fn edit(origin: &str, cx: &mut App, change: impl FnOnce(&mut Entry)) {
     let mut sessions = cx.try_global::<Sessions>().cloned().unwrap_or_default();
-    change(sessions.0.entry(origin.to_owned()).or_default());
+    change(sessions.entries.entry(origin.to_owned()).or_default());
     cx.set_global(sessions);
 }
 pub(super) fn status(origin: &str, cx: &App) -> String {
@@ -64,11 +79,17 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             current.gateway.as_ref().map(|g| g.status()),
             Some(GatewayStatus::ExpiresSoon { .. } | GatewayStatus::Expired)
         );
+    if authorize {
+        let mut sessions = cx.try_global::<Sessions>().cloned().unwrap_or_default();
+        sessions.selected = Some(origin.clone());
+        cx.set_global(sessions);
+    }
     edit(&origin, cx, |e| {
         e.busy = true;
         e.error = None;
     });
     cx.spawn(async move |cx| {
+        let mut publish = false;
         let result = async {
             let saved = cx
                 .update(|cx| cx.read_credentials(&env.credential_url()))
@@ -163,7 +184,8 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                     Ok::<_, anyhow::Error>(connected)
                 })
                 .await?;
-            if authorize {
+            publish = authorize && cx.update(|cx| selected_origin(cx).as_deref() == Some(&origin));
+            if publish {
                 let saved_env = env.clone();
                 cx.background_executor()
                     .spawn(async move {
@@ -176,7 +198,10 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             Ok::<_, anyhow::Error>(Arc::new(connected.gateway) as Arc<dyn ManagerGateway>)
         }
         .await;
-        cx.update(|cx| finish(&origin, result, authorize, cx));
+        cx.update(|cx| {
+            let publish = publish && selected_origin(cx).as_deref() == Some(&origin);
+            finish(&origin, result, publish, cx)
+        });
     })
     .detach();
 }
@@ -243,11 +268,14 @@ mod tests {
                     remaining: None,
                 });
             });
+            let mut sessions = cx.global::<Sessions>().clone();
+            sessions.selected = Some(env.origin());
+            cx.set_global(sessions);
             let other = Environment::new("another-project", &env.origin()).unwrap();
             connect(other, None, true, cx);
             let entry = entry(&env.origin(), cx);
             assert!(entry.pending.is_some());
-            assert_eq!(cx.global::<Sessions>().0.len(), 1);
+            assert_eq!(cx.global::<Sessions>().entries.len(), 1);
             assert!(status(&env.origin(), cx).contains("timed out"));
             entry
                 .pending
@@ -260,6 +288,15 @@ mod tests {
             matches!(receive.try_recv(), Ok(AuthInput::WaitLonger)),
             "the original attempt, not a replacement, owns the controls"
         );
+        let reopened = visual.update(|window, cx| cx.new(|cx| T3Settings::new(None, window, cx)));
+        visual.run_until_parked();
+        reopened.read_with(visual, |form, cx| {
+            assert_eq!(
+                form.origin_value(cx),
+                env.origin(),
+                "reopened Settings resumes the selected pending sign-in"
+            )
+        });
         visual.update(|_, cx| {
             let token = StoredToken {
                 access_token: "fixture-only".into(),

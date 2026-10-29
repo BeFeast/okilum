@@ -50,7 +50,9 @@ impl T3Settings {
             .as_ref()
             .and_then(|p| p.environment.clone())
             .unwrap_or_else(|| "app".into());
-        let current = cx.try_global::<Connection>().and_then(|c| c.origin.clone());
+        let current = auth::pending_origin(cx)
+            .or_else(|| cx.try_global::<Connection>().and_then(|c| c.origin.clone()));
+        let current_for_prefill = auth::pending_origin(cx);
         let origin = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("t3.oklabs.uk or 10.10.0.23:23110")
@@ -72,6 +74,9 @@ impl T3Settings {
             let prefill = cx
                 .background_executor()
                 .spawn(async move {
+                    if current_for_prefill.is_some() {
+                        return Ok(current_for_prefill);
+                    }
                     match project {
                         Some(p) => {
                             project::prefill_browser_origin(&p.folder, &alias, saved.as_deref())
