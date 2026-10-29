@@ -80,8 +80,9 @@ INFRA_MARKERS = ('Cannot connect to the Docker daemon', 'failed to create contai
                  'Error response from daemon', 'No space left on device', 'Could not resolve host',
                  'Connection reset by peer', DEADLINE)
 # The runner's step and job errors, and act's cleanup error: the only line that carries a
-# Docker failure when the job container was never created.
-RUNNER_LINE = re.compile(r'^(?:⚙️ )?\[runner\]: .*$|^Error occurred running finally: .*$', re.M)
+# Docker failure when the job container was never created. The runner always writes the gear;
+# a bare "[runner]: " is a step echoing one.
+RUNNER_LINE = re.compile(r'^⚙️ \[runner\]: .*$|^Error occurred running finally: .*$', re.M)
 FAILED_TEST = re.compile(r'^---- (\S+) stdout ----$', re.M)
 SLOW_TEST = re.compile(r'^test (\S+) has been running for over 60 seconds$', re.M)
 LOG_PREFIX = re.compile(r'^\S+Z ', re.M)

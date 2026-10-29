@@ -295,6 +295,7 @@ class MainHealthTests(unittest.TestCase):
         # The same words printed by a step, or a step echoing the runner's line, are output.
         self.assertEqual(health.classify(log.replace('⚙️ [runner]: ', '')), ('unknown', []))
         self.assertEqual(health.classify(log.replace('⚙️ [runner]: ', '  > ⚙️ [runner]: ')), ('unknown', []))
+        self.assertEqual(health.classify(log.replace('⚙️ [runner]: ', '[runner]: ')), ('unknown', []))
         # act's cleanup error is the runner's too: the only line run 14845 has (no container).
         # The cause is in "(original error: ...)".
         cleanup = ('2026-10-29T00:14:24.6053384Z Error occurred running finally: All attempts fail:\\n#1: Error '
