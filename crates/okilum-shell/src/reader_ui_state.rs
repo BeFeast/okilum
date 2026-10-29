@@ -1909,6 +1909,33 @@ fn mark_saved(generation: u64, cx: &mut App) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_preferences_without_font_keys_preserve_other_preferences() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1, "appearance": "dark", "font_size": 19.0,
+            "text_zoom": 1.25, "reading_width": 960.0, "toolbar_labels": true
+        }"#,
+        )
+        .unwrap();
+        let mut saved = read(&path).expect("old settings without font keys remain readable");
+        assert_eq!(saved.note_font, brand::SANS_FONT);
+        assert_eq!(saved.code_font, brand::MONO_FONT);
+        saved.note_font = brand::MONO_FONT.into();
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let upgraded = read(&path).unwrap();
+        assert_eq!(upgraded.note_font, brand::MONO_FONT);
+        assert_eq!(upgraded.code_font, brand::MONO_FONT);
+        assert_eq!(upgraded.appearance, "dark");
+        assert_eq!(upgraded.font_size, 19.);
+        assert_eq!(upgraded.text_zoom, 1.25);
+        assert_eq!(upgraded.reading_width, 960.);
+        assert!(upgraded.toolbar_labels);
+    }
+
     #[gpui::test]
     fn independent_font_changes_merge_without_resetting_other_role(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
