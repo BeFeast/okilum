@@ -34,11 +34,11 @@ impl EmojiTextSystem {
             return result.clone().map_err(|error| anyhow!(error));
         }
         let result = (|| {
-            // The embedded body face has Latin coverage but no emoji. A real
-            // emoji-only scalar exercises the platform's normal fallback,
-            // which returns the usable color font ID without deleting it.
+            // The embedded body face has Latin coverage but no emoji. Several
+            // default emoji exercise normal fallback so one absent glyph in
+            // an older or subset face cannot disable the whole color font.
             let body = self.inner.font_id(&font(crate::brand::SANS_FONT))?;
-            let sample = "🧠";
+            let sample = "😀🐕🧠";
             let line = self.inner.layout_line(
                 sample,
                 px(16.),
