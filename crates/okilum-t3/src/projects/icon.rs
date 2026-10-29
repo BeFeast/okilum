@@ -10,6 +10,8 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod cache;
+
 /// T3's eighteen icon colours, in T3's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -536,7 +538,7 @@ fn fetch_logo(url: &str) -> Result<Vec<u8>> {
 }
 
 /// A vault project's T3 counterpart, as last read from T3.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counterpart {
     /// The connection alias (`t3.environment`).
     pub environment: String,
@@ -600,8 +602,25 @@ pub fn counterparts_with_logos(
     gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
     logos: Option<&Path>,
 ) -> std::collections::BTreeMap<PathBuf, Counterpart> {
+    refresh_counterparts(vault, projects, gateways, logos).links
+}
+
+/// Only a successful listing can replace or clear the last known icon. Failed
+/// environments are omitted from `confirmed`, so an offline refresh keeps them.
+#[derive(Default)]
+pub struct CounterpartRefresh {
+    pub links: std::collections::BTreeMap<PathBuf, Counterpart>,
+    pub confirmed: std::collections::BTreeSet<PathBuf>,
+}
+
+pub fn refresh_counterparts(
+    vault: &Path,
+    projects: &[super::Project],
+    gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
+    logos: Option<&Path>,
+) -> CounterpartRefresh {
     let mut listings = std::collections::BTreeMap::<String, Option<Vec<crate::Project>>>::new();
-    let mut result = std::collections::BTreeMap::new();
+    let mut result = CounterpartRefresh::default();
     for project in projects {
         let Some(alias) = project.environment.as_ref() else {
             continue;
@@ -617,8 +636,9 @@ pub fn counterparts_with_logos(
         else {
             continue;
         };
+        result.confirmed.insert(project.folder.clone());
         if let Some(t3_project) = t3_counterpart(project, &relative, listing) {
-            result.insert(
+            result.links.insert(
                 project.folder.clone(),
                 Counterpart::new(alias, &project.folder, &relative, t3_project, logos),
             );
