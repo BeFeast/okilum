@@ -46,6 +46,7 @@ fn main() -> anyhow::Result<()> {
     ensure!(fs::read(&note)? == b"saved\r\n", "saved bytes differ");
     editor.set_text("draft\r\n".into())?;
     fs::write(&note, b"external\r\n")?;
+    let external_stamp = trash::stamp(&note, &fs::metadata(&note)?);
     ensure!(
         editor.save()? == Save::Conflict,
         "external conflict not detected"
@@ -53,6 +54,10 @@ fn main() -> anyhow::Result<()> {
     ensure!(
         fs::read(&note)? == b"external\r\n" && editor.text() == "draft\r\n",
         "conflict lost bytes"
+    );
+    ensure!(
+        trash::stamp(&note, &fs::metadata(&note)?) == external_stamp,
+        "conflict changed the external file identity or revision"
     );
     drop(editor);
     MovePlan::prepare(&vault, Path::new("note.md"), Path::new("renamed.md"))?.commit()?;
