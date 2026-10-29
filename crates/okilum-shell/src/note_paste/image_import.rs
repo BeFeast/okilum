@@ -169,9 +169,13 @@ pub fn save(
     if converted.is_some() && options.keep_original {
         let original = Path::new(&wanted);
         let stem = original.file_stem().unwrap_or_default().to_string_lossy();
-        let ext = original.extension().unwrap_or_default().to_string_lossy();
-        let name = files::write_into(folder, &format!("{stem}-original.{ext}"), bytes)
-            .map_err(|e| e.user_text(&wanted))?;
+        let mut retained_name = format!("{stem}-original");
+        if let Some(ext) = original.extension().filter(|ext| !ext.is_empty()) {
+            retained_name.push('.');
+            retained_name.push_str(&ext.to_string_lossy());
+        }
+        let name =
+            files::write_into(folder, &retained_name, bytes).map_err(|e| e.user_text(&wanted))?;
         paths.push(folder.join(name));
     }
     match files::write_into(folder, &output_name, converted.as_deref().unwrap_or(bytes)) {
@@ -281,6 +285,37 @@ mod tests {
         let untouched = save(temp.path(), "off.png", &png, Options::disabled()).unwrap();
         assert_eq!(untouched.name, "off.png");
         assert_eq!(std::fs::read(&untouched.paths[0]).unwrap(), png);
+    }
+
+    #[test]
+    fn retained_extensionless_images_have_portable_names_and_preserve_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let png = fixture_png();
+        let options = Options {
+            keep_original: true,
+            ..Default::default()
+        };
+        for wanted in ["picture", "picture."] {
+            let folder = temp.path().join(wanted.trim_end_matches('.'));
+            let saved = save(&folder, wanted, &png, options).unwrap();
+            assert_eq!(saved.paths.len(), 2);
+            assert!(!saved.paths[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with('.'));
+            assert_eq!(std::fs::read(&saved.paths[0]).unwrap(), png);
+            let image = image::open(saved.paths.last().unwrap()).unwrap();
+            assert_eq!((image.width(), image.height()), (32, 16));
+        }
+        assert_eq!(
+            std::fs::read(temp.path().join("picture/picture-original")).unwrap(),
+            png
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("picture/picture-original-1")).unwrap(),
+            png
+        );
     }
 
     #[test]
