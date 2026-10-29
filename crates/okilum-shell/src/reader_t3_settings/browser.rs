@@ -66,7 +66,7 @@ pub(super) fn show(
         let content = match browser {
             Ok((browser, routing)) => {
                 let view = cx.new(|cx| gpui_wry::WebView::new(browser, window, cx));
-                let sign_in = cx.new(|cx| {
+                let sign_in = cx.new(|cx: &mut Context<SignIn>| {
                     let session = window.observe_global::<auth::Sessions>(cx, move |window, cx| {
                         let entry = auth::entry(&origin, cx);
                         if !entry.busy && entry.pending.is_none() {
@@ -110,7 +110,8 @@ pub(super) fn show(
                 )),
             },
         };
-        Root::new(cx.new(|_| content), window, cx)
+        let content = cx.new(|_| content);
+        cx.new(|cx| Root::new(content, window, cx))
     })?;
     cx.set_global(Shown(Some(url.to_owned())));
     Ok(())
