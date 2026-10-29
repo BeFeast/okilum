@@ -198,12 +198,19 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             Ok::<_, anyhow::Error>(Arc::new(connected.gateway) as Arc<dyn ManagerGateway>)
         }
         .await;
-        cx.update(|cx| {
-            let publish = publish && selected_origin(cx).as_deref() == Some(&origin);
-            finish(&origin, result, publish, cx)
-        });
+        cx.update(|cx| finish_if_current(&origin, result, publish, cx));
     })
     .detach();
+}
+
+fn finish_if_current(
+    origin: &str,
+    result: anyhow::Result<Arc<dyn ManagerGateway>>,
+    publish: bool,
+    cx: &mut App,
+) {
+    let publish = publish && selected_origin(cx).as_deref() == Some(origin);
+    finish(origin, result, publish, cx);
 }
 
 fn finish(
@@ -305,7 +312,7 @@ mod tests {
                 client_id: "fixture".into(),
             };
             let gateway = Arc::new(McpGateway::new(env.clone(), Some(token)).unwrap());
-            finish(&env.origin(), Ok(gateway), true, cx);
+            finish_if_current(&env.origin(), Ok(gateway.clone()), true, cx);
             assert_eq!(
                 cx.global::<Connection>().origin.as_deref(),
                 Some("https://t3.example")
@@ -316,6 +323,18 @@ mod tests {
                 "an origin alone is never authentication"
             );
             assert!(entry(&env.origin(), cx).pending.is_none());
+            let mut sessions = cx.global::<Sessions>().clone();
+            sessions.selected = Some("https://another.example".into());
+            cx.set_global(sessions);
+            cx.set_global(Connection {
+                origin: Some("https://another.example".into()),
+            });
+            finish_if_current(&env.origin(), Ok(gateway), true, cx);
+            assert_eq!(
+                cx.global::<Connection>().origin.as_deref(),
+                Some("https://another.example"),
+                "a late callback must not replace a newer selected server"
+            );
         });
     }
 }
