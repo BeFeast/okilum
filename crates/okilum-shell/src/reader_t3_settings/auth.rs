@@ -214,6 +214,7 @@ enum Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn pending_sign_in_is_shared_across_aliases_and_survives_the_form(cx: &mut TestAppContext) {

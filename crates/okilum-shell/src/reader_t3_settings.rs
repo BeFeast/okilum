@@ -115,7 +115,7 @@ impl T3Settings {
     }
 }
 impl Render for T3Settings {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let env = okilum_t3::Environment::from_input("app", &self.origin.read(cx).value()).ok();
         let entry = env
             .as_ref()
@@ -124,7 +124,7 @@ impl Render for T3Settings {
         let pending = entry.pending.clone();
         #[cfg(target_os = "macos")]
         if let Some(pending) = &pending {
-            if let Err(e) = browser::show(&pending.url, env.as_ref().unwrap(), window, cx) {
+            if let Err(e) = browser::show(&pending.url, env.as_ref().unwrap(), _window, cx) {
                 self.error = Some(format!(
                     "Sign-in view could not open: {e:#}. Use Open in browser below."
                 ));
@@ -218,6 +218,7 @@ impl Render for T3Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[gpui::test]
     fn enter_validates_settings_input_and_editing_recovers(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
