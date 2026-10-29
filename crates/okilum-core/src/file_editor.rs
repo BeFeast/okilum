@@ -632,7 +632,6 @@ impl FileEditor {
         // A private UUID name alone never authorizes deletion: exact bytes
         // and the opened inode are rechecked before cleanup.
         let clean = |name: &std::ffi::OsStr, expected: &[u8]| -> Result<()> {
-            use std::os::unix::fs::MetadataExt;
             let fd = match openat(
                 directory,
                 name,
@@ -653,7 +652,7 @@ impl FileEditor {
             );
             let current = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
             anyhow::ensure!(
-                current.st_dev == metadata.dev() && current.st_ino == metadata.ino(),
+                crate::unix_publish::same_identity(&current, &metadata),
                 "Recovery file replaced; retained for inspection"
             );
             unlinkat(directory, name, AtFlags::empty())?;

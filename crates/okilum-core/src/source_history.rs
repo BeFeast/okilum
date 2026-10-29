@@ -286,7 +286,7 @@ impl Preimage {
     /// snapshot before removing its temporary hard link from the synced folder.
     #[cfg(unix)]
     pub(crate) fn finish_compatible(path: &Path, directory: &File) -> Result<()> {
-        use std::{io::Read, os::unix::fs::MetadataExt};
+        use std::io::Read;
         let mut entry = Self::load(path)?;
         let name = entry
             .displaced
@@ -306,7 +306,7 @@ impl Preimage {
         persist(path, &entry)?;
         let current = rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
         ensure!(
-            current.st_dev == identity.dev() && current.st_ino == identity.ino(),
+            crate::unix_publish::same_identity(&current, &identity),
             "Preimage changed before cleanup; retained"
         );
         rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::empty())?;

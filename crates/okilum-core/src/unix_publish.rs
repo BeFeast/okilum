@@ -38,6 +38,17 @@ pub(crate) fn flagged_rename(
     rustix::fs::renameat_with(a, b, c, d, flags)
 }
 
+/// std exposes dev_t as u64 on every Unix; Darwin's native dev_t is signed
+/// i32. Use the same conversion as std, preserving its exact bit/sign mapping.
+pub(crate) fn same_identity(stat: &rustix::fs::Stat, metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(target_os = "macos")]
+    let device = stat.st_dev as u64;
+    #[cfg(not(target_os = "macos"))]
+    let device = stat.st_dev;
+    device == metadata.dev() && stat.st_ino == metadata.ino()
+}
+
 pub fn unsupported(error: Errno) -> bool {
     error == Errno::NOTSUP || error == Errno::INVAL || error == Errno::NOSYS
 }
