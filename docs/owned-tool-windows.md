@@ -5,10 +5,11 @@ the main window that opened it, including commands invoked from another tool.
 Closing a tool leaves the main window usable; closing that main window closes its
 tools. An unrelated main window remains open.
 
-Settings retains its existing application singleton and selected pane on ordinary
+Settings retains one window per main window and its selected pane on ordinary
 reopen. Feedback retains one window/draft per main window. Reopening focuses the
 existing window; Esc closes it. The existing explicit About route still selects
-About. Settings keeps its original owner while the singleton remains open.
+About. Settings keeps its original owner while that tool remains open. Another main
+window opens its own Settings/About instead of activating the first owner.
 
 New tools use their owner's display and open centered over its bounds, constrained
 to that display's visible work area. They cannot be minimized independently.
