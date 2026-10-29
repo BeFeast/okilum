@@ -104,6 +104,12 @@ def lane_log(api, run_id):
     return api.text(f"/actions/jobs/{job['id']}/logs")
 
 
+def error_line(error):
+    """The exception as one short line that is safe inside a Markdown code span."""
+    # str(URLError) is '<urlopen error ...>', which Markdown would take for an HTML tag.
+    return ' '.join(f'{type(error).__name__}: {error}'.split())[:300].replace('`', "'")
+
+
 def lane_passed(statuses):
     # Newest first: the first status for each context is the current one.
     current = {}
@@ -171,7 +177,7 @@ def red(api, sha, run_url, run_id=None):
         try:
             log = lane_log(api, run_id)
         except Exception as error:  # a missing permission or log must not hide the red main
-            unread = str(error) or type(error).__name__
+            unread = error_line(error)
             print(f'Cannot read the lane log: {unread}')
     kind, detail = classify(log)
     if kind == 'infra':
@@ -220,7 +226,7 @@ def red(api, sha, run_url, run_id=None):
             f'{marker}\n@{author} main is red at {sha[:8]} ({run_url}). This merge landed after the '
             f'last green main ({episode[:8]}), so it is a suspect.\n\n{RULE}')})
     body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\n'
-            + (f'Lane log unreadable: {unread}; classified as unknown.\n\n' if unread else '')
+            + (f'Lane log unreadable: `{unread}`; classified as unknown.\n\n' if unread else '')
             + (f'Failing tests:{failing}' if failing else '') +
             f'Last green main: {episode[:8]}. Merges since then:\n' + '\n'.join(lines) + f'\n\n{RULE}\n'
             'This issue closes itself when main is green again.')

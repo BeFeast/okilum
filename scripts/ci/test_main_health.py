@@ -17,21 +17,30 @@ class FakeApi:
         self.green_commits = set(green)
         self.authors = authors
         self.actions = actions or {}
+        self.unexpected = []
         self.comments = {}
         self.writes = []
 
     def green(self, sha):
         return sha in self.green_commits
 
-    def text(self, path):
+    def read(self, kind, path):
+        # As with the real Api: job logs come through text(), other Actions reads are JSON.
+        # red() swallows read errors, so a wrong read is also recorded for the test to see.
+        if path not in self.actions or (kind == 'text') != path.endswith('/logs'):
+            self.unexpected.append((kind, path))
+            raise LookupError(f'unexpected {kind} read of {path}')
         answer = self.actions[path]
         if isinstance(answer, Exception):
             raise answer
         return answer
 
+    def text(self, path):
+        return self.read('text', path)
+
     def call(self, method, path, body=None):
         if method == 'GET' and path.startswith('/actions/'):
-            return self.text(path)
+            return self.read('json', path)
         if method == 'GET' and path.startswith('/pulls/'):
             return {'user': {'login': self.authors[int(path.split('/')[2])]}}
         if method == 'GET' and path.endswith('/comments?limit=50'):
@@ -84,6 +93,7 @@ class MainHealthTests(unittest.TestCase):
         issue = next(w for w in api.writes if w[1] == '/issues')
         self.assertIn('c2 chore: direct push (direct push)', issue[2]['body'])
         self.assertIn('20 minutes', issue[2]['body'])
+        self.assertNotIn('Lane log unreadable', issue[2]['body'], 'no RUN_ID: no log was tried')
 
     def test_older_green_does_not_close_a_newer_red(self):
         api = FakeApi(green=set(), authors={})
@@ -167,28 +177,45 @@ class MainHealthTests(unittest.TestCase):
                 health.red(api, 'c3c3c3c3', 'run/1', run_id=7)
         finally:
             health.first_parents, health.tip = saved
+        self.assertEqual(api.unexpected, [], 'only the configured Actions reads, each of the right kind')
         return api, out.getvalue()
 
-    def assert_merges_blamed(self, api, reason):
+    def assert_merges_blamed(self, api, out, reason):
         self.assertIn('/issues/3/comments', [w[1] for w in api.writes], 'the suspect merge is told')
         body = next(w[2]['body'] for w in api.writes if w[1] == '/issues')
         self.assertNotIn('looks like infrastructure', body)
         self.assertIn('- #3 by @ana (c3c3c3c3)', body)
         self.assertIn(health.RULE, body)
-        self.assertIn(f'Lane log unreadable: {reason}; classified as unknown.', body)
+        self.assertIn(f'Lane log unreadable: `{reason}`; classified as unknown.', body)
+        self.assertIn(f'Cannot read the lane log: {reason}', out)
+
+    def test_only_a_read_log_can_be_infrastructure(self):
+        self.assertEqual(health.classify(None), ('unknown', []), 'not read')
+        # Read but empty is still a read log (#1937 keeps the two apart): no build or test output.
+        self.assertEqual(health.classify(''), ('infra', 'the job ended before any build or test output'))
 
     def test_a_forbidden_lane_log_blames_the_merges(self):
         forbidden = urllib.error.HTTPError('https://forgejo/actions/runs/7/jobs', 403, 'Forbidden', {}, None)
         api, out = self.red_reading({'/actions/runs/7/jobs': forbidden})
-        self.assert_merges_blamed(api, 'HTTP Error 403: Forbidden')
-        self.assertIn('Cannot read the lane log: HTTP Error 403: Forbidden', out)
+        self.assert_merges_blamed(api, out, 'HTTPError: HTTP Error 403: Forbidden')
 
     def test_a_run_without_a_failed_linux_local_job_blames_the_merges(self):
         jobs = {'jobs': [{'name': 'linux', 'status': 'failure', 'id': 1},
                          {'name': 'linux-local', 'status': 'success', 'id': 2}]}
         api, out = self.red_reading({'/actions/runs/7/jobs': jobs})
-        self.assert_merges_blamed(api, 'no failed linux-local job in run 7')
-        self.assertIn('Cannot read the lane log: no failed linux-local job in run 7', out)
+        self.assert_merges_blamed(api, out, 'LookupError: no failed linux-local job in run 7')
+
+    def test_an_expired_job_log_blames_the_merges(self):
+        jobs = {'jobs': [{'name': 'linux-local', 'status': 'failure', 'id': 41}]}
+        gone = urllib.error.HTTPError('https://forgejo/actions/jobs/41/logs', 404, 'Not Found', {}, None)
+        api, out = self.red_reading({'/actions/runs/7/jobs': jobs, '/actions/jobs/41/logs': gone})
+        self.assert_merges_blamed(api, out, 'HTTPError: HTTP Error 404: Not Found')
+
+    def test_a_timed_out_read_keeps_its_reason_visible(self):
+        # '<urlopen error timed out>' outside a code span is an HTML tag that Forgejo strips.
+        timeout = urllib.error.URLError(TimeoutError('timed out'))
+        api, out = self.red_reading({'/actions/runs/7/jobs': timeout})
+        self.assert_merges_blamed(api, out, 'URLError: <urlopen error timed out>')
 
     def test_a_read_log_without_build_output_is_still_infrastructure(self):
         jobs = {'jobs': [{'name': 'linux', 'status': 'failure', 'id': 1},
