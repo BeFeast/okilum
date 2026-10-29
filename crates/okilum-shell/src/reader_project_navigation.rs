@@ -11,6 +11,52 @@ use okilum_t3::projects::{
 
 pub(super) type Gateways = std::collections::BTreeMap<String, Arc<dyn okilum_t3::ManagerGateway>>;
 
+/// Local metadata and logo paths are available before any network operation.
+fn cached_project_icons(
+    state: Option<&Path>,
+    projects: &[Project],
+) -> std::collections::BTreeMap<PathBuf, Counterpart> {
+    let Some(state) = state else {
+        return Default::default();
+    };
+    let origins = project::browser_connections(state, projects).unwrap_or_default();
+    okilum_t3::projects::icon::cache::load(&state.join("project-logos"), projects, &origins)
+}
+
+fn store_project_icons(
+    state: Option<&Path>,
+    projects: &[Project],
+    refresh: &okilum_t3::projects::icon::CounterpartRefresh,
+) {
+    let Some(state) = state else { return };
+    let origins = project::browser_connections(state, projects).unwrap_or_default();
+    if let Err(error) = okilum_t3::projects::icon::cache::store(
+        &state.join("project-logos"),
+        projects,
+        &origins,
+        refresh,
+    ) {
+        eprintln!("Project icon cache: {error:#}");
+    }
+}
+
+fn refresh_project_icons(
+    vault: &Path,
+    projects: &[Project],
+    gateways: &Gateways,
+    state: Option<&Path>,
+) -> okilum_t3::projects::icon::CounterpartRefresh {
+    let logos = state.map(|state| state.join("project-logos"));
+    let refresh = okilum_t3::projects::icon::refresh_counterparts(
+        vault,
+        projects,
+        gateways,
+        logos.as_deref(),
+    );
+    store_project_icons(state, projects, &refresh);
+    refresh
+}
+
 /// A project's icon as shown before a save, put back if the save fails.
 struct ShownIcon {
     link: Option<Counterpart>,
@@ -188,15 +234,26 @@ impl Reader {
     /// Rescan manifests off the UI thread and feed every mounted picker.
     fn discover_projects(&mut self, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
         let vault = self.vault_root.clone();
+        let state = self.session_directory.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let discovery = cx
+            let (discovery, icons) = cx
                 .background_executor()
-                .spawn(async move { okilum_t3::projects::discover(&vault) })
+                .spawn(async move {
+                    let discovery = okilum_t3::projects::discover(&vault);
+                    let icons = cached_project_icons(state.as_deref(), &discovery.projects);
+                    (discovery, icons)
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if generation != this.project_navigation.generation {
                     return;
                 }
+                let folders = discovery
+                    .projects
+                    .iter()
+                    .map(|p| p.folder.clone())
+                    .collect();
+                this.merge_icon_links(folders, icons, cx);
                 this.project_navigation.discovery = discovery;
                 this.project_navigation.discovered = true;
                 this.project_navigation.loading = false;
@@ -236,11 +293,16 @@ impl Reader {
         }
         let generation = self.project_navigation.generation;
         let vault = self.vault_root.clone();
+        let state = self.session_directory.clone();
         cx.spawn(async move |this, cx| {
             let scan = vault.clone();
-            let discovery = cx
+            let (discovery, icons) = cx
                 .background_executor()
-                .spawn(async move { okilum_t3::projects::discover(&scan) })
+                .spawn(async move {
+                    let discovery = okilum_t3::projects::discover(&scan);
+                    let icons = cached_project_icons(state.as_deref(), &discovery.projects);
+                    (discovery, icons)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let navigation = &mut this.project_navigation;
@@ -250,8 +312,14 @@ impl Reader {
                 {
                     return;
                 }
-                navigation.discovery = discovery;
                 navigation.discovered = true;
+                let folders = discovery
+                    .projects
+                    .iter()
+                    .map(|p| p.folder.clone())
+                    .collect();
+                navigation.discovery = discovery;
+                this.merge_icon_links(folders, icons, cx);
                 this.sync_projects_picker(cx);
                 this.refresh_palette_sections(cx);
             });
@@ -292,38 +360,51 @@ impl Reader {
         let state = self.session_directory.clone();
         let generation = self.project_navigation.generation;
         let vault = self.vault_root.clone();
-        let logos = self.project_logo_cache();
         cx.spawn_in(window, async move |this, cx| {
-            let Some(gateways) = t3_gateways(&this, state, cx).await else {
+            let Some(gateways) = t3_gateways(&this, state.clone(), cx).await else {
                 return;
             };
             let managers = projects
                 .iter()
                 .map(|p| (p.folder.clone(), p.manager.clone()))
                 .collect();
-            let folders: Vec<PathBuf> = projects.iter().map(|p| p.folder.clone()).collect();
             let kept = gateways.clone();
-            let (statuses, links) = cx
+            let scan = vault.clone();
+            let icon_projects = projects.clone();
+            let icon_gateways = gateways.clone();
+            let refresh = cx
                 .background_executor()
                 .spawn(async move {
-                    // The same connections answer the icons (#1627): one
-                    // project listing per environment.
-                    let links = okilum_t3::projects::icon::counterparts_with_logos(
-                        &vault,
-                        &projects,
-                        &gateways,
-                        logos.as_deref(),
-                    );
-                    (okilum_t3::projects::statuses(&projects, &gateways), links)
+                    refresh_project_icons(&scan, &icon_projects, &icon_gateways, state.as_deref())
                 })
                 .await;
+            let current = this
+                .update_in_own_window(cx, |this, _, cx| {
+                    if this.vault_root != vault || this.project_navigation.generation != generation
+                    {
+                        return false;
+                    }
+                    this.project_navigation.t3_gateways = kept;
+                    this.merge_icon_links(
+                        refresh.confirmed.into_iter().collect(),
+                        refresh.links,
+                        cx,
+                    );
+                    true
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let statuses = cx
+                .background_executor()
+                .spawn(async move { okilum_t3::projects::statuses(&projects, &gateways) })
+                .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                if this.project_navigation.generation == generation {
+                if this.vault_root == vault && this.project_navigation.generation == generation {
                     this.project_navigation.statuses = statuses;
                     this.project_navigation.status_managers = managers;
-                    this.project_navigation.t3_gateways = kept;
                     this.sync_projects_picker_statuses(cx);
-                    this.merge_icon_links(folders, links, cx);
                     cx.notify();
                 }
             });
@@ -362,27 +443,25 @@ impl Reader {
         let state = self.session_directory.clone();
         let vault = self.vault_root.clone();
         let known = self.project_navigation.t3_gateways.clone();
-        let logos = self.project_logo_cache();
         cx.spawn_in(window, async move |this, cx| {
             let gateways = if known.is_empty() {
-                match t3_gateways(&this, state, cx).await {
+                match t3_gateways(&this, state.clone(), cx).await {
                     Some(gateways) => gateways,
                     None => return,
                 }
             } else {
                 known
             };
-            let folder = project.folder.clone();
             let kept = gateways.clone();
             let scan = vault.clone();
-            let links = cx
+            let refresh = cx
                 .background_executor()
                 .spawn(async move {
-                    okilum_t3::projects::icon::counterparts_with_logos(
+                    refresh_project_icons(
                         &scan,
                         std::slice::from_ref(&project),
                         &gateways,
-                        logos.as_deref(),
+                        state.as_deref(),
                     )
                 })
                 .await;
@@ -393,7 +472,7 @@ impl Reader {
                 if this.project_navigation.t3_gateways.is_empty() {
                     this.project_navigation.t3_gateways = kept;
                 }
-                this.merge_icon_links(vec![folder], links, cx);
+                this.merge_icon_links(refresh.confirmed.into_iter().collect(), refresh.links, cx);
             });
         })
         .detach();
@@ -537,7 +616,9 @@ impl Reader {
             let gateway = match known {
                 Some(gateway) => Some(gateway),
                 None if connect => {
-                    let gateways = t3_gateways(&this, state, cx).await.unwrap_or_default();
+                    let gateways = t3_gateways(&this, state.clone(), cx)
+                        .await
+                        .unwrap_or_default();
                     project
                         .environment
                         .as_ref()
@@ -550,13 +631,27 @@ impl Reader {
             let saved = cx
                 .background_executor()
                 .spawn(async move {
-                    okilum_t3::projects::icon::save_icon_with_logos(
+                    let saved = okilum_t3::projects::icon::save_icon_with_logos(
                         &scan,
                         &target,
                         gateway.as_deref(),
                         icon.as_ref(),
                         logos.as_deref(),
-                    )
+                    );
+                    if let Ok(IconSaved::T3(link)) = &saved {
+                        let refresh = okilum_t3::projects::icon::CounterpartRefresh {
+                            confirmed: [target.folder.clone()].into_iter().collect(),
+                            links: [(target.folder.clone(), link.clone())]
+                                .into_iter()
+                                .collect(),
+                        };
+                        store_project_icons(
+                            state.as_deref(),
+                            std::slice::from_ref(&target),
+                            &refresh,
+                        );
+                    }
+                    saved
                 })
                 .await;
             let result = match &saved {
@@ -1093,6 +1188,8 @@ mod icon_save_tests {
     #[derive(Default)]
     struct IconT3 {
         refuse: bool,
+        fail_list: bool,
+        reads: std::sync::atomic::AtomicUsize,
         icon: Mutex<Option<ProjectIcon>>,
         writes: Mutex<Vec<Option<ProjectIcon>>>,
     }
@@ -1117,6 +1214,10 @@ mod icon_save_tests {
             panic!("unused identity")
         }
         fn list_projects(&self) -> GatewayResult<Vec<okilum_t3::Project>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail_list {
+                return Err(okilum_t3::GatewayError::Unreachable("offline".into()));
+            }
             Ok(vec![self.project()])
         }
         fn set_project_icon(
@@ -1168,6 +1269,130 @@ mod icon_save_tests {
     fn connect(reader: &mut Reader, t3: &Arc<IconT3>) {
         let gateway: Arc<dyn okilum_t3::ManagerGateway> = t3.clone();
         reader.project_navigation.t3_gateways = Gateways::from([("test".to_owned(), gateway)]);
+    }
+
+    #[gpui::test]
+    fn cached_project_icon_is_shown_before_network_and_survives_an_offline_refresh(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        let folder = root.join("Dev/Areas/okilum");
+        std::fs::create_dir_all(folder.join("ops")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        std::fs::write(folder.join("ops/project.yaml"), "name: Okilum\nt3:\n  environment: test\n  origin: https://t3.example\n  executor: {project_id: okilum}\n").unwrap();
+        let project = Project::read(&folder).unwrap();
+        let old_icon = ProjectIcon::Emoji {
+            emoji: "🚀".into()
+        };
+        let initial = okilum_t3::projects::icon::CounterpartRefresh {
+            confirmed: [folder.clone()].into_iter().collect(),
+            links: [(
+                folder.clone(),
+                Counterpart {
+                    environment: "test".into(),
+                    project_id: "okilum".into(),
+                    icon: Some(old_icon.clone()),
+                    logo: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        store_project_icons(Some(&state), std::slice::from_ref(&project), &initial);
+        let t3 = Arc::new(IconT3 {
+            icon: Mutex::new(Some(ProjectIcon::Lucide {
+                name: "calculator".into(),
+                color: IconColor::Green,
+            })),
+            ..Default::default()
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, _, cx| r.ensure_palette_projects(cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |_, cx| {
+            assert_eq!(
+                okilum_shell::project_avatar::avatar(&project, cx),
+                Avatar::Icon(old_icon.clone())
+            )
+        });
+        assert_eq!(
+            t3.reads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "cache displayed before any T3 request"
+        );
+        let gateway: Arc<dyn okilum_t3::ManagerGateway> = t3.clone();
+        let gateways = Gateways::from([("test".into(), gateway)]);
+        let fresh = refresh_project_icons(
+            &root,
+            std::slice::from_ref(&project),
+            &gateways,
+            Some(&state),
+        );
+        assert_eq!(
+            t3.reads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "positive control: refresh really contacts T3"
+        );
+        reader.update_in(visual, |r, _, cx| {
+            r.merge_icon_links(fresh.confirmed.into_iter().collect(), fresh.links, cx)
+        });
+        let refreshed = Avatar::Icon(t3.icon.lock().unwrap().clone().unwrap());
+        reader.read_with(visual, |_, cx| {
+            assert_eq!(
+                okilum_shell::project_avatar::avatar(&project, cx),
+                refreshed
+            )
+        });
+        let offline: Arc<dyn okilum_t3::ManagerGateway> = Arc::new(IconT3 {
+            fail_list: true,
+            ..Default::default()
+        });
+        let fresh = refresh_project_icons(
+            &root,
+            std::slice::from_ref(&project),
+            &Gateways::from([("test".into(), offline)]),
+            Some(&state),
+        );
+        assert!(fresh.confirmed.is_empty());
+        reader.update_in(visual, |r, _, cx| {
+            r.merge_icon_links(fresh.confirmed.into_iter().collect(), fresh.links, cx)
+        });
+        reader.read_with(visual, |_, cx| {
+            assert_eq!(
+                okilum_shell::project_avatar::avatar(&project, cx),
+                refreshed
+            )
+        });
+        assert_eq!(
+            cached_project_icons(Some(&state), &[project])[&folder].icon,
+            t3.icon.lock().unwrap().clone()
+        );
     }
 
     /// #1627: Save shows the icon at once and writes it to T3; a refusal
