@@ -113,7 +113,7 @@ fn encode(bytes: &[u8], format: image::ImageFormat, quality: u32) -> Result<Vec<
     let mut decoded = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     decoded.apply_orientation(orientation);
     let rgba = decoded.to_rgba8();
-    let mut config = webp::WebPConfig::new().ok_or("WebP encoding is unavailable.")?;
+    let mut config = webp::WebPConfig::new().map_err(|()| "WebP encoding is unavailable.")?;
     config.quality = quality.clamp(1, 100) as f32;
     config.alpha_quality = 100;
     webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())

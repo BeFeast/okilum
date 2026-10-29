@@ -870,7 +870,7 @@ mod attachment_refresh_tests {
         for raw_clipboard in [true, false] {
             reader.update_in(visual, |reader, window, cx| {
                 let input = reader.source_input().unwrap();
-                input.focus_handle(cx).focus(window);
+                input.focus_handle(cx).focus(window, cx);
                 let source_text = input.read(cx).value().to_string();
                 let anchor = Anchor::at(&source_text, source_text.len());
                 let options = crate::note_paste::image_import::Options {
