@@ -101,6 +101,7 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn repair_button_unlocks_edit_and_history_restores_the_original_bytes(cx: &mut TestAppContext) {
