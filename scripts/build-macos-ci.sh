@@ -34,11 +34,12 @@ python3 scripts/updater/sparkle.py fetch "$SPARKLE_ARCHIVE"
 python3 scripts/updater/sparkle.py prepare --archive "$SPARKLE_ARCHIVE" --destination vendor/sparkle
 mkdir -p "$OUTPUT/sparkle-bin"
 tar -xJf "$SPARKLE_ARCHIVE" -C "$OUTPUT/sparkle-bin" --include='*bin/sign_update'
-cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # The sync helper (#1013): its signature policy is compiled in from the build configuration.
 source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/ci/supervisor-bundle.sh"
 BUNDLE_ID="${OKILUM_BUNDLE_ID:-com.befeast.okilum}"
 TEAM_ID="$(supervisor_team_id "$OKILUM_SIGNING_IDENTITY")"
+OKILUM_SIGNING_TEAM_ID="$TEAM_ID" OKILUM_BUNDLE_ID="$BUNDLE_ID" \
+    cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 supervisor_build "$TEAM_ID" "$BUNDLE_ID" aarch64-apple-darwin
 
 APP="$OUTPUT/Okilum.app"

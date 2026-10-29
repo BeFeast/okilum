@@ -11,6 +11,8 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod launch;
+
 pub const SCHEMA: u32 = 2;
 const EXHAUSTED: &str = "revision exhausted; explicit operator repair required";
 
@@ -68,6 +70,9 @@ pub struct Envelope {
     intent: Intent,
     update: Option<UpdateState>,
     stop: Option<StopOperation>,
+    /// Missing in pre-launch-authority journals: recovery, never permission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<launch::Registration>,
 }
 
 impl Envelope {
@@ -81,6 +86,7 @@ impl Envelope {
             intent: Intent::Enabled,
             update: None,
             stop: None,
+            launch: None,
         }
     }
     pub fn binding(&self) -> &Binding {
@@ -116,6 +122,9 @@ impl Envelope {
         ensure!(self.schema == SCHEMA, "unknown sidecar journal schema");
         ensure!(!self.journal_epoch.is_nil(), "nil journal epoch");
         ensure!(self.revision >= 1, "invalid journal revision");
+        if let Some(launch) = &self.launch {
+            launch.validate()?;
+        }
         if let Some(update) = &self.update {
             ensure!(!update.update_id.is_nil(), "nil update id");
         }
@@ -333,7 +342,11 @@ impl Envelope {
                 next.revision == 1
                     && next.intent == Intent::Enabled
                     && next.update.is_none()
-                    && next.stop.is_none(),
+                    && next.stop.is_none()
+                    && next
+                        .launch
+                        .as_ref()
+                        .is_none_or(|r| r.phase() == launch::Phase::Ready),
                 "first journal must be a fresh Enable"
             ),
             Stored::Legacy { journal, update } => ensure!(
@@ -341,6 +354,7 @@ impl Envelope {
                     && next.binding == journal.binding
                     && next.intent == journal.intent
                     && next.stop.is_none()
+                    && next.launch.is_none()
                     && match (update, &next.update) {
                         (None, None) => true,
                         (Some(u), Some(n)) =>
@@ -352,12 +366,15 @@ impl Envelope {
                     },
                 "legacy journal may only be migrated"
             ),
-            Stored::Current(current) => ensure!(
-                next.journal_epoch == current.journal_epoch
-                    && current.revision.checked_add(1) == Some(next.revision)
-                    && next.binding == current.binding,
-                "stale or non-sequential journal revision"
-            ),
+            Stored::Current(current) => {
+                launch::check_successor(current.launch.as_ref(), next.launch.as_ref())?;
+                ensure!(
+                    next.journal_epoch == current.journal_epoch
+                        && current.revision.checked_add(1) == Some(next.revision)
+                        && next.binding == current.binding,
+                    "stale or non-sequential journal revision"
+                );
+            }
         }
         Ok(())
     }
@@ -389,6 +406,7 @@ impl Envelope {
             intent: journal.intent,
             update,
             stop: None,
+            launch: None,
         };
         envelope.validate()?;
         Ok(envelope)

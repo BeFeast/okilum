@@ -68,6 +68,14 @@ mod unix_main {
             Startup::Run(prepared) => {
                 // Only a real run needs a signature policy; checked before anything starts.
                 let peer_check = peer_check()?;
+                // Every production app copy uses one account-derived authority.
+                // Arbitrary scratch roots are permitted only in development builds.
+                #[cfg(all(target_os = "macos", not(feature = "dev-same-user")))]
+                anyhow::ensure!(
+                    std::fs::canonicalize(&state)?
+                        == std::fs::canonicalize(default_state_directory()?)?,
+                    "recovery pending: production Sync requires the account state directory"
+                );
                 let exit = serve::run(
                     &state,
                     store,
@@ -90,26 +98,7 @@ mod unix_main {
     /// database rather than the environment.
     #[cfg(target_os = "macos")]
     fn default_state_directory() -> Result<std::path::PathBuf> {
-        use std::{ffi::CStr, ffi::OsStr, os::unix::ffi::OsStrExt};
-        let mut buffer = vec![0u8; 4096];
-        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
-        let mut found: *mut libc::passwd = std::ptr::null_mut();
-        let status = unsafe {
-            libc::getpwuid_r(
-                libc::geteuid(),
-                &mut entry,
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                &mut found,
-            )
-        };
-        anyhow::ensure!(
-            status == 0 && !found.is_null() && !entry.pw_dir.is_null(),
-            "cannot determine the home directory"
-        );
-        let home = unsafe { CStr::from_ptr(entry.pw_dir) };
-        Ok(std::path::PathBuf::from(OsStr::from_bytes(home.to_bytes()))
-            .join("Library/Application Support/Okilum/Sync"))
+        okilum_sync_controller::sidecar::macos::account_state_directory()
     }
     #[cfg(not(target_os = "macos"))]
     fn default_state_directory() -> Result<std::path::PathBuf> {

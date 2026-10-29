@@ -14,6 +14,7 @@ use okilum_sync_controller::sidecar::{
     },
 };
 use std::{path::Path, time::Instant};
+#[cfg(any(not(target_os = "macos"), test))]
 use uuid::Uuid;
 
 type Runtime = StoreRuntime<UnixDir, ProcessGroupTree>;
@@ -30,6 +31,12 @@ pub fn run<C: PeerCheck>(
         selection,
         launch,
     } = prepared;
+    // macOS launchd may restart a crashed helper. Only the one helper that
+    // durably consumes the dispatched generation may spawn; no hint/absence
+    // probe can grant another attempt. Claim failure has no process effects.
+    #[cfg(target_os = "macos")]
+    let generation = store.claim_launch(&binding, Instant::now() + settings.store)?;
+    #[cfg(not(target_os = "macos"))]
     let generation = Uuid::new_v4();
     let scope = okilum_sync_controller::sidecar::supervisor::ipc::Scope {
         installation: binding.installation,

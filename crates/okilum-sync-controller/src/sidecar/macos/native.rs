@@ -1,7 +1,10 @@
 //! Native registration transport. The supervisor/verified-bundle boundary stays
 //! explicit; this type alone cannot certify process ownership or reap a child.
 use super::{Binding, SmApi, Status, PLIST};
-use crate::sidecar::{authority::StopToken, supervisor::ipc::Scope};
+use crate::sidecar::{
+    authority::{launch::Dispatch, StopToken},
+    supervisor::ipc::Scope,
+};
 use anyhow::{ensure, Result};
 use objc2::rc::Retained;
 use objc2_foundation::{NSProcessInfo, NSString};
@@ -13,6 +16,13 @@ pub trait OwnedSupervisor {
     fn verify_bundle(&mut self, binding: &Binding) -> Result<()>;
     fn verify_payload(&mut self, binding: &Binding) -> Result<()>;
     fn running(&mut self, binding: &Binding) -> Result<bool>;
+    /// Atomically consume the fresh generation BEFORE native registration. No
+    /// default permission: an unwired guard must never cause a launchd effect.
+    /// Implementations must share the caller's transaction or run outside it,
+    /// never nest a Store lock already held by a lifecycle controller.
+    fn dispatch_registration(&mut self, _: &Binding) -> Result<Dispatch> {
+        anyhow::bail!("recovery pending: native launch authority is not wired")
+    }
     /// Await launchd's owned helper; never launch an unrelated child as fallback.
     fn await_running(&mut self, binding: &Binding) -> Result<()>;
     /// Request clean stop and await supervisor plus sidecar exit before success.
@@ -78,14 +88,17 @@ impl<G: OwnedSupervisor> SmApi for NativeSm<G> {
         self.verify_bundle(binding, plist)?;
         self.verify_payload(binding)?;
         let service = self.service(plist)?;
-        // No error text is parsed as authorization. A user-approval requirement
-        // is accepted only if independently reported by ServiceManagement.
-        if let Err(error) = unsafe { service.registerAndReturnError() } {
-            if self.status(plist)? != Status::RequiresApproval {
-                anyhow::bail!("ServiceManagement registration failed: {error}");
+        let dispatch = self.guard.dispatch_registration(binding)?;
+        dispatch.execute(|_| {
+            // An error/approval requirement consumes this attempt too. Neither
+            // ServiceManagement status nor absence of a peer grants a retry.
+            if let Err(error) = unsafe { service.registerAndReturnError() } {
+                if self.status(plist)? != Status::RequiresApproval {
+                    anyhow::bail!("ServiceManagement registration failed: {error}");
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
     fn start_owned(&mut self, binding: &Binding) -> Result<()> {
         self.verify_bundle(binding, PLIST)?;

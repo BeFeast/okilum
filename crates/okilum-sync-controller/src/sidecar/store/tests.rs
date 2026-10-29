@@ -634,3 +634,198 @@ mod selection_tests {
         other.publish_selection(soon(), &chosen).unwrap(); // positive control
     }
 }
+
+mod launch_authority {
+    use super::*;
+    use crate::sidecar::authority::launch::Phase as LaunchPhase;
+
+    fn fresh() -> (tempfile::TempDir, Store, Binding) {
+        let dir = directory();
+        let store = Store::open_existing(dir.path()).unwrap();
+        let binding = binding();
+        store
+            .begin(soon())
+            .unwrap()
+            .commit(Envelope::first_with_launch(binding.clone()))
+            .unwrap();
+        (dir, store, binding)
+    }
+    fn phase(store: &Store) -> LaunchPhase {
+        let Stored::Current(saved) = load(store) else {
+            panic!()
+        };
+        saved.launch_registration().unwrap().phase()
+    }
+
+    #[test]
+    fn fresh_intent_dispatch_and_claim_are_distinct_durable_one_use_steps() {
+        let (dir, store, binding) = fresh();
+        assert_eq!(phase(&store), LaunchPhase::Ready);
+        assert!(store.claim_launch(&binding, soon()).is_err());
+        let dispatch = store.dispatch_launch(&binding, soon()).unwrap();
+        assert_eq!(phase(&store), LaunchPhase::Dispatched);
+        assert!(store.dispatch_launch(&binding, soon()).is_err());
+        let generation = dispatch
+            .execute(|generation| {
+                // Positive control: helper can take the lock during the native effect.
+                assert_eq!(store.claim_launch(&binding, soon())?, generation);
+                Ok(generation)
+            })
+            .unwrap();
+        let reopened = Store::open_existing(dir.path()).unwrap();
+        assert_eq!(phase(&reopened), LaunchPhase::Claimed);
+        assert!(reopened.claim_launch(&binding, soon()).is_err());
+        assert!(reopened.dispatch_launch(&binding, soon()).is_err());
+        let Stored::Current(saved) = load(&reopened) else {
+            panic!()
+        };
+        assert_eq!(
+            saved.launch_registration().unwrap().generation(),
+            generation
+        );
+        // Repeated Enable and epoch repair preserve spent authority.
+        let mut tx = reopened.begin(soon()).unwrap();
+        tx.commit(saved.enable().unwrap()).unwrap();
+        tx.repair().unwrap();
+        drop(tx);
+        assert!(reopened.claim_launch(&binding, soon()).is_err());
+        assert!(reopened.dispatch_launch(&binding, soon()).is_err());
+    }
+
+    #[test]
+    fn absent_legacy_missing_corrupt_or_changed_authority_never_grants_permission() {
+        let dir = directory();
+        let store = Store::open_existing(dir.path()).unwrap();
+        assert!(store.dispatch_launch(&binding(), soon()).is_err());
+        assert!(store.claim_launch(&binding(), soon()).is_err());
+        legacy(dir.path(), Intent::Enabled, None);
+        assert!(store.dispatch_launch(&binding(), soon()).is_err());
+        store.begin(soon()).unwrap().migrate().unwrap();
+        assert!(store.dispatch_launch(&binding(), soon()).is_err());
+        assert!(store.claim_launch(&binding(), soon()).is_err());
+        let (dir, store, binding) = fresh();
+        let mut changed = binding.clone();
+        changed.instance = Uuid::new_v4();
+        assert!(store.dispatch_launch(&changed, soon()).is_err());
+        let Stored::Current(saved) = load(&store) else {
+            panic!()
+        };
+        let good = serde_json::to_value(saved).unwrap();
+        for damage in [0, 1, 2] {
+            let mut value = good.clone();
+            match damage {
+                0 => {
+                    value.as_object_mut().unwrap().remove("launch");
+                }
+                1 => value["launch"]["generation"] = Uuid::nil().to_string().into(),
+                _ => value["launch"]["phase"] = "Invented".into(),
+            }
+            put(dir.path(), NAME, &serde_json::to_vec(&value).unwrap());
+            assert!(store.dispatch_launch(&binding, soon()).is_err());
+            assert!(store.claim_launch(&binding, soon()).is_err());
+        }
+        put(dir.path(), NAME, b"{");
+        assert!(store.dispatch_launch(&binding, soon()).is_err());
+    }
+
+    #[test]
+    fn failed_flush_never_returns_a_dispatch_or_claim_even_after_visible_rename() {
+        for fault in [Fault::BeforeRename, Fault::AfterRename] {
+            for claim in [false, true] {
+                let (_dir, store, binding) = fresh();
+                if claim {
+                    store
+                        .dispatch_launch(&binding, soon())
+                        .unwrap()
+                        .execute(|_| Ok(()))
+                        .unwrap();
+                }
+                store.dir.dir.fault.set(Some(fault));
+                if claim {
+                    assert!(store.claim_launch(&binding, soon()).is_err());
+                } else {
+                    assert!(store.dispatch_launch(&binding, soon()).is_err());
+                }
+                store.dir.dir.fault.set(None);
+                if matches!(fault, Fault::AfterRename) {
+                    // Visible but unconfirmed writes are not permission on reload.
+                    if claim {
+                        assert!(store.claim_launch(&binding, soon()).is_err());
+                    } else {
+                        assert!(store.dispatch_launch(&binding, soon()).is_err());
+                    }
+                } else {
+                    // Positive control: no effect occurred, old phase is unchanged.
+                    assert_eq!(
+                        phase(&store),
+                        if claim {
+                            LaunchPhase::Dispatched
+                        } else {
+                            LaunchPhase::Ready
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_independent_handles_can_dispatch_once_and_claim_once() {
+        let (dir, _store, binding) = fresh();
+        for claim in [false, true] {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let path = dir.path().to_owned();
+                    let binding = binding.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        let store = Store::open_existing(&path).unwrap();
+                        barrier.wait();
+                        if claim {
+                            store.claim_launch(&binding, soon()).is_ok()
+                        } else {
+                            store.dispatch_launch(&binding, soon()).is_ok()
+                        }
+                    })
+                })
+                .collect();
+            assert_eq!(
+                workers
+                    .into_iter()
+                    .map(|w| w.join().unwrap())
+                    .filter(|won| *won)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_or_pending_stop_cannot_claim_and_spent_records_cannot_be_rearmed() {
+        let (_dir, store, binding) = fresh();
+        store
+            .dispatch_launch(&binding, soon())
+            .unwrap()
+            .execute(|_| Ok(()))
+            .unwrap();
+        let mut tx = store.begin(soon()).unwrap();
+        let saved = tx.current().unwrap().unwrap().clone();
+        tx.commit(saved.disable(scope()).unwrap().0).unwrap();
+        drop(tx);
+        assert!(store.claim_launch(&binding, soon()).is_err());
+        // Hand-crafted next revisions cannot clear/change/reset the ledger.
+        let mut tx = store.begin(soon()).unwrap();
+        let saved = tx.current().unwrap().unwrap().clone();
+        for damage in [0, 1, 2] {
+            let mut value = serde_json::to_value(saved.enable().unwrap()).unwrap();
+            match damage {
+                0 => value["launch"] = serde_json::Value::Null,
+                1 => value["launch"]["generation"] = Uuid::new_v4().to_string().into(),
+                _ => value["launch"]["phase"] = "Ready".into(),
+            }
+            let forged = Envelope::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(tx.commit(forged).is_err());
+        }
+    }
+}

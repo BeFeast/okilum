@@ -134,10 +134,16 @@ impl World {
             device_identity: "existing-device".into(),
         };
         let store = UnixStore::open_existing(&state).unwrap();
+        #[cfg(target_os = "macos")]
+        let first = Envelope::first_with_launch(binding.clone());
+        #[cfg(not(target_os = "macos"))]
+        let first = Envelope::first(binding.clone());
+        store.begin(soon()).unwrap().commit(first).unwrap();
+        #[cfg(target_os = "macos")]
         store
-            .begin(soon())
+            .dispatch_launch(&binding, soon())
             .unwrap()
-            .commit(Envelope::first(binding.clone()))
+            .execute(|_| Ok(()))
             .unwrap();
         store
             .publish_selection(soon(), &Selection::new("v1", &digest, &executable).unwrap())
@@ -280,6 +286,62 @@ fn a_runtime_that_exits_by_itself_is_flushed_reported_and_its_hint_cleared() {
         .expect("the runtime started its descendant");
     wait_until("the leftover descendant to be flushed", || !alive(child));
     assert_eq!(world.store.read_hint(soon()).unwrap(), None);
+    #[cfg(target_os = "macos")]
+    {
+        // launchd's restart after a crash must not create another daemon, even
+        // after cleanup succeeded and the endpoint hint has disappeared.
+        let Startup::Run(retry) = world.prepare().unwrap() else {
+            panic!()
+        };
+        let error = serve::run(
+            &world.state,
+            world.store.clone(),
+            *retry,
+            &settings(),
+            || SameUser,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("recovery pending"),
+            "{error:#}"
+        );
+        assert_eq!(
+            world.child_pid(),
+            Some(child),
+            "a second runtime rewrote the positive-control marker"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_second_helper_cannot_launch_while_the_first_generation_is_live() {
+    let world = World::new(&[]);
+    let (handle, scope) = start(&world);
+    wait_until("first runtime positive control", || {
+        world.child_pid().is_some()
+    });
+    let first_child = world.child_pid().unwrap();
+    let Startup::Run(duplicate) = world.prepare().unwrap() else {
+        panic!()
+    };
+    let refused = serve::run(
+        &world.state,
+        world.store.clone(),
+        *duplicate,
+        &settings(),
+        || SameUser,
+    );
+    assert!(format!("{:#}", refused.unwrap_err()).contains("recovery pending"));
+    assert_eq!(world.child_pid(), Some(first_child));
+    assert_eq!(
+        call(&world, &scope, Command::Status).unwrap(),
+        Status::Running
+    );
+    let stop = arm_stop(&world, &scope);
+    assert_eq!(call(&world, &scope, stop).unwrap(), Status::Stopped);
+    assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+    wait_until("original child exit", || !alive(first_child));
 }
 
 #[test]
@@ -696,8 +758,11 @@ mod controller {
         let envelope = journal.current().unwrap().unwrap().clone();
         assert_eq!(envelope.intent(), Intent::Disabled);
         assert!(envelope.stop().is_none(), "the operation was not consumed");
-        // Enabled at 1, Disabled armed at 2, operation completed at 3.
-        assert_eq!(envelope.revision(), 3);
+        // macOS additionally commits dispatch and claim before the spawn.
+        assert_eq!(
+            envelope.revision(),
+            if cfg!(target_os = "macos") { 5 } else { 3 }
+        );
         drop(journal);
         assert_eq!(world.store.read_hint(soon()).unwrap(), None);
     }

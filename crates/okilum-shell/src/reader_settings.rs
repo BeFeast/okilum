@@ -272,7 +272,7 @@ enum Section {
     Updates,
     About,
     Inbox,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Sync,
 }
 impl Section {
@@ -286,7 +286,7 @@ impl Section {
             Self::Updates => "updates",
             Self::About => "about",
             Self::Inbox => "inbox",
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Sync => "sync",
         }
     }
@@ -299,7 +299,7 @@ impl Section {
             Some("logs") => Self::Logs,
             Some("updates") => Self::Updates,
             Some("inbox") => Self::Inbox,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some("sync") => Self::Sync,
             _ => Self::About,
         }
@@ -315,7 +315,7 @@ impl Section {
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
             Self::About => Icon::new(IconName::Info),
             Self::Inbox => Icon::new(IconName::Inbox),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Sync => Icon::new(IconName::RotateCw),
         }
     }
@@ -329,14 +329,14 @@ impl Section {
             Self::Updates => "Updates",
             Self::About => "About",
             Self::Inbox => "Inbox",
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Sync => "Sync",
         }
     }
 }
 struct Settings {
     t3: Option<Entity<reader_t3_settings::T3Settings>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
     theme_picker: Entity<theme_picker::ThemePicker>,
@@ -385,7 +385,7 @@ impl Settings {
         Self {
             t3: None,
             section: Section::remembered(cx),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             sync: None,
             theme_picker: cx.new(|cx| theme_picker::ThemePicker::new(None, cx)),
             #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
@@ -1275,7 +1275,7 @@ impl Settings {
                         .into_any_element()
                 }
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
             Section::T3 => content.children(self.t3.clone()).into_any_element(),
             Section::About => content.child(about::content(cx)).into_any_element(),
@@ -1290,7 +1290,7 @@ impl Settings {
 }
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.section == Section::Sync && self.sync.is_none() {
             self.sync = Some(reader_settings_sync::shared(window, cx));
         }
@@ -1349,7 +1349,7 @@ impl Render for Settings {
                             Section::T3,
                             Section::Updates,
                             Section::Inbox,
-                            #[cfg(target_os = "linux")]
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
                             Section::Sync,
                             // Developer options sit low (#1355).
                             Section::Logs,

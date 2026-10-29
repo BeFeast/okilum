@@ -646,3 +646,49 @@ unchanged config/no REST connection (with a listener positive control), changed
 binary/certificate, linked runtime ancestors, shared key permissions, substituted
 binding/config path and unsupported version labels. Real offline Syncthing
 preparation, shipped package provenance and complete macOS Enable remain open.
+
+## macOS one-use launch authority (#588, replacing rejected #1887)
+
+Machine-wide process absence is not a prerequisite we can currently prove on
+macOS. An unreadable image must not be skipped. Instead, managed launching uses
+one generation inside the existing atomic, flushed lifecycle envelope:
+
+| Durable state | Permitted next effect |
+| --- | --- |
+| No opt-in enrollment | None |
+| Missing, legacy, unreadable or invalid generation | None; recovery pending |
+| `Ready` | Commit `Dispatched`, then attempt native registration once |
+| `Dispatched` | One helper commits `Claimed`, then attempts daemon spawn once |
+| `Claimed` | No further spawn, including after crash, clean Stop or login |
+
+Only a successful commit returns permission. Errors after rename still return
+no permission. The new visible phase stays consumed, and recovery never recreates
+an in-memory permit from it. Separate handles serialize through the existing
+state-directory lock. Repeated Enable, migration and epoch repair cannot replace
+or reset the generation. There is deliberately no automatic re-arm API yet.
+
+Production helpers require the account-derived Application Support state root;
+caller-selected scratch roots belong to development fixtures. All app copies for
+one account must share this authority and the one daemon serving its enrolled
+folders. A signed, answering socket peer for the durable generation is the only
+basis for reporting our daemon running. Service registration, PID, endpoint hint
+or absent hint is not proof of liveness or exit. Stop remains the authenticated
+owned-tree acknowledgement plus captured helper exit and current Stop token.
+
+This excludes a second managed launch through this authority. It does not claim
+absence of manually started/external daemons, prevent another account or an
+administrator from running one, or protect against deliberate deletion/rollback
+of all durable authority. Those limitations must stay visible; recovery cannot
+infer a safe second launch from them.
+
+This implementation adds the journal/registration/helper barriers, native
+regression fixtures and a read-only macOS Settings → Sync section. That section
+shows **Recovery pending** for missing/unreadable authority, missing or unverified
+peers, generation mismatch, and concurrent journal changes. Running requires a
+claimed durable generation and the verified socket answer. A build without the
+compiled signing policy cannot show Running. The packaged Reader receives the
+same Team ID/bundle policy as the helper. Refresh only observes: it never starts,
+repairs, adopts or stops anything. Desktop Mac Enable remains unwired. The
+conservative lack of automatic restart after a consumed generation is an
+availability limitation, not evidence of absence.
+Sync remains opt-in; this work does not change live hubs, TCC or host settings.

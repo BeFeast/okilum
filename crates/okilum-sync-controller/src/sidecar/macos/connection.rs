@@ -59,6 +59,30 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
         Ok(self.link.detailed_until(&self.binding, deadline))
     }
 
+    /// Only the durable, claimed generation AND a verified answering socket can
+    /// report Running. Registration without a peer, damaged state and concurrent
+    /// authority changes all remain recovery pending. Never an absence claim.
+    pub fn managed_status(&self) -> super::recovery::ManagedStatus {
+        use super::recovery::ManagedStatus;
+        let attempt = || -> Result<ManagedStatus> {
+            let deadline = Instant::now() + self.budget;
+            let saved = {
+                let tx = self.store.begin(deadline)?;
+                tx.current()?.context("missing journal")?.clone()
+            };
+            ensure!(saved.binding() == &self.binding, "binding changed");
+            self.bundle.verify(&self.binding)?;
+            let peer = self.link.detailed_until(&self.binding, deadline);
+            let tx = self.store.begin(deadline)?;
+            ensure!(
+                tx.current()? == Some(&saved),
+                "authority changed during status"
+            );
+            Ok(ManagedStatus::observe(&saved, &peer))
+        };
+        attempt().unwrap_or(ManagedStatus::RecoveryPending)
+    }
+
     /// Request the already-journaled token against exactly its live generation.
     /// Success acknowledges the supervisor's owned-tree Stop reply, NOT that the
     /// supervisor process exited or that unregistering a service is now safe.
