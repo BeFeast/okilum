@@ -10,6 +10,8 @@ use uuid::Uuid;
 #[cfg(unix)]
 pub mod code_requirement;
 #[cfg(target_os = "macos")]
+pub mod macos_exit;
+#[cfg(target_os = "macos")]
 pub mod macos_peer;
 #[cfg(unix)]
 pub mod unix_transport;
