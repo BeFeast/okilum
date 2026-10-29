@@ -254,6 +254,12 @@ fn vault_trash_at(
             directory_flags(),
             Mode::empty(),
         )?;
+        ancestors.push(destination.try_clone()?);
+    }
+    // Persist the complete recovery path before removing the source entry.
+    // Flushing only the final parent does not persist intermediate listings.
+    for fd in ancestors.iter().rev().chain([&trash, &root_fd]) {
+        std::fs::File::from(fd.try_clone()?).sync_all()?;
     }
     let source = rustix::fs::statat(source_parent, source_name, AtFlags::SYMLINK_NOFOLLOW)?;
     publish(
