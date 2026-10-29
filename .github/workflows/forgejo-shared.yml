@@ -37,6 +37,7 @@ jobs:
           cargo fmt --version
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
+          python3 scripts/ci/check-vendor-generation.py
       # Initial measurement is deliberately cold: no compatible downloads-only
       # baseline exists, and restoring the Linux target archive would mix flags.
       # No cache save is introduced against the shared repository size cap.

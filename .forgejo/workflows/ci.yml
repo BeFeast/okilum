@@ -168,6 +168,7 @@ jobs:
         run: |
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
+          python3 scripts/ci/check-vendor-generation.py
 
       - name: Enable sccache
         run: |
