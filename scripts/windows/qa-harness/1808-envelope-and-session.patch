@@ -54,10 +54,10 @@ index 0f36761..65afee8 100644
 +no signing/promotion. The existing two blocked receipts remain immutable.
 diff --git a/autosave-gate/boot_readback.py b/autosave-gate/boot_readback.py
 new file mode 100644
-index 0000000..22c3f9c
+index 0000000..ed2d060
 --- /dev/null
 +++ b/autosave-gate/boot_readback.py
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,72 @@
 +"""Bounded read-only post-rollback boot observation, never a gate/SSH repair."""
 +import json
 +from pathlib import Path
@@ -90,11 +90,12 @@ index 0000000..22c3f9c
 +def observe(vm, evidence, release, runner=run_read, clock=time.time, pause=time.sleep, window_seconds=300):
 +    if not 1 <= window_seconds <= 600:
 +        raise ValueError('Boot observation window must be within1..600seconds')
++    max_attempts = (window_seconds + 4) // 5
 +    started = clock()
 +    deadline = min(started + window_seconds, release - 5)
 +    attempts = []
 +    state = 'deadline'
-+    while deadline - clock() >= 1 and len(attempts) < 60:
++    while deadline - clock() >= 1 and len(attempts) < max_attempts:
 +        limit = min(15, deadline - clock())
 +        try:
 +            result = runner([str(vm), 'ps', SCRIPT], capture_output=True, text=True, timeout=limit)
@@ -121,7 +122,7 @@ index 0000000..22c3f9c
 +        remaining = deadline - clock()
 +        if remaining > 0:
 +            pause(min(5, remaining))
-+    receipt = dict(state=state, attempts=len(attempts), window_seconds=window_seconds, elapsed_seconds=clock()-started, read_only=True, infrastructure_repair=False, guest_counts='zero' if state == 'ready' else 'UNKNOWN')
++    receipt = dict(state=state, attempts=len(attempts), window_seconds=window_seconds, max_attempts=max_attempts, elapsed_seconds=clock()-started, read_only=True, infrastructure_repair=False, guest_counts='zero' if state == 'ready' else 'UNKNOWN')
 +    (evidence / 'postclean-boot.json').write_text(json.dumps(receipt, indent=2) + '\n')
 +    print(json.dumps(receipt), flush=True)
 +    return 0 if state == 'ready' else 1
@@ -373,10 +374,10 @@ index fa9de44..b9de853 100755
  PS
 diff --git a/autosave-gate/test_boot_readback.py b/autosave-gate/test_boot_readback.py
 new file mode 100644
-index 0000000..6e06652
+index 0000000..4ebe00e
 --- /dev/null
 +++ b/autosave-gate/test_boot_readback.py
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,55 @@
 +import json
 +from pathlib import Path
 +import subprocess
@@ -419,6 +420,11 @@ index 0000000..6e06652
 +        status,r,_,elapsed=self.run_case(responses,probe_seconds=15,window_seconds=120)
 +        self.assertEqual((status,r['guest_counts']),(1,'UNKNOWN'))
 +        self.assertLessEqual(elapsed,120)
++    def test_configured_longer_window_is_not_cut_short_by_attempt_cap(self):
++        responses=[(255,'','Connection refused')]*64+[(0,'postcleanApps=0\npostcleanTasks=0\n','')]
++        status,r,calls,elapsed=self.run_case(responses,window_seconds=600)
++        self.assertEqual((status,r['guest_counts'],calls),(0,'zero',65))
++        self.assertGreater(elapsed,300);self.assertLessEqual(elapsed,600)
 +    def test_release_deadline_is_not_extended(self):
 +        status,r,_,elapsed=self.run_case([(124,'','')],release=10)
 +        self.assertEqual(status,1);self.assertLessEqual(elapsed,5)

@@ -61,7 +61,8 @@ it does not retroactively replace the original UNKNOWN receipt.
 Use a300-second default observation window (233 seconds observed upper bound
 plus67 seconds margin), configurable as the fourth boot_readback.py argument
 within1..600 seconds. The effective deadline remains min(window, original release
-minus5seconds), with at most60 probes and unchanged15-second per-probe limits.
+minus5seconds), with at most ceil(window/5) probes (60 by default,120 at600seconds) and
+unchanged15-second per-probe limits.
 The outer driver call is365 seconds; no release deadline is extended. Auth errors,
 unknown responses and nonzero/missing counts stop immediately. A later-ready
 positive-control regression passes at235seconds with the new window and remains
