@@ -287,9 +287,9 @@ impl Reader {
                     if this.vault_root != root || this.watcher_generation != generation {
                         return;
                     }
-                    if this.vault.entry_kind(&path)
-                        == Some(okilum_core::vault::EntryKind::Directory)
-                    {
+                    if this.vault.entries.iter().any(|entry| {
+                        entry.path == path && entry.kind == okilum_core::vault::EntryKind::Directory
+                    }) {
                         this.reveal_in_tree(&path, window, cx);
                     } else {
                         this.open_note(&path, None, window, cx);
@@ -628,9 +628,9 @@ mod tests {
         let state: reader_sidebar::State = serde_json::from_str("{}").unwrap();
         assert_eq!(state.left_mode, LeftMode::Now);
         let mac = gpui::Keystroke::parse("cmd-|").unwrap();
-        assert!(mac.should_match(&gpui::Keystroke::parse("cmd-|").unwrap()));
-        assert!(!mac.should_match(&gpui::Keystroke::parse("cmd-\\").unwrap()));
-        assert!(!mac.should_match(&gpui::Keystroke::parse("cmd-shift-\\").unwrap()));
+        assert!(mac.should_match(&gpui::KeybindingKeystroke::parse("cmd-|").unwrap()));
+        assert!(!mac.should_match(&gpui::KeybindingKeystroke::parse("cmd-\\").unwrap()));
+        assert!(!mac.should_match(&gpui::KeybindingKeystroke::parse("cmd-shift-\\").unwrap()));
     }
 
     #[test]
