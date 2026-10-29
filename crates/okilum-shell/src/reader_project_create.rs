@@ -341,7 +341,7 @@ impl Reader {
             Err(error) => {
                 reader_toast::error(
                     format!(
-                        "T3 has the project {}, but project.yaml was not updated: {error:#}",
+                        "T3 has the project {}, but the project manifest was not updated: {error:#}",
                         created.project.id
                     ),
                     window,

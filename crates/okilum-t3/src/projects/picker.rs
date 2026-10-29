@@ -86,7 +86,7 @@ pub fn manifest_problem(project: &Project) -> Option<String> {
         (None, None) => "t3.environment and the manager's project_id",
     };
     Some(format!(
-        "project.yaml names a manager thread but not {missing}"
+        "Project manifest names a manager thread but not {missing}"
     ))
 }
 /// A status is valid only for the manager pointer used by that live listing.

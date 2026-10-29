@@ -104,15 +104,13 @@ impl AreaBinding {
     /// Reads this area only. Missing manifests are an unconnected area;
     /// unreadable files and malformed data remain visible errors.
     pub fn read(area: &Path) -> Result<Option<Self>> {
-        let path = area.join("ops/project.yaml");
-        let source = match std::fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(error).with_context(|| format!("cannot read {}", path.display()))
-            }
+        let Some(document) = crate::area_files::read(area, "project")? else {
+            return Ok(None);
         };
-        Self::parse(&source).with_context(|| format!("{}", path.display()))
+        // Reuse the same schema validation; TOML nullable keys are normalized by
+        // the manifest reader, while YAML keeps its existing strict contract.
+        Self::parse(&serde_yaml::to_string(&document.value)?)
+            .with_context(|| document.path.display().to_string())
     }
 
     /// Resolve the explicit alias in the device's saved connections. No

@@ -511,7 +511,7 @@ impl Reader {
         let kind = icon.as_ref().map_or("reset", ProjectIcon::kind);
         let target = match project.environment.as_deref() {
             Some(alias) => format!("t3:{alias}"),
-            None => "project.yaml".into(),
+            None => "project manifest".into(),
         };
         eprintln!(
             "Project icon: saving project={:?} folder={} kind={kind} target={target}",
@@ -558,7 +558,7 @@ impl Reader {
                 .await;
             let result = match &saved {
                 Ok(IconSaved::T3(link)) => format!("ok t3 project={}", link.project_id),
-                Ok(IconSaved::Manifest(_)) => "ok project.yaml".into(),
+                Ok(IconSaved::Manifest(_)) => "ok project manifest".into(),
                 Err(error) => format!("error: {error:#}"),
             };
             eprintln!(

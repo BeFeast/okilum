@@ -25,6 +25,26 @@ pub struct Binding {
     pub stuck_after_seconds: u64,
     #[serde(skip)]
     pub registry_error: Option<String>,
+    #[serde(skip)]
+    pub card_problems: Vec<CardProblem>,
+}
+/// An invalid child is retained as a visible problem, without hiding healthy cards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardProblem {
+    pub field: String,
+    pub number: Option<u64>,
+    pub detail: String,
+}
+pub fn https_link(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+pub fn note_link(value: &str) -> bool {
+    relative_note(value) || https_link(value)
 }
 /// Human-owned next actions. No issue/thread state creates these entries.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -125,7 +145,38 @@ pub fn relative_note(value: &str) -> bool {
 }
 impl Binding {
     pub fn parse(source: &str) -> Result<Self> {
-        let binding: Self = serde_yaml::from_str(source).context("Invalid ops/board.yaml")?;
+        Self::parse_value(crate::area_files::parse(
+            source,
+            crate::area_files::Format::Yaml,
+        )?)
+    }
+    pub fn parse_toml(source: &str) -> Result<Self> {
+        Self::parse_value(crate::area_files::parse(
+            source,
+            crate::area_files::Format::Toml,
+        )?)
+    }
+    fn parse_value(mut document: serde_yaml::Value) -> Result<Self> {
+        let map = document
+            .as_mapping_mut()
+            .context("Board manifest must be a table")?;
+        let raw_issues = map
+            .remove(serde_yaml::Value::from("issues"))
+            .and_then(|v| v.as_sequence().cloned())
+            .context("issues must be an ordered array of cards")?;
+        let raw_attention = match map.remove(serde_yaml::Value::from("attention")) {
+            Some(value) => value
+                .as_sequence()
+                .cloned()
+                .context("attention must be an array")?,
+            None => Vec::new(),
+        };
+        map.insert(
+            serde_yaml::Value::from("issues"),
+            serde_yaml::Value::Sequence(Vec::new()),
+        );
+        let mut binding: Self =
+            serde_yaml::from_value(document).context("Invalid Board manifest")?;
         ensure!(binding.version == 1, "Unsupported Board binding version");
         ensure!(
             !binding.title.trim().is_empty()
@@ -155,80 +206,71 @@ impl Binding {
                         .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))),
             "Expected a Forgejo owner/repository URL"
         );
-        ensure!(
-            !binding.issues.is_empty(),
-            "Board stage has no explicit issues"
-        );
-        for item in &binding.attention {
-            ensure!(
-                !item.title.trim().is_empty()
-                    && !item.subline.trim().is_empty()
-                    && attention_link(&item.link),
-                "Attention items require kind, title, subline and a safe note/HTTPS link"
-            );
-        }
+        ensure!(!raw_issues.is_empty(), "Board stage has no explicit issues");
         ensure!(
             binding.stuck_after_seconds > 0,
             "stuck_after_seconds must be positive"
         );
-        let mut seen = std::collections::BTreeSet::new();
-        for scope in &binding.issues {
-            ensure!(
-                scope.number > 0 && seen.insert(scope.number),
-                "Board issue references must be positive and unique"
-            );
-            ensure!(
-                !scope.expected.trim().is_empty() && !scope.executor.trim().is_empty(),
-                "Each issue requires an expected result and executor binding"
-            );
-            if let Some(id) = &scope.agent_thread_id {
-                ensure!(
-                    !id.trim().is_empty() && !id.chars().any(char::is_whitespace),
-                    "agent_thread_id must name one exact T3 thread"
-                );
+
+        let mut counts = std::collections::BTreeMap::<u64, usize>::new();
+        for value in &raw_issues {
+            if let Some(n) = value.get("number").and_then(serde_yaml::Value::as_u64) {
+                *counts.entry(n).or_default() += 1;
             }
-            ensure!(
-                scope.notes.iter().all(|n| relative_note(n)),
-                "Related notes must be area-relative Markdown paths"
-            );
-            for build in &scope.builds {
-                let url = url::Url::parse(&build.url)?;
+        }
+        for (index, value) in raw_issues.into_iter().enumerate() {
+            let number = value.get("number").and_then(serde_yaml::Value::as_u64);
+            let field = format!("issues[{index}]");
+            let parsed = (|| -> Result<Scope> {
+                let scope: Scope = serde_yaml::from_str(&serde_yaml::to_string(&value)?)?;
+                ensure!(scope.number > 0, "number: expected a positive issue number");
                 ensure!(
-                    !build.label.trim().is_empty()
-                        && url.scheme() == "https"
-                        && url.host_str().is_some()
-                        && url.username().is_empty()
-                        && url.password().is_none(),
-                    "Build links require a label and credential-free HTTPS URL"
+                    counts.get(&scope.number) == Some(&1),
+                    "number: duplicate issue references are ambiguous"
                 );
+                validate_scope(&scope)?;
+                Ok(scope)
+            })();
+            match parsed {
+                Ok(scope) => binding.issues.push(scope),
+                Err(error) => binding.card_problems.push(CardProblem {
+                    field,
+                    number,
+                    detail: format!("{error:#}"),
+                }),
             }
-            if let Some(run) = &scope.execution {
+        }
+        for (index, value) in raw_attention.into_iter().enumerate() {
+            let parsed = (|| -> Result<AttentionItem> {
+                let item: AttentionItem = serde_yaml::from_str(&serde_yaml::to_string(&value)?)?;
+                ensure!(!item.title.trim().is_empty(), "title: required");
+                ensure!(!item.subline.trim().is_empty(), "subline: required");
                 ensure!(
-                    !run.thread_id.trim().is_empty() && !run.run_id.trim().is_empty(),
-                    "Execution requires both thread and run identity"
+                    attention_link(&item.link),
+                    "link: expected safe Markdown path or HTTPS link"
                 );
+                Ok(item)
+            })();
+            match parsed {
+                Ok(item) => binding.attention.push(item),
+                Err(error) => binding.card_problems.push(CardProblem {
+                    field: format!("attention[{index}]"),
+                    number: None,
+                    detail: format!("{error:#}"),
+                }),
             }
         }
         Ok(binding)
     }
     pub fn read(area: &Path) -> Result<Option<Self>> {
-        let path = area.join("ops/board.yaml");
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) => ensure!(
-                meta.is_file(),
-                "Board binding must be a regular file, not a symlink"
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        }
-        let text = match std::fs::read_to_string(&path) {
-            Ok(v) => v,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).context("Cannot read ops/board.yaml"),
+        let Some(document) = crate::area_files::read(area, "board")? else {
+            return Ok(None);
         };
-        let binding = Self::parse(&text)?;
-        let project: serde_yaml::Value =
-            serde_yaml::from_str(&std::fs::read_to_string(area.join("ops/project.yaml"))?)?;
+        let mut binding = Self::parse_value(document.value)
+            .with_context(|| document.path.display().to_string())?;
+        let project = crate::area_files::read(area, "project")?
+            .context("Board requires a project manifest")?
+            .value;
         let repo = url::Url::parse(&binding.repository)?;
         ensure!(
             project["repo"]["host"].as_str() == repo.host_str()
@@ -236,26 +278,45 @@ impl Binding {
             "Board repository differs from explicit project manifest"
         );
         let canonical = area.canonicalize()?;
-        for note in std::iter::once(&binding.stage_note)
-            .chain(binding.issues.iter().flat_map(|s| &s.notes))
-            .chain(
-                binding
-                    .attention
-                    .iter()
-                    .filter(|i| relative_note(&i.link))
-                    .map(|i| &i.link),
-            )
-        {
-            if area.join(note).exists() {
-                ensure!(
-                    area.join(note).canonicalize()?.starts_with(&canonical),
-                    "Board note escapes the project through a symlink"
-                );
+        if area.join(&binding.stage_note).exists() {
+            ensure!(
+                area.join(&binding.stage_note)
+                    .canonicalize()?
+                    .starts_with(&canonical),
+                "stage_note escapes the project through a symlink"
+            );
+        }
+        let mut healthy = Vec::new();
+        for scope in binding.issues.drain(..) {
+            let invalid = scope
+                .notes
+                .iter()
+                .filter(|n| relative_note(n))
+                .find_map(|note| {
+                    let path = area.join(note);
+                    if !path.exists() {
+                        return None;
+                    }
+                    match path.canonicalize() {
+                        Ok(path) if path.starts_with(&canonical) => None,
+                        _ => Some(
+                            "notes: related note escapes the project or is unreadable".to_owned(),
+                        ),
+                    }
+                });
+            if let Some(detail) = invalid {
+                binding.card_problems.push(CardProblem {
+                    field: "issues.notes".into(),
+                    number: Some(scope.number),
+                    detail,
+                });
+            } else {
+                healthy.push(scope);
             }
         }
+        binding.issues = healthy;
         // The current registry supersedes literal IDs retained in old cards.
         // An unreadable registry cannot establish live executor ownership.
-        let mut binding = binding;
         let registry = match crate::executors::Registry::read(area) {
             Ok(registry) => Some(registry),
             Err(error) => {
@@ -299,6 +360,40 @@ impl Binding {
     }
 }
 
+fn validate_scope(scope: &Scope) -> Result<()> {
+    ensure!(!scope.expected.trim().is_empty(), "expected: required");
+    ensure!(!scope.executor.trim().is_empty(), "executor: required");
+    if let Some(id) = &scope.agent_thread_id {
+        ensure!(
+            !id.trim().is_empty() && !id.chars().any(char::is_whitespace),
+            "agent_thread_id: expected one exact T3 thread"
+        );
+    }
+    for (i, note) in scope.notes.iter().enumerate() {
+        ensure!(
+            note_link(note),
+            "notes[{i}]: expected area-relative Markdown or credential-free HTTPS"
+        );
+    }
+    for (i, build) in scope.builds.iter().enumerate() {
+        ensure!(
+            !build.label.trim().is_empty(),
+            "builds[{i}].label: required"
+        );
+        ensure!(
+            https_link(&build.url),
+            "builds[{i}].url: expected credential-free HTTPS"
+        );
+    }
+    if let Some(run) = &scope.execution {
+        ensure!(
+            !run.thread_id.trim().is_empty() && !run.run_id.trim().is_empty(),
+            "execution: both thread and run identity are required"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Issue {
     pub number: u64,
@@ -323,6 +418,9 @@ impl Issue {
 }
 /// Public requests only: no token, client credential store or GitHub bridge.
 pub fn read_issues(binding: &Binding) -> Vec<(u64, Result<Issue, String>)> {
+    if binding.issues.is_empty() {
+        return Vec::new();
+    }
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())

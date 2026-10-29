@@ -454,7 +454,7 @@ impl ProjectsPicker {
                 }),
             )
     }
-    /// A folder whose project.yaml cannot be read: a muted row with the
+    /// A folder whose Project manifest cannot be read: a muted row with the
     /// same ⚠ after its name; the reason is in the tooltip.
     fn render_problem(&self, problem: &Problem, index: usize, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
@@ -471,7 +471,7 @@ impl ProjectsPicker {
             .child(icon_slot(None))
             .child(div().min_w_0().truncate().child(problem.name.clone()))
             .child(Self::render_status(
-                RowStatus::Problem(format!("project.yaml cannot be read: {}", problem.detail)),
+                RowStatus::Problem(format!("Project manifest cannot be read: {}", problem.detail)),
                 index,
                 cx,
             ))
