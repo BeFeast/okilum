@@ -246,7 +246,9 @@ mod tests {
                     );
                     assert!(
                         pixels
-                            .chunks_exact(4)
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
                             .any(|pixel| pixel[3] > 0
                                 && (pixel[0] != pixel[1] || pixel[1] != pixel[2])),
                         "{family}: {sample} has actual color pixels, not a mask/tofu"
