@@ -621,3 +621,27 @@ launch the fixture app. A verification result is not an atomic lease over the
 bundle: the native adapter must revalidate at every effect, and ownership/IPC,
 selected Syncthing payload and actual stop/reap integration remain subsequent
 work under #588. Native login/sleep/update acceptance is still open.
+
+### Offline managed payload verification (#588)
+
+`macos::payload::Payload` retains the exact prepared binding, runtime selection
+and daemon identity. Its read-only verifier accepts only the supported 2.1.6
+version label, checks every private config/data/runtime directory below state,
+refuses links/foreign ownership/shared credentials, checks the selected executable
+digest and executable bit, and re-reads the existing certificate fingerprint and
+literal-loopback REST configuration through `DaemonIdentity::verify_local`.
+It returns fixed Launch config/data/executable paths without starting a process,
+opening REST, discovering a daemon, or creating/replacing identity or journals.
+
+This does not establish package provenance or derive a device ID from a certificate:
+the trusted explicit preparation layer must provide that verified identity and
+selection, and place state outside vault/index/install directories. Bundle signing,
+current lifecycle authority, fresh REST identity/version checks after start, and
+native stop/exit confirmation remain separate mandatory checks. Revalidate at each
+native effect; a path observation is not an atomic filesystem lease.
+
+Both Unix gates exercise the verifier with synthetic, never-executed payloads:
+unchanged config/no REST connection (with a listener positive control), changed
+binary/certificate, linked runtime ancestors, shared key permissions, substituted
+binding/config path and unsupported version labels. Real offline Syncthing
+preparation, shipped package provenance and complete macOS Enable remain open.

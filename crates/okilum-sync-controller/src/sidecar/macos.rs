@@ -9,6 +9,8 @@ use anyhow::{ensure, Result};
 pub mod bundle;
 #[cfg(unix)]
 pub mod connection;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod payload;
 pub const PLIST: &str = "com.befeast.okilum.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
