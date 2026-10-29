@@ -136,8 +136,9 @@ report a count and can be retried. Switching vaults or closing the window stops
 submission of the remaining requests. Indexing inspects metadata and never requests a
 download; filesystem materialisation notifications reconcile the source and clear
 the count without Retry or reopening. A displayed document keeps its last readable
-content (and any editor draft) while its source is pending. Read/encoding errors
-on other files retain their normal attention UI. Existing partial-inventory and
+content (and any editor draft) while its source is pending. Ordinary read errors
+on other files retain their normal attention UI; damaged encoding uses the inline
+Repair flow below. Existing partial-inventory and
 link-ambiguity safeguards also apply while cloud sources are pending.
 
 ## Typography
@@ -671,6 +672,25 @@ history and offers Undo in an eight-second toast. Both restore and undo retain t
 existing dirty-editor and exact-current-byte guards; a racing edit is never silently
 overwritten. Restore failures appear in a dismissible toast. Recovery of unsaved drafts
 continues to use its existing dialog.
+
+### Damaged text encoding (#1934)
+
+A Markdown note with invalid UTF-8 opens with replacement characters (U+FFFD).
+A quiet inline notice keeps it read-only and offers Repair. Merely opening,
+searching, previewing, or trying Edit never changes the original file.
+
+Repair explicitly replaces invalid byte sequences with U+FFFD through the same
+revision-bound safe-save path as source editing. The original bytes are durable
+in Note history before publication. On success, the notice clears and Edit is
+available. A changed source refuses the transaction; a failed transaction restores
+its original bytes and removes only verified staging files.
+
+History previews damaged versions with replacement characters, with a clear
+notice that Restore and Save as recovered note preserve the exact original bytes.
+Restoring the original version to the same note makes it read-only again. Raw
+records share the existing History retention limits; interrupted recovery is
+protected. They live in application state, outside the vault. Existing text
+records are unchanged, and older builds skip the additive raw record kind.
 
 ### macOS file previews (#477, step 1)
 

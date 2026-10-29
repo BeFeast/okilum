@@ -489,24 +489,34 @@ mod tests {
 
     #[test]
     fn history_error_after_publication_rolls_back_and_removes_owned_staging() {
-        let fixture = tempfile::tempdir().unwrap();
-        let state = fixture.path().join("state/editor-drafts");
-        let root = fixture.path().join("vault");
-        fs::create_dir(&root).unwrap();
-        let note = root.join("Synthetic.md");
-        let original = b"Before \xff After\n";
-        fs::write(&note, original).unwrap();
-        crate::source_history::RawRecord::fail_next_complete();
-        let error = FileEditor::repair_encoding(&note, &state).unwrap_err();
-        assert!(format!("{error:#}").contains("History acknowledgement"));
-        assert_eq!(fs::read(&note).unwrap(), original);
-        #[cfg(unix)]
-        assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
-        no_vault_tails(&root);
-        assert!(crate::source_history::list(&state, &root)
-            .unwrap()
-            .versions
-            .is_empty());
+        for (original, proposed) in [
+            (
+                b"Before \xff After\n".as_slice(),
+                b"Before \xef\xbf\xbd After\n".as_slice(),
+            ),
+            (
+                b"Before \xef\xbf\xbd After\n".as_slice(),
+                b"Before \xff After\n".as_slice(),
+            ),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state/editor-drafts");
+            let root = fixture.path().join("vault");
+            fs::create_dir(&root).unwrap();
+            let note = root.join("Synthetic.md");
+            fs::write(&note, original).unwrap();
+            crate::source_history::RawRecord::fail_next_complete();
+            let error = FileEditor::replace_bytes(&note, &state, original, proposed).unwrap_err();
+            assert!(format!("{error:#}").contains("History acknowledgement"));
+            assert_eq!(fs::read(&note).unwrap(), original);
+            #[cfg(unix)]
+            assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
+            no_vault_tails(&root);
+            assert!(crate::source_history::list(&state, &root)
+                .unwrap()
+                .versions
+                .is_empty());
+        }
     }
 
     #[test]
