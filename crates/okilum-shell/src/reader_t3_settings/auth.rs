@@ -325,7 +325,7 @@ fn finish(
                 entry.gateway = None;
                 if let Some(help) = okilum_t3::connection::permission_help(&error) {
                     entry.error = Some(help.into());
-                    entry.error_details = Some(format!("{error:#}"));
+                    entry.error_details = okilum_t3::connection::permission_details(&error);
                 } else {
                     entry.error = Some(format!("{error:#}. Choose Sign in to continue."));
                 }

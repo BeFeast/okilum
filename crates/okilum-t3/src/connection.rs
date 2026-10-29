@@ -9,7 +9,9 @@ pub const RETRY_NOTICE: &str = "macOS may be asking to allow local network acces
 pub const PERMISSION_HELP: &str = "Could not reach T3 on the local network. macOS may need your permission: allow Okilum in System Settings → Privacy & Security → Local Network, then choose Sign in. Okilum already retried once.";
 
 #[derive(Debug)]
-struct PermissionHelp;
+struct PermissionHelp {
+    diagnostic: String,
+}
 impl std::fmt::Display for PermissionHelp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(PERMISSION_HELP)
@@ -23,6 +25,13 @@ pub fn permission_help(error: &anyhow::Error) -> Option<&'static str> {
     error
         .downcast_ref::<PermissionHelp>()
         .map(|_| PERMISSION_HELP)
+}
+
+/// The original error chain without the user-facing permission explanation.
+pub fn permission_details(error: &anyhow::Error) -> Option<String> {
+    error
+        .downcast_ref::<PermissionHelp>()
+        .map(|help| help.diagnostic.clone())
 }
 
 #[derive(Default)]
@@ -73,7 +82,8 @@ impl Retry {
         wait();
         operation().map_err(|error| {
             if route_error(&error) {
-                error.context(PermissionHelp)
+                let diagnostic = format!("{error:#}");
+                error.context(PermissionHelp { diagnostic })
             } else {
                 error
             }
@@ -199,6 +209,12 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(permission_help(&error), Some(PERMISSION_HELP));
         assert!(format!("{error:#}").contains("os error 65"));
+        let details = permission_details(&error).unwrap();
+        assert!(details.contains("os error 65"));
+        assert!(
+            !details.contains(PERMISSION_HELP),
+            "Details must not repeat the headline"
+        );
         assert_eq!(attempts.get(), 2);
         assert_eq!(notices.get(), 1);
         let _: Result<()> = retry.run_using(
