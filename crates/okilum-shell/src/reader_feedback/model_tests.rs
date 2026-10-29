@@ -309,9 +309,35 @@ fn a_video_that_grew_past_the_cap_or_a_bare_413_keeps_the_draft_with_a_reason() 
 
 #[test]
 fn fallback_rebuilds_the_same_report_after_transport_failure() {
-    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
-    let primary = format!("http://{}/feedback", closed.local_addr().unwrap());
-    drop(closed);
+    // Keep the primary port owned until the request arrives. Dropping a bound
+    // listener first lets parallel HTTP fixtures reuse it and answer this request.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let primary = format!("http://{}/feedback", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let failed_primary = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "primary request never arrived"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("primary accept failed: {error}"),
+            }
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = read_mock_request(&mut socket);
+        // A complete upload followed by EOF without HTTP headers is a transport
+        // failure, not an HTTP rejection. Retain the request as a positive control.
+        socket.shutdown(std::net::Shutdown::Both).unwrap();
+        request
+    });
     let mut report = report();
     report.screenshot = Some(Arc::new(image(image::ImageFormat::Png)));
     report.log = Some("selected diagnostic attachment".into());
@@ -323,6 +349,11 @@ fn fallback_rebuilds_the_same_report_after_transport_failure() {
         receipt.delivery_endpoint.as_deref(),
         Some(fallback.as_str())
     );
+    let primary_wire = failed_primary.join().unwrap();
+    let primary_text = String::from_utf8_lossy(&primary_wire);
+    assert!(primary_text.contains(&report.text));
+    assert!(primary_text.contains("selected diagnostic attachment"));
+    assert!(primary_wire.windows(8).any(|b| b == b"\x89PNG\r\n\x1a\n"));
     let wire = received.join().unwrap();
     let text = String::from_utf8_lossy(&wire);
     assert!(text.contains(&report.text));
