@@ -9,6 +9,10 @@ gpui::actions!(okilum_settings, [OpenSettings, CloseSettings]);
 struct SettingsWindow(Option<WindowHandle<Root>>);
 impl Global for SettingsWindow {}
 
+#[derive(Default)]
+struct SettingsOwners(std::collections::HashMap<Option<WindowId>, WindowHandle<Root>>);
+impl Global for SettingsOwners {}
+
 pub(crate) fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-,", OpenSettings, None),
@@ -41,8 +45,20 @@ pub(crate) fn show_about(cx: &mut App) {
 }
 
 fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx: &mut App) {
+    show_section_from(reader, section, cx.active_window(), cx);
+}
+
+pub(crate) fn show_about_in(window: &Window, cx: &mut App) {
+    show_section_from(None, Some(Section::About), Some(window.window_handle()), cx);
+}
+
+fn show_section_from(
+    reader: Option<WeakEntity<Reader>>,
+    section: Option<Section>,
+    active: Option<AnyWindowHandle>,
+    cx: &mut App,
+) {
     // Native application-menu actions may bypass the Reader's action handler.
-    let active = cx.active_window();
     // Menu dispatch can still hold the active Reader's update borrow.
     cx.defer(move |cx| {
         let owner = reader
@@ -62,7 +78,11 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                 .ok()?;
             Some(reader.downgrade())
         });
-        if let Some(handle) = cx.try_global::<SettingsWindow>().and_then(|s| s.0) {
+        let owner_id = owner.map(|owner| owner.window_id());
+        let existing = cx
+            .try_global::<SettingsOwners>()
+            .and_then(|windows| windows.0.get(&owner_id).copied());
+        if let Some(handle) = existing {
             if handle
                 .update(cx, |root, window, cx| {
                     if let Ok(settings) = root.view().clone().downcast::<Settings>() {
@@ -79,6 +99,7 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
                 })
                 .is_ok()
             {
+                cx.set_global(SettingsWindow(Some(handle)));
                 return;
             }
         }
@@ -103,6 +124,17 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
         }) {
             Ok(handle) => {
                 reader_owned_windows::register(owner, handle.into(), cx);
+                if !cx.has_global::<SettingsOwners>() {
+                    cx.set_global(SettingsOwners::default());
+                }
+                let alive: std::collections::HashSet<_> = cx
+                    .windows()
+                    .iter()
+                    .map(|window| window.window_id())
+                    .collect();
+                let windows = &mut cx.global_mut::<SettingsOwners>().0;
+                windows.retain(|_, handle| alive.contains(&handle.window_id()));
+                windows.insert(owner_id, handle);
                 cx.set_global(SettingsWindow(Some(handle)));
             }
             Err(error) => eprintln!("Could not open Settings: {error}"),
@@ -2721,6 +2753,53 @@ mod tests {
         visual.run_until_parked();
         visual.update(|_, cx| {
             assert_eq!(cx.global::<SettingsWindow>().0.unwrap().window_id(), first)
+        });
+    }
+
+    #[gpui::test]
+    fn about_keeps_each_reader_owner_and_reuses_only_its_own_window(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, first) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            Root::new(reader, window, cx)
+        });
+        let (_, second) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            Root::new(reader, window, cx)
+        });
+        first.update(about::show_about);
+        first.run_until_parked();
+        let first_about = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
+        second.update(about::show_about);
+        second.run_until_parked();
+        let second_about = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
+        assert_ne!(first_about, second_about, "each Reader needs its own About");
+        for (reader, about) in [(first.clone(), first_about), (second.clone(), second_about)] {
+            reader.update(|window, cx| {
+                assert_eq!(
+                    reader_owned_windows::owner(about.into(), cx),
+                    window.window_handle()
+                );
+            });
+            let mut tool = VisualTestContext::from_window(about.into(), cx);
+            tool.update(about::show_about);
+            tool.run_until_parked();
+            cx.read(|cx| {
+                assert_eq!(cx.global::<SettingsWindow>().0.unwrap(), about);
+                assert_eq!(cx.windows().len(), 4, "reopen must reuse the owner's tool");
+            });
+            about
+                .update(cx, |root, _, cx| {
+                    let settings = root.view().clone().downcast::<Settings>().unwrap();
+                    assert!(settings.read(cx).section == Section::About);
+                })
+                .unwrap();
+        }
+        first.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(!cx.windows().contains(&first_about.into()));
+            assert!(cx.windows().contains(&second_about.into()));
         });
     }
 

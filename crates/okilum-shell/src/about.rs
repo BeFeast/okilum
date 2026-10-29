@@ -17,8 +17,8 @@ pub(crate) fn show_from_menu(cx: &mut App) {
     reader_settings::show_about(cx);
 }
 
-pub(crate) fn show_about(_window: &mut Window, cx: &mut App) {
-    reader_settings::show_about(cx);
+pub(crate) fn show_about(window: &mut Window, cx: &mut App) {
+    reader_settings::show_about_in(window, cx);
 }
 
 /// The update channel, named as one; never a bare «Beta» that could read as
