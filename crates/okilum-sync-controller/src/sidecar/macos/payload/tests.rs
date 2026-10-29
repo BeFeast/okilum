@@ -96,7 +96,28 @@ fn offline_payload_verification_builds_fixed_launch_paths_without_contacting_res
         .is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock));
     // Positive control proves the listener would detect any connection.
     let _connection = TcpStream::connect(f.listener.local_addr()?)?;
-    assert!(f.listener.accept().is_ok());
+    // Connection completion and accept readiness need not be observed in the
+    // same scheduling instant on every kernel. Await this one positive-control
+    // connection, preserving all errors except readiness/interruption.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match f.listener.accept() {
+            Ok(_) => break,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                ensure!(
+                    std::time::Instant::now() < deadline,
+                    "listener positive control did not become ready: {error}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
