@@ -565,6 +565,8 @@ mod tests {
                 Reader::new(
                     Opts {
                         defer_loading: true,
+                        vault: Some(temp.path().join("vault")),
+                        session_directory: Some(temp.path().join("state")),
                         ..Default::default()
                     },
                     window,
@@ -575,7 +577,10 @@ mod tests {
                 reader.loading = None;
                 reader.vault_root = temp.path().join("vault");
                 reader.sidebar = reader_sidebar::State::default();
-                reader.sidebar_path = Some(temp.path().join("state/sidebar.json"));
+                reader.sidebar_path = Some(reader_sidebar::State::path(
+                    &temp.path().join("state"),
+                    &reader.vault_root,
+                ));
                 reader.vault = Arc::new(Vault::from_note_paths(
                     (0..150).map(|i| format!("Dev/Projects/App/Note {i:03}.md")),
                 ));
@@ -640,7 +645,13 @@ mod tests {
             assert_eq!(r.tree_scroll.0.borrow().base_handle.offset(), before.2);
             assert_eq!(r.sidebar.left_mode, LeftMode::Tree);
         });
-        let restored = reader_sidebar::State::load(&temp.path().join("state/sidebar.json"));
+        let path =
+            reader_sidebar::State::path(&temp.path().join("state"), &temp.path().join("vault"));
+        assert!(
+            path.is_file(),
+            "the actual per-vault application state was saved"
+        );
+        let restored = reader_sidebar::State::load(&path);
         assert_eq!(restored.left_mode, LeftMode::Tree);
     }
 
