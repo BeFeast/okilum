@@ -650,7 +650,27 @@ pub(super) fn typed_hook() -> TypedTextHook {
             markdown,
             fences: reader_ui_state::close_code_fences(cx),
         };
-        if !may_format(ch, !input.selection.is_empty(), pairing) {
+        // With inline pairing off, the first two marks remain plain typing:
+        // inspect only two bytes of the rope before copying a large note.
+        let at = input.selection.start;
+        let fence_candidate = pairing.fences
+            && input.selection.is_empty()
+            && matches!(ch, '`' | '~')
+            && at >= 2
+            && input
+                .text
+                .try_slice(at - 2..at)
+                .is_ok_and(|slice| slice.to_string() == ch.to_string().repeat(2));
+        if !fence_candidate
+            && !may_format(
+                ch,
+                !input.selection.is_empty(),
+                Pairing {
+                    fences: false,
+                    ..pairing
+                },
+            )
+        {
             return None;
         }
         typed(
