@@ -257,7 +257,7 @@ fn symlinked_stage_or_manifest_cannot_redirect_management_writes() {
 #[test]
 fn handwritten_inline_toml_cards_can_be_edited_without_rewriting_the_other_card() {
     let a = Area::new();
-    let source="title = 'Example'\ngoal = 'Outcome'\nrepository = 'https://git.oklabs.uk/BeFeast/example'\nstage_note = 'planning/stage.md'\nissues = [\n  { number = 1, expected = 'First', executor = 'Editing', notes = ['planning/stage.md'] },\n  # Other card comment\n  { number = 2, expected = 'Keep exactly', executor = 'UI' },\n]\n";
+    let source="version = 1\ntitle = 'Example'\ngoal = 'Outcome'\nrepository = 'https://git.oklabs.uk/BeFeast/example'\nstage_note = 'planning/stage.md'\nissues = [\n  { number = 1, expected = 'First', executor = 'Editing', notes = ['planning/stage.md'] },\n  # Other card comment\n  { number = 2, expected = 'Keep exactly', executor = 'UI' },\n]\n";
     std::fs::write(a.file("board.toml"), source).unwrap();
     let s = a.session();
     let mut edit = s.card(0);
