@@ -176,7 +176,9 @@ pub fn folder_name(folder: &Path) -> String {
 /// A folder that already has `ops/project.yaml` is a project: the tree
 /// does not offer «Make this a project…» for it.
 pub fn is_project(folder: &Path) -> bool {
-    std::fs::symlink_metadata(folder.join(MANIFEST)).is_ok()
+    ["project.toml", "project.yaml"]
+        .iter()
+        .any(|name| std::fs::symlink_metadata(folder.join("ops").join(name)).is_ok())
 }
 
 /// `HomeLab Mesh` → `homelab-mesh`: lowercase ASCII letters and digits,
@@ -371,55 +373,39 @@ pub fn t3_block(link: &T3Link) -> String {
 /// Add the `t3:` block to `folder`'s manifest, every other byte kept.
 /// Refused when the manifest has a `t3:` block already.
 pub fn link_t3(folder: &Path, link: &T3Link) -> Result<Project> {
-    let ops = folder.join("ops");
+    let document =
+        crate::area_files::read(folder, "project")?.context("Area has no project manifest")?;
     ensure!(
-        std::fs::symlink_metadata(&ops)?.is_dir(),
-        "Project ops must not be a symlink"
+        document.value.get("t3").is_none(),
+        "Project manifest already has a t3 block"
     );
-    let manifest = folder.join(MANIFEST);
-    ensure!(
-        std::fs::symlink_metadata(&manifest)?.is_file(),
-        "Project manifest must not be a symlink"
-    );
-    let source = std::fs::read_to_string(&manifest)?;
-    let before: serde_yaml::Value = serde_yaml::from_str(&source).context("project.yaml")?;
-    let before = before
-        .as_mapping()
-        .context("project.yaml must be a mapping")?;
-    let key = serde_yaml::Value::from("t3");
-    ensure!(
-        !before.contains_key(&key),
-        "project.yaml already has a t3: block"
-    );
-    let mut updated = source.clone();
-    if !updated.is_empty() && !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    updated.push_str(&t3_block(link));
-    let after: serde_yaml::Value =
-        serde_yaml::from_str(&updated).context("the edited project.yaml does not parse")?;
-    let after = after
-        .as_mapping()
-        .context("project.yaml must be a mapping")?;
-    let others: serde_yaml::Mapping = after
-        .iter()
-        .filter(|(k, _)| **k != key)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    ensure!(
-        &others == before,
-        "adding the T3 project would change other project.yaml fields"
-    );
-    let temp = ops.join(format!(".project.yaml.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, updated.as_bytes())?;
-    std::fs::rename(&temp, &manifest).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })?;
+    let updated = match document.format {
+        crate::area_files::Format::Yaml => {
+            let mut updated = document.source.clone();
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&t3_block(link));
+            let after: serde_yaml::Value = serde_yaml::from_str(&updated)?;
+            let mut others = after.as_mapping().context("Expected a mapping")?.clone();
+            others.remove(serde_yaml::Value::from("t3"));
+            ensure!(
+                Some(&others) == document.value.as_mapping(),
+                "Adding T3 would change unrelated manifest fields"
+            );
+            updated
+        }
+        crate::area_files::Format::Toml => {
+            let value: serde_yaml::Value = serde_yaml::from_str(&t3_block(link))?;
+            document.set_toml_field("t3", value.get("t3"))?
+        }
+    };
+    document.replace(&updated)?;
     let project = Project::read(folder)?;
     ensure!(
         project.environment.as_deref() == Some(link.environment.as_str())
             && project.appearance.executor_project.as_deref() == Some(link.project_id.as_str()),
-        "the T3 project did not read back from project.yaml"
+        "The T3 project did not read back from the manifest"
     );
     Ok(project)
 }

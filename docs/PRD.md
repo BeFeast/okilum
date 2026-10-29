@@ -58,6 +58,13 @@ sections into the app menu, limits the sidebar to vault navigation, and defines
 vault-wide project discovery, reversible scoping and the macOS manager webview.
 Explicit manager creation retains launch intent and revision-aware registry writes.
 
+**Project Board and compatible Area manifests (2026-10-27/29, #1767, #1859):**
+[Native project Board](project-board.md) adds an explicitly bound read-only stage
+projection in the center, related-note navigation and draft-only Manager context.
+[TOML manifests](area-manifests.md) prefer TOML with absence-only legacy YAML
+fallback. Invalid cards retain precise visible diagnostics beside healthy cards.
+Delivery/human acceptance and execution mutations remain separate.
+
 A local-first desktop knowledge environment that replaces Obsidian without taking
 ownership of the files.
 

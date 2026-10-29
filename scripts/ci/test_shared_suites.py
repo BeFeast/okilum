@@ -13,7 +13,7 @@ import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 if Path(sys.argv[0]).name == 'python3':
-    name = args[args.index('-s') + 1]
+    name = args[args.index('-s') + 1] if '-s' in args else args[0]
 else:
     name = args[0]
     if name == 'test':
@@ -24,7 +24,7 @@ with open(os.environ['SHARED_TRACE'], 'a') as trace:
 sys.exit(42 if name in os.environ.get('SHARED_FAILURES', '').split(',') else 0)
 '''
 EXPECTED = ['fmt', 'clippy', 'workspace', 'portable', 'scripts/ci',
-            'scripts/releases', 'scripts/updater']
+            'scripts/releases', 'scripts/manifests/check.py', 'scripts/updater']
 
 
 class SharedSuitesTests(unittest.TestCase):

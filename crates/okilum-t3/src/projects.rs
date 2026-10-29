@@ -151,8 +151,9 @@ impl Project {
     /// Native fallback for knowledge projects intentionally has no executor
     /// binding. Empty internal executor/model defaults are never actionable.
     pub fn native_binding(&self) -> Result<Option<crate::manifest::AreaBinding>> {
-        let source = std::fs::read_to_string(self.folder.join("ops/project.yaml"))?;
-        let document: serde_yaml::Value = serde_yaml::from_str(&source)?;
+        let document = crate::area_files::read(&self.folder, "project")?
+            .context("Area has no project manifest")?
+            .value;
         if self.kind != Kind::Knowledge && document["t3"].get("executor").is_some() {
             let mut binding = crate::manifest::AreaBinding::read(&self.folder)?;
             if let Some(binding) = &mut binding {
@@ -210,19 +211,15 @@ impl Project {
             std::fs::symlink_metadata(folder.join("ops"))?.is_dir(),
             "Project ops must not be a symlink"
         );
-        ensure!(
-            std::fs::symlink_metadata(folder.join("ops/project.yaml"))?.is_file(),
-            "Project manifest must not be a symlink"
-        );
         if let Ok(metadata) = std::fs::symlink_metadata(folder.join("ops/thread-ids.md")) {
             ensure!(
                 metadata.is_file(),
                 "Manager registry must be a regular file, not a symlink"
             );
         }
-        let source = std::fs::read_to_string(folder.join("ops/project.yaml"))?;
-        let doc: serde_yaml::Value = serde_yaml::from_str(&source)?;
-        ensure!(doc.is_mapping(), "project.yaml must be a mapping");
+        let doc = crate::area_files::read(folder, "project")?
+            .context("Area has no project.toml or project.yaml")?
+            .value;
         let text = |value: &serde_yaml::Value| value.as_str().map(str::to_owned);
         let kind = match doc.get("kind") {
             Some(value @ serde_yaml::Value::String(kind)) => {
@@ -356,19 +353,11 @@ pub fn discover(vault: &Path) -> Discovery {
     let mut result = Discovery::default();
     let mut pending = vec![vault.to_owned()];
     while let Some(folder) = pending.pop() {
-        let manifest = folder.join("ops/project.yaml");
-        if manifest.exists() {
-            let read = (|| {
-                ensure!(
-                    std::fs::symlink_metadata(folder.join("ops"))?.is_dir(),
-                    "project ops must be a directory, not a symlink"
-                );
-                ensure!(
-                    std::fs::symlink_metadata(&manifest)?.is_file(),
-                    "project manifest must be a file, not a symlink"
-                );
-                Project::read(&folder)
-            })();
+        let present = ["project.toml", "project.yaml"]
+            .iter()
+            .any(|name| std::fs::symlink_metadata(folder.join("ops").join(name)).is_ok());
+        if present {
+            let read = Project::read(&folder);
             match read {
                 Ok(project) => result.projects.push(project),
                 Err(e) if e.is::<NotAProject>() => {}

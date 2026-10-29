@@ -91,6 +91,8 @@ pub struct ThreadSummary {
     pub title: String,
     pub status: String,
     pub latest_run_id: Option<String>,
+    #[serde(default)]
+    pub active_run_id: Option<String>,
     pub provider_instance_id: String,
     pub model: String,
     pub runtime_mode: String,

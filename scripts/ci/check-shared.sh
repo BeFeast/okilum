@@ -23,6 +23,7 @@ suite 'Workspace Rust tests' cargo test --workspace --locked --no-fail-fast -- -
 suite 'Portable reader' cargo test -p okilum-core --no-default-features --test portable_reader --locked --no-fail-fast
 suite 'CI Python tests' python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 suite 'Release Python tests' python3 -m unittest discover -s scripts/releases -p 'test_*.py'
+suite 'Manifest conversion tests' python3 scripts/manifests/check.py
 suite 'Updater Python tests' python3 -m unittest discover -s scripts/updater -p 'test_*.py'
 
 summary() {

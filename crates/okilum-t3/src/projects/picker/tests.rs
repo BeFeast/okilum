@@ -211,7 +211,7 @@ fn row_status_shows_only_activity_or_a_manifest_problem() {
     assert_eq!(status(&model, "Wired"), None, "checking: nothing");
     assert!(matches!(
         status(&model, "Orphan"),
-        Some(RowStatus::Problem(text)) if text.contains("project.yaml")
+        Some(RowStatus::Problem(text)) if text.contains("Project manifest")
     ));
     let observe = |status: Status| {
         BTreeMap::from([(

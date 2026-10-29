@@ -128,3 +128,25 @@ fn modern_pr_links_work_when_the_legacy_link_is_null_and_nonweb_actions_refuse()
         assert!(!crate::is_http_link(bad));
     }
 }
+
+#[test]
+fn optional_current_task_is_stable_and_old_registry_columns_remain_supported() {
+    let source="## Current threads\n| Role | Thread | Current task |\n|---|---|---|\n| Manager | `mcp:manager` | |\n| Editing | `mcp:launch:current` | #1860 |\n";
+    assert_eq!(
+        Registry::parse(source).unwrap().executors[0].current_task,
+        Some(1860)
+    );
+    assert!(Registry::parse(REGISTRY)
+        .unwrap()
+        .executors
+        .iter()
+        .all(|entry| entry.current_task.is_none()));
+    for invalid in ["#0", "#1860 #1859", "unknown"] {
+        assert!(Registry::parse(&source.replace("#1860", invalid)).is_err());
+    }
+    assert!(Registry::parse(&source.replace(
+        "| Editing | `mcp:launch:current` | #1860 |",
+        "| Editing | `mcp:launch:current` | #1860 |\n| Editing | `mcp:other` | #1859 |"
+    ))
+    .is_err());
+}

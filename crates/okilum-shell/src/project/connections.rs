@@ -13,11 +13,8 @@ use okilum_t3::Environment;
 pub(super) fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
     let mut directory = note.parent().unwrap_or(vault);
     while directory.starts_with(vault) {
-        match std::fs::metadata(directory.join("ops/project.yaml")) {
-            Ok(metadata) if metadata.is_file() => return Ok(directory.to_owned()),
-            Ok(_) => anyhow::bail!("The area's project manifest is not a file"),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).context("Cannot read this area's project manifest"),
+        if okilum_t3::area_files::preferred_path(directory, "project")?.is_some() {
+            return Ok(directory.to_owned());
         }
         if directory == vault {
             break;
@@ -118,11 +115,9 @@ pub(super) fn project_origin(
     alias: &str,
     state: Option<&Path>,
 ) -> Result<Option<String>> {
-    let manifest: serde_yaml::Value = match std::fs::read_to_string(area.join("ops/project.yaml")) {
-        Ok(source) => serde_yaml::from_str(&source)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_yaml::Value::Null,
-        Err(error) => return Err(error.into()),
-    };
+    let manifest = okilum_t3::area_files::read(area, "project")?
+        .map(|document| document.value)
+        .unwrap_or(serde_yaml::Value::Null);
     if let Some(origin) = manifest["t3"]["origin"].as_str() {
         return Ok(Some(Environment::from_input(alias, origin)?.origin()));
     }
