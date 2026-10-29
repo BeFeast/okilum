@@ -973,6 +973,9 @@ impl Render for Board {
                 cx.notify();
             }));
         let mut end = v_flex().w(px(36.)).flex_none().gap_2();
+        if binding.attention.is_empty() {
+            end = end.child(self.agent_filter(binding, true, cx));
+        }
         end = end.child(
             Button::new("board-manage")
                 .debug_selector(|| "board-manage".into())
@@ -984,9 +987,6 @@ impl Render for Board {
                 .disabled(self.editor_loading)
                 .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
         );
-        if binding.attention.is_empty() {
-            end = end.child(self.agent_filter(binding, true, cx));
-        }
         root.child(columns.child(end.child(toggle)))
             .into_any_element()
     }

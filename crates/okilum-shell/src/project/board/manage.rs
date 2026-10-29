@@ -360,7 +360,9 @@ impl Board {
                             Button::new("board-details")
                                 .ghost()
                                 .small()
-                                .label("Board details")
+                                .child(appearance::icon("settings-2", colors.text_muted))
+                                .tooltip("Board details")
+                                .accessibility_label("Board details")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.management_screen(Screen::Details, window, cx)
@@ -523,7 +525,7 @@ impl Board {
                         cx,
                     ))
                     .child(self.management_field("executor", "Executor", &editor.executor, cx));
-                let mut stages = h_flex().gap_2();
+                let mut stages = gpui_component::button::ButtonGroup::new("board-stage");
                 for (index, (value, label)) in [
                     ("", "Automatic"),
                     ("ready", "Ready"),
