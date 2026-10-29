@@ -525,7 +525,8 @@ impl Board {
                         cx,
                     ))
                     .child(self.management_field("executor", "Executor", &editor.executor, cx));
-                let mut stages = gpui_component::button::ButtonGroup::new("board-stage");
+                let mut stages =
+                    gpui_component::button::ButtonGroup::new("board-stage").disabled(busy);
                 for (index, (value, label)) in [
                     ("", "Automatic"),
                     ("ready", "Ready"),
