@@ -54,10 +54,10 @@ index 0f36761..65afee8 100644
 +no signing/promotion. The existing two blocked receipts remain immutable.
 diff --git a/autosave-gate/boot_readback.py b/autosave-gate/boot_readback.py
 new file mode 100644
-index 0000000..a132280
+index 0000000..22c3f9c
 --- /dev/null
 +++ b/autosave-gate/boot_readback.py
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,71 @@
 +"""Bounded read-only post-rollback boot observation, never a gate/SSH repair."""
 +import json
 +from pathlib import Path
@@ -87,11 +87,14 @@ index 0000000..a132280
 +    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 +
 +
-+def observe(vm, evidence, release, runner=run_read, clock=time.time, pause=time.sleep):
-+    deadline = min(clock() + 120, release - 5)
++def observe(vm, evidence, release, runner=run_read, clock=time.time, pause=time.sleep, window_seconds=300):
++    if not 1 <= window_seconds <= 600:
++        raise ValueError('Boot observation window must be within1..600seconds')
++    started = clock()
++    deadline = min(started + window_seconds, release - 5)
 +    attempts = []
 +    state = 'deadline'
-+    while deadline - clock() >= 1 and len(attempts) < 24:
++    while deadline - clock() >= 1 and len(attempts) < 60:
 +        limit = min(15, deadline - clock())
 +        try:
 +            result = runner([str(vm), 'ps', SCRIPT], capture_output=True, text=True, timeout=limit)
@@ -118,16 +121,16 @@ index 0000000..a132280
 +        remaining = deadline - clock()
 +        if remaining > 0:
 +            pause(min(5, remaining))
-+    receipt = dict(state=state, attempts=len(attempts), read_only=True, infrastructure_repair=False, guest_counts='zero' if state == 'ready' else 'UNKNOWN')
++    receipt = dict(state=state, attempts=len(attempts), window_seconds=window_seconds, elapsed_seconds=clock()-started, read_only=True, infrastructure_repair=False, guest_counts='zero' if state == 'ready' else 'UNKNOWN')
 +    (evidence / 'postclean-boot.json').write_text(json.dumps(receipt, indent=2) + '\n')
 +    print(json.dumps(receipt), flush=True)
 +    return 0 if state == 'ready' else 1
 +
 +
 +if __name__ == '__main__':
-+    raise SystemExit(observe(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))
++    raise SystemExit(observe(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]), window_seconds=int(sys.argv[4]) if len(sys.argv)>4 else 300))
 diff --git a/autosave-gate/gate-run.sh b/autosave-gate/gate-run.sh
-index afee61f..a657d9b 100755
+index afee61f..9c0b3ed 100755
 --- a/autosave-gate/gate-run.sh
 +++ b/autosave-gate/gate-run.sh
 @@ -13,7 +13,7 @@ PR_MANIFEST=${3:-}
@@ -183,7 +186,7 @@ index afee61f..a657d9b 100755
 -exit 0
 -PS
 -)" 25; then post=READBACK_AVAILABLE; fi
-+        if call postclean-boot 185 boot-readback; then post=READBACK_AVAILABLE; fi
++        if call postclean-boot 365 boot-readback; then post=READBACK_AVAILABLE; fi
        fi
      fi
    fi
@@ -370,10 +373,10 @@ index fa9de44..b9de853 100755
  PS
 diff --git a/autosave-gate/test_boot_readback.py b/autosave-gate/test_boot_readback.py
 new file mode 100644
-index 0000000..e22dc56
+index 0000000..6e06652
 --- /dev/null
 +++ b/autosave-gate/test_boot_readback.py
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,50 @@
 +import json
 +from pathlib import Path
 +import subprocess
@@ -382,16 +385,16 @@ index 0000000..e22dc56
 +from boot_readback import observe
 +
 +class Boot(unittest.TestCase):
-+    def run_case(self, responses, release=1000):
++    def run_case(self, responses, release=1000, probe_seconds=1, window_seconds=300):
 +        with tempfile.TemporaryDirectory() as directory:
 +            p=Path(directory);now=[0];calls=[]
 +            def runner(command, **kwargs):
-+                calls.append(command);now[0]+=1
++                calls.append(command);now[0]+=min(probe_seconds, kwargs['timeout'])
 +                code,out,err=responses[min(len(calls)-1,len(responses)-1)]
 +                if code==124:raise subprocess.TimeoutExpired(command,kwargs['timeout'])
 +                return subprocess.CompletedProcess(command,code,out,err)
 +            def pause(seconds):now[0]+=seconds
-+            status=observe(p/'vm.sh',p,release,runner=runner,clock=lambda:now[0],pause=pause)
++            status=observe(p/'vm.sh',p,release,runner=runner,clock=lambda:now[0],pause=pause,window_seconds=window_seconds)
 +            receipt=json.loads((p/'postclean-boot.json').read_text())
 +            self.assertTrue(all(c[1]=='ps' for c in calls))
 +            return status,receipt,len(calls),now[0]
@@ -407,7 +410,15 @@ index 0000000..e22dc56
 +        self.assertEqual(r['guest_counts'],'UNKNOWN')
 +    def test_unreachable_exhausts_bounded_boot_only(self):
 +        status,r,calls,elapsed=self.run_case([(255,'','Connection refused')])
-+        self.assertEqual(status,1);self.assertEqual(r['guest_counts'],'UNKNOWN');self.assertLessEqual(elapsed,120);self.assertLessEqual(calls,24)
++        self.assertEqual(status,1);self.assertEqual(r['guest_counts'],'UNKNOWN');self.assertLessEqual(elapsed,300);self.assertLessEqual(calls,60)
++    def test_slow_boot_after_nine_probes_can_be_observed(self):
++        responses=[(255,'','Connection refused')]*11+[(0,'postcleanApps=0\npostcleanTasks=0\n','')]
++        status,r,calls,elapsed=self.run_case(responses,probe_seconds=15)
++        self.assertEqual((status,r['guest_counts'],calls),(0,'zero',12))
++        self.assertGreater(elapsed,120);self.assertLessEqual(elapsed,300)
++        status,r,_,elapsed=self.run_case(responses,probe_seconds=15,window_seconds=120)
++        self.assertEqual((status,r['guest_counts']),(1,'UNKNOWN'))
++        self.assertLessEqual(elapsed,120)
 +    def test_release_deadline_is_not_extended(self):
 +        status,r,_,elapsed=self.run_case([(124,'','')],release=10)
 +        self.assertEqual(status,1);self.assertLessEqual(elapsed,5)

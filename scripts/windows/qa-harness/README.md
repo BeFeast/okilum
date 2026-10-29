@@ -49,3 +49,23 @@ GO; never infer authority from a passing local test. Keep original seed5226 /
 
 #1808's copied-build and #1414 external-file identity scenario are subsequent
 work; this patch does not implement or claim their native acceptance.
+
+## Postclean window after the one authorized read-only follow-up
+
+The controls-only self-test's observer exhausted120 seconds / nine probes.
+The subsequently authorized single guest read returned session1 and app/task0
+without reboot, rollback or repair, at233 seconds after rollback/unlock completed.
+This is an upper bound on observed recovery, not an exact boot-ready timestamp;
+it does not retroactively replace the original UNKNOWN receipt.
+
+Use a300-second default observation window (233 seconds observed upper bound
+plus67 seconds margin), configurable as the fourth boot_readback.py argument
+within1..600 seconds. The effective deadline remains min(window, original release
+minus5seconds), with at most60 probes and unchanged15-second per-probe limits.
+The outer driver call is365 seconds; no release deadline is extended. Auth errors,
+unknown responses and nonzero/missing counts stop immediately. A later-ready
+positive-control regression passes at235seconds with the new window and remains
+UNKNOWN with the old120-second window; release cutoff tests still pass.
+
+No new VM self-test is authorized by these code changes. Manager must grant r2;
+merge and #1698r4 remain held pending r2 and explicit GO.
