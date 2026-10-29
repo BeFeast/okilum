@@ -81,11 +81,12 @@ impl Payload {
             (executable.clone(), false),
         ] {
             let metadata = fs::symlink_metadata(path)?;
+            let forbidden = 0o7000 | if private { 0o077 } else { 0o022 };
             ensure!(
                 metadata.is_file()
                     && !metadata.file_type().is_symlink()
                     && metadata.uid() == rustix::process::geteuid().as_raw()
-                    && metadata.mode() & if private { 0o077 } else { 0o022 } == 0,
+                    && metadata.mode() & forbidden == 0,
                 "prepared payload file is foreign, linked or has unsafe permissions"
             );
         }
@@ -116,7 +117,7 @@ impl Payload {
                 m.is_dir()
                     && !m.file_type().is_symlink()
                     && m.uid() == rustix::process::geteuid().as_raw()
-                    && m.mode() & 0o077 == 0,
+                    && m.mode() & 0o7077 == 0,
                 "private owned payload directory required"
             );
             Ok(())

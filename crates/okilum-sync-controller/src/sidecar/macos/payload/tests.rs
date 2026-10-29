@@ -162,3 +162,31 @@ fn receipt_binding_and_supported_version_cannot_be_substituted() -> Result<()> {
     payload.verify(&f.binding)?;
     Ok(())
 }
+
+#[test]
+fn special_permission_bits_on_payload_files_and_directories_are_refused() -> Result<()> {
+    let f = Fixture::new()?;
+    let payload = f.payload();
+    let mut paths = vec![
+        f.state.join("config/config.xml"),
+        f.state.join("config/key.pem"),
+        f.state.join("config/cert.pem"),
+        f.selection.resolve(&f.state)?,
+        f.state.join("data"),
+    ];
+    for path in paths.drain(..) {
+        let original = fs::metadata(&path)?.permissions();
+        for special in [0o4000, 0o2000, 0o1000] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(original.mode() | special))?;
+            assert_eq!(
+                fs::metadata(&path)?.mode() & special,
+                special,
+                "positive control: filesystem did not retain the test permission bit"
+            );
+            assert!(payload.verify(&f.binding).is_err());
+        }
+        fs::set_permissions(path, original)?;
+    }
+    payload.verify(&f.binding)?;
+    Ok(())
+}

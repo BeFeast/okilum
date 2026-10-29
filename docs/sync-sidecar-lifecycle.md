@@ -627,7 +627,8 @@ work under #588. Native login/sleep/update acceptance is still open.
 `macos::payload::Payload` retains the exact prepared binding, runtime selection
 and daemon identity. Its read-only verifier accepts only the supported 2.1.6
 version label, checks every private config/data/runtime directory below state,
-refuses links/foreign ownership/shared credentials, checks the selected executable
+refuses links/foreign ownership/shared credentials and setuid/setgid/sticky bits
+on payload files or directories, checks the selected executable
 digest and executable bit, and re-reads the existing certificate fingerprint and
 literal-loopback REST configuration through `DaemonIdentity::verify_local`.
 It returns fixed Launch config/data/executable paths without starting a process,
