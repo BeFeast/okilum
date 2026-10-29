@@ -182,21 +182,31 @@ fn recover_interrupted_at(path: &Path) -> Result<()> {
 }
 
 // Called only while holding the update lock, before creating a new stage.
-// Preserve the newest completed transaction as one manual rollback generation.
+// Preserve the newest completed transaction and one interrupted replacement's
+// recovery copy: a missing startup receipt does not prove rename never happened.
 fn prune_stages(parent: &Path) -> Result<()> {
     let stages = private_stages(parent)?;
     let mut completed = Vec::new();
+    let mut interrupted = Vec::new();
     for stage in &stages {
         if let Ok(metadata) = fs::symlink_metadata(stage.join("completed")) {
             if metadata.is_file() {
                 completed.push((metadata.modified()?, stage));
+                continue;
             }
+        }
+        if fs::symlink_metadata(stage.join("previous.AppImage"))
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            interrupted.push((fs::symlink_metadata(stage)?.modified()?, stage));
         }
     }
     completed.sort();
+    interrupted.sort();
     let retained = completed.last().map(|(_, stage)| *stage);
+    let recovery = interrupted.last().map(|(_, stage)| *stage);
     for stage in &stages {
-        if Some(stage) != retained {
+        if Some(stage) != retained && Some(stage) != recovery {
             fs::remove_dir_all(stage)
                 .with_context(|| format!("Remove old update stage {}", stage.display()))?;
         }
@@ -361,7 +371,8 @@ pub fn check(beta: bool, current: u64, gpgv: &Path) -> Result<Option<Release>> {
 /// Staging is ephemeral until an explicit restart. Crash before restart leaves
 /// the installed file intact. The private sibling directory survives apply and
 /// holds the old executable plus a recovery log. The next preparation retains
-/// only the newest completed transaction and removes older private stages.
+/// the newest completed transaction plus one interrupted replacement's recovery
+/// copy, removing older private stages.
 pub struct Staged {
     directory: tempfile::TempDir,
     target: Target,
@@ -996,6 +1007,33 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn retention_preserves_newest_interrupted_replacement_without_startup_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let completed = stage_directory(dir.path()).unwrap().keep();
+        fs::write(completed.join("completed"), b"committed").unwrap();
+        let old = stage_directory(dir.path()).unwrap().keep();
+        executable(&old.join("previous.AppImage"), b"older recovery");
+        fs::write(old.join("apply.log"), b"Applied, no startup receipt").unwrap();
+        let new = stage_directory(dir.path()).unwrap().keep();
+        executable(&new.join("previous.AppImage"), b"newer recovery");
+        fs::write(new.join("apply.log"), b"Applied, no startup receipt").unwrap();
+        let mut candidates = [old, new];
+        candidates.sort_by_key(|p| (fs::metadata(p).unwrap().modified().unwrap(), p.clone()));
+        let newest = candidates.last().unwrap();
+        let previous = fs::read(newest.join("previous.AppImage")).unwrap();
+        assert_eq!(private_stages(dir.path()).unwrap().len(), 3);
+        prune_stages(dir.path()).unwrap();
+        assert!(completed.join("completed").exists());
+        assert_eq!(
+            fs::read(newest.join("previous.AppImage")).unwrap(),
+            previous
+        );
+        assert!(newest.join("apply.log").exists());
+        assert_eq!(private_stages(dir.path()).unwrap().len(), 2);
+        assert!(!candidates[0].exists());
     }
 
     #[test]

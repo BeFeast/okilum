@@ -415,7 +415,9 @@ holding the nonblocking update lock. Unrelated hard-linked installs remain
 unsupported; the regular-file/owner/single-link checks are unchanged.
 
 A completed stage retains `previous.AppImage` as a manual rollback copy. The next
-update preparation preserves only the newest completed stage and removes older
-private stages; the current transaction is created afterward. Symlinked and
-non-private directories are never pruned. Thus the preceding completed rollback
-and the current transaction may coexist until the following preparation.
+update preparation preserves the newest completed stage and the newest
+uncompleted stage that still holds a rollback copy, then removes older private
+stages. A crash after rename but before startup confirmation must not erase the
+only recovery copy. The current transaction is created afterward. Symlinked and
+non-private directories are never pruned. At most two retained generations plus
+the current transaction coexist until the following preparation.
