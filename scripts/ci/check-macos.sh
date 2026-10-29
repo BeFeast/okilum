@@ -84,6 +84,7 @@ run_tests okilum-shell --bins reader_create::tests::deleted_folder_keyboard_crea
 # #1731: real case-insensitive APFS note/folder rename, link rewriting and Undo.
 run_tests okilum-core --lib note_move::case_rename_native_tests::
 # #1729: exercise the native NSFileManager Trash and Undo path for a real folder.
+run_tests okilum-shell --bins reader_trash_fs::tests::
 run_tests okilum-shell --bins reader_trash::tests::unlinked_folder_moves_without_dialog_and_undo_restores_contents --exact
 # #1110 (AGENTS 9a): first run → choose a vault → a window always exists; this
 # replaces the manual first-launch check on every PR. #1137: a reopen with no
