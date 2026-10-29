@@ -25,16 +25,13 @@ fn publish(
     okilum_core::unix_publish::no_replace(a, b, c, d)
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct TrashUnavailable;
-#[cfg(target_os = "macos")]
 impl std::fmt::Display for TrashUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Trash is unavailable on this disk. The note was not deleted.")
     }
 }
-#[cfg(target_os = "macos")]
 impl std::error::Error for TrashUnavailable {}
 
 #[derive(Clone, Debug)]
@@ -44,6 +41,20 @@ pub struct Trashed {
     location: PathBuf,
     info: Option<PathBuf>,
     identity: (u64, u64),
+    vault_trash: Option<VaultTrash>,
+}
+
+#[derive(Clone, Debug)]
+struct VaultTrash {
+    root_identity: (u64, u64),
+    entry: PathBuf,
+}
+
+/// Cocoa's feature-unsupported error is the only accepted no-Trash signal.
+/// Permission, missing-source, busy and I/O errors never authorize fallback.
+#[cfg(any(target_os = "macos", test))]
+fn no_volume_trash(domain: &str, code: i64) -> bool {
+    domain == "NSCocoaErrorDomain" && code == 3328 // NSFeatureUnsupportedError
 }
 
 fn parent(root: &Path, relative: &Path) -> Result<(rustix::fd::OwnedFd, std::ffi::OsString)> {
@@ -85,15 +96,35 @@ pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
         metadata.is_file() || metadata.is_dir(),
         "Choose a regular file or folder, not a symbolic link"
     );
-    let (location, info) = system_trash(&source, &source_parent, &source_name)?;
+    move_with_system(&root, relative, &source_parent, &source_name, || {
+        system_trash(&source, &source_parent, &source_name)
+    })
+}
+
+fn move_with_system(
+    root: &Path,
+    relative: &Path,
+    source_parent: &rustix::fd::OwnedFd,
+    source_name: &std::ffi::OsStr,
+    system: impl FnOnce() -> Result<(PathBuf, Option<PathBuf>)>,
+) -> Result<Trashed> {
+    let (location, info, vault_trash) = match system() {
+        Ok((location, info)) => (location, info, None),
+        Err(error) if error.is::<TrashUnavailable>() => {
+            let (location, saved) = vault_trash_at(root, relative, source_parent, source_name)?;
+            (location, None, Some(saved))
+        }
+        Err(error) => return Err(error),
+    };
     let metadata = fs::symlink_metadata(&location)
         .context("The item reached Trash, but Undo is unavailable. Restore it from system Trash")?;
     Ok(Trashed {
-        root,
+        root: root.to_owned(),
         relative: relative.to_owned(),
         location,
         info,
         identity: (metadata.dev(), metadata.ino()),
+        vault_trash,
     })
 }
 
@@ -108,7 +139,12 @@ impl Trashed {
             location,
             info,
             identity: (meta.dev(), meta.ino()),
+            vault_trash: None,
         }
+    }
+
+    pub fn in_vault_trash(&self) -> bool {
+        self.vault_trash.is_some()
     }
 
     pub fn restore(&self) -> Result<()> {
@@ -119,12 +155,43 @@ impl Trashed {
             "The item in Trash changed; restore it through the system file manager"
         );
         let (destination, name) = parent(&self.root, &self.relative)?;
-        let source_parent = open(
-            self.location.parent().context("Missing Trash folder")?,
-            trash_parent_flags(),
-            Mode::empty(),
-        )
-        .context("Cannot open the Trash folder for Undo; the item remains in system Trash")?;
+        let source_parent = if let Some(saved) = &self.vault_trash {
+            let root = open(&self.root, directory_flags(), Mode::empty())?;
+            let metadata = std::fs::File::from(root.try_clone()?).metadata()?;
+            ensure!(
+                (metadata.dev(), metadata.ino()) == saved.root_identity,
+                "Vault root replaced; Trash retained"
+            );
+            let relative = self.location.strip_prefix(&self.root)?;
+            ensure!(
+                relative.starts_with(&saved.entry),
+                "Vault Trash entry changed"
+            );
+            open_components(
+                root,
+                relative.parent().context("Missing vault Trash parent")?,
+            )?
+        } else {
+            open(
+                self.location.parent().context("Missing Trash folder")?,
+                trash_parent_flags(),
+                Mode::empty(),
+            )
+            .context("Cannot open the Trash folder for Undo; the item remains in system Trash")?
+        };
+        let pinned = rustix::fs::statat(
+            &source_parent,
+            self.location.file_name().context("Missing Trash name")?,
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )?;
+        #[cfg(target_os = "macos")]
+        let device = pinned.st_dev as u64;
+        #[cfg(not(target_os = "macos"))]
+        let device = pinned.st_dev;
+        ensure!(
+            (device, pinned.st_ino) == self.identity,
+            "Trash source changed before Undo; retained"
+        );
         publish(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name)
             .context("Cannot Undo: the original path is occupied, unavailable, or on a different filesystem. The item remains in system Trash")?;
         if let Some(info) = &self.info {
@@ -132,6 +199,95 @@ impl Trashed {
         }
         Ok(())
     }
+}
+
+fn directory_flags() -> OFlags {
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+}
+fn open_components(mut directory: rustix::fd::OwnedFd, path: &Path) -> Result<rustix::fd::OwnedFd> {
+    for part in path.components() {
+        ensure!(matches!(part, Component::Normal(_)), "Invalid Trash path");
+        directory = openat(
+            &directory,
+            part.as_os_str(),
+            directory_flags(),
+            Mode::empty(),
+        )?;
+    }
+    Ok(directory)
+}
+fn vault_trash_at(
+    root: &Path,
+    relative: &Path,
+    source_parent: &rustix::fd::OwnedFd,
+    source_name: &std::ffi::OsStr,
+) -> Result<(PathBuf, VaultTrash)> {
+    use rustix::fs::{mkdirat, AtFlags};
+    let root_fd = open(root, directory_flags(), Mode::empty())?;
+    let metadata = std::fs::File::from(root_fd.try_clone()?).metadata()?;
+    match mkdirat(&root_fd, ".trash", Mode::RUSR | Mode::WUSR | Mode::XUSR) {
+        Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let trash = openat(&root_fd, ".trash", directory_flags(), Mode::empty())?;
+    // Each deletion owns a new entry. Nested original paths remain intact,
+    // and repeating deletion can never overwrite an older recoverable item.
+    let id = uuid::Uuid::new_v4().to_string();
+    mkdirat(&trash, id.as_str(), Mode::RUSR | Mode::WUSR | Mode::XUSR)?;
+    let entry = Path::new(".trash").join(&id);
+    let mut destination = openat(&trash, id.as_str(), directory_flags(), Mode::empty())?;
+    let mut ancestors = vec![destination.try_clone()?];
+    for part in relative
+        .parent()
+        .context("Missing relative parent")?
+        .components()
+    {
+        ensure!(matches!(part, Component::Normal(_)), "Invalid Trash target");
+        mkdirat(
+            &destination,
+            part.as_os_str(),
+            Mode::RUSR | Mode::WUSR | Mode::XUSR,
+        )?;
+        destination = openat(
+            &destination,
+            part.as_os_str(),
+            directory_flags(),
+            Mode::empty(),
+        )?;
+        ancestors.push(destination.try_clone()?);
+    }
+    // Persist the complete recovery path before removing the source entry.
+    // Flushing only the final parent does not persist intermediate listings.
+    for fd in ancestors.iter().rev().chain([&trash, &root_fd]) {
+        std::fs::File::from(fd.try_clone()?).sync_all()?;
+    }
+    let source = rustix::fs::statat(source_parent, source_name, AtFlags::SYMLINK_NOFOLLOW)?;
+    publish(
+        source_parent,
+        source_name,
+        &destination,
+        relative.file_name().context("Missing Trash target")?,
+    )?;
+    let moved = rustix::fs::statat(
+        &destination,
+        relative.file_name().unwrap(),
+        AtFlags::SYMLINK_NOFOLLOW,
+    )?;
+    ensure!(
+        source.st_dev == moved.st_dev && source.st_ino == moved.st_ino,
+        "Trash target changed; inspect vault .trash before continuing"
+    );
+    for fd in [&destination, source_parent, &trash, &root_fd] {
+        std::fs::File::from(fd.try_clone()?).sync_all()?;
+    }
+    let location = root.join(&entry).join(relative);
+    Ok((
+        location,
+        VaultTrash {
+            root_identity: (metadata.dev(), metadata.ino()),
+            entry,
+        },
+    ))
 }
 
 fn trash_parent_flags() -> OFlags {
@@ -315,8 +471,13 @@ fn system_trash(
             stamp(source, &retained) == stamp(source, &object),
             "Trash failed and the source changed; inspect it before continuing: {error}"
         );
-        eprintln!("Native Trash refused without moving source: {error}");
-        return Err(TrashUnavailable.into());
+        let domain = error.domain().to_string();
+        let code = error.code() as i64;
+        eprintln!("Native Trash refused domain={domain} code={code}: {error}");
+        if no_volume_trash(&domain, code) {
+            return Err(TrashUnavailable.into());
+        }
+        anyhow::bail!("Cannot move to system Trash; the note was kept: {error}");
     }
     let location = resulting
         .and_then(|url| url.path())
@@ -425,6 +586,7 @@ mod tests {
             location,
             info,
             identity: (meta.dev(), meta.ino()),
+            vault_trash: None,
         };
         assert!(!source.exists());
         fs::write(&source, b"new").unwrap();
@@ -451,6 +613,7 @@ mod tests {
             location,
             info,
             identity: (meta.dev(), meta.ino()),
+            vault_trash: None,
         };
         fs::remove_dir(root.join("Parent")).unwrap();
         let outside = temp.path().join("outside");
@@ -484,6 +647,7 @@ mod tests {
             location: location.clone(),
             info,
             identity: (meta.dev(), meta.ino()),
+            vault_trash: None,
         };
         // Keep the original inode alive so the replacement cannot reuse it.
         fs::rename(&location, root.join("kept")).unwrap();
@@ -514,5 +678,127 @@ mod tests {
         assert_eq!(fs::read(location).unwrap(), b"inside");
         assert_eq!(fs::read(outside.join("note.md")).unwrap(), b"outside");
         assert!(!root.join("Original/note.md").exists());
+    }
+}
+
+#[cfg(test)]
+mod vault_fallback_tests {
+    use super::*;
+    #[test]
+    fn no_trash_is_specific_not_permission_or_io() {
+        assert!(no_volume_trash("NSCocoaErrorDomain", 3328));
+        for code in [4, 13, 260, 512, 513, 640] {
+            assert!(!no_volume_trash("NSCocoaErrorDomain", code));
+        }
+        assert!(!no_volume_trash("NSPOSIXErrorDomain", 3328));
+    }
+    fn injected(root: &Path, relative: &Path, missing_trash: bool) -> Result<Trashed> {
+        let (fd, name) = parent(root, relative)?;
+        move_with_system(root, relative, &fd, &name, || {
+            if missing_trash {
+                Err(TrashUnavailable.into())
+            } else {
+                anyhow::bail!("permission denied")
+            }
+        })
+    }
+    #[test]
+    fn fallback_preserves_path_bytes_collisions_and_undo_redo_for_files_and_folders() {
+        for folder in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let relative = Path::new(if folder {
+                "Parent/Folder"
+            } else {
+                "Parent/note.md"
+            });
+            fs::create_dir_all(root.join("Parent")).unwrap();
+            let source = root.join(relative);
+            if folder {
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("note.md"), b"original\r\n").unwrap();
+            } else {
+                fs::write(&source, b"original\r\n").unwrap();
+            }
+            assert!(injected(&root, relative, false).is_err());
+            assert!(source.exists());
+            assert!(
+                !root.join(".trash").exists(),
+                "permission error created fallback"
+            );
+            let first = injected(&root, relative, true).unwrap();
+            assert!(first.in_vault_trash());
+            assert!(first.location.ends_with(relative));
+            assert!(!source.exists());
+            fs::write(&source, b"external").unwrap();
+            assert!(first.restore().is_err());
+            assert_eq!(fs::read(&source).unwrap(), b"external");
+            fs::remove_file(&source).unwrap();
+            first.restore().unwrap();
+            let second = injected(&root, relative, true).unwrap();
+            assert_ne!(
+                first.location, second.location,
+                "Redo reused old Trash entry"
+            );
+            second.restore().unwrap();
+            let note = if folder {
+                source.join("note.md")
+            } else {
+                source
+            };
+            assert_eq!(fs::read(note).unwrap(), b"original\r\n");
+        }
+    }
+    #[test]
+    fn symlinked_trash_and_replaced_root_or_entry_cannot_redirect_moves() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(root.join("note.md"), b"inside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".trash")).unwrap();
+        assert!(injected(&root, Path::new("note.md"), true).is_err());
+        assert_eq!(fs::read(root.join("note.md")).unwrap(), b"inside");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        fs::remove_file(root.join(".trash")).unwrap();
+        let saved = injected(&root, Path::new("note.md"), true).unwrap();
+        let old = temp.path().join("old-vault");
+        fs::rename(&root, &old).unwrap();
+        fs::create_dir(&root).unwrap();
+        assert!(saved.restore().is_err());
+        assert!(!root.join("note.md").exists());
+        assert_eq!(
+            fs::read(old.join(saved.location.strip_prefix(&root).unwrap())).unwrap(),
+            b"inside"
+        );
+    }
+}
+
+#[cfg(test)]
+mod vault_trash_inventory_tests {
+    use super::*;
+    #[test]
+    fn vault_trash_stays_out_of_tree_and_search_with_positive_control() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("vault");
+        fs::create_dir(&root)?;
+        fs::write(root.join("visible.md"), b"visiblecontrol")?;
+        fs::write(root.join("removed.md"), b"deletedcontrol")?;
+        let (fd, name) = parent(&root, Path::new("removed.md"))?;
+        let saved = move_with_system(&root, Path::new("removed.md"), &fd, &name, || {
+            Err(TrashUnavailable.into())
+        })?;
+        assert_eq!(fs::read(&saved.location)?, b"deletedcontrol");
+        let vault = okilum_core::Vault::scan(&root)?;
+        assert!(vault.entries.iter().any(|e| e.path == "visible.md"));
+        assert!(vault.entries.iter().all(|e| !e.path.starts_with(".trash")));
+        assert!(vault.notes.iter().all(|e| !e.path.starts_with(".trash")));
+        let search = okilum_core::search::Searcher::build(&vault, &temp.path().join("index"))?;
+        assert!(!search.search("visiblecontrol", 10)?.is_empty());
+        assert!(search.search("deletedcontrol", 10)?.is_empty());
+        saved.restore()?;
+        assert_eq!(fs::read(root.join("removed.md"))?, b"deletedcontrol");
+        Ok(())
     }
 }

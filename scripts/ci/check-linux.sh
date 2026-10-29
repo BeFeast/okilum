@@ -49,3 +49,6 @@ cargo check -p okilum-shell --no-default-features
 cargo test -p okilum-core --no-default-features --test portable_reader
 # Vendored gpui-kit tests when the patch stack changes (otherwise a skip line).
 bash scripts/ci/vendor-tests.sh
+# #1924: injected no-system-Trash fallback is shared across Unix.
+cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_fallback_tests::
+cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests::

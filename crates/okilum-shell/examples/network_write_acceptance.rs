@@ -239,42 +239,38 @@ fn main() -> anyhow::Result<()> {
             trash::stamp(&vault.join(relative), &fs::metadata(vault.join(relative))?),
         ))
     })?;
-    // This network volume has no system Trash. An explicit, typed refusal with
-    // an intact source is acceptance; permanent deletion never is (#1924).
-    let trashed = stages.run("trash-or-safe-refusal", 30, || {
-        match trash::move_to_trash(&vault, relative) {
-            Ok(value) => Ok(Some(value)),
-            Err(error) => {
-                #[cfg(target_os = "macos")]
-                if error.is::<trash::TrashUnavailable>() {
-                    stages.line("EXPECTED Trash unavailable; source must remain unchanged")?;
-                    return Ok(None);
-                }
-                Err(error)
-            }
-        }
+    let trashed = stages.run("trash-with-vault-fallback", 30, || {
+        trash::move_to_trash(&vault, relative)
     })?;
-    if let Some(trashed) = trashed {
-        stages.run("verify-trash", 30, || {
-            ensure!(!vault.join(relative).exists(), "trash retained source");
-            Ok(())
-        })?;
-        stages.run("undo", 30, || trashed.restore())?;
+    stages.line(if trashed.in_vault_trash() {
+        "VAULT_TRASH fallback selected"
     } else {
-        stages.line("Undo not applicable: no deletion occurred")?;
-    }
-    stages.run("verify-trash-undo-or-refusal", 30, || {
+        "SYSTEM_TRASH selected"
+    })?;
+    #[cfg(target_os = "macos")]
+    ensure!(
+        trashed.in_vault_trash(),
+        "NFS QA expected vault Trash fallback"
+    );
+    stages.run("verify-trash", 30, || {
+        ensure!(!vault.join(relative).exists(), "trash retained source");
+        Ok(())
+    })?;
+    stages.run("undo", 30, || trashed.restore())?;
+    stages.run("verify-undo", 30, || {
         ensure!(
             fs::read(vault.join(relative))? == before_trash.0,
-            "Trash/Undo/refusal changed source bytes"
+            "Undo changed source bytes"
         );
         ensure!(
             trash::stamp(&vault.join(relative), &fs::metadata(vault.join(relative))?)
                 == before_trash.1,
-            "Trash/Undo/refusal changed source identity or revision"
+            "Undo changed source identity or revision"
         );
         Ok(())
     })?;
+    let redone = stages.run("redo-trash", 30, || trash::move_to_trash(&vault, relative))?;
+    stages.run("redo-undo", 30, || redone.restore())?;
     fn no_tails(root: &Path) -> anyhow::Result<()> {
         for entry in fs::read_dir(root)? {
             let entry = entry?;
