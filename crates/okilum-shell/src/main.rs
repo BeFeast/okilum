@@ -1622,6 +1622,7 @@ struct Reader {
     /// the find bar can re-mark it on every keystroke and restore it on Esc.
     note_source: String,
     note_canonical_source: Option<Arc<str>>,
+    note_encoding_damaged: bool,
     find_input: Entity<InputState>,
     find_open: bool,
     /// Top-level headings of the open document (docs/design/reader.md §Right
@@ -1911,6 +1912,7 @@ impl Reader {
             focus_handle: cx.focus_handle(),
             note_source: String::new(),
             note_canonical_source: None,
+            note_encoding_damaged: false,
             find_input,
             find_open: false,
             outline: Vec::new(),
@@ -2225,6 +2227,7 @@ impl Reader {
         self.clear_hover(cx);
         let prepared_links::PreparedDocument {
             canonical_source,
+            encoding_damaged,
             source,
             original: original_body,
             identities,
@@ -2360,6 +2363,7 @@ impl Reader {
         self.typed_navigation = Default::default();
         self.note_source = source;
         self.note_canonical_source = canonical_source;
+        self.note_encoding_damaged = encoding_damaged;
         if request.history_index.is_none() {
             self.quick_open.remember(rel);
         }

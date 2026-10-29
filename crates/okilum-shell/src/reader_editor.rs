@@ -407,6 +407,11 @@ impl Reader {
         if self.move_applying {
             return;
         }
+        if self.note_encoding_damaged && self.file_preview.is_none() {
+            self.link_notice = Some(reader_loading::ENCODING_NOTICE.into());
+            cx.notify();
+            return;
+        }
         if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
             self.toggle_timeline_source(window, cx);
             return;

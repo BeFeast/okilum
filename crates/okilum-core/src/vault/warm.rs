@@ -243,7 +243,6 @@ pub fn remember_primary(base: &Path, root: &Path, path: &str) -> Result<()> {
         bytes.len() as u64 <= MAX_BYTES,
         "Primary exceeds cache size limit"
     );
-    let raw = String::from_utf8(bytes)?;
     ensure!(
         SourceRevision::read(&file_path)? == before,
         "Primary changed during cache read"
@@ -255,7 +254,7 @@ pub fn remember_primary(base: &Path, root: &Path, path: &str) -> Result<()> {
             path.to_owned(),
             Source {
                 stamp: Some(before),
-                bytes: STANDARD.encode(raw),
+                bytes: STANDARD.encode(bytes),
             },
         ),
     };
@@ -290,7 +289,7 @@ fn latest_primary(base: &Path, root: &Path) -> Option<(String, Source)> {
     if snapshot.schema != SCHEMA || snapshot.root != root || !relative(&snapshot.primary.0) {
         return None;
     }
-    String::from_utf8(STANDARD.decode(&snapshot.primary.1.bytes).ok()?).ok()?;
+    STANDARD.decode(&snapshot.primary.1.bytes).ok()?;
     Some(snapshot.primary)
 }
 
@@ -335,7 +334,11 @@ fn cached_vault(
         .filter(|item| !super::is_cloud_placeholder_diagnostic(&item.operation, &item.error))
         .map(|item| UnreadableEntry {
             path: item.path.clone(),
-            operation: "previous scan",
+            operation: if item.operation == super::DECODE_NOTE {
+                super::DECODE_NOTE
+            } else {
+                "previous scan"
+            },
             error: format!("{}: {}", item.operation, item.error),
         })
         .collect();
@@ -472,7 +475,7 @@ impl StartupSnapshot {
                         .any(|e| e.kind == EntryKind::Markdown && &e.path == path),
                 "Invalid Reader startup primary identity"
             );
-            String::from_utf8(STANDARD.decode(&source.bytes)?)?;
+            STANDARD.decode(&source.bytes)?;
         }
         snapshot.latest = latest_primary(base, &snapshot.root);
         if let Some(delta) = &delta {
@@ -482,13 +485,30 @@ impl StartupSnapshot {
     }
 
     pub fn vault(&self) -> Vault {
-        cached_vault(
+        let mut vault = cached_vault(
             &self.root,
             &self.entries,
             &self.links,
             &self.aliases,
             &self.unreadable,
-        )
+        );
+        if let Some((path, source)) = self.latest.as_ref().or(self.primary.as_ref()) {
+            let absolute = self.root.join(path);
+            vault
+                .unreadable
+                .retain(|item| item.path != absolute || item.operation != super::DECODE_NOTE);
+            if STANDARD
+                .decode(&source.bytes)
+                .is_ok_and(|bytes| std::str::from_utf8(&bytes).is_err())
+            {
+                vault.unreadable.push(UnreadableEntry {
+                    path: absolute,
+                    operation: super::DECODE_NOTE,
+                    error: "Invalid UTF-8; displayed with replacement characters".into(),
+                });
+            }
+        }
+        vault
     }
 
     pub fn source(&self, path: &str) -> Option<String> {
@@ -496,7 +516,9 @@ impl StartupSnapshot {
             .as_ref()
             .filter(|(p, _)| p == path)
             .or_else(|| self.primary.as_ref().filter(|(p, _)| p == path))
-            .and_then(|(_, source)| String::from_utf8(STANDARD.decode(&source.bytes).ok()?).ok())
+            .and_then(|(_, source)| {
+                Some(String::from_utf8_lossy(&STANDARD.decode(&source.bytes).ok()?).into_owned())
+            })
             .or_else(|| self.previous.as_ref()?.source(path))
     }
 
@@ -735,7 +757,10 @@ impl Snapshot {
 
     /// Decode only the selected primary note for the first usable Reader frame.
     pub fn source(&self, path: &str) -> Option<String> {
-        String::from_utf8(STANDARD.decode(&self.sources.get(path)?.bytes).ok()?).ok()
+        Some(
+            String::from_utf8_lossy(&STANDARD.decode(&self.sources.get(path)?.bytes).ok()?)
+                .into_owned(),
+        )
     }
 
     pub fn save(&self, base: &Path) -> Result<()> {
@@ -771,7 +796,7 @@ pub fn reconcile(
     checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
 ) -> Result<(Vault, Snapshot, ReconcileStats)> {
     reconcile_with_reader(root, previous, force_read, checkpoint, &mut |path| {
-        super::read_source(path).map(String::into_bytes)
+        super::read_source_bytes(path)
     })
 }
 
@@ -974,6 +999,18 @@ fn check_source(
     let old = previous.and_then(|p| p.sources.get(relative));
     if !stats.reuse.needs_read(before.as_ref(), old, force_read) {
         result.source = Some(old.unwrap().clone());
+        result.unreadable = previous
+            .and_then(|snapshot| {
+                snapshot
+                    .unreadable
+                    .iter()
+                    .find(|item| item.path == path && item.operation == super::DECODE_NOTE)
+            })
+            .map(|item| UnreadableEntry {
+                path: path.clone(),
+                operation: super::DECODE_NOTE,
+                error: item.error.clone(),
+            });
         stats.reused += 1;
         return result;
     }
@@ -982,11 +1019,10 @@ fn check_source(
         Ok(bytes) => {
             if let Err(error) = std::str::from_utf8(&bytes) {
                 result.unreadable = Some(UnreadableEntry {
-                    path,
+                    path: path.clone(),
                     operation: "decode note",
                     error: error.to_string(),
                 });
-                return result;
             }
             let after = SourceRevision::read(&path).ok();
             let stamp = (before == after).then_some(after).flatten();
@@ -1091,7 +1127,7 @@ fn finish_reconcile(
             let raw = sources
                 .get(path)
                 .and_then(|s| STANDARD.decode(&s.bytes).ok())
-                .and_then(|bytes| String::from_utf8(bytes).ok());
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
             if vault.update_aliases(path, raw.as_deref()) {
                 names.extend(before);
                 names.extend(vault.aliases.get(path).into_iter().flatten().cloned());
@@ -1234,6 +1270,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_utf8_is_displayed_and_indexed_without_rewriting_its_raw_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut bytes = b"# Synthetic damaged note\n\nencodingcanary Before ".to_vec();
+        bytes.push(0xff);
+        bytes.extend_from_slice(b" After\n");
+        let path = root.join("Damaged.md");
+        std::fs::write(&path, &bytes).unwrap();
+        let (vault, snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        let display = snapshot.source("Damaged.md").unwrap();
+        assert!(display.contains('\u{fffd}'));
+        assert_eq!(snapshot.sources().unwrap()["Damaged.md"], bytes);
+        assert!(vault.note_encoding_damaged("Damaged.md"));
+        let document = crate::render::reader_document(&vault, "Damaged.md").unwrap();
+        assert!(document.encoding_damaged);
+        assert!(document.rendered.contains("encodingcanary"));
+        assert!(document.rendered.contains('\u{fffd}'));
+        let searcher = crate::Searcher::build(&vault, &temp.path().join("index")).unwrap();
+        assert_eq!(searcher.search("encodingcanary", 10).unwrap().len(), 1);
+        let cache = temp.path().join("cache");
+        save_provisional(&snapshot, &vault, &cache, Some("Damaged.md")).unwrap();
+        let saved = Snapshot::load(&cache, &root).unwrap();
+        assert_eq!(saved.source("Damaged.md").unwrap(), display);
+        assert_eq!(saved.sources().unwrap()["Damaged.md"], bytes);
+        remember_primary(&cache, &root, "Damaged.md").unwrap();
+        let startup = StartupSnapshot::load(&cache, &root).unwrap();
+        assert!(startup.vault().note_encoding_damaged("Damaged.md"));
+        assert_eq!(startup.source("Damaged.md").unwrap(), display);
+        assert!(
+            super::super::read_source(&path).is_err(),
+            "mutation/rewrite reads remain strict"
+        );
+        assert!(crate::file_editor::FileEditor::open(&path, &temp.path().join("drafts")).is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "no replacement characters reach canonical bytes"
+        );
+        // Repair to a valid literal replacement character: it must become editable.
+        std::fs::write(&path, display.as_bytes()).unwrap();
+        let (_, repaired, _) = reconcile(&root, Some(&saved), true, &mut |_, _| Ok(())).unwrap();
+        assert!(!repaired.vault().note_encoding_damaged("Damaged.md"));
+        assert!(
+            !crate::render::reader_document(&repaired.vault(), "Damaged.md")
+                .unwrap()
+                .encoding_damaged
+        );
+        assert!(
+            crate::file_editor::FileEditor::open(&path, &temp.path().join("valid-drafts")).is_ok()
+        );
+    }
+
+    #[test]
     fn cloud_placeholders_stay_pending_in_cache_then_materialize_on_reconcile() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
@@ -1357,7 +1447,7 @@ mod tests {
         );
         assert_eq!(
             Vault::discover(temp.path(), &mut || Ok(())).unwrap(),
-            super::super::Discovery::Unreadable
+            super::super::Discovery::Found("bad.md".into())
         );
     }
 
@@ -1606,7 +1696,10 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink("missing", root.join("notes/dangling.md")).unwrap();
         let absolute = root.canonicalize().unwrap().join("root.md");
-        let text = format!("[Local](local.md)\n[Root](root.md)\n[Suffix](suffix.md)\n[Absolute](<{}>)\n[Root slash](/root.md)\n[Blocked](blocked.md)\n[Strict](./root.md)\n[Escape](../../root.md)\n[Dangling](dangling.md)\n", absolute.display());
+        let text = format!(
+            "[Local](local.md)\n[Root](root.md)\n[Suffix](suffix.md)\n[Absolute](<{}>)\n[Root slash](/root.md)\n[Blocked](blocked.md)\n[Strict](./root.md)\n[Escape](../../root.md)\n[Dangling](dangling.md)\n",
+            absolute.display()
+        );
         std::fs::write(root.join("notes/start.md"), text).unwrap();
         let (vault, _, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
         assert_eq!(vault.backlinks("notes/local.md").len(), 1);
@@ -1774,7 +1867,11 @@ mod tests {
                 } else {
                     serial = Some((vault.clone(), snapshot.clone()));
                 }
-                eprintln!("SOURCE_LATENCY_PROFILE sample={sample} parallel={parallel} notes=5001 read={} total_ms={ms:.2} phases={} actual_calls={calls:?}; open/read delay {read_ms}ms, stat delay {metadata_us}us; same host/session, search/persist/native SMB excluded", stats.read, serde_json::to_string(&phases).unwrap());
+                eprintln!(
+                    "SOURCE_LATENCY_PROFILE sample={sample} parallel={parallel} notes=5001 read={} total_ms={ms:.2} phases={} actual_calls={calls:?}; open/read delay {read_ms}ms, stat delay {metadata_us}us; same host/session, search/persist/native SMB excluded",
+                    stats.read,
+                    serde_json::to_string(&phases).unwrap()
+                );
                 if parallel {
                     set(c"parallel_sources");
                     let before = unsafe { count(0) };
@@ -1792,7 +1889,9 @@ mod tests {
                     set(c"setup");
                     assert_eq!((warm_stats.read, warm_stats.reused), (0, 5001));
                     assert!(warm_stats.graph_reused);
-                    eprintln!("SOURCE_LATENCY_WARM sample={sample} read=0 reused=5001 graph_reused=true reconcile_ms={warm_ms:.2}");
+                    eprintln!(
+                        "SOURCE_LATENCY_WARM sample={sample} read=0 reused=5001 graph_reused=true reconcile_ms={warm_ms:.2}"
+                    );
                 }
             }
         }
@@ -1869,7 +1968,9 @@ mod tests {
                 "absolute and suffix references preserved"
             );
             assert_eq!(stats.read, 5001);
-            eprintln!("CLOUD_GRAPH_PROFILE sample={sample} notes=5001 links=10000 preparing_backlinks_ms={ms:.2}; actual vault filesystem delay, native Mac NOT_RUN");
+            eprintln!(
+                "CLOUD_GRAPH_PROFILE sample={sample} notes=5001 links=10000 preparing_backlinks_ms={ms:.2}; actual vault filesystem delay, native Mac NOT_RUN"
+            );
         }
     }
 
@@ -1930,7 +2031,10 @@ mod tests {
             std::fs::read(control.path()).unwrap(),
             std::fs::read(buffered.path()).unwrap()
         );
-        eprintln!("CACHE_WRITE_PROFILE bytes={} unbuffered_ms={unbuffered_ms:.2} buffered_ms={buffered_ms:.2}; same JSON bytes, same host/session", control.as_file().metadata().unwrap().len());
+        eprintln!(
+            "CACHE_WRITE_PROFILE bytes={} unbuffered_ms={unbuffered_ms:.2} buffered_ms={buffered_ms:.2}; same JSON bytes, same host/session",
+            control.as_file().metadata().unwrap().len()
+        );
         phase(c"positive_control");
         let delay: u64 = std::env::var("OKILUM_SLOW_FS_MS").unwrap().parse().unwrap();
         let start = std::time::Instant::now();
@@ -1970,7 +2074,9 @@ mod tests {
                 "every authored link was processed"
             );
             assert_eq!(document.original_body, primary);
-            eprintln!("CLOUD_PRIMARY_PROFILE sample={sample} notes=5001 links=5000 delay_ms={delay} primary_source_and_render_ms={elapsed_ms:.2}; cached source, injected actual filesystem calls, native Mac NOT_RUN");
+            eprintln!(
+                "CLOUD_PRIMARY_PROFILE sample={sample} notes=5001 links=5000 delay_ms={delay} primary_source_and_render_ms={elapsed_ms:.2}; cached source, injected actual filesystem calls, native Mac NOT_RUN"
+            );
         }
     }
 
@@ -2417,7 +2523,10 @@ mod tests {
                 1,
                 "reused graph positive control"
             );
-            eprintln!("IMPORTED_MTIME_PROFILE sample={sample} notes=5092 read={} reused={} graph_built={graph} reconcile_ms={ms:.2}; source opens/reads {read_ms}ms, metadata {metadata_us}us, actual filesystem injection; cache load/persist and search excluded, native Mac NOT_RUN", stats.read, stats.reused);
+            eprintln!(
+                "IMPORTED_MTIME_PROFILE sample={sample} notes=5092 read={} reused={} graph_built={graph} reconcile_ms={ms:.2}; source opens/reads {read_ms}ms, metadata {metadata_us}us, actual filesystem injection; cache load/persist and search excluded, native Mac NOT_RUN",
+                stats.read, stats.reused
+            );
         }
         // A second process cannot reuse any parent memory. Each launch reloads
         // the persisted source bank and publishes its next cache for the next one.
@@ -2487,7 +2596,10 @@ mod tests {
         let start = std::time::Instant::now();
         save_provisional(&snapshot, &vault, &cache, Some("Note 0.md")).unwrap();
         let persist_ms = start.elapsed().as_secs_f64() * 1000.;
-        eprintln!("IMPORTED_MTIME_RELAUNCH launch={launch} read={} reused={} graph_reused={} cache_load_ms={cache_load_ms:.2} reconcile_ms={reconcile_ms:.2} persist_ms={persist_ms:.2}; fresh process, actual syscall delay inherited, no canonical source writes, search/native GUI excluded", stats.read, stats.reused, stats.graph_reused);
+        eprintln!(
+            "IMPORTED_MTIME_RELAUNCH launch={launch} read={} reused={} graph_reused={} cache_load_ms={cache_load_ms:.2} reconcile_ms={reconcile_ms:.2} persist_ms={persist_ms:.2}; fresh process, actual syscall delay inherited, no canonical source writes, search/native GUI excluded",
+            stats.read, stats.reused, stats.graph_reused
+        );
     }
 
     #[test]
@@ -2530,7 +2642,10 @@ mod tests {
         }
         cold_times.sort();
         warm_times.sort();
-        println!("5000 notes, inventory+graph (search excluded), same-process OS-warm files: cold {cold_times:?}ms p50={}ms; snapshot-load+reconcile warm {warm_times:?}ms p50={}ms", cold_times[2], warm_times[2]);
+        println!(
+            "5000 notes, inventory+graph (search excluded), same-process OS-warm files: cold {cold_times:?}ms p50={}ms; snapshot-load+reconcile warm {warm_times:?}ms p50={}ms",
+            cold_times[2], warm_times[2]
+        );
     }
     #[test]
     fn warm_small_changes_match_full_graph_including_topology_and_unreadable_sources() {

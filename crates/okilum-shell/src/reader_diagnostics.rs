@@ -326,7 +326,9 @@ struct DiagnosticDisclosure {
 }
 
 fn item_summary(item: &okilum_core::vault::UnreadableEntry) -> Option<&'static str> {
-    if okilum_core::vault::is_cloud_placeholder_diagnostic(item.operation, &item.error) {
+    if item.operation == okilum_core::vault::DECODE_NOTE
+        || okilum_core::vault::is_cloud_placeholder_diagnostic(item.operation, &item.error)
+    {
         return None;
     }
     Some(if item.operation.contains("search") {
@@ -466,6 +468,7 @@ impl Reader {
                         .child(
                             div()
                                 .id("unreadable-items")
+                                .debug_selector(|| "reader-attention-items".into())
                                 .max_h(px(280.))
                                 .overflow_y_scroll()
                                 .child(v_flex().gap_3().children(rows.iter().map(

@@ -1,4 +1,5 @@
 //! Progressive Reader preparation. Workers own data, never GPUI entities.
+pub(super) const ENCODING_NOTICE: &str = "Some characters could not be read. This note is read-only until its text encoding is repaired.";
 use super::*;
 use anyhow::{bail, Context as _, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -158,6 +159,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
         document: Some((
             String::new(),
             prepared_links::PreparedDocument {
+                encoding_damaged: false,
                 canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
@@ -198,6 +200,7 @@ fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -
         document: Some((
             String::new(),
             prepared_links::PreparedDocument {
+                encoding_damaged: false,
                 canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
@@ -279,22 +282,10 @@ fn prepare_first_existing_document(
         vault.root = intent.root.clone();
         vault.single_file = true;
         let document = if opts.use_html {
-            prepared_links::PreparedDocument {
-                source: okilum_core::render_html(&vault, &rel, "InspiredGitHub")?,
-                canonical_source: None,
-                original: None,
-                identities: Vec::new(),
-                frontmatter: None,
-            }
+            prepared_links::PreparedDocument::html(&vault, &rel, None)?
         } else {
             let document = okilum_core::render::reader_document(&vault, &rel)?;
-            prepared_links::PreparedDocument {
-                canonical_source: Some(document.canonical_source),
-                source: document.rendered,
-                original: Some(document.original_body),
-                identities: document.links,
-                frontmatter: document.frontmatter,
-            }
+            document.into()
         };
         return Ok(Event::First {
             intent,
@@ -450,8 +441,24 @@ fn prepare_first_existing_document(
         .map(|rel| {
             cancel.check()?;
             let saved = snapshot.as_ref().and_then(|snapshot| snapshot.source(&rel));
-            let document = if rel.is_empty() {
+            let display = if rel.is_empty() {
+                None
+            } else {
+                Some(match saved {
+                    Some(text) => okilum_core::vault::DisplayNote {
+                        text,
+                        encoding_damaged: vault.note_encoding_damaged(&rel),
+                    },
+                    None => vault.read_note_display(&rel)?,
+                })
+            };
+            let damaged = display
+                .as_ref()
+                .is_some_and(|source| source.encoding_damaged);
+            let saved = display.map(|source| source.text);
+            let mut document = if rel.is_empty() {
                 prepared_links::PreparedDocument {
+                    encoding_damaged: false,
                     source: String::new(),
                     canonical_source: None,
                     original: Some(String::new()),
@@ -459,21 +466,7 @@ fn prepare_first_existing_document(
                     frontmatter: None,
                 }
             } else if opts.use_html {
-                prepared_links::PreparedDocument {
-                    source: match &saved {
-                        Some(raw) => okilum_core::render::render_html_from_source(
-                            &vault,
-                            &rel,
-                            raw,
-                            "InspiredGitHub",
-                        )?,
-                        None => okilum_core::render_html(&vault, &rel, "InspiredGitHub")?,
-                    },
-                    canonical_source: None,
-                    original: None,
-                    identities: Vec::new(),
-                    frontmatter: None,
-                }
+                prepared_links::PreparedDocument::html(&vault, &rel, saved.clone())?
             } else {
                 let document = match &saved {
                     Some(raw) => {
@@ -481,14 +474,12 @@ fn prepare_first_existing_document(
                     }
                     None => okilum_core::render::reader_document(&vault, &rel)?,
                 };
-                prepared_links::PreparedDocument {
-                    canonical_source: Some(document.canonical_source),
-                    source: document.rendered,
-                    original: Some(document.original_body),
-                    identities: document.links,
-                    frontmatter: document.frontmatter,
-                }
+                document.into()
             };
+            document.encoding_damaged = damaged;
+            if damaged {
+                document.canonical_source = None;
+            }
             cancel.check()?;
             Ok::<_, anyhow::Error>((rel, document))
         })
@@ -603,7 +594,9 @@ fn prepare_rest_with_snapshot(
         &mut |path| std::fs::read(path),
         |root| {
             if okilum_core::watch::is_network_root(root) {
-                bail!("Auto-refresh is limited on this network drive. Use Rescan to check changes made by other clients.");
+                bail!(
+                    "Auto-refresh is limited on this network drive. Use Rescan to check changes made by other clients."
+                );
             }
             VaultWatcher::new(root).map_err(anyhow::Error::new)
         },
@@ -891,7 +884,7 @@ fn prepare_rest_with_io_and_snapshot(
             documents.push(okilum_core::search::SearchDocument {
                 path: note.path.clone(),
                 title: note.title.clone(),
-                // Cached sources are validated UTF-8; avoid copying each one.
+                // Retain valid UTF-8 without a copy; damaged bytes are display-only.
                 text: String::from_utf8(source)
                     .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()),
             });
@@ -1383,7 +1376,7 @@ fn existing_cache_ancestor(
                         "Read search cache ancestor metadata {}",
                         okilum_core::vault::display_path(candidate)
                     )
-                })
+                });
             }
         }
     }
@@ -1717,7 +1710,10 @@ impl Reader {
         // an image the incomplete inventory did not know yet (#1126).
         let pending_embed = okilum_core::render::has_pending_embeds(&self.note_source)
             || okilum_core::render::has_unavailable_images(&self.note_source);
-        if !pending_embed && self.note_canonical_source.as_deref() == Some(raw.as_ref()) {
+        if !pending_embed
+            && self.note_canonical_source.as_deref() == Some(raw.as_ref())
+            && self.note_encoding_damaged == self.vault.note_encoding_damaged(&self.current_rel)
+        {
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1772,36 +1768,14 @@ impl Reader {
                 .background_executor()
                 .spawn(async move {
                     if html {
-                        let rendered = if let Some(raw) = raw {
-                            okilum_core::render::render_html_from_source(
-                                &vault,
-                                &target,
-                                &raw,
-                                "InspiredGitHub",
-                            )
-                        } else {
-                            okilum_core::render_html(&vault, &target, "InspiredGitHub")
-                        };
-                        rendered.map(|source| prepared_links::PreparedDocument {
-                            source,
-                            canonical_source: None,
-                            original: None,
-                            identities: Vec::new(),
-                            frontmatter: None,
-                        })
+                        prepared_links::PreparedDocument::html(&vault, &target, raw)
                     } else {
                         let doc = if let Some(raw) = raw {
                             okilum_core::render::reader_document_from_source(&vault, &target, &raw)
                         } else {
                             okilum_core::render::reader_document(&vault, &target)?
                         };
-                        Ok(prepared_links::PreparedDocument {
-                            canonical_source: Some(doc.canonical_source),
-                            source: doc.rendered,
-                            original: Some(doc.original_body),
-                            identities: doc.links,
-                            frontmatter: doc.frontmatter,
-                        })
+                        Ok(doc.into())
                     }
                 })
                 .await;
@@ -1816,6 +1790,7 @@ impl Reader {
                 }
                 if result.as_ref().is_ok_and(|document| {
                     document.canonical_source == this.note_canonical_source
+                        && document.encoding_damaged == this.note_encoding_damaged
                         && document.source == this.note_source
                         && document.original == this.link_original_source
                 }) {
@@ -2812,6 +2787,101 @@ impl Reader {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn damaged_utf8_opens_read_only_without_attention_and_stays_searchable(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("Damaged.md");
+        let mut bytes = b"# Synthetic note\n\nencodingcanary Before ".to_vec();
+        bytes.push(0xff);
+        bytes.extend_from_slice(b" After\n");
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(root.join("Valid.md"), "# Valid\n\nLiteral \u{fffd}\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Damaged.md".into()),
+                        session_directory: Some(fixture.path().join("state")),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(r.document_ready());
+            assert_eq!(r.current_rel, "Damaged.md");
+            assert!(r.note_source.contains("encodingcanary"));
+            assert!(r.note_source.contains('\u{fffd}'));
+            assert!(r.note_encoding_damaged);
+            assert!(r.note_canonical_source.is_none());
+            assert_eq!(
+                r.searcher
+                    .as_ref()
+                    .unwrap()
+                    .search("encodingcanary", 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            r.toggle_source(window, cx);
+            r.open_live_preview(window, cx);
+            assert!(
+                r.editing.is_none(),
+                "neither editing entry accepts lossy text"
+            );
+            assert!(r.save_source(cx)); // Saving without an editor is a no-op.
+            r.show_unreadable_items(window, cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("note-encoding-notice").is_some());
+        assert!(visual.debug_bounds("reader-attention-items").is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        // A real, valid replacement character must not make another note read-only.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Valid.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.current_rel, "Valid.md");
+            assert!(!r.note_encoding_damaged);
+            r.toggle_source(window, cx);
+            assert!(r.editing.is_some());
+            assert!(r.save_source(cx));
+            r.toggle_source(window, cx);
+            // Positive control: ordinary I/O errors still open the attention dialog.
+            r.vault
+                .unreadable
+                .push(okilum_core::vault::UnreadableEntry {
+                    path: root.join("Unavailable.md"),
+                    operation: "read note",
+                    error: "Permission denied (synthetic)".into(),
+                });
+            r.show_unreadable_items(window, cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("note-encoding-notice").is_none());
+        assert!(visual.debug_bounds("reader-attention-items").is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
     #[test]
     fn delimited_quick_open_has_no_markdown_projection_or_recursive_index() {
         let fixture = tempfile::tempdir().unwrap();
@@ -3288,7 +3358,9 @@ mod tests {
                     "no predecessor-root results"
                 );
             });
-            eprintln!("{count}-note warm switch to vault {index}: first_usable={first:?}; background held; native timing NOT_RUN");
+            eprintln!(
+                "{count}-note warm switch to vault {index}: first_usable={first:?}; background held; native timing NOT_RUN"
+            );
             release.try_send(()).unwrap();
             visual.run_until_parked();
         }
@@ -5455,7 +5527,9 @@ mod tests {
                 });
                 visual.update(|window, _| window.remove_window());
                 visual.run_until_parked();
-                eprintln!("WARM_FRAME_PROFILE sample={sample} notes={total_notes} links={links} filesystem_delay={filesystem_delay} paragraphs={paragraphs} unreadable={unreadable} first_document_ms={first_document_ms:.2} first_tree_frame_ms={tree_ms:.2} tree_before_reconcile={early_tree}; GPUI test renderer, OS-warm fixture, controlled {delay_ms}ms preferences hold, native timing NOT_RUN");
+                eprintln!(
+                    "WARM_FRAME_PROFILE sample={sample} notes={total_notes} links={links} filesystem_delay={filesystem_delay} paragraphs={paragraphs} unreadable={unreadable} first_document_ms={first_document_ms:.2} first_tree_frame_ms={tree_ms:.2} tree_before_reconcile={early_tree}; GPUI test renderer, OS-warm fixture, controlled {delay_ms}ms preferences hold, native timing NOT_RUN"
+                );
             }
         }
         std::fs::remove_dir_all(fixture).unwrap();
@@ -5758,7 +5832,9 @@ mod tests {
             assert_eq!(v.find_input.read(cx).value().as_ref(), "Uncached");
         });
         assert_eq!(std::fs::read_to_string(root.join(deep)).unwrap(), source);
-        eprintln!("338 uncached deep >4KiB selected after publication, 5002 synthetic notes: readable={readable:?}; inventory held; no native timing claim");
+        eprintln!(
+            "338 uncached deep >4KiB selected after publication, 5002 synthetic notes: readable={readable:?}; inventory held; no native timing claim"
+        );
     }
 
     #[gpui::test]
@@ -5843,7 +5919,9 @@ mod tests {
             assert_eq!(v.current_rel, "first.md");
             assert_eq!(v.loading.as_ref().unwrap().phase, "Preparation cancelled");
         });
-        eprintln!("progressive GPUI harness, 5001 synthetic notes: first_frame={first_frame:?}, first_document={first:?}, input_scroll={input:?}, cancel_ack={cancelled:?}, worker_teardown={teardown:?}; all input before >3s inventory release; whole_ready=cancelled; native timing NOT_RUN");
+        eprintln!(
+            "progressive GPUI harness, 5001 synthetic notes: first_frame={first_frame:?}, first_document={first:?}, input_scroll={input:?}, cancel_ack={cancelled:?}, worker_teardown={teardown:?}; all input before >3s inventory release; whole_ready=cancelled; native timing NOT_RUN"
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("first.md")).unwrap(),
             source
@@ -6364,7 +6442,10 @@ mod tests {
                 (0..4).map(|i| unsafe { count(i) }).collect::<Vec<_>>()
             );
         }
-        eprintln!("UNCHANGED_RELAUNCH launch={launch} first_ms={first_ms:.2} ready_ms={ready_ms:.2} stats={} replay={replay}",serde_json::to_string(&stats).unwrap());
+        eprintln!(
+            "UNCHANGED_RELAUNCH launch={launch} first_ms={first_ms:.2} ready_ms={ready_ms:.2} stats={} replay={replay}",
+            serde_json::to_string(&stats).unwrap()
+        );
     }
 
     /// Generated vault for the warm startup tail (#652): 5000 notes in 50
@@ -6712,7 +6793,9 @@ mod tests {
             before,
             "all source names/bytes unchanged by cold and warm preparation"
         );
-        eprintln!("5001 nested synthetic notes: cold_whole_ready={cold_ready:?}, warm_whole_ready={warm_ready:?}; same host/session, external cache");
+        eprintln!(
+            "5001 nested synthetic notes: cold_whole_ready={cold_ready:?}, warm_whole_ready={warm_ready:?}; same host/session, external cache"
+        );
         assert!(matches!(warm, Event::Ready { .. }));
         assert_eq!(
             std::fs::read_dir(cache.join("generations"))
@@ -7438,8 +7521,10 @@ mod quick_view_tests {
                 if matches {
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline,
-                    "external folder changes did not reach the quick sidebar: present={present:?}, absent={absent:?}");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "external folder changes did not reach the quick sidebar: present={present:?}, absent={absent:?}"
+                );
                 std::thread::sleep(Duration::from_millis(25));
             }
         };
