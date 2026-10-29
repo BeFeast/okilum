@@ -60,6 +60,7 @@ pub struct Session {
     project: Document,
     pub value: Value,
     pub stage_notes: Vec<String>,
+    inactive_legacy: bool,
 }
 
 pub fn issue_number(text: &str, repository: &str) -> Result<u64> {
@@ -175,15 +176,21 @@ impl Session {
                     "stage_note":if stage_notes.len()==1 { stage_notes[0].as_str() } else { "" }, "issues":[]})
             }
         };
+        let inactive_legacy = document.as_ref().is_some_and(|d| d.format == Format::Toml)
+            && std::fs::symlink_metadata(area.join("ops/board.yaml")).is_ok();
         Ok(Self {
             area: area.into(),
             document,
             project,
             value,
             stage_notes,
+            inactive_legacy,
         })
     }
     pub fn format_label(&self) -> &'static str {
+        if self.inactive_legacy {
+            return "Editing board.toml · TOML; board.yaml is inactive";
+        }
         match self.document.as_ref().map(|d| d.format) {
             Some(Format::Yaml) => "Editing board.yaml · JSON",
             Some(Format::Toml) => "Editing board.toml · TOML",

@@ -105,7 +105,10 @@ fn yaml_edits_stay_two_space_json_and_both_files_edit_only_reader_selection() {
     )
     .unwrap();
     let preferred = a.session();
-    assert_eq!(preferred.format_label(), "Editing board.toml · TOML");
+    assert_eq!(
+        preferred.format_label(),
+        "Editing board.toml · TOML; board.yaml is inactive"
+    );
     let updated = preferred.save(&Change::Add(card("2"))).unwrap();
     assert_eq!(updated.cards()[0]["number"], 2);
     assert_eq!(

@@ -564,6 +564,7 @@ impl Board {
             }
         }
         v_flex()
+            .id("board-management")
             .debug_selector(|| "board-management".into())
             .size_full()
             .overflow_y_scroll()
@@ -658,7 +659,7 @@ mod tests {
             assert!(visual.debug_bounds("board-empty").is_some());
             assert!(visual.debug_bounds("board-create").is_some());
         }
-        let click = |visual: &mut VisualTestContext, selector: &str| {
+        let click = |visual: &mut VisualTestContext, selector: &'static str| {
             let bounds = visual
                 .debug_bounds(selector)
                 .unwrap_or_else(|| panic!("Missing {selector}"));
