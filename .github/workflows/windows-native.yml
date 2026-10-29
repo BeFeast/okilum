@@ -8,7 +8,24 @@ on:
 permissions: {contents: read}
 concurrency: {group: 'windows-native-${{ github.ref }}', cancel-in-progress: true}
 jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate the standard Windows icon
+        run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg "$RUNNER_TEMP/okilum.ico"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-icon
+          path: ${{ runner.temp }}/okilum.ico
+          retention-days: 1
+          if-no-files-found: error
   native:
+    needs: icon
     if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && inputs.package != 'okilum-http-health'
     runs-on: windows-2022
     timeout-minutes: 30
@@ -28,6 +45,15 @@ jobs:
             echo '::error::CRLF detected in vendor patches; checkout must preserve LF'
             exit 1
           fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-icon
+          path: ${{ runner.temp }}/windows-native-icon
+      - name: Export the Windows build icon
+        shell: pwsh
+        run: |
+          $icon = Join-Path $env:RUNNER_TEMP 'windows-native-icon/okilum.ico'
+          "OKILUM_WINDOWS_ICON=$icon" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: bash scripts/vendor-setup.sh
       - shell: pwsh
         env: {PKG: '${{ inputs.package }}', FEATURES: '${{ inputs.features }}', FILTER: '${{ inputs.test-filter }}'}
@@ -85,6 +111,15 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-icon
+          path: ${{ runner.temp }}/windows-native-icon
+      - name: Export the Windows build icon
+        shell: pwsh
+        run: |
+          $icon = Join-Path $env:RUNNER_TEMP 'windows-native-icon/okilum.ico'
+          "OKILUM_WINDOWS_ICON=$icon" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: bash scripts/vendor-setup.sh
       - name: Test production Feedback model and GET public health endpoints
         shell: bash
