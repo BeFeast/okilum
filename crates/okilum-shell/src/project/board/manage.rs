@@ -537,6 +537,7 @@ impl Board {
                 {
                     stages = stages.child(
                         Button::new(("board-stage", index))
+                            .debug_selector(move || format!("board-stage-{index}"))
                             .small()
                             .selected(editor.stage == value)
                             .label(label)
@@ -637,12 +638,32 @@ mod tests {
         std::fs::write(area.path().join("ops/project.yaml"), project).unwrap();
         let (root, visual) = cx.add_window_view(|window, cx| {
             let board = cx.new(|cx| {
-                Board::with_reader(
+                let mut board = Board::with_reader(
                     area.path().into(),
-                    okilum_t3::board::read_issues,
+                    |binding| {
+                        binding
+                            .issues
+                            .iter()
+                            .map(|scope| {
+                                (
+                                    scope.number,
+                                    Ok(okilum_t3::board::Issue {
+                                        number: scope.number,
+                                        title: format!("Fixture issue {}", scope.number),
+                                        state: "open".into(),
+                                        body: String::new(),
+                                        labels: Vec::new(),
+                                        open_pull_requests: Vec::new(),
+                                    }),
+                                )
+                            })
+                            .collect()
+                    },
                     window,
                     cx,
-                )
+                );
+                board.active = true;
+                board
             });
             Root::new(board, window, cx)
         });
@@ -696,8 +717,13 @@ mod tests {
                 .executor
                 .update(cx, |input, cx| input.set_value("Editing", window, cx));
         });
+        click(visual, "board-stage-1");
         click(visual, "board-save");
         assert!(visual.debug_bounds("board-manage-card-0").is_some());
+        assert_eq!(
+            Binding::read(area.path()).unwrap().unwrap().issues[0].stage,
+            Some(okilum_t3::board::HumanStage::Ready)
+        );
         click(visual, "board-edit-0");
         board.update_in(visual, |board, window, cx| {
             board
@@ -758,5 +784,9 @@ mod tests {
                 "Stale edit"
             )
         });
+        click(visual, "board-management-close");
+        assert!(visual.debug_bounds("board-empty").is_none());
+        assert!(visual.debug_bounds("board-expand-42").is_some());
+        assert!(visual.debug_bounds("board-manage").is_some());
     }
 }
