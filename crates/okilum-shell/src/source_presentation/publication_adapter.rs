@@ -45,7 +45,7 @@ impl PreparedProvider {
             .view(&snapshot, Context::LivePreview, &native, &identity)
             .ok()?;
         let text = Arc::from(view.display());
-        let styles = projected_styles(&view, view.styles(), colors)?;
+        let styles = projected_styles(&view, view.styles(), colors, super::CODE_FONT)?;
         let line_scales = heading_line_scales(&view, view.styles());
         let markers = projection_markers(view.decorations());
         let tables = view
