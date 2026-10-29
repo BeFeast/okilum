@@ -50,10 +50,11 @@ original combined titlebar and document controls:
   the existing vault lifecycle; split view is outside this change.
 - **App More.** Settings, keyboard shortcuts, creation/open/recovery actions,
   sidebar preferences, Appearance and application commands.
-- **Panels** are separated from the document by one 1 px `border-subtle` line. Panel
-  headers are titles (vault name, «On this page»), never «Close panel». Closing
+- **Panels** are separated from the document by one 1 px `border-subtle` line. The
+  left panel names its vault. The ordinary right panel has no panel header;
+  its sections retain their own headings (#1910). Closing
   uses the title-bar toggle or panel shortcut; overlay panels also close on
-  an outside click. Esc only dismisses local transient UI (#483). Neither panel header has a close button.
+  an outside click. Esc only dismisses local transient UI (#483). Panel headers have no close button.
 - **Panel defaults.** Each panel's open/closed state is remembered next to its width
   (`reader-layout.json`). Until R2/R3 ship useful panel content, R1 keeps the
   current defaults (both closed). From R2 the sidebar defaults to open on docked
@@ -430,8 +431,10 @@ collapsible sidebar sections above Folders — is superseded.
 
 ## Right panel (R3)
 
-Header «On this page», without a close button. Until R3 the right panel keeps its current
-backlinks content under the title «Backlinks» with a quiet «N notes · M links» count. Two sections with independent scrolling:
+No panel header; sections have their own headings (#1910). Properties, Contents
+and Linked from remain independent sections with their existing scrolling:
+
+- **Properties** — the note's frontmatter, when present, under its own collapsible heading.
 
 - **Contents** — the outline of the current document. Each item is indented 12 px per level. The current
   section has a 2 px `accent` bar on the left and `text` weight 500, and the rest are
