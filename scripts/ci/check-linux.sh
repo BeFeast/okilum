@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Full required Linux gate, shared by the local runner and hosted PR pilot.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 cargo fmt --check
 # Shipped icons must be the approved Okilum mark (#977).
 python3 scripts/rebrand/check_brand.py
