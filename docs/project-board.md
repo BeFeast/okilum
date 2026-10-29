@@ -254,6 +254,11 @@ The management view names the exact active file and format. Existing
 keeps TOML, including unrelated card content and comments. When both files
 exist, only the reader-selected TOML is edited and the YAML is explicitly marked
 inactive. No operation writes both files or performs vault-wide conversion.
+Until the manager completes rollout, removing the last legacy YAML card is
+refused with an explanation: older Okilum builds would show “Board unavailable”.
+Add another card first or wait for that Board's migration to TOML. All other
+legacy edits/removes work; a TOML Board may become empty. This temporary guard
+is removed with the [vault migration](area-manifests.md#one-shot-conversion).
 Changes use the revision and format selected when editing began. A changed
 project manifest, external Board edit or new preferred-format file refuses a
 stale write; close/reopen management to reload. A new file is published atomically

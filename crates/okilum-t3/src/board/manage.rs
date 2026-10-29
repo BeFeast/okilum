@@ -339,6 +339,11 @@ impl Session {
                     *index < self.cards().len(),
                     "Card changed; reload the Board"
                 );
+                ensure!(
+                    !(self.document.as_ref().is_some_and(|d| d.format == Format::Yaml)
+                        && self.cards().len() == 1),
+                    "The last card can't be removed from a YAML board yet — older Okilum builds would show \"Board unavailable\". Add another card first, or wait until this board moves to TOML."
+                );
                 value["issues"].as_array_mut().unwrap().remove(*index);
                 "issues"
             }

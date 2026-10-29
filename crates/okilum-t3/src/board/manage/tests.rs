@@ -160,6 +160,52 @@ fn changed_revision_or_format_or_project_refuses_writes_and_undo() {
 }
 
 #[test]
+fn last_yaml_card_is_protected_for_old_readers_but_other_edits_and_toml_remove_work() {
+    let a = Area::new();
+    let created = a.create();
+    std::fs::remove_file(a.file("board.toml")).unwrap();
+    std::fs::write(
+        a.file("board.yaml"),
+        serde_json::to_string_pretty(&created.value).unwrap() + "\n",
+    )
+    .unwrap();
+    let legacy = a.session().save(&Change::Add(card("1"))).unwrap();
+    let path = a.file("board.yaml");
+    let before = std::fs::read(&path).unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let error = legacy.save(&Change::Remove(0)).unwrap_err().to_string();
+    assert!(
+        error.contains("last card")
+            && error.contains("older Okilum builds")
+            && error.contains("Board unavailable")
+            && error.contains("Add another card")
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+    let mut edit = legacy.card(0);
+    edit.expected = "Updated without changing compatibility".into();
+    let legacy = legacy.save(&Change::Edit(0, edit)).unwrap();
+    let legacy = legacy.save(&Change::Add(card("2"))).unwrap();
+    let legacy = legacy.save(&Change::Remove(0)).unwrap();
+    assert_eq!(legacy.cards().len(), 1);
+    assert_eq!(legacy.cards()[0]["number"], 2);
+    let mut details = legacy.details();
+    details.title = "Updated legacy Board".into();
+    let legacy = legacy.save(&Change::Details(details)).unwrap();
+    let yaml = std::fs::read(&path).unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(
+        a.file("board.toml"),
+        toml::to_string_pretty(&legacy.value).unwrap(),
+    )
+    .unwrap();
+    let emptied = a.session().save(&Change::Remove(0)).unwrap();
+    assert!(emptied.cards().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), yaml);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+}
+
+#[test]
 fn invalid_inputs_report_each_field_and_do_not_write_or_resolve_another_repository() {
     let a = Area::new();
     let s = a.create();
