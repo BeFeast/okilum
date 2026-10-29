@@ -158,10 +158,13 @@ mod native {
     }
     impl PeerCheck for WatchingPeer {
         fn verify(&self, stream: &UnixStream, end: PeerEnd) -> Result<()> {
+            self.captured.borrow_mut().take();
             ensure!(
                 matches!(end, PeerEnd::Server),
                 "exit capture requires the supervisor endpoint"
             );
+            // Capture delegates to SignedPeer::verify both before and after
+            // kernel registration (fresh audit-token/Security/path checks).
             let watch = ExitWatch::capture(stream, &self.peer)?;
             *self.captured.borrow_mut() = Some(watch);
             Ok(())
@@ -229,6 +232,60 @@ mod native {
                         .context("Stop did not capture an authenticated process")?;
                     watch.wait(deadline)
                 })
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::process::Command;
+
+        #[test]
+        fn watching_peer_keeps_signed_authentication_and_clears_failed_captures() -> Result<()> {
+            let executable = std::env::current_exe()?;
+            let output = Command::new("codesign")
+                .arg("-dvvv")
+                .arg(&executable)
+                .output()?;
+            ensure!(output.status.success(), "test signature inspection failed");
+            let text = String::from_utf8(output.stderr)?;
+            let hash = text
+                .lines()
+                .find_map(|line| line.strip_prefix("CDHash="))
+                .context("test code has no cdhash")?;
+            let correct = SignedPeer::new(
+                CodeRequirement::code_directory_hash(hash.trim())?,
+                &executable,
+            )?;
+            let slot = Rc::new(RefCell::new(None));
+            let (stream, _other) = UnixStream::pair()?;
+            let right = WatchingPeer {
+                peer: correct,
+                captured: slot.clone(),
+            };
+            right.verify(&stream, PeerEnd::Server)?;
+            assert!(
+                slot.borrow().is_some(),
+                "genuine signed peer did not capture exit"
+            );
+            let wrong = WatchingPeer {
+                peer: SignedPeer::new(
+                    CodeRequirement::team_and_identifier("ABCDE12345", "org.example.wrong")?,
+                    &executable,
+                )?,
+                captured: slot.clone(),
+            };
+            assert!(wrong.verify(&stream, PeerEnd::Server).is_err());
+            assert!(
+                slot.borrow().is_none(),
+                "failed authentication retained old exit evidence"
+            );
+            right.verify(&stream, PeerEnd::Server)?;
+            assert!(right.verify(&stream, PeerEnd::Client).is_err());
+            assert!(
+                slot.borrow().is_none(),
+                "wrong endpoint retained exit evidence"
+            );
+            Ok(())
         }
     }
 }
