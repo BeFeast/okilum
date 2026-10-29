@@ -1,6 +1,6 @@
 //! System Trash transport and collision-safe, identity-checked session Undo.
 use anyhow::{ensure, Context, Result};
-use rustix::fs::{open, openat, renameat_with, Mode, OFlags, RenameFlags};
+use rustix::fs::{open, openat, Mode, OFlags};
 use std::{
     fs,
     os::unix::fs::MetadataExt,
@@ -95,7 +95,7 @@ impl Trashed {
             Mode::empty(),
         )
         .context("Cannot open the Trash folder for Undo; the item remains in system Trash")?;
-        renameat_with(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name, RenameFlags::NOREPLACE)
+        okilum_core::unix_publish::no_replace(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name)
             .context("Cannot Undo: the original path is occupied, unavailable, or on a different filesystem. The item remains in system Trash")?;
         if let Some(info) = &self.info {
             let _ = fs::remove_file(info);
@@ -228,12 +228,11 @@ fn freedesktop_trash_at(
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )?;
-        renameat_with(
+        okilum_core::unix_publish::no_replace(
             source_parent,
             source_name,
             &destination,
-            name.as_str(),
-            RenameFlags::NOREPLACE,
+            std::ffi::OsStr::new(&name),
         )
         .context("Cannot move to system Trash on this filesystem; the original item was kept")?;
         Ok(())

@@ -1,6 +1,6 @@
 //! Preview-bound, non-replacing moves of ordinary notes within one vault.
 use anyhow::{bail, Context, Result};
-use rustix::fs::{open, openat, renameat_with, Mode, OFlags, RenameFlags};
+use rustix::fs::{open, openat, Mode, OFlags};
 use std::{
     ffi::OsString,
     fs::File,
@@ -174,7 +174,7 @@ impl MovePlan {
             bail!("The note changed after preview. Nothing was moved; preview again");
         }
         before();
-        renameat_with(&self.source_dir, &self.source_name, &self.target_dir, &self.target_name, RenameFlags::NOREPLACE)
+        crate::unix_publish::no_replace(&self.source_dir, &self.source_name, &self.target_dir, &self.target_name)
             .context("Nothing was moved: destination exists, source changed, or the filesystem cannot perform a safe move")?;
         let mut warnings = Vec::new();
         match snapshot(&self.target_dir, &self.target_name) {

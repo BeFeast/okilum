@@ -6,12 +6,14 @@ mod directory;
 #[cfg(windows)]
 #[path = "file_editor/directory_windows.rs"]
 mod directory;
+#[cfg(unix)]
+use crate::unix_publish::flagged_rename as renameat_with;
 use anyhow::{bail, Context, Result};
 #[cfg(unix)]
 pub(crate) use directory::open_regular_at;
 use directory::Directory;
 #[cfg(unix)]
-use rustix::fs::{renameat_with, RenameFlags};
+use rustix::fs::RenameFlags;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
@@ -534,13 +536,23 @@ impl FileEditor {
         )?;
         self.directory.validate(parent)?;
         before_exchange();
-        renameat_with(
+        let mut compatible = false;
+        match renameat_with(
             directory,
             backup.file_name().unwrap(),
             directory,
             self.draft.path.file_name().unwrap(),
             RenameFlags::EXCHANGE,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(error) if crate::unix_publish::unsupported(error) => {
+                compatible = true;
+                if !self.compatible_replace(directory, &backup)? {
+                    return Ok(Save::Conflict);
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
         directory.sync_all()?;
         let displaced =
             open_regular_at(directory, backup.file_name().unwrap()).and_then(|mut file| {
@@ -552,6 +564,11 @@ impl FileEditor {
                 Ok(bytes)
             });
         if !displaced.is_ok_and(|bytes| bytes == self.draft.base.as_bytes()) {
+            if compatible {
+                // Plain rename cannot safely roll back a third-party change.
+                // Both the draft and pending displaced preimage stay protected.
+                return Ok(Save::Conflict);
+            }
             // A racing replacement is restored, and the displaced version from
             // this second exchange also remains on disk. Never delete either.
             renameat_with(
@@ -564,7 +581,11 @@ impl FileEditor {
             directory.sync_all()?;
             return Ok(Save::Conflict);
         }
-        crate::source_history::Preimage::finish_bound(&history, directory)?;
+        if compatible {
+            crate::source_history::Preimage::finish_compatible(&history, directory)?;
+        } else {
+            crate::source_history::Preimage::finish_bound(&history, directory)?;
+        }
         self.directory.validate(parent)?;
         self.draft.base = self.draft.text.clone();
         // The note is now the inode written above; its stamp after the
@@ -574,6 +595,42 @@ impl FileEditor {
         // Cleanup is best effort; a retention error never reverses a saved note.
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
+    }
+    /// NFS/SMB do not implement RENAME_SWAP. Preserve the old inode before
+    /// atomic plain replacement, rechecking exact revision immediately before
+    /// publication. Unlike EXCHANGE, POSIX cannot detect a replacement in the
+    /// last check→rename window; no post-publication rollback is attempted.
+    #[cfg(unix)]
+    fn compatible_replace(&self, directory: &File, backup: &Path) -> Result<bool> {
+        use rustix::fs::{linkat, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
+        let note = self.draft.path.file_name().unwrap();
+        let old_name = backup.file_name().unwrap();
+        let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
+        let (current, _) = self.directory.read(note)?;
+        if current != self.draft.base {
+            unlinkat(directory, old_name, AtFlags::empty())?;
+            return Ok(false);
+        }
+        renameat(directory, old_name, directory, prepared.as_str())?;
+        // No symlink following; private UUID backup name is created exclusively.
+        linkat(directory, note, directory, old_name, AtFlags::empty())?;
+        let mut original = File::from(openat(
+            directory,
+            note,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let mut bytes = Vec::new();
+        original.read_to_end(&mut bytes)?;
+        if bytes != self.draft.base.as_bytes() {
+            unlinkat(directory, old_name, AtFlags::empty())?;
+            unlinkat(directory, prepared.as_str(), AtFlags::empty())?;
+            return Ok(false);
+        }
+        directory.sync_all()?;
+        self.directory.validate(self.draft.path.parent().unwrap())?;
+        renameat(directory, prepared.as_str(), directory, note)?;
+        Ok(true)
     }
     #[cfg(windows)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
@@ -1319,5 +1376,33 @@ mod windows_editor_tests {
             .file_name()
             .to_string_lossy()
             .ends_with(".raced")));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod network_save_tests {
+    use super::*;
+    #[test]
+    fn unsupported_exchange_rechecks_external_write_at_publication_boundary() {
+        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+            crate::unix_publish::inject(error, || {
+                let root = tempfile::tempdir().unwrap();
+                let note = root.path().join("note.md");
+                fs::write(&note, b"base").unwrap();
+                let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
+                editor.set_text("mine".into()).unwrap();
+                let outcome = editor
+                    .save_before_exchange(|| fs::write(&note, b"external").unwrap())
+                    .unwrap();
+                assert_eq!(outcome, Save::Conflict);
+                assert_eq!(fs::read(&note).unwrap(), b"external");
+                assert_eq!(editor.text(), "mine");
+                assert!(fs::read_dir(root.path()).unwrap().all(|e| !e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".okilum-save-")));
+            });
+        }
     }
 }

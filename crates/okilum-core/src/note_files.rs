@@ -72,12 +72,11 @@ pub fn create_with_source(root: &Path, relative: &Path, source: &[u8]) -> Result
             let mut file = File::from(file);
             file.write_all(source)?;
             file.sync_all()?;
-            rustix::fs::renameat_with(
+            crate::unix_publish::no_replace(
                 &folder,
-                temporary.as_str(),
+                std::ffi::OsStr::new(&temporary),
                 &folder,
                 parts.last().unwrap().as_os_str(),
-                rustix::fs::RenameFlags::NOREPLACE,
             )
             .context("Cannot create note: destination already exists or cannot be written")?;
             Ok(())

@@ -109,6 +109,20 @@ const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
 
 fn file_access_notice(error: &anyhow::Error) -> &'static str {
+    #[cfg(unix)]
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rustix::io::Errno>()
+            .is_some_and(|e| okilum_core::unix_publish::unsupported(*e))
+            || cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(|e| e.raw_os_error())
+                .is_some_and(|e| {
+                    okilum_core::unix_publish::unsupported(rustix::io::Errno::from_raw_os_error(e))
+                })
+    }) {
+        return "This drive does not support the required safe file operation. Your edits are preserved. Copy them or keep a draft.";
+    }
     if error.chain().any(|cause| {
         #[cfg(unix)]
         if cause.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT) {

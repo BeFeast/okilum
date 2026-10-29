@@ -79,3 +79,6 @@ pub mod json_view;
 pub mod recycle_bin;
 #[cfg(windows)]
 pub mod windows_files;
+
+#[cfg(unix)]
+pub mod unix_publish;
