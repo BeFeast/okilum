@@ -135,6 +135,7 @@ impl Authorization {
                     listener = Some(reopened);
                 }
                 deadline = Instant::now() + timeout;
+                last_seconds = u64::MAX;
             }
             let pasted = match command {
                 Some(Input::Callback(url)) => Some(url),
