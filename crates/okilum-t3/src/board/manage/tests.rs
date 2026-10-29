@@ -177,6 +177,14 @@ fn invalid_inputs_report_each_field_and_do_not_write_or_resolve_another_reposito
         ["executor", "expected", "issue", "stage"]
     );
     assert_eq!(std::fs::read(a.file("board.toml")).unwrap(), before);
+    let mut oversized = card("3");
+    oversized.expected = "x".repeat(area_files::MAX_BYTES as usize);
+    assert!(s
+        .save(&Change::Add(oversized))
+        .unwrap_err()
+        .to_string()
+        .contains("512 KiB"));
+    assert_eq!(std::fs::read(a.file("board.toml")).unwrap(), before);
     let s = s.save(&Change::Add(card("1"))).unwrap();
     assert!(s.save(&Change::Add(card("1"))).is_err());
     for text in [

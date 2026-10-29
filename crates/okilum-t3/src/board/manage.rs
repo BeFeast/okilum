@@ -466,6 +466,10 @@ impl Session {
         };
         // Root validity is retained. Existing per-card errors must not suppress
         // an unrelated repair; they remain visible in the Board projection.
+        ensure!(
+            source.len() as u64 <= area_files::MAX_BYTES,
+            "Board exceeds the reader's 512 KiB limit; shorten the draft before saving"
+        );
         let parsed = if self
             .document
             .as_ref()

@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAX_BYTES: u64 = 512 * 1024;
+pub(crate) const MAX_BYTES: u64 = 512 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Toml,
