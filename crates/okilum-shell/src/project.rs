@@ -66,6 +66,7 @@ pub(crate) struct ProjectView {
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
+    connection_details: bool,
     gateway: Option<Arc<dyn ManagerGateway>>,
     identity: Option<ServerIdentity>,
     chat: Option<Conversation>,
@@ -245,6 +246,16 @@ impl ProjectView {
                     .and_then(|c| c.origin.clone());
                 let _ = weak.update(cx, |this, cx| {
                     if let Some(origin) = origin {
+                        if reader_t3_settings::signed_out(&origin, cx) {
+                            if this
+                                .environment
+                                .as_ref()
+                                .is_some_and(|env| env.origin() == origin)
+                            {
+                                this.clear_connection(cx);
+                            }
+                            return;
+                        }
                         // A project's explicit different server must not inherit another token.
                         if this.project_override
                             && this
@@ -267,6 +278,7 @@ impl ProjectView {
             state,
             environment: None,
             project_override: true,
+            connection_details: false,
             gateway: None,
             identity: None,
             chat: None,
@@ -342,11 +354,19 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) {
         self.busy = false;
+        if result
+            .as_ref()
+            .is_ok_and(|(env, _)| reader_t3_settings::signed_out(&env.origin(), cx))
+        {
+            self.clear_connection(cx);
+            return;
+        }
         match result {
             Ok((env, gateway)) => {
                 #[cfg(target_os = "linux")]
                 self.native.clear();
                 self.environment = Some(env);
+                self.connection_details = false;
                 self.gateway = Some(gateway);
                 self.chat = self
                     .binding
@@ -370,6 +390,101 @@ impl ProjectView {
             Err(error) => self.error = Some(format!("{error:#}")),
         }
         cx.notify();
+    }
+
+    fn clear_connection(&mut self, cx: &mut Context<Self>) {
+        self.generation = self.generation.wrapping_add(1);
+        self.polling = false;
+        self.busy = false;
+        self.gateway = None;
+        self.identity = None;
+        self.connection_details = false;
+        self.last_poll_status = None;
+        self.model_target = None;
+        self.error = None;
+        #[cfg(target_os = "linux")]
+        self.native.clear();
+        // History, retained send intents, and the unsent draft stay intact.
+        cx.notify();
+    }
+
+    fn connection_is_compact(&self, status: &GatewayStatus) -> bool {
+        !self.connection_details
+            && matches!(
+                status,
+                GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
+            )
+    }
+
+    fn connection_line(&self, status: &GatewayStatus, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let Some(env) = self.environment.clone() else {
+            return div().into_any_element();
+        };
+        let origin = env.origin();
+        let host = url::Url::parse(&origin)
+            .ok()
+            .map(|url| url[url::Position::BeforeHost..url::Position::AfterPort].to_owned())
+            .unwrap_or(origin);
+        let mut label = format!("Connected · {host}");
+        if matches!(status, GatewayStatus::ExpiresSoon { .. }) {
+            label.push_str(" · renew soon");
+        }
+        #[cfg(target_os = "linux")]
+        if !self.native.active() {
+            label.push_str(" · history only");
+        }
+        #[cfg(target_os = "linux")]
+        if self.native.active() && self.native.renew_due() {
+            label.push_str(" · renew live updates");
+        }
+        let owner = cx.entity().downgrade();
+        let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);
+        let renew = matches!(status, GatewayStatus::ExpiresSoon { .. });
+        h_flex()
+            .items_center()
+            .gap_2()
+            .debug_selector(|| "project-connected-line".into())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(label),
+            )
+            .child(
+                Button::new("project-connection-menu")
+                    .debug_selector(|| "project-connection-menu".into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::Ellipsis)
+                    .tooltip("T3 connection")
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                        let change = owner.clone();
+                        let sign_out = env.clone();
+                        menu.item(
+                            PopupMenuItem::new(if renew {
+                                "Renew connection…"
+                            } else {
+                                "Change connection…"
+                            })
+                            .on_click(move |_, _, cx| {
+                                let _ = change.update(cx, |this, cx| {
+                                    this.connection_details = true;
+                                    cx.notify();
+                                });
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Sign out").disabled(disabled).on_click(
+                                move |_, _, cx| {
+                                    reader_t3_settings::sign_out(sign_out.clone(), cx);
+                                },
+                            ),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 
     fn connection_environment(&self, cx: &App) -> anyhow::Result<Environment> {
@@ -796,6 +911,7 @@ impl Render for ProjectView {
             .unwrap_or(GatewayStatus::NotConnected);
         let enabled = self.can_send();
         let note = status_note(&status);
+        let compact = self.connection_is_compact(&status);
         let expiry = self
             .gateway
             .as_ref()
@@ -1044,6 +1160,9 @@ impl Render for ProjectView {
                     )
                 },
             )
+            .when(self.binding.is_some() && compact, |view| {
+                view.child(self.connection_line(&status, cx))
+            })
             .when(self.binding.is_some(),|view| {
                 #[cfg(target_os="linux")] let view=view.child(self.render_native(cx));
                 view
@@ -1056,6 +1175,7 @@ impl Render for ProjectView {
                 )
             })
             .when_some(note, |view, note| {
+                if compact { return view; }
                 view.child(
                     div()
                         .debug_selector(|| "project-connection-status".into())
@@ -1063,7 +1183,7 @@ impl Render for ProjectView {
                         .child(note),
                 )
             })
-            .when(self.binding.as_ref().is_some(), |view| {
+            .when(self.binding.is_some() && !compact, |view| {
                 view.child(
                     h_flex()
                         .gap_2()
@@ -1089,7 +1209,10 @@ impl Render for ProjectView {
                         ),
                 )
             })
-            .when_some(expiry, |view, expiry| view.child(div().w_full().min_w_0().whitespace_normal().debug_selector(|| "project-token-expiry".into()).text_color(brand::palette(cx).text_muted).child(expiry)))
+            .when_some(expiry.filter(|_| !compact), |view, expiry| view.child(div().w_full().min_w_0().whitespace_normal().debug_selector(|| "project-token-expiry".into()).text_color(brand::palette(cx).text_muted).child(expiry)))
+            .when(self.connection_details, |view| view.child(Button::new("project-connection-done")
+                .debug_selector(|| "project-connection-done".into()).ghost().icon(IconName::Check).tooltip("Done with connection settings")
+                .on_click(cx.listener(|this, _, _, cx| { this.connection_details = false; cx.notify(); }))))
             .when(self.binding.is_some() && browser_help, |view| {
                 view.child(v_flex().gap_1()
                     .child(div().w_full().min_w_0().whitespace_normal().child("Settings › T3 shows the shared sign-in state and can accept a browser callback URL."))
@@ -1112,7 +1235,7 @@ impl Render for ProjectView {
                     )
                 },
             )
-            .when_some(self.error.clone(), |view, error| {
+            .when_some(self.error.clone().or_else(|| self.environment.as_ref().and_then(|env| reader_t3_settings::connection_error(&env.origin(), cx))), |view, error| {
                 view.child(
                     div()
                         .debug_selector(|| "project-error".into())

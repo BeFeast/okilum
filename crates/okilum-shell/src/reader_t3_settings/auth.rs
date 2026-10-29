@@ -15,6 +15,7 @@ pub(super) struct Entry {
     pub pending: Option<Pending>,
     pub busy: bool,
     pub error: Option<String>,
+    pub signed_out: bool,
 }
 #[derive(Clone, Default)]
 pub(super) struct Sessions {
@@ -74,6 +75,9 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
     if current.busy || current.pending.is_some() {
         return;
     }
+    if current.signed_out && !authorize {
+        return;
+    }
     let renew = authorize
         && matches!(
             current.gateway.as_ref().map(|g| g.status()),
@@ -87,6 +91,7 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
     edit(&origin, cx, |e| {
         e.busy = true;
         e.error = None;
+        e.signed_out = false;
     });
     cx.spawn(async move |cx| {
         let mut publish = false;
@@ -199,6 +204,53 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
         }
         .await;
         cx.update(|cx| finish_if_current(&origin, result, publish, cx));
+    })
+    .detach();
+}
+
+/// Local sign-out is shared by every panel at this origin. It does not revoke
+/// another application's session or remove drafts and history.
+pub(super) fn sign_out(env: Environment, cx: &mut App) {
+    let origin = env.origin();
+    let current = entry(&origin, cx);
+    if current.busy || current.pending.is_some() {
+        return;
+    }
+    edit(&origin, cx, |entry| {
+        entry.gateway = None;
+        entry.busy = true;
+        entry.signed_out = true;
+        entry.error = None;
+    });
+    cx.set_global(Connection {
+        origin: Some(origin.clone()),
+    });
+    cx.spawn(async move |cx| {
+        let result = async {
+            cx.update(|cx| cx.delete_credentials(&env.credential_url()))
+                .await?;
+            #[cfg(target_os = "linux")]
+            cx.update(|cx| {
+                cx.delete_credentials(&okilum_t3::stream::NativeToken::credential_key(&env))
+            })
+            .await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        cx.update(|cx| {
+            let failed = result.is_err();
+            edit(&origin, cx, |entry| {
+                entry.busy = false;
+                entry.error = result.err().map(|e| {
+                    format!("Sign-out could not remove the saved connection: {e:#}. Try again.")
+                });
+            });
+            if failed {
+                cx.set_global(Connection {
+                    origin: Some(origin.clone()),
+                });
+            }
+        });
     })
     .detach();
 }

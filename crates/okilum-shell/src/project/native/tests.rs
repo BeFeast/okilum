@@ -154,6 +154,7 @@ fn pairing_token_keeps_the_full_row_width_in_a_narrow_panel(cx: &mut TestAppCont
             );
             view.active = false;
             view.native.open = true;
+            view.connection_details = true;
             view
         });
         Root::new(view, window, cx)

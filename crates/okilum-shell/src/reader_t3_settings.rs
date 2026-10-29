@@ -10,6 +10,23 @@ pub(super) struct Connection {
 }
 impl Global for Connection {}
 
+pub(super) fn signed_out(origin: &str, cx: &App) -> bool {
+    auth::entry(origin, cx).signed_out
+}
+
+pub(super) fn connection_error(origin: &str, cx: &App) -> Option<String> {
+    auth::entry(origin, cx).error
+}
+
+pub(super) fn can_sign_out(env: &okilum_t3::Environment, cx: &App) -> bool {
+    let entry = auth::entry(&env.origin(), cx);
+    !entry.busy && entry.pending.is_none()
+}
+
+pub(super) fn sign_out(env: okilum_t3::Environment, cx: &mut App) {
+    auth::sign_out(env, cx);
+}
+
 pub(super) fn gateway(
     env: &okilum_t3::Environment,
     cx: &App,
