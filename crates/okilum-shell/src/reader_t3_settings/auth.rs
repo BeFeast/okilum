@@ -199,7 +199,7 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                         &mut retry,
                         notice,
                     )?;
-                    Ok((connected, retry))
+                    Ok::<_, anyhow::Error>((connected, retry))
                 })
                 .await?;
             if let Some(token) = &connected.issued_token {
