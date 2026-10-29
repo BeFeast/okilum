@@ -174,6 +174,18 @@ impl FileEditor {
         }
         Ok(())
     }
+    #[cfg(unix)]
+    pub(super) fn track_raw_renamed(&self, original: &std::ffi::OsStr, name: &str) -> Result<()> {
+        if let Some(raw) = &self.raw_transaction {
+            let mut artifacts = raw.artifacts.lock().unwrap();
+            let identities = artifacts
+                .get(original)
+                .context("Missing owned staging identity")?
+                .clone();
+            artifacts.insert(name.into(), identities);
+        }
+        Ok(())
+    }
     #[cfg(windows)]
     pub(super) fn track_raw_windows_identity(&self, path: &Path, identity: Identity) -> Result<()> {
         if let Some(raw) = &self.raw_transaction {
@@ -555,6 +567,102 @@ mod tests {
 #[cfg(all(test, unix))]
 mod partial_write_tests {
     use super::*;
+    fn assert_clean(root: &Path, note: &Path, expected: &[u8]) {
+        assert_eq!(fs::read(note).unwrap(), expected);
+        assert_eq!(fs::metadata(note).unwrap().nlink(), 1);
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn unsupported_exchange_repair_and_raw_restore_round_trip() {
+        for error in [
+            rustix::io::Errno::NOTSUP,
+            rustix::io::Errno::INVAL,
+            rustix::io::Errno::NOSYS,
+        ] {
+            crate::unix_publish::inject(error, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                let state = fixture.path().join("state/editor-drafts");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("Synthetic.md");
+                let original = b"Before \xff After\r\n";
+                let repaired = String::from_utf8_lossy(original);
+                fs::write(&note, original).unwrap();
+                assert_eq!(
+                    FileEditor::repair_encoding(&note, &state).unwrap(),
+                    Save::Saved
+                );
+                assert_clean(&root, &note, repaired.as_bytes());
+                drop(FileEditor::open(&note, &state).unwrap());
+                let listing = crate::source_history::list(&state, &root).unwrap();
+                assert!(listing.warnings.is_empty());
+                let retained = listing.versions.iter().find(|v| v.raw.is_some()).unwrap();
+                assert_eq!(retained.bytes(), original);
+                assert_eq!(
+                    FileEditor::replace_bytes(&note, &state, repaired.as_bytes(), retained.bytes())
+                        .unwrap(),
+                    Save::Saved
+                );
+                assert_clean(&root, &note, original);
+                assert!(FileEditor::open(&note, &state).is_err());
+            });
+        }
+    }
+
+    #[test]
+    fn unsupported_exchange_raw_failures_preserve_bytes_and_leave_no_tails() {
+        for restoring in [false, true] {
+            for failure in 0..3 {
+                crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+                    let fixture = tempfile::tempdir().unwrap();
+                    let root = fixture.path().join("vault");
+                    let state = fixture.path().join("state/editor-drafts");
+                    fs::create_dir(&root).unwrap();
+                    let note = root.join("Synthetic.md");
+                    let damaged = b"Before \xff After\r\n";
+                    let repaired = String::from_utf8_lossy(damaged);
+                    let (before, after) = if restoring {
+                        (repaired.as_bytes(), damaged.as_slice())
+                    } else {
+                        (damaged.as_slice(), repaired.as_bytes())
+                    };
+                    fs::write(&note, before).unwrap();
+                    match failure {
+                        0 => network_save_tests::LINK_ERROR
+                            .with(|v| v.set(Some(rustix::io::Errno::PERM))),
+                        1 => network_save_tests::ERROR_AFTER_LINK
+                            .with(|v| v.set(Some(rustix::io::Errno::IO))),
+                        _ => crate::source_history::RawRecord::fail_next_complete(),
+                    }
+                    let error =
+                        FileEditor::replace_bytes(&note, &state, before, after).unwrap_err();
+                    match failure {
+                        0 => assert_eq!(
+                            error.downcast_ref::<rustix::io::Errno>(),
+                            Some(&rustix::io::Errno::PERM)
+                        ),
+                        1 => assert_eq!(
+                            error.downcast_ref::<rustix::io::Errno>(),
+                            Some(&rustix::io::Errno::IO)
+                        ),
+                        _ => assert!(format!("{error:#}").contains("History acknowledgement")),
+                    }
+                    assert_clean(&root, &note, before);
+                    assert!(crate::source_history::list(&state, &root)
+                        .unwrap()
+                        .versions
+                        .is_empty());
+                    assert_eq!(
+                        FileEditor::replace_bytes(&note, &state, before, after).unwrap(),
+                        Save::Saved
+                    );
+                    assert_clean(&root, &note, after);
+                });
+            }
+        }
+    }
+
     #[test]
     fn partial_repair_write_does_not_leave_a_tail_or_change_the_note() {
         let fixture = tempfile::tempdir().unwrap();

@@ -666,24 +666,25 @@ impl FileEditor {
         let note = self.draft.path.file_name().unwrap();
         let old_name = backup.file_name().unwrap();
         let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
-        let current = match self.directory.read(note) {
+        let current = match self.directory.read_bytes(note) {
             Ok((text, _)) => Some(text),
             Err(e) if missing(&e) => None,
             Err(e) => {
                 return Err(with_cleanup(
                     e,
-                    clean_recovery_file(directory, old_name, self.draft.text.as_bytes()),
+                    clean_recovery_file(directory, old_name, self.proposed_bytes()),
                 ))
             }
         };
-        if current.as_deref() != Some(self.draft.base.as_str()) {
-            clean_recovery_file(directory, old_name, self.draft.text.as_bytes())?;
+        if current.as_deref() != Some(self.base_bytes()) {
+            clean_recovery_file(directory, old_name, self.proposed_bytes())?;
             return Ok(false);
         }
+        self.track_raw_renamed(old_name, &prepared)?;
         if let Err(error) = renameat(directory, old_name, directory, prepared.as_str()) {
             return Err(with_cleanup(
                 error.into(),
-                clean_recovery_file(directory, old_name, self.draft.text.as_bytes()),
+                clean_recovery_file(directory, old_name, self.proposed_bytes()),
             ));
         }
         let mut linked = false;
@@ -703,7 +704,7 @@ impl FileEditor {
                     clean_recovery_file(
                         directory,
                         std::ffi::OsStr::new(&prepared),
-                        self.draft.text.as_bytes(),
+                        self.proposed_bytes(),
                     )?;
                     return Ok(false);
                 }
@@ -727,11 +728,11 @@ impl FileEditor {
             let mut original = match original {
                 Ok(fd) => File::from(fd),
                 Err(rustix::io::Errno::NOENT) => {
-                    clean_recovery_file(directory, old_name, self.draft.base.as_bytes())?;
+                    clean_recovery_file(directory, old_name, self.base_bytes())?;
                     clean_recovery_file(
                         directory,
                         std::ffi::OsStr::new(&prepared),
-                        self.draft.text.as_bytes(),
+                        self.proposed_bytes(),
                     )?;
                     return Ok(false);
                 }
@@ -739,12 +740,12 @@ impl FileEditor {
             };
             let mut bytes = Vec::new();
             original.read_to_end(&mut bytes)?;
-            if bytes != self.draft.base.as_bytes() {
-                clean_recovery_file(directory, old_name, self.draft.base.as_bytes())?;
+            if bytes != self.base_bytes() {
+                clean_recovery_file(directory, old_name, self.base_bytes())?;
                 clean_recovery_file(
                     directory,
                     std::ffi::OsStr::new(&prepared),
-                    self.draft.text.as_bytes(),
+                    self.proposed_bytes(),
                 )?;
                 return Ok(false);
             }
@@ -777,10 +778,10 @@ impl FileEditor {
                 let draft_cleanup = clean_recovery_file(
                     directory,
                     std::ffi::OsStr::new(&prepared),
-                    self.draft.text.as_bytes(),
+                    self.proposed_bytes(),
                 );
                 let preimage_cleanup = if linked {
-                    clean_recovery_file(directory, old_name, self.draft.base.as_bytes())
+                    clean_recovery_file(directory, old_name, self.base_bytes())
                 } else {
                     Ok(())
                 };
