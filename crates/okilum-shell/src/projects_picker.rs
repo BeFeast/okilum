@@ -471,7 +471,10 @@ impl ProjectsPicker {
             .child(icon_slot(None))
             .child(div().min_w_0().truncate().child(problem.name.clone()))
             .child(Self::render_status(
-                RowStatus::Problem(format!("Project manifest cannot be read: {}", problem.detail)),
+                RowStatus::Problem(format!(
+                    "Project manifest cannot be read: {}",
+                    problem.detail
+                )),
                 index,
                 cx,
             ))

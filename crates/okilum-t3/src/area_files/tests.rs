@@ -108,11 +108,23 @@ fn toml_manual_icon_and_t3_link_read_back_without_touching_legacy() {
     let source = "# keep\nname = 'Example'\nkind = 'knowledge'\n[metadata]\nowner = 'Human'\n";
     std::fs::write(a.file("project.toml"), source).unwrap();
     std::fs::write(a.file("project.yaml"), "name: Legacy\n").unwrap();
-    let icon=crate::projects::icon::ProjectIcon::Emoji{emoji:"🦉".into()};
-    crate::projects::icon::save_manifest_icon(&a.0,Some(&icon)).unwrap();
-    assert_eq!(crate::projects::Project::read(&a.0).unwrap().appearance.icon,Some(icon));
-    crate::projects::icon::save_manifest_icon(&a.0,None).unwrap();
-    assert!(crate::projects::Project::read(&a.0).unwrap().appearance.icon.is_none());
+    let icon = crate::projects::icon::ProjectIcon::Emoji {
+        emoji: "🦉".into()
+    };
+    crate::projects::icon::save_manifest_icon(&a.0, Some(&icon)).unwrap();
+    assert_eq!(
+        crate::projects::Project::read(&a.0)
+            .unwrap()
+            .appearance
+            .icon,
+        Some(icon)
+    );
+    crate::projects::icon::save_manifest_icon(&a.0, None).unwrap();
+    assert!(crate::projects::Project::read(&a.0)
+        .unwrap()
+        .appearance
+        .icon
+        .is_none());
     let linked = crate::projects::create::link_t3(
         &a.0,
         &crate::projects::create::T3Link {

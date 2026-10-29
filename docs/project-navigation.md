@@ -3,7 +3,7 @@
 Approved decisions of 22 October 2026 supersede the former current-note Project
 button and the typed-project section in the left sidebar.
 
-A project is any vault folder containing `ops/project.yaml`, across every domain.
+A project is any vault folder containing `ops/project.toml` (legacy `ops/project.yaml` while TOML is absent), across every domain.
 Discovery does not require `Dev/Areas`, a repository, or a particular PARA category.
 `kind` is `code`, `knowledge`, or `hybrid`; absence means code when `repo` is
 present and knowledge otherwise. A minimal knowledge manifest needs no executor,

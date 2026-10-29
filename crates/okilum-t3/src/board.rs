@@ -138,6 +138,7 @@ pub struct Execution {
 pub fn relative_note(value: &str) -> bool {
     !value.is_empty()
         && !value.contains('\\')
+        && !value.contains(':')
         && value.ends_with(".md")
         && Path::new(value)
             .components()
@@ -315,6 +316,23 @@ impl Binding {
             }
         }
         binding.issues = healthy;
+        let mut healthy_attention = Vec::new();
+        for (index, item) in binding.attention.drain(..).enumerate() {
+            let path = area.join(&item.link);
+            if relative_note(&item.link)
+                && path.exists()
+                && !path.canonicalize()?.starts_with(&canonical)
+            {
+                binding.card_problems.push(CardProblem {
+                    field: format!("attention[{index}].link"),
+                    number: None,
+                    detail: "Related note escapes the project through a symlink".into(),
+                });
+            } else {
+                healthy_attention.push(item);
+            }
+        }
+        binding.attention = healthy_attention;
         // The current registry supersedes literal IDs retained in old cards.
         // An unreadable registry cannot establish live executor ownership.
         let registry = match crate::executors::Registry::read(area) {
