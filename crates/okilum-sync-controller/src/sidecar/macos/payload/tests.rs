@@ -215,3 +215,12 @@ fn special_permission_bits_on_payload_files_and_directories_are_refused() -> Res
     payload.verify(&f.binding)?;
     Ok(())
 }
+
+#[test]
+fn registration_retains_the_exact_durable_selection_receipt() -> Result<()> {
+    let f = Fixture::new()?;
+    f.payload().verify_selected(&f.binding, &f.selection)?; // positive control
+    let changed = Selection::new("2.1.6", &"0".repeat(64), &f.selection.resolve(&f.state)?)?;
+    assert!(f.payload().verify_selected(&f.binding, &changed).is_err());
+    Ok(())
+}

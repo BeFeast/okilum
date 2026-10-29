@@ -9,6 +9,7 @@ use anyhow::{ensure, Result};
 use objc2::rc::Retained;
 use objc2_foundation::{NSProcessInfo, NSString};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
+use std::time::Instant;
 
 /// Native supervisor implementation must authenticate its private IPC peer and
 /// bind process identity to the saved installation/device, not only a PID.
@@ -45,14 +46,7 @@ impl<G: OwnedSupervisor> NativeSm<G> {
         Self { guard }
     }
     fn service(&self, plist: &str) -> Result<Retained<SMAppService>> {
-        ensure!(
-            self.major_version() >= 13,
-            "Sync requires macOS 13 or later"
-        );
-        ensure!(plist == PLIST, "unexpected bundled agent");
-        // SMAppService is referenced only after checking the runtime OS version.
-        // The selector uses our fixed plist in the caller's own signed bundle.
-        Ok(unsafe { SMAppService::agentServiceWithPlistName(&NSString::from_str(plist)) })
+        service(plist)
     }
 }
 impl<G: OwnedSupervisor> SmApi for NativeSm<G> {
@@ -71,15 +65,7 @@ impl<G: OwnedSupervisor> SmApi for NativeSm<G> {
         self.guard.verify_payload(binding)
     }
     fn status(&mut self, plist: &str) -> Result<Status> {
-        // The retained service lives through the message send.
-        let status = unsafe { self.service(plist)?.status() };
-        Ok(match status {
-            SMAppServiceStatus::NotRegistered => Status::NotRegistered,
-            SMAppServiceStatus::Enabled => Status::Enabled,
-            SMAppServiceStatus::RequiresApproval => Status::RequiresApproval,
-            SMAppServiceStatus::NotFound => Status::NotFound,
-            _ => anyhow::bail!("unknown ServiceManagement status"),
-        })
+        service_status(plist)
     }
     fn running(&mut self, binding: &Binding) -> Result<bool> {
         self.guard.running(binding)
@@ -136,6 +122,49 @@ impl<G: OwnedSupervisor> SmApi for NativeSm<G> {
             !self.guard.running(binding)?,
             "owned helper exit not confirmed"
         );
+        Ok(())
+    }
+}
+
+fn service(plist: &str) -> Result<Retained<SMAppService>> {
+    let version = NSProcessInfo::processInfo().operatingSystemVersion();
+    ensure!(
+        version.majorVersion >= 13,
+        "Sync requires macOS 13 or later"
+    );
+    ensure!(plist == PLIST, "unexpected bundled agent");
+    // Only our current app's fixed bundled plist, after checking runtime OS.
+    Ok(unsafe { SMAppService::agentServiceWithPlistName(&NSString::from_str(plist)) })
+}
+fn service_status(plist: &str) -> Result<Status> {
+    let status = unsafe { service(plist)?.status() };
+    Ok(match status {
+        SMAppServiceStatus::NotRegistered => Status::NotRegistered,
+        SMAppServiceStatus::Enabled => Status::Enabled,
+        SMAppServiceStatus::RequiresApproval => Status::RequiresApproval,
+        SMAppServiceStatus::NotFound => Status::NotFound,
+        _ => anyhow::bail!("unknown ServiceManagement status"),
+    })
+}
+
+/// Not exported outside the macOS module. NativeRegistrationGuard alone composes
+/// this raw effect port with the one-use journal dispatch capability.
+pub(super) struct RegistrationService;
+impl super::registration::RegistrationPort for RegistrationService {
+    fn status(&mut self, deadline: Instant) -> Result<Status> {
+        ensure!(Instant::now() < deadline, "registration deadline elapsed");
+        service_status(PLIST)
+    }
+    fn register(&mut self, deadline: Instant) -> Result<()> {
+        ensure!(Instant::now() < deadline, "registration deadline elapsed");
+        let service = service(PLIST)?;
+        // This native synchronous API has no cancellation interface; critically,
+        // no journal lock is held across it, including approval/error handling.
+        if let Err(error) = unsafe { service.registerAndReturnError() } {
+            if service_status(PLIST)? != Status::RequiresApproval {
+                anyhow::bail!("ServiceManagement registration failed: {error}");
+            }
+        }
         Ok(())
     }
 }

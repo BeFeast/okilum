@@ -692,3 +692,29 @@ repairs, adopts or stops anything. Desktop Mac Enable remains unwired. The
 conservative lack of automatic restart after a consumed generation is an
 availability limitation, not evidence of absence.
 Sync remains opt-in; this work does not change live hubs, TCC or host settings.
+
+### Native registration coordinator (next #588 slice)
+
+`macos::registration::NativeRegistrationGuard` composes the verified bundle,
+pinned selected payload, signed supervisor connection, account-root store and
+private ServiceManagement port. It is intentionally not a `Platform` for the
+generic lifecycle controller: that controller holds a transaction while calling
+registration, which would nest the helper/selection store lock.
+
+The dedicated coordinator validates outside a transaction, observes native
+registration, commits the one-use dispatch in its own short transaction, releases
+that transaction, then revalidates bundle/payload/selection and native status
+before its single registration call. No journal lock spans native registration
+or signed socket I/O. A helper can claim immediately during registration. Another
+window at that boundary can take the lock but cannot dispatch the spent intent.
+A synchronous ServiceManagement call has no cancellation interface; the guard
+does not pretend otherwise or hold the journal lock while waiting for it.
+
+Only `NotRegistered` plus a fresh Ready record can attempt dispatch. Existing
+registration/approval without the signed claimed-generation peer stays Recovery
+pending. Errors, changes after dispatch and delayed peer appearance consume the
+attempt; there is no automatic second registration or child-launch fallback.
+Production verifies the caller's own app executable and the fixed account root,
+so ServiceManagement cannot register one app after validating a different one.
+The UI is still read-only: this slice adds no Enable or recovery action, creates
+no enrollment and supplies no re-arm authority. Those remain subsequent work.

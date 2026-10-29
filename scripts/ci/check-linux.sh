@@ -29,6 +29,7 @@ cargo test --locked -p okilum-sync-controller --lib enrollment::
 cargo test --locked -p okilum-sync-controller --test enrollment_storage
 cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery::
+cargo test --locked -p okilum-sync-controller --lib sidecar::macos::registration::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::bundle::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connection::
 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::payload::
