@@ -406,6 +406,52 @@ impl Session {
                         if tables.is_empty() {
                             doc["issues"] = toml_edit::value(toml_edit::Array::new());
                         }
+                    } else if let Some(array) =
+                        doc["issues"].as_array_mut().filter(|a| !a.is_empty())
+                    {
+                        match change {
+                            Change::Remove(i) => {
+                                array.remove(*i);
+                            }
+                            Change::Add(_) | Change::Edit(_, _) => {
+                                let index = if let Change::Edit(i, _) = change {
+                                    *i
+                                } else {
+                                    value["issues"].as_array().unwrap().len() - 1
+                                };
+                                let replacement = toml::to_string_pretty(&value["issues"][index])?
+                                    .parse::<toml_edit::DocumentMut>()?
+                                    .into_table()
+                                    .into_inline_table();
+                                if let Change::Edit(i, _) = change {
+                                    let item = array.get_mut(*i).context("Card changed")?;
+                                    if let Some(original) = item.as_inline_table_mut() {
+                                        for name in ["number", "expected", "executor", "stage"] {
+                                            if let Some(next) = replacement.get(name) {
+                                                let mut next = next.clone();
+                                                if let Some(before) = original.get(name) {
+                                                    *next.decor_mut() = before.decor().clone();
+                                                }
+                                                if let Some(key) = original.key(name).cloned() {
+                                                    original.insert_formatted(&key, next);
+                                                } else {
+                                                    original.insert(name, next);
+                                                }
+                                            } else {
+                                                original.remove(name);
+                                            }
+                                        }
+                                    } else {
+                                        let decor = item.decor().clone();
+                                        *item = toml_edit::Value::InlineTable(replacement);
+                                        *item.decor_mut() = decor;
+                                    }
+                                } else {
+                                    array.push(replacement);
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
                     } else {
                         ensure!(self.cards().is_empty(), "Unsupported issues layout");
                         doc.insert(

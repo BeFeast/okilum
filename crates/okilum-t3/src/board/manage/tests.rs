@@ -253,3 +253,23 @@ fn symlinked_stage_or_manifest_cannot_redirect_management_writes() {
     std::os::unix::fs::symlink(outside.file("project.yaml"), a.file("board.toml")).unwrap();
     assert!(Session::load(&a.0).is_err());
 }
+
+#[test]
+fn handwritten_inline_toml_cards_can_be_edited_without_rewriting_the_other_card() {
+    let a = Area::new();
+    let source="title = 'Example'\ngoal = 'Outcome'\nrepository = 'https://git.oklabs.uk/BeFeast/example'\nstage_note = 'planning/stage.md'\nissues = [\n  { number = 1, expected = 'First', executor = 'Editing', notes = ['planning/stage.md'] },\n  # Other card comment\n  { number = 2, expected = 'Keep exactly', executor = 'UI' },\n]\n";
+    std::fs::write(a.file("board.toml"), source).unwrap();
+    let s = a.session();
+    let mut edit = s.card(0);
+    edit.expected = "Updated".into();
+    let s = s.save(&Change::Edit(0, edit)).unwrap();
+    let source = s.document.as_ref().unwrap().source.clone();
+    assert!(source.contains(
+        "# Other card comment\n  { number = 2, expected = 'Keep exactly', executor = 'UI' }"
+    ));
+    assert_eq!(s.cards()[0]["notes"], json!(["planning/stage.md"]));
+    let s = s.save(&Change::Add(card("3"))).unwrap();
+    assert_eq!(s.cards().len(), 3);
+    let s = s.save(&Change::Remove(0)).unwrap();
+    assert_eq!(s.cards()[0]["number"], 2);
+}
