@@ -2867,7 +2867,7 @@ mod tests {
             assert!(r.save_source(cx));
             r.toggle_source(window, cx);
             // Positive control: ordinary I/O errors still open the attention dialog.
-            r.vault
+            Arc::make_mut(&mut r.vault)
                 .unreadable
                 .push(okilum_core::vault::UnreadableEntry {
                     path: root.join("Unavailable.md"),
