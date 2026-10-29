@@ -1,6 +1,9 @@
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 import unittest
+import urllib.error
 
 spec = importlib.util.spec_from_file_location('health', Path(__file__).with_name('main-health.py'))
 health = importlib.util.module_from_spec(spec)
@@ -8,18 +11,36 @@ spec.loader.exec_module(health)
 
 
 class FakeApi:
-    """Statuses per commit and a record of writes."""
+    """Statuses per commit, Actions reads (an answer or an exception per path), and a record of writes."""
 
-    def __init__(self, green, authors):
+    def __init__(self, green, authors, actions=None):
         self.green_commits = set(green)
         self.authors = authors
+        self.actions = actions or {}
+        self.unexpected = []
         self.comments = {}
         self.writes = []
 
     def green(self, sha):
         return sha in self.green_commits
 
+    def read(self, kind, path):
+        # As with the real Api: job logs come through text(), other Actions reads are JSON.
+        # red() swallows read errors, so a wrong read is also recorded for the test to see.
+        if path not in self.actions or (kind == 'text') != path.endswith('/logs'):
+            self.unexpected.append((kind, path))
+            raise LookupError(f'unexpected {kind} read of {path}')
+        answer = self.actions[path]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def text(self, path):
+        return self.read('text', path)
+
     def call(self, method, path, body=None):
+        if method == 'GET' and path.startswith('/actions/'):
+            return self.read('json', path)
         if method == 'GET' and path.startswith('/pulls/'):
             return {'user': {'login': self.authors[int(path.split('/')[2])]}}
         if method == 'GET' and path.endswith('/comments?limit=50'):
@@ -72,6 +93,7 @@ class MainHealthTests(unittest.TestCase):
         issue = next(w for w in api.writes if w[1] == '/issues')
         self.assertIn('c2 chore: direct push (direct push)', issue[2]['body'])
         self.assertIn('20 minutes', issue[2]['body'])
+        self.assertNotIn('Lane log unreadable', issue[2]['body'], 'no RUN_ID: no log was tried')
 
     def test_older_green_does_not_close_a_newer_red(self):
         api = FakeApi(green=set(), authors={})
@@ -142,6 +164,67 @@ class MainHealthTests(unittest.TestCase):
             self.assertIn('/issues/3/comments', [w[1] for w in api.writes])
         finally:
             health.first_parents, health.tip, health.lane_log = saved
+
+    def red_reading(self, actions):
+        """red() for c3 (merge #3 by ana; c0 is the last green) with the real lane_log."""
+        history = [('c3c3c3c3', "Merge pull request 'a' (#3) from x into main"), ('c0c0c0c0', 'm0')]
+        saved = health.first_parents, health.tip
+        health.first_parents = lambda sha, limit: history
+        health.tip = lambda: 'c3c3c3c3'
+        api = FakeApi(green={'c0c0c0c0'}, authors={3: 'ana'}, actions=actions)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                health.red(api, 'c3c3c3c3', 'run/1', run_id=7)
+        finally:
+            health.first_parents, health.tip = saved
+        self.assertEqual(api.unexpected, [], 'only the configured Actions reads, each of the right kind')
+        return api, out.getvalue()
+
+    def assert_merges_blamed(self, api, out, reason):
+        self.assertIn('/issues/3/comments', [w[1] for w in api.writes], 'the suspect merge is told')
+        body = next(w[2]['body'] for w in api.writes if w[1] == '/issues')
+        self.assertNotIn('looks like infrastructure', body)
+        self.assertIn('- #3 by @ana (c3c3c3c3)', body)
+        self.assertIn(health.RULE, body)
+        self.assertIn(f'Lane log unreadable: `{reason}`; classified as unknown.', body)
+        self.assertIn(f'Cannot read the lane log: {reason}', out)
+
+    def test_only_a_read_log_can_be_infrastructure(self):
+        self.assertEqual(health.classify(None), ('unknown', []), 'not read')
+        # Read but empty is still a read log (#1937 keeps the two apart): no build or test output.
+        self.assertEqual(health.classify(''), ('infra', 'the job ended before any build or test output'))
+
+    def test_a_forbidden_lane_log_blames_the_merges(self):
+        forbidden = urllib.error.HTTPError('https://forgejo/actions/runs/7/jobs', 403, 'Forbidden', {}, None)
+        api, out = self.red_reading({'/actions/runs/7/jobs': forbidden})
+        self.assert_merges_blamed(api, out, 'HTTPError: HTTP Error 403: Forbidden')
+
+    def test_a_run_without_a_failed_linux_local_job_blames_the_merges(self):
+        jobs = {'jobs': [{'name': 'linux', 'status': 'failure', 'id': 1},
+                         {'name': 'linux-local', 'status': 'success', 'id': 2}]}
+        api, out = self.red_reading({'/actions/runs/7/jobs': jobs})
+        self.assert_merges_blamed(api, out, 'LookupError: no failed linux-local job in run 7')
+
+    def test_an_expired_job_log_blames_the_merges(self):
+        jobs = {'jobs': [{'name': 'linux-local', 'status': 'failure', 'id': 41}]}
+        gone = urllib.error.HTTPError('https://forgejo/actions/jobs/41/logs', 404, 'Not Found', {}, None)
+        api, out = self.red_reading({'/actions/runs/7/jobs': jobs, '/actions/jobs/41/logs': gone})
+        self.assert_merges_blamed(api, out, 'HTTPError: HTTP Error 404: Not Found')
+
+    def test_a_timed_out_read_keeps_its_reason_visible(self):
+        # '<urlopen error timed out>' outside a code span is an HTML tag that Forgejo strips.
+        timeout = urllib.error.URLError(TimeoutError('timed out'))
+        api, out = self.red_reading({'/actions/runs/7/jobs': timeout})
+        self.assert_merges_blamed(api, out, 'URLError: <urlopen error timed out>')
+
+    def test_a_read_log_without_build_output_is_still_infrastructure(self):
+        jobs = {'jobs': [{'name': 'linux', 'status': 'failure', 'id': 1},
+                         {'name': 'linux-local', 'status': 'failure', 'id': 41}]}
+        api, out = self.red_reading({'/actions/runs/7/jobs': jobs, '/actions/jobs/41/logs': '2026Z Job failed\n'})
+        self.assertEqual(out, '', 'the log was read')
+        self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed')
+        self.assertIn('looks like infrastructure', api.writes[0][2]['body'])
+        self.assertNotIn('Lane log unreadable', api.writes[0][2]['body'])
 
 
 if __name__ == '__main__':
