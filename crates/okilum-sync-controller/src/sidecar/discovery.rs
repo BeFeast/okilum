@@ -54,6 +54,15 @@ pub fn discover_detailed<D: StateDir, C: Connector>(
     connector: &C,
     budget: Duration,
 ) -> Discovered {
+    discover_detailed_until(store, binding, connector, Instant::now() + budget)
+}
+
+fn discover_detailed_until<D: StateDir, C: Connector>(
+    store: &Store<D>,
+    binding: &Binding,
+    connector: &C,
+    deadline: Instant,
+) -> Discovered {
     let hint = match store.peek_hint() {
         Ok(Some(hint)) => hint,
         Ok(None) => return Discovered::Absent,
@@ -61,7 +70,10 @@ pub fn discover_detailed<D: StateDir, C: Connector>(
     };
     let scope = scope_of(binding, &hint);
     let attempt = (|| -> Result<Status> {
-        let deadline = Instant::now() + budget;
+        ensure!(
+            Instant::now() < deadline,
+            "supervisor exchange deadline elapsed"
+        );
         let mut transport = connector.connect(binding, &hint, &scope, deadline)?;
         exchange(
             &mut transport,
@@ -101,6 +113,16 @@ pub fn stop<D: StateDir, C: Connector>(
     token: &StopToken,
     budget: Duration,
 ) -> Result<()> {
+    stop_until(store, binding, connector, token, Instant::now() + budget)
+}
+
+fn stop_until<D: StateDir, C: Connector>(
+    store: &Store<D>,
+    binding: &Binding,
+    connector: &C,
+    token: &StopToken,
+    deadline: Instant,
+) -> Result<()> {
     let hint = store
         .peek_hint()?
         .context("no supervisor has published a generation")?;
@@ -113,7 +135,10 @@ pub fn stop<D: StateDir, C: Connector>(
         scope == scope_of(binding, &hint),
         "the stop token names another installation or instance"
     );
-    let deadline = Instant::now() + budget;
+    ensure!(
+        Instant::now() < deadline,
+        "supervisor exchange deadline elapsed"
+    );
     let mut transport = connector.connect(binding, &hint, &scope, deadline)?;
     let status = exchange(
         &mut transport,
@@ -148,6 +173,18 @@ impl<D: StateDir, C: Connector> SupervisorLink<D, C> {
     }
     pub fn detailed(&self, binding: &Binding) -> Discovered {
         discover_detailed(&self.store, binding, &self.connector, self.budget)
+    }
+    /// Share the caller's whole-operation deadline, without renewing its budget.
+    pub fn detailed_until(&self, binding: &Binding, deadline: Instant) -> Discovered {
+        discover_detailed_until(&self.store, binding, &self.connector, deadline)
+    }
+    pub fn stop_until(
+        &self,
+        binding: &Binding,
+        token: &StopToken,
+        deadline: Instant,
+    ) -> Result<()> {
+        stop_until(&self.store, binding, &self.connector, token, deadline)
     }
     pub fn stop(&self, binding: &Binding, token: &StopToken) -> Result<()> {
         stop(&self.store, binding, &self.connector, token, self.budget)

@@ -217,3 +217,131 @@ fn a_denied_approval_is_reported() {
         .unwrap_err();
     assert!(error.to_string().contains("access_denied"), "{error}");
 }
+
+#[test]
+fn a_pasted_callback_after_loopback_timeout_keeps_pkce_and_rejects_foreign_answers() {
+    let (server, _) = fake_t3_oauth(str::to_owned);
+    let env = Environment::new("test", &server.origin).unwrap();
+    let pending = Authorization::prepare(&env, "Okilum on test").unwrap();
+    // Browser approved, but never delivered its redirect to the listener.
+    let response = http_client()
+        .unwrap()
+        .get(pending.url().clone())
+        .send()
+        .unwrap();
+    let callback = response.headers()["location"].to_str().unwrap().to_owned();
+    let (send, receive) = std::sync::mpsc::channel();
+    let (events, progress) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        pending.wait(
+            receive,
+            |p| {
+                let _ = events.send(p);
+            },
+            Duration::from_millis(100),
+        )
+    });
+    loop {
+        if matches!(
+            progress.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Progress::TimedOut
+        ) {
+            break;
+        }
+    }
+    let url = Url::parse(&callback).unwrap();
+    assert!(
+        TcpStream::connect(url.socket_addrs(|| None).unwrap()[0]).is_err(),
+        "positive control: the loopback port really closed"
+    );
+    for (name, value) in [("state", "foreign"), ("iss", "https://foreign.example")] {
+        let mut forged = url.clone();
+        let pairs: Vec<_> = forged
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        forged.set_query(None);
+        for (k, v) in pairs {
+            forged
+                .query_pairs_mut()
+                .append_pair(&k, if k == name { value } else { &v });
+        }
+        send.send(Input::Callback(forged.to_string())).unwrap();
+        loop {
+            if let Progress::InvalidCallback(error) =
+                progress.recv_timeout(Duration::from_secs(3)).unwrap()
+            {
+                assert!(error.contains(name), "{error}");
+                break;
+            }
+        }
+        assert!(!server
+            .requests()
+            .iter()
+            .any(|r| r.path() == "/oauth/mcp/token"));
+    }
+    send.send(Input::Callback(callback)).unwrap();
+    let token = worker.join().unwrap().unwrap();
+    assert_eq!(token.access_token, "issued-token");
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|r| r.path() == "/oauth/mcp/token")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn waiting_longer_reopens_the_original_callback_and_cancel_is_bounded() {
+    let (server, _) = fake_t3_oauth(str::to_owned);
+    let pending = Authorization::prepare(
+        &Environment::new("test", &server.origin).unwrap(),
+        "Okilum on test",
+    )
+    .unwrap();
+    let response = http_client()
+        .unwrap()
+        .get(pending.url().clone())
+        .send()
+        .unwrap();
+    let callback = response.headers()["location"].to_str().unwrap().to_owned();
+    let (send, receive) = std::sync::mpsc::channel();
+    let (events, progress) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        pending.wait(
+            receive,
+            |p| {
+                let _ = events.send(p);
+            },
+            Duration::from_millis(200),
+        )
+    });
+    while !matches!(
+        progress.recv_timeout(Duration::from_secs(3)).unwrap(),
+        Progress::TimedOut
+    ) {}
+    send.send(Input::WaitLonger).unwrap();
+    while !matches!(
+        progress.recv_timeout(Duration::from_secs(3)).unwrap(),
+        Progress::Waiting(_)
+    ) {}
+    assert!(reqwest::blocking::get(&callback)
+        .unwrap()
+        .status()
+        .is_success());
+    assert_eq!(worker.join().unwrap().unwrap().access_token, "issued-token");
+    let pending = Authorization::prepare(
+        &Environment::new("test", &server.origin).unwrap(),
+        "Okilum on test",
+    )
+    .unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    send.send(Input::Cancel).unwrap();
+    assert!(pending
+        .wait(receive, |_| {}, DEFAULT_WAIT)
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled"));
+}

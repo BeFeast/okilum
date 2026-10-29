@@ -7,6 +7,8 @@ use super::{
 use anyhow::{ensure, Result};
 #[cfg(unix)]
 pub mod bundle;
+#[cfg(unix)]
+pub mod connection;
 pub const PLIST: &str = "com.befeast.okilum.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {

@@ -5,7 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use okilum_t3::{manifest::AreaBinding, Environment};
+#[cfg(test)]
+use okilum_t3::manifest::AreaBinding;
+use okilum_t3::Environment;
 
 #[cfg(test)]
 pub(super) fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
@@ -25,6 +27,7 @@ pub(super) fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
     Ok(vault.to_owned())
 }
 
+#[cfg(test)]
 pub(super) fn load(state: &Path, binding: &AreaBinding) -> Result<Option<Environment>> {
     let source = match std::fs::read(state.join("t3-connections.json")) {
         Ok(source) => source,
@@ -37,6 +40,28 @@ pub(super) fn load(state: &Path, binding: &AreaBinding) -> Result<Option<Environ
         .get(&binding.environment)
         .map(|origin| Environment::new(&binding.environment, origin))
         .transpose()
+}
+
+/// App-wide sign-in also serves aliases which have never opened a panel.
+pub(super) fn for_projects(
+    state: &Path,
+    projects: &[okilum_t3::projects::Project],
+) -> Result<BTreeMap<String, String>> {
+    let mut saved: BTreeMap<String, String> = match std::fs::read(state.join("t3-connections.json"))
+    {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => return Err(e.into()),
+    };
+    for project in projects {
+        let Some(alias) = &project.environment else {
+            continue;
+        };
+        if let Some(origin) = prefill_origin(&project.folder, alias, Some(state))? {
+            saved.insert(alias.clone(), origin);
+        }
+    }
+    Ok(saved)
 }
 
 pub(super) fn save(state: &Path, env: &Environment) -> Result<()> {
@@ -170,6 +195,40 @@ mod origin_tests {
             last_origin(Some(&state)).unwrap(),
             Some(app.origin()),
             "project override must not replace the app default"
+        );
+    }
+
+    #[test]
+    fn one_app_origin_serves_new_project_aliases_and_preserves_overrides() {
+        let base = tempfile::tempdir().unwrap();
+        let state = base.path().join("state");
+        save_last_origin(
+            &state,
+            &Environment::new("app", "https://shared.example").unwrap(),
+        )
+        .unwrap();
+        let mut projects = Vec::new();
+        for (name, extra) in [
+            ("first", ""),
+            ("second", ""),
+            ("override", "  origin: https://override.example\n"),
+        ] {
+            let folder = base.path().join(name);
+            std::fs::create_dir_all(folder.join("ops")).unwrap();
+            std::fs::write(
+                folder.join("ops/project.yaml"),
+                format!("name: {name}\nt3:\n  environment: {name}\n{extra}"),
+            )
+            .unwrap();
+            projects.push(okilum_t3::projects::Project::read(&folder).unwrap());
+        }
+        let connections = for_projects(&state, &projects).unwrap();
+        assert_eq!(connections["first"], "https://shared.example");
+        assert_eq!(connections["second"], connections["first"]);
+        assert_eq!(connections["override"], "https://override.example");
+        assert!(
+            !state.join("t3-connections.json").exists(),
+            "discovery does not persist guessed project overrides"
         );
     }
 

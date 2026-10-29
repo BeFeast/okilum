@@ -54,16 +54,17 @@ pub(super) async fn t3_gateways(
     state: Option<PathBuf>,
     cx: &mut AsyncWindowContext,
 ) -> Option<Gateways> {
+    let projects = this
+        .update_in_own_window(cx, |reader, _, _| {
+            reader.project_navigation.discovery.projects.clone()
+        })
+        .ok()?;
     let connections = cx
         .background_executor()
         .spawn(async move {
-            let Some(state) = state else {
-                return Ok(std::collections::BTreeMap::<String, String>::new());
-            };
-            match std::fs::read(state.join("t3-connections.json")) {
-                Ok(source) => serde_json::from_slice(&source).map_err(anyhow::Error::from),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
-                Err(e) => Err(e.into()),
+            match state {
+                Some(state) => project::browser_connections(&state, &projects),
+                None => Ok(std::collections::BTreeMap::<String, String>::new()),
             }
         })
         .await;

@@ -1,6 +1,7 @@
 //! The area's remote manager in the existing Reader window (#1418).
 //! Network work stays off the UI thread; questionnaires remain in T3.
 use super::*;
+#[cfg(target_os = "linux")]
 use anyhow::Context as _;
 use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
@@ -30,6 +31,13 @@ pub(super) fn save_browser_environment(
     connections::save_last_origin(state, environment)
 }
 
+pub(super) fn browser_connections(
+    state: &Path,
+    projects: &[okilum_t3::projects::Project],
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    connections::for_projects(state, projects)
+}
+
 pub(super) fn prefill_app_browser_origin(state: Option<&Path>) -> anyhow::Result<Option<String>> {
     connections::last_origin(state)
 }
@@ -56,6 +64,7 @@ pub(crate) struct ProjectView {
     context_path: String,
     state: Option<PathBuf>,
     environment: Option<Environment>,
+    project_override: bool,
     gateway: Option<Arc<dyn ManagerGateway>>,
     identity: Option<ServerIdentity>,
     chat: Option<Conversation>,
@@ -78,6 +87,7 @@ pub(crate) struct ProjectView {
     polling: bool,
     generation: u64,
     _input: Subscription,
+    _connection: Subscription,
     last_poll_status: Option<GatewayStatus>,
     #[cfg(target_os = "linux")]
     feed: Entity<feed::Feed>,
@@ -99,22 +109,40 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = Self::empty(state.clone(), window, cx);
+        let area_copy = area.clone();
         view.area = Some(area);
         let state_copy = state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let env = match (&binding, &state_copy) {
-                        (Some(binding), Some(state)) => connections::load(state, binding)?,
-                        _ => None,
+                    let (env, project_override) = match (&binding, &state_copy) {
+                        (Some(binding), Some(state)) => {
+                            let explicit = connections::project_origin(
+                                &area_copy,
+                                &binding.environment,
+                                Some(state),
+                            )?;
+                            let project_override = explicit.is_some();
+                            let origin = explicit.or(connections::last_origin(Some(state))?);
+                            (
+                                origin
+                                    .map(|origin| {
+                                        Environment::from_input(&binding.environment, &origin)
+                                    })
+                                    .transpose()?,
+                                project_override,
+                            )
+                        }
+                        _ => (None, false),
                     };
-                    Ok::<_, anyhow::Error>((binding, env))
+                    Ok::<_, anyhow::Error>((binding, env, project_override))
                 })
                 .await;
             let env = this
                 .update_in(cx, |this, window, cx| match result {
-                    Ok((binding, env)) => {
+                    Ok((binding, env, project_override)) => {
+                        this.project_override = project_override;
                         this.reason = match &binding {
                             None => Some("This area is not connected to T3.".into()),
                             Some(binding) if binding.manager.thread_id.is_none() => {
@@ -142,6 +170,19 @@ impl ProjectView {
             let Some(env) = env else {
                 return;
             };
+            let reused = this
+                .update_in(cx, |this, window, cx| {
+                    if let Some(gateway) = reader_t3_settings::gateway(&env, cx) {
+                        this.finish_connection(Ok((env.clone(), gateway)), window, cx);
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if reused {
+                return;
+            }
             let url = env.credential_url();
             let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
                 Ok(task) => task,
@@ -195,12 +236,36 @@ impl ProjectView {
                 this.send(None, window, cx);
             },
         );
+        let weak = cx.weak_entity();
+        let connection =
+            window.observe_global::<reader_t3_settings::Connection>(cx, move |window, cx| {
+                let origin = cx
+                    .try_global::<reader_t3_settings::Connection>()
+                    .and_then(|c| c.origin.clone());
+                let _ = weak.update(cx, |this, cx| {
+                    if let Some(origin) = origin {
+                        // A project's explicit different server must not inherit another token.
+                        if this.project_override
+                            && this
+                                .environment
+                                .as_ref()
+                                .is_some_and(|env| env.origin() != origin)
+                        {
+                            return;
+                        }
+                        this.origin
+                            .update(cx, |input, cx| input.set_value(origin, window, cx));
+                        this.connect_mode(false, window, cx);
+                    }
+                });
+            });
         Self {
             binding: None,
             area: None,
             context_path: String::new(),
             state,
             environment: None,
+            project_override: true,
             gateway: None,
             identity: None,
             chat: None,
@@ -223,6 +288,7 @@ impl ProjectView {
             polling: false,
             generation: 0,
             _input: input,
+            _connection: connection,
             last_poll_status: None,
             #[cfg(target_os = "linux")]
             feed,
@@ -292,21 +358,18 @@ impl ProjectView {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_override = true;
         self.connect_mode(false, window, cx);
     }
 
     fn connect_mode(&mut self, sign_in_again: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if sign_in_again {
+            reader_settings::show_t3(cx);
+            return;
+        }
         if self.busy || self.model_busy {
             return;
         }
-        if self.binding.is_none() {
-            return;
-        }
-        let Some(state) = self.state.clone() else {
-            self.error = Some("Application state is unavailable.".into());
-            cx.notify();
-            return;
-        };
         let env = match self.connection_environment(cx) {
             Ok(env) => env,
             Err(error) => {
@@ -316,84 +379,27 @@ impl ProjectView {
             }
         };
         self.busy = true;
-        self.error = None;
-        let (send_url, receive_url) = async_channel::bounded::<String>(1);
-        let worker_env = env.clone();
+        let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            let key = env.credential_url();
-            let saved = if sign_in_again {
-                Ok(None)
-            } else {
-                let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&key)) {
-                    Ok(task) => task,
-                    Err(_) => return,
-                };
-                match task.await {
-                    Ok(Some((_, bytes))) => {
-                        StoredToken::from_secret(&bytes)
-                            .context("Saved T3 credentials cannot be read. Choose Sign in again to replace them after authorization.")
-                            .map(|token| Some((key, token)))
-                    }
-                    Ok(None) => Ok(None),
-                    Err(error) => Err(error),
-                }
+            let Some(task) = this
+                .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
+                .ok()
+            else {
+                return;
             };
-            let saved = match saved {
-                Ok(saved) => saved,
-                Err(error) => {
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.finish_connection(Err(error), window, cx)
-                    });
-                    return;
-                }
-            };
-            let job = cx.background_executor().spawn(async move {
-                okilum_t3::reconnect::connect(&worker_env, saved, sign_in_again, || {
-                    okilum_t3::oauth::connect(
-                        &worker_env,
-                        "Okilum",
-                        move |url| {
-                            send_url
-                                .send_blocking(url.to_string())
-                                .map_err(|_| anyhow::anyhow!("The connection window closed"))
-                        },
-                        Duration::from_secs(180),
-                    )
-                })
+            let token = task.await.and_then(|saved| {
+                saved
+                    .map(|(_, bytes)| StoredToken::from_secret(&bytes))
+                    .transpose()
             });
-            // A reused token never invokes authorization: its unused URL sender
-            // closes, so this does not wait for a browser or ask for pairing.
-            if let Ok(url) = receive_url.recv().await {
-                let _ = this.update_in(cx, |_, _, cx| cx.open_url(&url));
-            }
-            let connected = match job.await {
-                Ok(connected) => connected,
-                Err(error) => {
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.finish_connection(Err(error), window, cx)
-                    });
-                    return;
-                }
-            };
-            if let Some(token) = &connected.issued_token {
-                let task = match this.update_in(cx, |_, _, cx| {
-                    cx.write_credentials(&env.credential_url(), &env.alias, &token.to_secret())
-                }) {
-                    Ok(task) => task,
-                    Err(_) => return,
-                };
-                if let Err(error) = task.await {
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.finish_connection(Err(error), window, cx)
-                    });
-                    return;
-                }
-            }
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    connections::save(&state, &env)?;
-                    Ok((env, Arc::new(connected.gateway) as Arc<dyn ManagerGateway>))
+                    let gateway = McpGateway::new(env.clone(), token?)?;
+                    if let Some(state) = state {
+                        connections::save(&state, &env)?;
+                    }
+                    Ok((env, Arc::new(gateway) as Arc<dyn ManagerGateway>))
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -744,7 +750,9 @@ fn expiry_note(expires_at: u64) -> String {
 fn status_note(status: &GatewayStatus) -> Option<&'static str> {
     match status {
         GatewayStatus::Connected { .. } => None,
-        GatewayStatus::NotConnected => Some("Connect to T3 to talk to this manager."),
+        GatewayStatus::NotConnected => {
+            Some("Sign in once in Settings › T3 to use every project in this app.")
+        }
         GatewayStatus::ExpiresSoon { .. } => {
             Some("Your T3 connection expires within three days. Choose Renew to sign in again.")
         }
@@ -1051,8 +1059,8 @@ impl Render for ProjectView {
                             Button::new("project-sign-in-again")
                                 .debug_selector(move || if renew { "project-renew".into() } else { "project-sign-in-again".into() })
                                 .ghost()
-                                .label(if renew { "Renew" } else { "Sign in again" })
-                                .tooltip("Authorize a new 30-day connection in your browser")
+                                .label(if renew { "Renew in Settings" } else { "Sign in to T3" })
+                                .tooltip("Use the shared connection in Settings › T3")
                                 .disabled(self.busy || self.model_busy)
                                 .on_click(cx.listener(|this, _, window, cx| this.connect_mode(true, window, cx))),
                         ),
@@ -1061,7 +1069,7 @@ impl Render for ProjectView {
             .when_some(expiry, |view, expiry| view.child(div().w_full().min_w_0().whitespace_normal().debug_selector(|| "project-token-expiry".into()).text_color(brand::palette(cx).text_muted).child(expiry)))
             .when(self.binding.is_some() && browser_help, |view| {
                 view.child(v_flex().gap_1()
-                    .child(div().w_full().min_w_0().whitespace_normal().child("If your browser is signed out, sign in to T3 once (30 days), then approve this connection."))
+                    .child(div().w_full().min_w_0().whitespace_normal().child("Settings › T3 shows the shared sign-in state and can accept a browser callback URL."))
                     .child(Button::new("project-browser-sign-in").debug_selector(|| "project-browser-sign-in".into()).ghost().label("Open T3 in browser")
                         .disabled(browser_origin.is_none())
                         .on_click(move |_, _, cx| { if let Some(origin) = &browser_origin { cx.open_url(origin); } })))

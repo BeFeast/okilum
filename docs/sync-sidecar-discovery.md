@@ -113,3 +113,37 @@ positive control is the genuine fixture on the same endpoint. macOS: the same se
 audit-token reuse simulated by a replaced process, and the process-group stop with a
 descendant that stays in the group (reaped) and one that leaves it (reported as not
 owned, answer `Stopping`, never `Stopped`).
+
+## Concrete macOS connection (#588, stage 7)
+
+`macos::connection::NativeConnection::open` combines the verified current bundle,
+existing private Unix store, saved installation/instance/device binding, and the
+Unix connector with `SignedPeer` authentication. Both code requirements come from
+the caller's build policy; the factory has no permissive peer or transport
+fallback. Opening refuses an absent/mismatched lifecycle journal and never creates
+state or registers/starts a service. Open it outside a controller transaction.
+
+`inspect` revalidates the bundle, then uses the lock-free atomic hint read so a
+controller can inspect while holding its own transaction. It returns `Absent`,
+`Unreachable(reason)` or `Live(scope)` distinctly. Absent means no published hint,
+not proof of process exit. Unreachable never silently becomes Stopped.
+
+`request_stop` checks the current journal's exact revision/epoch-bound token in a
+short transaction and releases the lock before authenticated IPC. One absolute
+deadline spans bundle checks, journal wait and authenticated exchange; it is not
+renewed between these phases or per byte. Filesystem/signature calls themselves
+are synchronous observations, not forcibly interruptible OS calls. The supervisor
+still revalidates authority itself. Changed generation, stale authority, incomplete
+Stop or failed authentication remain errors. Success is a protocol acknowledgement
+of the owned-tree stop; it does not confirm supervisor-process exit or authorize
+service unregistration. The native lifecycle adapter must separately confirm exit
+and the lifecycle controller must revalidate the current journal after the reply.
+No PID killing or service-unregistration fallback exists in this connection.
+
+Portable tests inject a framed transport and signature verifier to exercise these
+boundaries, including inspection while the journal is locked. Hosted macOS opens
+a real ad-hoc signed disposable app/helper through the concrete factory, observes
+the absent hint without launching them, and refuses a wrong helper requirement.
+Existing native audit-token/socket tests cover signed peer authentication. This
+is not a native login/sleep/stop/uninstall acceptance claim; OwnedSupervisor,
+pinned Syncthing preparation and desktop orchestration remain work under #588.
