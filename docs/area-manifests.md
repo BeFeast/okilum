@@ -42,6 +42,14 @@ keep the existing YAML files. The executor tests conversion on a separate copy.
 Vault-side scripts and skills migrate in a separate manager step. Conversion or
 deletion of real vault YAML is not part of shipping this reader change.
 
+During rollout, #1862 blocks removing the last card from a legacy YAML Board:
+older readers reject an empty `issues` array and would show “Board unavailable”.
+The refusal leaves the file unchanged and explains that another card can be
+added first. Other legacy edits/removes remain available; TOML Boards may become
+empty. Remove this temporary guard together with the manager's vault migration
+after every deployed reader supports TOML and empty Boards. Do not convert a
+Board or write both formats to bypass this guard.
+
 ```sh
 python3 -m venv /tmp/okilum-manifests
 /tmp/okilum-manifests/bin/pip install -r scripts/manifests/requirements.txt

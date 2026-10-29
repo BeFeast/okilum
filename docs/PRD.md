@@ -65,6 +65,11 @@ projection in the center, related-note navigation and draft-only Manager context
 fallback. Invalid cards retain precise visible diagnostics beside healthy cards.
 Delivery/human acceptance and execution mutations remain separate.
 
+**Board management (2026-10-29, #1862):** [inline authoring](project-board.md#board-management-1862)
+creates an empty `board.toml` explicitly and edits project cards and the selected
+stage note. Existing boards retain their selected format, revision checks and
+atomic writes; this does not convert vault manifests or dispatch executor work.
+
 A local-first desktop knowledge environment that replaces Obsidian without taking
 ownership of the files.
 

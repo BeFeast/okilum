@@ -1,8 +1,9 @@
 # Native project Board (#1767, #1859)
 
 The accepted Sprint Board UI and shared model now use the compatible Area
-manifest readers. The Board remains a read-only projection; in-app authoring is
-tracked separately in #1862.
+manifest readers. Its live status remains a projection; explicit in-app Board
+authoring is described below. Editing a card never changes its Forgejo issue or
+starts executor work.
 
 Entering a project opens a native Board in its existing center pane. Notes and
 Board share that center. Returning with **Board** retains the executor filter,
@@ -226,3 +227,41 @@ Malformed, unreadable or symlinked TOML is an explicit error; it cannot silently
 select an older YAML copy. Readers never convert files. See the
 [conversion and rollout guide](area-manifests.md). Existing YAML remains usable
 unchanged until the manager completes the rollout on every channel and OS.
+
+## Board management (#1862)
+
+A project without a Board shows a quiet empty state and a primary **Create
+board** action. The inline form starts with the Area's project title and goal
+(`goal`, then `product.outcome`, then `description`); a missing goal is filled by
+the person creating the Board. The repository comes from the selected project
+manifest, never from a folder name. The stage note is selected from Planning;
+exactly one candidate may prefill the selector, while multiple candidates
+require an explicit choice. Creation writes an empty `ops/board.toml` only when
+no Board file exists. An empty created Board is valid and prompts its first card.
+
+The Board's **Manage board** icon opens the same inline surface. Add a card with
+an issue number, `#number`, or exact issue URL in this Board's repository; edit
+its expected result, executor and stage; remove it; or change the title, goal and
+stage note under Board details. Automatic stage follows source evidence; Ready
+and Verified are explicit human overrides. A reference adds only an explicit
+card; it does not create, close or edit an issue, send a Manager message, or
+assign an executor. Removal is immediate and has one revision-checked Undo
+inside management until the next write. Errors remain beneath their fields and
+the draft stays available after a write conflict.
+
+The management view names the exact active file and format. Existing
+`board.yaml` files remain JSON-in-YAML with two-space indentation; existing TOML
+keeps TOML, including unrelated card content and comments. When both files
+exist, only the reader-selected TOML is edited and the YAML is explicitly marked
+inactive. No operation writes both files or performs vault-wide conversion.
+Until the manager completes rollout, removing the last legacy YAML card is
+refused with an explanation: older Okilum builds would show “Board unavailable”.
+Add another card first or wait for that Board's migration to TOML. All other
+legacy edits/removes work; a TOML Board may become empty. This temporary guard
+is removed with the [vault migration](area-manifests.md#one-shot-conversion).
+Changes use the revision and format selected when editing began. A changed
+project manifest, external Board edit or new preferred-format file refuses a
+stale write; close/reopen management to reload. A new file is published atomically
+without replacing a concurrent creator, and existing files use synced
+same-directory atomic replacement. Local-note, repository and per-field
+validation remain enforced. All file work runs off the UI thread.
