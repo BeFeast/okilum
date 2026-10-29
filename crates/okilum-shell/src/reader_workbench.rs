@@ -628,9 +628,11 @@ mod tests {
         let state: reader_sidebar::State = serde_json::from_str("{}").unwrap();
         assert_eq!(state.left_mode, LeftMode::Now);
         let mac = gpui::Keystroke::parse("cmd-|").unwrap();
-        assert!(mac.should_match(&gpui::KeybindingKeystroke::parse("cmd-|").unwrap()));
-        assert!(!mac.should_match(&gpui::KeybindingKeystroke::parse("cmd-\\").unwrap()));
-        assert!(!mac.should_match(&gpui::KeybindingKeystroke::parse("cmd-shift-\\").unwrap()));
+        let binding =
+            |key| gpui::KeybindingKeystroke::from_keystroke(gpui::Keystroke::parse(key).unwrap());
+        assert!(mac.should_match(&binding("cmd-|")));
+        assert!(!mac.should_match(&binding("cmd-\\")));
+        assert!(!mac.should_match(&binding("cmd-shift-\\")));
     }
 
     #[test]
