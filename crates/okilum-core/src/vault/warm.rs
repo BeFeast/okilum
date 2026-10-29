@@ -334,7 +334,7 @@ fn cached_vault(
         .filter(|item| !super::is_cloud_placeholder_diagnostic(&item.operation, &item.error))
         .map(|item| UnreadableEntry {
             path: item.path.clone(),
-            operation: if item.operation == super::DECODE_NOTE {
+            operation: if super::is_note_encoding_diagnostic(&item.operation, &item.error) {
                 super::DECODE_NOTE
             } else {
                 "previous scan"
@@ -795,9 +795,13 @@ pub fn reconcile(
     force_read: bool,
     checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
 ) -> Result<(Vault, Snapshot, ReconcileStats)> {
-    reconcile_with_reader(root, previous, force_read, checkpoint, &mut |path| {
-        super::read_source_bytes(path)
-    })
+    reconcile_with_reader(
+        root,
+        previous,
+        force_read,
+        checkpoint,
+        &mut super::read_source_bytes,
+    )
 }
 
 /// Reconcile with a caller-owned source reader, retaining per-entry I/O failures.
@@ -1001,10 +1005,10 @@ fn check_source(
         result.source = Some(old.unwrap().clone());
         result.unreadable = previous
             .and_then(|snapshot| {
-                snapshot
-                    .unreadable
-                    .iter()
-                    .find(|item| item.path == path && item.operation == super::DECODE_NOTE)
+                snapshot.unreadable.iter().find(|item| {
+                    item.path == path
+                        && super::is_note_encoding_diagnostic(&item.operation, &item.error)
+                })
             })
             .map(|item| UnreadableEntry {
                 path: path.clone(),
@@ -1295,6 +1299,12 @@ mod tests {
         let saved = Snapshot::load(&cache, &root).unwrap();
         assert_eq!(saved.source("Damaged.md").unwrap(), display);
         assert_eq!(saved.sources().unwrap()["Damaged.md"], bytes);
+        let mut legacy = saved.clone();
+        for warning in &mut legacy.unreadable {
+            warning.operation = "previous scan".into();
+            warning.error = "previous scan: decode note: invalid UTF-8".into();
+        }
+        assert!(legacy.vault().note_encoding_damaged("Damaged.md"));
         remember_primary(&cache, &root, "Damaged.md").unwrap();
         let startup = StartupSnapshot::load(&cache, &root).unwrap();
         assert!(startup.vault().note_encoding_damaged("Damaged.md"));

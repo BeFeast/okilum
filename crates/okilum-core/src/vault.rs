@@ -398,6 +398,21 @@ pub fn is_cloud_placeholder_diagnostic(operation: &str, error: &str) -> bool {
         || (matches!(operation, "read note" | "previous scan") && error.ends_with(CLOUD_PENDING))
 }
 
+/// Old snapshots wrapped diagnostics with "previous scan" on each publication.
+pub fn is_note_encoding_diagnostic(operation: &str, error: &str) -> bool {
+    if operation == DECODE_NOTE {
+        return true;
+    }
+    if operation != "previous scan" {
+        return false;
+    }
+    let mut original = error;
+    while let Some(inner) = original.strip_prefix("previous scan: ") {
+        original = inner;
+    }
+    original.starts_with("decode note: ")
+}
+
 /// A skipped entry, retained so a partial inventory is never presented as complete.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnreadableEntry {
@@ -613,7 +628,7 @@ impl Vault {
         root: &Path,
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<(Vault, HashMap<String, Vec<u8>>)> {
-        Self::scan_snapshot_read_with(root, checkpoint, &mut |path| read_source_bytes(path))
+        Self::scan_snapshot_read_with(root, checkpoint, &mut read_source_bytes)
     }
 
     fn scan_snapshot_read_with(
@@ -1073,9 +1088,9 @@ impl Vault {
     /// Encoding information captured with a cached display source.
     pub fn note_encoding_damaged(&self, rel: &str) -> bool {
         let path = self.root.join(rel);
-        self.unreadable
-            .iter()
-            .any(|item| item.path == path && item.operation == DECODE_NOTE)
+        self.unreadable.iter().any(|item| {
+            item.path == path && is_note_encoding_diagnostic(item.operation, &item.error)
+        })
     }
 
     /// Resolve a wikilink target ("Note", "Dir/Note", "Note#Heading", with any

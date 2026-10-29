@@ -326,7 +326,7 @@ struct DiagnosticDisclosure {
 }
 
 fn item_summary(item: &okilum_core::vault::UnreadableEntry) -> Option<&'static str> {
-    if item.operation == okilum_core::vault::DECODE_NOTE
+    if okilum_core::vault::is_note_encoding_diagnostic(item.operation, &item.error)
         || okilum_core::vault::is_cloud_placeholder_diagnostic(item.operation, &item.error)
     {
         return None;
@@ -575,6 +575,27 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encoding_damage_is_inline_even_with_legacy_cached_diagnostics() {
+        use okilum_core::vault::{UnreadableEntry, DECODE_NOTE};
+        for (operation, error) in [
+            (DECODE_NOTE, "invalid UTF-8"),
+            ("previous scan", "decode note: invalid UTF-8"),
+            ("previous scan", "previous scan: decode note: invalid UTF-8"),
+        ] {
+            assert!(!needs_attention(&UnreadableEntry {
+                path: "synthetic/Damaged.md".into(),
+                operation,
+                error: error.into()
+            }));
+        }
+        assert!(needs_attention(&UnreadableEntry {
+            path: "synthetic/Unavailable.md".into(),
+            operation: "previous scan",
+            error: "read note: Permission denied".into()
+        }));
+    }
+
     #[test]
     fn first_paint_markers_are_scoped_to_each_resolved_vault() {
         let base = std::env::temp_dir().join(format!("okilum-root-trace-{}", uuid::Uuid::new_v4()));
