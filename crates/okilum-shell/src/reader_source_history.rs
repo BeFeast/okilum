@@ -78,7 +78,7 @@ impl Reader {
             .map(|v| v.note.strip_prefix(&root).unwrap_or(&v.note).to_path_buf())
             .collect();
         let ambiguous = reader_recovery_rows::ambiguous_titles(rels.iter().map(PathBuf::as_path));
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let reader = reader.clone(); let root = root.clone();
             dialog.title(if drafts_only { "Recover notes" } else { "Note history" }).width(px(760.))
                 .child(div().id("recovery-explanation").child("Choose a note to preview. Saving a recovered copy leaves the original unchanged.")
