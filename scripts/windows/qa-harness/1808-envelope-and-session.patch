@@ -1,0 +1,487 @@
+diff --git a/.gitignore b/.gitignore
+index 6f24d38..ca63f9e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -36,3 +36,6 @@
+
+ !/autosave-gate/pr_seed.py
+ !/autosave-gate/test_pr_seed.py
++
++!/autosave-gate/boot_readback.py
++!/autosave-gate/test_boot_readback.py
+diff --git a/autosave-gate/CONTRACT.md b/autosave-gate/CONTRACT.md
+index 0f36761..65afee8 100644
+--- a/autosave-gate/CONTRACT.md
++++ b/autosave-gate/CONTRACT.md
+@@ -105,3 +105,38 @@ Accepted limits, repeated in each attempt contract/receipt:
+ Offline tests: test_pr_seed.py (original archive/source/Setup admission negatives),
+ test-pr-seed.ps1 (unsigned mode/signature/policy/fresh public beta adapter), and
+ all existing gate regression suites. Offline/mock results are not native proof.
++
++## Per-attempt guest quiet preparation and post-rollback boot
++
++All canonical gate modes prepare QA session1 before the first app launch. The
++new session-quiet helper snapshots two per-user DWORD toast switches (including
++absent values/keys) and validated, current-session OneDrive executable paths.
++Only these switches are set to0. OneDrive uses its bounded /shutdown command;
++unknown paths, other sessions, repeated preparation or incomplete shutdown STOP.
++No service/package/policy/snapshot update, network blocking, auth or kill fallback.
++Actual notification suppression is UNVERIFIED until the next granted native run;
++registry readback alone is not proof that every possible popup is suppressed.
++Existing full-frame guards stay exact, with no additional mask.
++
++Cleanup stops the own app/task, restores the recorded registry values and requests
++/background launch only for previously running OneDrive paths inside QA session1,
++then collects raw evidence and rolls back to clean. Partial preparation has a
++saved baseline and is restored too. Preparation never started => no restoration
++session is launched. Restoration failure retains the lock under existing policy.
++Restoration and preparation are bounded canonical desktop calls, not SSH-session
++registry edits. Snapshot clean is never saved/changed.
++
++unlock currently returns after qm start, without waiting for guest boot. The prior
++postclean SSH began immediately and timed out255 twice; later reachability passed.
++This supports a boot/readback race, not a proven network fault. A read-only boot
++observer now waits at most120s (plus5s local kill/drain grace), bounded by the
++original release deadline, at most24 probes. It uses only canonical vm.sh ps.
++Connection timeout/refused/reset/closed or explicit desktop-not-ready may wait;
++auth, unknown error, missing/nonzero counters STOP without repeat. Every probe and
++final state is retained. Deadline/nonready counts stay UNKNOWN, never inferred0.
++No reboot/repair/new gate/native retry is performed by this observer.
++
++29Oct r3: exactly ONE attempt AFTER the09:00status, same local5226/8113ab0a artifact;
++no extra VM tonight. Fresh reachability, own reservation, clean rollback, frame
++approval and all install/update/Restart/data gates remain required. #1667 open,
++no signing/promotion. The existing two blocked receipts remain immutable.
+diff --git a/autosave-gate/boot_readback.py b/autosave-gate/boot_readback.py
+new file mode 100644
+index 0000000..ed2d060
+--- /dev/null
++++ b/autosave-gate/boot_readback.py
+@@ -0,0 +1,72 @@
++"""Bounded read-only post-rollback boot observation, never a gate/SSH repair."""
++import json
++from pathlib import Path
++import re
++import os
++import signal
++import subprocess
++import sys
++import time
++
++SCRIPT = """$ErrorActionPreference='Stop'
++if(!(Get-Process explorer -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})){Write-Output 'BOOT_DESKTOP_NOT_READY'; exit 75}
++'postcleanApps='+@(Get-Process okilum -ErrorAction SilentlyContinue).Count
++'postcleanTasks='+@(Get-ScheduledTask okilumqa-run -ErrorAction SilentlyContinue).Count
++exit 0
++"""
++
++
++def run_read(command, capture_output, text, timeout):
++    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text, start_new_session=True)
++    try:
++        stdout, stderr = process.communicate(timeout=timeout)
++    except subprocess.TimeoutExpired:
++        os.killpg(process.pid, signal.SIGKILL)
++        process.communicate(timeout=5)
++        raise
++    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
++
++
++def observe(vm, evidence, release, runner=run_read, clock=time.time, pause=time.sleep, window_seconds=300):
++    if not 1 <= window_seconds <= 600:
++        raise ValueError('Boot observation window must be within1..600seconds')
++    max_attempts = (window_seconds + 4) // 5
++    started = clock()
++    deadline = min(started + window_seconds, release - 5)
++    attempts = []
++    state = 'deadline'
++    while deadline - clock() >= 1 and len(attempts) < max_attempts:
++        limit = min(15, deadline - clock())
++        try:
++            result = runner([str(vm), 'ps', SCRIPT], capture_output=True, text=True, timeout=limit)
++            code, stdout, stderr = result.returncode, result.stdout, result.stderr
++            # vm.sh keeps SSH stderr in its existing separate file.
++            remote = vm.parent / 'last-ps.stderr'
++            if remote.exists():
++                stderr += remote.read_text(errors='replace')
++        except subprocess.TimeoutExpired:
++            code, stdout, stderr = 124, '', 'Post-rollback read timed out during boot'
++        attempt = dict(exit_code=code, stdout=stdout, stderr=stderr, observed_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(clock())))
++        attempts.append(attempt)
++        (evidence / 'postclean-boot-attempts.json').write_text(json.dumps(attempts, indent=2) + '\n')
++        if code == 0:
++            apps = re.findall(r'^postcleanApps=([0-9]+)$', stdout, re.M)
++            tasks = re.findall(r'^postcleanTasks=([0-9]+)$', stdout, re.M)
++            if apps == ['0'] and tasks == ['0']:
++                state = 'ready'; break
++            state = 'invalid-or-nonzero-counts'; break
++        text = stdout + stderr
++        transient = (code == 124 or (code == 255 and re.search(r'Connection timed out|Connection refused|Connection reset|No route to host|Connection closed', text, re.I)) or (code == 75 and stdout.strip() == 'BOOT_DESKTOP_NOT_READY'))
++        if not transient:
++            state = 'non-boot-error'; break
++        remaining = deadline - clock()
++        if remaining > 0:
++            pause(min(5, remaining))
++    receipt = dict(state=state, attempts=len(attempts), window_seconds=window_seconds, max_attempts=max_attempts, elapsed_seconds=clock()-started, read_only=True, infrastructure_repair=False, guest_counts='zero' if state == 'ready' else 'UNKNOWN')
++    (evidence / 'postclean-boot.json').write_text(json.dumps(receipt, indent=2) + '\n')
++    print(json.dumps(receipt), flush=True)
++    return 0 if state == 'ready' else 1
++
++
++if __name__ == '__main__':
++    raise SystemExit(observe(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]), window_seconds=int(sys.argv[4]) if len(sys.argv)>4 else 300))
+diff --git a/autosave-gate/gate-run.sh b/autosave-gate/gate-run.sh
+index afee61f..9c0b3ed 100755
+--- a/autosave-gate/gate-run.sh
++++ b/autosave-gate/gate-run.sh
+@@ -13,7 +13,7 @@ PR_MANIFEST=${3:-}
+ [[ -z $PR_MANIFEST || ( $PR_MANIFEST == /* && -f $PR_MANIFEST ) ]] || exit 64
+ export PR_MANIFEST
+ DRY=0; [[ $MODE != --dry-run ]] || DRY=1
+-MAIN_PID=$BASHPID; OWN=0; CLEANING=0; ALL_PASS=0; FAILED=preflight; ACTIVE=''; ACTIVE_NAME=''; STEP_CALL_BUDGET=60; EVIDENCE_OK=0; LAST_STATUS=0; LAST_CALL=local-preparation
++MAIN_PID=$BASHPID; OWN=0; CLEANING=0; ALL_PASS=0; FAILED=preflight; ACTIVE=''; ACTIVE_NAME=''; STEP_CALL_BUDGET=60; EVIDENCE_OK=0; QUIET_STARTED=0; LAST_STATUS=0; LAST_CALL=local-preparation
+ START=$(date +%s); CUTOFF=$((START+3600)); RELEASE=$((START+4500))
+ export E ROOT DRY START CUTOFF RELEASE
+ # shellcheck source=/dev/null
+@@ -147,6 +147,7 @@ PYMOCKZIP
+     else : > "$2"
+     fi
+   }
++  boot-readback(){ printf 'postcleanApps=0\npostcleanTasks=0\n'; }
+   qm150(){ printf 'MOCK QM150 %s\n' "$*"; }
+ fi
+
+@@ -181,6 +182,8 @@ PYBEGIN
+       controller_pid=$!
+       printf '%s\n' "$controller_pid" > "$E/$id.controller-pid"
+       wait "$controller_pid" || status=$?
++    elif [[ $command == boot-readback ]]; then
++      timeout --signal=TERM --kill-after=5 "$limit" python3 "$ROOT/autosave-gate/boot_readback.py" "$ROOT/vm.sh" "$E" "$RELEASE" > "$E/$id.log" 2>&1 || status=$?
+     else
+       timeout --signal=TERM --kill-after=5 "$limit" "$ROOT/vm.sh" "$command" "$@" < /dev/null > "$E/$id.log" 2>&1 || status=$?
+     fi
+@@ -264,6 +267,15 @@ PS
+       fi
+       wait "$ACTIVE"; ACTIVE=''
+     fi
++    if ((cleanup_ok == 0 && QUIET_STARTED)); then
++      cat > "$E/cleanup-session-restore.ps1" <<'PSRESTORE'
++$ErrorActionPreference='Stop'
++. "$Q\session-quiet.ps1"
++Log (ExitQuietSession $Q)
++PSRESTORE
++      call cleanup-session-restore 210 run "$E/cleanup-session-restore.ps1" 180
++      cleanup_ok=$?
++    fi
+     # Read-only best-effort evidence, once. Failure does not permit a repair chain.
+     if ps_body collect-raw "$(cat <<'PS'
+ $ErrorActionPreference='Stop'; $q='C:\Users\Public\okilum-qa'
+@@ -306,13 +318,7 @@ PYRAW
+       call rollback-unlock 150 unlock "$OWNER"
+       if [[ $? == 0 && ! -d $LOCK ]]; then
+         OWN=0
+-        if ps_body postclean "$(cat <<'PS'
+-$ErrorActionPreference='Stop'
+-'postcleanApps='+@(Get-Process okilum -ErrorAction SilentlyContinue).Count
+-'postcleanTasks='+@(Get-ScheduledTask okilumqa-run -ErrorAction SilentlyContinue).Count
+-exit 0
+-PS
+-)" 25; then post=READBACK_AVAILABLE; fi
++        if call postclean-boot 365 boot-readback; then post=READBACK_AVAILABLE; fi
+       fi
+     fi
+   fi
+@@ -416,7 +422,7 @@ if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*',attempt):raise ValueError('Inv
+ (p/'attempt-label.txt').write_text(attempt)
+
+ (p/'gate-contract.json').write_text(json.dumps(c,indent=2)+'\n')
+-members=['readiness-budget.ps1','gate-contract.ps1','reviewed-action.ps1','frame-identity.ps1','width-fixture.ps1','04-width-observe.ps1','05-beta-observe.ps1','07-version-observe.ps1']
++members=['session-quiet.ps1','readiness-budget.ps1','gate-contract.ps1','reviewed-action.ps1','frame-identity.ps1','width-fixture.ps1','04-width-observe.ps1','05-beta-observe.ps1','07-version-observe.ps1']
+ with zipfile.ZipFile(p/'stage.zip','x',zipfile.ZIP_DEFLATED) as z:
+  z.write(p/'gate-contract.json','gate-contract.json')
+  for n in members:z.write(h/'autosave-gate'/n,n)
+@@ -429,7 +435,7 @@ with zipfile.ZipFile(p/'stage.zip') as z:
+   if name.endswith('.ps1'):
+    dest=p/'zip-parse'/name;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(z.read(name))
+ (p/'stage-manifest.json').write_text(json.dumps(dict(stage_sha256=hashlib.sha256((p/'stage.zip').read_bytes()).hexdigest(),setup_sha256=c['baseline']['setup_sha256'],members=hashes),indent=2)+'\n')
+-manifest={n:hashlib.sha256((h/n).read_bytes()).hexdigest() for n in ['vm.sh','lib.ps1','step-envelope.ps1','run-evidence.sh','autosave-gate/pr_seed.py','autosave-gate/gate-run.sh']+['autosave-gate/'+n for n in members]}
++manifest={n:hashlib.sha256((h/n).read_bytes()).hexdigest() for n in ['vm.sh','lib.ps1','step-envelope.ps1','run-evidence.sh','autosave-gate/pr_seed.py','autosave-gate/boot_readback.py','autosave-gate/gate-run.sh']+['autosave-gate/'+n for n in members]}
+ (p/'pins.json').write_text(json.dumps(dict(baseline=c['baseline'],target=c['target'],full=f,descriptor=d,head=head,code=manifest),indent=2)+'\n')
+ (p/'times.json').write_text(json.dumps({k:datetime.datetime.fromtimestamp(int(os.environ[v]),datetime.timezone.utc).isoformat() for k,v in [('T0','START'),('work_cutoff','CUTOFF'),('release_deadline','RELEASE')]}))
+ (p/'owner.txt').write_text('windows-'+str(d['build'])+'-'+attempt)
+@@ -506,7 +512,7 @@ $root="$Q\controls"; . "$root\child-control.ps1"
+ $exe=Join-Path $env:windir 'System32/WindowsPowerShell/v1.0/powershell.exe'
+ foreach($name in @('success','nested')){
+  $d=Join-Path $root $name
+- $r=InvokeChildControl -Executable $exe -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',"$root\step-envelope.ps1",'-PayloadPath',"$d\payload.ps1",'-EvidenceDirectory',$d) -ReceiptBase "$d\process" -Seconds 30
++ $r=InvokeChildControl -Executable $exe -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',"$root\step-envelope.ps1",'-PayloadPath',"$d\payload.ps1",'-EvidenceDirectory',$d) -ReceiptBase "$d\process" -Seconds 120
+  $wanted=1;$state='child-nonzero';if($name -eq 'success'){$wanted=0;$state='success'}
+  if($r.exit_code -ne $wanted -or $r.state -cne $state -or !$r.handle_acquired -or !$r.pid -or $r.error -or !$r.stdout_complete -or !$r.stderr_complete){throw 'Envelope control incomplete'}
+  if((ReadChildExitReceipt "$d\process.exit") -ne $wanted){throw 'Child exit readback mismatch'}
+@@ -617,7 +623,16 @@ PYPUBLISH
+ }
+
+ FAILED=first-control
+-desktop first-control "$E/first-envelope-control.ps1" 180
++desktop first-control "$E/first-envelope-control.ps1" 330
++FAILED=session-preparation
++cat > "$E/session-preparation.ps1" <<'PSQUIET'
++$ErrorActionPreference='Stop'
++if(@(Get-Process okilum -ErrorAction SilentlyContinue).Count){throw 'App present before session preparation'}
++. "$Q\session-quiet.ps1"
++Log (EnterQuietSession $Q)
++PSQUIET
++QUIET_STARTED=1
++desktop session-preparation "$E/session-preparation.ps1" 180
+ FAILED=01; desktop 01 "$ROOT/autosave-gate/01-install.ps1" 330
+ FAILED=02; desktop 02 "$ROOT/autosave-gate/02-setup-existing-vault.ps1" 300
+ FAILED=03; desktop 03 "$ROOT/autosave-gate/03-seed-draft.ps1" 300
+diff --git a/autosave-gate/session-quiet.ps1 b/autosave-gate/session-quiet.ps1
+new file mode 100644
+index 0000000..aba61cb
+--- /dev/null
++++ b/autosave-gate/session-quiet.ps1
+@@ -0,0 +1,73 @@
++# Per-attempt QA guest session only; snapshot clean is never modified.
++function GetQuietSessionId {(Get-Process -Id $PID).SessionId}
++function GetQuietRegistry($Path,$Name){
++ $exists=Test-Path $Path;$present=$false;$value=$null;$kind=$null
++ if($exists){$key=Get-Item $Path;$present=$key.GetValueNames() -contains $Name;if($present){$kind=[string]$key.GetValueKind($Name);$value=$key.GetValue($Name)}}
++ if($present -and $kind -cne 'DWord'){throw 'Unexpected toast registry value type'}
++ [pscustomobject]@{path=$Path;name=$Name;key_existed=$exists;present=$present;value=$value;kind=$kind}
++}
++function SetQuietRegistry($Record){
++ if(!(Test-Path $Record.path)){New-Item -Path $Record.path -Force|Out-Null}
++ New-ItemProperty -Path $Record.path -Name $Record.name -PropertyType DWord -Value 0 -Force|Out-Null
++ $actual=GetQuietRegistry $Record.path $Record.name
++ if(!$actual.present -or $actual.value -ne 0){throw 'Toast suppression readback failed'}
++}
++function RestoreQuietRegistry($Record){
++ if($Record.present){New-ItemProperty -Path $Record.path -Name $Record.name -PropertyType DWord -Value $Record.value -Force|Out-Null}
++ elseif(Test-Path $Record.path){Remove-ItemProperty -Path $Record.path -Name $Record.name -ErrorAction SilentlyContinue}
++ $actual=GetQuietRegistry $Record.path $Record.name
++ if($actual.present -ne $Record.present -or ($Record.present -and $actual.value -ne $Record.value)){throw 'Toast baseline restoration failed'}
++ if(!$Record.key_existed -and (Test-Path $Record.path)){
++  $key=Get-Item $Record.path
++  if(!$key.GetValueNames().Count -and !$key.GetSubKeyNames().Count){Remove-Item $Record.path}
++ }
++}
++function GetQuietOneDrive {
++ $allowed=@((Join-Path $env:LOCALAPPDATA 'Microsoft\OneDrive\OneDrive.exe'),(Join-Path $env:ProgramFiles 'Microsoft OneDrive\OneDrive.exe'))
++ if(${env:ProgramFiles(x86)}){$allowed+=Join-Path ${env:ProgramFiles(x86)} 'Microsoft OneDrive\OneDrive.exe'}
++ $paths=@()
++ foreach($process in @(Get-Process OneDrive -ErrorAction SilentlyContinue)){
++  if($process.SessionId -ne (GetQuietSessionId)){throw 'Foreign OneDrive session; no suppression'}
++  $path=$process.MainModule.FileName
++  if($allowed -notcontains $path){throw 'Unknown OneDrive executable; no suppression'}
++  $paths+=@($path)
++ }
++ @($paths|Select-Object -Unique)
++}
++function StopQuietOneDrive([string]$Path){
++ $command=Start-Process -FilePath $Path -ArgumentList '/shutdown' -PassThru
++ if(!$command.WaitForExit(20000)){throw 'OneDrive shutdown command deadline'}
++ $clock=[Diagnostics.Stopwatch]::StartNew()
++ while(@(Get-Process OneDrive -ErrorAction SilentlyContinue).Count -and $clock.Elapsed.TotalSeconds -lt 20){Start-Sleep -Milliseconds 250}
++ if(@(Get-Process OneDrive -ErrorAction SilentlyContinue).Count){throw 'OneDrive remained active; STOP, no kill fallback'}
++}
++function StartQuietOneDrive([string]$Path){Start-Process -FilePath $Path -ArgumentList '/background'|Out-Null}
++function EnterQuietSession([string]$Directory){
++ if((GetQuietSessionId) -ne 1){throw 'Quiet preparation requires own QA session1'}
++ $snapshot=Join-Path $Directory 'session-quiet-before.json'
++ if(Test-Path $snapshot){throw 'Quiet session already prepared; no repeat'}
++ $records=@(
++  (GetQuietRegistry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled'),
++  (GetQuietRegistry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings' 'NOC_GLOBAL_SETTING_TOASTS_ENABLED')
++ )
++ # Validate all process identities before any mutation. Save baseline first.
++ $paths=@(GetQuietOneDrive)
++ $before=[ordered]@{session=1;registry=$records;onedrive=$paths}
++ $before|ConvertTo-Json -Depth 8|Set-Content $snapshot -Encoding UTF8
++ foreach($record in $records){SetQuietRegistry $record}
++ foreach($path in $paths){StopQuietOneDrive $path}
++ if(@(GetQuietOneDrive).Count){throw 'OneDrive suppression incomplete'}
++ @{session=1;toast_values_zero=$true;onedrive_processes=0;scope='until cleanup or canonical rollback'}|ConvertTo-Json|Set-Content (Join-Path $Directory 'session-quiet-active.json')
++ 'QUIET_SESSION_READY'
++}
++function ExitQuietSession([string]$Directory){
++ $snapshot=Join-Path $Directory 'session-quiet-before.json'
++ if(!(Test-Path $snapshot)){'QUIET_SESSION_NOT_PREPARED';return}
++ $before=Get-Content $snapshot -Raw -Encoding UTF8|ConvertFrom-Json
++ if($before.session -ne (GetQuietSessionId) -or $before.session -ne 1){throw 'Quiet restoration session mismatch'}
++ foreach($record in @($before.registry)){RestoreQuietRegistry $record}
++ $active=@(GetQuietOneDrive);$restarted=0
++ foreach($path in @($before.onedrive)){if($active -notcontains $path){StartQuietOneDrive $path;$restarted++}}
++ @{session=1;registry_restored=$true;onedrive_restart_requested=$restarted}|ConvertTo-Json|Set-Content (Join-Path $Directory 'session-quiet-restored.json')
++ 'QUIET_SESSION_RESTORED'
++}
+diff --git a/autosave-gate/test-session-quiet.ps1 b/autosave-gate/test-session-quiet.ps1
+new file mode 100644
+index 0000000..292540a
+--- /dev/null
++++ b/autosave-gate/test-session-quiet.ps1
+@@ -0,0 +1,33 @@
++$ErrorActionPreference='Stop'
++. "$PSScriptRoot/session-quiet.ps1"
++$root=Join-Path ([IO.Path]::GetTempPath()) ('quiet-test-'+[guid]::NewGuid());New-Item -ItemType Directory $root|Out-Null
++$n=0
++function Check($value,$label){if(!$value){throw "FAIL $label"};$script:n++}
++function Reject([scriptblock]$Action){$bad=$false;try{& $Action|Out-Null}catch{$bad=$true};Check $bad 'expected rejection'}
++# Registry/process adapters only: state machine and real on-disk snapshot are production code.
++$script:values=@{ToastEnabled=1;NOC_GLOBAL_SETTING_TOASTS_ENABLED=$null}
++$script:running=$true;$script:session=1;$script:events=@();$script:failSet=$false
++function GetQuietSessionId {$script:session}
++function GetQuietRegistry($Path,$Name){[pscustomobject]@{path=$Path;name=$Name;key_existed=($Name -eq 'ToastEnabled');present=($null -ne $script:values[$Name]);value=$script:values[$Name];kind='DWord'}}
++function SetQuietRegistry($Record){$script:events+=@('set-'+$Record.name);$script:values[$Record.name]=0;if($script:failSet){throw 'injected set failure'}}
++function RestoreQuietRegistry($Record){$script:events+=@('restore-'+$Record.name);$script:values[$Record.name]=$Record.value}
++function GetQuietOneDrive {if($script:running){'C:\Program Files\Microsoft OneDrive\OneDrive.exe'}}
++function StopQuietOneDrive($Path){$script:events+=@('stop');$script:running=$false}
++function StartQuietOneDrive($Path){$script:events+=@('start');$script:running=$true}
++try{
++ $out=EnterQuietSession $root
++ Check ($out -ceq 'QUIET_SESSION_READY' -and !$script:running -and $script:values.ToastEnabled -eq 0) 'quiet positive control'
++ Check ((Get-Content "$root/session-quiet-before.json" -Raw|ConvertFrom-Json).registry[0].value -eq 1) 'original value saved before mutation'
++ Reject {EnterQuietSession $root}
++ $out=ExitQuietSession $root
++ Check ($out -ceq 'QUIET_SESSION_RESTORED' -and $script:running -and $script:values.ToastEnabled -eq 1 -and $null -eq $script:values.NOC_GLOBAL_SETTING_TOASTS_ENABLED) 'exact value and missing baseline restored'
++ $other=Join-Path $root 'partial';New-Item -ItemType Directory $other|Out-Null
++ $startsBefore=@($script:events|Where-Object {$_ -eq 'start'}).Count
++ $script:failSet=$true;Reject {EnterQuietSession $other};$script:failSet=$false
++ $out=ExitQuietSession $other
++ Check ($script:values.ToastEnabled -eq 1) 'partial preparation restores baseline'
++ Check (@($script:events|Where-Object {$_ -eq 'start'}).Count -eq $startsBefore) 'failed shutdown does not duplicate running OneDrive'
++ $script:session=0;Reject {EnterQuietSession (Join-Path $root 'wrong-session')}
++ Reject {ExitQuietSession $root}
++}finally{Remove-Item $root -Recurse -Force}
++"PASS $n session quiet lifecycle assertions; mock registry/process, no guest mutation"
+diff --git a/autosave-gate/test-step-envelope.sh b/autosave-gate/test-step-envelope.sh
+index fa9de44..b9de853 100755
+--- a/autosave-gate/test-step-envelope.sh
++++ b/autosave-gate/test-step-envelope.sh
+@@ -37,7 +37,12 @@ foreach($name in @('success','nested','write-error','bootstrap','parse','log-fai
+   if($name -eq 'nested' -and (!$s.Contains('outer-message') -or !$s.Contains('inner-message') -or !$s.Contains('FailInner'))){throw 'Lost nested error'}
+   if($name -eq 'trap' -and !$s.Contains('handler=trap')){throw 'Trap not exercised'}
+  }
+- "PASS envelope $name exit=$($r.exit_code)"
++ $phases=@(Get-Content (Join-Path $d 'envelope-phases.jsonl')|ForEach-Object {$_|ConvertFrom-Json})
++ $expectedExit='exit-requested-'+$wanted
++ if($phases[-1].phase -cne $expectedExit){throw "Missing exit phase $name"}
++ if($name -eq 'nested' -and (@($phases.phase) -notcontains 'error-report-persisted')){throw 'Missing persisted report phase'}
++ if(@($phases|Where-Object {$_.pid -ne $r.pid -or ![DateTime]::Parse($_.utc)}).Count){throw 'Bad phase identity'}
++ "PASS envelope $name exit=$($r.exit_code) phases retained"
+ }
+ "Runtime=$($PSVersionTable.PSVersion) PS7 ONLY; actual PS5 envelope UNVERIFIED"
+ PS
+diff --git a/autosave-gate/test_boot_readback.py b/autosave-gate/test_boot_readback.py
+new file mode 100644
+index 0000000..4ebe00e
+--- /dev/null
++++ b/autosave-gate/test_boot_readback.py
+@@ -0,0 +1,55 @@
++import json
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++from boot_readback import observe
++
++class Boot(unittest.TestCase):
++    def run_case(self, responses, release=1000, probe_seconds=1, window_seconds=300):
++        with tempfile.TemporaryDirectory() as directory:
++            p=Path(directory);now=[0];calls=[]
++            def runner(command, **kwargs):
++                calls.append(command);now[0]+=min(probe_seconds, kwargs['timeout'])
++                code,out,err=responses[min(len(calls)-1,len(responses)-1)]
++                if code==124:raise subprocess.TimeoutExpired(command,kwargs['timeout'])
++                return subprocess.CompletedProcess(command,code,out,err)
++            def pause(seconds):now[0]+=seconds
++            status=observe(p/'vm.sh',p,release,runner=runner,clock=lambda:now[0],pause=pause,window_seconds=window_seconds)
++            receipt=json.loads((p/'postclean-boot.json').read_text())
++            self.assertTrue(all(c[1]=='ps' for c in calls))
++            return status,receipt,len(calls),now[0]
++    def test_boot_transition_positive_control(self):
++        r=self.run_case([(255,'','ssh: Connection timed out'),(75,'BOOT_DESKTOP_NOT_READY',''),(0,'postcleanApps=0\npostcleanTasks=0\n','')])
++        self.assertEqual(r[:1],(0,));self.assertEqual(r[2],3);self.assertEqual(r[1]['guest_counts'],'zero')
++    def test_auth_stops_without_retry(self):
++        status,r,calls,_=self.run_case([(255,'','Permission denied (publickey)')])
++        self.assertEqual((status,r['state'],calls),(1,'non-boot-error',1))
++    def test_foreign_process_counts_stop(self):
++        status,r,calls,_=self.run_case([(0,'postcleanApps=1\npostcleanTasks=0\n','')])
++        self.assertEqual((status,r['state'],calls),(1,'invalid-or-nonzero-counts',1))
++        self.assertEqual(r['guest_counts'],'UNKNOWN')
++    def test_unreachable_exhausts_bounded_boot_only(self):
++        status,r,calls,elapsed=self.run_case([(255,'','Connection refused')])
++        self.assertEqual(status,1);self.assertEqual(r['guest_counts'],'UNKNOWN');self.assertLessEqual(elapsed,300);self.assertLessEqual(calls,60)
++    def test_slow_boot_after_nine_probes_can_be_observed(self):
++        responses=[(255,'','Connection refused')]*11+[(0,'postcleanApps=0\npostcleanTasks=0\n','')]
++        status,r,calls,elapsed=self.run_case(responses,probe_seconds=15)
++        self.assertEqual((status,r['guest_counts'],calls),(0,'zero',12))
++        self.assertGreater(elapsed,120);self.assertLessEqual(elapsed,300)
++        status,r,_,elapsed=self.run_case(responses,probe_seconds=15,window_seconds=120)
++        self.assertEqual((status,r['guest_counts']),(1,'UNKNOWN'))
++        self.assertLessEqual(elapsed,120)
++    def test_configured_longer_window_is_not_cut_short_by_attempt_cap(self):
++        responses=[(255,'','Connection refused')]*64+[(0,'postcleanApps=0\npostcleanTasks=0\n','')]
++        status,r,calls,elapsed=self.run_case(responses,window_seconds=600)
++        self.assertEqual((status,r['guest_counts'],calls),(0,'zero',65))
++        self.assertGreater(elapsed,300);self.assertLessEqual(elapsed,600)
++    def test_release_deadline_is_not_extended(self):
++        status,r,_,elapsed=self.run_case([(124,'','')],release=10)
++        self.assertEqual(status,1);self.assertLessEqual(elapsed,5)
++    def test_missing_marker_is_not_absence_evidence(self):
++        status,r,calls,_=self.run_case([(0,'','')])
++        self.assertEqual(status,1);self.assertEqual(calls,1);self.assertEqual(r['guest_counts'],'UNKNOWN')
++
++if __name__=='__main__':unittest.main()
+diff --git a/step-envelope.ps1 b/step-envelope.ps1
+index f653b78..c335c36 100644
+--- a/step-envelope.ps1
++++ b/step-envelope.ps1
+@@ -4,8 +4,17 @@ param(
+  [string]$EvidenceDirectory=$PSScriptRoot
+ )
+ $ErrorActionPreference='Stop'
++function WriteEnvelopePhase([string]$Phase){
++ # Diagnostic only: phase presence must never replace numeric process exit.
++ $row=[ordered]@{phase=$Phase;utc=[DateTime]::UtcNow.ToString('o');pid=$PID}
++ try{[IO.File]::AppendAllText((Join-Path $EvidenceDirectory 'envelope-phases.jsonl'),($row|ConvertTo-Json -Compress)+[Environment]::NewLine,(New-Object Text.UTF8Encoding($false)))}catch{
++  # A diagnostic write failure cannot mask the original failure or recurse in trap.
++  try{[Console]::Error.WriteLine('ENVELOPE PHASE WRITE FAILED: '+$Phase)}catch{}
++ }
++}
+ function WriteScheduledStepFailure([Management.Automation.ErrorRecord]$Record,[string]$Handler){
+  # Never depend on Log: a Log/Add-Content failure must itself be capturable.
++ WriteEnvelopePhase ('handler-start-'+$Handler)
+  $report=New-Object Text.StringBuilder
+  try{
+   [void]$report.AppendLine('SCHEDULED STEP FAILURE')
+@@ -43,6 +52,7 @@ function WriteScheduledStepFailure([Management.Automation.ErrorRecord]$Record,[s
+   $temporary=$destination+'.tmp'
+   [IO.File]::WriteAllText($temporary,$text,(New-Object Text.UTF8Encoding($false)))
+   [IO.File]::Move($temporary,$destination)
++  WriteEnvelopePhase 'error-report-persisted'
+  }catch{
+   # Storage failure cannot yield a file; retain the original diagnostic on stderr.
+   try{[Console]::Error.WriteLine($text);[Console]::Error.WriteLine('CAPTURE WRITE FAILURE: '+$_.Exception.ToString())}catch{}
+@@ -50,17 +60,21 @@ function WriteScheduledStepFailure([Management.Automation.ErrorRecord]$Record,[s
+ }
+ trap{
+  WriteScheduledStepFailure -Record $_ -Handler 'trap'
++ WriteEnvelopePhase 'exit-requested-1'
+  exit 1
+ }
+ # Top-level execution boundary.
+ try{
+  [IO.Directory]::CreateDirectory($EvidenceDirectory)|Out-Null
++ WriteEnvelopePhase 'entry'
+  "ENTRY session=$((Get-Process -Id $PID).SessionId)"|Set-Content (Join-Path $EvidenceDirectory 'entry.txt')
+  . $PayloadPath
+  Log 'DONE'
+  New-Item (Join-Path $EvidenceDirectory 'done') -Force|Out-Null
++ WriteEnvelopePhase 'exit-requested-0'
+  exit 0
+ }catch{
+  WriteScheduledStepFailure -Record $_ -Handler 'catch'
++ WriteEnvelopePhase 'exit-requested-1'
+  exit 1
+ }
