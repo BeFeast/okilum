@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import tomlkit
 
@@ -17,6 +18,30 @@ spec.loader.exec_module(converter)
 
 
 class ConvertTests(unittest.TestCase):
+    def test_cli_rejects_missing_or_nondirectory_root_instead_of_empty_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            file = root / 'file'
+            file.write_text('not a directory')
+            for path in (root / 'missing', file):
+                result = subprocess.run([sys.executable, str(SCRIPT), str(path)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('existing directory', result.stderr)
+            if os.name == 'posix':
+                linked = root / 'linked'
+                linked.symlink_to(root, target_is_directory=True)
+                result = subprocess.run([sys.executable, str(SCRIPT), str(linked)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('not a symlink', result.stderr)
+
+    def test_unreadable_subtree_is_an_error_instead_of_silently_missing_manifests(self):
+        def unreadable(root, *, followlinks, onerror):
+            onerror(PermissionError('fixture subtree is unreadable'))
+            return iter(())
+
+        with mock.patch.object(converter.os, 'walk', unreadable), self.assertRaises(PermissionError):
+            list(converter.manifests(Path('fixture')))
+
     def test_comments_nulls_dates_and_numeric_keys_are_reported_and_preserved(self):
         source = '''# Identity belongs to the human
 name: Example # display name

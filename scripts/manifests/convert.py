@@ -183,7 +183,10 @@ def convert_file(source, apply=False):
 
 
 def manifests(root):
-    for directory, folders, files in os.walk(root, followlinks=False):
+    def fail(error):
+        raise error  # An unreadable subtree must not look like an empty Area.
+
+    for directory, folders, files in os.walk(root, followlinks=False, onerror=fail):
         folders[:] = [name for name in folders if name not in SKIP and not (Path(directory) / name).is_symlink()]
         if Path(directory).name == "ops":
             for name in ("project.yaml", "board.yaml"):
@@ -196,6 +199,8 @@ def main():
     parser.add_argument("root", type=Path, help="Vault or copied Areas tree")
     parser.add_argument("--write", action="store_true", help="Create missing TOML files; manager only after rollout. YAML remains untouched.")
     args = parser.parse_args()
+    if not args.root.is_dir() or args.root.is_symlink():
+        parser.error("root must be an existing directory, not a symlink")
     rows, failed = [], False
     for source in sorted(manifests(args.root)):
         row = {"source": str(source.relative_to(args.root)), "target": str(source.with_suffix('.toml').relative_to(args.root))}
