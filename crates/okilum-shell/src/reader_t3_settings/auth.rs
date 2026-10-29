@@ -66,7 +66,7 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
     cx.spawn(async move |cx| {
         let result = async {
             let saved = cx
-                .update(|cx| cx.read_credentials(&env.credential_url()))?
+                .update(|cx| cx.read_credentials(&env.credential_url()))
                 .await?;
             let token = saved
                 .map(|(_, bytes)| StoredToken::from_secret(&bytes))
@@ -76,36 +76,31 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             let progress_origin = origin.clone();
             let updates_job = cx.spawn(async move |cx| {
                 while let Ok(event) = updates.recv().await {
-                    if cx
-                        .update(|cx| {
-                            #[cfg(not(target_os = "macos"))]
-                            if let Event::Ready(pending) = &event {
-                                cx.open_url(&pending.url);
+                    cx.update(|cx| {
+                        #[cfg(not(target_os = "macos"))]
+                        if let Event::Ready(pending) = &event {
+                            cx.open_url(&pending.url);
+                        }
+                        edit(&progress_origin, cx, |entry| match event {
+                            Event::Ready(pending) => {
+                                entry.pending = Some(pending);
+                                entry.error = None;
                             }
-                            edit(&progress_origin, cx, |entry| match event {
-                                Event::Ready(pending) => {
-                                    entry.pending = Some(pending);
-                                    entry.error = None;
+                            Event::Progress(Progress::Waiting(time)) => {
+                                if let Some(p) = &mut entry.pending {
+                                    p.remaining = Some(time.as_secs());
                                 }
-                                Event::Progress(Progress::Waiting(time)) => {
-                                    if let Some(p) = &mut entry.pending {
-                                        p.remaining = Some(time.as_secs());
-                                    }
+                            }
+                            Event::Progress(Progress::TimedOut) => {
+                                if let Some(p) = &mut entry.pending {
+                                    p.remaining = None;
                                 }
-                                Event::Progress(Progress::TimedOut) => {
-                                    if let Some(p) = &mut entry.pending {
-                                        p.remaining = None;
-                                    }
-                                }
-                                Event::Progress(Progress::InvalidCallback(message)) => {
-                                    entry.error = Some(message)
-                                }
-                            })
+                            }
+                            Event::Progress(Progress::InvalidCallback(message)) => {
+                                entry.error = Some(message)
+                            }
                         })
-                        .is_err()
-                    {
-                        break;
-                    }
+                    });
                 }
             });
             let connected = cx
@@ -147,7 +142,7 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             if let Some(token) = &connected.issued_token {
                 cx.update(|cx| {
                     cx.write_credentials(&env.credential_url(), "Okilum", &token.to_secret())
-                })?
+                })
                 .await?;
             }
             // Persist only after a real authenticated connection. Merely typing
@@ -174,7 +169,7 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             Ok::<_, anyhow::Error>(Arc::new(connected.gateway) as Arc<dyn ManagerGateway>)
         }
         .await;
-        let _ = cx.update(|cx| finish(&origin, result, authorize, cx));
+        cx.update(|cx| finish(&origin, result, authorize, cx));
     })
     .detach();
 }
