@@ -1,4 +1,46 @@
 use super::*;
+
+#[test]
+fn parser_limits_reject_excessive_nesting_and_yaml_alias_amplification() {
+    for (format, source) in [
+        (
+            Format::Yaml,
+            format!("value: {}0{}", "[".repeat(256), "]".repeat(256)),
+        ),
+        (
+            Format::Toml,
+            format!("value = {}0{}", "[".repeat(256), "]".repeat(256)),
+        ),
+    ] {
+        assert!(parse(&source, format).is_err());
+        assert!(parse(
+            if format == Format::Toml {
+                "value = [[0]]"
+            } else {
+                "value: [[0]]"
+            },
+            format
+        )
+        .is_ok());
+    }
+    let mut yaml = String::from("a: &a [value]\n");
+    for (parent, name) in [
+        ('a', 'b'),
+        ('b', 'c'),
+        ('c', 'd'),
+        ('d', 'e'),
+        ('e', 'f'),
+        ('f', 'g'),
+    ] {
+        yaml.push_str(&format!(
+            "{name}: &{name} [{}]\n",
+            vec![format!("*{parent}"); 10].join(", ")
+        ));
+    }
+    let error = format!("{:#}", parse(&yaml, Format::Yaml).unwrap_err());
+    assert!(error.contains("repetition limit"), "{error}");
+    assert!(parse("a: &a [value]\nb: *a", Format::Yaml).is_ok());
+}
 struct Area(PathBuf);
 impl Area {
     fn new() -> Self {

@@ -144,6 +144,24 @@ pub fn relative_note(value: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
 }
+fn local_note_problem(area: &Path, canonical: &Path, note: &str) -> Option<String> {
+    if !relative_note(note) {
+        return None; // HTTPS destinations have no filesystem identity.
+    }
+    let path = area.join(note);
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(format!("{note}: {error}")),
+        Ok(_) => {}
+    }
+    match path.canonicalize() {
+        Ok(path) if path.starts_with(canonical) => None,
+        Ok(_) => Some(format!(
+            "{note}: related note escapes the project through a symlink"
+        )),
+        Err(error) => Some(format!("{note}: related note is unreadable: {error}")),
+    }
+}
 impl Binding {
     pub fn parse(source: &str) -> Result<Self> {
         Self::parse_value(crate::area_files::parse(
@@ -295,22 +313,10 @@ impl Binding {
         }
         let mut healthy = Vec::new();
         for scope in binding.issues.drain(..) {
-            let invalid = scope
-                .notes
-                .iter()
-                .filter(|n| relative_note(n))
-                .find_map(|note| {
-                    let path = area.join(note);
-                    if !path.exists() {
-                        return None;
-                    }
-                    match path.canonicalize() {
-                        Ok(path) if path.starts_with(&canonical) => None,
-                        _ => Some(
-                            "notes: related note escapes the project or is unreadable".to_owned(),
-                        ),
-                    }
-                });
+            let invalid = scope.notes.iter().enumerate().find_map(|(index, note)| {
+                local_note_problem(area, &canonical, note)
+                    .map(|detail| format!("notes[{index}]: {detail}"))
+            });
             if let Some(detail) = invalid {
                 binding.card_problems.push(CardProblem {
                     field: "issues.notes".into(),
@@ -324,15 +330,11 @@ impl Binding {
         binding.issues = healthy;
         let mut healthy_attention = Vec::new();
         for (index, item) in binding.attention.drain(..).enumerate() {
-            let path = area.join(&item.link);
-            if relative_note(&item.link)
-                && path.exists()
-                && !path.canonicalize()?.starts_with(&canonical)
-            {
+            if let Some(detail) = local_note_problem(area, &canonical, &item.link) {
                 binding.card_problems.push(CardProblem {
                     field: format!("attention[{index}].link"),
                     number: None,
-                    detail: "Related note escapes the project through a symlink".into(),
+                    detail,
                 });
             } else {
                 healthy_attention.push(item);

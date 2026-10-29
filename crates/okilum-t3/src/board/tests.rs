@@ -108,6 +108,20 @@ fn one_related_note_escape_is_a_card_problem_not_a_board_failure() {
     assert_eq!(binding.issues.len(), 13);
     assert_eq!(binding.card_problems[0].number, Some(1731));
     assert!(binding.card_problems[0].detail.contains("escapes"));
+    // Broken links fail canonicalization deterministically, exercising the
+    // same per-child error branch as a removal/permissions race after metadata.
+    std::os::unix::fs::symlink(area.join("missing.md"), area.join("broken.md")).unwrap();
+    source["issues"][0]["notes"] = serde_json::json!([]);
+    source["attention"] = serde_json::json!([
+        {"kind":"try", "title":"Healthy", "subline":"Safe public link", "link":"https://git.oklabs.uk/BeFeast/okilum/issues/1859"},
+        {"kind":"try", "title":"Broken", "subline":"Needs repair", "link":"broken.md"}
+    ]);
+    std::fs::write(area.join("ops/board.yaml"), source.to_string()).unwrap();
+    let binding = Binding::read(&area).unwrap().unwrap();
+    assert_eq!(binding.issues.len(), 14);
+    assert_eq!(binding.attention.len(), 1);
+    assert_eq!(binding.card_problems[0].field, "attention[1].link");
+    assert!(binding.card_problems[0].detail.contains("unreadable"));
     std::fs::remove_file(note).unwrap();
     std::fs::remove_dir_all(area).unwrap();
 }
