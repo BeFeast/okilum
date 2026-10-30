@@ -6,6 +6,7 @@ result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
 import http.client
+import hashlib
 import importlib.util
 import random
 import json
@@ -32,6 +33,11 @@ class Unavailable(Exception):
 spec = importlib.util.spec_from_file_location('github_bridge_auth', Path(__file__).with_name('github_auth.py'))
 auth = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(auth)
+
+
+_evidence_spec = importlib.util.spec_from_file_location('gate_log_evidence', Path(__file__).with_name('gate_log_evidence.py'))
+gate_log_evidence = importlib.util.module_from_spec(_evidence_spec)
+_evidence_spec.loader.exec_module(gate_log_evidence)
 
 
 class RateLimitExhausted(Unavailable):
@@ -99,6 +105,47 @@ class GitHub:
         except (urllib.error.URLError, TimeoutError,
                 http.client.RemoteDisconnected, ConnectionResetError) as error:
             raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}") from None
+
+
+    def job_log(self, job_id):
+        """Fetch one bounded job log; never forward API credentials to storage."""
+        if type(job_id) is not int or job_id <= 0 or self.quota_exhausted:
+            raise Unavailable('Invalid log job or exhausted quota')
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args):
+                return None
+        request = urllib.request.Request(
+            f'https://api.github.com/repos/{REPOSITORY}/actions/jobs/{job_id}/logs',
+            headers={'Authorization': 'Bearer ' + self.token,
+                     'Cache-Control': 'no-cache', 'Accept': 'application/vnd.github+json'})
+        try:
+            try:
+                response = urllib.request.build_opener(NoRedirect()).open(request, timeout=30)
+            except urllib.error.HTTPError as error:
+                self.credentials.note_quota(error.headers)
+                if error.code != 302:
+                    reason = auth.http_error(error, 'GitHub job log GET')
+                    if isinstance(reason, auth.RateLimitError):
+                        self.quota_exhausted = True
+                        raise RateLimitExhausted(str(reason)) from None
+                    raise Unavailable(str(reason)) from None
+                location = error.headers.get('Location', '')
+                parsed = urllib.parse.urlparse(location)
+                if (parsed.scheme != 'https' or parsed.username or parsed.password
+                        or not parsed.hostname or not (
+                            parsed.hostname.endswith('.blob.core.windows.net')
+                            or parsed.hostname.endswith('.actions.githubusercontent.com'))):
+                    raise Unavailable('Unexpected GitHub job-log storage origin')
+                # New request without the API Authorization header.
+                response = urllib.request.urlopen(urllib.request.Request(location), timeout=30)
+            with response:
+                raw = response.read(gate_log_evidence.MAX_LOG_BYTES + 1)
+            if len(raw) > gate_log_evidence.MAX_LOG_BYTES:
+                raise Unavailable('GitHub job log exceeds evidence bound')
+            return raw
+        except (urllib.error.URLError, TimeoutError, http.client.RemoteDisconnected,
+                ConnectionResetError) as error:
+            raise Unavailable(f'GitHub job log unavailable: {type(error).__name__}') from None
 
 
 def ref_name(number, sha, run_id, attempt, invocation=None):
@@ -245,7 +292,20 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                         f"jobs={evidence!r} — {url}", flush=True)
                     if attempt < 2:
                         sleep(poll_delay())
-                # A persistently missing, skipped or failed gate must still fail.
+                # Only an EMPTY steps projection may use log evidence. A known
+                # skipped/failed/pending step must never be overridden by a log.
+                if (len(native) == 1 and native[0].get('status') == 'completed'
+                        and native[0].get('conclusion') == 'success'
+                        and native[0].get('steps') == []
+                        and native[0].get('run_id') == run['id']
+                        and native[0].get('head_sha') == sha
+                        and callable(getattr(api, 'job_log', None))):
+                    raw = api.job_log(native[0]['id'])
+                    if gate_log_evidence.executed(raw, sha=sha, run=run['id'],
+                            attempt=run.get('run_attempt'), job=job_name, step=build_step):
+                        return 'success', (f'GitHub gate passed with exact job-log step/exit evidence '
+                                           f"job={native[0]['id']} log_sha256={hashlib.sha256(raw).hexdigest()}: {url}")
+                # Missing, skipped, failed, unmarked or ambiguous gates still fail.
                 return "failure", f"GitHub did not execute the native gate: {url}"
             if run["status"] == "in_progress":
                 never_started = False
