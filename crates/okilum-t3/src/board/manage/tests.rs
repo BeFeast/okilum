@@ -254,16 +254,17 @@ fn invalid_inputs_report_each_field_and_do_not_write_or_resolve_another_reposito
 }
 
 #[test]
-fn multiple_plans_require_a_visible_human_choice_and_toml_comments_survive_edits() {
+fn multiple_plans_are_optional_and_toml_comments_survive_edits() {
     let a = Area::new();
     std::fs::write(a.0.join("planning/other.md"), "# Other").unwrap();
     let draft = a.session();
     assert_eq!(draft.stage_notes.len(), 2);
     assert!(draft.details().stage_note.is_empty());
-    assert!(draft.save(&Change::Details(draft.details())).is_err());
-    let mut details = draft.details();
+    let without_note = draft.save(&Change::Details(draft.details())).unwrap();
+    assert!(Binding::read(&a.0).unwrap().unwrap().stage_note.is_empty());
+    let mut details = without_note.details();
     details.stage_note = "planning/stage.md".into();
-    let s = draft.save(&Change::Details(details)).unwrap();
+    let s = without_note.save(&Change::Details(details)).unwrap();
     let s = s.save(&Change::Add(card("1"))).unwrap();
     let s = s.save(&Change::Add(card("2"))).unwrap();
     let source = s
@@ -326,4 +327,41 @@ fn handwritten_inline_toml_cards_can_be_edited_without_rewriting_the_other_card(
     assert_eq!(s.cards().len(), 3);
     let s = s.save(&Change::Remove(0)).unwrap();
     assert_eq!(s.cards()[0]["number"], 2);
+}
+
+#[test]
+fn create_without_project_repository_or_planning_accepts_explicit_form_repository() {
+    let a = Area::new();
+    let project = "name: Example\nproduct: {outcome: A useful outcome}\n";
+    std::fs::write(a.file("project.yaml"), project).unwrap();
+    std::fs::remove_file(a.0.join("planning/stage.md")).unwrap();
+    std::fs::remove_dir(a.0.join("planning")).unwrap();
+    let session = a.session();
+    let mut details = session.details();
+    assert!(details.repository.is_empty() && details.stage_note.is_empty());
+    let error = session.save(&Change::Details(details.clone())).unwrap_err();
+    let problems = &error.downcast_ref::<Problems>().unwrap().0;
+    assert!(problems["repository"].contains("Board management"));
+    assert!(!problems.contains_key("stage_note"));
+    assert!(!a.file("board.toml").exists());
+    details.repository = "https://git.example/Team/pulse".into();
+    let saved = session.save(&Change::Details(details)).unwrap();
+    let board = Binding::read(&a.0).unwrap().unwrap();
+    assert_eq!(board.repository, "https://git.example/Team/pulse");
+    assert!(board.stage_note.is_empty());
+    assert!(board.issues.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(a.file("project.yaml")).unwrap(),
+        project,
+        "the form never silently rewrites the project manifest"
+    );
+    let mut change = saved.details();
+    change.repository = "https://git.example/Other/project".into();
+    let before = std::fs::read(a.file("board.toml")).unwrap();
+    assert!(saved
+        .save(&Change::Details(change))
+        .unwrap_err()
+        .to_string()
+        .contains("fixed after creation"));
+    assert_eq!(std::fs::read(a.file("board.toml")).unwrap(), before);
 }

@@ -88,6 +88,11 @@ fn fake_t3(stored: Arc<Mutex<Value>>) -> FakeServer {
                     t3_project("gone", Value::Null, true),
                 ], "updatedAt": "2026-10-24T09:00:00.000Z" }),
             ),
+            ("GET", "/api/orchestration/shell")
+                if request.header("x-t3-orchestration-protocol") != Some("2") =>
+            {
+                Response::empty(400)
+            }
             ("GET", "/api/orchestration/shell") => Response::json(
                 200,
                 json!({
@@ -596,5 +601,37 @@ fn a_new_project_is_t3s_project_create_with_the_panels_session() {
             code: "workspace_root_not_found".into(),
             message: "Workspace root /srv/missing does not exist".into()
         }
+    );
+}
+
+#[test]
+fn board_shell_requires_protocol_two_in_addition_to_the_working_manager_cookie() {
+    let server = fake_t3(Arc::new(Mutex::new(Value::Null)));
+    let response = Client::new()
+        .get(format!("{}/api/orchestration/shell", server.origin))
+        .header(COOKIE, GOOD)
+        .send()
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "positive control: the live route schema rejects the old request even with a valid cookie"
+    );
+    let session = gateway(&server, Store::holding(&[("t3_session_abc", "live")]));
+    let threads = session.list_threads("okilum").unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread_id, "mcp:launch:executor");
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path() == "/api/orchestration/shell"
+                && r.header("x-t3-orchestration-protocol") == Some("2"))
+            .count(),
+        1
+    );
+    assert!(
+        requests.iter().any(|r| r.path() == "/api/auth/session"),
+        "real paired-session authentication ran"
     );
 }
