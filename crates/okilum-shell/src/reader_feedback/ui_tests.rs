@@ -935,3 +935,66 @@ fn insert_clipboard_shortcuts_work_in_feedback_and_source_editor(cx: &mut TestAp
         }
     });
 }
+
+#[gpui::test]
+fn minimum_feedback_window_keeps_actions_visible_and_submit_from_input(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        feedback.simulate_resize(size(px(400.), px(360.)));
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
+        let sent = calls.clone();
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.include_log = false;
+            view.text.update(cx, |text, cx| {
+                text.set_value("small-window feedback", window, cx)
+            });
+            view.state = SendState::Failed("long diagnostic ".repeat(300));
+            view.sender = Arc::new(move |report| {
+                sent.lock().unwrap().push(report);
+                anyhow::bail!("offline fixture failure")
+            });
+            Focusable::focus_handle(view.text.read(cx), cx).focus(window, cx);
+            cx.notify();
+        });
+        feedback.run_until_parked();
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
+        let viewport = feedback.update(|window, _| window.viewport_size());
+        for selector in ["feedback-send", "feedback-cancel"] {
+            let bounds = feedback
+                .debug_bounds(selector)
+                .expect("footer action rendered");
+            assert!(
+                bounds.top() >= px(0.) && bounds.bottom() <= viewport.height,
+                "{selector} must stay vertically visible at minimum size"
+            );
+            assert!(
+                bounds.left() >= px(0.) && bounds.right() <= viewport.width,
+                "{selector} must stay horizontally visible at minimum size"
+            );
+        }
+        feedback.simulate_keystrokes("secondary-enter");
+        feedback.run_until_parked();
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "focused input shortcut submits once"
+        );
+        for attaching in [true, false] {
+            view.update_in(&mut feedback, |view, window, cx| {
+                view.attaching = attaching;
+                if !attaching {
+                    view.text
+                        .update(cx, |text, cx| text.set_value("", window, cx));
+                }
+                cx.notify();
+            });
+            feedback.simulate_keystrokes("secondary-enter");
+            feedback.run_until_parked();
+        }
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "attachment/empty guards retained"
+        );
+    });
+}
