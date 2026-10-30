@@ -117,10 +117,36 @@ impl Dispatch {
 }
 impl<D: StateDir> Store<D> {
     pub fn dispatch_launch(&self, binding: &Binding, deadline: Instant) -> Result<Dispatch> {
+        self.dispatch_launch_checked(binding, None, deadline)
+    }
+    /// Explicit UI confirmation is bound to the generation it displayed. Check
+    /// and consume that generation under the SAME transaction, never re-arm it.
+    pub fn dispatch_confirmed_launch(
+        &self,
+        binding: &Binding,
+        confirmed: Uuid,
+        deadline: Instant,
+    ) -> Result<Dispatch> {
+        self.dispatch_launch_checked(binding, Some(confirmed), deadline)
+    }
+    fn dispatch_launch_checked(
+        &self,
+        binding: &Binding,
+        confirmed: Option<Uuid>,
+        deadline: Instant,
+    ) -> Result<Dispatch> {
         let mut tx = self.begin(deadline)?;
         let saved = tx
             .current()?
             .context("recovery pending: missing launch journal")?;
+        if let Some(confirmed) = confirmed {
+            ensure!(
+                saved
+                    .launch_registration()
+                    .is_some_and(|launch| launch.generation() == confirmed),
+                "recovery pending: confirmed launch generation changed"
+            );
+        }
         let next = saved.advance_launch(Phase::Ready, Phase::Dispatched, binding)?;
         let generation = next.launch.as_ref().unwrap().generation;
         tx.commit(next)?;
