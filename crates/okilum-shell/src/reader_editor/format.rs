@@ -1363,7 +1363,14 @@ mod key_tests {
                     reader.toggle_live_preview(window, cx);
                 }
             });
-            for (prefix, continued) in [("", ""), ("- ", "  "), ("> ", "> "), ("- > ", "  > ")] {
+            for (prefix, continued) in [
+                ("", ""),
+                ("- ", "  "),
+                ("> ", "> "),
+                ("- > ", "  > "),
+                ("- [ ] Task\n  ", "  "),
+                ("> - [x] Task\n>   ", ">   "),
+            ] {
                 set(&note, visual, &format!("{prefix}|"));
                 for _ in 0..3 {
                     visual.simulate_input("`");
@@ -1381,6 +1388,34 @@ mod key_tests {
                 assert_eq!(
                     shown(&note, visual),
                     format!("{prefix}```\n{continued}|\n{continued}```")
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn same_line_task_fence_marks_stay_literal_without_rewriting_the_file(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        let path = note._directory.path().join("vault/note.md");
+        let original_bytes = std::fs::read(&path).unwrap();
+        let original_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        for live in [false, true] {
+            note.reader.update_in(visual, |reader, window, cx| {
+                if reader.editing.as_ref().unwrap().live_preview.enabled != live {
+                    reader.toggle_live_preview(window, cx);
+                }
+            });
+            for prefix in ["- [ ] ", "> - [x] ", "- [ ] > "] {
+                set(&note, visual, &format!("{prefix}|"));
+                for _ in 0..3 {
+                    visual.simulate_input("`");
+                }
+                visual.run_until_parked();
+                assert_eq!(shown(&note, visual), format!("{prefix}```|"));
+                assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().modified().unwrap(),
+                    original_modified
                 );
             }
         }

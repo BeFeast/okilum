@@ -79,6 +79,8 @@ pub struct Opening {
 
 /// Prove opener identity with the Reader's Markdown parser. A closing fence,
 /// indented code, front matter or a fence-looking code-body line cannot win.
+/// A checkbox followed by fence marks on the same line is task paragraph text;
+/// an actual fence on the task's continuation line remains eligible.
 /// Call only for a structural trigger, never for ordinary typed characters.
 pub fn opening_line(source: &str) -> Option<Opening> {
     let first = source.trim_start_matches('\u{feff}');
@@ -159,13 +161,17 @@ mod tests {
             ("1. ```", "   "),
             ("> - ```", ">   "),
             ("- > ```", "  > "),
-            ("- [ ] ```", "      "),
-            ("> - [x] ```", ">       "),
-            ("- [ ] > ```", "      > "),
+            ("- [ ] Task\n  ```", "  "),
+            ("> - [x] Task\n>   ```", ">   "),
+            ("- [ ] Task\n  > ```", "  > "),
+            ("1. [x] Task\n   ```", "   "),
         ] {
             let opening = opening_line(source).expect(source);
             assert_eq!(opening.length, 3, "{source}");
             assert_eq!(opening.continuation, prefix, "{source}");
+        }
+        for source in ["- [ ] ```", "> - [x] ```", "- [ ] > ```"] {
+            assert_eq!(opening_line(source), None, "task paragraph: {source}");
         }
     }
 
@@ -198,9 +204,10 @@ mod tests {
             "1. ```",
             "> - ```",
             "- > ```",
-            "- [ ] ```",
-            "> - [x] ```",
-            "- [ ] > ```",
+            "- [ ] Task\n  ```",
+            "> - [x] Task\n>   ```",
+            "- [ ] Task\n  > ```",
+            "1. [x] Task\n   ```",
         ] {
             let opening = opening_line(opener).expect(opener);
             let source = format!(
@@ -227,6 +234,17 @@ mod tests {
             }
             assert_eq!(blocks, 1, "{source:?}");
             assert!(prose_tail, "the remainder must not become code: {source:?}");
+        }
+        // These authored paragraphs are not rewritten into a fenced block.
+        for literal in ["- [ ] ```", "> - [x] ```", "- [ ] > ```"] {
+            assert_eq!(opening_line(literal), None, "{literal}");
+            let source = format!("{literal}\n\nTail stays prose\n");
+            let arena = comrak::Arena::new();
+            let root = comrak::parse_document(&arena, &source, &crate::render::comrak_options());
+            assert!(root.descendants().all(|node| !matches!(
+                node.data.borrow().value,
+                comrak::nodes::NodeValue::CodeBlock(_)
+            )));
         }
     }
 

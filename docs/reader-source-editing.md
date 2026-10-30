@@ -28,8 +28,12 @@ Existing code bodies/closers and nonempty line suffixes stay literal. One Undo
 removes the assistance while retaining the typed opening marks. The independent
 Settings → Editor → Close code fences switch defaults on, including in older
 profiles without that key. Quote markers and original indentation are retained;
-each list marker, including an ordered marker or task box, becomes continuation
-spaces at its own nesting level. Source and Live Preview use the same hook and
+each opening-line list marker, including an ordered marker, becomes continuation
+spaces at its own nesting level. Fence marks on the same line after a task
+checkbox (for example, `- [ ] ``` `) remain literal task text: assistance does
+not insert a closer, split the line or rewrite the authored source. A real fence
+on a list/task continuation line remains eligible, preserving that line's indent
+and quote markers. Source and Live Preview use the same hook and
 existing IME guards, exact line endings and native Undo transactions.
 
 Document zoom scales code together with prose in Read and Live Preview (#1737).
