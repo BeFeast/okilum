@@ -979,6 +979,11 @@ fn minimum_feedback_window_keeps_actions_visible_and_submit_from_input(cx: &mut 
             1,
             "focused input shortcut submits once"
         );
+        assert_eq!(
+            calls.lock().unwrap()[0].text,
+            "small-window feedback",
+            "submit shortcut must not insert a newline into the report"
+        );
         for attaching in [true, false] {
             view.update_in(&mut feedback, |view, window, cx| {
                 view.attaching = attaching;

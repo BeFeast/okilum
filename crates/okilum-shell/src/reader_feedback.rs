@@ -29,6 +29,12 @@ impl Global for Drafts {}
 pub(crate) fn install(cx: &mut App) {
     cx.set_global(Drafts::default());
     cx.bind_keys([
+        // Override the multiline Input's own secondary-enter/newline binding.
+        KeyBinding::new(
+            "secondary-enter",
+            SubmitFeedback,
+            Some("OkilumFeedbackWindow > Input"),
+        ),
         KeyBinding::new(
             "secondary-enter",
             SubmitFeedback,
