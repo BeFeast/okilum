@@ -409,6 +409,16 @@ fn prepare_first_existing_document(
         }
     };
     drop(selection_phase);
+    // Deterministic first-read fault injection for candidate-publication tests.
+    // Unix mode bits do not deny reads to root/CAP_DAC_OVERRIDE runners.
+    #[cfg(test)]
+    let selected = selected.filter(|rel| {
+        rel.is_empty()
+            || opts
+                .first_document_read
+                .as_ref()
+                .is_none_or(|read| read(&intent.root.join(rel)).is_ok())
+    });
     // A PDF, image or archive is not rendered as the first document: the Reader
     // publishes an empty one and opens the file in its viewer (#1080).
     let selected = selected.map(|rel| {
@@ -2787,51 +2797,60 @@ impl Reader {
 mod tests {
     use super::*;
 
-    // Candidate-failure tests need a real I/O failure: invalid UTF-8 now has a
-    // valid read-only display projection. Keep denial active until the guard drops.
+    // Exercise a failed read through the real asynchronous candidate-publication
+    // path, independently of runner identity and platform file-sharing rules.
     struct DeniedNote {
-        #[cfg(unix)]
-        path: PathBuf,
-        #[cfg(unix)]
-        permissions: std::fs::Permissions,
-        #[cfg(windows)]
-        _handle: std::fs::File,
+        read: FirstDocumentRead,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
     }
     impl DeniedNote {
         fn new(path: PathBuf) -> Self {
             std::fs::write(&path, "# Unreadable candidate\n").unwrap();
-            #[cfg(unix)]
-            let guard = {
-                use std::os::unix::fs::PermissionsExt;
-                let permissions = std::fs::metadata(&path).unwrap().permissions();
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-                Self {
-                    path: path.clone(),
-                    permissions,
-                }
-            };
-            #[cfg(windows)]
-            let guard = {
-                use std::os::windows::fs::OpenOptionsExt;
-                Self {
-                    _handle: std::fs::OpenOptions::new()
-                        .read(true)
-                        .share_mode(0)
-                        .open(&path)
-                        .unwrap(),
-                }
-            };
             assert!(
-                std::fs::read(&path).is_err(),
-                "positive control: candidate bytes really cannot be read"
+                path.is_file(),
+                "the candidate is a note, not an empty vault"
             );
-            guard
+            let path = path.canonicalize().unwrap();
+            let expected_path = path.clone();
+            let read: FirstDocumentRead = Arc::new(move |requested| {
+                assert_eq!(
+                    requested, expected_path,
+                    "only the failed candidate is injected"
+                );
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "synthetic candidate read denial",
+                ))
+            });
+            // Probe the same injected read used by the worker, without counting
+            // the probe as evidence that the asynchronous path actually fired.
+            let error = read(&path).expect_err("positive control: injected read must fail");
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "positive control: the expected I/O failure, not decoding"
+            );
+            Self {
+                read,
+                calls: Default::default(),
+            }
         }
-    }
-    #[cfg(unix)]
-    impl Drop for DeniedNote {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+
+        fn inject(&self, mut opts: Opts) -> Opts {
+            let read = self.read.clone();
+            let calls = self.calls.clone();
+            opts.first_document_read = Some(Arc::new(move |path| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                read(path)
+            }));
+            opts
+        }
+
+        fn assert_fired(&self) {
+            assert!(
+                self.calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+                "positive control: the candidate worker actually attempted the failing read"
+            );
         }
     }
 
@@ -3243,12 +3262,13 @@ mod tests {
         std::fs::create_dir(&empty).unwrap();
         // Actual read denial must preserve the published vault/cache; damaged
         // encoding is admitted read-only and is no longer a failed candidate.
-        let _denied = DeniedNote::new(empty.join("bad.md"));
+        let denied = DeniedNote::new(empty.join("bad.md"));
         let empty = empty.canonicalize().unwrap();
-        let opts = opts_for(&empty);
+        let opts = denied.inject(opts_for(&empty));
         let unused_cache = reader_open::cache_path_for(&empty, &opts).unwrap();
         reader.update_in(visual, |v, window, cx| v.start_loading(opts, window, cx));
         visual.run_until_parked();
+        denied.assert_fired();
         reader.read_with(visual, |v, _| {
             assert_eq!(v.vault_root, b);
             assert_eq!(v.index_dir.as_ref(), Some(&new_cache));
@@ -4329,7 +4349,7 @@ mod tests {
         for name in ["a", "b", "empty"] {
             std::fs::create_dir(temp.path().join(name)).unwrap();
         }
-        let _denied = DeniedNote::new(temp.path().join("empty/bad.md"));
+        let denied = DeniedNote::new(temp.path().join("empty/bad.md"));
         std::fs::write(
             temp.path().join("a/shared.md"),
             format!(
@@ -4418,15 +4438,16 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
             v.start_loading(
-                Opts {
+                denied.inject(Opts {
                     vault: Some(temp.path().join("empty")),
                     ..Default::default()
-                },
+                }),
                 window,
                 cx,
             )
         });
         visual.run_until_parked();
+        denied.assert_fired();
         reader.update_in(visual, |v, window, cx| {
             assert!(v.document_ready());
             assert!(v.watcher.is_some());
@@ -6941,16 +6962,17 @@ mod tests {
         let denied = DeniedNote::new(fixture.join("empty/bad.md"));
         reader.update_in(visual, |v, window, cx| {
             v.start_loading(
-                Opts {
+                denied.inject(Opts {
                     vault: Some(fixture.join("empty")),
                     index_dir: Some(fixture.join("empty-cache")),
                     ..Default::default()
-                },
+                }),
                 window,
                 cx,
             )
         });
         visual.run_until_parked();
+        denied.assert_fired();
         reader.update_in(visual, |v, _, _| {
             assert!(v.document_ready(), "previous document remains usable");
             assert_eq!(v.current_rel, "second.md");
@@ -6960,7 +6982,6 @@ mod tests {
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.loading.as_ref().unwrap().phase.contains("no readable"));
         });
-        drop(denied);
         std::fs::remove_dir_all(fixture).unwrap();
     }
     #[gpui::test]

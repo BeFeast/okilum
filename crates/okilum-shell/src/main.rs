@@ -771,6 +771,8 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
 
 #[cfg(test)]
 type IndexBuildHook = Arc<dyn Fn(&Path) + Send + Sync>;
+#[cfg(test)]
+type FirstDocumentRead = Arc<dyn Fn(&Path) -> std::io::Result<Vec<u8>> + Send + Sync>;
 
 #[derive(Default, Clone)]
 struct Opts {
@@ -810,6 +812,8 @@ struct Opts {
     rest_snapshot_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     index_build_hook: Option<IndexBuildHook>,
+    #[cfg(test)]
+    first_document_read: Option<FirstDocumentRead>,
     #[cfg(test)]
     search_publish_in_place: bool,
     cache_lease: Option<Arc<reader_cache::Lease>>,
