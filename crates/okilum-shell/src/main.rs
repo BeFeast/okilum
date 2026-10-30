@@ -7344,16 +7344,12 @@ fn main() {
         .set_auto_apply_on_startup(updater::apply_pending_at_start())
         .on_after_install_fast_callback(|_| {
             markdown_handler::install();
-            if let Ok(executable) = std::env::current_exe() {
-                okilum_core::folder_registration::install(&executable);
-            }
+            okilum_core::folder_registration::install_current();
             url_protocol::install();
         })
         .on_after_update_fast_callback(|_| {
             markdown_handler::install();
-            if let Ok(executable) = std::env::current_exe() {
-                okilum_core::folder_registration::install(&executable);
-            }
+            okilum_core::folder_registration::install_current();
             url_protocol::install();
         })
         .on_before_uninstall_fast_callback(|_| app_footprint::uninstall())

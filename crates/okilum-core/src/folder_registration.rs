@@ -55,6 +55,15 @@ pub fn install(executable: &std::path::Path) {
     }
 }
 
+/// Velopack hooks need a diagnostic if the current executable cannot be resolved.
+#[cfg(windows)]
+pub fn install_current() {
+    match std::env::current_exe() {
+        Ok(executable) => install(&executable),
+        Err(error) => eprintln!("Folder verb executable resolution failed: {error}"),
+    }
+}
+
 /// Preserve all shared Explorer keys and every unrelated verb.
 #[cfg(windows)]
 pub fn uninstall() {
