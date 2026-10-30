@@ -1,6 +1,7 @@
 """Pinned provenance and cross-platform archive admission negative controls."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -16,6 +17,14 @@ SPEC.loader.exec_module(bundle)
 
 
 class SyncthingBundleTests(unittest.TestCase):
+    def test_packaging_version_matches_existing_runtime_contract(self):
+        repo = Path(__file__).resolve().parents[2]
+        source = (repo / "crates/okilum-sync-controller/src/daemon.rs").read_text()
+        expected = re.search(r'pub const CLIENT_VERSION: &str = "v([0-9.]+)";', source)
+        self.assertIsNotNone(expected, "runtime contract version declaration changed")
+        self.assertEqual(bundle.VERSION, expected.group(1),
+                         "update packaging archive pins and signed checksum list with runtime contract")
+
     def test_pinned_signature_required_bad_signature_never_accepted(self):
         good = "[GNUPG:] VALIDSIG " + bundle.FINGERPRINT + " 2026 0 0\n"
         legacy = "[GNUPG:] NO_PUBKEY " + bundle.LEGACY + "\n"

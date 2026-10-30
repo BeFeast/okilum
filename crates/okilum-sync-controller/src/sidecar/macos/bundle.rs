@@ -53,7 +53,11 @@ impl<V: SignatureVerifier> BundleGuard<V> {
         let provenance = fs::read(self.root.join(SYNCTHING_PROVENANCE))?;
         let parsed: serde_json::Value = serde_json::from_slice(&provenance)?;
         ensure!(
-            parsed["version"] == "2.1.6" && parsed["signed"] == true,
+            parsed["version"]
+                == crate::daemon::CLIENT_VERSION
+                    .strip_prefix('v')
+                    .unwrap_or(crate::daemon::CLIENT_VERSION)
+                && parsed["signed"] == true,
             "untrusted bundled runtime provenance"
         );
         let hash = format!("{:x}", Sha256::digest(fs::read(&runtime)?));
