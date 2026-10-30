@@ -187,8 +187,8 @@ def github_release(github, tag, release, files, body, stable):
     if matches:
         current = exact[0] if exact else min(matches, key=lambda r: r['id'])
     if current is None:
-        current = github.call('POST', '/releases', {'tag_name': tag, 'draft': True,
-                              'name': 'Beta' if not stable else f'Okilum 0.1.{release["build"]}',
+        current = github.call('POST', '/releases', {'tag_name': tag, 'target_commitish': release['source'], 'draft': True,
+                              'name': 'Beta' if not stable else release.get('name', f'Okilum 0.1.{release["build"]}'),
                               'prerelease': not stable})
     rid = current['id']
     # Hide an existing rolling release while replacing its matching asset set.
@@ -198,7 +198,7 @@ def github_release(github, tag, release, files, body, stable):
     for name, data in files.items():
         github.call('POST', f'/releases/{rid}/assets?name={urllib.parse.quote(name)}', data, binary=True)
     github.call('PATCH', f'/releases/{rid}', {
-        'name': f'Okilum 0.1.{release["build"]}' if stable else 'Beta',
+        'name': release.get('name', f'Okilum 0.1.{release["build"]}') if stable else 'Beta',
         'tag_name': tag, 'target_commitish': release['source'],
         'body': body, 'draft': False, 'prerelease': not stable})
     published = github.call('GET', f'/releases/tags/{tag}')
@@ -269,7 +269,7 @@ def preflight_macos(store, release, tree=None):
         raise ValueError('Selected macOS build is absent from appcast')
 
 
-def promote_mac_only(store, build, supersede_pending=False):
+def promote_mac_only(store, build, supersede_pending=False, forgejo=None):
     """Promote only verified Mac payloads; never mutate cross-platform releases."""
     if build is None or build < 1:
         raise ValueError('mac_only requires a positive explicit build')
@@ -321,8 +321,12 @@ def promote_mac_only(store, build, supersede_pending=False):
     if 'Okilum-macos.zip' not in files or f'Okilum-0.1.{build}.dmg' not in files:
         raise ValueError('Mac-only promotion requires verified zip and DMG')
     store.put(pending_key, catalog.encode(release), 'application/json', 'no-cache')
-    # Retain existing descriptions/notes and Sparkle signature; only channel changes.
-    appcast.promote(tree, SimpleNamespace(build=build))
+    # Notes and preflight must use the same exact appcast snapshot.
+    notes_store = SimpleNamespace(call=lambda method, key: raw if key == 'okilum/appcast.xml' else store.call(method, key))
+    stable_notes = release_notes.prepare_stable(notes_store, forgejo or Forgejo(), 'macos', build, source)
+    release_notes.record(store, stable_notes)
+    # Stable uses the same canonical notes as the in-app build history.
+    appcast.promote(tree, SimpleNamespace(build=build, notes_json=json.dumps(stable_notes)))
     ET.indent(tree, '  ')
     store.put('okilum/appcast.xml', ET.tostring(tree.getroot(), encoding='utf-8', xml_declaration=True),
               'application/xml', 'no-cache')
