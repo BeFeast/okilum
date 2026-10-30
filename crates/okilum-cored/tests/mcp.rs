@@ -99,6 +99,7 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
