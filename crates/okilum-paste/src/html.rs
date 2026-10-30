@@ -130,6 +130,8 @@ fn scan_tags(html: &str, mut out: Option<&mut String>) -> usize {
         "colgroup", "rt",
     ];
     const RAW: [&str; 6] = ["script", "style", "textarea", "title", "xmp", "plaintext"];
+    // Raw text the converter shows as text; the rest of RAW is skipped.
+    const LITERAL: [&str; 2] = ["xmp", "plaintext"];
     let bytes = html.as_bytes();
     let n = bytes.len();
     let mut depth = 0usize;
@@ -223,8 +225,13 @@ fn scan_tags(html: &str, mut out: Option<&mut String>) -> usize {
                         if keep {
                             out.push_str(&html[copied..stop]);
                         } else {
+                            // Without its wrapper the body would be markup:
+                            // literal bodies stay text, the others are
+                            // dropped as `skipped` drops them when shallow.
                             out.push_str(&html[copied..lt]);
-                            out.push_str(&html[end..stop]);
+                            if LITERAL.contains(&name.as_str()) {
+                                escape_text(out, &html[end..stop]);
+                            }
                         }
                         copied = stop;
                     }
@@ -249,6 +256,18 @@ fn scan_tags(html: &str, mut out: Option<&mut String>) -> usize {
         out.push_str(&html[copied.min(n)..]);
     }
     max
+}
+
+/// Appends raw text as HTML text that parses back to the same characters.
+fn escape_text(out: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
 }
 
 fn is_plain_block(block: &Block) -> bool {
@@ -2349,6 +2368,43 @@ mod tracking_pixel_tests {
         for style in ["max-width:1px;max-height:1px", "width:100px;height:0"] {
             let html = format!("<p><img src=\"https://t.example/p.gif\" style=\"{style}\"></p>");
             assert!(!is_tracking_pixel(&first_img(&html)), "{style}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod flatten_tests {
+    use super::*;
+
+    fn deep(inner: &str) -> String {
+        let n = PARSE_DEPTH + 44;
+        format!("{}{inner}{}", "<div>".repeat(n), "</div>".repeat(n))
+    }
+
+    /// Literal markup inside a deep `<xmp>` or `<plaintext>` stays text in
+    /// the flattened HTML, so reparsing it cannot nest past the limit.
+    #[test]
+    fn deep_literal_bodies_do_not_reintroduce_nesting() {
+        for t in ["xmp", "plaintext"] {
+            let html = deep(&format!("<{t}>{}</{t}>", "<div>".repeat(1_000)));
+            assert!(
+                scan_tags(&html, None) > PARSE_DEPTH,
+                "{t}: positive control"
+            );
+            let flat = flatten_deep(&html);
+            assert!(matches!(flat, std::borrow::Cow::Owned(_)), "{t}");
+            assert!(scan_tags(&flat, None) <= PARSE_DEPTH, "{t}");
+            assert_eq!(flat.matches("&lt;div&gt;").count(), 1_000, "{t}");
+        }
+    }
+
+    #[test]
+    fn deep_skipped_bodies_are_dropped() {
+        for t in ["script", "style", "title", "textarea"] {
+            let html = deep(&format!("<p>shown</p><{t}>hidden-{t}</{t}>"));
+            let flat = flatten_deep(&html);
+            assert!(flat.contains("shown"), "{t}");
+            assert!(!flat.contains("hidden"), "{t}: {flat:.200}");
         }
     }
 }

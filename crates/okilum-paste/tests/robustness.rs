@@ -193,3 +193,54 @@ fn seeded_random_input_never_panics() {
         let _ = okilum_paste::guess_language(&text);
     }
 }
+
+/// Wraps `inner` in `depth` divs.
+fn nested(depth: usize, inner: &str) -> String {
+    format!("{}{inner}{}", "<div>".repeat(depth), "</div>".repeat(depth))
+}
+
+/// Past the flattening depth, raw-text elements keep their shallow meaning:
+/// script, style, title and textarea bodies are dropped, xmp and plaintext
+/// bodies are literal text.
+#[test]
+fn raw_text_elements_nested_deeply() {
+    for depth in [3, 300, 10_000] {
+        for t in ["script", "style", "title", "textarea"] {
+            let html = nested(
+                depth,
+                &format!("<p>before</p><{t}>leaked {t} body</{t}><p>after</p>"),
+            );
+            on_small_stack(move || {
+                let md = convert(&html);
+                assert!(md.contains("before") && md.contains("after"), "{md:.200}");
+                assert!(!md.contains("leaked"), "{depth} {t}: {md:.200}");
+            });
+        }
+        for t in ["xmp", "plaintext"] {
+            let html = nested(
+                depth,
+                &format!("<p>before</p><{t}><b>lit</b> &amp; x</{t}>"),
+            );
+            on_small_stack(move || {
+                let md = convert(&html);
+                assert!(md.contains("before"), "{md:.200}");
+                assert!(
+                    md.contains("\\<b>lit\\</b> \\&amp; x"),
+                    "{depth} {t}: {md:.200}"
+                );
+            });
+        }
+    }
+}
+
+/// 1 000 literal `<div>` strings in a deep `<xmp>` stay text: reparsed as
+/// tags, they would nest far past the flattening depth.
+#[test]
+fn literal_tags_in_deep_xmp_stay_text() {
+    let html = nested(300, &format!("<xmp>{}</xmp>after", "<div>".repeat(1_000)));
+    on_small_stack(move || {
+        let md = convert(&html);
+        assert_eq!(md.matches("\\<div>").count(), 1_000, "{md:.200}");
+        assert!(md.contains("after"), "{md:.200}");
+    });
+}
