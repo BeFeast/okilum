@@ -80,11 +80,12 @@ impl OpenIntent {
             bail!("Choose a local Markdown, CSV, TSV, text, code or log file, or a folder");
         }
         // Fail before constructing a Reader rather than falling back to its first note.
-        // A log is bytes, not UTF-8 text: only readability is required.
+        // Damaged Markdown is displayable read-only; encoding is not an admission gate.
         if read_primary && (log || plain || !markdown) {
             std::fs::File::open(&path).context("The file cannot be read")?;
         } else if read_primary {
-            std::fs::read_to_string(&path).context("The Markdown file cannot be read as UTF-8")?;
+            okilum_core::vault::read_display_source(&path)
+                .context("The Markdown file cannot be read")?;
         }
         let parent = path
             .parent()
@@ -288,11 +289,11 @@ mod tests {
         assert_eq!(OpenIntent::validate(&f.0, None, None).unwrap().root, f.0);
     }
     #[test]
-    fn log_files_open_without_utf8_and_other_files_still_refuse() {
+    fn damaged_text_documents_open_but_unsupported_files_stay_rejected() {
         let f = Fixture::new();
         let names = ["service.log", "events.JSONL", "events.ndjson", "app.logfmt"];
         for name in names {
-            // Invalid UTF-8 is fine for a log; the Markdown path would refuse it.
+            // Logs and damaged Markdown both admit a read-only display.
             std::fs::write(f.0.join(name), b"{\"level\":\"info\"}\n\xff\xfe\n").unwrap();
             let intent = OpenIntent::validate(&f.0.join(name), None, None).unwrap();
             assert!(intent.single_file, "{name}");
@@ -300,7 +301,14 @@ mod tests {
             assert_eq!(intent.root, f.0.canonicalize().unwrap());
         }
         std::fs::write(f.0.join("binary.md"), b"\xff\xfe").unwrap();
-        assert!(OpenIntent::validate(&f.0.join("binary.md"), None, None).is_err());
+        assert_eq!(
+            OpenIntent::validate(&f.0.join("binary.md"), None, None)
+                .unwrap()
+                .note
+                .as_deref(),
+            Some("binary.md")
+        );
+        assert_eq!(std::fs::read(f.0.join("binary.md")).unwrap(), [0xff, 0xfe]);
         // Code files open directly since #998; other kinds stay rejected.
         std::fs::write(f.0.join("data.json"), b"{}").unwrap();
         assert!(

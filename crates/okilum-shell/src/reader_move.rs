@@ -881,13 +881,7 @@ impl Reader {
                 let success_message =
                     move_message(&pending.from, &pending.to, update.then_some(&pending.links));
                 let document = okilum_core::render::reader_document(&self.vault, &next_current)
-                    .map(|d| prepared_links::PreparedDocument {
-                        canonical_source: Some(d.canonical_source),
-                        source: d.rendered,
-                        original: Some(d.original_body),
-                        identities: d.links,
-                        frontmatter: d.frontmatter,
-                    });
+                    .map(|d| d.into());
                 // Even a concurrent deletion/read failure must not leave the UI
                 // pointing at the old path after a successful rename.
                 self.current_rel = next_current.clone();

@@ -50,7 +50,7 @@ run_tests() {
     cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@"
 }
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
-run_tests okilum-core --lib link_rewrite::tests::sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search --exact
+run_tests okilum-core --lib link_rewrite::tests::sidecars_stay_excluded_and_invalid_utf8_remains_searchable_without_rewriting --exact
 for name in \
     completed_exchange_before_journal_acknowledgement_recovers_without_conflict \
     immediate_reopen_releases_lock_despite_an_inherited_descriptor \
@@ -148,6 +148,14 @@ run_tests okilum-shell --bins reader_editor::tests::replacing_vault_saves_dirty_
 # #1915: unsupported rename flags must exercise the compatible path on every Mac.
 run_tests okilum-core --lib unix_publish::
 run_tests okilum-core --lib file_editor::network_save_tests::
+# #1934: the native kernel must exercise byte-exact Repair/Restore, including
+# rollback and unsupported-EXCHANGE failures, plus the actual Reader buttons.
+run_tests okilum-core --lib file_editor::raw_transaction::
+run_tests okilum-core --lib source_history::
+run_tests okilum-core --lib vault::preimage_visibility_tests::appledouble_is_excluded_before_lossy_utf8_inventory_and_display --exact
+run_tests okilum-shell --bins network_write_qa::
+run_tests okilum-shell --bins reader_encoding::tests::repair_button_unlocks_edit_and_history_restores_the_original_bytes --exact
+run_tests okilum-shell --bins reader_encoding::tests::appledouble_does_not_enter_tree_or_offer_encoding_repair --exact
 run_tests okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --exact
 # Manager-authorized native mount gate only on the local M4 runner. Hosted Macs
 # have no corporate mount; never substitute local APFS for this acceptance.
@@ -156,6 +164,12 @@ if [[ "${OKILUM_NETWORK_WRITE_QA:-0}" == 1 ]]; then
     test -d /Volumes/Maestro/okilum-nfs-qa
     cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell \
         --example network_write_acceptance -- /Volumes/Maestro/okilum-nfs-qa
+fi
+if [[ "${OKILUM_ENCODING_REPAIR_QA:-0}" == 1 ]]; then
+    [[ "${GITHUB_SERVER_URL:-}" == https://git.oklabs.uk ]]
+    test -d /Volumes/Maestro/okilum-nfs-qa
+    cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell \
+        --example network_write_acceptance -- /Volumes/Maestro/okilum-nfs-qa --encoding-repair
 fi
 # #1924: no-Trash fallback, collision-safe Undo/Redo, and hidden tree/search.
 run_tests okilum-shell --bins reader_trash_fs::vault_fallback_tests::

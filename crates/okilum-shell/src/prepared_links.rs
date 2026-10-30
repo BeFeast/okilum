@@ -183,11 +183,50 @@ pub(crate) fn presentation(
 
 pub(crate) struct PreparedDocument {
     pub canonical_source: Option<Arc<str>>,
+    pub encoding_damaged: bool,
     pub source: String,
     pub original: Option<String>,
     pub identities: Vec<document_links::prepared::LinkIdentity>,
     /// Leading frontmatter YAML for the Properties view (#386).
     pub frontmatter: Option<String>,
+}
+
+impl From<okilum_core::render::ReaderDocument> for PreparedDocument {
+    fn from(document: okilum_core::render::ReaderDocument) -> Self {
+        Self {
+            canonical_source: (!document.encoding_damaged).then_some(document.canonical_source),
+            encoding_damaged: document.encoding_damaged,
+            source: document.rendered,
+            original: Some(document.original_body),
+            identities: document.links,
+            frontmatter: document.frontmatter,
+        }
+    }
+}
+
+impl PreparedDocument {
+    pub(crate) fn html(vault: &Vault, rel: &str, source: Option<String>) -> anyhow::Result<Self> {
+        let source = match source {
+            Some(text) => okilum_core::vault::DisplayNote {
+                text,
+                encoding_damaged: vault.note_encoding_damaged(rel),
+            },
+            None => vault.read_note_display(rel)?,
+        };
+        Ok(Self {
+            encoding_damaged: source.encoding_damaged,
+            source: okilum_core::render::render_html_from_source(
+                vault,
+                rel,
+                &source.text,
+                "InspiredGitHub",
+            )?,
+            canonical_source: None,
+            original: None,
+            identities: Vec::new(),
+            frontmatter: None,
+        })
+    }
 }
 
 /// Where to land once the document is rendered.
@@ -354,24 +393,10 @@ impl Reader {
                             cloud_send.send_blocking(()).map_err(|_| anyhow::anyhow!("Opening cancelled"))
                         })?;
                         let document = if html && !Path::new(&rel).is_absolute() {
-                            okilum_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
-                                PreparedDocument {
-                                    source: html,
-                                    canonical_source: None,
-                                    original: None,
-                                    identities: Vec::new(),
-                                    frontmatter: None,
-                                }
-                            })
+                            PreparedDocument::html(&vault, &rel, None)
                         } else {
                             okilum_core::render::reader_document(&vault, &rel).map(|document| {
-                                PreparedDocument {
-                                    canonical_source: Some(document.canonical_source),
-                                    source: document.rendered,
-                                    original: Some(document.original_body),
-                                    identities: document.links,
-                                    frontmatter: document.frontmatter,
-                                }
+                                document.into()
                             })
                         };
                         document.and_then(|document| {

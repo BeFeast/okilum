@@ -101,7 +101,9 @@ fn windows_name_error(cause: &str, original: Option<&Path>) -> String {
     let original = original
         .map(|path| format!(" Original name: {}.", display_path(path)))
         .unwrap_or_default();
-    format!("{cause} Name not valid on Windows (possibly an SMB short alias).{original} Rename the original file on the server or another platform.")
+    format!(
+        "{cause} Name not valid on Windows (possibly an SMB short alias).{original} Rename the original file on the server or another platform."
+    )
 }
 
 #[cfg(windows)]
@@ -341,6 +343,33 @@ pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
 
+/// A display projection only: replacement characters never authorize a write.
+#[derive(Debug, Clone)]
+pub struct DisplayNote {
+    pub text: String,
+    pub encoding_damaged: bool,
+}
+
+/// Preserve raw source bytes for Reader snapshots, including malformed UTF-8.
+/// Mutation/rewrite paths keep using the strict `read_source` above.
+pub(crate) fn read_source_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    if cloud_placeholder(path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            CloudPlaceholder,
+        ));
+    }
+    std::fs::read(path)
+}
+
+pub fn read_display_source(path: &Path) -> std::io::Result<DisplayNote> {
+    let bytes = read_source_bytes(path)?;
+    Ok(DisplayNote {
+        encoding_damaged: std::str::from_utf8(&bytes).is_err(),
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
 /// Scan-admitted browser metadata. Identity is the complete root-relative path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
@@ -367,6 +396,21 @@ pub(crate) const CLOUD_PENDING: &str = "iCloud placeholder is not downloaded";
 pub fn is_cloud_placeholder_diagnostic(operation: &str, error: &str) -> bool {
     operation == CLOUD_PLACEHOLDER
         || (matches!(operation, "read note" | "previous scan") && error.ends_with(CLOUD_PENDING))
+}
+
+/// Old snapshots wrapped diagnostics with "previous scan" on each publication.
+pub fn is_note_encoding_diagnostic(operation: &str, error: &str) -> bool {
+    if operation == DECODE_NOTE {
+        return true;
+    }
+    if operation != "previous scan" {
+        return false;
+    }
+    let mut original = error;
+    while let Some(inner) = original.strip_prefix("previous scan: ") {
+        original = inner;
+    }
+    original.starts_with("decode note: ")
 }
 
 /// A skipped entry, retained so a partial inventory is never presented as complete.
@@ -547,8 +591,17 @@ impl Vault {
         let mut cloud_placeholders = Vec::new();
         vault.build_backlinks_from(checkpoint, |path| {
             let path = root.join(path);
-            match read_source(&path) {
-                Ok(source) => Some(source),
+            match read_display_source(&path) {
+                Ok(source) => {
+                    if source.encoding_damaged {
+                        unreadable.push(UnreadableEntry {
+                            path,
+                            operation: DECODE_NOTE,
+                            error: "Invalid UTF-8; displayed with replacement characters".into(),
+                        });
+                    }
+                    Some(source.text)
+                }
                 Err(error) if cloud_read_error(&error) || cloud_placeholder(&path) => {
                     cloud_placeholders.push(path);
                     None
@@ -575,9 +628,7 @@ impl Vault {
         root: &Path,
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<(Vault, HashMap<String, Vec<u8>>)> {
-        Self::scan_snapshot_read_with(root, checkpoint, &mut |path| {
-            read_source(path).map(String::into_bytes)
-        })
+        Self::scan_snapshot_read_with(root, checkpoint, &mut read_source_bytes)
     }
 
     fn scan_snapshot_read_with(
@@ -600,11 +651,14 @@ impl Vault {
                     Ok(_) => {
                         sources.insert(note.path.clone(), bytes);
                     }
-                    Err(error) => vault.unreadable.push(UnreadableEntry {
-                        path,
-                        operation: DECODE_NOTE,
-                        error: error.to_string(),
-                    }),
+                    Err(error) => {
+                        vault.unreadable.push(UnreadableEntry {
+                            path,
+                            operation: DECODE_NOTE,
+                            error: error.to_string(),
+                        });
+                        sources.insert(note.path.clone(), bytes);
+                    }
                 },
                 Err(error) if cloud_read_error(&error) => vault.cloud_placeholders.push(path),
                 Err(error) => vault.unreadable.push(UnreadableEntry {
@@ -994,7 +1048,7 @@ impl Vault {
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("md"))
             {
-                if read_source(entry.path()).is_ok() {
+                if read_display_source(entry.path()).is_ok() {
                     return Ok(Discovery::Found(note_path(
                         entry.path().strip_prefix(root)?,
                     )));
@@ -1022,8 +1076,21 @@ impl Vault {
 
     pub fn read_note(&self, rel: &str) -> Result<String> {
         anyhow::ensure!(!service_path(Path::new(rel)), "Service files are not notes");
-        crate::open_diagnostics::fs(|| read_source(&self.root.join(rel)))
+        Ok(self.read_note_display(rel)?.text)
+    }
+
+    pub fn read_note_display(&self, rel: &str) -> Result<DisplayNote> {
+        anyhow::ensure!(!service_path(Path::new(rel)), "Service files are not notes");
+        crate::open_diagnostics::fs(|| read_display_source(&self.root.join(rel)))
             .with_context(|| format!("read {rel}"))
+    }
+
+    /// Encoding information captured with a cached display source.
+    pub fn note_encoding_damaged(&self, rel: &str) -> bool {
+        let path = self.root.join(rel);
+        self.unreadable.iter().any(|item| {
+            item.path == path && is_note_encoding_diagnostic(item.operation, &item.error)
+        })
     }
 
     /// Resolve a wikilink target ("Note", "Dir/Note", "Note#Heading", with any
@@ -1941,14 +2008,14 @@ mod browser_inventory_tests {
             Vault::discover(&notes, &mut ok).unwrap(),
             Discovery::Found("Plan.md".into())
         );
-        // Markdown that is not UTF-8 cannot be read, as root too.
+        // Damaged encoding still has a readable display projection, as root too.
         let unreadable = fixture.path().join("Broken");
         std::fs::create_dir_all(&unreadable).unwrap();
         std::fs::write(unreadable.join("bad.md"), [0xff, 0xfe]).unwrap();
         assert_eq!(
             Vault::discover(&unreadable, &mut ok).unwrap(),
-            Discovery::Unreadable,
-            "unreadable Markdown is never an empty vault"
+            Discovery::Found("bad.md".into()),
+            "damaged Markdown stays discoverable"
         );
     }
 
@@ -2102,6 +2169,52 @@ mod property_backlink_tests {
 mod preimage_visibility_tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn appledouble_is_excluded_before_lossy_utf8_inventory_and_display() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let bytes = [0x00, 0x05, 0x16, 0x07, 0xff];
+        fs::write(root.join("._Note.md"), bytes).unwrap();
+        fs::write(root.join("Note.md"), "# Visible note\n").unwrap();
+        fs::write(root.join("Damaged.md"), b"# Damaged\n\xff").unwrap();
+        assert!(service_path(Path::new("._Note.md")));
+        let vault = Vault::scan(root).unwrap();
+        assert_eq!(
+            vault.notes.len(),
+            2,
+            "real damaged notes still enter the lossy display inventory"
+        );
+        assert!(vault.notes.iter().any(|note| note.path == "Note.md"));
+        assert!(vault.notes.iter().all(|note| note.path != "._Note.md"));
+        assert!(vault.entries.iter().all(|entry| entry.path != "._Note.md"));
+        assert!(
+            vault
+                .unreadable
+                .iter()
+                .all(|entry| entry.path != root.join("._Note.md")),
+            "metadata is excluded before it can become an encoding diagnostic"
+        );
+        assert!(!vault.note_encoding_damaged("._Note.md"));
+        assert!(
+            vault.read_note_display("._Note.md").is_err(),
+            "explicit display cannot offer Repair for a sidecar"
+        );
+        assert!(
+            vault
+                .read_note_display("Damaged.md")
+                .unwrap()
+                .encoding_damaged,
+            "positive control: genuine invalid UTF-8 remains repairable"
+        );
+        let cached = Vault::from_note_paths(["._Note.md".into(), "Note.md".into()]);
+        assert_eq!(
+            cached.notes.len(),
+            1,
+            "cached identities use the same exclusion"
+        );
+        assert_eq!(fs::read(root.join("._Note.md")).unwrap(), bytes);
+    }
     #[test]
     fn windows_history_preimages_are_service_files_on_every_platform() {
         let temp = tempfile::tempdir().unwrap();

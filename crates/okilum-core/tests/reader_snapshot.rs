@@ -25,8 +25,8 @@ fn snapshot_preserves_backlinks_exact_bytes_and_cancellation() {
         "fixture must be admitted by directory policy"
     );
     assert_eq!(snapshot.notes.len(), old.notes.len());
-    assert_eq!(bytes.len(), 3);
-    assert!(!bytes.contains_key("invalid.md"));
+    assert_eq!(bytes.len(), 4);
+    assert_eq!(bytes["invalid.md"], b"\xff [[a]]");
     assert!(snapshot
         .unreadable
         .iter()
@@ -36,19 +36,17 @@ fn snapshot_preserves_backlinks_exact_bytes_and_cancellation() {
         b"\xff [[a]]"
     );
     for note in &old.notes {
-        if note.path != "invalid.md" {
-            assert_eq!(
-                bytes[&note.path],
-                std::fs::read(root.join(&note.path)).unwrap()
-            );
-        }
+        assert_eq!(
+            bytes[&note.path],
+            std::fs::read(root.join(&note.path)).unwrap()
+        );
         assert_eq!(
             serde_json::to_value(snapshot.backlinks(&note.path)).unwrap(),
             serde_json::to_value(old.backlinks(&note.path)).unwrap()
         );
     }
-    // Only nested/b.md contributes: the invalid source must not be decoded lossily.
-    assert_eq!(snapshot.backlinks("a.md").len(), 1);
+    // Both readable projections contribute; the snapshot retains exact raw bytes.
+    assert_eq!(snapshot.backlinks("a.md").len(), 2);
     assert!(Vault::scan_snapshot_with(&root, &mut |phase, _| {
         if phase == "Reading notes" {
             anyhow::bail!("cancel reading");
