@@ -77,6 +77,9 @@ impl RenderOnce for CodeActions {
                     })
                     .tooltip(if copied { "Copied" } else { "Copy code" })
                     .accessibility_label(if copied { "Code copied" } else { "Copy code" })
+                    // In Live Preview the editor would reveal source on this
+                    // press, removing the button before its click can copy.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .debug_selector(move || {
                         format!(
                             "reader-code-{}-{offset}",

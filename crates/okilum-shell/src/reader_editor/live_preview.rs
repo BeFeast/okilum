@@ -1214,6 +1214,14 @@ mod tests {
                     "Live Copy excludes fences and container indentation: {block:?}"
                 )
             });
+            input.read_with(visual, |input, _| {
+                assert_eq!(
+                    input.selected_range(),
+                    note.len()..note.len(),
+                    "Copy must not move the caret into the code block"
+                );
+                assert_eq!(input.value().as_ref(), note);
+            });
             let stamp = input.read_with(visual, |input, _| input.source_stamp());
             let at = note.find("int x").unwrap();
             reader.update_in(visual, |_, window, cx| {
