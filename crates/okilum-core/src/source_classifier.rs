@@ -413,6 +413,23 @@ fn classify_parsed<'a>(
             });
         }
     }
+    // Code stays exact Source, but its metric style must still reach Live's
+    // projection shaper. Include container indentation and authored fences;
+    // never classify literal code as inline Markdown.
+    for node in root.descendants() {
+        if !matches!(node.data.borrow().value, NodeValue::CodeBlock(_)) {
+            continue;
+        }
+        if let Some(mut range) = context.range(node) {
+            range.start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+            if context.boundary(range.start) && context.boundary(range.end) {
+                styles.push(StyleSpan {
+                    range,
+                    style: Style::Code,
+                });
+            }
+        }
+    }
     styles.sort_by_key(|style| style.range.start);
     resolved.dedup_by(|a: &mut Reference, b: &mut Reference| a.label == b.label);
     if styles.len() + reasons.len() > MAX_STYLES_AND_REASONS {

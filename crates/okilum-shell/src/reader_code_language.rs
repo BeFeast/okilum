@@ -19,17 +19,7 @@ fn language(block: &CodeBlock) -> Option<SharedString> {
 }
 
 fn normalize(lang: &str) -> String {
-    let lower = lang.to_ascii_lowercase();
-    match lower.as_str() {
-        "sh" | "shell" => "bash",
-        "yml" => "yaml",
-        "js" => "javascript",
-        "ts" => "typescript",
-        "py" => "python",
-        "rs" => "rust",
-        _ => &lower,
-    }
-    .to_owned()
+    okilum_core::code_language::canonical(lang)
 }
 
 // Scores rank explicit signatures, not statistical probabilities. A winner
@@ -165,6 +155,9 @@ mod tests {
             ("YML", "yaml"),
             ("js", "javascript"),
             ("rs", "rust"),
+            ("cs", "csharp"),
+            ("c#", "csharp"),
+            ("csharp", "csharp"),
             ("custom", "custom"),
         ] {
             assert_eq!(normalize(input), expected);

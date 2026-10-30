@@ -1709,6 +1709,44 @@ This paragraph remains ordinary Markdown.
     }
 
     #[test]
+    fn active_code_uses_the_selected_code_font_without_styling_prose() {
+        for language in ["csharp", "c#", "cs", "rust", "python", "javascript"] {
+            let note = source(&format!("```{language}\ncode_body\n```\n\nprose\n"));
+            let provider = CachedProvider::classify(note.clone());
+            let at = note.text.find("code_body").unwrap();
+            let active = ActiveSource {
+                anchor: SourceByte(at),
+                head: SourceByte(at),
+                ..Default::default()
+            };
+            for font in ["Cascadia Code", "Selected code family"] {
+                let projection = provider
+                    .compose_colored(&note, &active, None, font)
+                    .unwrap();
+                assert!(
+                    projection.blocks().is_empty(),
+                    "editing shows authored code"
+                );
+                assert!(
+                    projection.styles().iter().any(|style| {
+                        style.range.start.0 <= at
+                            && at < style.range.end.0
+                            && style.font_family.as_deref() == Some(font)
+                    }),
+                    "{language} uses the current Settings code font"
+                );
+                let prose = projection.text().find("prose").unwrap();
+                assert!(!projection.styles().iter().any(|style| {
+                    style.range.start.0 <= prose
+                        && prose < style.range.end.0
+                        && style.font_family.is_some()
+                }));
+                assert_eq!(&*projection.source().text, &*note.text);
+            }
+        }
+    }
+
+    #[test]
     fn explicit_replacement_reveals_without_changing_selection() {
         let source = source("**first**\n\n**second**\n\nend");
         let provider = CachedProvider::classify(source.clone());
