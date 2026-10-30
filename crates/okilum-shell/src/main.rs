@@ -90,6 +90,7 @@ mod reader_navigation;
 mod reader_obsidian;
 mod reader_open;
 mod reader_open_windows;
+mod reader_outline;
 mod reader_owned_windows;
 mod reader_pdf;
 mod reader_plain_text;
@@ -6086,7 +6087,7 @@ impl Reader {
                             return div().into_any_element();
                         };
                         let p = brand::palette(cx);
-                        let block = heading.target.block;
+                        let target = heading.clone();
                         let is_current = current == Some(ix);
                         let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
                         div()
@@ -6118,9 +6119,7 @@ impl Reader {
                                     .child(heading.text.clone()),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.scroll_to_block(block, cx);
-                                let focus = this.content.read(cx).focus_handle().clone();
-                                focus.focus(window, cx);
+                                this.open_outline_heading(target.clone(), window, cx);
                             }))
                             .context_menu({
                                 let entity = entity.clone();
