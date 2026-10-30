@@ -104,7 +104,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn real_registry_round_trip_preserves_neighbor_verbs() {
+    fn windows_registry_round_trip_preserves_neighbor_verbs() {
         let exe = std::path::Path::new("C:\\Okilum QA\\okilum.exe");
         let query = |key: &str| {
             std::process::Command::new("reg.exe")
