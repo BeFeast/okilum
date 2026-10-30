@@ -37,9 +37,9 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
-/// «Create the project in T3» starts on for a code project, off otherwise.
-pub fn t3_default(kind: Kind) -> bool {
-    kind == Kind::Code
+/// Local project creation never enrolls a T3 host without an explicit choice.
+pub fn t3_default(_kind: Kind) -> bool {
+    false
 }
 
 /// Only code and hybrid projects say where their code is.
@@ -222,7 +222,11 @@ pub fn manifest(draft: &Draft, relative: &str) -> String {
     out.push_str(&format!("domain: {}\n", quoted(domain)));
     out.push_str(&format!(
         "index: {}\n",
-        quoted(&format!("{relative}/{INDEX}"))
+        quoted(&if relative.is_empty() {
+            INDEX.into()
+        } else {
+            format!("{relative}/{INDEX}")
+        })
     ));
     if let Some(icon) = &draft.icon {
         out.push_str(&format!("icon: {}\n", icon.to_yaml_flow()));
@@ -275,11 +279,14 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
         bail!(problem);
     }
     let relative = super::icon::vault_relative(vault, folder)
-        .filter(|relative| !relative.is_empty())
-        .context("Choose a folder inside the vault, not the vault itself")?;
+        .context("Choose a folder inside the vault, including the vault root")?;
     ensure!(
         !relative.split('/').any(|part| part.starts_with('.')),
         "A hidden folder cannot be a project"
+    );
+    ensure!(
+        folder.canonicalize()?.starts_with(vault.canonicalize()?),
+        "Project folder escapes the vault through a symlink"
     );
     let metadata =
         std::fs::symlink_metadata(folder).with_context(|| format!("{relative} does not exist"))?;
@@ -460,11 +467,14 @@ pub fn t3_workspace_root(
             .checkout()
             .context("T3 opens a code project in its checkout: enter the checkout path");
     }
-    let relative = super::icon::vault_relative(vault, folder)
-        .filter(|relative| !relative.is_empty())
-        .context("The folder is outside the vault")?;
+    let relative =
+        super::icon::vault_relative(vault, folder).context("The folder is outside the vault")?;
     if let Some(root) = server_vault_root(vault, listing) {
-        return Ok(format!("{root}/{relative}"));
+        return Ok(if relative.is_empty() {
+            root
+        } else {
+            format!("{root}/{relative}")
+        });
     }
     let local = folder.to_string_lossy().replace('\\', "/");
     ensure!(

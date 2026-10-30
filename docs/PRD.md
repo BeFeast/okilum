@@ -94,6 +94,13 @@ Product pillars, in the order they will be defended when they conflict:
    semantic retrieval only on measured need.
 5. A safe multi-device story.
 
+**Local project onboarding (#2033, path A, Oleg 2026-10-30):**
+[Local project start](local-project-start.md) lets any ordinary vault folder,
+including its root, become a local project and create an empty Board without
+mandatory goal/repository/executor/stage. Local cards and verified local T3
+Manager binding (#1801) follow in separate slices; this contract does not claim
+those later slices are implemented.
+
 ## 2. Canonical data
 
 - Markdown and adjacent media files are canonical, inspectable, portable, and

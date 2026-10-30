@@ -309,3 +309,12 @@ separate contract; a valid cookie alone does not satisfy the orchestration schem
 A TCP regression rejects the previous header-less request with 400 and accepts
 the real client with the required header and same cookie. An authenticated native
 server reproduction is separate; no cookie/token is copied for this diagnosis.
+
+## Local empty Boards (#2033 slice 1)
+
+Goal and Repository are now optional when creating a Board. An unbound Board
+shows a quiet Local Board state with inactive PR/CI links; add Repository in
+Manage board → Board details later. Explicitly supplied URLs retain validation
+and known-project matching. A bound repository cannot be retargeted. No executor
+or stage is required to create the empty Board. Local cards and verified local
+Manager launch follow separately; see [local project start](local-project-start.md).

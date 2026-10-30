@@ -14,7 +14,9 @@ pub mod manage;
 pub struct Binding {
     pub version: u32,
     pub title: String,
+    #[serde(default)]
     pub goal: String,
+    #[serde(default)]
     pub repository: String,
     #[serde(default)]
     pub stage_note: String,
@@ -234,15 +236,16 @@ impl Binding {
         ensure!(binding.version == 1, "Unsupported Board binding version");
         ensure!(
             !binding.title.trim().is_empty()
-                && !binding.goal.trim().is_empty()
                 && (binding.stage_note.is_empty() || relative_note(&binding.stage_note)),
-            "Board requires a title and goal; an optional stage note must be area-relative Markdown"
+            "Board requires a title; an optional stage note must be area-relative Markdown"
         );
         ensure!(
             binding.refresh_seconds > 0,
             "Board refresh_seconds must be positive (default 30)"
         );
-        repository_url(&binding.repository)?;
+        if !binding.repository.is_empty() {
+            repository_url(&binding.repository)?;
+        }
         // An explicitly created empty Board has no cards until its first add.
         ensure!(
             binding.stuck_after_seconds > 0,
@@ -265,6 +268,10 @@ impl Binding {
                         "{field}: expected text"
                     );
                 }
+                ensure!(
+                    !binding.repository.is_empty(),
+                    "Set Repository in Board management before linking Forgejo issue cards"
+                );
                 let scope: Scope = serde_yaml::from_str(&serde_yaml::to_string(&value)?)?;
                 ensure!(scope.number > 0, "number: expected a positive issue number");
                 ensure!(
@@ -314,8 +321,10 @@ impl Binding {
         let project = crate::area_files::read(area, "project")?
             .context("Board requires a project manifest")?
             .value;
-        let repo = repository_url(&binding.repository)?;
-        check_project_repository(&project, &repo)?;
+        if !binding.repository.is_empty() {
+            let repo = repository_url(&binding.repository)?;
+            check_project_repository(&project, &repo)?;
+        }
         let canonical = area.canonicalize()?;
         if !binding.stage_note.is_empty() && area.join(&binding.stage_note).exists() {
             ensure!(

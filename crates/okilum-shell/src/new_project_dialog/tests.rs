@@ -80,10 +80,10 @@ fn drawn(visual: &mut VisualTestContext, selector: &'static str) -> bool {
 }
 
 /// #1475: the name is the folder's, the kind knowledge, and «Create the
-/// project in T3» follows the kind: on for code, off for knowledge and
+/// project in T3» is explicitly opt-in for code, knowledge and
 /// hybrid. Only code and hybrid ask where the code is.
 #[gpui::test]
-fn the_dialog_starts_from_the_folder_and_t3_follows_the_kind(cx: &mut TestAppContext) {
+fn the_dialog_starts_locally_and_keeps_the_explicit_t3_choice(cx: &mut TestAppContext) {
     let vault = Vault::new();
     let (dialog, visual, _) = open(cx, &vault.0, "HomeLab", true);
     dialog.read_with(visual, |d, cx| {
@@ -116,7 +116,10 @@ fn the_dialog_starts_from_the_folder_and_t3_follows_the_kind(cx: &mut TestAppCon
     click(visual, "new-project-kind-0");
     dialog.read_with(visual, |d, _| {
         assert_eq!(d.draft().kind, Kind::Code);
-        assert!(d.draft().create_in_t3(), "on for code");
+        assert!(
+            !d.draft().create_in_t3(),
+            "local code project needs no remote host"
+        );
     });
     assert!(drawn(visual, "new-project-source"));
     click(visual, "new-project-kind-2");
@@ -240,6 +243,7 @@ fn a_code_project_for_t3_needs_its_checkout(cx: &mut TestAppContext) {
     let vault = Vault::new();
     let (dialog, visual, events) = open(cx, &vault.0, "HomeLab/Mesh", true);
     click(visual, "new-project-kind-0");
+    click(visual, "new-project-t3");
     click(visual, "new-project-create");
     assert!(events.borrow().is_empty());
     dialog.read_with(visual, |d, _| {
@@ -263,4 +267,27 @@ fn a_code_project_for_t3_needs_its_checkout(cx: &mut TestAppContext) {
             "/home/me/src/mesh".into()
         ))
     );
+}
+
+#[gpui::test]
+fn vault_root_can_be_chosen_in_the_real_dialog_without_t3_or_required_code_location(
+    cx: &mut TestAppContext,
+) {
+    let vault = Vault::new();
+    let (dialog, visual, events) = open(cx, &vault.0, "", false);
+    click(visual, "new-project-kind-0");
+    dialog.read_with(visual, |d, cx| {
+        assert_eq!(d.folder(cx), Some(vault.0.clone()));
+        assert_eq!(d.draft().name, create::folder_name(&vault.0));
+        assert!(!d.draft().create_in_t3());
+        assert_eq!(d.problem(cx), None);
+    });
+    click(visual, "new-project-create");
+    let seen = events.borrow();
+    let [NewProjectEvent::Create { folder, draft }] = &seen[..] else {
+        panic!("one root Create: {seen:?}")
+    };
+    assert_eq!(folder, &vault.0);
+    assert_eq!(draft.kind, Kind::Code);
+    assert!(!draft.create_in_t3());
 }

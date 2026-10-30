@@ -883,6 +883,11 @@ impl Render for Board {
             }
             return root.into_any_element();
         };
+        if binding.repository.is_empty() {
+            root = root.child(div().debug_selector(|| "board-local".into())
+                .text_size(px(12.)).text_color(colors.text_muted)
+                .child("Local Board · PR and CI links are inactive. Add Repository in Manage board → Board details when needed."));
+        }
         if let Some(attention) = self.attention(binding, cx) {
             root = root.child(attention);
         }
