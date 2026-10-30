@@ -2804,7 +2804,7 @@ mod tests {
             let guard = {
                 use std::os::unix::fs::PermissionsExt;
                 let permissions = std::fs::metadata(&path).unwrap().permissions();
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
                 Self {
                     path: path.clone(),
                     permissions,
