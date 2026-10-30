@@ -2,7 +2,7 @@
 use super::*;
 use gpui::SharedString;
 use gpui_base::input::HighlightStyleResolver;
-use gpui_component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
+use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
 use gpui_component::Rope;
 
 #[derive(Default)]
@@ -29,14 +29,24 @@ impl CodeSyntax {
             return Self::default();
         }
 
-        // Reader labels and Markdown injections resolve the same authored name.
-        // Register the actual spelling too, so mixed-case aliases work without
-        // modifying authored info strings or parser input.
-        let registry = LanguageRegistry::singleton();
-        for block in &blocks {
+        // Parse a same-length copy with lowercase language names. The registry
+        // owns only the fixed aliases installed by the app, never authored keys.
+        // ASCII lowercasing preserves every byte offset and authored source.
+        let mut parsing_text = None;
+        for marker in classified
+            .decorations_for(&snapshot)
+            .unwrap_or_default()
+            .iter()
+            .filter(|marker| {
+                matches!(
+                    marker.kind,
+                    source_classifier::decorations::Kind::CodeBlock { fenced: true }
+                )
+            })
+        {
             let Some(header) = source
                 .text
-                .get(block.clone())
+                .get(marker.range.clone())
                 .and_then(|s| s.lines().next())
             else {
                 continue;
@@ -52,16 +62,23 @@ impl CodeSyntax {
             if width < 3 {
                 continue;
             }
-            let Some(authored) = header[start + width..].split_whitespace().next() else {
+            let info = &header[start + width..];
+            let Some(authored) = info.split_whitespace().next() else {
                 continue;
             };
-            let canonical = okilum_core::code_language::canonical(authored);
-            if let Some(config) = registry.language(&canonical) {
-                registry.register(authored, &config);
+            if authored.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                let language_start =
+                    marker.range.start + start + width + info.len() - info.trim_start().len();
+                parsing_text
+                    .get_or_insert_with(|| source.text.to_string())
+                    .replace_range(
+                        language_start..language_start + authored.len(),
+                        &authored.to_ascii_lowercase(),
+                    );
             }
         }
 
-        let text = Rope::from_str(&source.text);
+        let text = Rope::from_str(parsing_text.as_deref().unwrap_or(&source.text));
         let mut highlighter = SyntaxHighlighter::new("markdown");
         highlighter.update(None, &text, None);
         let mut spans = Vec::new();
@@ -134,6 +151,7 @@ impl CodeSyntax {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_component::highlighter::LanguageRegistry;
     use gpui_component::input::projection::SourceStamp;
 
     fn source(text: String) -> SourceSnapshot {
@@ -147,15 +165,64 @@ mod tests {
     }
 
     #[test]
+    fn authored_language_casing_never_grows_the_global_registry() {
+        super::super::code_languages::install();
+        let registry_names = || {
+            let mut names: Vec<_> = LanguageRegistry::singleton()
+                .languages()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            names.sort();
+            names
+        };
+        let before = registry_names();
+        for revision in 0..2 {
+            for mask in 0u8..16 {
+                let language: String = "javascript"
+                    .bytes()
+                    .enumerate()
+                    .map(|(index, byte)| {
+                        char::from(if index < 4 && mask & (1u8 << index) != 0 {
+                            byte.to_ascii_uppercase()
+                        } else {
+                            byte
+                        })
+                    })
+                    .collect();
+                let text = format!("# Heading\n\n```{language}\nconst value = 7;\n```\n");
+                let mut note = source(text.clone());
+                note.stamp.generation = revision * 16 + u64::from(mask) + 1;
+                let at = text.find("const").unwrap();
+                let provider = CachedProvider::classify(note.clone());
+                assert!(
+                    provider
+                        .syntax
+                        .spans
+                        .iter()
+                        .any(|(range, name)| { range.contains(&at) && name.as_ref() == "keyword" }),
+                    "positive control: {language} is actually highlighted"
+                );
+                assert_eq!(&*provider.source().text, text);
+            }
+        }
+        assert_eq!(registry_names(), before);
+    }
+
+    #[test]
     fn csharp_aliases_and_popular_code_match_reader_colors_in_both_themes() {
         for (language, body) in [
             ("csharp", "class Demo { public int N = 7; }\n"),
             ("c#", "class Demo { public int N = 7; }\n"),
             ("cs", "class Demo { public int N = 7; }\n"),
             ("C#", "class Demo { public int N = 7; }\n"),
+            ("cShArP", "class Demo { public int N = 7; }\n"),
             ("rust", "fn run() { let value = 7; }\n"),
+            ("RuSt", "fn run() { let value = 7; }\n"),
             ("python", "def run():\n    return 7\n"),
+            ("PyThOn", "def run():\n    return 7\n"),
             ("js", "const value = 7;\n"),
+            ("JaVaScRiPt", "const value = 7;\n"),
         ] {
             let note = source(format!("# Heading\n\n```{language}\n{body}```\n\nprose\n"));
             let provider = Arc::new(CachedProvider::classify(note.clone()));

@@ -294,6 +294,8 @@ impl CachedProvider {
         let projection = reveal_snapshot.projection().clone();
         let mut styles = projected_styles(&projection, retained.styles(), colors, code_font)?;
         if let Some(theme) = syntax_theme {
+            // Native StyleCursor accepts unsorted ranges and retains provider
+            // order: later semantic colors override broad Markdown captures.
             self.syntax.project(source, &projection, theme, &mut styles);
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
