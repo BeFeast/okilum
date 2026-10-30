@@ -47,21 +47,26 @@ impl Target {
     fn captured(reader: &Reader, url: Option<&str>) -> Self {
         let parsed = url.and_then(|url| url::Url::parse(url).ok());
         let local = parsed.as_ref().and_then(|url| url.to_file_path().ok());
-        let relative = local
+        let relative = parsed
+            .as_ref()
+            .and_then(|url| {
+                okilum_core::render::image_reference::local_path(&reader.vault_root, url)
+            })
             .as_ref()
             .and_then(|path| path.strip_prefix(&reader.vault_root).ok())
             .map(okilum_core::vault::note_path);
         let remote = parsed
             .as_ref()
             .is_some_and(|url| matches!(url.scheme(), "https" | "http"));
-        let placeholder = local
-            .as_ref()
-            .is_some_and(|path| reader.vault.cloud_placeholders.contains(path));
+        let placeholder = relative.is_some()
+            && local
+                .as_ref()
+                .is_some_and(|path| reader.vault.cloud_placeholders.contains(path));
         Self {
             root: reader.vault_root.clone(),
             note: reader.current_rel.clone(),
             generation: reader.navigation.preparation_generation,
-            url: (local.is_some() || remote).then(|| url.unwrap().to_owned()),
+            url: (relative.is_some() || remote).then(|| url.unwrap().to_owned()),
             local,
             relative,
             placeholder,
@@ -109,7 +114,7 @@ impl Target {
         if self.placeholder {
             Some("Download this image from iCloud before opening or copying it.")
         } else if self.url.is_none() {
-            Some("Image file not found or its destination is ambiguous.")
+            Some("Image file not found, outside this vault, or ambiguous.")
         } else {
             None
         }
@@ -344,16 +349,14 @@ fn prepare(target: &Target, command: Command) -> anyhow::Result<Prepared> {
             anyhow::bail!("This image is on the web")
         };
     };
-    if command == Command::Download {
-        #[cfg(target_os = "macos")]
-        {
-            reader_icloud::materialize(path, || Ok(()))?;
-            return Ok(Prepared::Downloaded);
-        }
-        #[cfg(not(target_os = "macos"))]
-        anyhow::bail!("iCloud downloads are available on macOS");
-    }
-    if command == Command::Reveal && target.placeholder && !path.try_exists()? {
+    let relative = target
+        .relative
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("The image is outside this vault"))?;
+    let path = if matches!(command, Command::Reveal | Command::Download)
+        && target.placeholder
+        && !path.try_exists()?
+    {
         let mut name = std::ffi::OsString::from(".");
         name.push(
             path.file_name()
@@ -361,19 +364,23 @@ fn prepare(target: &Target, command: Command) -> anyhow::Result<Prepared> {
         );
         name.push(".icloud");
         let stub = path.with_file_name(name).canonicalize()?;
-        if target.relative.is_some() {
-            anyhow::ensure!(
-                stub.starts_with(target.root.canonicalize()?),
-                "The image moved outside this vault"
-            );
-        }
-        return Ok(Prepared::Path(stub));
-    }
-    let path = if let Some(relative) = &target.relative {
-        reader_files::checked_path(&target.root, relative)?
+        anyhow::ensure!(
+            stub.starts_with(target.root.canonicalize()?),
+            "The image moved outside this vault"
+        );
+        stub
     } else {
-        path.canonicalize()?
+        reader_files::checked_path(&target.root, relative)?
     };
+    if command == Command::Download {
+        #[cfg(target_os = "macos")]
+        {
+            reader_icloud::materialize(&path, || Ok(()))?;
+            return Ok(Prepared::Downloaded);
+        }
+        #[cfg(not(target_os = "macos"))]
+        anyhow::bail!("iCloud downloads are available on macOS");
+    }
     let metadata = std::fs::metadata(&path)?;
     anyhow::ensure!(metadata.is_file(), "Image file not found");
     if command == Command::CopyPath || command == Command::Reveal {
@@ -613,10 +620,85 @@ mod tests {
         let external = fixture.path().join("outside.png");
         std::fs::write(&external, png()).unwrap();
         let target = target(&root, "image.png");
+        std::fs::write(root.join("image.png"), png()).unwrap();
+        assert!(
+            prepare(&target, Command::Open).is_ok(),
+            "positive control before replacement"
+        );
+        std::fs::remove_file(root.join("image.png")).unwrap();
         std::os::unix::fs::symlink(&external, root.join("image.png")).unwrap();
-        assert!(prepare(&target, Command::CopyImage).is_err());
-        assert!(prepare(&target, Command::Open).is_err());
+        for command in [
+            Command::Reveal,
+            Command::Open,
+            Command::CopyPath,
+            Command::CopyImage,
+            Command::Download,
+        ] {
+            assert!(prepare(&target, command)
+                .is_err_and(|error| error.to_string().contains("outside this vault")));
+        }
         assert!(external.exists());
+    }
+
+    #[test]
+    fn execution_rejects_an_outside_file_even_without_menu_checks() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let inside = target(&root, "image.png");
+        std::fs::write(root.join("image.png"), png()).unwrap();
+        assert!(prepare(&inside, Command::CopyImage).is_ok());
+        let outside = fixture.path().join("private.png");
+        let bytes = png();
+        std::fs::write(&outside, &bytes).unwrap();
+        assert_eq!(
+            std::fs::read(&outside).unwrap(),
+            bytes,
+            "positive control: outside file is readable"
+        );
+        let outside = Target {
+            url: Some(url::Url::from_file_path(&outside).unwrap().into()),
+            local: Some(outside.clone()),
+            relative: None,
+            ..inside
+        };
+        for command in [
+            Command::Reveal,
+            Command::Open,
+            Command::CopyPath,
+            Command::CopyImage,
+            Command::Download,
+        ] {
+            assert!(prepare(&outside, command)
+                .is_err_and(|error| error.to_string().contains("outside this vault")));
+        }
+        assert_eq!(std::fs::read(outside.local.unwrap()).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn placeholder_reveal_and_download_recheck_the_stub_containment() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut target = target(&root, "image.png");
+        target.placeholder = true;
+        let stub = root.join(".image.png.icloud");
+        std::fs::write(&stub, b"synthetic placeholder").unwrap();
+        assert!(
+            matches!(prepare(&target, Command::Reveal).unwrap(), Prepared::Path(path) if path == stub)
+        );
+        std::fs::remove_file(&stub).unwrap();
+        let outside = fixture.path().join("outside-placeholder");
+        std::fs::write(&outside, b"private placeholder").unwrap();
+        std::os::unix::fs::symlink(&outside, &stub).unwrap();
+        for command in [Command::Reveal, Command::Download] {
+            assert!(prepare(&target, command)
+                .is_err_and(|error| error.to_string().contains("outside this vault")));
+        }
+        assert_eq!(std::fs::read(outside).unwrap(), b"private placeholder");
     }
 
     #[gpui::test]
@@ -667,6 +749,21 @@ mod tests {
                         .as_str(),
                 ),
             )
+        });
+        let outside = fixture.path().join("private.png");
+        std::fs::write(&outside, png()).unwrap();
+        reader.read_with(visual, |reader, _| {
+            let external = Target::captured(
+                reader,
+                Some(url::Url::from_file_path(&outside).unwrap().as_str()),
+            );
+            assert!(external.url.is_none() && external.relative.is_none());
+            assert!(external.entries().iter().all(|(_, _, disabled)| *disabled));
+            assert!(external.notice().unwrap().contains("outside this vault"));
+            assert!(
+                captured.url.is_some(),
+                "positive control: in-vault image stays enabled"
+            );
         });
         let bounds = visual.debug_bounds("image-action-surface").unwrap();
         visual.simulate_mouse_down(bounds.center(), MouseButton::Right, Modifiers::default());

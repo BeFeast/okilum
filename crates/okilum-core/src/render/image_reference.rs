@@ -1,6 +1,7 @@
 //! Authored image ranges and the same captured resolver used by Reader images.
 use super::*;
 use std::ops::Range;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageReference {
@@ -13,6 +14,11 @@ pub struct ImageReference {
 /// Source-menu lookup never reads the filesystem or invents a basename match.
 /// Code examples are excluded by the same Markdown parser as Reader rendering.
 pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference> {
+    // Both menu snapshots and click-time lookup use this bound, before building
+    // the resolver or parsing. Large notes retain their ordinary Source view.
+    if source.len() > crate::source_classifier::MAX_BYTES {
+        return Vec::new();
+    }
     let resolver = crate::document_links::IndexedResolver::new(vault);
     let lines: Vec<_> = std::iter::once(0)
         .chain(source.match_indices('\n').map(|(at, _)| at + 1))
@@ -111,14 +117,84 @@ fn resolve(
 ) -> Option<String> {
     if target.contains("://") {
         let url = url::Url::parse(target).ok()?;
-        return matches!(url.scheme(), "http" | "https" | "file").then(|| url.into());
+        return match url.scheme() {
+            "http" | "https" => Some(url.into()),
+            "file" => local_path(&vault.root, &url).map(|_| url.into()),
+            _ => None,
+        };
     }
     image_file_url(target, vault, resolver, from)
+}
+
+/// A local image action must name a file lexically inside the captured vault.
+/// Decode URL separators before checking components; the executor also checks
+/// canonical containment on its worker to reject symlink replacements.
+pub fn local_path(root: &Path, url: &url::Url) -> Option<PathBuf> {
+    let path = url.to_file_path().ok()?;
+    // File URLs use plain drive/UNC paths on Windows; Vault keeps the verbatim
+    // canonical spelling for I/O. Compare plain spellings, then retain the root.
+    let plain_root = crate::vault::plain_path(root);
+    let plain_path = crate::vault::plain_path(&path);
+    let relative = plain_path.strip_prefix(&plain_root).ok()?;
+    (root.is_absolute()
+        && !relative.as_os_str().is_empty()
+        && relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_))))
+    .then(|| root.join(relative))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_image_actions_reject_outside_paths_and_decoded_traversal() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut vault = Vault::from_note_paths(["note.md".into()]);
+        vault.root = root.clone();
+        let inside = url::Url::from_file_path(root.join("image.png")).unwrap();
+        let outside = url::Url::from_file_path(fixture.path().join("private.png")).unwrap();
+        let sibling =
+            url::Url::from_file_path(root.with_file_name("vault-other").join("image.png")).unwrap();
+        let base = url::Url::from_directory_path(&root).unwrap();
+        let escaped = url::Url::parse(&format!("{base}folder%2F..%2F..%2Fprivate.png")).unwrap();
+        assert_eq!(local_path(&root, &inside), Some(root.join("image.png")));
+        for blocked in [&outside, &sibling, &escaped] {
+            assert!(local_path(&root, blocked).is_none(), "{blocked}");
+        }
+        let source =
+            format!("![inside]({inside})\n\n![outside]({outside})\n\n![traversal]({escaped})\n");
+        let images = references(&source, &vault, "note.md");
+        assert_eq!(images.len(), 3, "authored images remain identifiable");
+        assert_eq!(images[0].url.as_deref(), Some(inside.as_str()));
+        assert!(images[1].url.is_none() && images[2].url.is_none());
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn large_source_lookup_is_bounded_with_a_working_image_at_the_limit() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut vault = Vault::from_note_paths(["note.md".into()]);
+        vault.root = fixture.path().canonicalize().unwrap();
+        let mut source = "![remote](https://example.invalid/image.png)\n\n".to_owned();
+        source.push_str(&" ".repeat(crate::source_classifier::MAX_BYTES - source.len()));
+        let images = references(&source, &vault, "note.md");
+        assert_eq!(
+            images.len(),
+            1,
+            "positive control: same image is actionable at the bound"
+        );
+        assert_eq!(
+            images[0].url.as_deref(),
+            Some("https://example.invalid/image.png")
+        );
+        source.push(' ');
+        assert!(references(&source, &vault, "note.md").is_empty());
+    }
 
     #[test]
     fn wiki_and_markdown_images_match_the_renderer_without_fs_reads() {

@@ -947,3 +947,9 @@ creates a vault attachment. Commands captured for a note cannot act after changi
 that note or its publication generation. Source-menu construction reads an observed
 snapshot rather than re-entering EditorState. Brain previews retain their own image
 authority. Native file-manager/default-app acceptance is recorded per OS and build.
+
+Local image actions require a path inside the captured vault, including authored
+`file://` images. Outside paths and decoded traversal have disabled actions;
+execution rechecks canonical containment, including placeholder Reveal/Download,
+so a replaced symlink cannot redirect the command. Source image lookup is limited
+to 64 KiB before resolver construction or parsing, for menus and modified clicks.
