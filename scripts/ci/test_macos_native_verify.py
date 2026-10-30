@@ -3,11 +3,11 @@ from datetime import datetime
 import importlib.util
 import os
 from pathlib import Path
+import re
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-import yaml
 
 SPEC = importlib.util.spec_from_file_location("macos_native_verify",
     Path(__file__).with_name("macos-native-verify.py"))
@@ -61,19 +61,24 @@ class NativeVerifyTests(unittest.TestCase):
     def test_verify_only_workflow_has_no_reachable_publication_steps_or_secrets(self):
         repo = Path(__file__).resolve().parents[2]
         text = (repo / ".forgejo/workflows/macos-native-verify.yml").read_text()
-        workflow = yaml.safe_load(text)
-        self.assertEqual(workflow["permissions"], {"contents": "read"})
-        self.assertEqual(set(workflow["jobs"]), {"verify-only"})
-        job = workflow["jobs"]["verify-only"]
-        self.assertIn("inputs.verify_only == 'true'", job["if"])
-        self.assertEqual(job["runs-on"], "macos")
-        self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
-        self.assertEqual(len(job["steps"]), 4)
-        commands = [s.get("run", "") for s in job["steps"]]
-        self.assertEqual(commands[1], "python3 scripts/ci/macos-native-verify.py")
-        self.assertTrue(commands[0].lstrip().startswith("set -euo pipefail"))
-        self.assertTrue(commands[2].lstrip().startswith("set -euo pipefail"))
-        self.assertEqual(job["steps"][3]["uses"], "./.forgejo-local-actions/upload-artifact")
+        # Check the deliberately closed, indentation-fixed workflow shape without
+        # introducing a YAML package dependency into local Linux CI images.
+        # This is not a permissive YAML parser: alternate structure fails here.
+        self.assertIn("\npermissions:\n  contents: read\nconcurrency:\n", text)
+        self.assertIn("\n  cancel-in-progress: false\njobs:\n", text)
+        jobs = text.split("\njobs:\n", 1)[1]
+        self.assertEqual(re.findall(r"^  ([a-z][a-z-]*):$", jobs, re.M), ["verify-only"])
+        self.assertRegex(jobs, r"(?m)^    if: .*inputs\.verify_only == 'true'$")
+        self.assertIn("\n    runs-on: macos\n", jobs)
+        steps = re.split(r"(?m)^      - ", jobs)[1:]
+        self.assertEqual(len(steps), 4)
+        self.assertTrue(steps[0].startswith("name: Check out trusted main workflow tools\n"))
+        self.assertTrue(steps[1].startswith("name: Verify exact source without publication credentials or steps\n"))
+        self.assertTrue(steps[2].startswith("name: Prepare pinned artifact upload action\n"))
+        self.assertTrue(steps[3].startswith("uses: ./.forgejo-local-actions/upload-artifact\n"))
+        self.assertIn("\n        run: python3 scripts/ci/macos-native-verify.py\n", steps[1])
+        for step in (steps[0], steps[2]):
+            self.assertIn("\n        run: |\n          set -euo pipefail\n", step)
         for forbidden in ("secrets.", "publication.py", "publish.py", "macos-artifact.py",
                           "releases.yml", "macos-release.yml", "appcast", "R2_"):
             self.assertNotIn(forbidden, text)
