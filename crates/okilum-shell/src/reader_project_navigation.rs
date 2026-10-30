@@ -1634,197 +1634,175 @@ mod icon_save_tests {
     }
 }
 
-/// Test-only libc interposers (#1521): every outbound socket, name lookup
-/// and process spawn of this process goes through `connect`,
-/// `getaddrinfo`, `posix_spawn`/`posix_spawnp` or `fork`, whichever crate
-/// opens it (reqwest/hyper/mio for MCP and the T3 session over HTTP,
-/// tungstenite and std sockets for T3 streams, std `Command` for helper
-/// processes). Each forwards to libc unchanged; only an armed process
-/// records, and only the dedicated child of
-/// `local_reader_flows_open_no_socket_lookup_or_process` arms itself, so
-/// the parallel tests of this binary neither notice nor pollute it.
+/// Test-only libc boundary (#1521): every outbound socket, name lookup and
+/// process spawn of a process goes through `connect`, `getaddrinfo`,
+/// `posix_spawn`/`posix_spawnp` or `fork`, whichever crate opens it
+/// (reqwest/hyper/mio for MCP and the T3 session over HTTP, tungstenite and
+/// std sockets for T3 streams, std `Command` for helper processes).
+///
+/// The interposers are not linked into any test binary: `SHIM` is compiled
+/// at test time with the system C compiler into a shared object that only
+/// the re-executed child of `local_reader_flows_open_no_socket_lookup_or_process`
+/// loads, through `LD_PRELOAD`. Each forwards to libc unchanged and appends
+/// one line per call to the file named by `EVENTS`.
 #[cfg(all(test, target_os = "linux"))]
 mod libc_boundary {
-    use libc::{c_char, c_int, pid_t, sockaddr, socklen_t};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
-    use std::sync::{Mutex, OnceLock};
+    use std::path::{Path, PathBuf};
 
-    static ARMED: AtomicBool = AtomicBool::new(false);
-    static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    static SPAWNS: AtomicUsize = AtomicUsize::new(0);
+    /// The file the preloaded shim appends its events to.
+    pub(super) const EVENTS: &str = "OKILUM_1521_LIBC_EVENTS";
 
-    pub(super) fn arm() {
-        EVENTS.lock().unwrap().clear();
-        SPAWNS.store(0, SeqCst);
-        ARMED.store(true, SeqCst);
+    const SHIM: &str = r#"
+#define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+static void record(const char *event) {
+    const char *path = getenv("OKILUM_1521_LIBC_EVENTS");
+    if (!path) return;
+    char line[512];
+    int length = snprintf(line, sizeof line, "%s\n", event);
+    if (length <= 0) return;
+    if (length >= (int)sizeof line) length = sizeof line - 1;
+    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    ssize_t written = write(fd, line, (size_t)length);
+    (void)written;
+    close(fd);
+}
+
+static void *real(void **cell, const char *name) {
+    if (!*cell) *cell = dlsym(RTLD_NEXT, name);
+    if (!*cell) abort();
+    return *cell;
+}
+
+int connect(int fd, const struct sockaddr *address, socklen_t length) {
+    static void *cell;
+    char event[400] = "connect unknown";
+    char host[INET6_ADDRSTRLEN] = "";
+    if (address && length >= sizeof(sa_family_t)) {
+        if (address->sa_family == AF_INET) {
+            const struct sockaddr_in *ip = (const void *)address;
+            inet_ntop(AF_INET, &ip->sin_addr, host, sizeof host);
+            snprintf(event, sizeof event, "connect %s:%u", host, ntohs(ip->sin_port));
+        } else if (address->sa_family == AF_INET6) {
+            const struct sockaddr_in6 *ip = (const void *)address;
+            inet_ntop(AF_INET6, &ip->sin6_addr, host, sizeof host);
+            snprintf(event, sizeof event, "connect [%s]:%u", host, ntohs(ip->sin6_port));
+        } else if (address->sa_family == AF_UNIX) {
+            const struct sockaddr_un *unix_address = (const void *)address;
+            snprintf(event, sizeof event, "connect unix:%.300s", unix_address->sun_path);
+        } else {
+            snprintf(event, sizeof event, "connect family %d", address->sa_family);
+        }
+    }
+    record(event);
+    int (*forward)(int, const struct sockaddr *, socklen_t) = real(&cell, "connect");
+    return forward(fd, address, length);
+}
+
+int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints,
+                struct addrinfo **result) {
+    static void *cell;
+    char event[400];
+    snprintf(event, sizeof event, "getaddrinfo %.300s", node ? node : "");
+    record(event);
+    int (*forward)(const char *, const char *, const struct addrinfo *, struct addrinfo **) =
+        real(&cell, "getaddrinfo");
+    return forward(node, service, hints, result);
+}
+
+typedef int (*spawn_fn)(pid_t *, const char *, const posix_spawn_file_actions_t *,
+                        const posix_spawnattr_t *, char *const[], char *const[]);
+
+int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *actions,
+                const posix_spawnattr_t *attributes, char *const argv[], char *const envp[]) {
+    static void *cell;
+    char event[400];
+    snprintf(event, sizeof event, "posix_spawn %.300s", path);
+    record(event);
+    spawn_fn forward = real(&cell, "posix_spawn");
+    return forward(pid, path, actions, attributes, argv, envp);
+}
+
+int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *actions,
+                 const posix_spawnattr_t *attributes, char *const argv[], char *const envp[]) {
+    static void *cell;
+    char event[400];
+    snprintf(event, sizeof event, "posix_spawnp %.300s", file);
+    record(event);
+    spawn_fn forward = real(&cell, "posix_spawnp");
+    return forward(pid, file, actions, attributes, argv, envp);
+}
+
+/* std Command forks when it cannot use posix_spawn (uid, pre_exec);
+   recorded before the fork. */
+pid_t fork(void) {
+    static void *cell;
+    record("fork");
+    pid_t (*forward)(void) = real(&cell, "fork");
+    return forward();
+}
+"#;
+
+    /// Compiles the shim into `directory`. A missing C compiler fails the
+    /// test: without the shim, an empty event list would prove nothing.
+    pub(super) fn build(directory: &Path) -> PathBuf {
+        let source = directory.join("okilum-1521-shim.c");
+        let shim = directory.join("okilum-1521-shim.so");
+        std::fs::write(&source, SHIM).unwrap();
+        let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+        let output = std::process::Command::new(&compiler)
+            .args(["-shared", "-fPIC", "-O1", "-Wall", "-Werror", "-o"])
+            .arg(&shim)
+            .arg(&source)
+            .arg("-ldl")
+            .output()
+            .unwrap_or_else(|error| panic!("cannot run the C compiler {compiler:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "the libc boundary shim does not compile\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        shim
     }
 
-    /// What the armed process attempted, failed attempts included.
+    fn path() -> PathBuf {
+        std::env::var_os(EVENTS)
+            .expect("the child runs with the libc boundary shim")
+            .into()
+    }
+
+    /// Forgets what the child did before the flows under test.
+    pub(super) fn arm() {
+        std::fs::write(path(), "").unwrap();
+    }
+
+    /// What the child attempted since `arm`, failed attempts included.
     pub(super) fn events() -> Vec<String> {
-        EVENTS.lock().unwrap().clone()
+        std::fs::read_to_string(path())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub(super) fn spawns() -> usize {
-        SPAWNS.load(SeqCst)
-    }
-
-    fn record(event: impl FnOnce() -> String) {
-        if ARMED.load(SeqCst) {
-            let event = event();
-            EVENTS.lock().unwrap().push(event);
-        }
-    }
-
-    fn real(cell: &OnceLock<usize>, name: &std::ffi::CStr) -> usize {
-        let address =
-            *cell.get_or_init(|| unsafe { libc::dlsym(libc::RTLD_NEXT, name.as_ptr()) } as usize);
-        assert_ne!(address, 0, "libc has no {name:?}");
-        address
-    }
-
-    fn describe(address: *const sockaddr, length: socklen_t) -> String {
-        if address.is_null() || (length as usize) < std::mem::size_of::<libc::sa_family_t>() {
-            return "unknown".into();
-        }
-        // SAFETY: the caller hands connect(2) a valid address of `length` bytes.
-        unsafe {
-            match c_int::from((*address).sa_family) {
-                libc::AF_INET => {
-                    let ip = &*address.cast::<libc::sockaddr_in>();
-                    let host = std::net::Ipv4Addr::from(u32::from_be(ip.sin_addr.s_addr));
-                    format!("{host}:{}", u16::from_be(ip.sin_port))
-                }
-                libc::AF_INET6 => {
-                    let ip = &*address.cast::<libc::sockaddr_in6>();
-                    let host = std::net::Ipv6Addr::from(ip.sin6_addr.s6_addr);
-                    format!("[{host}]:{}", u16::from_be(ip.sin6_port))
-                }
-                libc::AF_UNIX => {
-                    let unix = &*address.cast::<libc::sockaddr_un>();
-                    let path: Vec<u8> = unix
-                        .sun_path
-                        .iter()
-                        .take_while(|&&c| c != 0)
-                        .map(|&c| c as u8)
-                        .collect();
-                    format!("unix:{}", String::from_utf8_lossy(&path))
-                }
-                family => format!("family {family}"),
-            }
-        }
-    }
-
-    #[no_mangle]
-    extern "C" fn connect(fd: c_int, address: *const sockaddr, length: socklen_t) -> c_int {
-        static REAL: OnceLock<usize> = OnceLock::new();
-        record(|| format!("connect {}", describe(address, length)));
-        let real = real(&REAL, c"connect");
-        // SAFETY: libc's own connect(2), called with the caller's arguments.
-        unsafe {
-            std::mem::transmute::<usize, extern "C" fn(c_int, *const sockaddr, socklen_t) -> c_int>(
-                real,
-            )(fd, address, length)
-        }
-    }
-
-    #[no_mangle]
-    extern "C" fn getaddrinfo(
-        node: *const c_char,
-        service: *const c_char,
-        hints: *const libc::addrinfo,
-        result: *mut *mut libc::addrinfo,
-    ) -> c_int {
-        type Real = extern "C" fn(
-            *const c_char,
-            *const c_char,
-            *const libc::addrinfo,
-            *mut *mut libc::addrinfo,
-        ) -> c_int;
-        static REAL: OnceLock<usize> = OnceLock::new();
-        record(|| {
-            let node = if node.is_null() {
-                String::new()
-            } else {
-                // SAFETY: getaddrinfo(3) takes a NUL-terminated name.
-                unsafe { std::ffi::CStr::from_ptr(node) }
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            format!("getaddrinfo {node}")
-        });
-        let real = real(&REAL, c"getaddrinfo");
-        // SAFETY: libc's own getaddrinfo(3), called with the caller's arguments.
-        unsafe { std::mem::transmute::<usize, Real>(real)(node, service, hints, result) }
-    }
-
-    type Spawn = extern "C" fn(
-        *mut pid_t,
-        *const c_char,
-        *const libc::posix_spawn_file_actions_t,
-        *const libc::posix_spawnattr_t,
-        *const *mut c_char,
-        *const *mut c_char,
-    ) -> c_int;
-
-    fn spawned(call: &str, path: *const c_char) {
-        if ARMED.load(SeqCst) {
-            SPAWNS.fetch_add(1, SeqCst);
-        }
-        record(|| {
-            // SAFETY: posix_spawn(3) takes a NUL-terminated path.
-            let path = unsafe { std::ffi::CStr::from_ptr(path) }.to_string_lossy();
-            format!("{call} {path}")
-        });
-    }
-
-    #[no_mangle]
-    extern "C" fn posix_spawn(
-        pid: *mut pid_t,
-        path: *const c_char,
-        actions: *const libc::posix_spawn_file_actions_t,
-        attributes: *const libc::posix_spawnattr_t,
-        argv: *const *mut c_char,
-        envp: *const *mut c_char,
-    ) -> c_int {
-        static REAL: OnceLock<usize> = OnceLock::new();
-        spawned("posix_spawn", path);
-        let real = real(&REAL, c"posix_spawn");
-        // SAFETY: libc's own posix_spawn(3), called with the caller's arguments.
-        unsafe {
-            std::mem::transmute::<usize, Spawn>(real)(pid, path, actions, attributes, argv, envp)
-        }
-    }
-
-    #[no_mangle]
-    extern "C" fn posix_spawnp(
-        pid: *mut pid_t,
-        file: *const c_char,
-        actions: *const libc::posix_spawn_file_actions_t,
-        attributes: *const libc::posix_spawnattr_t,
-        argv: *const *mut c_char,
-        envp: *const *mut c_char,
-    ) -> c_int {
-        static REAL: OnceLock<usize> = OnceLock::new();
-        spawned("posix_spawnp", file);
-        let real = real(&REAL, c"posix_spawnp");
-        // SAFETY: libc's own posix_spawnp(3), called with the caller's arguments.
-        unsafe {
-            std::mem::transmute::<usize, Spawn>(real)(pid, file, actions, attributes, argv, envp)
-        }
-    }
-
-    /// std `Command` forks when it cannot use posix_spawn (uid, pre_exec).
-    /// Recorded before the fork: the child only runs async-signal-safe code.
-    #[no_mangle]
-    extern "C" fn fork() -> pid_t {
-        static REAL: OnceLock<usize> = OnceLock::new();
-        if ARMED.load(SeqCst) {
-            SPAWNS.fetch_add(1, SeqCst);
-        }
-        record(|| "fork".into());
-        let real = real(&REAL, c"fork");
-        // SAFETY: libc's own fork(2).
-        unsafe { std::mem::transmute::<usize, extern "C" fn() -> pid_t>(real)() }
+        events()
+            .iter()
+            .filter(|event| event.starts_with("posix_spawn") || event.as_str() == "fork")
+            .count()
     }
 }
 
@@ -1834,11 +1812,12 @@ mod libc_boundary {
 /// Two instruments, each with a positive control:
 /// - `t3_probe` sees every entry into this file's T3 connection points
 ///   (`t3_gateways`, `manager_gateway`) and can block or gate them;
-/// - on Linux, `libc_boundary` sees every socket connect, name lookup and
-///   process spawn of a dedicated child process running the same flows
-///   with the real T3 transports, so no path elsewhere in the shell (MCP
-///   client, T3 session HTTP, T3 streams, Board/native clients, Kibana,
-///   link fetches, helper processes) can reach out unnoticed.
+/// - on Linux, the `libc_boundary` shim, preloaded into a dedicated child
+///   process only, sees every socket connect, name lookup and process
+///   spawn of the same flows with the real T3 transports, so no path
+///   elsewhere in the shell (MCP client, T3 session HTTP, T3 streams,
+///   Board/native clients, Kibana, link fetches, helper processes) can
+///   reach out unnoticed.
 #[cfg(test)]
 mod local_reader_without_t3_tests {
     use super::t3_probe::{self, Probe};
@@ -1853,11 +1832,13 @@ mod local_reader_without_t3_tests {
     type GatewayResult<T> = std::result::Result<T, okilum_t3::GatewayError>;
 
     const UNREACHABLE: &str = "test T3 endpoint is unreachable";
-    /// How long the fake T3 blocks the thread that calls it.
-    const HUNG_T3: Duration = Duration::from_secs(8);
-    /// Generous for a debug build, well under `HUNG_T3`: a local path that
-    /// waits on T3 fails here as a timeout, not as a flaky threshold.
-    const LOCAL_BOUND: Duration = Duration::from_secs(4);
+    /// How long the blocking fake T3 holds the thread that calls it.
+    const HUNG_T3: Duration = Duration::from_secs(30);
+    /// The least slack over the same-host baseline a blocked run gets; only
+    /// a wait on `HUNG_T3` could use it up.
+    const MARGIN: Duration = Duration::from_secs(5);
+    /// How long the libc boundary child may run before it is killed.
+    const CHILD_DEADLINE: Duration = Duration::from_secs(60);
     /// How long a listener may take to report a connection made to it.
     const READY: Duration = Duration::from_secs(2);
 
@@ -1869,12 +1850,6 @@ mod local_reader_without_t3_tests {
         delay: Mutex<Option<Duration>>,
     }
     impl UnreachableT3 {
-        fn hung() -> Self {
-            Self {
-                delay: Mutex::new(Some(HUNG_T3)),
-                ..Default::default()
-            }
-        }
         fn attempt(&self, operation: &'static str) {
             self.calls.lock().unwrap().push(operation);
             let delay = *self.delay.lock().unwrap();
@@ -2185,40 +2160,27 @@ mod local_reader_without_t3_tests {
         });
     }
 
-    /// A fresh profile: no project.yaml in the vault, no saved T3 connection.
-    /// T3 hangs for `HUNG_T3` on any call, so startup and the local paths
-    /// finish within `LOCAL_BOUND` only if none of them waits on it.
-    #[gpui::test]
-    fn a_fresh_local_profile_never_contacts_or_waits_on_t3(cx: &mut TestAppContext) {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("vault");
+    /// Startup and the local paths of a fresh profile in `directory`: no
+    /// project.yaml, no saved T3 connection. The T3 counters are checked
+    /// after each stage; the elapsed time is returned for the backstop.
+    fn fresh_local_run<'a>(
+        cx: &'a mut TestAppContext,
+        directory: &Path,
+        probe: &Probe,
+        t3: &UnreachableT3,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext, Duration) {
+        let root = directory.join("vault");
         local_vault(&root);
-        let state = temp.path().join("state");
-        let t3 = Arc::new(UnreachableT3::hung());
-        let probe = probe(&t3);
-        *probe.delay.lock().unwrap() = Some(HUNG_T3);
-        let _installed = t3_probe::install(probe.clone());
-        init(cx);
-
+        let state = directory.join("state");
         let started = Instant::now();
         let (reader, visual) = open_reader(cx, &root, &state);
         visual.run_until_parked();
-        let startup = started.elapsed();
-        assert!(
-            startup < LOCAL_BOUND,
-            "startup took {startup:?}: it waited on a hung T3"
-        );
-        reader.read_with(visual, |r, _| assert_no_t3(&probe, &t3, r, "startup"));
+        reader.read_with(visual, |r, _| assert_no_t3(probe, t3, r, "startup"));
         assert_no_error_toast(visual, "startup");
-
         use_local_reader(&reader, visual);
-        let local = started.elapsed();
-        assert!(
-            local < LOCAL_BOUND,
-            "startup and the local paths took {local:?}: they waited on a hung T3"
-        );
+        let elapsed = started.elapsed();
         reader.read_with(visual, |r, _| {
-            assert_no_t3(&probe, &t3, r, "local paths");
+            assert_no_t3(probe, t3, r, "local paths");
             let navigation = &r.project_navigation;
             assert!(navigation.discovered, "the palette scanned for projects");
             assert!(navigation.discovery.projects.is_empty());
@@ -2226,7 +2188,35 @@ mod local_reader_without_t3_tests {
         });
         assert_no_error_toast(visual, "local paths");
         assert!(!state.join("t3-connections.json").exists());
-        eprintln!("#1521 same-run timing: startup {startup:?}, startup + local paths {local:?}");
+        (reader, visual, elapsed)
+    }
+
+    /// A fresh profile never contacts T3, so it never waits on it either:
+    /// the counters are the assertion. The backstop times the same flows on
+    /// this host twice, first with a T3 that answers at once, then with one
+    /// that blocks every sweep and call for `HUNG_T3`; the blocked run must
+    /// stay within the baseline plus a generous margin and below `HUNG_T3`.
+    #[gpui::test]
+    fn a_fresh_local_profile_never_contacts_or_waits_on_t3(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let t3 = Arc::new(UnreachableT3::default());
+        let probe = probe(&t3);
+        let _installed = t3_probe::install(probe.clone());
+        init(cx);
+
+        let (_, _, baseline) = fresh_local_run(cx, &temp.path().join("baseline"), &probe, &t3);
+        *probe.delay.lock().unwrap() = Some(HUNG_T3);
+        *t3.delay.lock().unwrap() = Some(HUNG_T3);
+        let (reader, visual, blocked) =
+            fresh_local_run(cx, &temp.path().join("blocked"), &probe, &t3);
+        let bound = baseline + baseline.max(MARGIN);
+        eprintln!(
+            "#1521 same-host timing: baseline {baseline:?}, blocking T3 {blocked:?}, bound {bound:?}"
+        );
+        assert!(
+            blocked < bound && blocked < HUNG_T3,
+            "with T3 blocked the local paths took {blocked:?} (baseline {baseline:?}, bound {bound:?}): they waited on T3"
+        );
 
         // Positive control, same instrument: the Projects view asks T3, and
         // a sweep really waits on the hung T3 (shortened here).
@@ -2248,7 +2238,10 @@ mod local_reader_without_t3_tests {
             assert!(r.project_navigation.picker.is_some());
             assert!(r.project_navigation.statuses.is_empty());
         });
-        assert!(!state.join("t3-connections.json").exists());
+        assert!(!temp
+            .path()
+            .join("blocked/state/t3-connections.json")
+            .exists());
     }
 
     /// Projects configured, T3 unreachable: the Reader stays local and
@@ -2370,9 +2363,9 @@ mod local_reader_without_t3_tests {
 
     const BOUNDARY_CHILD: &str = "OKILUM_1521_LIBC_BOUNDARY_CHILD";
 
-    /// The same flows with the real T3 transports and no probe, watched at
+    /// The same flows with the real T3 transports and no fake, watched at
     /// the libc boundary (see `libc_boundary`) in a child process of their
-    /// own: a fresh profile, then a configured project whose T3 refuses
+    /// own, run with a deadline and killed and reaped past it: a fresh profile, then a configured project whose T3 refuses
     /// every connection. Neither opens a socket, looks up a name or spawns
     /// a process; the Projects view then really connects to the configured
     /// origin, and only there shows T3 as unreachable.
@@ -2396,12 +2389,36 @@ mod local_reader_without_t3_tests {
             ] {
                 child.env_remove(proxy);
             }
-            let output = child.output().expect("run the libc boundary child");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let scratch = tempfile::tempdir().unwrap();
+            let shim = super::libc_boundary::build(scratch.path());
+            let (stdout, stderr) = (scratch.path().join("stdout"), scratch.path().join("stderr"));
+            child
+                .env("LD_PRELOAD", &shim)
+                .env(super::libc_boundary::EVENTS, scratch.path().join("events"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::fs::File::create(&stdout).unwrap())
+                .stderr(std::fs::File::create(&stderr).unwrap());
+            let mut running = child.spawn().expect("run the libc boundary child");
+            let deadline = Instant::now() + CHILD_DEADLINE;
+            let status = loop {
+                if let Some(status) = running.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if Instant::now() >= deadline {
+                    let _ = running.kill();
+                    running.wait().expect("reap the killed child");
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let stdout = std::fs::read_to_string(&stdout).unwrap_or_default();
+            let stderr = std::fs::read_to_string(&stderr).unwrap_or_default();
+            let Some(status) = status else {
+                panic!("libc boundary child killed after {CHILD_DEADLINE:?}\n{stdout}\n{stderr}");
+            };
             assert!(
-                output.status.success() && stdout.contains("test result: ok. 1 passed"),
-                "libc boundary child failed\n{stdout}\n{stderr}"
+                status.success() && stdout.contains("test result: ok. 1 passed"),
+                "libc boundary child failed: {status}\n{stdout}\n{stderr}"
             );
             return;
         }
