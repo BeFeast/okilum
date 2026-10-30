@@ -1190,17 +1190,17 @@ mod tests {
             let copy = format!("reader-code-copy-{offset}");
             let language = format!("reader-code-language-{offset}");
             assert!(
-                visual.debug_bounds(copy.as_str()).is_some(),
+                visual.debug_bounds(copy.clone()).is_some(),
                 "rendered code positive control: {block:?}"
             );
             assert!(
-                visual.debug_bounds(language.as_str()).is_some(),
+                visual.debug_bounds(language.clone()).is_some(),
                 "quiet language label"
             );
             visual.update(|_, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string("sentinel".to_owned()))
             });
-            let button = visual.debug_bounds(copy.as_str()).unwrap();
+            let button = visual.debug_bounds(copy.clone()).unwrap();
             visual.simulate_click(button.center(), Modifiers::default());
             draw(visual);
             visual.update(|_, cx| {
@@ -1218,7 +1218,7 @@ mod tests {
             input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
             draw(visual);
             assert!(
-                visual.debug_bounds(copy.as_str()).is_none(),
+                visual.debug_bounds(copy.clone()).is_none(),
                 "focused block shows native source"
             );
             input.read_with(visual, |input, _| {
@@ -1248,7 +1248,7 @@ mod tests {
             });
             draw(visual);
             assert!(
-                visual.debug_bounds(copy.as_str()).is_some(),
+                visual.debug_bounds(copy.clone()).is_some(),
                 "unfocused again after Undo"
             );
             assert_eq!(
