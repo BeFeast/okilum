@@ -5,6 +5,10 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
+      sync_stable:
+        description: 'Reconcile GitHub Latest from existing Stable feeds only; no promotion or build'
+        type: boolean
+        default: false
       build:
         description: 'Owner-approved macOS build (Linux build with linux_only); empty refreshes Beta only (or see source)'
         required: false
@@ -14,7 +18,7 @@ on:
         required: false
         default: ''
       mac_only:
-        description: 'With build: promote only Mac appcast/zip/DMG; no Linux/Windows feeds, tag or notes'
+        description: 'With build: promote Mac only with Stable notes; preserve Linux/Windows feeds'
         type: boolean
         default: false
       pacman_final:
@@ -48,7 +52,7 @@ on:
 # Platform beta publishers finish independently; Beta mirrors each current public platform head.
 concurrency:
   # A source request only dispatches builds and returns; it must not hold the publication lock.
-  group: ${{ inputs.build != '' && 'okilum-macos-release' || (inputs.source != '' && 'okilum-release-request' || 'okilum-github-beta') }}
+  group: ${{ (inputs.build != '' || inputs.sync_stable) && 'okilum-macos-release' || (inputs.source != '' && 'okilum-release-request' || 'okilum-github-beta') }}
   cancel-in-progress: false
 jobs:
   github-mirror:
@@ -79,6 +83,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
           ARCH_GPG_FINGERPRINT: ${{ vars.ARCH_GPG_FINGERPRINT }}
+          SYNC_STABLE: ${{ inputs.sync_stable }}
           PROMOTE_BUILD: ${{ inputs.build }}
           PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
@@ -89,6 +94,12 @@ jobs:
           WINDOWS_ONLY: ${{ inputs.windows_only }}
           SKIP_WINDOWS: ${{ inputs.skip_windows }}
         run: |
+          if [ "$SYNC_STABLE" = true ]; then
+            if [ -n "$PROMOTE_BUILD" ] || [ -n "$PROMOTE_SOURCE" ] || [ "$MAC_ONLY" = true ] || [ "$WINDOWS_ONLY" = true ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$PACMAN_FINAL" = true ] || [ "$SKIP_WINDOWS" = true ] || [ "$SUPERSEDE_PENDING" = true ]; then
+              echo 'sync_stable excludes all promotion inputs' >&2; exit 1
+            fi
+            exit 0
+          fi
           if [ "$PACMAN_FINAL" = true ]; then
             if [ -z "$PROMOTE_BUILD" ] || [ -z "$PROMOTE_SOURCE" ] || [ "$MAC_ONLY" = true ] || [ "$WINDOWS_ONLY" = true ] || [ "$LINUX_ONLY" = true ] || [ "$LINUX_ROLLBACK" = true ] || [ "$SKIP_WINDOWS" = true ] || [ "$SUPERSEDE_PENDING" = true ]; then
               echo 'pacman_final requires exact build/source and excludes all other modes' >&2; exit 1
@@ -159,3 +170,16 @@ jobs:
           else
             python scripts/releases/publish.py
           fi
+      - name: Reconcile GitHub Latest after successful Stable promotion
+        if: ${{ success() && (inputs.build != '' || inputs.sync_stable) && !inputs.pacman_final }}
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+        run: python scripts/releases/stable_github.py --receipt stable-github-receipt.json
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: ${{ success() && (inputs.build != '' || inputs.sync_stable) && !inputs.pacman_final }}
+        with:
+          name: stable-github-receipt
+          path: stable-github-receipt.json
