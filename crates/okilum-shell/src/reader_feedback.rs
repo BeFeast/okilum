@@ -11,7 +11,12 @@ use model::{Kind, Metadata, Receipt, Report};
 
 gpui::actions!(
     okilum_feedback,
-    [SendFeedback, CloseFeedback, SendSprintReport]
+    [
+        SendFeedback,
+        CloseFeedback,
+        SendSprintReport,
+        SubmitFeedback
+    ]
 );
 #[derive(Default)]
 struct Drafts(std::collections::HashMap<WindowId, Draft>);
@@ -24,6 +29,17 @@ impl Global for Drafts {}
 pub(crate) fn install(cx: &mut App) {
     cx.set_global(Drafts::default());
     cx.bind_keys([
+        // Override the multiline Input's own secondary-enter/newline binding.
+        KeyBinding::new(
+            "secondary-enter",
+            SubmitFeedback,
+            Some("OkilumFeedbackWindow > Input"),
+        ),
+        KeyBinding::new(
+            "secondary-enter",
+            SubmitFeedback,
+            Some("OkilumFeedbackWindow"),
+        ),
         KeyBinding::new("secondary-v", Paste, Some("OkilumFeedback")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("shift-insert", Paste, Some("OkilumFeedback")),
@@ -286,6 +302,7 @@ struct FeedbackWindow {
 impl Render for FeedbackWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.view.clone();
+        let submit_view = self.view.clone();
         let p = brand::palette(cx);
         v_flex()
             .size_full()
@@ -293,6 +310,9 @@ impl Render for FeedbackWindow {
             .text_color(p.text)
             .key_context("OkilumFeedbackWindow")
             .track_focus(&self.focus)
+            .capture_action(move |_: &SubmitFeedback, _, cx| {
+                submit_view.update(cx, |view, cx| view.send(cx));
+            })
             .capture_action(move |_: &CloseFeedback, window, cx| {
                 let sending = view.update(cx, |view, _| {
                     if matches!(view.state, SendState::Sending) {
@@ -455,8 +475,13 @@ impl FeedbackView {
         }
         Ok(report)
     }
+    fn can_send(&self, cx: &App) -> bool {
+        !self.busy()
+            && !self.attaching
+            && report_text(&self.text.read(cx).value(), sprint::enabled()).is_some()
+    }
     fn send(&mut self, cx: &mut Context<Self>) {
-        if self.busy() || self.attaching {
+        if !self.can_send(cx) {
             return;
         }
         let report = match self.report(cx) {
@@ -715,7 +740,7 @@ impl FeedbackView {
     }
 }
 impl Render for FeedbackView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy();
         let p = brand::palette(cx);
         let mut body = v_flex()
@@ -724,7 +749,8 @@ impl Render for FeedbackView {
             .key_context("OkilumFeedback")
             .gap_3()
             .w_full()
-            .max_h((window.viewport_size().height - px(88.)).max(px(160.)))
+            .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
             .capture_action(cx.listener(|this, _: &Paste, _, cx| {
                 if !this.paste_image(cx) {
@@ -751,21 +777,24 @@ impl Render for FeedbackView {
                 .as_deref()
                 .and_then(|endpoint| url::Url::parse(endpoint).ok())
                 .and_then(|endpoint| endpoint.host_str().map(str::to_owned));
-            return body
-                .child("Thank you — feedback sent.")
-                .when_some(delivery_host, |body, host| {
-                    body.child(div().text_sm().child(format!("Sent via {host}")))
-                })
+            return v_flex()
+                .size_full()
                 .child(
-                    h_flex().child(
-                        div()
-                            .id("feedback-issue")
-                            .debug_selector(|| "feedback-issue".into())
-                            .cursor_pointer()
-                            .hover(|row| row.underline())
-                            .child(format!("Open issue #{} ↗", receipt.issue_number))
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
-                    ),
+                    body.child("Thank you — feedback sent.")
+                        .when_some(delivery_host, |body, host| {
+                            body.child(div().text_sm().child(format!("Sent via {host}")))
+                        })
+                        .child(
+                            h_flex().child(
+                                div()
+                                    .id("feedback-issue")
+                                    .debug_selector(|| "feedback-issue".into())
+                                    .cursor_pointer()
+                                    .hover(|row| row.underline())
+                                    .child(format!("Open issue #{} ↗", receipt.issue_number))
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            ),
+                        ),
                 )
                 .into_any_element();
         }
@@ -967,32 +996,43 @@ impl Render for FeedbackView {
             SendState::Failed(_) => "Retry",
             _ => "Send",
         };
-        body.child(
-            h_flex()
-                .justify_end()
-                .gap_2()
-                .child(
-                    Button::new("feedback-copy")
-                        .debug_selector(|| "feedback-copy".into())
-                        .ghost()
-                        .disabled(busy)
-                        .label("Copy report")
-                        .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
-                )
-                .child(
-                    Button::new("feedback-send")
-                        .debug_selector(|| "feedback-send".into())
-                        .primary()
-                        .disabled(
-                            busy || self.attaching
-                                || report_text(&self.text.read(cx).value(), sprint::enabled())
-                                    .is_none(),
-                        )
-                        .label(label)
-                        .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
-                ),
-        )
-        .into_any_element()
+        v_flex()
+            .size_full()
+            .gap_3()
+            .child(body)
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("feedback-copy")
+                            .debug_selector(|| "feedback-copy".into())
+                            .ghost()
+                            .disabled(busy)
+                            .label("Copy report")
+                            .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
+                    )
+                    .child(
+                        Button::new("feedback-cancel")
+                            .debug_selector(|| "feedback-cancel".into())
+                            .ghost()
+                            .disabled(matches!(self.state, SendState::Sending))
+                            .label("Cancel")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(CloseFeedback), cx)
+                            }),
+                    )
+                    .child(
+                        Button::new("feedback-send")
+                            .debug_selector(|| "feedback-send".into())
+                            .primary()
+                            .disabled(!self.can_send(cx))
+                            .label(label)
+                            .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
+                    ),
+            )
+            .into_any_element()
     }
 }
 #[cfg(test)]
