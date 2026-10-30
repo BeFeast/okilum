@@ -2,7 +2,13 @@
 
 Stable releases use independent build numbers for each platform. Entries below retain existing published release text.
 
-Existing published Mac Stable appcast entries since 2026-10-18; Windows signed Stable 17312 and 19179 corroborated by promotion receipts; AppImage Stable 7198. Historical missing Stable sidecars are not reconstructed from guessed commit ranges. Windows entries retain exact existing per-build notes, not a claimed cumulative Stable range.
+Existing published Mac Stable appcast entries since 2026-10-18; Windows signed Stable 17312, 19179 and 21583 corroborated by promotion receipts; AppImage Stable 7198. Historical missing Stable sidecars are not reconstructed from guessed commit ranges. Windows entries retain exact existing per-build notes, not a claimed cumulative Stable range.
+
+## windows 0.1.21583 — Stable
+
+Source: `9cf78ec2467c69a874de385cd2380688837dcac2`. [Release data](https://updates.befeast.com/okilum/releases/9cf78ec2467c69a874de385cd2380688837dcac2/windows/beta/notes.json).
+
+No user-visible items were recorded in the existing build notes.
 
 ## macos 0.1.18977 — Stable
 

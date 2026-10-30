@@ -1,12 +1,32 @@
 {
   "schema": 1,
-  "coverage": "Existing published Mac Stable appcast entries since 2026-10-18; Windows signed Stable 17312 and 19179 corroborated by promotion receipts; AppImage Stable 7198. Historical missing Stable sidecars are not reconstructed from guessed commit ranges. Windows entries retain exact existing per-build notes, not a claimed cumulative Stable range.",
+  "coverage": "Existing published Mac Stable appcast entries since 2026-10-18; Windows signed Stable 17312, 19179 and 21583 corroborated by promotion receipts; AppImage Stable 7198. Historical missing Stable sidecars are not reconstructed from guessed commit ranges. Windows entries retain exact existing per-build notes, not a claimed cumulative Stable range.",
   "baseline": {
     "url": "https://github.com/BeFeast/okilum/releases/tag/v0.1.13890",
     "body": "Same-source builds — macos: 13890, windows: 13678, linux: 13846.\n\n- fix(open-in): Cursor opens the note in a new editor window (#1398) ([#1403](https://git.oklabs.uk/BeFeast/okilum/pulls/1403))\n- fix(open-in): Cursor opens the note in an editor window (#1398) ([#1401](https://git.oklabs.uk/BeFeast/okilum/pulls/1401))\n- docs: bug report form and CONTRIBUTING.md with log locations (#1396) ([#1397](https://git.oklabs.uk/BeFeast/okilum/pulls/1397))\n- feat(reader): create a new vault from the start screen (#1357) ([#1395](https://git.oklabs.uk/BeFeast/okilum/pulls/1395))\n- fix(windows): copy and show plain paths, not \\\\?\\C:\\ (#1391) ([#1392](https://git.oklabs.uk/BeFeast/okilum/pulls/1392))\n- fix(test): two reader_loading timing flakes; ci-logs checks tests first ([#1229](https://git.oklabs.uk/BeFeast/okilum/pulls/1229))\n- fix(reader): sidebar empty sections read as one set of hints (#1350) ([#1393](https://git.oklabs.uk/BeFeast/okilum/pulls/1393))\n- fix(reader): each window of a vault comes back on its own note (#1375) ([#1383](https://git.oklabs.uk/BeFeast/okilum/pulls/1383))\n- fix(editor): a refresh during an autosave is not a conflict (#1376) ([#1380](https://git.oklabs.uk/BeFeast/okilum/pulls/1380))\n- fix(reader): the start screen names a missing vault in plain words (#1368) ([#1377](https://git.oklabs.uk/BeFeast/okilum/pulls/1377))\n- fix(create): a new note is just its title and opens in Live Preview (#1352) ([#1381](https://git.oklabs.uk/BeFeast/okilum/pulls/1381))\n- ci(releases): promote Mac and Linux before the Windows signature ([#1379](https://git.oklabs.uk/BeFeast/okilum/pulls/1379))",
     "published_at": "2026-10-18T03:06:14Z"
   },
   "releases": [
+    {
+      "notes": {
+        "build": 21583,
+        "channel": "stable",
+        "items": [],
+        "platform": "windows",
+        "previous_build": null,
+        "previous_source": null,
+        "source": "9cf78ec2467c69a874de385cd2380688837dcac2"
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/releases/9cf78ec2467c69a874de385cd2380688837dcac2/windows/beta/notes.json",
+        "sha256": "46b1b383bcdc550531236b8b8d95e7d0e796125ecd10e982173d5ee4abe9187a"
+      },
+      "stable_identity": {
+        "url": "https://updates.befeast.com/okilum/windows/builds/21583/release.json",
+        "signed": true,
+        "promotion_run": 16589
+      }
+    },
     {
       "notes": {
         "build": 18977,

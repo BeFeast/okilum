@@ -32,7 +32,7 @@ SHA256. Missing historical text is not reconstructed from guessed commits.
 
 `CHANGELOG.md` is generated from that cumulative history. The backfill includes
 published Mac Stable entries since 18 October, the corroborated Windows Stable
-17312/19179 records, AppImage 7198, and the original 18 October cross-platform
+17312/19179/21583 records, AppImage 7198, and the original 18 October cross-platform
 GitHub release body. Empty existing notes are explicitly identified. The
 historical Windows rows preserve per-build text, not an invented cumulative
 Stable range. The legacy pacman release is retained in the original baseline;
