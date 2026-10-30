@@ -4,6 +4,7 @@ use gpui_base::text::{CodeBlock, CodeBlockLanguageFn};
 use std::sync::{Arc, OnceLock};
 
 pub(super) fn resolver() -> Arc<CodeBlockLanguageFn> {
+    crate::source_presentation::code_languages::install();
     static RESOLVER: OnceLock<Arc<CodeBlockLanguageFn>> = OnceLock::new();
     RESOLVER.get_or_init(|| Arc::new(language)).clone()
 }

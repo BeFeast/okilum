@@ -1338,7 +1338,7 @@ mod tests {
     #[gpui::test]
     fn live_code_font_and_syntax_follow_settings_theme_and_undo(cx: &mut TestAppContext) {
         use gpui_base::input::HighlightStyleResolver as _;
-        use gpui_component::highlighter::HighlightTheme;
+        use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
         let note = "# Heading\n\n```c#\nclass Demo { public int N = 7; }\n```\n\nprose\n";
         let (reader, visual, directory) = fixture(cx, note);
         visual.update(|_, cx| {
@@ -1412,7 +1412,19 @@ mod tests {
                     .rev()
                     .filter(|style| style.range.start.0 <= pos && pos < style.range.end.0)
                     .find_map(|style| style.color);
-                assert_eq!(color, theme.style("keyword").and_then(|style| style.color));
+                let body = "class Demo { public int N = 7; }\n";
+                let mut reader_code = SyntaxHighlighter::new("csharp");
+                reader_code.update(None, &gpui_component::Rope::from_str(body), None);
+                let reader_color = reader_code
+                    .styles(&(0..body.len()), &*theme)
+                    .into_iter()
+                    .find_map(|(range, style)| range.contains(&0).then_some(style.color).flatten());
+                assert_eq!(
+                    reader_color,
+                    theme.style("keyword").and_then(|style| style.color),
+                    "Reader positive control: class is a C# keyword"
+                );
+                assert_eq!(color, reader_color, "Live matches Reader in the same theme");
                 assert!(
                     color.is_some(),
                     "actual semantic keyword color positive control"

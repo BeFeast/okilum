@@ -56,7 +56,9 @@ mod tests {
                     .styles(&(0..body.len()), &*theme)
                     .into_iter()
                     .find_map(|(range, style)| range.contains(&0).then_some(style.color).flatten())
-                    .expect("positive control: Reader colors the language keyword");
+                    .unwrap_or_else(|| {
+                        panic!("positive control: Reader colors {language} keyword")
+                    });
                 let colors = ProjectionColors {
                     heading: gpui::rgb(0).into(),
                     link: gpui::rgb(0).into(),
@@ -156,6 +158,7 @@ mod tests {
 
 impl CodeSyntax {
     pub(super) fn new(source: &SourceSnapshot, classified: &Classification) -> Self {
+        super::code_languages::install();
         if source.text.len() > source_classifier::MAX_BYTES {
             return Self::default();
         }

@@ -18,6 +18,9 @@ use okilum_core::{
 #[path = "source_presentation/code_syntax.rs"]
 mod code_syntax;
 
+#[path = "source_presentation/code_languages.rs"]
+pub(crate) mod code_languages;
+
 #[allow(dead_code)] // Full authored metadata is separate from display backend selection.
 #[path = "source_presentation/navigation_inventory.rs"]
 pub(crate) mod navigation_inventory;

@@ -7478,6 +7478,7 @@ fn main() {
         note_paste::install_menu(cx);
         let components_phase = diagnostics.phase("components_init");
         gpui_component::init(cx);
+        source_presentation::code_languages::install();
         reader_mermaid::register();
         drop(components_phase);
         let services_phase = diagnostics.phase("menus_and_updater");
