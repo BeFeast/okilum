@@ -1,12 +1,13 @@
 //! Read-only macOS Sync status. Opening Settings cannot register, launch, repair,
 //! adopt or stop anything. Missing authority/peer is visible recovery pending.
 use super::*;
-use okilum_sync_controller::sidecar::macos::recovery::ManagedStatus;
+use okilum_sync_controller::sidecar::macos::recovery::{ManagedStatus, RecoveryDetail};
 
 pub(super) fn shared(_: &mut Window, cx: &mut App) -> Entity<SyncSettings> {
     cx.new(|cx| {
         let mut view = SyncSettings {
             status: ManagedStatus::RecoveryPending,
+            detail: RecoveryDetail::StateUnavailable,
             busy: false,
         };
         view.refresh(cx);
@@ -15,6 +16,7 @@ pub(super) fn shared(_: &mut Window, cx: &mut App) -> Entity<SyncSettings> {
 }
 pub(super) struct SyncSettings {
     status: ManagedStatus,
+    detail: RecoveryDetail,
     busy: bool,
 }
 impl SyncSettings {
@@ -25,14 +27,21 @@ impl SyncSettings {
         self.busy = true;
         // Do not retain a prior Running claim while a new observation is pending.
         self.status = ManagedStatus::RecoveryPending;
+        self.detail = RecoveryDetail::StateUnavailable;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let status = cx
                 .background_executor()
-                .spawn(async { read_status().unwrap_or(ManagedStatus::RecoveryPending) })
+                .spawn(async {
+                    read_status().unwrap_or((
+                        ManagedStatus::RecoveryPending,
+                        RecoveryDetail::StateUnavailable,
+                    ))
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.status = status;
+                this.status = status.0;
+                this.detail = status.1;
                 this.busy = false;
                 cx.notify();
             });
@@ -40,7 +49,7 @@ impl SyncSettings {
         .detach();
     }
 }
-fn read_status() -> anyhow::Result<ManagedStatus> {
+fn read_status() -> anyhow::Result<(ManagedStatus, RecoveryDetail)> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
         macos::{account_state_directory, connection::NativeConnection},
@@ -50,10 +59,11 @@ fn read_status() -> anyhow::Result<ManagedStatus> {
     let budget = Duration::from_secs(5);
     let state = account_state_directory()?;
     let store = UnixStore::open_existing(&state)?;
-    let binding = {
+    let saved = {
         let tx = store.begin(std::time::Instant::now() + budget)?;
-        tx.current()?.context("missing journal")?.binding().clone()
+        tx.current()?.context("missing journal")?.clone()
     };
+    let binding = saved.binding().clone();
     anyhow::ensure!(
         Path::new(&binding.state_directory) == state,
         "non-native state root"
@@ -78,7 +88,8 @@ fn read_status() -> anyhow::Result<ManagedStatus> {
         CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         budget,
     )?;
-    Ok(connection.managed_status())
+    let status = connection.managed_status();
+    Ok((status, RecoveryDetail::observe(&saved, status)))
 }
 impl Render for SyncSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -96,7 +107,7 @@ impl Render for SyncSettings {
                 div()
                     .text_sm()
                     .text_color(p.text_muted)
-                    .child(self.status.description()),
+                    .child(self.detail.description()),
             )
             .child(
                 Button::new("refresh-macos-sync-status")
