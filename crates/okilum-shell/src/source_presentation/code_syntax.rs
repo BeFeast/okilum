@@ -11,6 +11,126 @@ pub(super) struct CodeSyntax {
     spans: Vec<(Range<usize>, SharedString)>,
 }
 
+impl CodeSyntax {
+    pub(super) fn new(source: &SourceSnapshot, classified: &Classification) -> Self {
+        super::code_languages::install();
+        if source.text.len() > source_classifier::MAX_BYTES {
+            return Self::default();
+        }
+        let snapshot = core_snapshot(source);
+        let blocks: Vec<_> = classified
+            .styles_for(&snapshot)
+            .unwrap_or_default()
+            .iter()
+            .filter(|style| style.style == Style::CodeBlock)
+            .map(|style| style.range.clone())
+            .collect();
+        if blocks.is_empty() {
+            return Self::default();
+        }
+
+        // Reader labels and Markdown injections resolve the same authored name.
+        // Register the actual spelling too, so mixed-case aliases work without
+        // modifying authored info strings or parser input.
+        let registry = LanguageRegistry::singleton();
+        for block in &blocks {
+            let Some(header) = source
+                .text
+                .get(block.clone())
+                .and_then(|s| s.lines().next())
+            else {
+                continue;
+            };
+            let Some(start) = header.find(['`', '~']) else {
+                continue;
+            };
+            let fence = header.as_bytes()[start];
+            let width = header.as_bytes()[start..]
+                .iter()
+                .take_while(|b| **b == fence)
+                .count();
+            if width < 3 {
+                continue;
+            }
+            let Some(authored) = header[start + width..].split_whitespace().next() else {
+                continue;
+            };
+            let canonical = okilum_core::code_language::canonical(authored);
+            if let Some(config) = registry.language(&canonical) {
+                registry.register(authored, &config);
+            }
+        }
+
+        let text = Rope::from_str(&source.text);
+        let mut highlighter = SyntaxHighlighter::new("markdown");
+        highlighter.update(None, &text, None);
+        let mut spans = Vec::new();
+        'captures: for (range, name) in highlighter.semantic_spans(&(0..source.text.len())) {
+            let first = blocks.partition_point(|block| block.end <= range.start);
+            for block in blocks[first..]
+                .iter()
+                .take_while(|block| block.start < range.end)
+            {
+                let clipped = range.start.max(block.start)..range.end.min(block.end);
+                if clipped.is_empty() {
+                    continue;
+                }
+                if spans.len() == source_classifier::MAX_STYLES_AND_REASONS {
+                    break 'captures;
+                }
+                spans.push((clipped, name.clone()));
+            }
+        }
+        Self {
+            source: Some(source.clone()),
+            spans,
+        }
+    }
+
+    pub(super) fn project(
+        &self,
+        source: &SourceSnapshot,
+        map: &impl PresentationMap,
+        theme: &HighlightTheme,
+        styles: &mut Vec<ProjectionStyle>,
+    ) {
+        if !self
+            .source
+            .as_ref()
+            .is_some_and(|old| old.stamp == source.stamp && old.text == source.text)
+        {
+            // A pending edit must never receive token offsets from an old tree.
+            return;
+        }
+        for (range, name) in &self.spans {
+            if styles.len() >= source_classifier::MAX_STYLES_AND_REASONS {
+                break;
+            }
+            let Some(start) = map.map_source(range.start) else {
+                continue;
+            };
+            let Some(end) = map.map_source(range.end) else {
+                continue;
+            };
+            let Some(style) = theme.style(name) else {
+                continue;
+            };
+            if start < end {
+                styles.push(ProjectionStyle {
+                    range: ProjectedByte(start)..ProjectedByte(end),
+                    font_family: None,
+                    color: style.color,
+                    bold: style
+                        .font_weight
+                        .is_some_and(|weight| weight >= gpui::FontWeight::BOLD),
+                    italic: style.font_style == Some(gpui::FontStyle::Italic),
+                    strikethrough: style.strikethrough.is_some(),
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,125 +280,5 @@ mod tests {
             &mut styles,
         );
         assert!(styles.is_empty(), "pending edits never reuse stale offsets");
-    }
-}
-
-impl CodeSyntax {
-    pub(super) fn new(source: &SourceSnapshot, classified: &Classification) -> Self {
-        super::code_languages::install();
-        if source.text.len() > source_classifier::MAX_BYTES {
-            return Self::default();
-        }
-        let snapshot = core_snapshot(source);
-        let blocks: Vec<_> = classified
-            .styles_for(&snapshot)
-            .unwrap_or_default()
-            .iter()
-            .filter(|style| style.style == Style::CodeBlock)
-            .map(|style| style.range.clone())
-            .collect();
-        if blocks.is_empty() {
-            return Self::default();
-        }
-
-        // Reader labels and Markdown injections resolve the same authored name.
-        // Register the actual spelling too, so mixed-case aliases work without
-        // modifying authored info strings or parser input.
-        let registry = LanguageRegistry::singleton();
-        for block in &blocks {
-            let Some(header) = source
-                .text
-                .get(block.clone())
-                .and_then(|s| s.lines().next())
-            else {
-                continue;
-            };
-            let Some(start) = header.find(['`', '~']) else {
-                continue;
-            };
-            let fence = header.as_bytes()[start];
-            let width = header.as_bytes()[start..]
-                .iter()
-                .take_while(|b| **b == fence)
-                .count();
-            if width < 3 {
-                continue;
-            }
-            let Some(authored) = header[start + width..].split_whitespace().next() else {
-                continue;
-            };
-            let canonical = okilum_core::code_language::canonical(authored);
-            if let Some(config) = registry.language(&canonical) {
-                registry.register(authored, &config);
-            }
-        }
-
-        let text = Rope::from_str(&source.text);
-        let mut highlighter = SyntaxHighlighter::new("markdown");
-        highlighter.update(None, &text, None);
-        let mut spans = Vec::new();
-        'captures: for (range, name) in highlighter.semantic_spans(&(0..source.text.len())) {
-            let first = blocks.partition_point(|block| block.end <= range.start);
-            for block in blocks[first..]
-                .iter()
-                .take_while(|block| block.start < range.end)
-            {
-                let clipped = range.start.max(block.start)..range.end.min(block.end);
-                if clipped.is_empty() {
-                    continue;
-                }
-                if spans.len() == source_classifier::MAX_STYLES_AND_REASONS {
-                    break 'captures;
-                }
-                spans.push((clipped, name.clone()));
-            }
-        }
-        Self {
-            source: Some(source.clone()),
-            spans,
-        }
-    }
-
-    pub(super) fn project(
-        &self,
-        source: &SourceSnapshot,
-        map: &impl PresentationMap,
-        theme: &HighlightTheme,
-        styles: &mut Vec<ProjectionStyle>,
-    ) {
-        if !self
-            .source
-            .as_ref()
-            .is_some_and(|old| old.stamp == source.stamp && old.text == source.text)
-        {
-            // A pending edit must never receive token offsets from an old tree.
-            return;
-        }
-        for (range, name) in &self.spans {
-            if styles.len() >= source_classifier::MAX_STYLES_AND_REASONS {
-                break;
-            }
-            let Some(start) = map.map_source(range.start) else {
-                continue;
-            };
-            let Some(end) = map.map_source(range.end) else {
-                continue;
-            };
-            let Some(style) = theme.style(name) else {
-                continue;
-            };
-            if start < end {
-                styles.push(ProjectionStyle {
-                    range: ProjectedByte(start)..ProjectedByte(end),
-                    font_family: None,
-                    color: style.color,
-                    bold: style
-                        .font_weight
-                        .is_some_and(|weight| weight >= gpui::FontWeight::BOLD),
-                    italic: style.font_style == Some(gpui::FontStyle::Italic),
-                    strikethrough: style.strikethrough.is_some(),
-                });
-            }
-        }
     }
 }
