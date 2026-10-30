@@ -20,12 +20,15 @@ source scripts/ci/release-cache.sh
 export OKILUM_SCCACHE="${RUSTC_WRAPPER:-}"
 export RUSTC_WRAPPER="$PWD/scripts/windows-rustc.py"
 export RC_x86_64_pc_windows_msvc="$PWD/scripts/windows-rc.py"
-cargo xwin build --locked --target x86_64-pc-windows-msvc \
+# cc-rs checks the literal target key before the underscored key cargo-xwin
+# overwrites. Only this Windows cross-build uses the per-file libwebp adapter.
+windows_cc="CC_x86_64-pc-windows-msvc=$PWD/scripts/windows-clang-cl.py"
+env "$windows_cc" cargo xwin build --locked --target x86_64-pc-windows-msvc \
     --profile windows-diagnostic -p okilum-shell --no-default-features
 cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-msvc/windows-diagnostic/okilum.exe" "$output/okilum.exe"
 # The sync supervisor (#1013) ships in the package; the Enable flow stages it outside
 # `current`. Same profile and flags as the shell, so shared dependencies are reused.
-cargo xwin build --locked --target x86_64-pc-windows-msvc \
+env "$windows_cc" cargo xwin build --locked --target x86_64-pc-windows-msvc \
     --profile windows-diagnostic -p okilum-sync-supervisor
 cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-msvc/windows-diagnostic/okilum-sync-supervisor.exe" "$output/okilum-sync-supervisor.exe"
 python3 scripts/windows/pe.py gui "$output/okilum-sync-supervisor.exe"
