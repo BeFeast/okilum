@@ -51,7 +51,7 @@ impl PreparedProvider {
         let tables = view
             .decorations()
             .iter()
-            .filter(|m| is_block(&m.kind))
+            .filter(|m| is_rendered_block(m, &source.text))
             .map(|m| m.range.clone())
             .collect();
         let blocks = table_blocks(
