@@ -121,3 +121,101 @@ fn unsafe_or_corrupt_storage_never_reaches_the_service() -> Result<()> {
     assert_eq!(fs::read(actual.join("pairing.json"))?, b"{broken");
     Ok(())
 }
+
+struct RemovalRecovery {
+    start: LostReply,
+    offline: std::cell::Cell<bool>,
+    exchanges: std::cell::Cell<usize>,
+    removals: RefCell<Vec<Vec<u8>>>,
+}
+impl PairingService for RemovalRecovery {
+    fn origin(&self) -> &str {
+        self.start.origin()
+    }
+    fn start(&self, session: &Session) -> Result<Approval> {
+        self.start.start(session)
+    }
+    fn exchange(&self, _: &Session) -> Result<Option<Registration>> {
+        self.exchanges.set(self.exchanges.get() + 1);
+        anyhow::bail!("injected lost exchange response")
+    }
+    fn status(&self, _: &Session) -> Result<Status> {
+        panic!("removal recovery must not resume pairing")
+    }
+    fn remove(&self, session: &Session) -> Result<State> {
+        self.removals
+            .borrow_mut()
+            .push(serde_json::to_vec(session)?);
+        if self.offline.get() {
+            anyhow::bail!("fixture service offline");
+        }
+        Ok(State::Revoked)
+    }
+}
+
+#[test]
+fn lost_exchange_offline_removal_and_restart_preserve_credentials_and_unrelated_data() -> Result<()>
+{
+    use okilum_sync_controller::enrollment::{Intent, Removal};
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("pairing");
+    let unrelated = root.path().join("existing-syncthing-config.xml");
+    let note = root.path().join("personal-note.md");
+    fs::write(&unrelated, b"existing config must survive")?;
+    fs::write(&note, b"unrelated note must survive")?;
+    let service = RemovalRecovery {
+        start: LostReply::new(state.clone()),
+        offline: std::cell::Cell::new(true),
+        exchanges: std::cell::Cell::new(0),
+        removals: RefCell::new(vec![]),
+    };
+    let enrollment = Enrollment::new(state.clone());
+    assert!(enrollment
+        .begin(&service, &["AAAAAAA"; 8].join("-"), "Fixture Mac")
+        .is_err());
+    let request = enrollment.snapshot()?.unwrap().request_id;
+    assert!(enrollment.poll(&service).is_err());
+    assert_eq!(
+        service.exchanges.get(),
+        1,
+        "positive control: uncertain exchange never fired"
+    );
+    enrollment.request_remove()?;
+    drop(enrollment);
+    let reopened = Enrollment::new(state.clone());
+    assert_eq!(reopened.snapshot()?.unwrap().intent, Intent::Remove);
+    assert!(reopened.poll(&service).is_err());
+    assert_eq!(
+        reopened.snapshot()?.unwrap().removal,
+        Some(Removal::Pending)
+    );
+    drop(reopened);
+    service.offline.set(false);
+    let recovered = Enrollment::new(state);
+    assert_eq!(recovered.poll(&service)?.removal, Some(Removal::Revoked));
+    assert_eq!(recovered.snapshot()?.unwrap().request_id, request);
+    assert_eq!(recovered.poll(&service)?.removal, Some(Removal::Revoked));
+    assert_eq!(
+        service.removals.borrow().len(),
+        2,
+        "terminal receipt must not revoke twice"
+    );
+    for removal in service.removals.borrow().iter() {
+        assert!(
+            removal == &service.start.requests.borrow()[0],
+            "removal changed durable credentials"
+        );
+    }
+    assert!(recovered
+        .begin(&service, &["AAAAAAA"; 8].join("-"), "Fixture Mac")
+        .is_err());
+    assert_eq!(
+        service.start.requests.borrow().len(),
+        1,
+        "removed request was silently reintroduced"
+    );
+    assert_eq!(service.exchanges.get(), 1, "removal must never re-exchange");
+    assert_eq!(fs::read(&unrelated)?, b"existing config must survive");
+    assert_eq!(fs::read(&note)?, b"unrelated note must survive");
+    Ok(())
+}
