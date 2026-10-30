@@ -39,6 +39,13 @@ mod tests {
         ] {
             let note = source(format!("# Heading\n\n```{language}\n{body}```\n\nprose\n"));
             let provider = Arc::new(CachedProvider::classify(note.clone()));
+            let config = LanguageRegistry::singleton()
+                .language(&okilum_core::code_language::canonical(language))
+                .expect("positive control: tested language grammar is registered");
+            assert!(
+                !config.highlights.trim().is_empty(),
+                "positive control: {language} has a nonempty highlight query"
+            );
             let at = note.text.find(body).unwrap();
             let active = ActiveSource {
                 anchor: SourceByte(at),

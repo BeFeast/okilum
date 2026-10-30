@@ -1415,13 +1415,20 @@ mod tests {
                 let body = "class Demo { public int N = 7; }\n";
                 let mut reader_code = SyntaxHighlighter::new("csharp");
                 reader_code.update(None, &gpui_component::Rope::from_str(body), None);
+                let (_, capture) = reader_code
+                    .semantic_spans(&(0..body.len()))
+                    .into_iter()
+                    .rev()
+                    .find(|(range, _)| range.contains(&0))
+                    .expect("positive control: Reader captures the C# keyword");
+                assert_eq!(capture.as_ref(), "keyword");
                 let reader_color = reader_code
                     .styles(&(0..body.len()), &*theme)
                     .into_iter()
                     .find_map(|(range, style)| range.contains(&0).then_some(style.color).flatten());
                 assert_eq!(
                     reader_color,
-                    theme.style("keyword").and_then(|style| style.color),
+                    theme.style(&capture).and_then(|style| style.color),
                     "Reader positive control: class is a C# keyword"
                 );
                 assert_eq!(color, reader_color, "Live matches Reader in the same theme");
