@@ -7,6 +7,13 @@ body:
       value: |
         Thanks for reporting. Where the logs are and what helps most: [CONTRIBUTING.md](https://github.com/BeFeast/okilum/blob/main/CONTRIBUTING.md#reporting-a-bug).
         Please check the [open issues](https://github.com/BeFeast/okilum/issues) first.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Briefly describe what is wrong in your own words.
+    validations:
+      required: true
   - type: input
     id: version
     attributes:
