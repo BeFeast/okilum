@@ -188,6 +188,49 @@ mod tests {
     }
 
     #[test]
+    fn assisted_closer_renders_an_empty_block_without_swallowing_the_note_tail() {
+        for opener in [
+            "```",
+            "~~~",
+            "  ```",
+            "> ```",
+            "- ```",
+            "1. ```",
+            "> - ```",
+            "- > ```",
+            "- [ ] ```",
+            "> - [x] ```",
+            "- [ ] > ```",
+        ] {
+            let opening = opening_line(opener).expect(opener);
+            let source = format!(
+                "{opener}\n{}{}\n\nTail stays prose\n",
+                opening.continuation,
+                opening.character.to_string().repeat(opening.length)
+            );
+            let arena = comrak::Arena::new();
+            let root = comrak::parse_document(&arena, &source, &crate::render::comrak_options());
+            let mut blocks = 0;
+            let mut prose_tail = false;
+            for node in root.descendants() {
+                match &node.data.borrow().value {
+                    comrak::nodes::NodeValue::CodeBlock(block) => {
+                        blocks += 1;
+                        assert!(block.fenced && block.closed, "{source:?}");
+                        assert!(block.literal.is_empty(), "{source:?}");
+                    }
+                    comrak::nodes::NodeValue::Text(text) if text == "Tail stays prose" => {
+                        prose_tail = true;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(blocks, 1, "{source:?}");
+            assert!(prose_tail, "the remainder must not become code: {source:?}");
+        }
+    }
+
+    #[test]
     fn paragraph_text_and_incomplete_markers_are_not_container_prefixes() {
         for prefix in ["a ", "-", "12.", "[ ] ", "~~", "> text ", "1234567890. "] {
             assert_eq!(continuation_prefix(prefix), None, "{prefix:?}");
