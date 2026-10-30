@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 pub mod local;
+pub mod delivery;
 pub mod manage;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
