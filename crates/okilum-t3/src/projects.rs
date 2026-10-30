@@ -684,6 +684,68 @@ mod tests {
     }
 
     #[test]
+    fn discovered_registry_errors_keep_actionable_context_and_healthy_projects() {
+        let fixture = tempfile::tempdir().unwrap();
+        let broken = fixture.path().join("Проект with spaces");
+        let healthy = fixture.path().join("Healthy");
+        for folder in [&broken, &healthy] {
+            std::fs::create_dir_all(folder.join("ops")).unwrap();
+            std::fs::write(
+                folder.join("ops/project.yaml"),
+                "name: Synthetic\nkind: knowledge\n",
+            )
+            .unwrap();
+        }
+        let path = broken.join("ops/thread-ids.md");
+        for (cell, cause) in [
+            (
+                "[Manager](t3-thread://example)",
+                "must start with an inline-code thread id",
+            ),
+            ("`mcp:current", "unterminated Manager thread id"),
+            ("`mcp:invalid id`", "invalid Manager thread id"),
+        ] {
+            let registry = format!(
+                "# Registry 🧠\r\n\r\n```markdown\r\n| Manager | `mcp:example` |\r\n```\r\n| Role | Thread |\r\n| --- | --- |\r\n| Manager | {cell} |\r\n"
+            );
+            std::fs::write(&path, &registry).unwrap();
+            let discovered = discover(fixture.path());
+            assert_eq!(discovered.projects.len(), 1, "{cell}");
+            assert_eq!(discovered.projects[0].folder, healthy);
+            assert_eq!(discovered.errors.len(), 1, "{cell}");
+            let (folder, detail) = &discovered.errors[0];
+            assert_eq!(folder, &broken);
+            for required in [
+                path.to_str().unwrap(),
+                "Manager row, line 8",
+                "current thread ID in backticks",
+                "| Manager | `mcp:<thread-id>` … |",
+                cause,
+            ] {
+                assert!(detail.contains(required), "{cell}: {detail}");
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), registry.as_bytes());
+        }
+        std::fs::write(
+            &path,
+            "| Role | Thread |\n| --- | --- |\n| Manager | `mcp:current` [Manager](t3-thread://example) |\n",
+        )
+        .unwrap();
+        let discovered = discover(fixture.path());
+        assert!(discovered.errors.is_empty(), "{:?}", discovered.errors);
+        assert_eq!(discovered.projects.len(), 2);
+        assert_eq!(
+            discovered
+                .projects
+                .iter()
+                .find(|p| p.folder == broken)
+                .unwrap()
+                .manager,
+            Manager::Thread("mcp:current".into())
+        );
+    }
+
+    #[test]
     fn discovery_crosses_domains_and_keeps_broken_projects_visible() {
         let vault = std::env::temp_dir().join(format!("okilum-projects-{}", uuid::Uuid::new_v4()));
         let write = |folder: &str, source: &str| {
