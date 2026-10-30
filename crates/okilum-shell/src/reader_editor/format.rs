@@ -660,7 +660,7 @@ pub(super) fn typed_hook() -> TypedTextHook {
             && input
                 .text
                 .try_slice(at - 2..at)
-                .is_ok_and(|slice| slice.to_string() == ch.to_string().repeat(2));
+                .is_ok_and(|slice| slice == if ch == '`' { "``" } else { "~~" });
         if !fence_candidate
             && !may_format(
                 ch,
