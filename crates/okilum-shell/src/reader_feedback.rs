@@ -469,11 +469,13 @@ impl FeedbackView {
         }
         Ok(report)
     }
+    fn can_send(&self, cx: &App) -> bool {
+        !self.busy()
+            && !self.attaching
+            && report_text(&self.text.read(cx).value(), sprint::enabled()).is_some()
+    }
     fn send(&mut self, cx: &mut Context<Self>) {
-        if self.busy()
-            || self.attaching
-            || report_text(&self.text.read(cx).value(), sprint::enabled()).is_none()
-        {
+        if !self.can_send(cx) {
             return;
         }
         let report = match self.report(cx) {
@@ -1019,11 +1021,7 @@ impl Render for FeedbackView {
                         Button::new("feedback-send")
                             .debug_selector(|| "feedback-send".into())
                             .primary()
-                            .disabled(
-                                busy || self.attaching
-                                    || report_text(&self.text.read(cx).value(), sprint::enabled())
-                                        .is_none(),
-                            )
+                            .disabled(!self.can_send(cx))
                             .label(label)
                             .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
                     ),
