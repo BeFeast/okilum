@@ -24,6 +24,8 @@ mod export;
 mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
+#[cfg(test)]
+mod network_write_qa;
 mod note_paste;
 mod open_in;
 mod pdf_engine;
@@ -52,6 +54,7 @@ mod reader_drawing;
 #[cfg(any(unix, windows))]
 mod reader_editor;
 mod reader_embeds;
+mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
@@ -87,6 +90,7 @@ mod reader_navigation;
 mod reader_obsidian;
 mod reader_open;
 mod reader_open_windows;
+mod reader_outline;
 mod reader_owned_windows;
 mod reader_pdf;
 mod reader_plain_text;
@@ -770,6 +774,8 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
 
 #[cfg(test)]
 type IndexBuildHook = Arc<dyn Fn(&Path) + Send + Sync>;
+#[cfg(test)]
+type FirstDocumentRead = Arc<dyn Fn(&Path) -> std::io::Result<Vec<u8>> + Send + Sync>;
 
 #[derive(Default, Clone)]
 struct Opts {
@@ -809,6 +815,8 @@ struct Opts {
     rest_snapshot_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     index_build_hook: Option<IndexBuildHook>,
+    #[cfg(test)]
+    first_document_read: Option<FirstDocumentRead>,
     #[cfg(test)]
     search_publish_in_place: bool,
     cache_lease: Option<Arc<reader_cache::Lease>>,
@@ -1622,6 +1630,8 @@ struct Reader {
     /// the find bar can re-mark it on every keystroke and restore it on Esc.
     note_source: String,
     note_canonical_source: Option<Arc<str>>,
+    note_encoding_damaged: bool,
+    encoding_repair_pending: Option<PathBuf>,
     find_input: Entity<InputState>,
     find_open: bool,
     /// Top-level headings of the open document (docs/design/reader.md §Right
@@ -1911,6 +1921,8 @@ impl Reader {
             focus_handle: cx.focus_handle(),
             note_source: String::new(),
             note_canonical_source: None,
+            note_encoding_damaged: false,
+            encoding_repair_pending: None,
             find_input,
             find_open: false,
             outline: Vec::new(),
@@ -2225,6 +2237,7 @@ impl Reader {
         self.clear_hover(cx);
         let prepared_links::PreparedDocument {
             canonical_source,
+            encoding_damaged,
             source,
             original: original_body,
             identities,
@@ -2360,6 +2373,7 @@ impl Reader {
         self.typed_navigation = Default::default();
         self.note_source = source;
         self.note_canonical_source = canonical_source;
+        self.note_encoding_damaged = encoding_damaged;
         if request.history_index.is_none() {
             self.quick_open.remember(rel);
         }
@@ -6073,7 +6087,7 @@ impl Reader {
                             return div().into_any_element();
                         };
                         let p = brand::palette(cx);
-                        let block = heading.target.block;
+                        let target = heading.clone();
                         let is_current = current == Some(ix);
                         let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
                         div()
@@ -6105,9 +6119,7 @@ impl Reader {
                                     .child(heading.text.clone()),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.scroll_to_block(block, cx);
-                                let focus = this.content.read(cx).focus_handle().clone();
-                                focus.focus(window, cx);
+                                this.open_outline_heading(target.clone(), window, cx);
                             }))
                             .context_menu({
                                 let entity = entity.clone();

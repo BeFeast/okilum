@@ -505,13 +505,7 @@ impl Reader {
                         history_index: None,
                         restore_position: None,
                     },
-                    Ok(prepared_links::PreparedDocument {
-                        canonical_source: Some(document.canonical_source),
-                        source: document.rendered,
-                        original: Some(document.original_body),
-                        identities: document.links,
-                        frontmatter: document.frontmatter,
-                    }),
+                    Ok(document.into()),
                     window,
                     cx,
                 );

@@ -126,6 +126,7 @@ impl Reader {
                 .title("Preview recovered note")
                 .width(px(760.))
                 .child(version.label.clone())
+                .when(version.raw.is_some(), |dialog| dialog.child("Preview replaces unreadable characters. Recovery preserves the exact original bytes."))
                 .child(
                     Editor::new(&input)
                         .readonly(true)
@@ -191,11 +192,11 @@ impl Reader {
                         .session_directory
                         .as_ref()
                         .ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
-                    source_history::save_copy(
+                    source_history::save_copy_bytes(
                         &root,
                         relative,
                         &state.join("editor-drafts"),
-                        &version.text,
+                        version.bytes(),
                     )?;
                     Ok(relative.display().to_string())
                 })();

@@ -374,7 +374,7 @@ fn block_references_land_on_the_marked_block() {
 
 /// #1120: one note that is not valid UTF-8 must not turn every link between the other
 /// notes into "the vault is loading". The file is listed under its real name, only its
-/// bytes are unusable, so what is known about paths stays true.
+/// bytes need a read-only lossy projection, so known paths and links stay usable.
 #[test]
 fn a_non_utf8_note_leaves_links_between_readable_notes_working() {
     let dir = tempfile::Builder::new()
@@ -406,7 +406,7 @@ fn a_non_utf8_note_leaves_links_between_readable_notes_working() {
     std::fs::write(dir.path().join("Non-UTF8.md"), &legacy).unwrap();
 
     let (vault, sources) = Vault::scan_snapshot_with(dir.path(), &mut |_, _| Ok(())).unwrap();
-    // The report stays: the user is told about the unreadable note.
+    // The encoding warning stays while the lossy display source is retained.
     assert_eq!(
         vault.unreadable.len(),
         1,
@@ -420,15 +420,17 @@ fn a_non_utf8_note_leaves_links_between_readable_notes_working() {
     assert!(vault.paths_complete());
     assert!(
         !vault.inventory_complete,
-        "the inventory is still reported as having a skipped file"
+        "the encoding warning still reports incomplete canonical text"
     );
     assert!(vault.inventory_scanned);
-    assert!(sources.contains_key("Target.md") && !sources.contains_key("Non-UTF8.md"));
+    assert!(sources.contains_key("Target.md"));
+    assert_eq!(sources["Non-UTF8.md"], legacy);
 
     let mut prep = LinkPreparation::new(&vault, "Target.md", |path| {
-        let source = std::fs::read_to_string(dir.path().join(path))
-            .map_err(|_| "Document source is unavailable.".to_owned())?;
-        Ok(target(&source))
+        let bytes = sources
+            .get(path)
+            .ok_or_else(|| "Document source is unavailable.".to_owned())?;
+        Ok(target(&String::from_utf8_lossy(bytes)))
     });
     let (resolved, state) = prep.link("Other vault", true);
     assert_eq!(resolved.candidates, ["Other vault.md"]);
@@ -442,11 +444,22 @@ fn a_non_utf8_note_leaves_links_between_readable_notes_working() {
         prep.link("No such note", true).1.status,
         LinkStatus::MissingDocument
     );
-    // The unreadable note itself is not hidden or guessed: it is known, its source is not.
+    // Damaged encoding opens through its display projection without changing disk bytes.
     let (legacy_link, legacy_state) = prep.link("Non-UTF8", true);
     assert_eq!(legacy_link.candidates, ["Non-UTF8.md"]);
-    assert_eq!(legacy_state.status, LinkStatus::Unknown);
-    assert_eq!(legacy_state.reason, "Document source is unavailable.");
+    assert_eq!(legacy_state.status, LinkStatus::Resolved);
+    assert_eq!(legacy_state.reason, "Open document");
+    assert_eq!(
+        std::fs::read(dir.path().join("Non-UTF8.md")).unwrap(),
+        legacy
+    );
+    // A genuine source read failure still refuses navigation to that known note.
+    let mut denied = LinkPreparation::new(&vault, "Target.md", |_| {
+        Err("Document source is unavailable.".to_owned())
+    });
+    let (_, denied_state) = denied.link("Non-UTF8", true);
+    assert_eq!(denied_state.status, LinkStatus::Unknown);
+    assert_eq!(denied_state.reason, "Document source is unavailable.");
 
     // Positive control for the guard: a vault that is still being scanned (a cached,
     // provisional snapshot) is loading, and its links stay unavailable.

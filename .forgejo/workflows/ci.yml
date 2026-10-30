@@ -561,6 +561,8 @@ jobs:
         env:
           # #1915 dedicated mount gate, only for this manager-approved P1 branch.
           OKILUM_NETWORK_WRITE_QA: ${{ (github.event.pull_request.head.ref == 'fix/1915-network-writes' || github.event.pull_request.head.ref == 'feat/1924-vault-trash') && '1' || '0' }}
+          # Manager-approved #1934 native gate; dedicated QA mount only.
+          OKILUM_ENCODING_REPAIR_QA: ${{ github.event.pull_request.head.ref == 'fix/1934-repair-approved' && '1' || '0' }}
         run: bash scripts/ci/check-macos.sh
       - name: Prepare the pinned upload action from the runner server
         if: always()

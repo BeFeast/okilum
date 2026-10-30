@@ -564,7 +564,7 @@ mod frontmatter_tests {
 /// A file outside the vault has no vault-relative identity, so relative `../`
 /// links in it resolve to nothing rather than being guessed at by suffix.
 pub fn note_source(vault: &Vault, rel: &str) -> anyhow::Result<String> {
-    let (raw, from) = read_source(vault, rel)?;
+    let (raw, from, _) = read_source(vault, rel)?;
     Ok(process_source(
         without_frontmatter(&raw),
         vault,
@@ -586,8 +586,10 @@ pub fn reader_source(vault: &Vault, rel: &str) -> anyhow::Result<String> {
 /// authored embed syntax. Both values exclude the same leading frontmatter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReaderDocument {
-    /// Exact primary-file bytes, shared with native view selection and revision evidence.
+    /// Display source; exact UTF-8 only when `encoding_damaged` is false.
     pub canonical_source: std::sync::Arc<str>,
+    /// A lossy display is never eligible as canonical editor input.
+    pub encoding_damaged: bool,
     pub rendered: String,
     pub original_body: String,
     pub links: Vec<crate::document_links::prepared::LinkIdentity>,
@@ -599,11 +601,13 @@ pub struct ReaderDocument {
 /// This avoids pairing displayed input with a later external edit when copying.
 /// As with [`reader_source`], `rel` accepts vault-relative and absolute paths.
 pub fn reader_document(vault: &Vault, rel: &str) -> anyhow::Result<ReaderDocument> {
-    let (raw, from) = {
+    let (raw, from, encoding_damaged) = {
         let _phase = crate::open_diagnostics::phase("read_source");
         read_source(vault, rel)?
     };
-    Ok(reader_document_from_source(vault, from, &raw))
+    let mut document = reader_document_from_source(vault, from, &raw);
+    document.encoding_damaged = encoding_damaged;
+    Ok(document)
 }
 
 /// Derive Reader input from a captured source. A provisional vault keeps embeds
@@ -614,6 +618,7 @@ pub fn reader_document_from_source(vault: &Vault, from: &str, raw: &str) -> Read
     let rendered = process_source_collect(body, vault, from, true, true, &mut links);
     ReaderDocument {
         canonical_source: raw.into(),
+        encoding_damaged: vault.note_encoding_damaged(from),
         rendered,
         original_body: body.to_string(),
         links,
@@ -776,15 +781,14 @@ mod reader_document_tests {
     }
 }
 
-fn read_source<'a>(vault: &Vault, rel: &'a str) -> anyhow::Result<(String, &'a str)> {
+fn read_source<'a>(vault: &Vault, rel: &'a str) -> anyhow::Result<(String, &'a str, bool)> {
     let path = std::path::Path::new(rel);
     if path.is_absolute() {
-        Ok((
-            crate::open_diagnostics::fs(|| std::fs::read_to_string(path))?,
-            "",
-        ))
+        let source = crate::open_diagnostics::fs(|| crate::vault::read_display_source(path))?;
+        Ok((source.text, "", source.encoding_damaged))
     } else {
-        Ok((vault.read_note(rel)?, rel))
+        let source = vault.read_note_display(rel)?;
+        Ok((source.text, rel, source.encoding_damaged))
     }
 }
 

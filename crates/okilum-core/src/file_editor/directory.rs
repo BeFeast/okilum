@@ -58,14 +58,20 @@ impl Directory {
         Ok(())
     }
     pub fn read(&self, name: &OsStr) -> Result<(String, fs::Metadata)> {
+        let (bytes, metadata) = self.read_bytes(name)?;
+        Ok((
+            String::from_utf8(bytes).context("Only lossless UTF-8 source editing is supported")?,
+            metadata,
+        ))
+    }
+    pub fn read_bytes(&self, name: &OsStr) -> Result<(Vec<u8>, fs::Metadata)> {
         #[cfg(test)]
         READS.with(|reads| reads.set(reads.get() + 1));
         let mut file = open_regular_at(&self.file, name)?;
         let metadata = file.metadata()?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .context("Only lossless UTF-8 source editing is supported")?;
-        Ok((text, metadata))
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok((bytes, metadata))
     }
     pub fn temporary(&self) -> Result<(File, String)> {
         let name = format!(".okilum-save-{}", uuid::Uuid::new_v4());

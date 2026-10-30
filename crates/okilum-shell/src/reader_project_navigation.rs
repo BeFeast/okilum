@@ -77,23 +77,47 @@ fn manager_session() -> Arc<dyn okilum_t3::SessionSource> {
 
 /// The paired gateway of one saved T3 connection: projects and icons with
 /// the Manager panel's T3 session (connected on the first call, within
-/// `okilum_t3::CONNECT_TIMEOUT`), threads over MCP with the keychain token.
+/// `okilum_t3::CONNECT_TIMEOUT`), including read-only thread summaries. MCP
+/// remains the fallback when no browser session exists.
 fn paired_gateway(
     env: okilum_t3::Environment,
     token: Option<okilum_t3::StoredToken>,
     session: Arc<dyn okilum_t3::SessionSource>,
 ) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
     let mcp = okilum_t3::McpGateway::new(env.clone(), token)?;
-    let session = okilum_t3::SessionGateway::new(env, session)?;
-    Ok(Arc::new(okilum_t3::PairedGateway::new(
-        session,
-        Arc::new(mcp),
-    )))
+    with_manager_session(env, Arc::new(mcp), session)
+}
+
+fn with_manager_session(
+    env: okilum_t3::Environment,
+    mcp: Arc<dyn okilum_t3::ManagerGateway>,
+    source: Arc<dyn okilum_t3::SessionSource>,
+) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
+    let session = okilum_t3::SessionGateway::new(env, source)?;
+    Ok(Arc::new(okilum_t3::PairedGateway::new(session, mcp)))
+}
+
+/// Native Board reads on macOS use the Manager's persistent browser session,
+/// through the same gateway as project icons. MCP-only native UI keeps its
+/// existing transport and credential lifecycle on the other platforms.
+pub(super) fn manager_gateway(
+    env: okilum_t3::Environment,
+    mcp: Arc<dyn okilum_t3::ManagerGateway>,
+) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
+    #[cfg(target_os = "macos")]
+    {
+        with_manager_session(env, mcp, manager_session())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = env;
+        Ok(mcp)
+    }
 }
 
 /// One gateway per T3 connection saved on this machine (t3-connections.json,
 /// written when the Manager panel connects): the panel's T3 session for
-/// projects and icons, MCP with the keychain token for the rest. `None` once
+/// projects, icons and read-only Board threads, MCP for commands. `None` once
 /// the Reader is gone.
 pub(super) async fn t3_gateways(
     this: &WeakEntity<Reader>,

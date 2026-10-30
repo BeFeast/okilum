@@ -114,19 +114,24 @@ impl ProjectView {
         let area_copy = area.clone();
         view.area = Some(area);
         let state_copy = state.clone();
+        let app_origin = cx
+            .try_global::<reader_t3_settings::Connection>()
+            .and_then(|c| c.origin.clone());
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let (env, project_override) = match (&binding, &state_copy) {
-                        (Some(binding), Some(state)) => {
+                        (Some(binding), state) => {
                             let explicit = connections::project_origin(
                                 &area_copy,
                                 &binding.environment,
-                                Some(state),
+                                state.as_deref(),
                             )?;
                             let project_override = explicit.is_some();
-                            let origin = explicit.or(connections::last_origin(Some(state))?);
+                            let origin = explicit
+                                .or(app_origin)
+                                .or(connections::last_origin(state.as_deref())?);
                             (
                                 origin
                                     .map(|origin| {
@@ -173,34 +178,44 @@ impl ProjectView {
                 return;
             };
             let reused = this
-                .update_in(cx, |this, window, cx| {
-                    if let Some(gateway) = reader_t3_settings::gateway(&env, cx) {
-                        this.finish_connection(Ok((env.clone(), gateway)), window, cx);
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .unwrap_or(false);
-            if reused {
+                .update_in(cx, |_, _, cx| reader_t3_settings::gateway(&env, cx))
+                .ok()
+                .flatten();
+            if let Some(gateway) = reused {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        reader_project_navigation::manager_gateway(env.clone(), gateway)
+                            .map(|gateway| (env, gateway))
+                    })
+                    .await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.finish_connection(result, window, cx)
+                });
                 return;
             }
-            let url = env.credential_url();
-            let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
-                Ok(task) => task,
-                Err(_) => return,
-            };
-            let token = match task.await {
-                Ok(Some((_, bytes))) => StoredToken::from_secret(&bytes).map(Some),
-                Ok(None) => Ok(None),
-                Err(error) => Err(error),
+            #[cfg(target_os = "macos")]
+            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
+            #[cfg(not(target_os = "macos"))]
+            let token = {
+                let url = env.credential_url();
+                let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
+                    Ok(task) => task,
+                    Err(_) => return,
+                };
+                match task.await {
+                    Ok(Some((_, bytes))) => StoredToken::from_secret(&bytes).map(Some),
+                    Ok(None) => Ok(None),
+                    Err(error) => Err(error),
+                }
             };
             let result = match token {
                 Ok(token) => {
                     cx.background_executor()
                         .spawn(async move {
-                            McpGateway::new(env.clone(), token)
-                                .map(|gateway| (env, Arc::new(gateway) as Arc<dyn ManagerGateway>))
+                            let gateway = Arc::new(McpGateway::new(env.clone(), token)?);
+                            reader_project_navigation::manager_gateway(env.clone(), gateway)
+                                .map(|gateway| (env, gateway))
                         })
                         .await
                 }
@@ -519,25 +534,33 @@ impl ProjectView {
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            let Some(task) = this
-                .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
-                .ok()
-            else {
-                return;
+            #[cfg(target_os = "macos")]
+            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
+            #[cfg(not(target_os = "macos"))]
+            let token = {
+                let Some(task) = this
+                    .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
+                    .ok()
+                else {
+                    return;
+                };
+                task.await.and_then(|saved| {
+                    saved
+                        .map(|(_, bytes)| StoredToken::from_secret(&bytes))
+                        .transpose()
+                })
             };
-            let token = task.await.and_then(|saved| {
-                saved
-                    .map(|(_, bytes)| StoredToken::from_secret(&bytes))
-                    .transpose()
-            });
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let gateway = McpGateway::new(env.clone(), token?)?;
+                    let gateway = reader_project_navigation::manager_gateway(
+                        env.clone(),
+                        Arc::new(McpGateway::new(env.clone(), token?)?),
+                    )?;
                     if let Some(state) = state {
                         connections::save(&state, &env)?;
                     }
-                    Ok((env, Arc::new(gateway) as Arc<dyn ManagerGateway>))
+                    Ok((env, gateway))
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {

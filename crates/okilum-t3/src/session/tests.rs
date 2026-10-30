@@ -88,6 +88,19 @@ fn fake_t3(stored: Arc<Mutex<Value>>) -> FakeServer {
                     t3_project("gone", Value::Null, true),
                 ], "updatedAt": "2026-10-24T09:00:00.000Z" }),
             ),
+            ("GET", "/api/orchestration/shell") => Response::json(
+                200,
+                json!({
+                    "projects": [{"id":"okilum"}],
+                    "threads": [{
+                        "id":"mcp:launch:executor", "projectId":"okilum", "title":"Editing",
+                        "modelSelection":{"instanceId":"codex","model":"model"},
+                        "runtimeMode":"full-access", "updatedAt":"2026-10-29T20:00:00Z",
+                        "session":{"status":"running","activeTurnId":"run-current"},
+                        "latestTurn":{"turnId":"run-current","state":"running"}
+                    }]
+                }),
+            ),
             ("POST", "/api/projects/mutate") => {
                 let command = request.json();
                 if command["projectId"] != "okilum" {
@@ -344,7 +357,11 @@ impl ManagerGateway for Mcp {
         })
     }
     fn list_threads(&self, _: &str) -> GatewayResult<Vec<ThreadSummary>> {
-        Ok(Vec::new())
+        if self.connected {
+            Ok(Vec::new())
+        } else {
+            Err(GatewayError::NotConnected)
+        }
     }
     fn read_thread(&self, _: &ThreadQuery) -> GatewayResult<ThreadPage> {
         Err(GatewayError::NotConnected)
@@ -367,7 +384,7 @@ impl ManagerGateway for Mcp {
 }
 
 #[test]
-fn a_paired_connection_saves_icons_over_the_session_and_threads_over_mcp() {
+fn a_paired_connection_reads_board_threads_and_saves_icons_with_the_manager_session() {
     let stored = Arc::new(Mutex::new(Value::Null));
     let server = fake_t3(stored.clone());
     let mcp = Arc::new(Mcp {
@@ -406,7 +423,32 @@ fn a_paired_connection_saves_icons_over_the_session_and_threads_over_mcp() {
             .contains("icon:"),
         "project.yaml is untouched"
     );
-    assert!(paired.list_threads("okilum").unwrap().is_empty());
+    let threads = paired
+        .list_threads("okilum")
+        .expect("the Manager cookie works without an MCP token");
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread_id, "mcp:launch:executor");
+    assert_eq!(threads[0].active_run_id.as_deref(), Some("run-current"));
+    assert_eq!(threads[0].status, "running");
+    let mut binding =
+        crate::board::Binding::parse(include_str!("../../tests/fixtures/board-legacy.yaml"))
+            .unwrap();
+    let scope = &mut binding.issues[0];
+    scope.agent_thread_id = Some(threads[0].thread_id.clone());
+    scope.current_task = true;
+    let issue: crate::board::Issue =
+        serde_json::from_value(json!({"number":scope.number,"title":"Task","state":"open"}))
+            .unwrap();
+    assert_eq!(
+        crate::board::column(scope, Some(&issue), &threads),
+        crate::board::Column::Working
+    );
+    assert!(server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r.path() == "/api/orchestration/shell" && r.header("cookie") == Some(GOOD)));
     std::fs::remove_dir_all(vault).unwrap();
 }
 
@@ -420,6 +462,10 @@ fn without_a_paired_session_an_mcp_token_still_serves_icons() {
     let paired = PairedGateway::new(
         gateway(&server, Arc::new(NoSessionSource)),
         connected.clone(),
+    );
+    assert!(
+        paired.list_threads("okilum").unwrap().is_empty(),
+        "no browser session preserves the existing MCP read path"
     );
     assert_eq!(paired.list_projects().unwrap()[0].id, "via-mcp");
     paired
@@ -455,6 +501,34 @@ fn without_a_paired_session_an_mcp_token_still_serves_icons() {
         Err(GatewayError::Unreachable(_))
     ));
     assert_eq!(connected.icons.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn board_session_scope_refusal_is_concrete_and_does_not_silently_switch_to_mcp() {
+    let server = FakeServer::start(|request| {
+        assert_eq!(request.header("cookie"), Some(GOOD));
+        match request.path() {
+            "/api/auth/session" => Response::json(200, json!({"authenticated":true})),
+            "/api/orchestration/shell" => Response::json(
+                403,
+                json!({"code":"scope_denied","requiredScope":"orchestration:read"}),
+            ),
+            path => panic!("unexpected request {path}"),
+        }
+    });
+    let paired = PairedGateway::new(
+        gateway(&server, Store::holding(&[("t3_session_abc", "live")])),
+        Arc::new(Mcp {
+            connected: true,
+            icons: AtomicUsize::new(0),
+        }),
+    );
+    let error = paired.list_threads("okilum").unwrap_err().to_string();
+    assert!(error.contains("scope_denied") && error.contains("orchestration:read"));
+    assert!(
+        !error.contains("live"),
+        "diagnostics never include the session secret"
+    );
 }
 
 /// #1475: «Create the project in T3» is T3's web app's own `project.create`

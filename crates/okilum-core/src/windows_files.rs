@@ -304,6 +304,14 @@ impl Directory {
         Ok(self.path.join(name))
     }
     fn prepared(&self, bytes: &[u8], security_source: Option<&File>) -> Result<PathBuf> {
+        self.prepared_tracked(bytes, security_source, |_, _| Ok(()))
+    }
+    fn prepared_tracked(
+        &self,
+        bytes: &[u8],
+        security_source: Option<&File>,
+        mut created: impl FnMut(&Path, (u32, u32, u32)) -> Result<()>,
+    ) -> Result<PathBuf> {
         let path = self
             .path
             .join(format!(".okilum-save-{}.prepared", uuid::Uuid::new_v4()));
@@ -359,6 +367,7 @@ impl Directory {
             return Err(std::io::Error::last_os_error()).context("Prepare save file");
         }
         let mut file = unsafe { File::from_raw_handle(raw) };
+        created(&path, identity(&information(&file)?))?;
         if owner_fallback {
             // Creation can grant the creator a handle even when OWNER RIGHTS
             // ACEs deny a later open under the new owner. Exercise effective
@@ -436,6 +445,15 @@ impl Directory {
         expected: &[u8],
         proposed: &[u8],
     ) -> Result<Option<PreparedReplacement<'_>>> {
+        self.prepare_replace_tracked(name, expected, proposed, |_, _| Ok(()))
+    }
+    pub(crate) fn prepare_replace_tracked(
+        &self,
+        name: &OsStr,
+        expected: &[u8],
+        proposed: &[u8],
+        created: impl FnMut(&Path, (u32, u32, u32)) -> Result<()>,
+    ) -> Result<Option<PreparedReplacement<'_>>> {
         let path = self.child(name)?;
         let (guard, bytes, info) = read_file(&path)?;
         if bytes != expected {
@@ -445,7 +463,7 @@ impl Directory {
             info.dwFileAttributes & FILE_ATTRIBUTE_READONLY == 0,
             "The note is not writable; your draft must remain protected"
         );
-        let prepared = self.prepared(proposed, Some(&guard))?;
+        let prepared = self.prepared_tracked(proposed, Some(&guard), created)?;
         let backup = self
             .path
             .join(format!(".okilum-save-{}.previous", uuid::Uuid::new_v4()));

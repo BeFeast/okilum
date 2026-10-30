@@ -477,7 +477,8 @@ impl State {
                 // drops a source (#1933). A full reconcile reads the note
                 // again and leaves it out while it still cannot be read.
                 if let Some(source) = checked.source {
-                    let raw = String::from_utf8(STANDARD.decode(&source.bytes)?)?;
+                    let raw =
+                        String::from_utf8_lossy(&STANDARD.decode(&source.bytes)?).into_owned();
                     std::sync::Arc::make_mut(&mut self.candidates).update(
                         &path,
                         &raw,
@@ -655,7 +656,7 @@ impl Delta {
         for (path, source) in &delta.sources {
             ensure!(relative(path), "Invalid incremental source identity");
             if let Some(source) = source {
-                String::from_utf8(STANDARD.decode(&source.bytes)?)?;
+                STANDARD.decode(&source.bytes)?;
             }
         }
         ensure!(

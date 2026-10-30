@@ -47,6 +47,39 @@ impl Reader {
                     .h(px(48.))
                     .child(self.render_document_header(window, cx)),
             )
+            .when(self.note_encoding_damaged, |view| {
+                view.child(
+                    h_flex()
+                        .debug_selector(|| "note-encoding-notice".into())
+                        .px_4()
+                        .py_1()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(reader_loading::ENCODING_NOTICE),
+                        )
+                        .child(
+                            Button::new("note-encoding-repair")
+                                .debug_selector(|| "note-encoding-repair".into())
+                                .small()
+                                .label(if self.encoding_repair_pending.is_some() {
+                                    "Repairing…"
+                                } else {
+                                    "Repair"
+                                })
+                                .disabled(
+                                    self.encoding_repair_pending.is_some() || self.move_applying,
+                                )
+                                .on_click(cx.listener(|reader, _, window, cx| {
+                                    reader.repair_note_encoding(window, cx)
+                                })),
+                        ),
+                )
+            })
             .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
             .into_any_element()
     }
@@ -225,6 +258,7 @@ impl Reader {
                     .when(labels, |button| button.label(label))
                     .accessibility_label(label)
                     .tooltip(reader_shortcuts::hint(label, &ToggleSource, cx))
+                    .disabled(self.note_encoding_damaged && self.file_preview.is_none())
                     .debug_selector(move || id.into())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_source(window, cx);
@@ -551,6 +585,7 @@ impl Reader {
         self.current_title.clear();
         self.note_source.clear();
         self.note_canonical_source = None;
+        self.note_encoding_damaged = false;
         self.file_preview = None;
         self.editing = None;
         self.table_overlay = None;

@@ -7,6 +7,7 @@
 //! accepts only MCP client sessions. Project reads and icon writes therefore
 //! go where T3's web app sends them, `GET /api/projects` and
 //! `POST /api/projects/mutate` (`project.update`), with the same cookie.
+//! Read-only Board thread summaries use its `GET /api/orchestration/shell`.
 //! The cookie is read from the web view's store on the first call (the
 //! panel need not be open) and again after T3 refuses it.
 
@@ -24,6 +25,7 @@ use crate::types::{
     Capabilities, ModelSelection, OutgoingMessage, Project, SendReceipt, ThreadConfiguration,
     ThreadPage, ThreadQuery, ThreadSummary,
 };
+mod threads;
 
 /// How long connecting may take: reading the cookie store, then asking T3
 /// which cookie is a live session.
@@ -382,8 +384,9 @@ impl ManagerGateway for SessionGateway {
         Ok(project)
     }
 
-    fn list_threads(&self, _: &str) -> GatewayResult<Vec<ThreadSummary>> {
-        unsupported("list threads")
+    fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>> {
+        let value = self.send(|_| self.http.get(self.env.endpoint("/api/orchestration/shell")))?;
+        threads::read(value, project_id)
     }
 
     fn read_thread(&self, _: &ThreadQuery) -> GatewayResult<ThreadPage> {
@@ -413,7 +416,7 @@ impl ManagerGateway for SessionGateway {
 
 /// The gateway the Projects page and the icon dialog use for one saved T3
 /// connection: projects and icons over the paired web session (the Manager
-/// panel's), threads over MCP. Without a paired session an MCP token, if
+/// panel's), including read-only thread summaries. Without a paired session an MCP token, if
 /// the user connected one, still serves the icons.
 pub struct PairedGateway {
     session: SessionGateway,
@@ -488,7 +491,10 @@ impl ManagerGateway for PairedGateway {
     }
 
     fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>> {
-        self.mcp.list_threads(project_id)
+        self.projects_call(
+            |s| s.list_threads(project_id),
+            |m| m.list_threads(project_id),
+        )
     }
 
     fn read_thread(&self, query: &ThreadQuery) -> GatewayResult<ThreadPage> {
