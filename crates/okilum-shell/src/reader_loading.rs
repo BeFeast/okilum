@@ -2787,6 +2787,54 @@ impl Reader {
 mod tests {
     use super::*;
 
+    // Candidate-failure tests need a real I/O failure: invalid UTF-8 now has a
+    // valid read-only display projection. Keep denial active until the guard drops.
+    struct DeniedNote {
+        #[cfg(unix)]
+        path: PathBuf,
+        #[cfg(unix)]
+        permissions: std::fs::Permissions,
+        #[cfg(windows)]
+        _handle: std::fs::File,
+    }
+    impl DeniedNote {
+        fn new(path: PathBuf) -> Self {
+            std::fs::write(&path, "# Unreadable candidate\n").unwrap();
+            #[cfg(unix)]
+            let guard = {
+                use std::os::unix::fs::PermissionsExt;
+                let permissions = std::fs::metadata(&path).unwrap().permissions();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+                Self {
+                    path: path.clone(),
+                    permissions,
+                }
+            };
+            #[cfg(windows)]
+            let guard = {
+                use std::os::windows::fs::OpenOptionsExt;
+                Self {
+                    _handle: std::fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(&path)
+                        .unwrap(),
+                }
+            };
+            assert!(
+                std::fs::read(&path).is_err(),
+                "positive control: candidate bytes really cannot be read"
+            );
+            guard
+        }
+    }
+    #[cfg(unix)]
+    impl Drop for DeniedNote {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+        }
+    }
+
     #[gpui::test]
     fn damaged_utf8_opens_read_only_without_attention_and_stays_searchable(
         cx: &mut TestAppContext,
@@ -3193,9 +3241,9 @@ mod tests {
         });
         let empty = temp.path().join("empty");
         std::fs::create_dir(&empty).unwrap();
-        // A folder whose only note cannot be read is a failed candidate; an
-        // empty folder now opens as a new vault (#1123).
-        std::fs::write(empty.join("bad.md"), [0xff, 0xfe]).unwrap();
+        // Actual read denial must preserve the published vault/cache; damaged
+        // encoding is admitted read-only and is no longer a failed candidate.
+        let _denied = DeniedNote::new(empty.join("bad.md"));
         let empty = empty.canonicalize().unwrap();
         let opts = opts_for(&empty);
         let unused_cache = reader_open::cache_path_for(&empty, &opts).unwrap();
@@ -4281,9 +4329,7 @@ mod tests {
         for name in ["a", "b", "empty"] {
             std::fs::create_dir(temp.path().join(name)).unwrap();
         }
-        // A folder whose only note cannot be read is a failed candidate; an
-        // empty folder now opens as a new vault (#1123).
-        std::fs::write(temp.path().join("empty/bad.md"), [0xff, 0xfe]).unwrap();
+        let _denied = DeniedNote::new(temp.path().join("empty/bad.md"));
         std::fs::write(
             temp.path().join("a/shared.md"),
             format!(
@@ -6892,9 +6938,7 @@ mod tests {
         });
         assert_eq!(source_manifest(&root), before);
         std::fs::create_dir_all(fixture.join("empty")).unwrap();
-        // A folder whose only note cannot be read is a failed candidate; an
-        // empty folder now opens as a new vault (#1123).
-        std::fs::write(fixture.join("empty/bad.md"), [0xff, 0xfe]).unwrap();
+        let denied = DeniedNote::new(fixture.join("empty/bad.md"));
         reader.update_in(visual, |v, window, cx| {
             v.start_loading(
                 Opts {
@@ -6916,6 +6960,7 @@ mod tests {
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.loading.as_ref().unwrap().phase.contains("no readable"));
         });
+        drop(denied);
         std::fs::remove_dir_all(fixture).unwrap();
     }
     #[gpui::test]

@@ -50,7 +50,7 @@ run_tests() {
     cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@"
 }
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
-run_tests okilum-core --lib link_rewrite::tests::sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search --exact
+run_tests okilum-core --lib link_rewrite::tests::sidecars_stay_excluded_and_invalid_utf8_remains_searchable_without_rewriting --exact
 for name in \
     completed_exchange_before_journal_acknowledgement_recovers_without_conflict \
     immediate_reopen_releases_lock_despite_an_inherited_descriptor \

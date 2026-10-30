@@ -971,7 +971,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search() {
+    fn sidecars_stay_excluded_and_invalid_utf8_remains_searchable_without_rewriting() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::create_dir(root.join("SAP")).unwrap();
@@ -990,26 +990,29 @@ mod tests {
         let (vault, sources) = Vault::scan_snapshot_with(root, &mut |_, _| Ok(())).unwrap();
         assert!(!vault.notes.iter().any(|n| n.path.contains("._")));
         assert!(!vault.entries.iter().any(|n| n.path.contains("._")));
-        assert!(!sources.contains_key("invalid.md"));
+        assert_eq!(sources["invalid.md"], b"badneedle [[from]]\xff");
         assert!(vault
             .unreadable
             .iter()
             .any(|n| n.path.ends_with("invalid.md")));
-        assert_eq!(vault.backlinks("from.md").len(), 1);
+        assert_eq!(vault.backlinks("from.md").len(), 2);
         let (warm, snapshot, _) =
             crate::vault::warm::reconcile(root, None, false, &mut |_, _| Ok(())).unwrap();
         assert!(!warm.entries.iter().any(|n| n.path.contains("._")));
-        assert!(!snapshot.sources().unwrap().contains_key("invalid.md"));
+        assert_eq!(
+            snapshot.sources().unwrap()["invalid.md"],
+            b"badneedle [[from]]\xff"
+        );
         assert!(warm
             .unreadable
             .iter()
             .any(|entry| entry.path.ends_with("invalid.md")));
-        assert_eq!(warm.backlinks("from.md").len(), 1);
+        assert_eq!(warm.backlinks("from.md").len(), 2);
         let index = tempfile::tempdir().unwrap();
         let search = crate::search::Searcher::build(&vault, index.path()).unwrap();
         assert!(!search.search("ordinaryneedle", 10).unwrap().is_empty());
         assert!(search.search("sidecarneedle", 10).unwrap().is_empty());
-        assert!(search.search("badneedle", 10).unwrap().is_empty());
+        assert_eq!(search.search("badneedle", 10).unwrap().len(), 1);
         search.update_note(&vault, "._valid.md").unwrap();
         assert!(search.search("sidecarneedle", 10).unwrap().is_empty());
         let preview = Preview::prepare(root, "from.md", "to.md").unwrap();
