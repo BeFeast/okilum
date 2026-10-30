@@ -43,8 +43,8 @@ pub const LEFT_SECTIONS: [Section; 1] = [Section::Folders];
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LeftMode {
-    #[default]
     Now,
+    #[default]
     Tree,
 }
 
@@ -65,6 +65,10 @@ impl Section {
 pub struct State {
     #[serde(default)]
     pub left_mode: LeftMode,
+    /// None until the first accepted discovery; then persisted per vault.
+    /// Explicit Vault settings and mode choices take precedence over discovery.
+    #[serde(default)]
+    pub now_enabled: Option<bool>,
     #[serde(default)]
     pub now_collapsed: BTreeSet<String>,
     #[serde(default)]
@@ -127,8 +131,46 @@ impl State {
     pub fn load(path: &Path) -> Self {
         std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| {
+                let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                let legacy_choice =
+                    value.get("left_mode").is_some() && value.get("now_enabled").is_none();
+                let mut state: Self = serde_json::from_value(value).ok()?;
+                // Existing persisted mode choices must survive this upgrade.
+                if legacy_choice {
+                    state.now_enabled = Some(true);
+                }
+                Some(state)
+            })
             .unwrap_or_default()
+    }
+
+    pub fn now_enabled(&self) -> bool {
+        self.now_enabled == Some(true)
+    }
+
+    pub fn initialize_now(&mut self, has_projects: bool) -> bool {
+        if self.now_enabled.is_some() {
+            return false;
+        }
+        self.now_enabled = Some(has_projects);
+        self.left_mode = if has_projects {
+            LeftMode::Now
+        } else {
+            LeftMode::Tree
+        };
+        self.now_collapsed
+            .extend(["changes", "pins"].map(str::to_owned));
+        true
+    }
+
+    pub fn choose_now(&mut self, enabled: bool) {
+        self.now_enabled = Some(enabled);
+        self.left_mode = if enabled {
+            LeftMode::Now
+        } else {
+            LeftMode::Tree
+        };
     }
 
     /// Save from a background task. Saves are serialized and a snapshot older
@@ -318,6 +360,76 @@ pub fn age_label(then: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vault_project_default_is_chosen_once_and_manual_choices_survive_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        for has_projects in [false, true] {
+            let root = directory
+                .path()
+                .join(if has_projects { "projects" } else { "notes" });
+            let path = State::path(directory.path(), &root);
+            let mut state = State::load(&path);
+            assert!(state.initialize_now(has_projects));
+            assert_eq!(state.now_enabled(), has_projects);
+            assert_eq!(
+                state.left_mode,
+                if has_projects {
+                    LeftMode::Now
+                } else {
+                    LeftMode::Tree
+                }
+            );
+            state.save(&path).unwrap();
+            let mut reopened = State::load(&path);
+            assert!(
+                !reopened.initialize_now(!has_projects),
+                "discovery cannot reset a stored decision"
+            );
+            assert_eq!(reopened, state);
+            reopened.choose_now(true);
+            reopened.left_mode = LeftMode::Tree;
+            reopened.save(&path).unwrap();
+            let mut manual = State::load(&path);
+            assert!(!manual.initialize_now(false));
+            assert!(
+                manual.now_enabled(),
+                "manual enable wins in a plain note vault"
+            );
+            assert_eq!(
+                manual.left_mode,
+                LeftMode::Tree,
+                "manual Tree selection is retained"
+            );
+            manual.choose_now(false);
+            manual.save(&path).unwrap();
+            let mut disabled = State::load(&path);
+            assert!(!disabled.initialize_now(true));
+            assert!(
+                !disabled.now_enabled(),
+                "manual disable wins even after discovering projects"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_persisted_mode_selection_is_not_overwritten_by_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.json");
+        for mode in ["tree", "now"] {
+            std::fs::write(&path, format!("{{\"left_mode\":\"{mode}\"}}")).unwrap();
+            let mut state = State::load(&path);
+            assert!(!state.initialize_now(false));
+            assert!(state.now_enabled());
+            assert_eq!(
+                state.left_mode,
+                if mode == "tree" {
+                    LeftMode::Tree
+                } else {
+                    LeftMode::Now
+                }
+            );
+        }
+    }
 
     const DAY: u64 = 86_400;
 

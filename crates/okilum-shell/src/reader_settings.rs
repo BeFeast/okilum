@@ -1115,6 +1115,8 @@ impl Settings {
                     let short_path = compact_vault_path(&root);
                     let color_root = root.clone();
                     let weak = reader.downgrade();
+                    let now_reader = weak.clone();
+                    let now_enabled = state.sidebar.now_enabled();
                     content
                         .child(
                             h_flex()
@@ -1182,6 +1184,21 @@ impl Settings {
                                         }),
                                 ),
                         )
+                        .child(setting_row(
+                            "Now sidebar",
+                            "Show project activity alongside the file tree in this vault.",
+                            div().debug_selector(|| "settings-now-sidebar".into()).child(
+                                Switch::new("settings-now-sidebar-switch")
+                                    .accessibility_label("Now sidebar")
+                                    .checked(now_enabled)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = now_reader.update(cx, |reader, cx| {
+                                            reader.set_now_enabled(!now_enabled, window, cx)
+                                        });
+                                    }),
+                            ),
+                            cx,
+                        ))
                         .child(setting_row(
                             "Show hidden files",
                             "Include hidden files in this vault’s sidebar.",

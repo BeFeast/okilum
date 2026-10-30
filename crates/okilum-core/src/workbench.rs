@@ -8,11 +8,13 @@ pub const DOMAINS: [&str; 9] = [
     "AI", "Business", "Dev", "Finance", "Health", "HomeLab", "Life", "Music", "Video",
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Unit {
     pub path: String,
     pub title: String,
     pub terminal: bool,
+    pub status: String,
+    pub manager: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +46,9 @@ pub struct View {
     pub days: Vec<Period>,
     pub domains: BTreeMap<String, usize>,
     pub built_at: u64,
+    /// All discovered/structural units, including those without recent edits.
+    pub project_count: usize,
+    pub older_active: Vec<Activity>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +57,74 @@ pub struct Activity {
     pub open: String,
     pub modified: u64,
     pub count: usize,
+    pub today: usize,
+}
+
+/// Prefer a short project identity over an index note's document heading.
+pub fn short_project_name(path: &str, suggested: &str) -> String {
+    let folder = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".md");
+    let dated = folder.as_bytes().get(4) == Some(&b'-')
+        && folder
+            .get(..4)
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+        && folder
+            .get(5..7)
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+        && folder.as_bytes().get(7) == Some(&b'-');
+    let short = if dated {
+        let start = if folder
+            .get(8..10)
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+            && folder.as_bytes().get(10) == Some(&b'-')
+        {
+            11
+        } else {
+            8
+        };
+        &folder[start..]
+    } else {
+        folder
+    };
+    let short = if short.is_empty() { folder } else { short };
+    if dated
+        || suggested.trim().is_empty()
+        || suggested.to_ascii_lowercase().ends_with("project manager")
+        || suggested == "_index"
+    {
+        short.to_owned()
+    } else {
+        suggested.trim().to_owned()
+    }
+}
+
+impl Activity {
+    pub fn domain(&self) -> &str {
+        let domain = self.unit.path.split('/').next().unwrap_or("Vault");
+        if matches!(domain, "AI" | "HomeLab") {
+            "AI · HomeLab"
+        } else if DOMAINS.contains(&domain) {
+            domain
+        } else {
+            "Vault"
+        }
+    }
+
+    pub fn activity_label(&self, now: u64) -> String {
+        if self.today > 0 {
+            format!("{} today", self.today)
+        } else {
+            let age = now.saturating_sub(self.modified);
+            if age < DAY {
+                format!("{}h ago", (age / 3600).max(1))
+            } else {
+                format!("{}d ago", age / DAY)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +272,9 @@ impl Index {
     pub fn rows(&self) -> impl Iterator<Item = &Row> {
         self.notes.values()
     }
+    pub fn unit_for(&self, path: &str) -> Option<&str> {
+        self.notes.get(path).map(|row| row.unit.as_str())
+    }
 
     pub fn replace(&mut self, path: &str, source: &str, mtime: u64) {
         // Only unit metadata needs YAML parsing, not every body on a watcher batch.
@@ -261,12 +337,12 @@ impl Index {
             .cloned()
             .map(|u| (u.path.clone(), u))
             .collect();
-        for row in self.notes.values() {
+        for row in self.notes.values().filter(|row| !row.noise) {
             if let Some(path) = para_unit(&row.path) {
                 units.entry(path.clone()).or_insert_with(|| Unit {
-                    title: path.rsplit('/').next().unwrap_or(&path).into(),
+                    title: short_project_name(&path, ""),
                     path,
-                    terminal: false,
+                    ..Unit::default()
                 });
             }
         }
@@ -277,15 +353,14 @@ impl Index {
                 .or_else(|| self.notes.get(&format!("{}.md", unit.path)))
             {
                 unit.terminal |= row.terminal;
-                if row.title != "_index" {
-                    unit.title.clone_from(&row.title);
-                }
             }
+            unit.title = short_project_name(&unit.path, &unit.title);
         }
         let mut activity: BTreeMap<String, Activity> = BTreeMap::new();
         let mut groups: BTreeMap<(usize, String), Vec<&Row>> = BTreeMap::new();
         let mut view = View {
             built_at: now,
+            project_count: units.len(),
             ..View::default()
         };
         let week = now.saturating_sub(7 * DAY);
@@ -318,6 +393,7 @@ impl Index {
                             open: row.path.clone(),
                             modified: 0,
                             count: 0,
+                            today: 0,
                         });
                     if row.mtime > a.modified {
                         a.modified = row.mtime;
@@ -325,6 +401,9 @@ impl Index {
                     }
                     if row.mtime >= week {
                         a.count += 1;
+                    }
+                    if row.mtime >= midnight {
+                        a.today += 1;
                     }
                 }
             }
@@ -349,9 +428,15 @@ impl Index {
                 view.active.push(a);
             } else if a.modified >= now.saturating_sub(14 * DAY) {
                 view.older += 1;
+                view.older_active.push(a);
             }
         }
         view.active.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then(a.unit.path.cmp(&b.unit.path))
+        });
+        view.older_active.sort_by(|a, b| {
             b.modified
                 .cmp(&a.modified)
                 .then(a.unit.path.cmp(&b.unit.path))
@@ -415,12 +500,92 @@ impl Index {
 mod tests {
     use super::*;
     #[test]
+    fn short_project_identity_activity_and_domains_use_existing_snapshot_data() {
+        for (path, name, expected) in [
+            ("Dev/Areas/okilum", "Okilum", "Okilum"),
+            ("Dev/Areas/karaoke", "Karaoke Project Manager", "karaoke"),
+            (
+                "Music/Projects/2026-10-axe-fx-linux-editor",
+                "axe3",
+                "axe-fx-linux-editor",
+            ),
+            (
+                "AI/Projects/2026-10-second-brain-v2",
+                "2026-10-second-brain-v2",
+                "second-brain-v2",
+            ),
+            ("Dev/Projects/2026-10-29-demo", "", "demo"),
+        ] {
+            assert_eq!(short_project_name(path, name), expected);
+        }
+        let now = 30 * DAY;
+        let mut index = Index::default();
+        index.set_units(vec![Unit {
+            path: "Dev/Areas/okilum".into(),
+            title: "Okilum".into(),
+            manager: true,
+            ..Default::default()
+        }]);
+        index.replace(
+            "Dev/Areas/okilum/_index.md",
+            "---\ntitle: Long Index Heading\n---\n",
+            now,
+        );
+        index.replace("Dev/Areas/okilum/old.md", "", now - 2 * DAY);
+        index.replace(
+            "AI/Projects/2026-10-second-brain-v2/n.md",
+            "",
+            now - 4 * DAY,
+        );
+        index.replace("HomeLab/Projects/router/n.md", "", now - 8 * DAY);
+        index.refresh(now, now - 100, now - DAY);
+        let app = &index.view.active[0];
+        assert_eq!(
+            app.unit.title, "Okilum",
+            "document headings cannot rename projects"
+        );
+        assert!(app.unit.manager);
+        assert_eq!((app.count, app.today), (2, 1));
+        assert_eq!(app.activity_label(now), "1 today");
+        assert_eq!(app.domain(), "Dev");
+        assert_eq!(index.view.active[1].domain(), "AI · HomeLab");
+        assert_eq!(index.view.active[1].activity_label(now), "4d ago");
+        assert_eq!(index.view.older_active.len(), 1);
+        assert_eq!(
+            index.unit_for("Dev/Areas/okilum/old.md"),
+            Some("Dev/Areas/okilum")
+        );
+        assert_eq!(index.view.project_count, 3);
+    }
+
+    #[test]
+    fn project_presence_does_not_depend_on_recent_activity_or_archived_noise() {
+        let now = 30 * DAY;
+        let mut index = Index::default();
+        index.replace("Notes/plain.md", "# Note", now);
+        index.replace("Archive/Projects/Past/n.md", "", now);
+        index.refresh(now, now - 100, now - DAY);
+        assert_eq!(index.view.project_count, 0);
+        index.set_units(vec![Unit {
+            path: "Dev/Areas/quiet".into(),
+            title: "Quiet".into(),
+            ..Default::default()
+        }]);
+        index.refresh(now, now - 100, now - DAY);
+        assert_eq!(index.view.project_count, 1);
+        assert!(
+            index.view.active.is_empty(),
+            "quiet projects still enable the project sidebar"
+        );
+    }
+
+    #[test]
     fn now_tracks_content_terminal_units_noise_and_incremental_removal() {
         let mut i = Index::default();
         i.set_units(vec![Unit {
             path: "Dev/Areas/App".into(),
             title: "App".into(),
-            terminal: false,
+            ..Unit::default()
         }]);
         let now = 20 * DAY;
         for (p, t) in [

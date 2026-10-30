@@ -1,15 +1,35 @@
 # Now sidebar, slice 1 (#1927)
 
-The left panel defaults to **Now**. Its header switches between Now and the
-existing **Tree**, also with Cmd+Shift+Backslash on macOS or
+After first accepted discovery, vaults with at least one project unit default to
+**Now**. Units include project manifests and children of Projects, regardless of
+recent activity. Plain note vaults show only **Tree**, with no mode switch. Now
+can be explicitly enabled or disabled in Vault settings. The initial decision
+is stored once per vault; later discovery cannot override it or a manual choice.
+Existing persisted mode choices survive migration. Before discovery, the Tree
+remains visible instead of briefly showing an uninitialized Now surface.
+
+When enabled, the header's icon segments switch between Now and the existing
+Tree, also with Cmd+Shift+Backslash on macOS or
 Ctrl+Shift+Backslash elsewhere. Reveal in Tree (Cmd/Ctrl+Shift+L) explicitly
 selects Tree and reveals the open file. Plain mode switching retains the tree
 object, expanded folders, cursor and scroll handle; it never reveals a new row.
 The mode persists per vault in application state. Single-folder viewers and
 project mode retain their existing tree surface.
 
-Now shows recent project activity, changes grouped by day and place, existing
-pins and a nine-domain activity strip. Project candidates come from manifest
+Now keeps the In progress, Changes and Pinned section headers visible, with
+counts and collapse controls. In progress groups compact, single-line project
+rows by domain (Dev, Music, AI / HomeLab, then remaining domains). Each group
+initially shows four projects and an expandable +N preview. The current project
+is retained in that compact set and highlighted; the current pinned note is also
+highlighted. Rows use short project names, a status dot, meaningful-file activity
+or recency, and M only when discovery has an actual manager binding. Document
+headings do not rename projects. Paths stay in tooltips and Tree reveal.
+
+The older 14-day tail starts collapsed. Changes are grouped by day and place;
+Pinned uses the existing pin list. A fixed footer shows the file count and an
+explicit Tree shortcut. Local freshness says `live · snapshot HH:MM`; network
+freshness says `NFS · snapshot HH:MM`. Both offer Rescan and a compact action menu.
+Project candidates come from manifest
 discovery and children of Projects; terminal status/lifecycle values exclude a
 unit from activity. Source mtime determines recency. Shims, transcripts,
 dot-directories, resource forks, Pokutan, archive and operational bookkeeping
@@ -27,5 +47,6 @@ Acceptance includes preserved Tree behavior, real-corpus counts and projection
 timings (full build <=150 ms; 20-file batch <=10 ms on maestro and M4), and
 delivery on Mac and Linux Sprint. Oleg's daily use for two weeks determines
 whether Now stays the default. Delivery alone does not prove human acceptance.
-Unread state, origin filters, Waiting for me, review queues, project Now mode,
+P0 badges and Waiting for me share the later manager-state slice. Neither is
+inferred from activity. Unread state, origin filters, review queues, project Now mode,
 right-panel changes and Collections belong to later slices.

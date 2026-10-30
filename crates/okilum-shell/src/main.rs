@@ -4047,6 +4047,8 @@ impl Reader {
         } else {
             0.
         };
+        let modes_visible = self.sidebar.now_enabled() && !self.single_file && project.is_none();
+        let modes_inline = modes_visible && width >= 260.;
         let actions = if self.sidebar.left_mode == reader_sidebar::LeftMode::Now
             && !self.single_file
             && project.is_none()
@@ -4055,10 +4057,14 @@ impl Reader {
         } else {
             SidebarAction::available()
         };
-        let room = width - 24. - dot - 2. * SIDEBAR_NAME_GAP;
+        let room = width - 24. - dot - 2. * SIDEBAR_NAME_GAP - if modes_inline { 132. } else { 0. };
         let name = toolbar_text_width(&title, FontWeight::SEMIBOLD, window) + SIDEBAR_NAME_CHROME;
-        let visible = sidebar_visible_actions(room, name, actions);
-        let overflow = visible < actions.len();
+        let visible = if modes_inline {
+            0
+        } else {
+            sidebar_visible_actions(room, name, actions)
+        };
+        let overflow = !modes_inline && visible < actions.len();
         let name_max =
             (room - lead - (visible + usize::from(overflow)) as f32 * SIDEBAR_ACTION_SLOT).max(0.);
         let show_hidden = self.sidebar.show_hidden;
@@ -4085,7 +4091,7 @@ impl Reader {
             ))
             .debug_selector(|| "sidebar-vault-title".into())
             .dropdown_menu(move |menu, _, _| {
-                name_items.iter().fold(menu, |menu, item| {
+                let menu = name_items.iter().fold(menu, |menu, item| {
                     let label = item.label();
                     let root = menu_root.clone();
                     let reader = menu_reader.clone();
@@ -4126,7 +4132,18 @@ impl Reader {
                             }))
                         }
                     }
-                })
+                });
+                if modes_inline {
+                    actions.iter().fold(menu.separator(), |menu, &action| {
+                        menu.item(
+                            PopupMenuItem::new(action.label())
+                                .checked(action == SidebarAction::ShowHidden && show_hidden)
+                                .on_click(sidebar_action_click(menu_reader.clone(), action)),
+                        )
+                    })
+                } else {
+                    menu
+                }
             });
         let mut slots = header_controls().debug_selector(|| "sidebar-header-actions".into());
         for &action in &actions[..visible] {
@@ -4197,7 +4214,11 @@ impl Reader {
             })
             .child(name_button)
             .child(div().flex_1().min_w_0())
-            .child(slots)
+            .when_else(
+                modes_inline,
+                |header| header.child(self.render_left_modes(cx)),
+                |header| header.child(slots),
+            )
             // The row stands where the Folders header used to: dropping a
             // note on it still moves the note to the vault root.
             .map(|row| {
@@ -4238,8 +4259,8 @@ impl Reader {
             .debug_selector(|| "sidebar-mode-header".into())
             .flex_none()
             .child(row)
-            .when(!self.single_file && project.is_none(), |header| {
-                header.child(self.render_left_modes(cx))
+            .when(modes_visible && !modes_inline, |header| {
+                header.child(div().px_3().py_1().child(self.render_left_modes(cx)))
             })
             .into_any_element()
     }
@@ -4336,6 +4357,7 @@ impl Reader {
     /// `![alt](relative path)` → `![alt](file:///abs%20path)` via resolve_asset.
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree
+            || !self.sidebar.now_enabled()
             || self.single_file
             || self.project_navigation.active.is_some()
         {
