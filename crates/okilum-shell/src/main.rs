@@ -3580,6 +3580,7 @@ impl Reader {
             .visible(reader_layout::Panel::Backlinks, available);
         h_flex()
             .id("reader-header")
+            .debug_selector(|| "reader-header".into())
             .w_full()
             .when(cfg!(windows) && !self.embedded_in_workspace, |row| {
                 // The toolkit's bar content does not shrink. Reserve its native
@@ -3662,28 +3663,6 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
-                    .child(preserve_reader_selection(
-                        "reader-maximize-note-preserve",
-                        reader_icon_button(
-                            "reader-maximize-note",
-                            IconName::Maximize,
-                            reader_shortcuts::hint(
-                                if self.panels.maximized() {
-                                    "Restore panels"
-                                } else {
-                                    "Maximize note"
-                                },
-                                &MaximizeNote,
-                                cx,
-                            ),
-                            cx,
-                        )
-                        .debug_selector(|| "reader-maximize-note".into())
-                        .selected(self.panels.maximized())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.maximize_note(window, cx)),
-                        ),
-                    ))
                     .child(reader_feedback::button(cx))
                     .child(reader_more_menu(
                         self.vault_root.clone(),
@@ -3892,10 +3871,8 @@ impl Reader {
         }
         let title = if self.project_navigation.active.is_some() {
             "Manager"
-        } else if self.active_timeline().is_some() {
-            "Note history"
         } else {
-            "On this page"
+            "Note history"
         };
         // The Manager panel says whose manager it is with the avatar (#1627).
         let avatar = self
@@ -3904,6 +3881,7 @@ impl Reader {
             .as_ref()
             .map(|project| okilum_shell::project_avatar::project_avatar(project, 16., cx));
         h_flex()
+            .debug_selector(|| "reader-backlinks-header".into())
             .h(px(READER_HEADER_HEIGHT))
             .flex_none()
             .gap_1()
@@ -5647,7 +5625,10 @@ impl Reader {
                         .bg(p.border_subtle),
                 )
             })
-            .child(section("icons/list.svg", "Contents".into()))
+            .child(
+                section("icons/list.svg", "Contents".into())
+                    .debug_selector(|| "right-contents-heading".into()),
+            )
             .child(self.render_outline(cx))
             .child(
                 div()
@@ -5657,7 +5638,10 @@ impl Reader {
                     .my_1()
                     .bg(p.border_subtle),
             )
-            .child(section("icons/link.svg", linked))
+            .child(
+                section("icons/link.svg", linked)
+                    .debug_selector(|| "right-linked-from-heading".into()),
+            )
             .child(self.render_backlinks(cx))
             .into_any_element()
     }
@@ -5692,6 +5676,7 @@ impl Reader {
                 .child(
                     h_flex()
                         .id("properties-section")
+                        .debug_selector(|| "properties-section".into())
                         .gap_1p5()
                         .px_4()
                         .pt_3()
@@ -6748,7 +6733,9 @@ impl Render for Reader {
             .map(|panel| {
                 let left = panel == reader_layout::Panel::Notes;
                 let resize_view = cx.entity().downgrade();
-                let header = (left || !manager_headerless)
+                let contextual_header =
+                    self.project_navigation.active.is_some() || self.active_timeline().is_some();
+                let header = (left || (!manager_headerless && contextual_header))
                     .then(|| self.render_panel_header(panel, panel_widths.get(panel), window, cx));
                 v_flex()
                     .id(if left {

@@ -407,6 +407,18 @@ mod tests {
                 cx.notify();
             });
             visual.run_until_parked();
+            // #1909: the document owns maximize beside its width control.
+            // A hit in the application titlebar would fail these bounds even
+            // if it dispatched the same action successfully.
+            let document = visual.debug_bounds("document-header").unwrap();
+            let application = visual.debug_bounds("reader-header").unwrap();
+            let maximize = visual.debug_bounds("reader-maximize-note").unwrap();
+            let width = visual.debug_bounds("note-width").unwrap();
+            assert!(maximize.left() >= document.left() && maximize.right() <= document.right());
+            assert!(maximize.top() >= document.top() && maximize.bottom() <= document.bottom());
+            assert!(maximize.top() >= application.bottom());
+            assert_eq!(maximize.center().y, width.center().y);
+            assert!(maximize.left() >= width.right() && maximize.left() <= width.right() + px(5.));
             let before = reader.read_with(visual, |r, cx| {
                 (
                     r.panels.clone(),
@@ -488,6 +500,85 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| assert!(r.panels.maximized()));
+    }
+
+    #[gpui::test]
+    fn right_panel_has_section_headings_without_a_panel_header(cx: &mut gpui::TestAppContext) {
+        use crate::*;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("properties.md"),
+            "---\nstatus: active\n---\n# With properties\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("plain.md"), "# Plain\n\n[[properties]]\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("properties.md".into()),
+                        session_directory: Some(fixture.path().join("state")),
+                        index_dir: Some(fixture.path().join("index")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for (path, properties) in [("properties.md", true), ("plain.md", false)] {
+            reader.update_in(visual, |r, window, cx| r.open_note(path, None, window, cx));
+            visual.run_until_parked();
+            for width in [1400., 700.] {
+                visual.simulate_resize(size(px(width), px(800.)));
+                reader.update(visual, |r, cx| {
+                    r.panels.open(Panel::Backlinks);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                reader.read_with(visual, |r, _| {
+                    assert_eq!(r.selected_file(), path);
+                    assert_eq!(r.has_properties(), properties);
+                });
+                let panel = visual
+                    .debug_bounds("reader-backlinks-panel")
+                    .expect("visible-panel positive control");
+                assert!(visual.debug_bounds("right-contents-heading").is_some());
+                assert!(visual.debug_bounds("right-linked-from-heading").is_some());
+                assert_eq!(
+                    visual.debug_bounds("properties-section").is_some(),
+                    properties
+                );
+                assert!(
+                    visual.debug_bounds("reader-backlinks-header").is_none(),
+                    "#1910: no redundant panel header at {width}px"
+                );
+                let first = visual
+                    .debug_bounds(if properties {
+                        "properties-section"
+                    } else {
+                        "right-contents-heading"
+                    })
+                    .unwrap();
+                assert!(
+                    first.top() < panel.top() + px(32.),
+                    "no empty header-height band"
+                );
+            }
+        }
     }
 
     #[test]
