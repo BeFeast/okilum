@@ -1223,6 +1223,52 @@ mod tests {
                 assert_eq!(input.value().as_ref(), note);
             });
             let stamp = input.read_with(visual, |input, _| input.source_stamp());
+            for body in [false, true] {
+                let header = visual
+                    .debug_bounds(language)
+                    .expect("rendered language label");
+                let position = if body {
+                    // One control row below the header is the code body. Prove
+                    // it belongs to the painted block rather than empty space.
+                    point(header.center().x, header.bottom() + button.size.height)
+                } else {
+                    header.center()
+                };
+                if body {
+                    visual.update(|window, cx| {
+                        let background: gpui::Background = brand::reader_palette(cx).code_bg.into();
+                        assert!(
+                            window.painted_quads().iter().any(|quad| {
+                                quad.background == background
+                                    && quad.bounds.size.width > quad.bounds.size.height
+                                    && quad.bounds.contains(&position.scale(window.scale_factor()))
+                            }),
+                            "body click positive control: inside the painted code surface"
+                        );
+                    });
+                }
+                visual.simulate_click(position, Modifiers::default());
+                draw(visual);
+                assert!(
+                    visual.debug_bounds(language).is_none(),
+                    "language/body click reveals authored source"
+                );
+                let opener = note.find("```c").unwrap();
+                let start = note[..opener].rfind('\n').map_or(0, |at| at + 1);
+                let end = note.rfind("```").unwrap() + 3;
+                input.read_with(visual, |input, _| {
+                    assert!(
+                        (start..=end).contains(&input.cursor()),
+                        "click puts the caret in the code block"
+                    );
+                    assert_eq!(input.source_stamp(), stamp);
+                    assert_eq!(input.value().as_ref(), note);
+                });
+                input.update(visual, |input, cx| {
+                    input.set_selected_range(note.len()..note.len(), cx)
+                });
+                draw(visual);
+            }
             let at = note.find("int x").unwrap();
             reader.update_in(visual, |_, window, cx| {
                 input.focus_handle(cx).focus(window, cx)
