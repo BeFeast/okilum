@@ -104,6 +104,8 @@ pub(super) fn manager_gateway(
     env: okilum_t3::Environment,
     mcp: Arc<dyn okilum_t3::ManagerGateway>,
 ) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
+    #[cfg(test)]
+    t3_probe::record_manager_gateway();
     #[cfg(target_os = "macos")]
     {
         with_manager_session(env, mcp, manager_session())
@@ -124,6 +126,8 @@ pub(super) async fn t3_gateways(
     state: Option<PathBuf>,
     cx: &mut AsyncWindowContext,
 ) -> Option<Gateways> {
+    #[cfg(test)]
+    let probe = t3_probe::sweep().await;
     let projects = this
         .update_in_own_window(cx, |reader, _, _| {
             reader.project_navigation.discovery.projects.clone()
@@ -144,6 +148,11 @@ pub(super) async fn t3_gateways(
             let Ok(env) = okilum_t3::Environment::new(&alias, &origin) else {
                 continue;
             };
+            #[cfg(test)]
+            if let Some(probe) = &probe {
+                gateways.insert(alias.clone(), probe.connect(&alias, &origin));
+                continue;
+            }
             let task = this
                 .update_in_own_window(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
                 .ok()?;
@@ -164,6 +173,84 @@ pub(super) async fn t3_gateways(
         }
     }
     Some(gateways)
+}
+
+/// Test-only instrument (#1521): every attempt this file makes to reach T3
+/// is counted, also those that would fail, and a probed connection gets a
+/// fake gateway in place of the MCP and T3 session transports.
+#[cfg(test)]
+mod t3_probe {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    pub(super) struct Probe {
+        /// `t3_gateways` entries: status sweeps and on-demand icon connects.
+        pub sweeps: AtomicUsize,
+        /// The (alias, origin) of every T3 connection a sweep opened.
+        pub connects: Mutex<Vec<(String, String)>>,
+        /// Board and Manager transports built through `manager_gateway`.
+        pub manager_gateways: AtomicUsize,
+        /// What every probed connection gets instead of a real transport.
+        pub gateway: Option<Arc<dyn okilum_t3::ManagerGateway>>,
+        /// While set, a sweep waits here before it reads any connection.
+        pub gate: Mutex<Option<async_channel::Receiver<()>>>,
+    }
+
+    impl Probe {
+        pub(super) fn connect(
+            &self,
+            alias: &str,
+            origin: &str,
+        ) -> Arc<dyn okilum_t3::ManagerGateway> {
+            self.connects
+                .lock()
+                .unwrap()
+                .push((alias.into(), origin.into()));
+            self.gateway
+                .clone()
+                .expect("a probed T3 connection needs a fake gateway")
+        }
+    }
+
+    thread_local! {
+        static CURRENT: std::cell::RefCell<Option<Arc<Probe>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// The probe of this test thread, until the returned guard drops.
+    pub(super) fn install(probe: Arc<Probe>) -> Installed {
+        CURRENT.with(|current| *current.borrow_mut() = Some(probe));
+        Installed
+    }
+
+    pub(super) struct Installed;
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            CURRENT.with(|current| current.borrow_mut().take());
+        }
+    }
+
+    fn current() -> Option<Arc<Probe>> {
+        CURRENT.with(|current| current.borrow().clone())
+    }
+
+    pub(super) async fn sweep() -> Option<Arc<Probe>> {
+        let probe = current()?;
+        probe.sweeps.fetch_add(1, SeqCst);
+        let gate = probe.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            let _ = gate.recv().await;
+        }
+        Some(probe)
+    }
+
+    pub(super) fn record_manager_gateway() {
+        if let Some(probe) = current() {
+            probe.manager_gateways.fetch_add(1, SeqCst);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -1533,5 +1620,468 @@ mod icon_save_tests {
         assert!(!std::fs::read_to_string(&manifest)
             .unwrap()
             .contains("icon:"));
+    }
+}
+
+/// #1521: Projects and T3 are optional. A plain local Reader never contacts
+/// them on its own; only an explicit Projects view does.
+#[cfg(test)]
+mod local_reader_without_t3_tests {
+    use super::t3_probe::{self, Probe};
+    use super::*;
+    use crate::quick_open::{PaletteItem, PaletteSection};
+    use ::core::prelude::v1::test;
+    use gpui::{TestAppContext, VisualTestContext};
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::Mutex;
+
+    type GatewayResult<T> = std::result::Result<T, okilum_t3::GatewayError>;
+
+    const UNREACHABLE: &str = "test T3 endpoint is unreachable";
+
+    /// T3 that never answers: every attempted operation is recorded, then
+    /// fails as an unreachable server does.
+    #[derive(Default)]
+    struct UnreachableT3 {
+        calls: Mutex<Vec<&'static str>>,
+    }
+    impl UnreachableT3 {
+        fn fail<T>(&self, operation: &'static str) -> GatewayResult<T> {
+            self.calls.lock().unwrap().push(operation);
+            Err(okilum_t3::GatewayError::Unreachable(UNREACHABLE.into()))
+        }
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl okilum_t3::ManagerGateway for UnreachableT3 {
+        fn start_manager(&self, _: &str, _: &str, _: &str) -> GatewayResult<String> {
+            self.fail("start_manager")
+        }
+        fn status(&self) -> okilum_t3::GatewayStatus {
+            self.calls.lock().unwrap().push("status");
+            okilum_t3::GatewayStatus::NotConnected
+        }
+        fn token_expires_at(&self) -> Option<u64> {
+            self.calls.lock().unwrap().push("token_expires_at");
+            None
+        }
+        fn server_identity(&self) -> GatewayResult<okilum_t3::ServerIdentity> {
+            self.fail("server_identity")
+        }
+        fn list_projects(&self) -> GatewayResult<Vec<okilum_t3::Project>> {
+            self.fail("list_projects")
+        }
+        fn read_project(&self, _: &str) -> GatewayResult<okilum_t3::Project> {
+            self.fail("read_project")
+        }
+        fn set_project_icon(
+            &self,
+            _: &str,
+            _: Option<&ProjectIcon>,
+        ) -> GatewayResult<okilum_t3::Project> {
+            self.fail("set_project_icon")
+        }
+        fn create_project(&self, _: &str, _: &str) -> GatewayResult<okilum_t3::Project> {
+            self.fail("create_project")
+        }
+        fn list_threads(&self, _: &str) -> GatewayResult<Vec<okilum_t3::ThreadSummary>> {
+            self.fail("list_threads")
+        }
+        fn read_thread(&self, _: &okilum_t3::ThreadQuery) -> GatewayResult<okilum_t3::ThreadPage> {
+            self.fail("read_thread")
+        }
+        fn send_message(
+            &self,
+            _: &okilum_t3::OutgoingMessage,
+        ) -> GatewayResult<okilum_t3::SendReceipt> {
+            self.fail("send_message")
+        }
+        fn pending_requests(&self, _: &str) -> GatewayResult<Vec<String>> {
+            self.fail("pending_requests")
+        }
+        fn capabilities(&self) -> GatewayResult<okilum_t3::Capabilities> {
+            self.fail("capabilities")
+        }
+        fn thread_configuration(&self, _: &str) -> GatewayResult<okilum_t3::ThreadConfiguration> {
+            self.fail("thread_configuration")
+        }
+        fn configure_model(
+            &self,
+            _: &str,
+            _: &okilum_t3::ModelSelection,
+        ) -> GatewayResult<okilum_t3::ThreadConfiguration> {
+            self.fail("configure_model")
+        }
+    }
+
+    /// The configured T3 origin: a loopback listener that only counts the
+    /// connections something opened to it.
+    struct Endpoint {
+        listener: std::net::TcpListener,
+        accepted: usize,
+    }
+    impl Endpoint {
+        fn new() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            Self {
+                listener,
+                accepted: 0,
+            }
+        }
+        fn origin(&self) -> String {
+            format!("http://{}", self.listener.local_addr().unwrap())
+        }
+        fn accepted(&mut self) -> usize {
+            while let Ok((stream, _)) = self.listener.accept() {
+                drop(stream);
+                self.accepted += 1;
+            }
+            self.accepted
+        }
+    }
+
+    fn probe(t3: &Arc<UnreachableT3>) -> Arc<Probe> {
+        let gateway: Arc<dyn okilum_t3::ManagerGateway> = t3.clone();
+        Arc::new(Probe {
+            gateway: Some(gateway),
+            ..Default::default()
+        })
+    }
+
+    /// Nothing reached T3: no sweep, connection, transport or operation.
+    fn assert_no_t3(probe: &Probe, t3: &UnreachableT3, reader: &Reader, after: &str) {
+        assert_eq!(probe.sweeps.load(SeqCst), 0, "{after}: no T3 sweep");
+        assert!(
+            probe.connects.lock().unwrap().is_empty(),
+            "{after}: no T3 connection"
+        );
+        assert_eq!(
+            probe.manager_gateways.load(SeqCst),
+            0,
+            "{after}: no Manager transport"
+        );
+        assert_eq!(t3.calls(), [] as [&str; 0], "{after}: no T3 operation");
+        let navigation = &reader.project_navigation;
+        assert!(navigation.t3_gateways.is_empty(), "{after}");
+        assert!(navigation.statuses.is_empty(), "{after}: no T3 status");
+        assert!(navigation.manager_panel.is_none(), "{after}");
+        assert!(navigation.boards.is_empty(), "{after}");
+        assert!(navigation.active.is_none(), "{after}");
+    }
+
+    fn assert_no_error_toast(visual: &mut VisualTestContext, after: &str) {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("reader-error-toast").is_none(),
+            "{after}: no T3 prompt or error"
+        );
+    }
+
+    fn local_vault(root: &Path) {
+        std::fs::create_dir_all(root.join("Notes")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n\nA plain local note.\n").unwrap();
+        std::fs::write(
+            root.join("Notes/Second.md"),
+            "# Second\n\nmeridian lives here\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.log"),
+            "2026-10-30T10:00:00Z INFO reader started\n2026-10-30T10:00:01Z WARN local only\n",
+        )
+        .unwrap();
+    }
+
+    fn open_reader<'a>(
+        cx: &'a mut TestAppContext,
+        root: &Path,
+        temp: &Path,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.to_owned()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.join("index")),
+                        session_directory: Some(temp.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        (entity.unwrap(), visual)
+    }
+
+    fn search(reader: &Entity<Reader>, visual: &mut VisualTestContext, text: &str) -> Vec<String> {
+        reader.update_in(visual, |r, window, cx| {
+            assert!(r.searcher.is_some(), "the index publishes before searching");
+            r.open_quick_open(true, window, cx);
+            let text = text.to_owned();
+            r.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value(text, window, cx));
+            r.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            let rows = r
+                .quick_open
+                .rows
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect();
+            r.close_quick_open(window, cx);
+            rows
+        })
+    }
+
+    /// The ordinary local paths after startup, each through the Reader's own
+    /// entry point: a note, search, Recent and Pinned in the command
+    /// palette, and a log from the Logs section.
+    fn use_local_reader(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Notes/Second.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Notes/Second.md"));
+
+        assert_eq!(search(reader, visual, "meridian"), ["Notes/Second.md"]);
+
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("start.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_pin("Notes/Second.md", cx);
+            r.open_quick_open(false, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.sidebar.recent.iter().any(|(p, _)| p == "Notes/Second.md"),
+                "the opened note is a recent"
+            );
+            let notes: Vec<_> = r
+                .palette_items()
+                .into_iter()
+                .enumerate()
+                .filter_map(|(ix, (section, item))| match item {
+                    PaletteItem::Note(entry) => Some((ix, section, entry.path)),
+                    _ => None,
+                })
+                .collect();
+            let pinned = notes
+                .iter()
+                .find(|(_, section, path)| {
+                    *section == PaletteSection::Pinned && path == "Notes/Second.md"
+                })
+                .unwrap_or_else(|| panic!("the pin is in the palette: {notes:?}"));
+            r.open_palette_item(pinned.0, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(!r.quick_open.open);
+            assert_eq!(r.current_rel, "Notes/Second.md", "the pin opened");
+        });
+
+        reader.update_in(visual, |r, window, cx| {
+            r.show_app_section(Section::Logs, window, cx)
+        });
+        visual.run_until_parked();
+        // As the Logs section's row does.
+        reader.update_in(visual, |r, window, cx| {
+            r.project_navigation.section = Section::Reader;
+            r.preview_file("app.log", window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            let preview = r.file_preview.as_ref().expect("the log is open");
+            assert_eq!(preview.rel, "app.log");
+            assert!(preview.log.is_some(), "the log viewer reads it");
+        });
+    }
+
+    /// A fresh profile: no project.yaml in the vault, no saved T3 connection.
+    #[gpui::test]
+    fn a_fresh_local_profile_never_contacts_t3(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        local_vault(&root);
+        let state = temp.path().join("state");
+        let t3 = Arc::new(UnreachableT3::default());
+        let probe = probe(&t3);
+        let _installed = t3_probe::install(probe.clone());
+
+        let (reader, visual) = open_reader(cx, &root, temp.path());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_no_t3(&probe, &t3, r, "startup"));
+        assert_no_error_toast(visual, "startup");
+
+        use_local_reader(&reader, visual);
+        reader.read_with(visual, |r, _| {
+            assert_no_t3(&probe, &t3, r, "local paths");
+            let navigation = &r.project_navigation;
+            assert!(navigation.discovered, "the palette scanned for projects");
+            assert!(navigation.discovery.projects.is_empty());
+            assert!(navigation.picker.is_none() && navigation.switcher.is_none());
+        });
+        assert_no_error_toast(visual, "local paths");
+        assert!(!state.join("t3-connections.json").exists());
+
+        // Positive control, same instrument: the Projects view asks T3.
+        reader.update_in(visual, |r, window, cx| {
+            r.show_app_section(Section::Projects, window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(probe.sweeps.load(SeqCst), 1, "the Projects view asks T3");
+        assert!(
+            probe.connects.lock().unwrap().is_empty(),
+            "nothing is configured to connect to"
+        );
+        assert_eq!(t3.calls(), [] as [&str; 0]);
+        reader.read_with(visual, |r, _| {
+            assert!(r.project_navigation.picker.is_some());
+            assert!(r.project_navigation.statuses.is_empty());
+        });
+        assert!(!state.join("t3-connections.json").exists());
+    }
+
+    /// Projects configured, T3 unreachable: the Reader stays local and
+    /// usable, also while the Projects view waits on a blocked T3, and the
+    /// unreachable status shows in the Projects view only.
+    #[gpui::test]
+    fn configured_projects_stay_lazy_and_an_unreachable_t3_shows_only_in_projects(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        local_vault(&root);
+        let mut endpoint = Endpoint::new();
+        let origin = endpoint.origin();
+        let folder = root.join("Dev/Areas/okilum");
+        std::fs::create_dir_all(folder.join("ops")).unwrap();
+        std::fs::write(
+            folder.join("ops/project.yaml"),
+            format!(
+                "name: Okilum\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: test\n  origin: {origin}\n  manager: {{project_id: okilum, thread_id: 'mcp:manager', workspace_mode: local}}\n"
+            ),
+        )
+        .unwrap();
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("t3-connections.json"),
+            serde_json::to_vec(&std::collections::BTreeMap::from([("test", &origin)])).unwrap(),
+        )
+        .unwrap();
+        let t3 = Arc::new(UnreachableT3::default());
+        let probe = probe(&t3);
+        let (release, gate) = async_channel::bounded(1);
+        *probe.gate.lock().unwrap() = Some(gate);
+        let _installed = t3_probe::install(probe.clone());
+
+        let (reader, visual) = open_reader(cx, &root, temp.path());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_no_t3(&probe, &t3, r, "startup"));
+        assert_no_error_toast(visual, "startup");
+
+        use_local_reader(&reader, visual);
+        reader.read_with(visual, |r, _| {
+            assert_no_t3(&probe, &t3, r, "local paths");
+            assert!(r.project_navigation.discovered);
+            let rows = r.palette_projects("", 8);
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.project.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Okilum"],
+                "the palette discovered the local project without T3"
+            );
+            assert!(r.project_navigation.picker.is_none());
+        });
+        assert_no_error_toast(visual, "local paths");
+
+        // Positive control, same instrument: the Projects view asks T3,
+        // whose answer is held back.
+        reader.update_in(visual, |r, window, cx| {
+            r.show_app_section(Section::Projects, window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(probe.sweeps.load(SeqCst), 1, "the Projects view asks T3");
+        assert!(
+            probe.connects.lock().unwrap().is_empty(),
+            "T3 is still blocked"
+        );
+
+        // The blocked sweep does not hold up the local Reader.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "start.md"));
+        assert_eq!(search(&reader, visual, "meridian"), ["Notes/Second.md"]);
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.project_navigation.statuses.is_empty(),
+                "T3 is still blocked"
+            );
+        });
+        assert_eq!(t3.calls(), [] as [&str; 0]);
+        assert_no_error_toast(visual, "a blocked T3");
+
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        assert_eq!(
+            *probe.connects.lock().unwrap(),
+            [("test".to_owned(), origin.clone())]
+        );
+        assert!(
+            t3.calls().contains(&"list_threads"),
+            "the sweep asked T3: {:?}",
+            t3.calls()
+        );
+        assert_eq!(probe.manager_gateways.load(SeqCst), 0);
+        reader.read_with(visual, |r, cx| {
+            let navigation = &r.project_navigation;
+            let folder = &navigation.discovery.projects[0].folder;
+            assert!(
+                matches!(
+                    navigation.statuses.get(folder),
+                    Some(okilum_t3::projects::Status::Unreachable(reason)) if reason.contains(UNREACHABLE)
+                ),
+                "{:?}",
+                navigation.statuses
+            );
+            let picker = navigation.picker.as_ref().unwrap().read(cx);
+            assert!(
+                picker
+                    .model()
+                    .manager_detail(folder)
+                    .is_some_and(|detail| detail.contains(UNREACHABLE)),
+                "the Projects view says T3 is unreachable"
+            );
+            assert!(navigation.active.is_none() && navigation.manager_panel.is_none());
+        });
+        assert_no_error_toast(visual, "an unreachable T3");
+
+        // No real transport bypassed the fake. Positive control: a
+        // connection to the endpoint is counted.
+        assert_eq!(endpoint.accepted(), 0, "nothing reached the T3 origin");
+        let _client =
+            std::net::TcpStream::connect(endpoint.listener.local_addr().unwrap()).unwrap();
+        assert_eq!(endpoint.accepted(), 1);
     }
 }
