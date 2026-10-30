@@ -1187,20 +1187,24 @@ mod tests {
                 input.set_selected_range(note.len()..note.len(), cx)
             });
             draw(visual);
-            let copy = format!("reader-code-copy-{offset}");
-            let language = format!("reader-code-language-{offset}");
+            // The pinned GPUI test API takes &'static str selectors.
+            let (copy, language) = match offset {
+                0 => ("reader-code-copy-0", "reader-code-language-0"),
+                2 => ("reader-code-copy-2", "reader-code-language-2"),
+                _ => unreachable!("fixture code starts at byte 0 or 2"),
+            };
             assert!(
-                visual.debug_bounds(copy.clone()).is_some(),
+                visual.debug_bounds(copy).is_some(),
                 "rendered code positive control: {block:?}"
             );
             assert!(
-                visual.debug_bounds(language.clone()).is_some(),
+                visual.debug_bounds(language).is_some(),
                 "quiet language label"
             );
             visual.update(|_, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string("sentinel".to_owned()))
             });
-            let button = visual.debug_bounds(copy.clone()).unwrap();
+            let button = visual.debug_bounds(copy).unwrap();
             visual.simulate_click(button.center(), Modifiers::default());
             draw(visual);
             visual.update(|_, cx| {
@@ -1218,7 +1222,7 @@ mod tests {
             input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
             draw(visual);
             assert!(
-                visual.debug_bounds(copy.clone()).is_none(),
+                visual.debug_bounds(copy).is_none(),
                 "focused block shows native source"
             );
             input.read_with(visual, |input, _| {
@@ -1248,7 +1252,7 @@ mod tests {
             });
             draw(visual);
             assert!(
-                visual.debug_bounds(copy.clone()).is_some(),
+                visual.debug_bounds(copy).is_some(),
                 "unfocused again after Undo"
             );
             assert_eq!(
