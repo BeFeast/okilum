@@ -41,6 +41,8 @@ fn actual_trait_consumer_matches_all_legacy_metadata_and_mapping_with_positive_c
         "# Heading\n\n| a | b |\n| - | - |\n| c | d |\n\n![alt](image.png)\n\n> [!note] Title\n> body\n\nend\n",
         "\u{feff}# e\u{301} 🧠\r\n\r\n**👩‍💻** 🇮🇱\r\n\r\nend\r\n",
         "---\nname: value\n---\n\n[x][id]\n\n[id]: /target 'title'\n\nend\n",
+        "- item\n\n  ```rust\n  let x = 1;\n  ```\n\nend\n",
+        "> ```rust\n> let x = 1;\n> ```\n\nend\n",
     ] {
         let source = source(1, text);
         let legacy = CachedProvider::classify(source.clone());

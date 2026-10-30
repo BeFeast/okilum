@@ -1,5 +1,6 @@
 //! App-owned raw classifier bridge: classify off-thread, compose reviewed source mappings.
 use std::{
+    collections::HashMap,
     ops::Range,
     sync::{Arc, Mutex},
 };
@@ -61,6 +62,7 @@ pub struct CachedProvider {
     /// exact bytes, so a later revision can find them before it is classified
     /// (S7, #936).
     tables: Vec<(Range<usize>, String)>,
+    fenced_blocks: HashMap<String, String>,
 }
 
 impl CachedProvider {
@@ -126,14 +128,37 @@ impl CachedProvider {
                 ))
             })
             .collect();
+        let fenced_blocks = classified
+            .decorations_for(&snapshot)
+            .unwrap_or_default()
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.kind,
+                    source_classifier::decorations::Kind::CodeBlock { fenced: true }
+                )
+            })
+            .filter_map(|m| {
+                let raw = source.text.get(m.range.clone())?;
+                Some((raw.to_owned(), standalone_fenced_source(raw)))
+            })
+            .collect();
         Self {
             source,
+            fenced_blocks,
             retained: Mutex::new(RetainedPresentation::new(&classified)),
             classified,
             links,
             tables,
         }
     }
+    /// Off-thread preparation keeps standalone list continuations from turning
+    /// a fence indented by four spaces into literal indented code.
+    #[allow(dead_code)] // Standalone projection examples do not render blocks.
+    pub(crate) fn block_markdown(&self, source: &str) -> Option<&str> {
+        self.fenced_blocks.get(source).map(String::as_str)
+    }
+
     // Shared with native_projection216, which only consumes presentation data.
     #[allow(dead_code)]
     pub fn note_links(&self) -> &[source_classifier::NoteLink] {
@@ -265,7 +290,7 @@ fn projection_markers(
                     MarkerKind::Quote { depth }
                 }
                 source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
-                source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
+                source_classifier::decorations::Kind::CodeBlock { .. } => MarkerKind::CodeBlock,
                 source_classifier::decorations::Kind::Task { checked } => {
                     MarkerKind::Task { checked }
                 }
@@ -290,31 +315,60 @@ fn is_block(kind: &source_classifier::decorations::Kind) -> bool {
     )
 }
 
-/// Only Mermaid fences opt into S7 rendering; all other code keeps its existing
-/// editable code presentation. Classification and active-range guards stay shared.
-fn is_rendered_block(marker: &source_classifier::decorations::Marker, text: &str) -> bool {
-    if is_block(&marker.kind) {
-        return true;
+/// Unfocused code uses the same Reader block surface as tables/images/callouts:
+/// language and Copy stay available without showing authored fence lines.
+/// The shared active-range guard reveals the exact source for editing.
+fn is_rendered_block(marker: &source_classifier::decorations::Marker, _: &str) -> bool {
+    is_block(&marker.kind)
+        || matches!(
+            marker.kind,
+            source_classifier::decorations::Kind::CodeBlock { .. }
+        )
+}
+
+/// Remove inherited indentation from an AST-proven fenced fragment. Quote
+/// delimiters and same-line list markers stay intact; content indentation and
+/// original line endings remain. Indented literal backticks never call this.
+fn standalone_fenced_source(source: &str) -> String {
+    let mut prefix = source.lines().next().unwrap_or_default();
+    let mut groups = Vec::new();
+    loop {
+        let spaces = prefix.len() - prefix.trim_start_matches(' ').len();
+        prefix = &prefix[spaces..];
+        let quote = prefix.starts_with('>');
+        groups.push((spaces, quote));
+        if !quote {
+            break;
+        }
+        prefix = &prefix[1..];
+        if let Some(rest) = prefix.strip_prefix(' ') {
+            prefix = rest;
+        }
     }
-    if marker.kind != source_classifier::decorations::Kind::CodeBlock {
-        return false;
-    }
-    let Some(header) = text
-        .get(marker.range.clone())
-        .and_then(|s| s.lines().next())
-    else {
-        return false;
-    };
-    let header = header.trim_start();
-    let Some(fence) = header.chars().next().filter(|c| matches!(c, '`' | '~')) else {
-        return false;
-    };
-    let count = header.chars().take_while(|c| *c == fence).count();
-    count >= 3
-        && header[count..]
-            .split_whitespace()
-            .next()
-            .is_some_and(|s| s.eq_ignore_ascii_case("mermaid"))
+    source
+        .split_inclusive('\n')
+        .map(|line| {
+            let mut rest = line;
+            let mut result = String::new();
+            for &(spaces, quote) in &groups {
+                let remove = rest.bytes().take(spaces).take_while(|b| *b == b' ').count();
+                rest = &rest[remove..];
+                if quote {
+                    let Some(after) = rest.strip_prefix('>') else {
+                        break;
+                    };
+                    result.push('>');
+                    rest = after;
+                    if let Some(after) = rest.strip_prefix(' ') {
+                        result.push(' ');
+                        rest = after;
+                    }
+                }
+            }
+            result.push_str(rest);
+            result
+        })
+        .collect()
 }
 
 impl CachedProvider {
@@ -1533,14 +1587,14 @@ This paragraph remains ordinary Markdown.
     }
 
     #[test]
-    fn mermaid_is_an_s7_block_and_active_source_reveals_only_that_block() {
+    fn code_is_rendered_and_active_source_reveals_only_that_block() {
         let note = source("# Diagrams\n\n```mermaid\nflowchart TD\nA-->B\n```\n\n```rust\nfn main() {}\n```\n\nend\n");
         let provider = CachedProvider::classify(note.clone());
         let projected = provider.compose(&note, &inactive(&note)).unwrap();
         assert_eq!(
             projected.blocks().len(),
-            1,
-            "ordinary code stays editable code"
+            2,
+            "ordinary code and Mermaid share active-source reveal"
         );
         let block = &projected.blocks()[0];
         assert_eq!(
@@ -1553,20 +1607,105 @@ This paragraph remains ordinary Markdown.
             head: at,
             ..Default::default()
         };
-        assert!(provider
-            .compose(&note, &active)
-            .unwrap()
-            .blocks()
-            .is_empty());
+        let focused = provider.compose(&note, &active).unwrap();
+        assert_eq!(focused.blocks().len(), 1);
+        assert!(note.text[focused.blocks()[0].source.start.0..].starts_with("```rust"));
         let composition = ActiveSource {
             composition: Some(at..SourceByte(at.0 + 1)),
             ..inactive(&note)
         };
-        assert!(provider
-            .compose(&note, &composition)
-            .unwrap()
-            .blocks()
-            .is_empty());
+        assert_eq!(
+            provider
+                .compose(&note, &composition)
+                .unwrap()
+                .blocks()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn standalone_fences_keep_container_content_and_line_endings() {
+        for (source, expected) in [
+            (
+                "    ```c\r\n      int x;\r\n    ```",
+                "```c\r\n  int x;\r\n```",
+            ),
+            (
+                ">    ```c\n>      int x;\n>    ```",
+                "> ```c\n>   int x;\n> ```",
+            ),
+            (
+                "    > ```c\n    > int x;\n    > ```",
+                "> ```c\n> int x;\n> ```",
+            ),
+            ("  - ```c\n    int x;\n    ```", "- ```c\n  int x;\n  ```"),
+            ("- ```c\n  int x;\n  ```", "- ```c\n  int x;\n  ```"),
+        ] {
+            assert_eq!(standalone_fenced_source(source), expected);
+        }
+        let note = source("    ```c\n    literal\n    ```\n\nend");
+        let provider = CachedProvider::classify(note);
+        assert!(
+            provider
+                .block_markdown("    ```c\n    literal\n    ```")
+                .is_none(),
+            "indented code is not a fence"
+        );
+    }
+
+    #[test]
+    fn ordinary_code_container_reveal_is_presentation_only() {
+        for block in [
+            "```c\nint x;\n```",
+            "- ```c\n  int x;\n  ```",
+            "> ```c\n> int x;\n> ```",
+            "- item\n\n  ```c\n  int x;\n  ```",
+            "> - ```c\n>   int x;\n>   ```",
+            "- > ```c\n  > int x;\n  > ```",
+        ] {
+            let note = source(&format!("{block}\n\ntail\n"));
+            let provider = CachedProvider::classify(note.clone());
+            let inactive = inactive(&note);
+            let rendered = provider.compose(&note, &inactive).unwrap();
+            assert_eq!(rendered.blocks().len(), 1, "{block:?}");
+            let code = &rendered.blocks()[0];
+            let at = SourceByte(note.text.find("int x").unwrap());
+            let active = ActiveSource {
+                anchor: at,
+                head: at,
+                ..Default::default()
+            };
+            let focused = provider.compose(&note, &active).unwrap();
+            assert!(
+                focused.blocks().is_empty(),
+                "caret reveals authored fences: {block:?}"
+            );
+            assert!(focused.text().contains("```c"));
+            assert_eq!(
+                provider.compose(&note, &inactive).unwrap().blocks()[0].source,
+                code.source
+            );
+            assert_eq!(&*note.text, format!("{block}\n\ntail\n"));
+        }
+    }
+
+    #[test]
+    fn nested_indented_code_keeps_its_authored_container_context() {
+        for text in [
+            "- item\n\n      indented\n\nend\n",
+            ">     indented\n\nend\n",
+        ] {
+            let note = source(text);
+            let provider = CachedProvider::classify(note.clone());
+            let projected = provider.compose(&note, &inactive(&note)).unwrap();
+            assert!(
+                projected.blocks().is_empty(),
+                "no standalone reparse of container indentation"
+            );
+            assert!(projected.text().contains("    indented"));
+            assert_eq!(&*projected.source().text, text);
+        }
     }
 
     #[test]

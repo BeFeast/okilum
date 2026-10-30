@@ -66,6 +66,13 @@ pub(super) struct LivePreview {
     worker_reports: Vec<okilum_core::open_diagnostics::Report>,
 }
 impl LivePreview {
+    pub(super) fn block_markdown(&self, source: &str) -> Option<SharedString> {
+        self.accepted
+            .as_ref()?
+            .block_markdown(source)
+            .map(Into::into)
+    }
+
     pub(super) fn new(
         reader: &Reader,
         entity: EntityId,
@@ -1147,6 +1154,166 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         (reader, visual, directory)
+    }
+
+    #[gpui::test]
+    fn code_fences_reveal_on_focus_and_undo_keeps_authored_containers(cx: &mut TestAppContext) {
+        for (block, offset) in [
+            ("```c\nint x;\n```", 0),
+            ("- ```c\n  int x;\n  ```", 2),
+            ("> ```c\n> int x;\n> ```", 2),
+            ("- item\n\n  ```c\n  int x;\n  ```", 0),
+            ("100. item\n\n     ```c\n     int x;\n     ```", 0),
+            ("> 100. item\n>\n>      ```c\n>      int x;\n>      ```", 2),
+        ] {
+            let note = format!("before\n\n{block}\n\ntail\n");
+            let (reader, visual, directory) = fixture(cx, &note);
+            visual.simulate_resize(size(px(1000.), px(800.)));
+            reader.update_in(visual, |reader, window, cx| {
+                if !reader.editing.as_ref().unwrap().live_preview.enabled {
+                    reader.toggle_live_preview(window, cx);
+                }
+            });
+            let input = reader.read_with(visual, |reader, _| {
+                reader.editing.as_ref().unwrap().input.clone()
+            });
+            let draw = |visual: &mut VisualTestContext| {
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+            };
+            input.update(visual, |input, cx| {
+                input.set_selected_range(note.len()..note.len(), cx)
+            });
+            draw(visual);
+            // The pinned GPUI test API takes &'static str selectors.
+            let (copy, language) = match offset {
+                0 => ("reader-code-copy-0", "reader-code-language-0"),
+                2 => ("reader-code-copy-2", "reader-code-language-2"),
+                _ => unreachable!("fixture code starts at byte 0 or 2"),
+            };
+            assert!(
+                visual.debug_bounds(copy).is_some(),
+                "rendered code positive control: {block:?}"
+            );
+            assert!(
+                visual.debug_bounds(language).is_some(),
+                "quiet language label"
+            );
+            visual.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".to_owned()))
+            });
+            let button = visual.debug_bounds(copy).unwrap();
+            visual.simulate_click(button.center(), Modifiers::default());
+            draw(visual);
+            visual.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("int x;\n"),
+                    "Live Copy excludes fences and container indentation: {block:?}"
+                )
+            });
+            input.read_with(visual, |input, _| {
+                assert_eq!(
+                    input.selected_range(),
+                    note.len()..note.len(),
+                    "Copy must not move the caret into the code block"
+                );
+                assert_eq!(input.value().as_ref(), note);
+            });
+            let stamp = input.read_with(visual, |input, _| input.source_stamp());
+            for body in [false, true] {
+                let header = visual
+                    .debug_bounds(language)
+                    .expect("rendered language label");
+                let position = if body {
+                    // One control row below the header is the code body. Prove
+                    // it belongs to the painted block rather than empty space.
+                    point(header.center().x, header.bottom() + button.size.height)
+                } else {
+                    header.center()
+                };
+                if body {
+                    visual.update(|window, cx| {
+                        let background: gpui::Background = brand::reader_palette(cx).code_bg.into();
+                        assert!(
+                            window.painted_quads().iter().any(|quad| {
+                                quad.background == background
+                                    && quad.bounds.size.width > quad.bounds.size.height
+                                    && quad.bounds.contains(&position.scale(window.scale_factor()))
+                            }),
+                            "body click positive control: inside the painted code surface"
+                        );
+                    });
+                }
+                visual.simulate_click(position, Modifiers::default());
+                draw(visual);
+                assert!(
+                    visual.debug_bounds(language).is_none(),
+                    "language/body click reveals authored source"
+                );
+                let opener = note.find("```c").unwrap();
+                let start = note[..opener].rfind('\n').map_or(0, |at| at + 1);
+                let end = note.rfind("```").unwrap() + 3;
+                input.read_with(visual, |input, _| {
+                    assert!(
+                        (start..=end).contains(&input.cursor()),
+                        "click puts the caret in the code block"
+                    );
+                    assert_eq!(input.source_stamp(), stamp);
+                    assert_eq!(input.value().as_ref(), note);
+                });
+                input.update(visual, |input, cx| {
+                    input.set_selected_range(note.len()..note.len(), cx)
+                });
+                draw(visual);
+            }
+            let at = note.find("int x").unwrap();
+            reader.update_in(visual, |_, window, cx| {
+                input.focus_handle(cx).focus(window, cx)
+            });
+            input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
+            draw(visual);
+            assert!(
+                visual.debug_bounds(copy).is_none(),
+                "focused block shows native source"
+            );
+            input.read_with(visual, |input, _| {
+                assert_eq!(input.value().as_ref(), note);
+                assert_eq!(input.source_stamp(), stamp, "focus is not a source edit");
+            });
+            reader.update_in(visual, |_, window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_text_in_range(Some(at..at), "unsigned ", window, cx)
+                });
+            });
+            draw(visual);
+            input.read_with(visual, |input, _| {
+                assert_eq!(
+                    input.value().as_ref(),
+                    note.replacen("int x", "unsigned int x", 1)
+                )
+            });
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-z");
+            draw(visual);
+            input.read_with(visual, |input, _| assert_eq!(input.value().as_ref(), note));
+            input.update(visual, |input, cx| {
+                input.set_selected_range(note.len()..note.len(), cx)
+            });
+            draw(visual);
+            assert!(
+                visual.debug_bounds(copy).is_some(),
+                "unfocused again after Undo"
+            );
+            assert_eq!(
+                std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+                note
+            );
+        }
     }
 
     #[gpui::test]

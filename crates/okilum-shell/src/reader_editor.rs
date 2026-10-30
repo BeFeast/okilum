@@ -1684,12 +1684,15 @@ fn live_blocks(
         let Some(this) = reader.upgrade() else {
             return div().into_any_element();
         };
-        let (vault, states, identities) = {
+        let (vault, states, identities, code_source) = {
             let this = this.read(cx);
             (
                 this.vault.clone(),
                 this.link_presentations.clone(),
                 this.link_identities.clone(),
+                this.editing
+                    .as_ref()
+                    .and_then(|editing| editing.live_preview.block_markdown(source)),
             )
         };
         let markdown = {
@@ -1704,11 +1707,15 @@ fn live_blocks(
             let note = context.borrow().clone();
             // Footnote references take the whole note's numbers; only a
             // block with footnote syntax pays for the note-wide pass.
-            let block_source = okilum_core::obsidian::block_footnotes(
-                &note.text,
-                block.source.start.0..block.source.end.0,
-            )
-            .unwrap_or_else(|| source.to_owned());
+            let block_source = code_source
+                .map(|source| source.to_string())
+                .unwrap_or_else(|| {
+                    okilum_core::obsidian::block_footnotes(
+                        &note.text,
+                        block.source.start.0..block.source.end.0,
+                    )
+                    .unwrap_or_else(|| source.to_owned())
+                });
             let input: SharedString = if note.definitions.is_empty() {
                 block_source.into()
             } else {

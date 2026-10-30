@@ -70,12 +70,16 @@ impl RenderOnce for CodeActions {
                     .xsmall()
                     .ghost()
                     .bg(brand::reader_palette(cx).code_bg)
-                    .label(if copied { "Copied" } else { "Copy" })
-                    .tooltip("Copy code")
-                    .accessibility_label("Copy code")
-                    .opacity(if copied { 1. } else { 0. })
-                    .group_hover("code-block", |s| s.opacity(1.))
-                    .focus(|s| s.opacity(1.))
+                    .icon(if copied {
+                        IconName::Check
+                    } else {
+                        IconName::Copy
+                    })
+                    .tooltip(if copied { "Copied" } else { "Copy code" })
+                    .accessibility_label(if copied { "Code copied" } else { "Copy code" })
+                    // In Live Preview the editor would reveal source on this
+                    // press, removing the button before its click can copy.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .debug_selector(move || {
                         format!(
                             "reader-code-{}-{offset}",
@@ -183,6 +187,79 @@ mod tests {
     }
 
     #[gpui::test]
+    fn copy_glyph_is_painted_without_hover_in_both_themes(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        for mode in [
+            gpui_component::ThemeMode::Light,
+            gpui_component::ThemeMode::Dark,
+        ] {
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let text = cx.new(|cx| TextViewState::markdown("```c\nint x;\n```", cx));
+                let view = cx.new(|_| Fixture {
+                    text,
+                    copies: Default::default(),
+                });
+                Root::new(view, window, cx)
+            });
+            visual.update(|window, cx| crate::set_appearance(Some(mode), None, window, cx));
+            visual.simulate_mouse_move(
+                point(px(690.), px(400.)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            let button = visual.debug_bounds("reader-code-copy-0").unwrap();
+            assert_eq!(button.size.width, button.size.height, "icon-only control");
+            let assert_painted =
+                |visual: &mut gpui::VisualTestContext| {
+                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                    visual.update(|window, cx| {
+                        let background: gpui::Background = brand::reader_palette(cx).code_bg.into();
+                        let bounds = button.scale(window.scale_factor());
+                        assert!(window.painted_quads().iter().any(|quad|
+                        quad.bounds == bounds && quad.background == background),
+                        "button-sized opaque background must be painted without hover: {mode:?}");
+                    });
+                };
+            assert_painted(visual);
+            // Hover is a positive control for the same painted control; moving
+            // away must keep it visible (geometry alone cannot detect opacity 0).
+            visual.simulate_mouse_move(button.center(), MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_mouse_move(
+                point(px(690.), px(400.)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_painted(visual);
+            visual.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".to_owned()))
+            });
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.run_until_parked();
+            let confirmed = visual.debug_bounds("reader-code-copied-0").unwrap();
+            assert_eq!(
+                confirmed.size, button.size,
+                "confirmation has no layout shift"
+            );
+            visual.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("int x;\n")
+                )
+            });
+            visual.simulate_mouse_move(
+                point(px(690.), px(400.)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_painted(visual);
+        }
+    }
+
+    #[gpui::test]
     fn sibling_blocks_keep_independent_copy_feedback(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -262,7 +339,9 @@ mod tests {
             visual.debug_bounds("reader-code-copy-0").is_some(),
             "feedback expires"
         );
-        visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+        visual.update(|_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".to_owned()))
+        });
         // No mouse click: Tab reaches the action and Enter activates it.
         for _ in 0..4 {
             visual.simulate_keystrokes("tab");
