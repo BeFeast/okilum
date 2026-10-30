@@ -230,6 +230,15 @@ mod tests {
             "<p><img src=\"{}\"></p>",
             url::Url::from_file_path(&source).unwrap()
         );
+        // Positive control for the transport diagnosis: genuine plain text
+        // containing markup stays literal and never creates an attachment.
+        // Smart paste must retain the offered HTML MIME, not guess from text.
+        let plain_only = Board(vec![("text/plain".into(), html.as_bytes().to_vec())]);
+        let literal = router::route(&plain_only, &context(&vault)).unwrap();
+        assert_eq!(literal.route, router::Route::Text);
+        assert_eq!(literal.insert.as_deref(), Some(html.as_str()));
+        assert!(literal.saved_files.is_empty() && literal.follow_up.is_none());
+        assert_eq!(std::fs::read_dir(&attachments).unwrap().count(), 1);
         let board = html_board(html.as_bytes(), Some(html.as_bytes()));
         let routed = router::route(&board, &context(&vault)).unwrap();
         assert_eq!(routed.route, router::Route::RichText);

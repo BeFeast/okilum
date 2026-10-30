@@ -88,7 +88,10 @@ router. HTML images use the same attachment pipeline before an embed is inserted
 Paste as Plain Text keeps the plain flavor. The Wayland data-control read
 keeps the same pinned-offer checks, deadline and payload limits; self-owned
 selections, X11 and unsupported compositors use GPUI's typed clipboard on the
-UI thread. Windows (#1619) still pastes text as described above. Completed
+UI thread. The locked GPUI X11 clipboard exposes image or plain text, not an
+HTML representation; this Wayland HTML fix does not add X11 rich-text transport.
+Plain text containing HTML syntax stays literal instead of being guessed as an
+HTML clipboard offer. Windows (#1619) still pastes text as described above. Completed
 local attachment writes publish their exact saved paths to inventory, so a
 paste or drop does not wait for filesystem notifications to display its image.
 
