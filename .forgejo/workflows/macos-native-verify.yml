@@ -1,0 +1,70 @@
+name: macos-native-verify
+on:
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: 'Must be true: artifact-only native verification; never publishes'
+        required: true
+        default: 'true'
+      source:
+        description: 'Full exact green open PR head'
+        required: true
+      pr:
+        description: 'Trusted same-repository open PR number'
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: okilum-macos-build
+  cancel-in-progress: false
+jobs:
+  verify-only:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'BeFeast/okilum' && github.ref == 'refs/heads/main' && inputs.verify_only == 'true'
+    runs-on: macos
+    timeout-minutes: 90
+    steps:
+      - name: Check out trusted main workflow tools
+        env:
+          TOOL_SHA: ${{ github.sha }}
+          TOOL_SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOL_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init -q .
+          git fetch -q --no-tags --depth 1 "$TOOL_SERVER/BeFeast/okilum.git" "$TOOL_SHA"
+          git checkout -q -f --detach FETCH_HEAD
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$TOOL_SHA"
+      - name: Verify exact source without publication credentials or steps
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          VERIFY_SOURCE: ${{ inputs.source }}
+          VERIFY_PR: ${{ inputs.pr }}
+          OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
+          OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
+          SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=
+          OKILUM_SCCACHE_ISOLATED: '1'
+        run: python3 scripts/ci/macos-native-verify.py
+      - name: Prepare pinned artifact upload action
+        if: success()
+        env:
+          ACTION_SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          action_dir=.forgejo-local-actions/upload-artifact
+          test ! -e "$action_dir"
+          mkdir -p "$action_dir"
+          git init -q "$action_dir"
+          git -C "$action_dir" fetch -q --no-tags --depth 1 "$ACTION_SERVER/BeFeast/actions-upload-artifact.git" ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+          git -C "$action_dir" checkout -q -f --detach FETCH_HEAD
+          test "$(git -C "$action_dir" rev-parse HEAD)" = ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+      - uses: ./.forgejo-local-actions/upload-artifact
+        if: success()
+        with:
+          name: macos-native-verify-${{ inputs.source }}
+          path: |
+            ${{ runner.temp }}/native-verify/*.zip
+            ${{ runner.temp }}/native-verify/*.dmg
+            ${{ runner.temp }}/native-verify/native-verify-receipt.json
+            ${{ runner.temp }}/native-verify/notarization.json
+          retention-days: 7
