@@ -119,6 +119,7 @@ mod reader_split;
 mod reader_stignore;
 mod reader_t3_settings;
 mod reader_title_nav;
+mod reader_vaults;
 #[cfg(windows)]
 mod url_protocol;
 mod vault_name;
@@ -4036,7 +4037,10 @@ impl Reader {
                 |_| title.to_string(),
             ))
             .debug_selector(|| "sidebar-vault-title".into())
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |menu, window, cx| {
+                if !name_items.contains(&SidebarNameItem::SwitchProject) {
+                    return reader_vaults::menu(menu, menu_reader.clone(), window, cx);
+                }
                 name_items.iter().fold(menu, |menu, item| {
                     let label = item.label();
                     let root = menu_root.clone();
@@ -6479,7 +6483,7 @@ impl SidebarNameItem {
     fn label(self) -> SharedString {
         use platform::labels::Os;
         match self {
-            Self::SwitchVault => "Switch vault…".into(),
+            Self::SwitchVault => "Open folder…".into(),
             Self::RevealVault => Os::CURRENT.reveal_named("vault").into(),
             Self::VaultSettings => "Vault settings".into(),
             Self::SwitchProject => "Switch project…".into(),
@@ -9775,7 +9779,7 @@ mod document_link_landing_tests {
         });
         assert_eq!(
             SidebarNameItem::SwitchVault.label().as_ref(),
-            "Switch vault…"
+            "Open folder…"
         );
         assert_eq!(
             SidebarNameItem::RevealVault.label().as_ref(),

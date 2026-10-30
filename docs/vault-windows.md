@@ -42,6 +42,26 @@ retention (three vaults) only ever evicts caches of that instance (#1129). This 
 only per-user override on Windows. `--index-dir` is separate: it is the index of the
 vault the instance is launched on and is not inherited by windows opened later.
 
+## Known vaults in the name menu (#2002, slice 1)
+
+The vault-name menu lists known full vaults with a check beside the current one
+and an absolute path tooltip. Clicking a row follows the same destination policy
+and save/conflict guard as Open folder. Open folder, Reveal and Vault settings
+remain available; the project-name menu keeps its project actions.
+
+The list uses the existing application-state `update-session.json` reading
+history, outside the vault and disposable caches. Quick-viewer folders do not
+become known vaults. Paths are checked independently in the background whenever
+the menu opens: a missing/unmounted path is marked Unavailable and retained.
+Opening the menu again rechecks a remounted path. No path probe runs in render.
+
+Remove from list hides only the history list entry, including it in startup
+recency suppression; it does not delete, rename or write the vault, or erase its
+last reading position. The additive `hidden_roots` field is omitted while empty;
+existing history remains readable without migration. Successfully opening/using
+that vault again lists it as recent. A state-write error leaves the entry visible.
+Settings vault management is a later slice.
+
 ## Window state integration (#592)
 
 New Window snapshots the initiating Reader before attaching the shared vault.
