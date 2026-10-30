@@ -13,7 +13,7 @@ pub enum Kind {
         depth: usize,
     },
     ThematicBreak,
-    /// A fenced or indented code block, including list/quote containers.
+    /// A fenced code block (including containers), or top-level indented code.
     /// Its literal contents are never classified; Live Preview may render the
     /// exact whole-line source while its caret is outside.
     CodeBlock {
@@ -111,7 +111,12 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     }
                 }
             }
-            NodeValue::CodeBlock(code) => {
+            NodeValue::CodeBlock(code)
+                if code.fenced
+                    || node.parent().is_some_and(|parent| {
+                        matches!(parent.data.borrow().value, NodeValue::Document)
+                    }) =>
+            {
                 // An odd block costs only its own background, not the note's
                 // other decorations.
                 let Some(range) = context.range(node) else {
@@ -761,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn code_blocks_include_containers_and_preserve_literal_source() {
+    fn top_level_indented_blocks_and_fences_preserve_literal_source() {
         let text = "para\n\n    indented\n    code\n    \n\n~~~\n**x**\n\n~~~\n\n- item\n\n      in list\n";
         let source = snapshot(text, 1);
         let classified = classify(&source);
@@ -774,14 +779,9 @@ mod tests {
             .collect();
         // Trailing whitespace-only lines of an indented block are not code;
         // blank lines inside a fence are.
-        assert_eq!(
-            blocks,
-            [
-                "    indented\n    code",
-                "~~~\n**x**\n\n~~~",
-                "      in list"
-            ]
-        );
+        // Nested indented code needs its container to interpret indentation;
+        // leave it raw rather than preparing a standalone fragment.
+        assert_eq!(blocks, ["    indented\n    code", "~~~\n**x**\n\n~~~"]);
     }
 
     #[test]

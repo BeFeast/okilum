@@ -1691,6 +1691,24 @@ This paragraph remains ordinary Markdown.
     }
 
     #[test]
+    fn nested_indented_code_keeps_its_authored_container_context() {
+        for text in [
+            "- item\n\n      indented\n\nend\n",
+            ">     indented\n\nend\n",
+        ] {
+            let note = source(text);
+            let provider = CachedProvider::classify(note.clone());
+            let projected = provider.compose(&note, &inactive(&note)).unwrap();
+            assert!(
+                projected.blocks().is_empty(),
+                "no standalone reparse of container indentation"
+            );
+            assert!(projected.text().contains("    indented"));
+            assert_eq!(&*projected.source().text, text);
+        }
+    }
+
+    #[test]
     fn explicit_replacement_reveals_without_changing_selection() {
         let source = source("**first**\n\n**second**\n\nend");
         let provider = CachedProvider::classify(source.clone());
