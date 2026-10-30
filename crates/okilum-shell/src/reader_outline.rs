@@ -73,7 +73,7 @@ impl Reader {
                 .focus(window, cx);
             return;
         };
-        let input = editing.input.clone();
+        let input = editing.input().clone();
         let Some(original) = self.note_canonical_source.clone() else {
             return;
         };
@@ -100,7 +100,7 @@ impl Reader {
                     || this
                         .editing
                         .as_ref()
-                        .is_none_or(|editing| editing.input != input)
+                        .is_none_or(|editing| editing.input() != &input)
                     || (
                         input.read(cx).source_stamp(),
                         input.read(cx).selected_range(),
@@ -132,7 +132,7 @@ impl Reader {
                             || reader
                                 .editing
                                 .as_ref()
-                                .is_none_or(|editing| editing.input != input)
+                                .is_none_or(|editing| editing.input() != &input)
                             || (
                                 input.read(cx).source_stamp(),
                                 input.read(cx).selected_range(),
@@ -267,7 +267,10 @@ mod tests {
         });
         settle(visual);
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().map(|editing| editing.input.clone())
+            reader
+                .editing
+                .as_ref()
+                .map(|editing| editing.input().clone())
         });
         reader.read_with(visual, |reader, _| {
             assert_eq!(
