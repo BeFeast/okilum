@@ -46,8 +46,8 @@ fn main() -> Result<()> {
         match a.as_str() {
             "index" => do_index = true,
             "mcp" => do_mcp = true,
-            "--vault" => vault_root = rest.next().map(PathBuf::from),
-            "--index-dir" => index_dir_arg = rest.next().map(PathBuf::from),
+            "--vault" => vault_root = Some(flag_value(&mut rest, "--vault")),
+            "--index-dir" => index_dir_arg = Some(flag_value(&mut rest, "--index-dir")),
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return Ok(());
@@ -102,6 +102,20 @@ fn main() -> Result<()> {
         out.flush()?;
     }
     Ok(())
+}
+
+/// The value after `flag`. A missing value, or one that is itself a flag, is
+/// rejected rather than taken: falling back to the environment or the default
+/// index directory would quietly index somewhere the user never named. A path
+/// that really starts with `-` can still be given as `./-name`.
+fn flag_value<'a>(rest: &mut impl Iterator<Item = &'a String>, flag: &str) -> PathBuf {
+    match rest.next() {
+        Some(value) if !value.starts_with('-') => PathBuf::from(value),
+        _ => {
+            eprintln!("missing value for {flag}\n{USAGE}");
+            std::process::exit(2);
+        }
+    }
 }
 
 fn handle(vault: &Vault, searcher: &Searcher, line: &str) -> String {
