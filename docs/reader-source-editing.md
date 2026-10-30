@@ -21,6 +21,15 @@ New note temporarily opens Live Preview for typing without changing the window's
 chosen mode for other notes. Restoring an editor after a sidebar selection keeps
 keyboard focus in the tree (#1730).
 
+Contents heading clicks target the visible document (#2020). Read retains its
+block landing. In Source and Live Preview the shared editor receives focus, the
+caret moves to the authored heading's first column and that line scrolls to the
+top. Frontmatter and original line endings count toward the authored line; body
+edits in an unsaved draft may shift it. If a changed heading cannot be identified
+unambiguously, a notice asks to refresh Contents in Read. Navigation never edits
+or saves the source. Results from an older click, document, text revision or caret
+position cannot move the current editor.
+
 Typing a third backtick or tilde at a Markdown line start adds its closing
 fence (#1893). The caret stays at the opener for the language; Enter enters the
 empty block. An adjacent empty closer grows with a longer opening fence.
