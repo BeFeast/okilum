@@ -155,6 +155,16 @@ Issue #1795 stays open until Oleg approves the resulting build.
 
 ## Live agent source, push 3
 
+On macOS, read-only Board threads use the Manager panel's existing persistent
+T3 web session and `/api/orchestration/shell`, through the same session gateway
+as Projects and icons (#1958). They do not require a second MCP credential.
+The configured project filters the server snapshot; only the authoritative
+active turn establishes current work. A project without an executor registry
+has no live-agent source to query and displays no connection warning. A present
+malformed registry remains a visible, specific diagnostic. Source failures show
+their concrete reason on the existing status line and in the application log,
+while retaining the last successful snapshot and its original timestamp.
+
 The current executor registry resolves each card to a literal thread in the already
 connected gateway's bound-project listing. An exact registry role supersedes a
 stale `agent_thread_id`; otherwise the literal ID must still belong to the registry.
