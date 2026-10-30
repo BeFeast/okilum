@@ -31,15 +31,20 @@ pub fn comrak_options() -> Options<'static> {
     o
 }
 
+fn embed_regex() -> &'static Regex {
+    static EMBED: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"!\[\[([^\]\[]+?)\]\]").unwrap());
+    &EMBED
+}
+
 /// Obsidian embeds `![[x]]` are not comrak wikilinks; turn image embeds into
 /// standard images and other embeds into plain wikilinks before parsing.
 ///
 /// Code spans and blocks are left alone: an embed written inside one is an
 /// example, not an embed (#20).
 pub fn preprocess(text: &str) -> String {
-    let embed_re = Regex::new(r"!\[\[([^\]\[]+?)\]\]").unwrap();
     replace_in_prose(text, |prose| {
-        embed_re
+        embed_regex()
             .replace_all(prose, |cap: &regex::Captures| {
                 let inner = cap[1].trim();
                 let base = crate::document_links::wiki_parts(inner)

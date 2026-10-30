@@ -51,39 +51,52 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
             });
         }
     }
-    // Comrak treats ![[...]] as a literal ! followed by a WikiLink. Reuse its
-    // verified original range; never scan strings inside code or escaped prose.
-    for link in crate::document_links::parse(source) {
-        if !link.wiki || !link.exact_range || link.range.start == 0 {
-            continue;
-        }
-        let start = link.range.start - 1;
-        if source.as_bytes().get(start) != Some(&b'!')
-            || start > 0 && source.as_bytes()[start - 1] == b'\\'
-        {
-            continue;
-        }
-        let range = start..link.range.end;
-        let Some(authored) = source.get(range.clone()) else {
-            continue;
-        };
-        let prepared = preprocess(authored);
-        // Only image embeds survive preprocess as Markdown images. Notes and
-        // drawings retain their existing, separate interactions.
-        if !prepared.starts_with("![](") || crate::excalidraw::is_drawing(&link.target) {
-            continue;
-        }
-        let mut target = None;
-        let _ = rewrite_source_images_with(&prepared, |url| {
-            target = Some(url.to_owned());
-            None
-        });
-        if let Some(target) = target {
-            images.push(ImageReference {
-                range,
-                url: resolve(&target, vault, &resolver, from),
-                target,
+    // Raw ![[...]] is not a Comrak WikiLink. Use the renderer's own embed
+    // grammar and prose boundaries while retaining the untouched byte range.
+    let body_start = source.len() - without_frontmatter(source).len();
+    for prose in crate::prose::prose_spans(source) {
+        for found in embed_regex().find_iter(&source[prose.clone()]) {
+            let range = prose.start + found.start()..prose.start + found.end();
+            if range.start < body_start {
+                continue;
+            }
+            let escapes = source.as_bytes()[..range.start]
+                .iter()
+                .rev()
+                .take_while(|&&byte| byte == b'\\')
+                .count();
+            if !escapes.is_multiple_of(2)
+                || images
+                    .iter()
+                    .any(|image| image.range.start <= range.start && image.range.end >= range.end)
+            {
+                continue;
+            }
+            let authored = &source[range.clone()];
+            let inner = &authored[3..authored.len() - 2];
+            let base = crate::document_links::wiki_parts(inner.trim())
+                .0
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .trim();
+            let prepared = preprocess(authored);
+            // Notes and drawings keep their existing, separate interactions.
+            if !prepared.starts_with("![](") || crate::excalidraw::is_drawing(base) {
+                continue;
+            }
+            let mut target = None;
+            let _ = rewrite_source_images_with(&prepared, |url| {
+                target = Some(url.to_owned());
+                None
             });
+            if let Some(target) = target {
+                images.push(ImageReference {
+                    range,
+                    url: resolve(&target, vault, &resolver, from),
+                    target,
+                });
+            }
         }
     }
     images.sort_by_key(|image| image.range.start);
@@ -129,6 +142,30 @@ mod tests {
         }
         let rendered = rewrite_source_images(&preprocess(source), &vault, "note.md");
         assert_eq!(rendered.matches(&expected).count(), 2);
+        for literal in [
+            r"\![[attachments/Привет image.png]]",
+            "`![[attachments/Привет image.png]]`",
+            "    ![[attachments/Привет image.png]]\n",
+            "---\nimage: '![[attachments/Привет image.png]]'\n---\n# Body\n",
+            "![[note.md]]",
+            "![[drawing.excalidraw]]",
+        ] {
+            assert!(
+                references(literal, &vault, "note.md").is_empty(),
+                "{literal}"
+            );
+        }
+        for source in [
+            r"\\![[attachments/Привет image.png]]",
+            "| Image |\n| --- |\n| ![[attachments/Привет image.png\\|120]] |\n",
+        ] {
+            let images = references(source, &vault, "note.md");
+            assert_eq!(images.len(), 1, "{source}");
+            assert!(source[images[0].range.clone()].starts_with("![["));
+            assert_eq!(images[0].url.as_deref(), Some(expected.as_str()));
+            let rendered = rewrite_source_images(&preprocess(source), &vault, "note.md");
+            assert!(rendered.contains(&expected), "{source}");
+        }
     }
 
     #[test]
