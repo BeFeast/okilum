@@ -31,7 +31,7 @@ fn build() -> Build {
         artifact: "https://updates.example/build100.AppImage".into(),
     }
 }
-fn evidence(issue: u64) -> Evidence {
+fn fixture_evidence(issue: u64) -> Evidence {
     Evidence {
         issue,
         pr: 42,
@@ -68,7 +68,10 @@ fn snapshot() -> Snapshot {
                     inclusion: BTreeMap::from([(A.into(), Ok(true))]),
                 }),
             )],
-            evidence: vec![("qa/board.md".into(), Ok(vec![evidence(1), evidence(2)]))],
+            evidence: vec![(
+                "qa/board.md".into(),
+                Ok(vec![fixture_evidence(1), fixture_evidence(2)]),
+            )],
         },
         100,
     );
@@ -175,7 +178,7 @@ fn installation_is_not_acceptance_and_conflicting_notes_are_visible() {
     s.evidence.insert(
         "qa/conflict.md".into(),
         Source {
-            value: vec![evidence(1)],
+            value: vec![fixture_evidence(1)],
             last_success: Some(100),
             error: None,
         },
