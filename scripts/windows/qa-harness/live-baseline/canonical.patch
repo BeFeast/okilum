@@ -1,0 +1,18 @@
+diff --git a/autosave-gate/gate-run.sh b/autosave-gate/gate-run.sh
+index 0daef37..e7f3799 100755
+--- a/autosave-gate/gate-run.sh
++++ b/autosave-gate/gate-run.sh
+@@ -423,8 +423,11 @@ f=max((a for a in b['Assets'] if a['Type']=='Full'),key=key)
+ d=fetch('https://updates.befeast.com/okilum/windows/builds/'+f['Version'].split('.')[-1]+'/release.json','t0-release.json')
+ sf=max((a for a in s['Assets'] if a['Type']=='Full'),key=key)
+ if not pr_manifest and not stable_contract:
+- assert sf['Version']==c['baseline']['package']=='0.1.17312' and sf['SHA256'].lower()==c['baseline']['package_sha256']
+- assert c['baseline']['build']==17175 and c['baseline']['source']=='ef1930ca6dea87bd4d677c9a67a5579ac9477eb0'
++ import sys
++ sys.path.insert(0,str(h/'autosave-gate'))
++ from live_baseline import select
++ c['baseline'],c['baseline_setup']=select(s)
++ assert sf['Version']==c['baseline']['package'] and sf['SHA256'].lower()==c['baseline']['package_sha256']
+ else:
+  assert tuple(map(int,f['Version'].split('.'))) > tuple(map(int,c['baseline']['package'].split('.'))), 'PR seed must precede real beta; never downgrade'
+ # release.json.build is the published PACKAGE build (re-sign19179), not compiled18194.
