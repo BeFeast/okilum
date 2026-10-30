@@ -11,6 +11,8 @@ pub mod bundle;
 pub mod connection;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod payload;
+#[cfg(unix)]
+pub mod preparation;
 pub mod recovery;
 #[cfg(unix)]
 pub mod registration;

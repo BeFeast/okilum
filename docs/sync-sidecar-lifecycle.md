@@ -729,3 +729,14 @@ dispatch twice. A failed native call or missing signed peer consumes the origina
 permission and stays recovery pending, without re-arm or fallback spawn. Opening
 Settings remains read-only. This slice exposes the backend action only; trusted
 fresh payload preparation and the desktop Enable/recovery flow remain pending.
+
+### Fresh preparation intent (#588)
+
+Explicit fresh preparation exclusively creates a new private account-state root
+and flushes a generation-independent installation/instance intent before offline
+payload preparation. An existing root, even empty or missing its journal, is
+recovery pending; a failed callback never removes the intent to allow another
+identity. Only an unchanged root and matching prepared binding may publish the
+initial Ready launch generation. Preparation performs no service registration,
+daemon launch, REST or hub request. Native packaging still needs a trusted bundled
+Syncthing runtime, and desktop Enable/recovery integration remains open.
