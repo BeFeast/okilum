@@ -124,7 +124,11 @@ class GitHub:
             except urllib.error.HTTPError as error:
                 self.credentials.note_quota(error.headers)
                 if error.code != 302:
-                    raise Unavailable(f'GitHub job log HTTP {error.code}') from None
+                    reason = auth.http_error(error, 'GitHub job log GET')
+                    if isinstance(reason, auth.RateLimitError):
+                        self.quota_exhausted = True
+                        raise RateLimitExhausted(str(reason)) from None
+                    raise Unavailable(str(reason)) from None
                 location = error.headers.get('Location', '')
                 parsed = urllib.parse.urlparse(location)
                 if (parsed.scheme != 'https' or parsed.username or parsed.password

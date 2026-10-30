@@ -114,6 +114,26 @@ class TransportTests(unittest.TestCase):
         self.assertIn('uses: actions/checkout@v4', aggregate)
         self.assertIn('test "$CHECKS" = success && test "$APPIMAGE" = success', aggregate)
 
+    def test_log_rate_limit_prevents_followup_api_calls(self):
+        import io
+        import urllib.error
+        from email.message import Message
+        for status, body, exhausted in [(403, b'API rate limit exceeded', True),
+                                        (429, b'secondary rate limit', False)]:
+            headers = Message()
+            if exhausted: headers['X-RateLimit-Remaining'] = '0'
+            error = urllib.error.HTTPError('https://api.github.com/job/logs', status,
+                                           'limited', headers, io.BytesIO(body))
+            credentials = MagicMock(); credentials.token = 'private-test-token'
+            api = bridge.GitHub(credentials)
+            with patch.object(bridge.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.side_effect = error
+                with self.assertRaises(bridge.RateLimitExhausted): api.job_log(99)
+                self.assertTrue(api.quota_exhausted)
+                with self.assertRaises(bridge.Unavailable): api.job_log(99)
+                with self.assertRaises(bridge.RateLimitExhausted): api.request('git/refs/heads/own', 'DELETE')
+                self.assertEqual(opener.return_value.open.call_count, 1)
+
     def test_log_redirect_drops_credentials_and_is_bounded(self):
         import urllib.error
         from email.message import Message
