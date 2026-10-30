@@ -769,10 +769,28 @@ mod tests {
             reader.toggle_source(window, cx)
         });
         visual.run_until_parked();
+        let current = reader.read_with(visual, |reader, _| {
+            Target::captured(reader, captured.url.as_deref())
+        });
         reader.update_in(visual, |reader, window, cx| {
+            // Edit/Read invalidates the old image menu even in the same note.
+            assert!(!captured.matches(reader));
+            let before = reader.tree.cursor.clone();
             reader.image_command(
                 &ImageCommand {
                     target: captured.clone(),
+                    command: Command::Sidebar,
+                },
+                window,
+                cx,
+            );
+            assert_eq!(reader.tree.cursor, before);
+            // A menu opened from the current rendered image captures a fresh
+            // generation, just as decorate() does for a real right-click.
+            assert!(current.matches(reader));
+            reader.image_command(
+                &ImageCommand {
+                    target: current.clone(),
                     command: Command::Sidebar,
                 },
                 window,
@@ -786,7 +804,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             reader.image_command(
                 &ImageCommand {
-                    target: captured,
+                    target: current,
                     command: Command::CopyPath,
                 },
                 window,
