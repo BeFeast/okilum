@@ -86,6 +86,21 @@ RUNNER_LINE = re.compile(r'^⚙️ \[runner\]: .*$|^Error occurred running final
 FAILED_TEST = re.compile(r'^---- (\S+) stdout ----$', re.M)
 SLOW_TEST = re.compile(r'^test (\S+) has been running for over 60 seconds$', re.M)
 LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
+# unittest's header for a failed or errored test: 'FAIL: test_x (module.Class.test_x)'. Python
+# before 3.11 names only the class in the parentheses; a subTest appends its parameters.
+PYTHON_FAILURE = re.compile(r'^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)', re.M)
+PYTHON_FAILED = re.compile(r'^FAILED \(', re.M)
+
+
+def python_failures(text):
+    """Full identifiers of the tests a failed unittest run reported, once each, in log order."""
+    names = []
+    for match in PYTHON_FAILURE.finditer(text):
+        method, where = match.groups()
+        name = where if where.endswith(f'.{method}') else f'{where}.{method}'
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def unfinished_tests(text):
@@ -107,9 +122,12 @@ def classify(log):
     tests = FAILED_TEST.findall(text)
     if tests or 'test result: FAILED' in text:
         return 'code', tests
-    # A compiler error, or a Python unittest suite that failed.
-    if re.search(r'^error(\[E\d+\])?: |^FAILED \(', text, re.M):
+    if re.search(r'^error(\[E\d+\])?: ', text, re.M):  # a compiler error
         return 'code', []
+    # A Python unittest suite that failed. Its headers count only with that summary: a passing
+    # suite's output may print the same shape.
+    if PYTHON_FAILED.search(text):
+        return 'code', python_failures(text)
     for line in RUNNER_LINE.findall(text):
         for marker in INFRA_MARKERS:
             if marker in line:
