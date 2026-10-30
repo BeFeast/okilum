@@ -522,11 +522,12 @@ secondary **Open file…** button, and recent folders below a divider.
 
 ## Code block Copy (#429)
 
-Fenced and indented code blocks have a small **Copy** action in the top-right
-corner, visible on block hover and on keyboard focus. Tab reaches the action;
-Enter/Space activate it. After activation the label reads **Copied** for two
-seconds, including after the pointer leaves the block. Repeated copies renew
-that interval; changing the block clears the feedback.
+Fenced and indented code blocks have an always-visible Copy glyph in the top-right
+corner in Reader and unfocused Live Preview (#1985). Its tooltip is **Copy code**.
+Tab reaches the action; Enter/Space activate it. After activation a check glyph
+and **Copied** tooltip confirm the copy for two seconds without changing the
+control's size. Repeated copies renew that interval; changing the block clears
+feedback.
 
 Copy writes code content only: no fences or info string, no Markdown container
 indentation, while code indentation, blank lines and original line endings

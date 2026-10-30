@@ -13,9 +13,12 @@ pub enum Kind {
         depth: usize,
     },
     ThematicBreak,
-    /// A top-level fenced or indented code block: a quiet row background only.
-    /// Its literal contents are never classified.
-    CodeBlock,
+    /// A fenced or indented code block, including list/quote containers.
+    /// Its literal contents are never classified; Live Preview may render the
+    /// exact whole-line source while its caret is outside.
+    CodeBlock {
+        fenced: bool,
+    },
     /// A bullet task item's `- [ ]` / `- [x]`, painted as a checkbox (S5, #1034).
     /// Its scope is the marker alone: the checkbox stays while the caret is in
     /// the task text and reveals only with the caret inside the marker.
@@ -108,11 +111,7 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     }
                 }
             }
-            NodeValue::CodeBlock(_)
-                if node
-                    .parent()
-                    .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document)) =>
-            {
+            NodeValue::CodeBlock(code) => {
                 // An odd block costs only its own background, not the note's
                 // other decorations.
                 let Some(range) = context.range(node) else {
@@ -139,7 +138,9 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 markers.push(Marker {
                     range: range.clone(),
                     scope: range,
-                    kind: Kind::CodeBlock,
+                    kind: Kind::CodeBlock {
+                        fenced: code.fenced,
+                    },
                 });
             }
             NodeValue::Table(_)
@@ -219,8 +220,21 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
         .map(|m| m.range.clone())
         .collect();
     markers.retain(|m| !(m.kind == Kind::Callout && with_tasks.contains(&m.range)));
-    // A callout is drawn whole; the quote bars, lists and tasks inside it are
-    // not decorated separately (they would overlap it).
+    // A code block's Reader fragment retains its authored quote/list prefix.
+    // Its native prefix decorations would overlap that rendered fragment.
+    let code: Vec<Range<usize>> = markers
+        .iter()
+        .filter(|m| matches!(m.kind, Kind::CodeBlock { .. }))
+        .map(|m| m.range.clone())
+        .collect();
+    markers.retain(|m| {
+        matches!(m.kind, Kind::CodeBlock { .. })
+            || !code
+                .iter()
+                .any(|c| c.start <= m.range.start && m.range.end <= c.end)
+    });
+    // A callout is drawn whole; nested code blocks and prefix decorations
+    // are not rendered separately (they would overlap it).
     let callouts: Vec<Range<usize>> = markers
         .iter()
         .filter(|m| m.kind == Kind::Callout)
@@ -468,7 +482,7 @@ mod tests {
         let classified = classify(&source);
         let markers = classified.decorations_for(&source).unwrap();
         assert_eq!(markers.len(), 3, "{markers:?}");
-        assert_eq!(markers[0].kind, Kind::CodeBlock);
+        assert_eq!(markers[0].kind, Kind::CodeBlock { fenced: true });
         assert_eq!(
             &source.source()[markers[0].range.clone()],
             "```md\n* raw\n> raw\n---\n```"
@@ -747,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_code_blocks_get_a_background_and_container_code_does_not() {
+    fn code_blocks_include_containers_and_preserve_literal_source() {
         let text = "para\n\n    indented\n    code\n    \n\n~~~\n**x**\n\n~~~\n\n- item\n\n      in list\n";
         let source = snapshot(text, 1);
         let classified = classify(&source);
@@ -755,12 +769,55 @@ mod tests {
             .decorations_for(&source)
             .unwrap()
             .iter()
-            .filter(|m| m.kind == Kind::CodeBlock)
+            .filter(|m| matches!(m.kind, Kind::CodeBlock { .. }))
             .map(|m| &text[m.range.clone()])
             .collect();
         // Trailing whitespace-only lines of an indented block are not code;
         // blank lines inside a fence are.
-        assert_eq!(blocks, ["    indented\n    code", "~~~\n**x**\n\n~~~"]);
+        assert_eq!(
+            blocks,
+            [
+                "    indented\n    code",
+                "~~~\n**x**\n\n~~~",
+                "      in list"
+            ]
+        );
+    }
+
+    #[test]
+    fn fenced_code_in_lists_and_quotes_has_disjoint_whole_line_markers() {
+        for block in [
+            "```c\nint x;\n```",
+            "- ```c\n  int x;\n  ```",
+            "> ```c\n> int x;\n> ```",
+            "- item\n\n  ```c\n  int x;\n  ```",
+            "> - ```c\n>   int x;\n>   ```",
+            "- > ```c\n  > int x;\n  > ```",
+        ] {
+            let text = format!("{block}\n\ntail\n");
+            let source = snapshot(&text, 1);
+            let classified = classify(&source);
+            let markers = classified.decorations_for(&source).unwrap();
+            let code: Vec<_> = markers
+                .iter()
+                .filter(|m| matches!(m.kind, Kind::CodeBlock { .. }))
+                .collect();
+            assert_eq!(code.len(), 1, "{text:?}");
+            let range = code[0].range.clone();
+            assert_eq!(
+                &text[range.clone()],
+                if block.starts_with("- item") {
+                    &block[8..]
+                } else {
+                    block
+                },
+                "{text:?}"
+            );
+            assert!(markers
+                .iter()
+                .filter(|m| !matches!(m.kind, Kind::CodeBlock { .. }))
+                .all(|m| m.range.end <= range.start || m.range.start >= range.end));
+        }
     }
 
     #[test]

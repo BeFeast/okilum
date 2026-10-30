@@ -218,3 +218,11 @@ revision-aware draft recovery as before, then reapplies its saved presentation.
 Find is temporary: a snapshot taken while Find is open preserves the presentation
 from before Find. An explicit Source selection supersedes that choice. Reader
 mode, canonical-file writes and recovery-offer policy are unchanged.
+
+## Code blocks (#1984 / #1985)
+
+Outside the active caret, selection or IME range, code blocks use the Reader code
+surface: authored fence lines are hidden, the language is a quiet label, and the
+Copy glyph stays visible. Moving into the block reveals the exact authored source,
+including list/quote prefixes and fences. These presentation changes do not replace
+the editor buffer, save the file or add an Undo transaction.

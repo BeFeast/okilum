@@ -264,7 +264,7 @@ impl RetainedPresentation {
         // The last line of a fenced code block that a matching fence closes.
         let closed_fence = |line: Range<usize>| {
             self.decorations.iter().any(|m| {
-                if m.kind != Kind::CodeBlock
+                if m.kind != (Kind::CodeBlock { fenced: true })
                     || m.range.end != line.end
                     || m.range.start >= line.start
                 {
@@ -2057,7 +2057,10 @@ mod tests {
         let mut text = format!("{head}{fence}\n\n");
         let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &text)));
         let classified = kinds(&retained);
-        assert!(classified.contains(&Kind::Table) && classified.contains(&Kind::CodeBlock));
+        assert!(
+            classified.contains(&Kind::Table)
+                && classified.contains(&Kind::CodeBlock { fenced: true })
+        );
         for generation in 2..8 {
             text.push('\n');
             let current = snapshot(generation, &text);
@@ -2081,7 +2084,11 @@ mod tests {
         // Enter on the closing fence line, and inside the table: that block
         // goes raw, the blocks above it stay.
         for (text, edited, kept) in [
-            (format!("{head}{fence}"), Kind::CodeBlock, Kind::Table),
+            (
+                format!("{head}{fence}"),
+                Kind::CodeBlock { fenced: true },
+                Kind::Table,
+            ),
             (
                 "# Days Gone\n\n![[cover.png]]\n\n| a | b |\n|---|---|\n| 1 | 2 |".to_owned(),
                 Kind::Table,
