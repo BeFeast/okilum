@@ -26,35 +26,3 @@
      /// Returns the syntax highlight styles for a range of text.
      ///
      /// The argument `range` is the range of bytes in the text to highlight.
-@@ -1070,30 +1089,7 @@
-         let mut styles = vec![];
-         let start_offset = range.start;
- 
--        let highlights = self.match_styles(range.clone());
--
--        // let mut iter_count = 0;
--        for item in highlights {
--            // iter_count += 1;
--            let node_range = &item.range;
--            let name = &item.name;
--
--            // Avoid start larger than end
--            let mut node_range = node_range.start.max(range.start)..node_range.end.min(range.end);
--            if node_range.start > node_range.end {
--                node_range.end = node_range.start;
--            }
--            // The tree can be stale while a background reparse is pending
--            // (sync-parse timeout, or the large-text `edit_tree` path), so
--            // node offsets may fall inside multi-byte characters of the
--            // current text. Snap to char boundaries — text shaping panics on
--            // a mid-char style boundary.
--            node_range = self.text.clip_offset(node_range.start, Bias::Left)
--                ..self.text.clip_offset(node_range.end, Bias::Right);
--            if node_range.is_empty() {
--                continue;
--            }
--
-+        for (node_range, name) in self.semantic_spans(range) {
-             styles.push((node_range, theme.style(name.as_ref()).unwrap_or_default()));
-         }
- 
