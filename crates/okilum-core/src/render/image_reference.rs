@@ -190,4 +190,27 @@ mod tests {
             Some("https://example.invalid/a%20b.png")
         );
     }
+
+    #[test]
+    fn reference_image_ranges_preserve_unicode_crlf_and_ignore_plain_links() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut vault = Vault::from_note_paths(["notes/current.md".into()]);
+        vault.root = fixture.path().canonicalize().unwrap();
+        vault.inventory_complete = true;
+        vault.entries.push(crate::vault::VaultEntry {
+            path: "notes/pictures/фото space.png".into(),
+            kind: crate::vault::EntryKind::Attachment,
+        });
+        let source = "---\r\nimage: '![metadata](ignored.png)'\r\n---\r\n\r\nПривет [plain](pictures/фото%20space.png)\r\n\r\nПривет ![copy][asset]\r\n\r\n[asset]: <pictures/фото%20space.png>\r\n";
+        let images = references(source, &vault, "notes/current.md");
+        assert_eq!(images.len(), 1);
+        assert_eq!(&source[images[0].range.clone()], "![copy][asset]");
+        let expected = url::Url::from_file_path(vault.root.join("notes/pictures/фото space.png"))
+            .unwrap()
+            .to_string();
+        assert_eq!(images[0].url.as_deref(), Some(expected.as_str()));
+        let rendered = rewrite_source_images(&preprocess(source), &vault, "notes/current.md");
+        assert_eq!(rendered.matches(&expected).count(), 1);
+        assert_eq!(std::fs::read_dir(&vault.root).unwrap().count(), 0);
+    }
 }

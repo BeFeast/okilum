@@ -744,6 +744,27 @@ mod tests {
         });
         input.update(visual, |input, cx| input.set_selected_range(0..0, cx));
         visual.run_until_parked();
+        reader.read_with(visual, |reader, cx| {
+            facts.refresh(reader, input.read(cx), true)
+        });
+        assert!(
+            facts.0.borrow().selected.is_none(),
+            "moving the caret outside the embed clears its image actions"
+        );
+        input.update(visual, |input, cx| {
+            input.set_selected_range(offset..offset, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, cx| {
+            facts.refresh(reader, input.read(cx), true)
+        });
+        assert_eq!(
+            facts.0.borrow().selected.as_ref().unwrap().url,
+            captured.url,
+            "returning to the embed restores its captured image, without a text edit"
+        );
+        input.update(visual, |input, cx| input.set_selected_range(0..0, cx));
+        visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_live_preview(window, cx)
         });
