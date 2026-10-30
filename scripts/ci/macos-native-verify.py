@@ -17,6 +17,15 @@ REQUIRED = ("ci / shared (pull_request)", "ci / macos (pull_request)",
             "ci / check (pull_request)")
 RUNTIME = Path("Contents/MacOS/syncthing")
 PROVENANCE = Path("Contents/Resources/Syncthing/provenance.json")
+# Closed packaging environment. In particular, Actions runtime/upload credentials
+# stay in the trusted parent only; unknown future secrets never enter product code.
+BUILD_ENVIRONMENT = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL",
+    "SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET", "CARGO_HOME", "RUSTUP_HOME",
+    "OKILUM_SIGNING_IDENTITY", "OKILUM_NOTARY_PROFILE", "OKILUM_SIGNING_KEYCHAIN",
+    "OKILUM_SIGNING_TEAM_ID", "SPARKLE_PUBLIC_ED_KEY", "OKILUM_SCCACHE_ISOLATED",
+    "GITHUB_RUN_NUMBER", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY",
+})
 
 
 def require(condition, reason):
@@ -129,9 +138,7 @@ def execute(env, api=api_get):
     command("git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD")
     require(command("git", "rev-parse", "HEAD", cwd=checkout).stdout.strip() == source,
             "product checkout mismatch")
-    # Fail closed even if publication credentials were accidentally added later.
-    forbidden = re.compile(r"R2_|SPARKLE_ED_PRIVATE_KEY|GITHUB_TOKEN|FORGEJO_TOKEN")
-    build_env = {key: value for key, value in env.items() if not forbidden.search(key)}
+    build_env = {key: value for key, value in env.items() if key in BUILD_ENVIRONMENT}
     build_env["OKILUM_BUILD_VERSION"] = str(5000 + int(env["GITHUB_RUN_NUMBER"]))
     # Packaging's existing script signs/notarizes/staples locally and emits files.
     # There is deliberately no publication module, API client, or feed-writing step.

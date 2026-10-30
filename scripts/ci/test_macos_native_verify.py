@@ -83,7 +83,9 @@ class NativeVerifyTests(unittest.TestCase):
             root = Path(tmp)
             environment = {**env(), "GITHUB_WORKSPACE": str(root), "RUNNER_TEMP": str(root),
                            "R2_SECRET_ACCESS_KEY": "forbidden", "GITHUB_TOKEN": "forbidden",
-                           "SPARKLE_ED_PRIVATE_KEY": "forbidden"}
+                           "SPARKLE_ED_PRIVATE_KEY": "forbidden",
+                           "FUTURE_CREDENTIAL": "unknown-secret", "ACTIONS_RUNTIME_TOKEN": "upload-secret",
+                           "OKILUM_SIGNING_IDENTITY": "approved identity", "HOME": str(root)}
             calls = []
             def build(args, **kwargs):
                 calls.append((args, kwargs))
@@ -104,8 +106,12 @@ class NativeVerifyTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][0][:2], ["bash", "scripts/build-macos-ci.sh"])
             child_env = calls[0][1]["env"]
-            for key in ("R2_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "SPARKLE_ED_PRIVATE_KEY"):
+            for key in ("R2_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "SPARKLE_ED_PRIVATE_KEY",
+                        "FUTURE_CREDENTIAL", "ACTIONS_RUNTIME_TOKEN"):
                 self.assertNotIn(key, child_env)
+            self.assertEqual(child_env["OKILUM_SIGNING_IDENTITY"], "approved identity")
+            self.assertEqual(child_env["HOME"], str(root))
+            self.assertTrue(set(child_env) <= verify.BUILD_ENVIRONMENT | {"OKILUM_BUILD_VERSION"})
             self.assertTrue((root / "native-verify/native-verify-receipt.json").is_file())
 
 
