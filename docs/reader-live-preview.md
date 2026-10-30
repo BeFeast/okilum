@@ -226,3 +226,10 @@ surface: authored fence lines are hidden, the language is a quiet label, and the
 Copy glyph stays visible. Moving into the block reveals the exact authored source,
 including list/quote prefixes and fences. These presentation changes do not replace
 the editor buffer, save the file or add an Undo transaction.
+
+Active code uses the code font selected in Settings and semantic colors from the
+same `SyntaxHighlighter` and active syntax theme as Reader (#1991). C# aliases
+(`cs`, `c#`, `csharp`) and the other explicit language aliases share one table.
+Captures are computed by the background worker; changing a theme or font reuses
+them without a parse. While a new source revision awaits classification, old
+token offsets are omitted. This adds presentation only, not a separate code editor.

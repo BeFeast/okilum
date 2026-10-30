@@ -89,7 +89,7 @@ fn code_block_metric_styles_preserve_literal_bytes_and_container_prefixes() {
             .styles_for(&current)
             .unwrap()
             .iter()
-            .find(|span| span.style == Style::Code && span.range.contains(&at))
+            .find(|span| span.style == Style::CodeBlock && span.range.contains(&at))
             .expect("literal code has a code-font metric span");
         assert!(code_style.range.end <= text.find("prose").unwrap());
         assert_eq!(

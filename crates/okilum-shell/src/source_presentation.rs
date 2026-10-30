@@ -15,6 +15,9 @@ use okilum_core::{
     source_projection::{Active, Bias, Projection, Snapshot},
 };
 
+#[path = "source_presentation/code_syntax.rs"]
+mod code_syntax;
+
 #[allow(dead_code)] // Full authored metadata is separate from display backend selection.
 #[path = "source_presentation/navigation_inventory.rs"]
 pub(crate) mod navigation_inventory;
@@ -41,6 +44,7 @@ struct ColoredProvider {
     provider: Arc<CachedProvider>,
     colors: ProjectionColors,
     code_font: String,
+    syntax_theme: Option<Arc<gpui_component::highlighter::HighlightTheme>>,
 }
 impl ProjectionProvider for ColoredProvider {
     fn compose(
@@ -48,8 +52,13 @@ impl ProjectionProvider for ColoredProvider {
         source: &SourceSnapshot,
         active: &ActiveSource,
     ) -> Option<Arc<dyn SourceProjection>> {
-        self.provider
-            .compose_colored(source, active, Some(self.colors), &self.code_font)
+        self.provider.compose_with_syntax(
+            source,
+            active,
+            Some(self.colors),
+            &self.code_font,
+            self.syntax_theme.as_deref(),
+        )
     }
 }
 
@@ -63,6 +72,7 @@ pub struct CachedProvider {
     /// (S7, #936).
     tables: Vec<(Range<usize>, String)>,
     fenced_blocks: HashMap<String, String>,
+    syntax: code_syntax::CodeSyntax,
 }
 
 impl CachedProvider {
@@ -82,6 +92,22 @@ impl CachedProvider {
             provider: self,
             colors,
             code_font,
+            syntax_theme: None,
+        })
+    }
+    /// Reuse worker-produced semantic captures with the active Reader theme.
+    #[allow(dead_code)] // Standalone examples use the unthemed provider.
+    pub fn with_code_syntax(
+        self: Arc<Self>,
+        colors: ProjectionColors,
+        code_font: String,
+        theme: Arc<gpui_component::highlighter::HighlightTheme>,
+    ) -> Arc<dyn ProjectionProvider> {
+        Arc::new(ColoredProvider {
+            provider: self,
+            colors,
+            code_font,
+            syntax_theme: Some(theme),
         })
     }
     /// Call only from a background classification task.
@@ -143,8 +169,10 @@ impl CachedProvider {
                 Some((raw.to_owned(), standalone_fenced_source(raw)))
             })
             .collect();
+        let syntax = code_syntax::CodeSyntax::new(&source, &classified);
         Self {
             source,
+            syntax,
             fenced_blocks,
             retained: Mutex::new(RetainedPresentation::new(&classified)),
             classified,
@@ -213,6 +241,16 @@ impl CachedProvider {
         colors: Option<ProjectionColors>,
         code_font: &str,
     ) -> Option<Arc<dyn SourceProjection>> {
+        self.compose_with_syntax(source, active, colors, code_font, None)
+    }
+    fn compose_with_syntax(
+        &self,
+        source: &SourceSnapshot,
+        active: &ActiveSource,
+        colors: Option<ProjectionColors>,
+        code_font: &str,
+        syntax_theme: Option<&gpui_component::highlighter::HighlightTheme>,
+    ) -> Option<Arc<dyn SourceProjection>> {
         // #214's stricter cap is a presentation limit, not a buffer limit.
         if source.text.len() > source_classifier::MAX_BYTES {
             return None;
@@ -251,7 +289,10 @@ impl CachedProvider {
         }
         let reveal_snapshot = retained.prepare_reveal(&reveal).ok()?;
         let projection = reveal_snapshot.projection().clone();
-        let styles = projected_styles(&projection, retained.styles(), colors, code_font)?;
+        let mut styles = projected_styles(&projection, retained.styles(), colors, code_font)?;
+        if let Some(theme) = syntax_theme {
+            self.syntax.project(source, &projection, theme, &mut styles);
+        }
         let line_scales = heading_line_scales(&projection, retained.styles());
         let blocks = table_blocks(
             &source.text,
@@ -659,7 +700,7 @@ fn projected_styles(
             Style::Heading(_) => 4,
             Style::Emphasis => 1,
             Style::Strike => 2,
-            Style::Code => 3,
+            Style::Code | Style::CodeBlock => 3,
             Style::Link | Style::WikiLink => 5,
             Style::Definition => 6,
         };

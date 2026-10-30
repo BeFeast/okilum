@@ -30,6 +30,8 @@ pub enum Style {
     Emphasis,
     Strike,
     Code,
+    /// Literal block code remains Source, with code-font metrics.
+    CodeBlock,
     Link,
     WikiLink,
     /// A reference definition row: kept at source height and rendered quietly.
@@ -425,7 +427,7 @@ fn classify_parsed<'a>(
             if context.boundary(range.start) && context.boundary(range.end) {
                 styles.push(StyleSpan {
                     range,
-                    style: Style::Code,
+                    style: Style::CodeBlock,
                 });
             }
         }
