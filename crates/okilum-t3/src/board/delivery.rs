@@ -463,7 +463,10 @@ pub fn config(area: &Path) -> Result<Option<Config>> {
 }
 pub fn evidence(area: &Path, note: &str) -> Result<Vec<Evidence>> {
     let bytes = local(area, note)?;
-    let text = std::str::from_utf8(&bytes)?.replace("\r\n", "\n");
+    parse_evidence(std::str::from_utf8(&bytes)?, note)
+}
+pub(crate) fn parse_evidence(text: &str, note: &str) -> Result<Vec<Evidence>> {
+    let text = text.replace("\r\n", "\n");
     let front = text
         .strip_prefix("---\n")
         .and_then(|text| text.split_once("\n---").map(|p| p.0))
