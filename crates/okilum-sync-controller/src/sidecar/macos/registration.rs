@@ -90,6 +90,14 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
     /// existing registration without a live signed generation stays pending.
     /// Failures consume any committed dispatch; never retry/re-arm automatically.
     pub fn register_prepared(&mut self) -> Result<ManagedStatus> {
+        self.register_until(None)
+    }
+    /// User action for the exact prepared generation displayed by the UI. This
+    /// never prepares missing state, repairs uncertainty or creates permission.
+    pub fn enable_confirmed(&mut self, generation: uuid::Uuid) -> Result<ManagedStatus> {
+        self.register_until(Some(generation))
+    }
+    fn register_until(&mut self, confirmed: Option<uuid::Uuid>) -> Result<ManagedStatus> {
         let deadline = Instant::now() + self.budget;
         self.proof.verify(&self.binding, deadline)?;
         ensure!(Instant::now() < deadline, "registration deadline elapsed");
@@ -97,7 +105,13 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
             return Ok(self.status_until(deadline));
         }
         ensure!(Instant::now() < deadline, "registration deadline elapsed");
-        let dispatch = self.store.dispatch_launch(&self.binding, deadline)?;
+        let dispatch = match confirmed {
+            Some(generation) => {
+                self.store
+                    .dispatch_confirmed_launch(&self.binding, generation, deadline)?
+            }
+            None => self.store.dispatch_launch(&self.binding, deadline)?,
+        };
         // dispatch_launch has returned and dropped its transaction BEFORE any
         // validation/native call: the helper may now take the same lock to claim.
         dispatch.execute(|_| {
@@ -213,6 +227,9 @@ mod native {
         }
         pub fn register_prepared(&mut self) -> Result<ManagedStatus> {
             self.0.register_prepared()
+        }
+        pub fn enable_confirmed(&mut self, generation: uuid::Uuid) -> Result<ManagedStatus> {
+            self.0.enable_confirmed(generation)
         }
         pub fn status(&self) -> ManagedStatus {
             self.0.status()

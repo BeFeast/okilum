@@ -301,3 +301,88 @@ fn payload_or_bundle_change_after_dispatch_consumes_permission_without_native_ca
     assert!(world.guard().register_prepared().is_err());
     assert_eq!(world.calls.get(), 0);
 }
+
+fn generation(world: &World) -> Uuid {
+    world
+        .store
+        .begin(soon())
+        .unwrap()
+        .current()
+        .unwrap()
+        .unwrap()
+        .launch_registration()
+        .unwrap()
+        .generation()
+}
+
+#[test]
+fn confirmed_enable_consumes_only_the_displayed_generation() {
+    let world = World::new(true);
+    let confirmed = generation(&world);
+    let mut guard = world.guard();
+    assert!(guard.enable_confirmed(Uuid::new_v4()).is_err());
+    assert_eq!(world.calls.get(), 0);
+    assert_eq!(
+        world
+            .store
+            .begin(soon())
+            .unwrap()
+            .current()
+            .unwrap()
+            .unwrap()
+            .revision(),
+        1
+    );
+    // Positive control: rejecting a stale click did not spend the valid intent.
+    world.claim.set(true);
+    assert_eq!(
+        guard.enable_confirmed(confirmed).unwrap(),
+        ManagedStatus::Running
+    );
+    assert_eq!(world.calls.get(), 1);
+    assert_eq!(
+        guard.enable_confirmed(confirmed).unwrap(),
+        ManagedStatus::Running
+    );
+    assert_eq!(world.calls.get(), 1);
+}
+
+#[test]
+fn confirmed_enable_cannot_rearm_after_native_failure_or_lost_peer() {
+    for fail in [false, true] {
+        let world = World::new(true);
+        let confirmed = generation(&world);
+        world.fail.set(fail);
+        let result = world.guard().enable_confirmed(confirmed);
+        if fail {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), ManagedStatus::RecoveryPending);
+        }
+        world.status.set(Status::NotRegistered);
+        world.fail.set(false);
+        assert!(world.guard().enable_confirmed(confirmed).is_err());
+        assert_eq!(world.calls.get(), 1);
+    }
+}
+
+#[test]
+fn a_competing_confirmed_click_cannot_create_a_second_daemon() {
+    let world = World::new(true);
+    let confirmed = generation(&world);
+    let mut first = world.guard();
+    let mut second = world.guard();
+    let exercised = Rc::new(Cell::new(false));
+    let witness = exercised.clone();
+    first.service.before_register = Some(Box::new(move || {
+        assert!(second.enable_confirmed(confirmed).is_err());
+        witness.set(true);
+    }));
+    world.claim.set(true);
+    assert_eq!(
+        first.enable_confirmed(confirmed).unwrap(),
+        ManagedStatus::Running
+    );
+    assert!(exercised.get());
+    assert_eq!(world.calls.get(), 1);
+}

@@ -718,3 +718,14 @@ Production verifies the caller's own app executable and the fixed account root,
 so ServiceManagement cannot register one app after validating a different one.
 The UI is still read-only: this slice adds no Enable or recovery action, creates
 no enrollment and supplies no re-arm authority. Those remain subsequent work.
+
+### Generation-bound explicit Enable (#588)
+
+`NativeRegistrationGuard::enable_confirmed` accepts the exact prepared launch
+ generation displayed for user confirmation. The store compares and consumes it
+in one locked, flushed transaction before ServiceManagement is called. A stale
+confirmation cannot authorize a different generation; concurrent clicks cannot
+dispatch twice. A failed native call or missing signed peer consumes the original
+permission and stays recovery pending, without re-arm or fallback spawn. Opening
+Settings remains read-only. This slice exposes the backend action only; trusted
+fresh payload preparation and the desktop Enable/recovery flow remain pending.
