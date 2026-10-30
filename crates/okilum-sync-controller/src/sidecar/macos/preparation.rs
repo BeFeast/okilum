@@ -5,11 +5,26 @@ use anyhow::{ensure, Context, Result};
 use std::io::Write;
 use std::{
     fs,
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    os::unix::fs::MetadataExt,
     path::{Component, Path},
     time::Instant,
 };
 use uuid::Uuid;
+
+fn directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+}
+fn directory_at(path: &Path) -> Result<fs::File> {
+    use rustix::fs::{openat, Mode, CWD};
+    let mut directory = fs::File::from(openat(CWD, "/", directory_flags(), Mode::empty())?);
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            directory = fs::File::from(openat(&directory, name, directory_flags(), Mode::empty())?);
+        }
+    }
+    Ok(directory)
+}
 
 /// Call only after explicit opt-in and trusted package verification. The callback
 /// prepares offline payload/configuration, never registers or starts a daemon.
@@ -29,44 +44,33 @@ pub fn fresh(
         "plain absolute state root required"
     );
     let parent = state.parent().context("missing state parent")?;
-    // Refuse symlink ancestors before exclusive creation; never follow a path
-    // supplied by a vault/index or create arbitrary missing ancestors here.
-    let mut ancestor = std::path::PathBuf::from("/");
-    for part in parent.components() {
-        if let Component::Normal(name) = part {
-            ancestor.push(name);
-            let m = fs::symlink_metadata(&ancestor)?;
-            ensure!(
-                m.is_dir() && !m.file_type().is_symlink(),
-                "state ancestor is not a plain directory"
-            );
-        }
-    }
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(state)
+    use rustix::fs::{mkdirat, openat, Mode, OFlags};
+    let parent_fd = directory_at(parent)?;
+    let name = state.file_name().context("missing state name")?;
+    mkdirat(&parent_fd, name, Mode::RUSR | Mode::WUSR | Mode::XUSR)
         .context("recovery pending: state already exists or cannot be created")?;
-    // A crash from this point retains the directory, even before the intent is
-    // complete. Nothing removes it to turn uncertainty back into fresh authority.
-    let created = fs::symlink_metadata(state)?;
+    // All creation and flushes stay bound to the opened directory chain.
+    // A crash retains this root, even before the intent is complete.
+    let root_fd = fs::File::from(openat(&parent_fd, name, directory_flags(), Mode::empty())?);
+    let created = root_fd.metadata()?;
     let installation = Uuid::new_v4();
     let instance = Uuid::new_v4();
-    let mut intent = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(state.join("preparation.json"))?;
+    let mut intent = fs::File::from(openat(
+        &root_fd,
+        "preparation.json",
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )?);
     intent.write_all(&serde_json::to_vec(&serde_json::json!({
         "schema": 1, "installation": installation, "instance": instance
     }))?)?;
     intent.sync_all()?;
-    fs::File::open(state)?.sync_all()?;
-    fs::File::open(parent)?.sync_all()?;
+    root_fd.sync_all()?;
+    parent_fd.sync_all()?;
     ensure!(Instant::now() < deadline, "preparation deadline elapsed");
     let binding = prepare(installation, instance)?;
     ensure!(Instant::now() < deadline, "preparation deadline elapsed");
-    let m = fs::symlink_metadata(state)?;
+    let m = directory_at(state)?.metadata()?;
     ensure!(
         m.dev() == created.dev() && m.ino() == created.ino(),
         "recovery pending: preparation root replaced"
@@ -99,7 +103,11 @@ pub fn fresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::Cell, time::Duration};
+    use std::{
+        cell::Cell,
+        os::unix::fs::{symlink, DirBuilderExt},
+        time::Duration,
+    };
     fn soon() -> Instant {
         Instant::now() + Duration::from_secs(2)
     }
@@ -181,6 +189,23 @@ mod tests {
             .is_err());
             assert!(!state.join("sidecar.json").exists());
         }
+        Ok(())
+    }
+    #[test]
+    fn symlinked_ancestor_cannot_redirect_fresh_intent() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let root = root.path().canonicalize()?;
+        let real = root.join("real");
+        fs::create_dir(&real)?;
+        symlink(&real, root.join("alias"))?;
+        assert!(fresh(&root.join("alias/state"), soon(), |_, _| panic!(
+            "must not prepare through link"
+        ))
+        .is_err());
+        assert!(!real.join("state").exists());
+        // Positive control: the real directory remains usable.
+        let state = real.join("state");
+        fresh(&state, soon(), |a, b| Ok(binding(&state, a, b)))?;
         Ok(())
     }
 }
