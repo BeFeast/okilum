@@ -112,6 +112,12 @@ fn main() -> anyhow::Result<()> {
             .nth(1)
             .context("explicit QA root required")?,
     );
+    let encoding_repair = match std::env::args_os().nth(2) {
+        None => false,
+        Some(option) if option == "--encoding-repair" => true,
+        Some(_) => anyhow::bail!("unknown acceptance mode"),
+    };
+    ensure!(std::env::args_os().nth(3).is_none(), "unexpected arguments");
     ensure!(
         supplied.is_absolute()
             && supplied.components().all(|c| !matches!(
@@ -155,6 +161,14 @@ fn main() -> anyhow::Result<()> {
             .prefix("okilum-1915-recovery-")
             .tempdir_in("/tmp")?)
     })?;
+    if encoding_repair {
+        encoding_repair_acceptance(&stages, &vault, state.path())?;
+        stages.run("cleanup-encoding-child", 30, || {
+            Ok(fs::remove_dir_all(&run)?)
+        })?;
+        stages.line("PASS encoding Repair/Edit/byte-exact History Restore/conflict/recovery failure/no-tails; own QA child removed")?;
+        return Ok(());
+    }
     let note = vault.join("note.md");
     stages.run("create", 30, || {
         note_files::create_with_source(&vault, Path::new("note.md"), b"base\r\n")
@@ -324,6 +338,95 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     })?;
     // END is flushed through the still-open unlinked log descriptor and stdout.
+    Ok(())
+}
+
+/// Reuse the existing bounded NFS admission/stages, touching only this run's
+/// synthetic child. Native unit tests cover injected post-publication failures.
+#[cfg(unix)]
+fn encoding_repair_acceptance(
+    stages: &diagnostics::Stages,
+    vault: &std::path::Path,
+    state: &std::path::Path,
+) -> anyhow::Result<()> {
+    use anyhow::ensure;
+    use okilum_core::file_editor::{FileEditor, Save};
+    use std::{fs, os::unix::fs::MetadataExt};
+
+    let note = vault.join("Synthetic.md");
+    let original = b"Before \xff After\r\n";
+    let repaired = String::from_utf8_lossy(original);
+    let clean = |expected: &[u8]| -> anyhow::Result<()> {
+        ensure!(fs::read(&note)? == expected, "encoding bytes changed");
+        ensure!(fs::metadata(&note)?.nlink() == 1, "preimage link retained");
+        let entries = fs::read_dir(vault)?.collect::<std::io::Result<Vec<_>>>()?;
+        ensure!(
+            entries.len() == 1 && entries[0].file_name() == "Synthetic.md",
+            "encoding transaction left vault tails"
+        );
+        Ok(())
+    };
+    stages.run("encoding-create", 30, || Ok(fs::write(&note, original)?))?;
+    stages.run("encoding-no-click", 30, || {
+        ensure!(
+            FileEditor::open(&note, state).is_err(),
+            "damaged note editable"
+        );
+        clean(original)
+    })?;
+    stages.run("encoding-repair", 30, || {
+        ensure!(
+            FileEditor::repair_encoding(&note, state)? == Save::Saved,
+            "Repair refused"
+        );
+        clean(repaired.as_bytes())
+    })?;
+    stages.run("encoding-edit-unlocked", 30, || {
+        let editor = FileEditor::open(&note, state)?;
+        ensure!(editor.text() == repaired, "editable text differs");
+        drop(editor);
+        clean(repaired.as_bytes())
+    })?;
+    let retained = stages.run("encoding-history", 30, || {
+        let history = okilum_core::source_history::list(state, vault)?;
+        ensure!(history.warnings.is_empty(), "History contains warnings");
+        let versions: Vec<_> = history.versions.iter().filter(|v| v.note == note).collect();
+        ensure!(versions.len() == 1, "expected one original History version");
+        ensure!(
+            versions[0].bytes() == original,
+            "History lost original bytes"
+        );
+        Ok(versions[0].bytes().to_vec())
+    })?;
+    stages.run("encoding-history-restore", 30, || {
+        ensure!(
+            FileEditor::replace_bytes(&note, state, repaired.as_bytes(), &retained)? == Save::Saved,
+            "History Restore refused"
+        );
+        ensure!(
+            FileEditor::open(&note, state).is_err(),
+            "restored note editable"
+        );
+        clean(original)
+    })?;
+    stages.run("encoding-stale-revision", 30, || {
+        ensure!(
+            FileEditor::replace_bytes(&note, state, b"stale reviewed bytes", repaired.as_bytes())?
+                == Save::Conflict,
+            "stale revision was accepted"
+        );
+        clean(original)
+    })?;
+    stages.run("encoding-recovery-failure", 30, || {
+        let blocked = state.join("blocked");
+        fs::create_dir(&blocked)?;
+        fs::write(blocked.join("source-history"), b"blocks History directory")?;
+        ensure!(
+            FileEditor::repair_encoding(&note, &blocked).is_err(),
+            "blocked History was accepted"
+        );
+        clean(original)
+    })?;
     Ok(())
 }
 #[cfg(not(unix))]
