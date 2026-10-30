@@ -52,3 +52,6 @@ bash scripts/ci/vendor-tests.sh
 # #1924: injected no-system-Trash fallback is shared across Unix.
 cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_fallback_tests::
 cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests::
+
+# #588: one-use fresh preparation never regenerates partial state.
+cargo test --locked -p okilum-sync-controller --lib sidecar::macos::preparation::

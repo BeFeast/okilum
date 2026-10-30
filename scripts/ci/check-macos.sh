@@ -160,3 +160,6 @@ fi
 # #1924: no-Trash fallback, collision-safe Undo/Redo, and hidden tree/search.
 run_tests okilum-shell --bins reader_trash_fs::vault_fallback_tests::
 run_tests okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests::
+
+# #588: one-use fresh preparation never regenerates partial state.
+run_tests okilum-sync-controller --lib sidecar::macos::preparation::
