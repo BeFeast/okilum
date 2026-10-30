@@ -12,6 +12,8 @@
 //! one Undo step; Backspace right after a typed autoformat takes back only
 //! the autoformat (patch 0088). Keys are matched by key position, so Russian
 //! and Hebrew layouts reach them too.
+pub(super) mod fences;
+
 use super::ime_guard::Trigger;
 use super::lists::{self, Edit, ListEdit};
 use super::*;
@@ -477,6 +479,8 @@ fn heading_edit(text: &str, line: &lists::Line, level: usize) -> Option<Edit> {
 /// Typed autoformat switches (Settings → Editor).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Pairing {
+    /// Code fences close independently of inline Markdown pairing (#1893).
+    pub fences: bool,
     /// `(` `[` `{` `"` `'` `«` close themselves.
     pub brackets: bool,
     /// `*` `_` `` ` `` close themselves (off by default, as in Typora).
@@ -512,6 +516,9 @@ fn opener(close: char) -> Option<char> {
 /// Whether a typed character can start a typed autoformat at all: the
 /// hook's cheap first test, before it reads the note.
 fn may_format(ch: char, selected: bool, pairing: Pairing) -> bool {
+    if !selected && pairing.fences && matches!(ch, '`' | '~') {
+        return true;
+    }
     if selected {
         return WRAP.contains(&ch) || (pairing.brackets && closer(ch).is_some());
     }
@@ -531,6 +538,11 @@ pub(crate) fn typed(
     pairing: Pairing,
 ) -> Option<TypedEdit> {
     let selection = past_bom(text, selection);
+    if pairing.fences {
+        if let Some(edit) = fences::typed(text, selection.clone(), ch) {
+            return Some(edit);
+        }
+    }
     if !may_format(ch, !selection.is_empty(), pairing)
         || lists::in_code(text, lists::line_start(text, selection.start))
     {
@@ -633,8 +645,32 @@ pub(super) fn typed_hook() -> TypedTextHook {
             return None;
         }
         let (brackets, markdown) = reader_ui_state::auto_pair(cx);
-        let pairing = Pairing { brackets, markdown };
-        if !may_format(ch, !input.selection.is_empty(), pairing) {
+        let pairing = Pairing {
+            brackets,
+            markdown,
+            fences: reader_ui_state::close_code_fences(cx),
+        };
+        // With inline pairing off, the first two marks remain plain typing:
+        // inspect only two bytes of the rope before copying a large note.
+        let at = input.selection.start;
+        let fence_candidate = pairing.fences
+            && input.selection.is_empty()
+            && matches!(ch, '`' | '~')
+            && at >= 2
+            && input
+                .text
+                .try_slice(at - 2..at)
+                .is_ok_and(|slice| slice == if ch == '`' { "``" } else { "~~" });
+        if !fence_candidate
+            && !may_format(
+                ch,
+                !input.selection.is_empty(),
+                Pairing {
+                    fences: false,
+                    ..pairing
+                },
+            )
+        {
             return None;
         }
         typed(
@@ -764,10 +800,12 @@ mod tests {
     }
 
     const ON: Pairing = Pairing {
+        fences: true,
         brackets: true,
         markdown: true,
     };
     const DEFAULT: Pairing = Pairing {
+        fences: true,
         brackets: true,
         markdown: false,
     };
@@ -959,6 +997,7 @@ mod tests {
         assert_eq!(type_char("[x]", '(', DEFAULT).as_deref(), Some("([x])"));
         assert_eq!(type_char("[x]", '«', DEFAULT).as_deref(), Some("«[x]»"));
         let off = Pairing {
+            fences: true,
             brackets: false,
             markdown: false,
         };
@@ -997,6 +1036,7 @@ mod tests {
             );
         }
         let off = Pairing {
+            fences: true,
             brackets: false,
             markdown: false,
         };
@@ -1312,6 +1352,87 @@ mod key_tests {
             .unwrap()
             .live_preview
             .enabled));
+    }
+
+    #[gpui::test]
+    fn code_fences_close_by_default_and_undo_keeps_the_typed_opener(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        for live in [false, true] {
+            note.reader.update_in(visual, |reader, window, cx| {
+                if reader.editing.as_ref().unwrap().live_preview.enabled != live {
+                    reader.toggle_live_preview(window, cx);
+                }
+            });
+            for (prefix, continued) in [
+                ("", ""),
+                ("- ", "  "),
+                ("> ", "> "),
+                ("- > ", "  > "),
+                ("- [ ] Task\n  ", "  "),
+                ("> - [x] Task\n>   ", ">   "),
+            ] {
+                set(&note, visual, &format!("{prefix}|"));
+                for _ in 0..3 {
+                    visual.simulate_input("`");
+                }
+                visual.run_until_parked();
+                assert_eq!(
+                    shown(&note, visual),
+                    format!("{prefix}```|\n{continued}```")
+                );
+                undo(visual);
+                assert_eq!(shown(&note, visual), format!("{prefix}```|"));
+                visual.dispatch_action(Redo);
+                visual.run_until_parked();
+                keys(visual, "enter");
+                assert_eq!(
+                    shown(&note, visual),
+                    format!("{prefix}```\n{continued}|\n{continued}```")
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn same_line_task_fence_marks_stay_literal_without_rewriting_the_file(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        let path = note._directory.path().join("vault/note.md");
+        let original_bytes = std::fs::read(&path).unwrap();
+        let original_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        for live in [false, true] {
+            note.reader.update_in(visual, |reader, window, cx| {
+                if reader.editing.as_ref().unwrap().live_preview.enabled != live {
+                    reader.toggle_live_preview(window, cx);
+                }
+            });
+            for prefix in ["- [ ] ", "> - [x] ", "- [ ] > "] {
+                set(&note, visual, &format!("{prefix}|"));
+                for _ in 0..3 {
+                    visual.simulate_input("`");
+                }
+                visual.run_until_parked();
+                assert_eq!(shown(&note, visual), format!("{prefix}```|"));
+                assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().modified().unwrap(),
+                    original_modified
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn disabling_fence_assistance_leaves_literal_typing(cx: &mut TestAppContext) {
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (note, visual) = open(cx);
+        visual.update(|_, cx| reader_ui_state::set_close_code_fences(false, cx));
+        set(&note, visual, "|");
+        for _ in 0..3 {
+            visual.simulate_input("`");
+        }
+        visual.run_until_parked();
+        assert_eq!(shown(&note, visual), "```|");
     }
 
     /// A typed autoformat is its own Undo step, and Backspace right after it

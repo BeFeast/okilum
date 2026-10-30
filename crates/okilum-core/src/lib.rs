@@ -57,6 +57,7 @@ pub mod search_snippet;
 #[cfg(all(unix, feature = "brain"))]
 pub mod source;
 pub mod source_classifier;
+pub mod source_fences;
 #[cfg(any(unix, windows))]
 pub mod source_history;
 pub mod source_projection;
