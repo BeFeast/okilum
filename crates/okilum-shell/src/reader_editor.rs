@@ -601,12 +601,15 @@ impl Reader {
         });
         let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
             // Code blocks and tables keep one alignment as they change (S6c).
-            input.update(cx, |state, _| {
+            // value() flattens the Rope: share this one immutable snapshot
+            // with the recovery queue instead of materializing it again (#1621).
+            let value = input.update(cx, |state, _| {
                 let value = state.value();
                 state.set_direction_exempt_lines(direction_exempt_lines(&value));
                 // Rendered blocks resolve references and number footnotes
                 // against the whole note.
-                *block_context.borrow_mut() = BlockNote::new(value);
+                *block_context.borrow_mut() = BlockNote::new(value.clone());
+                value
             });
             let Some(editing) = &mut this.editing else {
                 return;
@@ -615,7 +618,7 @@ impl Reader {
                 return;
             }
             // Includes Silent mutations emitted by native undo and redo.
-            let write = editing.store.queue_text(input.read(cx).value().to_string());
+            let write = editing.store.queue_text(value.to_string());
             editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
             let epoch = editing.recovery_epoch;
             let input_id = input.entity_id();
