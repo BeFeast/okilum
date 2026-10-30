@@ -81,7 +81,7 @@ mod tests {
         let exe = std::path::Path::new("C:\\Users\\QA User\\Okilum\\current\\okilum.exe");
         let commands = install_commands(exe);
         assert_eq!(commands.len(), 8);
-        for (group, placeholder) in commands.chunks_exact(4).zip(["%1", "%V"]) {
+        for (group, placeholder) in commands.as_chunks::<4>().0.iter().zip(["%1", "%V"]) {
             assert_eq!(group[0][group[0].len() - 2], "Open in Okilum as Vault");
             assert_eq!(group[2][group[2].len() - 2], "Single");
             assert_eq!(
