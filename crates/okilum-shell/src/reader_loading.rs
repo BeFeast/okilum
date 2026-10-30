@@ -1896,6 +1896,7 @@ impl Reader {
         let (send, receive) = async_channel::unbounded::<SessionRecord>();
         self.session_records = Some(send);
         cx.spawn(async move |this, cx| {
+            let mut opened_root: Option<PathBuf> = None;
             while let Ok(SessionRecord {
                 root,
                 document,
@@ -1907,6 +1908,14 @@ impl Reader {
             {
                 let requested_root = root.clone();
                 let requested_document = document.clone();
+                let opened_at = if !single_file && opened_root.as_ref() != Some(&root) {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|time| time.as_secs())
+                } else {
+                    None
+                };
                 // Restored windows record their notes at the same moment
                 // (#1325): a busy lock is waited out, not reported.
                 let mut result;
@@ -1918,8 +1927,8 @@ impl Reader {
                     result = cx
                         .background_executor()
                         .spawn(async move {
-                            crate::reader_history::ReadingHistory::record_document_mode(
-                                &directory, &root, &document, single_file,
+                            crate::reader_history::ReadingHistory::record_document_opened(
+                                &directory, &root, &document, single_file, opened_at,
                             )
                         })
                         .await;
@@ -1932,6 +1941,9 @@ impl Reader {
                     cx.background_executor().timer(delay).await;
                     waited += delay;
                     delay = (delay * 2).min(std::time::Duration::from_millis(500));
+                }
+                if result.is_ok() && !single_file {
+                    opened_root = Some(root.clone());
                 }
                 cx.background_executor()
                     .spawn(async move {

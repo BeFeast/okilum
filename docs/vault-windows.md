@@ -60,7 +60,30 @@ recency suppression; it does not delete, rename or write the vault, or erase its
 last reading position. The additive `hidden_roots` field is omitted while empty;
 existing history remains readable without migration. Successfully opening/using
 that vault again lists it as recent. A state-write error leaves the entry visible.
-Settings vault management is a later slice.
+Application-wide list management is described in slice 2 below.
+
+## Settings → Vaults (#2002, slice 2)
+
+Vaults is an application-wide Settings section, separate from the open vault's
+name, appearance and file settings in Vault. It uses the same known-vault list
+as the name menu. Each row shows its name, full path, availability, current/default
+markers and last successful opening time. Older records show Not recorded rather
+than an inferred timestamp; opening time advances on a usable vault publication,
+not every note navigation or a failed candidate.
+
+Open in new window explicitly bypasses the destination preference; an existing
+vault duplicates its shared session instead of merely focusing the old window.
+Remove from list leaves canonical files and reading position intact and clears
+that vault's default preference. A missing/unmounted path remains listed, can be
+removed explicitly, and is rechecked by Refresh. Reads and writes run in the
+background and failed state writes leave the visible list unchanged.
+
+Make default/Clear default persist only in application state, without a migration.
+The saved window set restores first; if no window can be restored, the default
+precedes last-used fallback. Explicit CLI/OS/file/folder deliveries still supersede
+startup. An unavailable default opens the existing start screen with its unavailable
+notice, rather than silently selecting a different vault. No default keeps the
+existing launch behavior.
 
 ## Window state integration (#592)
 

@@ -386,6 +386,8 @@ enum Section {
     Editor,
     /// The vault's name, colour and files (#1355: was «Files»).
     Vault,
+    /// Application-wide known vault management (#2002).
+    Vaults,
     /// Log source links: for logs of software you build (#1355).
     Logs,
     Updates,
@@ -401,6 +403,7 @@ impl Section {
             Self::Editor => "editor",
             Self::Appearance => "appearance",
             Self::Vault => "vault",
+            Self::Vaults => "vaults",
             Self::Logs => "logs",
             Self::Updates => "updates",
             Self::About => "about",
@@ -415,6 +418,7 @@ impl Section {
             Some("editor") => Self::Editor,
             Some("appearance") => Self::Appearance,
             Some("vault") => Self::Vault,
+            Some("vaults") => Self::Vaults,
             Some("logs") => Self::Logs,
             Some("updates") => Self::Updates,
             Some("inbox") => Self::Inbox,
@@ -430,6 +434,7 @@ impl Section {
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Editor => Icon::new(IconName::FileText),
             Self::Vault => Icon::new(IconName::Folder),
+            Self::Vaults => Icon::new(IconName::Folder),
             Self::Logs => Icon::new(IconName::SquareTerminal),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
             Self::About => Icon::new(IconName::Info),
@@ -444,6 +449,7 @@ impl Section {
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Vault => "Vault",
+            Self::Vaults => "Vaults",
             Self::Logs => "Logs",
             Self::Updates => "Updates",
             Self::About => "About",
@@ -454,6 +460,7 @@ impl Section {
     }
 }
 struct Settings {
+    vaults: Option<Entity<reader_settings_vaults::Vaults>>,
     t3: Option<Entity<reader_t3_settings::T3Settings>>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
@@ -487,6 +494,11 @@ struct Settings {
 impl Settings {
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         self.section = section;
+        if section == Section::Vaults {
+            if let Some(vaults) = &self.vaults {
+                vaults.update(cx, |vaults, cx| vaults.reload(cx));
+            }
+        }
         reader_ui_state::set_settings_section(section.key(), cx);
         cx.notify();
     }
@@ -503,6 +515,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
+            vaults: None,
             t3: None,
             section: Section::remembered(cx),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -576,6 +589,7 @@ impl Settings {
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         self.reader = reader;
         self.t3 = None;
+        self.vaults = None;
         cx.notify();
     }
     fn vault(&self, cx: &App) -> Option<Entity<Reader>> {
@@ -949,6 +963,7 @@ impl Settings {
                 .child(self.section.label()),
         );
         match self.section {
+            Section::Vaults => content.children(self.vaults.clone()).into_any_element(),
             Section::Appearance => {
                 let current = cx.try_global::<AppearancePreference>().and_then(|p| p.0);
                 let vault = self
@@ -1460,6 +1475,19 @@ impl Render for Settings {
                     reader_t3_settings::T3Settings::new(self.reader.clone(), window, cx)
                 }));
         }
+        if self.section == Section::Vaults && self.vaults.is_none() {
+            let directory = self
+                .reader
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+                .and_then(|reader| reader.read(cx).session_directory.clone())
+                .map(Ok)
+                .unwrap_or_else(|| reader_ui_state::state_directory(cx));
+            self.vaults =
+                Some(cx.new(|cx| {
+                    reader_settings_vaults::Vaults::new(directory, self.reader.clone(), cx)
+                }));
+        }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
@@ -1479,6 +1507,7 @@ impl Render for Settings {
                             Section::Appearance,
                             Section::Editor,
                             Section::Vault,
+                            Section::Vaults,
                             Section::T3,
                             Section::Updates,
                             Section::Inbox,
@@ -2507,6 +2536,7 @@ mod tests {
         });
         for (section, selector) in [
             (Section::Vault, "settings-section-Vault"),
+            (Section::Vaults, "settings-section-Vaults"),
             (Section::Logs, "settings-section-Logs"),
             (Section::Updates, "settings-section-Updates"),
             (Section::About, "settings-section-About"),

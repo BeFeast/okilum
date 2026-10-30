@@ -112,6 +112,7 @@ mod reader_settings_sync;
 #[cfg(target_os = "macos")]
 #[path = "reader_settings_sync_macos.rs"]
 mod reader_settings_sync;
+mod reader_settings_vaults;
 mod reader_shortcuts;
 mod reader_side_panel;
 mod reader_sidebar;

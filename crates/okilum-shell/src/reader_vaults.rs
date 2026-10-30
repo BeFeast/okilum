@@ -504,6 +504,26 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), 2);
+        cx.update(|cx| {
+            reader_ui_state::set_vault_open("current", cx);
+            reader_open::open_vault_in_new_window(roots[1].clone(), state.clone(), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            3,
+            "Settings explicitly opens another window despite the current-window preference"
+        );
+        cx.update(|cx| {
+            assert_eq!(
+                reader_open::readers(cx)
+                    .iter()
+                    .filter(|reader| reader.read(cx).vault_root == roots[1])
+                    .count(),
+                2,
+                "an existing vault is duplicated rather than just focused"
+            );
+        });
         for (root, name) in roots.iter().zip(["one", "two", "three"]) {
             assert_eq!(
                 std::fs::read_to_string(root.join(format!("{name}.md"))).unwrap(),
