@@ -60,6 +60,7 @@ pub(super) struct LivePreview {
     accepted: Option<Arc<CachedProvider>>,
     colors: Cell<Option<ProjectionColors>>,
     code_font: std::cell::RefCell<SharedString>,
+    syntax_theme: std::cell::RefCell<Option<Arc<gpui_component::highlighter::HighlightTheme>>>,
     #[cfg(target_os = "linux")]
     latency_subscriptions: Option<(Subscription, Subscription, Subscription)>,
     #[cfg(test)]
@@ -103,6 +104,7 @@ impl LivePreview {
             accepted: None,
             colors: Cell::new(None),
             code_font: Default::default(),
+            syntax_theme: Default::default(),
             #[cfg(target_os = "linux")]
             latency_subscriptions: None,
             #[cfg(test)]
@@ -237,8 +239,15 @@ impl Reader {
         };
         let colors = projection_colors(cx);
         let code_font = reader_fonts::code(cx);
+        let syntax_theme = cx.theme().highlight_theme.clone();
         if editing.live_preview.colors.get() == Some(colors)
             && *editing.live_preview.code_font.borrow() == code_font
+            && editing
+                .live_preview
+                .syntax_theme
+                .borrow()
+                .as_ref()
+                .is_some_and(|old| Arc::ptr_eq(old, &syntax_theme))
         {
             return;
         }
@@ -249,7 +258,8 @@ impl Reader {
         // observes it and cannot reinstall the same provider recursively.
         editing.live_preview.colors.set(Some(colors));
         *editing.live_preview.code_font.borrow_mut() = code_font.clone();
-        let provider = provider.with_code_font(colors, code_font.to_string());
+        *editing.live_preview.syntax_theme.borrow_mut() = Some(syntax_theme.clone());
+        let provider = provider.with_code_syntax(colors, code_font.to_string(), syntax_theme);
         editing.input.update(cx, |input, cx| {
             input.set_projection_provider(Some(provider), cx)
         });
@@ -362,7 +372,13 @@ impl Reader {
             input.set_searchable(!enabled, cx);
         });
         let provider = if enabled {
-            held.map(|p| p.with_code_font(colors, reader_fonts::code(cx).to_string()))
+            held.map(|p| {
+                p.with_code_syntax(
+                    colors,
+                    reader_fonts::code(cx).to_string(),
+                    cx.theme().highlight_theme.clone(),
+                )
+            })
         } else {
             None
         };
@@ -561,11 +577,14 @@ impl Reader {
                                 state.accepted = Some(provider.clone());
                                 state.needs_compute = false;
                                 state.colors.set(Some(colors));
+                                *state.syntax_theme.borrow_mut() =
+                                    Some(cx.theme().highlight_theme.clone());
                                 input.update(cx, |input, cx| {
                                     input.set_projection_provider(
-                                        Some(provider.with_code_font(
+                                        Some(provider.with_code_syntax(
                                             colors,
                                             reader_fonts::code(cx).to_string(),
+                                            cx.theme().highlight_theme.clone(),
                                         )),
                                         cx,
                                     )
@@ -1314,6 +1333,148 @@ mod tests {
                 note
             );
         }
+    }
+
+    #[gpui::test]
+    fn live_code_font_and_syntax_follow_settings_theme_and_undo(cx: &mut TestAppContext) {
+        use gpui_base::input::HighlightStyleResolver as _;
+        use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
+        let note = "# Heading\n\n```c#\nclass Demo { public int N = 7; }\n```\n\nprose\n";
+        let (reader, visual, directory) = fixture(cx, note);
+        visual.update(|_, cx| {
+            brand::load_fonts(cx).unwrap();
+            reader_fonts::install(cx);
+            reader_ui_state::install(&directory.path().join("font-state"), cx);
+            reader_ui_state::set_selected_font(reader_fonts::Role::Note, brand::SANS_FONT, cx);
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            if !reader.editing.as_ref().unwrap().live_preview.enabled {
+                reader.toggle_live_preview(window, cx);
+            }
+        });
+        let input = reader.read_with(visual, |reader, _| {
+            reader.editing.as_ref().unwrap().input.clone()
+        });
+        let at = note.find("class").unwrap();
+        input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
+        let draw = |visual: &mut VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let assert_code = |visual: &mut VisualTestContext, expected_font: &str| {
+            reader.read_with(visual, |reader, cx| {
+                let live = &reader.editing.as_ref().unwrap().live_preview;
+                assert!(live.enabled);
+                assert_eq!(live.code_font.borrow().as_ref(), expected_font);
+                let theme = cx.theme().highlight_theme.clone();
+                assert!(live
+                    .syntax_theme
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|published| Arc::ptr_eq(published, &theme)));
+                let accepted = live.accepted.as_ref().unwrap();
+                let projection = accepted
+                    .clone()
+                    .with_code_syntax(
+                        projection_colors(cx),
+                        reader_fonts::code(cx).to_string(),
+                        theme.clone(),
+                    )
+                    .compose(
+                        accepted.source(),
+                        &ActiveSource {
+                            anchor: SourceByte(at),
+                            head: SourceByte(at),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                let pos = projection
+                    .to_projected(
+                        SourceByte(at),
+                        gpui_component::input::projection::ConcealBias::Left,
+                    )
+                    .unwrap()
+                    .0;
+                assert!(
+                    projection.styles().iter().any(|style| {
+                        style.range.start.0 <= pos
+                            && pos < style.range.end.0
+                            && style.font_family.as_deref() == Some(expected_font)
+                    }),
+                    "active block uses Settings code font, independently of prose"
+                );
+                let color = projection
+                    .styles()
+                    .iter()
+                    .rev()
+                    .filter(|style| style.range.start.0 <= pos && pos < style.range.end.0)
+                    .find_map(|style| style.color);
+                let body = "class Demo { public int N = 7; }\n";
+                let mut reader_code = SyntaxHighlighter::new("csharp");
+                reader_code.update(None, &gpui_component::Rope::from_str(body), None);
+                let (_, capture) = reader_code
+                    .semantic_spans(&(0..body.len()))
+                    .into_iter()
+                    .rev()
+                    .find(|(range, _)| range.contains(&0))
+                    .expect("positive control: Reader captures the C# keyword");
+                assert_eq!(capture.as_ref(), "keyword");
+                let reader_color = reader_code
+                    .styles(&(0..body.len()), &*theme)
+                    .into_iter()
+                    .find_map(|(range, style)| range.contains(&0).then_some(style.color).flatten());
+                assert_eq!(
+                    reader_color,
+                    theme.style(&capture).and_then(|style| style.color),
+                    "Reader positive control: class is a C# keyword"
+                );
+                assert_eq!(color, reader_color, "Live matches Reader in the same theme");
+                assert!(
+                    color.is_some(),
+                    "actual semantic keyword color positive control"
+                );
+                assert_eq!(input.read(cx).value().as_ref(), note);
+            });
+        };
+        // GPUI's NoopTextSystem ignores families in glyph metrics. Verify the
+        // actual Settings publication and projection font, not fake equal widths.
+        for theme in [
+            HighlightTheme::default_light(),
+            HighlightTheme::default_dark(),
+        ] {
+            for font in [brand::SANS_FONT, brand::MONO_FONT] {
+                visual.update(|window, cx| {
+                    cx.global_mut::<Theme>().highlight_theme = theme.clone();
+                    reader_ui_state::set_selected_font(reader_fonts::Role::Code, font, cx);
+                    window.refresh();
+                });
+                draw(visual);
+                assert_code(visual, font);
+            }
+        }
+        reader.update_in(visual, |_, window, cx| {
+            input.focus_handle(cx).focus(window, cx);
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(at..at), "// local\n", window, cx)
+            });
+        });
+        draw(visual);
+        input.read_with(visual, |input, _| {
+            assert!(input.value().contains("// local\nclass"))
+        });
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-z");
+        draw(visual);
+        assert_code(visual, brand::MONO_FONT);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+            note
+        );
     }
 
     #[gpui::test]

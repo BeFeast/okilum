@@ -8,6 +8,7 @@
 pub mod analyzer;
 pub mod archive;
 pub mod callout;
+pub mod code_language;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;
 pub mod deep_link;

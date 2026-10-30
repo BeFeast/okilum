@@ -538,7 +538,8 @@ Copy action. This does not change the document's selection-copy format.
 ## Code block language (#430)
 
 Code blocks reserve a 24 px header above the code; a quiet language label sits
-next to Copy. Explicit fence languages win, with aliases normalised (sh/shell →
+next to Copy. Explicit fence languages win, with aliases normalised (cs/c# →
+csharp, sh/shell →
 bash, yml → yaml, js → javascript, ts → typescript, py → python, rs → rust).
 Unknown explicit languages retain their label and the highlighter's plain fallback.
 

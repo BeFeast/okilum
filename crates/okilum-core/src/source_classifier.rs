@@ -30,6 +30,8 @@ pub enum Style {
     Emphasis,
     Strike,
     Code,
+    /// Literal block code remains Source, with code-font metrics.
+    CodeBlock,
     Link,
     WikiLink,
     /// A reference definition row: kept at source height and rendered quietly.
@@ -411,6 +413,23 @@ fn classify_parsed<'a>(
                 range: start..start + row.len(),
                 style: Style::Definition,
             });
+        }
+    }
+    // Code stays exact Source, but its metric style must still reach Live's
+    // projection shaper. Include container indentation and authored fences;
+    // never classify literal code as inline Markdown.
+    for node in root.descendants() {
+        if !matches!(node.data.borrow().value, NodeValue::CodeBlock(_)) {
+            continue;
+        }
+        if let Some(mut range) = context.range(node) {
+            range.start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+            if context.boundary(range.start) && context.boundary(range.end) {
+                styles.push(StyleSpan {
+                    range,
+                    style: Style::CodeBlock,
+                });
+            }
         }
     }
     styles.sort_by_key(|style| style.range.start);

@@ -74,6 +74,33 @@ fn semantic_styles_are_raw_canonical_ranges() {
 }
 
 #[test]
+fn code_block_metric_styles_preserve_literal_bytes_and_container_prefixes() {
+    for code in [
+        "```csharp\nclass C {}\n```",
+        "- ```c#\r\n  class C {}\r\n  ```",
+        "> ```cs\n> class C {}\n> ```",
+        "- item\n\n      class C {}",
+    ] {
+        let text = format!("{code}\n\nprose\n");
+        let current = snapshot(&text);
+        let result = classify(&current);
+        let at = text.find("class").unwrap();
+        let code_style = result
+            .styles_for(&current)
+            .unwrap()
+            .iter()
+            .find(|span| span.style == Style::CodeBlock && span.range.contains(&at))
+            .expect("literal code has a code-font metric span");
+        assert!(code_style.range.end <= text.find("prose").unwrap());
+        assert_eq!(
+            display(&text),
+            text,
+            "font metadata never conceals or rewrites code"
+        );
+    }
+}
+
+#[test]
 fn unsupported_and_malformed_blocks_have_positive_neighbor() {
     for unsupported in [
         "```md\n**code**\n```",

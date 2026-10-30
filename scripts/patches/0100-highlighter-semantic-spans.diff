@@ -1,0 +1,28 @@
+--- a/crates/component/src/highlighter/highlighter.rs
++++ b/crates/component/src/highlighter/highlighter.rs
+@@ -1038,6 +1038,25 @@
+         highlights
+     }
+ 
++    /// Semantic captures from the existing parsed tree, without resolving a theme.
++    /// Ranges are clipped to current UTF-8 text, including while the tree is stale.
++    /// Captures may overlap; their order is the same one used by `styles`.
++    pub fn semantic_spans(&self, range: &Range<usize>) -> Vec<(Range<usize>, SharedString)> {
++        self.match_styles(range.clone())
++            .into_iter()
++            .filter_map(|item| {
++                let start = item.range.start.max(range.start);
++                let end = item.range.end.min(range.end);
++                if start >= end {
++                    return None;
++                }
++                let clipped = self.text.clip_offset(start, Bias::Left)
++                    ..self.text.clip_offset(end, Bias::Right);
++                (!clipped.is_empty()).then_some((clipped, item.name))
++            })
++            .collect()
++    }
++
+     /// Returns the syntax highlight styles for a range of text.
+     ///
+     /// The argument `range` is the range of bytes in the text to highlight.

@@ -81,3 +81,9 @@ unmodified. Carry this candidate in the #1814 bump (Okilum #1833).
 [0097](0097.md) adds optional TextView opening space inside the first measured
 block, avoiding jumps from changing viewport padding. GPUI core stays unmodified.
 Carry it in the #1814 vendor update (Okilum #1901).
+
+## Pending 0100 — theme-independent syntax spans
+
+| Patch | Upstream wave | Reason | Body |
+|---|---|---|---|
+| 0100 | [#1814](https://git.oklabs.uk/BeFeast/okilum/issues/1814), candidate | Additive `SyntaxHighlighter::semantic_spans` getter lets projected text reuse the existing matcher and current Reader theme; prior methods stay unchanged. Carry through the bump until upstream provides it. Repro/test pending. | [0100.md](0100.md) |
