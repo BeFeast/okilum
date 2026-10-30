@@ -24,6 +24,8 @@ mod export;
 mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
+#[cfg(test)]
+mod network_write_qa;
 mod note_paste;
 mod open_in;
 mod pdf_engine;

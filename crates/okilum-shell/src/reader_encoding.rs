@@ -104,6 +104,84 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[gpui::test]
+    fn appledouble_does_not_enter_tree_or_offer_encoding_repair(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let metadata = [0x00, 0x05, 0x16, 0x07, 0xff];
+        std::fs::write(root.join("._Note.md"), metadata).unwrap();
+        std::fs::write(root.join("Note.md"), "# Note\n").unwrap();
+        std::fs::write(root.join("Damaged.md"), b"# Damaged\n\xff").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Note.md".into()),
+                        session_directory: Some(fixture.path().join("state")),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.document_ready());
+            assert_eq!(reader.current_rel, "Note.md");
+            assert!(!reader.note_encoding_damaged);
+            assert!(reader
+                .vault
+                .entries
+                .iter()
+                .all(|entry| entry.path != "._Note.md"));
+            assert!(
+                reader.tree.rows.iter().any(|row| row.path == "Note.md"),
+                "positive control: the real note is in the browsing tree"
+            );
+            assert!(reader.tree.rows.iter().all(|row| row.path != "._Note.md"));
+            assert!(reader
+                .quick_open
+                .inventory
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|note| note.path != "._Note.md"));
+        });
+        assert!(visual.debug_bounds("note-encoding-repair").is_none());
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_note("Damaged.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("note-encoding-repair").is_some(),
+            "positive control: an actual damaged note still offers Repair"
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_note("Note.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("note-encoding-repair").is_none());
+        assert_eq!(std::fs::read(root.join("._Note.md")).unwrap(), metadata);
+        assert_eq!(
+            std::fs::read_to_string(root.join("Note.md")).unwrap(),
+            "# Note\n"
+        );
+    }
+
+    #[gpui::test]
     fn repair_button_unlocks_edit_and_history_restores_the_original_bytes(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");

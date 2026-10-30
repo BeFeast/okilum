@@ -2169,6 +2169,52 @@ mod property_backlink_tests {
 mod preimage_visibility_tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn appledouble_is_excluded_before_lossy_utf8_inventory_and_display() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let bytes = [0x00, 0x05, 0x16, 0x07, 0xff];
+        fs::write(root.join("._Note.md"), bytes).unwrap();
+        fs::write(root.join("Note.md"), "# Visible note\n").unwrap();
+        fs::write(root.join("Damaged.md"), b"# Damaged\n\xff").unwrap();
+        assert!(service_path(Path::new("._Note.md")));
+        let vault = Vault::scan(root).unwrap();
+        assert_eq!(
+            vault.notes.len(),
+            2,
+            "real damaged notes still enter the lossy display inventory"
+        );
+        assert!(vault.notes.iter().any(|note| note.path == "Note.md"));
+        assert!(vault.notes.iter().all(|note| note.path != "._Note.md"));
+        assert!(vault.entries.iter().all(|entry| entry.path != "._Note.md"));
+        assert!(
+            vault
+                .unreadable
+                .iter()
+                .all(|entry| entry.path != root.join("._Note.md")),
+            "metadata is excluded before it can become an encoding diagnostic"
+        );
+        assert!(!vault.note_encoding_damaged("._Note.md"));
+        assert!(
+            vault.read_note_display("._Note.md").is_err(),
+            "explicit display cannot offer Repair for a sidecar"
+        );
+        assert!(
+            vault
+                .read_note_display("Damaged.md")
+                .unwrap()
+                .encoding_damaged,
+            "positive control: genuine invalid UTF-8 remains repairable"
+        );
+        let cached = Vault::from_note_paths(["._Note.md".into(), "Note.md".into()]);
+        assert_eq!(
+            cached.notes.len(),
+            1,
+            "cached identities use the same exclusion"
+        );
+        assert_eq!(fs::read(root.join("._Note.md")).unwrap(), bytes);
+    }
     #[test]
     fn windows_history_preimages_are_service_files_on_every_platform() {
         let temp = tempfile::tempdir().unwrap();

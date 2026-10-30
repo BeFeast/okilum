@@ -1,6 +1,9 @@
 //! #1915: run only against a dedicated, explicitly supplied QA mount directory.
 //! No GUI or installed app. Creates/removes only its own tempfile child.
 #[cfg(unix)]
+#[path = "../src/network_write_qa.rs"]
+mod network_write_qa;
+#[cfg(unix)]
 #[path = "../src/reader_trash_fs.rs"]
 mod trash;
 
@@ -359,12 +362,7 @@ fn encoding_repair_acceptance(
     let clean = |expected: &[u8]| -> anyhow::Result<()> {
         ensure!(fs::read(&note)? == expected, "encoding bytes changed");
         ensure!(fs::metadata(&note)?.nlink() == 1, "preimage link retained");
-        let entries = fs::read_dir(vault)?.collect::<std::io::Result<Vec<_>>>()?;
-        ensure!(
-            entries.len() == 1 && entries[0].file_name() == "Synthetic.md",
-            "encoding transaction left vault tails"
-        );
-        Ok(())
+        network_write_qa::check_note_only(vault, std::ffi::OsStr::new("Synthetic.md"))
     };
     stages.run("encoding-create", 30, || Ok(fs::write(&note, original)?))?;
     stages.run("encoding-no-click", 30, || {

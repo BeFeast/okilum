@@ -152,7 +152,10 @@ run_tests okilum-core --lib file_editor::network_save_tests::
 # rollback and unsupported-EXCHANGE failures, plus the actual Reader buttons.
 run_tests okilum-core --lib file_editor::raw_transaction::
 run_tests okilum-core --lib source_history::
+run_tests okilum-core --lib vault::preimage_visibility_tests::appledouble_is_excluded_before_lossy_utf8_inventory_and_display --exact
+run_tests okilum-shell --bins network_write_qa::
 run_tests okilum-shell --bins reader_encoding::tests::repair_button_unlocks_edit_and_history_restores_the_original_bytes --exact
+run_tests okilum-shell --bins reader_encoding::tests::appledouble_does_not_enter_tree_or_offer_encoding_repair --exact
 run_tests okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --exact
 # Manager-authorized native mount gate only on the local M4 runner. Hosted Macs
 # have no corporate mount; never substitute local APFS for this acceptance.
