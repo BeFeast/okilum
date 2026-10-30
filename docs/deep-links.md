@@ -24,7 +24,11 @@ okilum://project/<project-id> (reserved, projects of the server model)
   `okilum://v/Notes/Projects/Launch%20plan.md?line=12&column=4`.
 - `file/<absolute path>`: for tools that know a file but not a vault
   (T3 Code, editors, terminals). The path is absolute, `/`-separated; on
-  Windows it is `file/C:/Users/…`. Okilum finds the vault that contains it.
+  Windows it is `file/C:/Users/…` (an encoded `\`, `C:%5CUsers…`, is also
+  accepted). Okilum finds the vault that contains it. Drive-relative forms
+  (`C:relative/note.md`, a bare `C:`) are not absolute and are refused as
+  incomplete on every platform: the parser is plain string parsing, not
+  host path logic.
 - `line`, `column`: 1-based. Column counts Unicode characters (scalar values),
   not bytes or UTF-16 units, so Hebrew and Cyrillic lines behave like
   Latin ones. Out of range is clamped to the last line or column.
@@ -64,8 +68,12 @@ rendered link is rewritten to the `v/` form.
      opens on its own as today's single-file mode, after the first-use
      confirmation below.
 2. **Note.**
-   - Exact vault-relative path. If it has no extension and only `<path>.md`
-     exists, that file opens. Otherwise nothing is guessed.
+   - Exact vault-relative path. If it does not exist, the path does not
+     already end with `.md` (in any case) and `<path>.md` exists, that file
+     opens; this includes dotted names such as `v1.2` or
+     `Daily/2026.10.29 Meeting`. The exact name always wins, `.md` is never
+     appended twice, and with several vaults of the same name each choice
+     applies the same rule. Otherwise nothing is guessed.
    - Missing file: «“Projects/Plan.md” is not in vault “Notes”.» The link
      never creates a note.
    - Paths with `..` or a leading `/` after the vault, or paths that resolve
@@ -130,7 +138,10 @@ rendered link is rewritten to the `v/` form.
   without asking: the link only moves within what is on screen. The same
   confirmation will apply to a file outside every known vault.
 - Rejected outright, with a message: unknown hosts, internal hosts, relative
-  or `..` paths, NUL or control characters, links over 4096 bytes, and
+  or `..` paths, NUL or control characters (raw, or percent-encoded in the
+  vault, a path segment, the file path, an id, a heading or a block; any
+  `char::is_control` such as NUL, LF, CR, ESC, DEL or C1), links over 4096
+  bytes, and
   non-`okilum` schemes passed as the argument.
 - No network fetch for any link. The web page only redirects.
 - Repeated identical links (link spam or double delivery) reuse the window and
