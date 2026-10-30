@@ -87,7 +87,7 @@ impl Reader {
         let rel = self.current_rel.clone();
         self.cancel_pending_landing();
         let request = self.navigation.landing_generation;
-        input.read(cx).focus_handle().clone().focus(window, cx);
+        input.read(cx).focus_handle(cx).focus(window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -326,7 +326,7 @@ mod tests {
                     Some(target_line as usize),
                     "{mode:?}: heading reaches the top of the visible editor"
                 );
-                assert!(input.focus_handle().is_focused(window));
+                assert!(input.focus_handle(cx).is_focused(window));
                 assert_eq!(input.value().as_ref(), original);
                 assert_eq!(
                     reader
