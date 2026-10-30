@@ -41,6 +41,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 cp "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/okilum" "$APP/Contents/MacOS/okilum"
 ditto vendor/sparkle/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
 python3 scripts/third-party-notices.py --stage "$APP/Contents/Resources/Licenses"
+python3 scripts/syncthing/bundle.py stage --app "$APP" --arch amd64
 # Deliberately no SUFeedURL: this QA app cannot offer arm64 feed updates.
 python3 - "$APP" <<'PY'
 import os, plistlib, sys
@@ -63,6 +64,13 @@ FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
 # Ad-hoc signatures carry neither a hardened runtime nor a secure timestamp.
 SIGN_OPTIONS=(--options runtime --timestamp)
 [[ $OKILUM_SIGNING_IDENTITY == - ]] && SIGN_OPTIONS=()
+source scripts/ci/supervisor-bundle.sh
+SYNC_TEAM_ARGS=()
+if [[ $OKILUM_SIGNING_IDENTITY != - ]]; then
+ SYNC_TEAM_ARGS=(--team "$(supervisor_team_id "$OKILUM_SIGNING_IDENTITY")")
+fi
+python3 scripts/syncthing/bundle.py sign --app "$APP" --identity "$OKILUM_SIGNING_IDENTITY" \
+ --identifier com.befeast.okilum.intel-qa ${SYNC_TEAM_ARGS[@]+"${SYNC_TEAM_ARGS[@]}"}
 for COMPONENT in \
  "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc" \
  "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc" \

@@ -11,6 +11,8 @@ use std::{
 };
 
 pub const HELPER: &str = "Contents/MacOS/okilum-sync-supervisor";
+pub const SYNCTHING: &str = "Contents/MacOS/syncthing";
+const SYNCTHING_PROVENANCE: &str = "Contents/Resources/Syncthing/provenance.json";
 
 // System-wide installs are root-owned; per-user installs belong to this account.
 // Read-only mode bits do not make a different file owner's code trustworthy.
@@ -33,6 +35,35 @@ pub struct BundleGuard<V> {
     verifier: V,
 }
 impl<V: SignatureVerifier> BundleGuard<V> {
+    /// The preparation layer can select only this runtime inside the verified
+    /// installed app, never PATH or an arbitrary download. No process is started.
+    /// The returned digest is of the Developer-ID-signed bytes, not the upstream
+    /// unsigned payload; retain this provenance when copying into private state.
+    pub fn bundled_runtime(
+        &self,
+        binding: &Binding,
+        runtime_requirement: &CodeRequirement,
+    ) -> Result<(PathBuf, String, Vec<u8>)> {
+        use sha2::{Digest, Sha256};
+        self.verify(binding)?;
+        self.inspect(Path::new(SYNCTHING), false)?;
+        self.inspect(Path::new(SYNCTHING_PROVENANCE), false)?;
+        let runtime = self.root.join(SYNCTHING);
+        self.verifier.verify(&runtime, runtime_requirement)?;
+        let provenance = fs::read(self.root.join(SYNCTHING_PROVENANCE))?;
+        let parsed: serde_json::Value = serde_json::from_slice(&provenance)?;
+        ensure!(
+            parsed["version"] == "2.1.6" && parsed["signed"] == true,
+            "untrusted bundled runtime provenance"
+        );
+        let hash = format!("{:x}", Sha256::digest(fs::read(&runtime)?));
+        ensure!(
+            parsed["signed_binary_sha256"].as_str() == Some(hash.as_str()),
+            "bundled runtime digest changed"
+        );
+        Ok((runtime, hash, provenance))
+    }
+
     /// The current app supplies its own bundle, never one discovered by label.
     /// Resolution reads only; no state, registration, or signature is created.
     pub fn new(

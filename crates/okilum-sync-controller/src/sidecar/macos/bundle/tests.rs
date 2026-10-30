@@ -84,6 +84,47 @@ fn helper_policy() -> CodeRequirement {
 }
 
 #[test]
+fn bundled_runtime_requires_fixed_path_outer_seal_nested_signature_and_exact_digest() -> Result<()>
+{
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new()?;
+    let guard = fixture.guard()?;
+    let policy =
+        CodeRequirement::team_and_identifier("ABCDE12345", "org.example.fixture.syncthing")?;
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    let executable = fixture.app.join(SYNCTHING);
+    fs::write(&executable, b"synthetic runtime, never executed")?;
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+    let digest = format!("{:x}", Sha256::digest(fs::read(&executable)?));
+    let provenance = fixture.app.join(SYNCTHING_PROVENANCE);
+    fs::create_dir_all(provenance.parent().unwrap())?;
+    fs::write(
+        &provenance,
+        serde_json::to_vec(&serde_json::json!({
+            "version": "2.1.6", "signed": true, "signed_binary_sha256": digest
+        }))?,
+    )?;
+    let (path, hash, receipt) = guard.bundled_runtime(&fixture.binding, &policy)?;
+    assert_eq!(path, executable);
+    assert_eq!(hash, digest);
+    assert_eq!(receipt, fs::read(&provenance)?);
+    assert!(fixture
+        .signatures
+        .calls
+        .borrow()
+        .contains(&(executable.clone(), policy.clone())));
+    *fixture.signatures.refusal.borrow_mut() = Some(executable.clone());
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    *fixture.signatures.refusal.borrow_mut() = None;
+    fs::write(&executable, b"tampered")?;
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    fs::remove_file(&executable)?;
+    symlink("/usr/bin/true", &executable)?;
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    Ok(())
+}
+
+#[test]
 fn valid_bundle_checks_outer_seal_and_separate_helper_policy_without_writes() -> Result<()> {
     let fixture = Fixture::new()?;
     let guard = fixture.guard()?;

@@ -45,6 +45,8 @@ PLIST_FILE="$(echo "$APP"/Contents/Library/LaunchAgents/*.plist)"
 # Ad-hoc signature, as the release does with the Developer ID (without the timestamp,
 # which needs the network): the explicit identifier is what the app's policy requires.
 supervisor_sign "$APP" - "$BUNDLE"
+[[ $(lipo -archs "$APP/Contents/MacOS/syncthing") == arm64 ]]
+codesign --verify --strict "$APP/Contents/MacOS/syncthing"
 codesign -dv "$APP/$SUPERVISOR_RELATIVE" 2>&1 | grep -Fx "Identifier=$BUNDLE.sync" >/dev/null
 codesign -dv --verbose=4 "$APP/$SUPERVISOR_RELATIVE" 2>&1 | grep -E 'flags=.*runtime' >/dev/null
 
