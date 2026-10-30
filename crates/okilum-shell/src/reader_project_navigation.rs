@@ -149,8 +149,8 @@ pub(super) async fn t3_gateways(
                 continue;
             };
             #[cfg(test)]
-            if let Some(probe) = &probe {
-                gateways.insert(alias.clone(), probe.connect(&alias, &origin));
+            if let Some(gateway) = probe.as_ref().and_then(|p| p.connect(&alias, &origin)) {
+                gateways.insert(alias.clone(), gateway);
                 continue;
             }
             let task = this
@@ -160,6 +160,8 @@ pub(super) async fn t3_gateways(
                 Ok(Some((_, bytes))) => okilum_t3::StoredToken::from_secret(&bytes).ok(),
                 _ => None,
             };
+            #[cfg(test)]
+            let token = token.or_else(|| probe.as_ref().and_then(|p| p.token.clone()));
             let gateway = cx
                 .background_executor()
                 .spawn(async move { paired_gateway(env, token, manager_session()) })
@@ -192,10 +194,17 @@ mod t3_probe {
         pub connects: Mutex<Vec<(String, String)>>,
         /// Board and Manager transports built through `manager_gateway`.
         pub manager_gateways: AtomicUsize,
-        /// What every probed connection gets instead of a real transport.
+        /// What every probed connection gets instead of a real transport;
+        /// without one, the real transports are built.
         pub gateway: Option<Arc<dyn okilum_t3::ManagerGateway>>,
+        /// The stored token real transports get, as the keychain would
+        /// give it; the test platform's keychain is always empty.
+        pub token: Option<okilum_t3::StoredToken>,
         /// While set, a sweep waits here before it reads any connection.
         pub gate: Mutex<Option<async_channel::Receiver<()>>>,
+        /// While set, a sweep blocks its thread this long, as a hung T3
+        /// connect would.
+        pub delay: Mutex<Option<std::time::Duration>>,
     }
 
     impl Probe {
@@ -203,14 +212,12 @@ mod t3_probe {
             &self,
             alias: &str,
             origin: &str,
-        ) -> Arc<dyn okilum_t3::ManagerGateway> {
+        ) -> Option<Arc<dyn okilum_t3::ManagerGateway>> {
             self.connects
                 .lock()
                 .unwrap()
                 .push((alias.into(), origin.into()));
-            self.gateway
-                .clone()
-                .expect("a probed T3 connection needs a fake gateway")
+            self.gateway.clone()
         }
     }
 
@@ -239,6 +246,10 @@ mod t3_probe {
     pub(super) async fn sweep() -> Option<Arc<Probe>> {
         let probe = current()?;
         probe.sweeps.fetch_add(1, SeqCst);
+        let delay = *probe.delay.lock().unwrap();
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
         let gate = probe.gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             let _ = gate.recv().await;
@@ -1623,8 +1634,211 @@ mod icon_save_tests {
     }
 }
 
+/// Test-only libc interposers (#1521): every outbound socket, name lookup
+/// and process spawn of this process goes through `connect`,
+/// `getaddrinfo`, `posix_spawn`/`posix_spawnp` or `fork`, whichever crate
+/// opens it (reqwest/hyper/mio for MCP and the T3 session over HTTP,
+/// tungstenite and std sockets for T3 streams, std `Command` for helper
+/// processes). Each forwards to libc unchanged; only an armed process
+/// records, and only the dedicated child of
+/// `local_reader_flows_open_no_socket_lookup_or_process` arms itself, so
+/// the parallel tests of this binary neither notice nor pollute it.
+#[cfg(all(test, target_os = "linux"))]
+mod libc_boundary {
+    use libc::{c_char, c_int, pid_t, sockaddr, socklen_t};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    use std::sync::{Mutex, OnceLock};
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static SPAWNS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn arm() {
+        EVENTS.lock().unwrap().clear();
+        SPAWNS.store(0, SeqCst);
+        ARMED.store(true, SeqCst);
+    }
+
+    /// What the armed process attempted, failed attempts included.
+    pub(super) fn events() -> Vec<String> {
+        EVENTS.lock().unwrap().clone()
+    }
+
+    pub(super) fn spawns() -> usize {
+        SPAWNS.load(SeqCst)
+    }
+
+    fn record(event: impl FnOnce() -> String) {
+        if ARMED.load(SeqCst) {
+            let event = event();
+            EVENTS.lock().unwrap().push(event);
+        }
+    }
+
+    fn real(cell: &OnceLock<usize>, name: &std::ffi::CStr) -> usize {
+        let address =
+            *cell.get_or_init(|| unsafe { libc::dlsym(libc::RTLD_NEXT, name.as_ptr()) } as usize);
+        assert_ne!(address, 0, "libc has no {name:?}");
+        address
+    }
+
+    fn describe(address: *const sockaddr, length: socklen_t) -> String {
+        if address.is_null() || (length as usize) < std::mem::size_of::<libc::sa_family_t>() {
+            return "unknown".into();
+        }
+        // SAFETY: the caller hands connect(2) a valid address of `length` bytes.
+        unsafe {
+            match c_int::from((*address).sa_family) {
+                libc::AF_INET => {
+                    let ip = &*address.cast::<libc::sockaddr_in>();
+                    let host = std::net::Ipv4Addr::from(u32::from_be(ip.sin_addr.s_addr));
+                    format!("{host}:{}", u16::from_be(ip.sin_port))
+                }
+                libc::AF_INET6 => {
+                    let ip = &*address.cast::<libc::sockaddr_in6>();
+                    let host = std::net::Ipv6Addr::from(ip.sin6_addr.s6_addr);
+                    format!("[{host}]:{}", u16::from_be(ip.sin6_port))
+                }
+                libc::AF_UNIX => {
+                    let unix = &*address.cast::<libc::sockaddr_un>();
+                    let path: Vec<u8> = unix
+                        .sun_path
+                        .iter()
+                        .take_while(|&&c| c != 0)
+                        .map(|&c| c as u8)
+                        .collect();
+                    format!("unix:{}", String::from_utf8_lossy(&path))
+                }
+                family => format!("family {family}"),
+            }
+        }
+    }
+
+    #[no_mangle]
+    extern "C" fn connect(fd: c_int, address: *const sockaddr, length: socklen_t) -> c_int {
+        static REAL: OnceLock<usize> = OnceLock::new();
+        record(|| format!("connect {}", describe(address, length)));
+        let real = real(&REAL, c"connect");
+        // SAFETY: libc's own connect(2), called with the caller's arguments.
+        unsafe {
+            std::mem::transmute::<usize, extern "C" fn(c_int, *const sockaddr, socklen_t) -> c_int>(
+                real,
+            )(fd, address, length)
+        }
+    }
+
+    #[no_mangle]
+    extern "C" fn getaddrinfo(
+        node: *const c_char,
+        service: *const c_char,
+        hints: *const libc::addrinfo,
+        result: *mut *mut libc::addrinfo,
+    ) -> c_int {
+        type Real = extern "C" fn(
+            *const c_char,
+            *const c_char,
+            *const libc::addrinfo,
+            *mut *mut libc::addrinfo,
+        ) -> c_int;
+        static REAL: OnceLock<usize> = OnceLock::new();
+        record(|| {
+            let node = if node.is_null() {
+                String::new()
+            } else {
+                // SAFETY: getaddrinfo(3) takes a NUL-terminated name.
+                unsafe { std::ffi::CStr::from_ptr(node) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            format!("getaddrinfo {node}")
+        });
+        let real = real(&REAL, c"getaddrinfo");
+        // SAFETY: libc's own getaddrinfo(3), called with the caller's arguments.
+        unsafe { std::mem::transmute::<usize, Real>(real)(node, service, hints, result) }
+    }
+
+    type Spawn = extern "C" fn(
+        *mut pid_t,
+        *const c_char,
+        *const libc::posix_spawn_file_actions_t,
+        *const libc::posix_spawnattr_t,
+        *const *mut c_char,
+        *const *mut c_char,
+    ) -> c_int;
+
+    fn spawned(call: &str, path: *const c_char) {
+        if ARMED.load(SeqCst) {
+            SPAWNS.fetch_add(1, SeqCst);
+        }
+        record(|| {
+            // SAFETY: posix_spawn(3) takes a NUL-terminated path.
+            let path = unsafe { std::ffi::CStr::from_ptr(path) }.to_string_lossy();
+            format!("{call} {path}")
+        });
+    }
+
+    #[no_mangle]
+    extern "C" fn posix_spawn(
+        pid: *mut pid_t,
+        path: *const c_char,
+        actions: *const libc::posix_spawn_file_actions_t,
+        attributes: *const libc::posix_spawnattr_t,
+        argv: *const *mut c_char,
+        envp: *const *mut c_char,
+    ) -> c_int {
+        static REAL: OnceLock<usize> = OnceLock::new();
+        spawned("posix_spawn", path);
+        let real = real(&REAL, c"posix_spawn");
+        // SAFETY: libc's own posix_spawn(3), called with the caller's arguments.
+        unsafe {
+            std::mem::transmute::<usize, Spawn>(real)(pid, path, actions, attributes, argv, envp)
+        }
+    }
+
+    #[no_mangle]
+    extern "C" fn posix_spawnp(
+        pid: *mut pid_t,
+        file: *const c_char,
+        actions: *const libc::posix_spawn_file_actions_t,
+        attributes: *const libc::posix_spawnattr_t,
+        argv: *const *mut c_char,
+        envp: *const *mut c_char,
+    ) -> c_int {
+        static REAL: OnceLock<usize> = OnceLock::new();
+        spawned("posix_spawnp", file);
+        let real = real(&REAL, c"posix_spawnp");
+        // SAFETY: libc's own posix_spawnp(3), called with the caller's arguments.
+        unsafe {
+            std::mem::transmute::<usize, Spawn>(real)(pid, file, actions, attributes, argv, envp)
+        }
+    }
+
+    /// std `Command` forks when it cannot use posix_spawn (uid, pre_exec).
+    /// Recorded before the fork: the child only runs async-signal-safe code.
+    #[no_mangle]
+    extern "C" fn fork() -> pid_t {
+        static REAL: OnceLock<usize> = OnceLock::new();
+        if ARMED.load(SeqCst) {
+            SPAWNS.fetch_add(1, SeqCst);
+        }
+        record(|| "fork".into());
+        let real = real(&REAL, c"fork");
+        // SAFETY: libc's own fork(2).
+        unsafe { std::mem::transmute::<usize, extern "C" fn() -> pid_t>(real)() }
+    }
+}
+
 /// #1521: Projects and T3 are optional. A plain local Reader never contacts
 /// them on its own; only an explicit Projects view does.
+///
+/// Two instruments, each with a positive control:
+/// - `t3_probe` sees every entry into this file's T3 connection points
+///   (`t3_gateways`, `manager_gateway`) and can block or gate them;
+/// - on Linux, `libc_boundary` sees every socket connect, name lookup and
+///   process spawn of a dedicated child process running the same flows
+///   with the real T3 transports, so no path elsewhere in the shell (MCP
+///   client, T3 session HTTP, T3 streams, Board/native clients, Kibana,
+///   link fetches, helper processes) can reach out unnoticed.
 #[cfg(test)]
 mod local_reader_without_t3_tests {
     use super::t3_probe::{self, Probe};
@@ -1634,20 +1848,42 @@ mod local_reader_without_t3_tests {
     use gpui::{TestAppContext, VisualTestContext};
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     type GatewayResult<T> = std::result::Result<T, okilum_t3::GatewayError>;
 
     const UNREACHABLE: &str = "test T3 endpoint is unreachable";
+    /// How long the fake T3 blocks the thread that calls it.
+    const HUNG_T3: Duration = Duration::from_secs(8);
+    /// Generous for a debug build, well under `HUNG_T3`: a local path that
+    /// waits on T3 fails here as a timeout, not as a flaky threshold.
+    const LOCAL_BOUND: Duration = Duration::from_secs(4);
+    /// How long a listener may take to report a connection made to it.
+    const READY: Duration = Duration::from_secs(2);
 
     /// T3 that never answers: every attempted operation is recorded, then
-    /// fails as an unreachable server does.
+    /// blocks for `delay`, if set, and fails as an unreachable server does.
     #[derive(Default)]
     struct UnreachableT3 {
         calls: Mutex<Vec<&'static str>>,
+        delay: Mutex<Option<Duration>>,
     }
     impl UnreachableT3 {
-        fn fail<T>(&self, operation: &'static str) -> GatewayResult<T> {
+        fn hung() -> Self {
+            Self {
+                delay: Mutex::new(Some(HUNG_T3)),
+                ..Default::default()
+            }
+        }
+        fn attempt(&self, operation: &'static str) {
             self.calls.lock().unwrap().push(operation);
+            let delay = *self.delay.lock().unwrap();
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+        }
+        fn fail<T>(&self, operation: &'static str) -> GatewayResult<T> {
+            self.attempt(operation);
             Err(okilum_t3::GatewayError::Unreachable(UNREACHABLE.into()))
         }
         fn calls(&self) -> Vec<&'static str> {
@@ -1659,11 +1895,11 @@ mod local_reader_without_t3_tests {
             self.fail("start_manager")
         }
         fn status(&self) -> okilum_t3::GatewayStatus {
-            self.calls.lock().unwrap().push("status");
+            self.attempt("status");
             okilum_t3::GatewayStatus::NotConnected
         }
         fn token_expires_at(&self) -> Option<u64> {
-            self.calls.lock().unwrap().push("token_expires_at");
+            self.attempt("token_expires_at");
             None
         }
         fn server_identity(&self) -> GatewayResult<okilum_t3::ServerIdentity> {
@@ -1733,12 +1969,19 @@ mod local_reader_without_t3_tests {
         fn origin(&self) -> String {
             format!("http://{}", self.listener.local_addr().unwrap())
         }
-        fn accepted(&mut self) -> usize {
-            while let Ok((stream, _)) = self.listener.accept() {
-                drop(stream);
-                self.accepted += 1;
+        /// Connections accepted so far, waiting up to `READY` for `expected`.
+        fn accepted_within(&mut self, expected: usize) -> usize {
+            let deadline = Instant::now() + READY;
+            loop {
+                while let Ok((stream, _)) = self.listener.accept() {
+                    drop(stream);
+                    self.accepted += 1;
+                }
+                if self.accepted >= expected || Instant::now() >= deadline {
+                    return self.accepted;
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
-            self.accepted
         }
     }
 
@@ -1763,6 +2006,11 @@ mod local_reader_without_t3_tests {
             "{after}: no Manager transport"
         );
         assert_eq!(t3.calls(), [] as [&str; 0], "{after}: no T3 operation");
+        assert_quiet_reader(reader, after);
+    }
+
+    /// No T3 state, status or panel anywhere in the Reader.
+    fn assert_quiet_reader(reader: &Reader, after: &str) {
         let navigation = &reader.project_navigation;
         assert!(navigation.t3_gateways.is_empty(), "{after}");
         assert!(navigation.statuses.is_empty(), "{after}: no T3 status");
@@ -1794,16 +2042,39 @@ mod local_reader_without_t3_tests {
         .unwrap();
     }
 
-    fn open_reader<'a>(
-        cx: &'a mut TestAppContext,
-        root: &Path,
-        temp: &Path,
-    ) -> (Entity<Reader>, &'a mut VisualTestContext) {
+    /// A project with a manager thread, its T3 at `origin`, saved as a
+    /// connection too.
+    fn configured_project(root: &Path, state: &Path, origin: &str) {
+        let folder = root.join("Dev/Areas/okilum");
+        std::fs::create_dir_all(folder.join("ops")).unwrap();
+        std::fs::write(
+            folder.join("ops/project.yaml"),
+            format!(
+                "name: Okilum\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: test\n  origin: {origin}\n  manager: {{project_id: okilum, thread_id: 'mcp:manager', workspace_mode: local}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(state).unwrap();
+        std::fs::write(
+            state.join("t3-connections.json"),
+            serde_json::to_vec(&std::collections::BTreeMap::from([("test", origin)])).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn init(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
             gpui_component::init(cx);
             bind_keys(cx);
         });
+    }
+
+    fn open_reader<'a>(
+        cx: &'a mut TestAppContext,
+        root: &Path,
+        state: &Path,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext) {
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -1811,8 +2082,8 @@ mod local_reader_without_t3_tests {
                     Opts {
                         vault: Some(root.to_owned()),
                         open_path: Some(root.join("start.md")),
-                        index_dir: Some(temp.join("index")),
-                        session_directory: Some(temp.join("state")),
+                        index_dir: Some(state.with_extension("index")),
+                        session_directory: Some(state.to_owned()),
                         ..Default::default()
                     },
                     window,
@@ -1915,22 +2186,37 @@ mod local_reader_without_t3_tests {
     }
 
     /// A fresh profile: no project.yaml in the vault, no saved T3 connection.
+    /// T3 hangs for `HUNG_T3` on any call, so startup and the local paths
+    /// finish within `LOCAL_BOUND` only if none of them waits on it.
     #[gpui::test]
-    fn a_fresh_local_profile_never_contacts_t3(cx: &mut TestAppContext) {
+    fn a_fresh_local_profile_never_contacts_or_waits_on_t3(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         local_vault(&root);
         let state = temp.path().join("state");
-        let t3 = Arc::new(UnreachableT3::default());
+        let t3 = Arc::new(UnreachableT3::hung());
         let probe = probe(&t3);
+        *probe.delay.lock().unwrap() = Some(HUNG_T3);
         let _installed = t3_probe::install(probe.clone());
+        init(cx);
 
-        let (reader, visual) = open_reader(cx, &root, temp.path());
+        let started = Instant::now();
+        let (reader, visual) = open_reader(cx, &root, &state);
         visual.run_until_parked();
+        let startup = started.elapsed();
+        assert!(
+            startup < LOCAL_BOUND,
+            "startup took {startup:?}: it waited on a hung T3"
+        );
         reader.read_with(visual, |r, _| assert_no_t3(&probe, &t3, r, "startup"));
         assert_no_error_toast(visual, "startup");
 
         use_local_reader(&reader, visual);
+        let local = started.elapsed();
+        assert!(
+            local < LOCAL_BOUND,
+            "startup and the local paths took {local:?}: they waited on a hung T3"
+        );
         reader.read_with(visual, |r, _| {
             assert_no_t3(&probe, &t3, r, "local paths");
             let navigation = &r.project_navigation;
@@ -1940,12 +2226,18 @@ mod local_reader_without_t3_tests {
         });
         assert_no_error_toast(visual, "local paths");
         assert!(!state.join("t3-connections.json").exists());
+        eprintln!("#1521 same-run timing: startup {startup:?}, startup + local paths {local:?}");
 
-        // Positive control, same instrument: the Projects view asks T3.
+        // Positive control, same instrument: the Projects view asks T3, and
+        // a sweep really waits on the hung T3 (shortened here).
+        let control = Duration::from_millis(300);
+        *probe.delay.lock().unwrap() = Some(control);
+        let opened = Instant::now();
         reader.update_in(visual, |r, window, cx| {
             r.show_app_section(Section::Projects, window, cx)
         });
         visual.run_until_parked();
+        assert!(opened.elapsed() >= control, "the sweep waited on T3");
         assert_eq!(probe.sweeps.load(SeqCst), 1, "the Projects view asks T3");
         assert!(
             probe.connects.lock().unwrap().is_empty(),
@@ -1961,7 +2253,7 @@ mod local_reader_without_t3_tests {
 
     /// Projects configured, T3 unreachable: the Reader stays local and
     /// usable, also while the Projects view waits on a blocked T3, and the
-    /// unreachable status shows in the Projects view only.
+    /// unreachable status shows in the Projects view only, once opened.
     #[gpui::test]
     fn configured_projects_stay_lazy_and_an_unreachable_t3_shows_only_in_projects(
         cx: &mut TestAppContext,
@@ -1971,29 +2263,16 @@ mod local_reader_without_t3_tests {
         local_vault(&root);
         let mut endpoint = Endpoint::new();
         let origin = endpoint.origin();
-        let folder = root.join("Dev/Areas/okilum");
-        std::fs::create_dir_all(folder.join("ops")).unwrap();
-        std::fs::write(
-            folder.join("ops/project.yaml"),
-            format!(
-                "name: Okilum\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: test\n  origin: {origin}\n  manager: {{project_id: okilum, thread_id: 'mcp:manager', workspace_mode: local}}\n"
-            ),
-        )
-        .unwrap();
         let state = temp.path().join("state");
-        std::fs::create_dir_all(&state).unwrap();
-        std::fs::write(
-            state.join("t3-connections.json"),
-            serde_json::to_vec(&std::collections::BTreeMap::from([("test", &origin)])).unwrap(),
-        )
-        .unwrap();
+        configured_project(&root, &state, &origin);
         let t3 = Arc::new(UnreachableT3::default());
         let probe = probe(&t3);
         let (release, gate) = async_channel::bounded(1);
         *probe.gate.lock().unwrap() = Some(gate);
         let _installed = t3_probe::install(probe.clone());
+        init(cx);
 
-        let (reader, visual) = open_reader(cx, &root, temp.path());
+        let (reader, visual) = open_reader(cx, &root, &state);
         visual.run_until_parked();
         reader.read_with(visual, |r, _| assert_no_t3(&probe, &t3, r, "startup"));
         assert_no_error_toast(visual, "startup");
@@ -2078,10 +2357,189 @@ mod local_reader_without_t3_tests {
         assert_no_error_toast(visual, "an unreachable T3");
 
         // No real transport bypassed the fake. Positive control: a
-        // connection to the endpoint is counted.
-        assert_eq!(endpoint.accepted(), 0, "nothing reached the T3 origin");
+        // connection to the endpoint is counted once the listener has it.
+        assert_eq!(
+            endpoint.accepted_within(0),
+            0,
+            "nothing reached the T3 origin"
+        );
         let _client =
             std::net::TcpStream::connect(endpoint.listener.local_addr().unwrap()).unwrap();
-        assert_eq!(endpoint.accepted(), 1);
+        assert_eq!(endpoint.accepted_within(1), 1);
+    }
+
+    const BOUNDARY_CHILD: &str = "OKILUM_1521_LIBC_BOUNDARY_CHILD";
+
+    /// The same flows with the real T3 transports and no probe, watched at
+    /// the libc boundary (see `libc_boundary`) in a child process of their
+    /// own: a fresh profile, then a configured project whose T3 refuses
+    /// every connection. Neither opens a socket, looks up a name or spawns
+    /// a process; the Projects view then really connects to the configured
+    /// origin, and only there shows T3 as unreachable.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn local_reader_flows_open_no_socket_lookup_or_process(cx: &mut TestAppContext) {
+        const NAME: &str = "reader_project_navigation::local_reader_without_t3_tests::local_reader_flows_open_no_socket_lookup_or_process";
+        if std::env::var_os(BOUNDARY_CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .env(BOUNDARY_CHILD, "1");
+            // Loopback only: no proxy may stand between reqwest and the origin.
+            for proxy in [
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ] {
+                child.env_remove(proxy);
+            }
+            let output = child.output().expect("run the libc boundary child");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success() && stdout.contains("test result: ok. 1 passed"),
+                "libc boundary child failed\n{stdout}\n{stderr}"
+            );
+            return;
+        }
+
+        super::libc_boundary::arm();
+        // Real transports, with the token a connected keychain would hold.
+        let probe = Arc::new(Probe {
+            token: Some(okilum_t3::StoredToken {
+                access_token: "synthetic-1521".into(),
+                expires_at: u64::MAX,
+                scope: "mcp".into(),
+                client_id: "okilum-test".into(),
+            }),
+            ..Default::default()
+        });
+        let _installed = t3_probe::install(probe.clone());
+        init(cx);
+        let temp = tempfile::tempdir().unwrap();
+
+        let fresh = temp.path().join("fresh");
+        local_vault(&fresh);
+        let fresh_state = temp.path().join("fresh-state");
+        {
+            let (reader, visual) = open_reader(cx, &fresh, &fresh_state);
+            visual.run_until_parked();
+            use_local_reader(&reader, visual);
+            reader.read_with(visual, |r, _| assert_quiet_reader(r, "fresh profile"));
+            assert_no_error_toast(visual, "fresh profile");
+        }
+        assert_eq!(
+            super::libc_boundary::events(),
+            [] as [String; 0],
+            "a fresh profile reaches out to nothing"
+        );
+
+        // T3 accepts and drops every connection, so each attempt fails fast.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = {
+            let (accepted, stop) = (accepted.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            drop(stream);
+                            accepted.fetch_add(1, SeqCst);
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+            })
+        };
+        let configured = temp.path().join("configured");
+        local_vault(&configured);
+        let configured_state = temp.path().join("configured-state");
+        configured_project(&configured, &configured_state, &format!("http://{address}"));
+        let (reader, visual) = open_reader(cx, &configured, &configured_state);
+        visual.run_until_parked();
+        use_local_reader(&reader, visual);
+        reader.read_with(visual, |r, _| {
+            assert_quiet_reader(r, "configured project");
+            assert_eq!(r.palette_projects("", 8).len(), 1, "discovered locally");
+        });
+        assert_no_error_toast(visual, "configured project");
+        assert_eq!(
+            super::libc_boundary::events(),
+            [] as [String; 0],
+            "a configured project is not contacted until asked"
+        );
+        assert_eq!(accepted.load(SeqCst), 0);
+        assert_eq!(probe.sweeps.load(SeqCst), 0);
+
+        // Positive control, same instrument: the Projects view connects to
+        // the configured T3 through the real MCP and session transports.
+        reader.update_in(visual, |r, window, cx| {
+            r.show_app_section(Section::Projects, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(probe.sweeps.load(SeqCst) > 0, "the Projects view asks T3");
+        assert_eq!(
+            *probe.connects.lock().unwrap(),
+            [("test".to_owned(), format!("http://{address}"))]
+        );
+        let events = super::libc_boundary::events();
+        assert!(
+            events.contains(&format!("connect {address}")),
+            "the Projects view connects to T3: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event == &format!("connect {address}")),
+            "nothing but the configured T3: {events:?}"
+        );
+        let deadline = Instant::now() + READY;
+        while accepted.load(SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            accepted.load(SeqCst) > 0,
+            "the T3 origin saw the connection"
+        );
+        stop.store(true, SeqCst);
+        server.join().unwrap();
+        reader.read_with(visual, |r, cx| {
+            let navigation = &r.project_navigation;
+            let folder = &navigation.discovery.projects[0].folder;
+            assert!(
+                matches!(
+                    navigation.statuses.get(folder),
+                    Some(okilum_t3::projects::Status::Unreachable(_))
+                ),
+                "{:?}",
+                navigation.statuses
+            );
+            let picker = navigation.picker.as_ref().unwrap().read(cx);
+            assert!(
+                picker.model().manager_detail(folder).is_some(),
+                "the Projects view says why T3 is unreachable"
+            );
+            assert!(navigation.active.is_none() && navigation.manager_panel.is_none());
+        });
+        assert_no_error_toast(visual, "an unreachable T3");
+
+        // Positive controls for the T3 stream transport, lookup and spawn.
+        let before = super::libc_boundary::events().len();
+        let _ = tungstenite::connect(format!("ws://{address}/"));
+        assert!(super::libc_boundary::events()[before..].contains(&format!("connect {address}")));
+        let before = super::libc_boundary::events().len();
+        let _ = std::net::ToSocketAddrs::to_socket_addrs(&("localhost", 80));
+        assert!(super::libc_boundary::events()[before..]
+            .iter()
+            .any(|event| event == "getaddrinfo localhost"));
+        assert_eq!(super::libc_boundary::spawns(), 0);
+        let _ = std::process::Command::new("true").status();
+        assert!(super::libc_boundary::spawns() > 0, "a spawn is seen");
     }
 }
