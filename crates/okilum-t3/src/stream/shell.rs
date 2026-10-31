@@ -24,6 +24,8 @@ pub struct Thread {
 #[derive(Clone, Debug)]
 pub enum Update {
     Snapshot(Vec<Thread>),
+    /// The server's requested completion marker, distinct from directory data.
+    Synchronized,
     Thread(Thread, bool),
     RemoveThread(String),
     RemoveProject(String),
@@ -80,7 +82,10 @@ impl Directory {
                     self.threads.retain(|_, t| &t.project_id != id);
                     changed |= self.threads.len() != before;
                 }
-                Update::Unchanged => {}
+                // Snapshot application already makes the directory usable.
+                // The wire marker is exposed for completion-sensitive clients
+                // without changing existing UI readiness or causing a redraw.
+                Update::Synchronized | Update::Unchanged => {}
             }
         }
         changed
@@ -153,6 +158,7 @@ fn decode(value: &Value, mut cursor: Option<u64>) -> StreamResult<(Vec<Update>, 
             return Err(invalid());
         }
         if value["kind"] == "synchronized" {
+            updates.push(Update::Synchronized);
             continue;
         }
         let next = sequence(&value["sequence"])?;
@@ -269,6 +275,51 @@ mod tests {
         assert!(!directory.threads.contains_key("manager"));
         assert!(directory.threads.contains_key("replacement"));
     }
+    #[test]
+    fn completion_marker_is_exposed_only_when_received_without_mutating_directory() {
+        let snapshot = json!({"kind":"snapshot","snapshot":{"snapshotSequence":20,"threads":[row("manager","bound")]}});
+        let (snapshot_only, cursor) = decode(&json!({"values":[snapshot.clone()]}), None).unwrap();
+        assert!(
+            matches!(&snapshot_only[..], [Update::Snapshot(_)]),
+            "a snapshot must not fabricate a server completion marker"
+        );
+        let mut directory = Directory::new(["bound".into()]);
+        assert!(directory.apply(&snapshot_only));
+        assert!(
+            directory.synchronized,
+            "snapshot readiness remains unchanged"
+        );
+        let before = directory.threads.clone();
+
+        let (marker, marker_cursor) =
+            decode(&json!({"values":[{"kind":"synchronized"}]}), cursor).unwrap();
+        assert!(
+            matches!(&marker[..], [Update::Synchronized]),
+            "positive control: the real server marker reaches the consumer"
+        );
+        assert_eq!(
+            marker_cursor, cursor,
+            "completion is not a structural event"
+        );
+        assert!(
+            !directory.apply(&marker),
+            "completion does not trigger a data redraw"
+        );
+        assert_eq!(directory.threads, before);
+        assert!(directory.synchronized);
+
+        let (together, _) =
+            decode(&json!({"values":[snapshot,{"kind":"synchronized"}]}), None).unwrap();
+        assert!(matches!(
+            &together[..],
+            [Update::Snapshot(_), Update::Synchronized]
+        ));
+        assert!(
+            decode(&json!({"values":[{"kind":"synchronized"}]}), None).is_err(),
+            "a completion marker cannot stand in for the initial snapshot"
+        );
+    }
+
     #[test]
     fn malformed_chunk_does_not_publish_a_partial_directory() {
         let mut directory = Directory::new(["bound".into()]);

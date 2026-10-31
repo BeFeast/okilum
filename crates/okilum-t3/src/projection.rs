@@ -1,6 +1,8 @@
 //! Retained Tier 1 thread projection for the native Linux Manager (#1787).
 //! Visibility/history semantics follow T3's orchestrationV2Projection,
-//! orchestrationV2Timeline and threadHistoryMerge (upstream 71a283aed2).
+//! orchestrationV2Timeline and threadHistoryMerge. Bounded history uses its
+//! cursor/hasMoreHistory metadata (upstream nightly 15fe283272), not the removed
+//! payload-budget flag.
 //! The model owns history once. A text flush replaces one Arc-backed row;
 //! the UI drains coalesced changes instead of cloning the conversation.
 use crate::stream::{StreamError, StreamResult, ThreadUpdate};
@@ -37,7 +39,6 @@ pub struct Metadata {
     pub deleted: bool,
     pub history_cursor: Option<String>,
     pub has_more_history: bool,
-    pub payload_budget_exceeded: bool,
     pub latest_local_turn_ordinal: Option<u64>,
 }
 #[derive(Default)]
@@ -227,7 +228,6 @@ impl Projection {
                     projection,
                     history_cursor,
                     has_more_history,
-                    payload_budget_exceeded,
                     latest_local_turn_ordinal,
                     ..
                 } => {
@@ -241,7 +241,6 @@ impl Projection {
                             .into(),
                         history_cursor: history_cursor.clone(),
                         has_more_history: *has_more_history,
-                        payload_budget_exceeded: *payload_budget_exceeded,
                         latest_local_turn_ordinal: *latest_local_turn_ordinal,
                         ..Default::default()
                     };

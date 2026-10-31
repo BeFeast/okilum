@@ -691,6 +691,7 @@ impl ProjectView {
         if self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some() {
             view = view.child(
                 Button::new("project-live-history")
+                    .debug_selector(|| "project-live-history".into())
                     .ghost()
                     .label(if self.native.history_busy {
                         "Loading earlier messages…"
@@ -744,12 +745,6 @@ impl ProjectView {
                     .debug_selector(|| "project-live-deleted".into())
                     .child("This manager thread was deleted. Open T3 to choose another manager."),
             );
-        }
-        if self.native.metadata.payload_budget_exceeded {
-            view =
-                view.child(div().w_full().min_w_0().whitespace_normal().child(
-                    "The latest activity window is incomplete. Open T3 for the full thread.",
-                ));
         }
         if let Some(error) = self
             .native

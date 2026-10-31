@@ -1256,3 +1256,32 @@ fn shell_directory_accepts_a_bounded_snapshot_larger_than_the_default_frame_limi
     drop(stream);
     fixture.finish();
 }
+
+#[test]
+fn modern_snapshot_without_budget_flag_keeps_opaque_history_metadata() {
+    let mut wire = snapshot(10);
+    assert!(wire.get("payloadBudgetExceeded").is_none());
+    wire["latestLocalTurnOrdinal"] = json!(42);
+    let chunk = json!({"values":[wire]});
+    let (updates, cursor) = protocol::decode_chunk(&chunk, "thread-a", None).unwrap();
+    assert_eq!(cursor, Some(10));
+    assert!(matches!(
+        &updates[..],
+        [ThreadUpdate::Snapshot {
+            has_more_history: true,
+            history_cursor: Some(history),
+            latest_local_turn_ordinal: Some(42),
+            ..
+        }] if history == "opaque+/cursor"
+    ));
+
+    // Removing an obsolete field must not relax the current history contract.
+    for (field, invalid) in [
+        ("hasMoreHistory", json!("false")),
+        ("historyCursor", json!(17)),
+    ] {
+        let mut malformed = chunk.clone();
+        malformed["values"][0][field] = invalid;
+        assert!(protocol::decode_chunk(&malformed, "thread-a", None).is_err());
+    }
+}

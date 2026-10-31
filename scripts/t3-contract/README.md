@@ -17,43 +17,92 @@ Current scope:
    or the upstream workspace dependency graph. Generate draft-2020-12 JSON Schema
    from the encoded upstream Effect contracts. No unsupported schema or absent
    export is replaced with a permissive placeholder.
-3. Compare canonical sorted JSON with `snapshot.json`. The snapshot covers the
-   protocol-v2 subscribeShell, subscribeThread and dispatchCommand input/output,
-   descriptor capabilities, server auth and pairing exchange contracts. The
-   committed `baseline.json` identifies its source version. Diff and actual
-   schema remain workflow artifacts, even on failure.
+3. Compare schemas semantically against the historical RPC `snapshot.json`
+   (provenance in `baseline.json`) plus the separately attributed current3991
+   decoded consumer snapshot. Removals, new requirements and narrowing fail;
+   additive changes are informational. The original subscribeThread RPC output
+   is deliberately unknown upstream, so it cannot protect stream fields. Export
+   explicit stream-item and bounded-snapshot decoded schemas with `Schema.toType`
+   as well, and reject opaque consumer roots. Their deterministic gzip baseline
+   and exact source/Effect/digests are in `consumer-snapshot.json.gz` and
+   `consumer-baseline.json`; decoded shapes do not substitute for wire runtime
+   proof. Diff and actual schema remain artifacts even on failure.
 
-Enabled after #1805: the actual `okilum-t3` example calls `NativeToken::pair`
-and `NativeClient::subscribe` for an initial thread snapshot, then reconnects
-with the committed `ResumeCursor`. It requires the completion marker on both
-connections, exactly one initial snapshot, no replacement snapshot on resume,
-and an unchanged idle cursor. An unexpected domain event fails visibly instead
-of being silently skipped. Each subscription has a 30-second cancellation
-watchdog, and the complete client subprocess has a 90-second ceiling. The
-receipt records source commit and actual compiled client binary SHA256.
+Both hosted observation and the local updater gate now exercise the same real
+`okilum_t3::stream::NativeClient` path. All five literal boolean proofs are
+required: `pair`, `subscribe_thread`, `resume_thread`, `subscribe_shell`, and
+`dispatch_command`. Thread and shell subscriptions must receive real completion
+markers; a shell snapshot alone does not prove completion. Resume uses the
+committed initial cursor, with no replacement snapshot or cursor change.
 
-Fixture setup is separate: official T3 CLI issues a temporary MCP setup session,
-and MCP creates one scratch thread **without message or attachments**. Its
-`runId` must be null: no provider/model run is requested. This is only server
-state setup, never evidence for native shell/dispatch operations. A fresh
-one-time pairing credential is passed to the Rust example over stdin; Python
-no longer substitutes its own token exchange for the client pairing call.
-The server, fixture and all credentials disappear with the throwaway home.
+Fixture setup uses the matching official T3 CLI to issue an isolated MCP setup
+session, then MCP creates one uniquely titled scratch thread **without a message
+or attachments**. Its `runId` must be null; no provider/model run is requested.
+The native client checks that exact scratch title and thread identity, empty
+messages/runs, and a real protocol-v2 descriptor before any mutation. Its harmless
+`thread.metadata.update` rename has the server's `expectedEmpty:true` race guard.
+A new native snapshot must then contain the exact renamed title at a cursor at
+least as recent as the command acknowledgement. An RPC acknowledgement alone is
+not proof. Only the native client's public APIs count; fixture MCP setup never
+substitutes for the shell or dispatch proof.
 
-**Deferred until future merged client APIs:** native subscribeShell,
-dispatchCommand/send/interrupt/approvals and capability-flag runtime checks.
-The schema snapshot continues to cover shell/dispatch/descriptor contracts.
-No production-client API, UI code or raw WebSocket substitute was added.
-Only exposed real-client methods count as round-trip evidence.
+Each receive stage has a 30-second cancellation watchdog. The complete native
+subprocess has a 150-second hard process-group deadline; setup and descriptor
+workers are independently bounded. Child groups are killed and their leaders
+reaped on timeout or interruption. Credential input uses stdin, never argv or
+inherited environment. Child stdout/stderr remain private and are never included
+in receipts or errors. Hosted server lifecycle remains confined to the disposable
+nightly bootstrap, which terminates its server before removing private state.
+
+## Local updater gate (existing candidate only)
+
+The updater must create an **isolated candidate** state directory and start its
+candidate server separately. Supply that candidate's matching verified official
+server binary and exact exported schema, together with the current compiled
+`nightly_contract` client example. This command never starts, stops, updates, or
+replaces a server, touches a live vault, or launches a provider/model:
+
+```sh
+python3 scripts/t3-contract/probe.py \
+  --url https://candidate.example \
+  --server-binary /isolated/candidate/t3 \
+  --server-base-dir /isolated/candidate/state \
+  --candidate-schema /isolated/candidate/schema.json \
+  --client-probe /build/examples/nightly_contract \
+  --receipt /existing/private-directory/contract.json
+```
+
+The URL follows the native `Environment` policy: HTTPS origins, or HTTP only for
+localhost or an explicit private/loopback IP. Credentials, paths, query strings
+and fragments are rejected. The existing receipt parent directory must already
+exist. The caller owns disposal of candidate state, including the idle scratch
+fixture and temporary auth records; this harness does not delete server state.
+It inherits no provider credentials, proxy credentials or live T3 configuration.
+
+Exit 0 requires compatible schemas **and all five actual native proofs**;
+otherwise exit 1 writes FAIL. Compatibility uses the default explicit consumer
+expectations and the digest-validated historical plus decoded-consumer baselines
+from `compatibility.load_baseline()`. Removed fields (including optional fields), RPCs or variants, newly required
+fields, narrowing, and unknown constructs fail; safe additions remain informational.
+The atomic mode-0600 JSON receipt includes the five booleans, sanitized descriptor
+version, exact server/client/schema SHA256 digests, canonical merged-baseline
+SHA256, and compatibility counts. It never contains credentials, peer exception
+text, server logs or child output. PASS binds those exact inputs; it is not a
+blanket approval of a different binary or schema.
+
+Legacy direct Rust callers may still provide only `{origin, credential,
+thread_id}` on stdin. They receive the old read-only pair/snapshot/resume proof,
+with shell/dispatch false. They cannot satisfy either full gate. Both official
+Python callers always supply the unique `expected_title` and require every proof.
 
 Failure or drift opens/updates one marker-labelled `t3-contract` issue in the
 GitHub mirror, using the normal Actions token. A later failure reopens the same
 incident if it was closed; concurrent runs are serialized. The issue includes
 T3 version, bootstrap/schema outcome, run URL and a bounded diff excerpt; the
 artifact contains the full diff. No Actions run polling or account token is
-used. Incident publication errors fail this standalone job visibly. Normal
-protocol drift is retained as FAIL in the result/summary and incident, while the
-probe step is report-only. No other CI gate is changed.
+used. Incident publication errors fail this standalone job visibly. Breaking protocol changes or runtime/harness failures remain FAIL in the
+result/summary and incident; additive-only drift is INFO with PASS. The hosted
+observation step remains report-only. No other CI gate is changed.
 
 Never upload the disposable server home or server logs: startup may print
 pairing credentials. The server process group is terminated before temporary
@@ -75,6 +124,12 @@ python3 -m unittest discover -s scripts/t3-contract -p 'test_*.py' -v
 Update `snapshot.json` and `baseline.json` together in a reviewed PR. Metadata is
 separate from schema so a version-only nightly change does not create drift.
 The initial snapshot was generated from the official release tag recorded in
-`baseline.json`. First real hosted native-client execution remains to be observed
-after installation; static/unit and normal PR compilation are distinct evidence.
-No server or cargo build/test was run on maestro during implementation.
+`baseline.json`. Static/unit and normal PR compilation remain distinct evidence from actual
+hosted or isolated-candidate execution. A baseline update cannot substitute for
+the full native proof.
+
+Changes to the separately attributed decoded consumer baseline also require
+review: regenerate both decoded roots from the exact inspected tag, use
+deterministic gzip (mtime zero), and update its source commit, Effect version
+and compressed/decoded SHA256 metadata together. Do not fabricate decoded
+roots for the historical3814 RPC baseline.

@@ -1,0 +1,195 @@
+"""Semantic contract regressions, with controls for silent field/variant loss."""
+import copy
+import gzip
+import json
+from pathlib import Path
+import unittest
+
+import compatibility as c
+
+
+def doc(schema, definitions=None):
+    return {'dialect': 'draft-2020-12', 'schema': schema, 'definitions': definitions or {}}
+
+
+def obj(properties=None, required=()):
+    return {'type': 'object', 'properties': properties or {}, 'required': list(required),
+            'additionalProperties': True}
+
+
+def variant(tag, extra=None):
+    return obj({'kind': {'type': 'string', 'enum': [tag]}, **(extra or {})}, ['kind'])
+
+
+class Compatibility(unittest.TestCase):
+    def compare(self, old, new):
+        return c.compare(new, old, expectations=())
+
+    def test_deleted_optional_payload_budget_flag_is_breaking(self):
+        # This is an explicitly synthetic older schema, not a claim that3991
+        # declares this obsolete field or that3814 exported stream internals.
+        old = {'stream': doc({'anyOf': [variant('snapshot', {
+            'payloadBudgetExceeded': {'type': 'boolean'}, 'projection': obj()})]})}
+        self.assertEqual(self.compare(old, copy.deepcopy(old))['status'], 'PASS')
+        new = copy.deepcopy(old)
+        del new['stream']['schema']['anyOf'][0]['properties']['payloadBudgetExceeded']
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertTrue(any('payloadBudgetExceeded' in x['path'] for x in result['breaking']))
+
+    def test_additive_field_rpc_and_discriminated_variant_are_info(self):
+        old = {'rpc': doc({'anyOf': [variant('snapshot'), variant('event')]})}
+        new = copy.deepcopy(old)
+        new['rpc']['schema']['anyOf'].reverse()
+        new['rpc']['schema']['anyOf'][0]['properties']['optionalHint'] = {'type': 'string'}
+        new['rpc']['schema']['anyOf'].append(variant('future'))
+        new['newRpc'] = doc(obj())
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertFalse(result['breaking']); self.assertFalse(result['errors'])
+        self.assertGreaterEqual(len(result['informational']), 3)
+
+    def test_removed_rpc_variant_and_new_required_fields_fail(self):
+        old = {'rpc': doc({'anyOf': [variant('snapshot'), variant('event')]}),
+               'other': doc(obj({'optional': {'type': 'string'}}))}
+        for mutate in [lambda n: n.pop('other'),
+                       lambda n: n['rpc']['schema']['anyOf'].pop(),
+                       lambda n: n['other']['schema']['required'].append('optional'),
+                       lambda n: n['other']['schema'].update(
+                           properties={'new': {'type': 'string'}}, required=['new'])]:
+            new = copy.deepcopy(old); mutate(new)
+            with self.subTest(new=new):
+                self.assertEqual(self.compare(old, new)['status'], 'FAIL')
+
+    def test_narrowing_types_enums_and_constraints_fail(self):
+        for old, new in [({'type': 'number'}, {'type': 'integer'}),
+                         ({'type': 'string'}, {'type': 'boolean'}),
+                         ({'type': 'string'}, {'type': 'string', 'maxLength': 10}),
+                         ({'type': 'integer', 'minimum': 0}, {'type': 'integer', 'minimum': 1}),
+                         ({'type': 'string', 'enum': ['a', 'b']}, {'type': 'string', 'enum': ['b']})]:
+            with self.subTest(old=old, new=new):
+                self.assertEqual(self.compare({'x': doc(old)}, {'x': doc(new)})['status'], 'FAIL')
+
+    def test_widening_and_enum_reordering_pass(self):
+        for old, new in [({'type': 'integer'}, {'type': 'number'}),
+                         ({'type': 'string', 'maxLength': 10}, {'type': 'string', 'maxLength': 20}),
+                         ({'type': 'string', 'enum': ['a', 'b']}, {'type': 'string', 'enum': ['b', 'a', 'c']})]:
+            with self.subTest(old=old, new=new):
+                self.assertEqual(self.compare({'x': doc(old)}, {'x': doc(new)})['status'], 'PASS')
+
+    def test_nested_discriminators_are_not_array_positions(self):
+        def event(tag):
+            result = variant('event', {'event': obj({'type': {'type': 'string', 'enum': [tag]},
+                                                    'payload': obj()}, ['type'])})
+            # The real stream requires event; an optional nested value is not a
+            # guaranteed discriminator and must not be used to match variants.
+            result['required'].append('event')
+            return result
+        old = {'x': doc({'anyOf': [event('created'), event('updated')]})}
+        new = {'x': doc({'anyOf': [event('updated'), event('future'), event('created')]})}
+        self.assertEqual(self.compare(old, new)['status'], 'PASS')
+        new['x']['schema']['anyOf'] = [event('updated')]
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertTrue(any('event.type=' in x['path'] for x in result['breaking']))
+
+    def test_recursive_refs_and_renamed_definitions_keep_variant_identity(self):
+        def tree(name):
+            return {'tree': doc({'$ref': '#/$defs/' + name}, {name: {'anyOf': [
+                variant('leaf', {'optional': {'type': 'boolean'}}),
+                variant('branch', {'children': {'type': 'array', 'items': {'$ref': '#/$defs/' + name}}})]}})}
+        old, new = tree('Before'), tree('After')
+        new['tree']['definitions']['After']['anyOf'].reverse()
+        self.assertEqual(self.compare(old, new)['status'], 'PASS')
+        del new['tree']['definitions']['After']['anyOf'][1]['properties']['optional']
+        self.assertEqual(self.compare(old, new)['status'], 'FAIL')
+
+    def test_unchanged_inline_ref_must_still_check_changed_definition(self):
+        old = {'x': doc(obj({'node': {'$ref': '#/$defs/Node'}}),
+                        {'Node': obj({'optional': {'type': 'string'}})})}
+        new = copy.deepcopy(old)
+        new['x']['definitions']['Node']['properties'].clear()
+        self.assertEqual(old['x']['schema'], new['x']['schema'])
+        self.assertEqual(self.compare(old, new)['status'], 'FAIL')
+
+    def test_unknown_keyword_bad_refs_and_ambiguous_union_fail_closed(self):
+        invalid = [doc({'type': 'object', 'unevaluatedProperties': False}),
+                   doc({'$ref': 'https://example.invalid/schema'}),
+                   doc({'$ref': '#/$defs/Missing'}),
+                   doc({'$ref': '#/$defs/Loop'}, {'Loop': {'$ref': '#/$defs/Loop'}}),
+                   doc({'required': 'not-an-array'})]
+        for value in invalid:
+            with self.subTest(schema=value):
+                result = self.compare({'x': value}, {'x': value})
+                self.assertEqual(result['status'], 'FAIL'); self.assertTrue(result['errors'])
+        old = {'x': doc({'anyOf': [obj({'a': {'type': 'string'}}), obj({'b': {'type': 'integer'}})]})}
+        new = {'x': doc({'anyOf': [obj({'c': {'type': 'string'}}), obj({'d': {'type': 'integer'}})]})}
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'FAIL'); self.assertTrue(result['errors'])
+
+    def test_actual_current_consumer_baseline_and_opaque_rpc_are_distinct(self):
+        baseline = c.load_baseline()
+        result = c.compare(copy.deepcopy(baseline), baseline)
+        self.assertEqual(result['status'], 'PASS', result['errors'])
+        # The historical RPC schema was Unknown. Decoded roots are separately
+        # inspected current3991 contracts, with explicit provenance.
+        self.assertEqual(baseline['subscribeThread.output']['schema'], {})
+        historical = json.loads((Path(__file__).parent / 'snapshot.json').read_text())
+        self.assertNotIn(c.STREAM, historical)
+        self.assertNotIn(c.BOUNDED, historical)
+        for root in [c.STREAM, c.BOUNDED]:
+            for replacement in [None, doc({}), doc(True)]:
+                new = copy.deepcopy(baseline)
+                if replacement is None:
+                    new.pop(root)
+                else:
+                    new[root] = replacement
+                result = c.compare(new, baseline)
+                with self.subTest(root=root, replacement=replacement):
+                    self.assertEqual(result['status'], 'FAIL'); self.assertTrue(result['errors'])
+
+    def test_deep_optional_consumer_field_removal_is_not_hidden_by3814(self):
+        baseline = c.load_baseline()
+        candidate = copy.deepcopy(baseline)
+        document = c.Document(candidate[c.BOUNDED])
+        thread = document.resolve(c._field(document, document.root, 'projection.thread'))
+        self.assertIn('snoozedAt', thread['properties'])
+        self.assertNotIn('snoozedAt', thread['required'])
+        del thread['properties']['snoozedAt']
+        result = c.compare(candidate, baseline)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertTrue(any('snoozedAt' in change['path'] for change in result['breaking']))
+
+    def test_union_operator_and_overlapping_oneof_fail_closed(self):
+        branches = [variant('a'), variant('b')]
+        old = {'x': doc({'anyOf': branches})}
+        changed = {'x': doc({'oneOf': copy.deepcopy(branches)})}
+        result = self.compare(old, changed)
+        self.assertEqual(result['status'], 'FAIL'); self.assertTrue(result['errors'])
+        ambiguous = {'x': doc({'oneOf': [{'type': 'string'}, {'type': 'string'}]})}
+        result = self.compare(ambiguous, ambiguous)
+        self.assertEqual(result['status'], 'FAIL'); self.assertTrue(result['errors'])
+        tagged = {'x': doc({'oneOf': [variant('b'), variant('a'), variant('c')]})}
+        self.assertEqual(self.compare(changed, tagged)['status'], 'PASS')
+
+    def test_fingerprint_is_bounded_for_deeply_nested_contracts(self):
+        schema = {'type': 'boolean'}
+        for _ in range(32):
+            schema = obj({'child': schema}, ['child'])
+        document = c.Document(doc(schema))
+        fingerprint = document.fingerprint(document.root)
+        self.assertLess(len(fingerprint), 1024)
+        self.assertEqual(fingerprint, document.fingerprint(document.root))
+
+    def test_current_consumer_baseline_provenance_and_deterministic_gzip(self):
+        directory = Path(__file__).parent
+        meta = json.loads((directory / 'consumer-baseline.json').read_text())
+        self.assertEqual(meta['tag'], 'v0.1.7-nightly.20261031.3991')
+        self.assertEqual(meta['source_commit'], '15fe2832727893cbdd2214383f9f971474849695')
+        packed = (directory / meta['snapshot']).read_bytes()
+        self.assertEqual(packed[4:8], bytes(4))
+        self.assertEqual(set(json.loads(gzip.decompress(packed))), {c.STREAM, c.BOUNDED})
+
+
+if __name__ == '__main__':
+    unittest.main()
