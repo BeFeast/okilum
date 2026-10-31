@@ -1,7 +1,7 @@
 //! Linux live history. The background task owns the socket; the retained model
 //! and cursor are paired under a mutex, including during concurrent history loads.
 use super::*;
-mod actions;
+pub(super) mod actions;
 use okilum_t3::{
     projection::{Metadata, Projection},
     stream::{
@@ -514,6 +514,7 @@ impl ProjectView {
                             this.native
                                 .actions
                                 .update(cx, |a, cx| a.set_state(state, window, cx));
+                            this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
                         }
                         let metadata = changes.metadata.clone();
                         let changed = changes.changed();

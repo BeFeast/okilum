@@ -45,6 +45,8 @@ fn activity_preview(text: &str) -> SharedString {
 
 pub(super) struct Feed {
     parent: WeakEntity<ProjectView>,
+    pub(super) actions: Option<Entity<super::native::actions::Actions>>,
+    request_cards: HashMap<u64, Entity<super::native::actions::RequestCard>>,
     messages: BTreeMap<u64, Message>,
     ids: BTreeMap<u64, String>,
     projected: HashMap<String, usize>,
@@ -71,6 +73,8 @@ impl Feed {
         let scroll = cx.observe(&scroller, |_, _, cx| cx.notify());
         Self {
             parent,
+            actions: None,
+            request_cards: HashMap::new(),
             messages: BTreeMap::new(),
             ids: BTreeMap::new(),
             projected: HashMap::new(),
@@ -93,6 +97,7 @@ impl Feed {
         }
     }
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
+        self.request_cards.clear();
         self.messages.clear();
         self.ids.clear();
         self.projected.clear();

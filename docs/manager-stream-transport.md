@@ -104,3 +104,29 @@ without another dispatch. Acceptance is not completion. Reconnect loads retained
 commands but never sends one automatically. Disk preparation failures keep the
 composer draft. Action drafts and composer keystrokes notify their own entities,
 without re-rendering the cached message history.
+
+
+### Interaction recovery (slice 7)
+
+Request controls live in their matching local history row. Runtime capability,
+request kind and source identity remain the authority; inherited/resolved or
+ambiguous cards cannot grant controls. Approval context retains both prompt and
+reason, advertised decisions and warnings. Missing approval options permit only
+Allow once/Decline. Secret requests are not ordinary answer fields.
+
+Live questions retain exact option values and multi-selection arrays. Message-mode
+requests require strings on the server; multiple selected values become JSON-array
+**text**, preserving unambiguous values without sending an unsupported array.
+Pending answer drafts survive an unsynchronized reconnect and are cleared only by
+confirmed resolution. A retained response disables further answers until projection
+confirms it. Stop pins its run and holds queued work.
+
+A stable per-thread file lock serializes durable preparation and receipt publication
+across windows. Respond/Dismiss share one request identity; Stop has one identity
+per run. Repeated clicks reuse the immutable operation, while a conflicting answer
+fails visibly. An uncertain message blocks fresh sends until explicit retry; retry
+keeps its command/message/thread/run IDs, including after reconnect. Acknowledged
+commands return their saved receipt without network dispatch. Resolved request
+and stale Stop retries are disabled. Message retries retain their original target
+even when the active run changes, allowing server idempotency readback without
+turning an old Steer into a new message. Missing or malformed receipts fail closed.
