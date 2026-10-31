@@ -126,6 +126,7 @@ impl ProjectView {
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn desktop_is_preferred_and_missing_windows_handler_uses_the_configured_server() {
         let identity = okilum_t3::ServerIdentity {
