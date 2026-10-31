@@ -908,9 +908,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
                 },
                 now(),
             );
-            // Exercise the Board summary rather than a second copy inside an
-            // expanded card, whose narrow viewport has its own scroll position.
-            b.selected = None;
+            b.selected = Some(number);
             assert_ne!(
                 b.delivery_column(&binding.issues[0]),
                 Column::Verified,
@@ -925,6 +923,26 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     visual.simulate_resize(size(px(1000.), px(1000.)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-delivery").is_some());
+    assert!(visual.debug_bounds("board-delivery-details").is_some());
+    assert!(visual.debug_bounds("board-delivery-line").is_some());
+    assert!(visual.debug_bounds("board-delivery-details-line").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Mac-Stable").is_some());
+    assert!(visual
+        .debug_bounds("board-delivery-details-problem-Mac-Stable")
+        .is_some());
+    for id in [
+        "board-delivery-details-Mac-Stable",
+        "board-delivery-details-Mac-Beta",
+        "board-delivery-details-Windows-Stable",
+        "board-delivery-details-Windows-Beta",
+        "board-delivery-details-Linux-Stable",
+        "board-delivery-details-Linux-Beta",
+    ] {
+        assert!(
+            visual.debug_bounds(id).is_some(),
+            "expanded card control: {id}"
+        );
+    }
     for id in [
         "board-delivery-Mac-Stable",
         "board-delivery-Mac-Beta",

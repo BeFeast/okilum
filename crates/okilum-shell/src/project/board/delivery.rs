@@ -88,17 +88,26 @@ impl Board {
         )
     }
     pub(super) fn delivery_summary(&self, binding: &Binding, cx: &mut Context<Self>) -> AnyElement {
+        self.delivery_summary_in("board-delivery", binding, cx)
+    }
+    fn delivery_summary_in(
+        &self,
+        namespace: &'static str,
+        binding: &Binding,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = brand::palette(cx);
         let mut view = v_flex()
-            .id("board-delivery")
-            .debug_selector(|| "board-delivery".into())
+            .id(namespace)
+            .debug_selector(move || namespace.into())
             .w_full()
             .min_w_0()
             .gap_1()
             .text_size(px(12.));
+        let line_id = format!("{namespace}-line");
         let mut line = h_flex()
-            .id("board-delivery-line")
-            .debug_selector(|| "board-delivery-line".into())
+            .id(SharedString::from(line_id.clone()))
+            .debug_selector(move || line_id.clone())
             .w_full()
             .min_w_0()
             .gap_2()
@@ -146,7 +155,7 @@ impl Board {
                         }
                     )
                 });
-                let id = format!("board-delivery-{}-{}", platform.label(), channel.label());
+                let id = format!("{namespace}-{}-{}", platform.label(), channel.label());
                 let problem_url = url.clone().unwrap_or_else(|| {
                     format!("{}/releases", binding.repository.trim_end_matches('/'))
                 });
@@ -167,7 +176,19 @@ impl Board {
                         }),
                 );
                 if stale || issue {
-                    line = line.child(Button::new(SharedString::from(format!("delivery-problem-{}-{}", platform.label(), channel.label())))
+                    // Preserve the main summary's existing problem identities.
+                    let problem_prefix = if namespace == "board-delivery" {
+                        "delivery"
+                    } else {
+                        namespace
+                    };
+                    let problem_id = format!(
+                        "{problem_prefix}-problem-{}-{}",
+                        platform.label(),
+                        channel.label()
+                    );
+                    line = line.child(Button::new(SharedString::from(problem_id.clone()))
+                        .debug_selector(move || problem_id.clone())
                         .ghost().small().flex_shrink_0().text_color(colors.text_muted).label(if stale { "Stale" } else { "Check" })
                         .tooltip(if stale { "Delivery data is out of date or unavailable. Open release notes for current publications." } else { "Publication date or download availability could not be verified. Open release notes." })
                         .on_click(move |_, _, cx| cx.open_url(&problem_url)));
@@ -184,7 +205,7 @@ impl Board {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // Board is a bird view. Diagnostics, PR history and evidence stay behind links.
-        self.delivery_summary(binding, cx)
+        self.delivery_summary_in("board-delivery-details", binding, cx)
     }
 }
 fn binding_refresh(board: &Board) -> u64 {
