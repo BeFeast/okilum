@@ -139,6 +139,8 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleSource>("Edit / Read", View),
         entry::<OpenLivePreview>("Live Preview", View),
         entry::<ToggleNotes>("Notes panel", View),
+        entry::<ToggleLeftMode>("Now / Tree", View),
+        entry::<FocusCurrentFolder>("Reveal in Tree", Navigation),
         entry::<ToggleProject>("Projects", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<MaximizeNote>("Maximize / restore note", View),

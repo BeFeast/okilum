@@ -22,6 +22,7 @@ mod launch;
 mod models;
 #[cfg(target_os = "linux")]
 mod native;
+mod setup;
 
 pub(super) fn save_browser_environment(
     state: &Path,
@@ -80,6 +81,7 @@ pub(crate) struct ProjectView {
     model_error: Option<String>,
     model_busy: bool,
     launch: launch::Form,
+    local_setup: Option<setup::Form>,
     origin: Entity<InputState>,
     compose: Entity<TextareaState>,
     reason: Option<String>,
@@ -260,6 +262,11 @@ impl ProjectView {
                     .try_global::<reader_t3_settings::Connection>()
                     .and_then(|c| c.origin.clone());
                 let _ = weak.update(cx, |this, cx| {
+                    if this.local_setup.is_some() {
+                        this.error = None;
+                        cx.notify();
+                        return;
+                    }
                     if let Some(origin) = origin {
                         if reader_t3_settings::signed_out(&origin, cx) {
                             if this
@@ -307,6 +314,7 @@ impl ProjectView {
             model_error: None,
             model_busy: false,
             launch: launch::Form::new(window, cx),
+            local_setup: None,
             origin,
             compose,
             reason: Some("Loading project…".into()),
@@ -927,6 +935,9 @@ fn status_note(status: &GatewayStatus) -> Option<&'static str> {
 
 impl Render for ProjectView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.local_setup.is_some() {
+            return self.render_local_setup(cx).into_any_element();
+        }
         let status = self
             .gateway
             .as_ref()
@@ -1161,8 +1172,10 @@ impl Render for ProjectView {
                     .when_some(open, |row, url| {
                         row.child(
                             Button::new("project-open-t3")
+                                .debug_selector(|| "project-open-t3".into())
                                 .ghost()
                                 .icon(IconName::ExternalLink)
+                                .when(cfg!(target_os = "linux"), |button| button.label("Open in T3"))
                                 .tooltip("Open in T3")
                                 .on_click(move |_, _, cx| cx.open_url(&url)),
                         )
@@ -1175,6 +1188,7 @@ impl Render for ProjectView {
                 |view| {
                     view.child(div().child("Manager не запущен")).child(
                         Button::new("start-manager")
+                            .debug_selector(|| "start-manager".into())
                             .label("Start manager")
                             .disabled(self.busy)
                             .on_click(
@@ -1196,6 +1210,10 @@ impl Render for ProjectView {
                         .text_color(brand::palette(cx).text_muted)
                         .child(reason),
                 )
+            })
+            .when(self.area.is_some() && self.reason.as_deref() != Some("Loading project…") && self.binding.as_ref().is_none_or(|b| b.manager.project_id.is_none() && b.manager.thread_id.is_none()), |view| {
+                view.child(Button::new("project-local-setup").debug_selector(|| "project-local-setup".into()).label("Set up local Manager")
+                    .disabled(self.busy).on_click(cx.listener(|this, _, window, cx| this.open_local_setup(window, cx))))
             })
             .when_some(note, |view, note| {
                 if compact { return view; }
@@ -1299,7 +1317,7 @@ impl Render for ProjectView {
                                 ),
                         ).into_any_element();
                 view.child(composer)
-            })
+            }).into_any_element()
     }
 }
 
