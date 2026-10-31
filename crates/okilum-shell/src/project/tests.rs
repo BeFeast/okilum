@@ -19,14 +19,35 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<ProjectView>().unwrap()
     });
+    visual.run_until_parked();
+    let history_before = visual.debug_bounds("project-chat-history").unwrap();
+    let composer_before = visual.debug_bounds("project-chat-composer").unwrap();
     let button = visual
         .debug_bounds("project-manager-model")
         .expect("manager model control");
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
-    assert!(visual
-        .debug_bounds("project-model-scheduler-limit")
-        .is_some());
+    let dropdown = visual
+        .debug_bounds("project-model-panel")
+        .expect("model dropdown");
+    assert!(dropdown.size.width <= px(272.));
+    assert!(dropdown.size.height <= px(320.));
+    assert_eq!(
+        visual.debug_bounds("project-chat-history"),
+        Some(history_before),
+        "the dropdown must overlay history without shrinking it"
+    );
+    assert_eq!(
+        visual.debug_bounds("project-chat-composer"),
+        Some(composer_before),
+        "the dropdown must not move the composer"
+    );
+    assert!(
+        visual
+            .debug_bounds("project-model-scheduler-limit")
+            .is_none(),
+        "internal migration diagnostics are not ordinary chat content"
+    );
     assert!(
         gateway.model_writes.lock().unwrap().is_empty(),
         "opening the catalog is read-only"
@@ -130,6 +151,37 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
         2,
         "a failed Refresh never dispatches a model change"
     );
+    // Closing must not discard a confirmed model or the unsent chat draft.
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-model-panel").is_none());
+    view.read_with(visual, |view, cx| {
+        assert!(!view.model_open);
+        assert_eq!(
+            view.models
+                .as_ref()
+                .unwrap()
+                .configuration
+                .model_selection
+                .model,
+            "gpt-6-astra"
+        );
+        assert_eq!(
+            view.compose.read(cx).value().as_ref(),
+            "Retain the manager draft"
+        );
+    });
+    let trigger = visual.debug_bounds("project-manager-model").unwrap();
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-model-panel").is_some());
+    visual.simulate_click(composer_before.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-model-panel").is_none(),
+        "outside click dismisses dropdown"
+    );
+    assert_eq!(gateway.model_writes.lock().unwrap().len(), 2);
 }
 
 #[gpui::test]

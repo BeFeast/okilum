@@ -1,4 +1,5 @@
 use super::*;
+use gpui_component::popover::Popover;
 use okilum_t3::{models::Target, ModelSelection};
 
 impl ProjectView {
@@ -19,8 +20,11 @@ impl ProjectView {
         if self.model_busy || self.busy {
             return;
         }
+        if self.model_target.as_ref() != Some(&target) {
+            self.models = None;
+        }
         self.model_target = Some(target);
-        self.models = None;
+        self.model_open = true;
         self.model_candidate = None;
         self.model_request(None, window, cx);
     }
@@ -85,68 +89,114 @@ impl ProjectView {
         cx.notify();
     }
 
+    pub(super) fn model_picker(
+        &self,
+        id: impl Into<ElementId>,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_target = self.model_target.as_ref() == Some(&target);
+        let label = self
+            .models
+            .as_ref()
+            .filter(|_| is_target)
+            .map(|snapshot| {
+                let current = &snapshot.configuration.model_selection;
+                snapshot
+                    .catalog
+                    .providers
+                    .iter()
+                    .find(|provider| provider.provider_instance_id == current.instance_id)
+                    .and_then(|provider| {
+                        provider
+                            .models
+                            .iter()
+                            .find(|model| model.id == current.model)
+                    })
+                    .and_then(|model| model.label.clone())
+                    .unwrap_or_else(|| current.model.clone())
+            })
+            .unwrap_or_else(|| "Model".into());
+        let owner = cx.entity().downgrade();
+        Popover::new(id)
+            .anchor(Anchor::TopRight)
+            .open(self.model_open && is_target)
+            .trigger(
+                Button::new("project-model-trigger")
+                    .debug_selector(|| "project-manager-model".into())
+                    .ghost()
+                    .small()
+                    .max_w(px(180.))
+                    .overflow_hidden()
+                    .label(label)
+                    .icon(IconName::ChevronDown)
+                    .tooltip("Choose model")
+                    .disabled(self.busy || !self.can_send()),
+            )
+            .on_open_change(move |open, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if *open {
+                        this.open_models(target.clone(), window, cx);
+                    } else {
+                        this.model_open = false;
+                        cx.notify();
+                    }
+                });
+            })
+            .child(if self.model_open && is_target {
+                self.render_models(cx)
+            } else {
+                div().into_any_element()
+            })
+            .into_any_element()
+    }
+
     pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
-        let target = self.model_target.as_ref().expect("open model panel");
         let enabled = !self.model_busy && !self.busy && self.can_send();
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
+            .w(px(272.))
+            .max_h(px(320.))
             .gap_2()
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(format!("Thread model · {}", target.thread_id))
+                    .justify_between()
+                    .items_center()
+                    .child("Model")
                     .child(
                         Button::new("project-model-refresh")
                             .debug_selector(|| "project-model-refresh".into())
                             .ghost()
-                            .label("Refresh models")
+                            .small()
+                            .icon(IconName::RotateCw)
+                            .tooltip("Refresh models")
                             .disabled(!enabled)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.model_request(None, window, cx)
                             })),
-                    )
-                    .child(
-                        Button::new("project-model-close")
-                            .ghost()
-                            .label("Close")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.model_target = None;
-                                cx.notify();
-                            })),
                     ),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "project-model-scheduler-limit".into())
-                    .child(okilum_t3::models::SCHEDULED_TASK_LIMIT),
             );
         if self.model_busy {
-            panel = panel.child("Waiting for T3 configuration readback…");
+            panel = panel.child("Loading…");
         }
         if let Some(error) = &self.model_error {
             panel = panel.child(
                 div()
                     .debug_selector(|| "project-model-error".into())
                     .text_color(cx.theme().danger)
-                    .child(error.clone()),
+                    .child(if self.connection_details {
+                        error.clone()
+                    } else {
+                        "Could not confirm the model. Refresh or open T3 to continue.".into()
+                    }),
             );
         }
         if let Some(snapshot) = &self.models {
             let current = &snapshot.configuration.model_selection;
-            panel = panel.child(
-                div()
-                    .debug_selector(|| "project-model-confirmed".into())
-                    .child(format!(
-                        "Last confirmed readback: {} / {} · thread {} · credential {}",
-                        current.instance_id,
-                        current.model,
-                        snapshot.configuration.runtime_mode,
-                        snapshot.catalog.runtime_mode
-                    )),
-            );
             let mut choices = v_flex()
                 .id("project-model-choices")
-                .max_h(px(140.))
+                .min_h_0()
+                .max_h(px(200.))
                 .overflow_y_scroll()
                 .gap_1();
             let mut index = 0usize;
@@ -161,14 +211,15 @@ impl ProjectView {
                         Button::new(("project-model-choice", id))
                             .debug_selector(move || format!("project-model-choice-{id}"))
                             .ghost()
-                            .label(format!(
-                                "{} / {}",
-                                provider
-                                    .display_name
-                                    .as_deref()
-                                    .unwrap_or(&provider.provider_instance_id),
-                                model.label.as_deref().unwrap_or(&model.id)
-                            ))
+                            .w_full()
+                            .justify_start()
+                            .overflow_hidden()
+                            .icon(if selected {
+                                IconName::Check
+                            } else {
+                                IconName::Bot
+                            })
+                            .label(model.label.as_deref().unwrap_or(&model.id).to_owned())
                             .selected(selected)
                             .disabled(!enabled || !valid)
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -179,18 +230,27 @@ impl ProjectView {
                 }
             }
             if index == 0 {
-                choices = choices.child("No models returned by the live T3 catalog.");
+                choices = choices.child("No models available.");
             }
-            panel = panel.child(choices)
-                .child("Selecting a different model clears previous model option overrides and uses T3 defaults.")
-                .child(Button::new("project-model-apply").debug_selector(|| "project-model-apply".into()).ghost()
-                    .label("Apply thread model")
+            panel = panel.child(choices).child(
+                Button::new("project-model-apply")
+                    .debug_selector(|| "project-model-apply".into())
+                    .w_full()
+                    .label("Apply")
                     .disabled(!enabled || self.model_candidate.is_none())
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(selection) = this.model_candidate.clone() {
                             this.model_request(Some(selection), window, cx);
                         }
-                    })));
+                    })),
+            );
+        }
+        if self.connection_details {
+            panel = panel.child(
+                div()
+                    .debug_selector(|| "project-model-scheduler-limit".into())
+                    .child(okilum_t3::models::SCHEDULED_TASK_LIMIT),
+            );
         }
         panel.into_any_element()
     }

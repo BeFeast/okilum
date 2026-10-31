@@ -80,6 +80,7 @@ pub(crate) struct ProjectView {
     model_candidate: Option<okilum_t3::ModelSelection>,
     model_error: Option<String>,
     model_busy: bool,
+    model_open: bool,
     launch: launch::Form,
     local_setup: Option<setup::Form>,
     origin: Entity<InputState>,
@@ -316,6 +317,7 @@ impl ProjectView {
             model_candidate: None,
             model_error: None,
             model_busy: false,
+            model_open: false,
             launch: launch::Form::new(window, cx),
             local_setup: None,
             origin,
@@ -412,6 +414,7 @@ impl ProjectView {
                 self.last_poll_status = None;
                 self.identity = None;
                 self.model_target = None;
+                self.model_open = false;
                 self.models = None;
                 self.model_candidate = None;
                 self.model_error = None;
@@ -435,6 +438,7 @@ impl ProjectView {
         self.connection_details = false;
         self.last_poll_status = None;
         self.model_target = None;
+        self.model_open = false;
         self.error = None;
         #[cfg(target_os = "linux")]
         self.native.clear();
@@ -442,12 +446,8 @@ impl ProjectView {
         cx.notify();
     }
 
-    fn connection_is_compact(&self, status: &GatewayStatus) -> bool {
-        !self.connection_details
-            && matches!(
-                status,
-                GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
-            )
+    fn connection_is_compact(&self, _status: &GatewayStatus) -> bool {
+        !self.connection_details && self.environment.is_some()
     }
 
     fn connection_line(&self, status: &GatewayStatus, cx: &mut Context<Self>) -> AnyElement {
@@ -455,23 +455,14 @@ impl ProjectView {
         let Some(env) = self.environment.clone() else {
             return div().into_any_element();
         };
-        let origin = env.origin();
-        let host = url::Url::parse(&origin)
-            .ok()
-            .map(|url| url[url::Position::BeforeHost..url::Position::AfterPort].to_owned())
-            .unwrap_or(origin);
-        let mut label = format!("Connected · {host}");
-        if matches!(status, GatewayStatus::ExpiresSoon { .. }) {
-            label.push_str(" · renew soon");
-        }
-        #[cfg(target_os = "linux")]
-        if !self.native.active() {
-            label.push_str(" · history only");
-        }
-        #[cfg(target_os = "linux")]
-        if self.native.active() && self.native.renew_due() {
-            label.push_str(" · renew live updates");
-        }
+        let label = if matches!(
+            status,
+            GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
+        ) {
+            "Connected"
+        } else {
+            "Offline"
+        };
         let owner = cx.entity().downgrade();
         let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);
         let renew = matches!(status, GatewayStatus::ExpiresSoon { .. });
@@ -1011,11 +1002,15 @@ impl Render for ProjectView {
                 composer.set_native(self.native.active(), can_steer, cx);
                 composer.set_controls(enabled && native_ready, self.busy, cx)
             });
-            div().flex_1().min_h_0().child(
-                self.feed
-                    .clone()
-                    .cached(StyleRefinement::default().size_full()),
-            )
+            div()
+                .debug_selector(|| "project-chat-history".into())
+                .flex_1()
+                .min_h_0()
+                .child(
+                    self.feed
+                        .clone()
+                        .cached(StyleRefinement::default().size_full()),
+                )
         };
         #[cfg(not(target_os = "linux"))]
         let history = {
@@ -1158,7 +1153,8 @@ impl Render for ProjectView {
                                 Button::new("project-launch")
                                     .debug_selector(|| "project-launch".into())
                                     .ghost()
-                                    .label("Request executor")
+                                    .icon(IconName::Plus)
+                                    .tooltip("Request executor")
                                     .disabled(self.busy || self.model_busy || !enabled)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_launch(window, cx)
@@ -1167,16 +1163,7 @@ impl Render for ProjectView {
                         },
                     )
                     .when_some(self.manager_model_target(), |row, target| {
-                        row.child(
-                            Button::new("project-manager-model")
-                                .debug_selector(|| "project-manager-model".into())
-                                .ghost()
-                                .label("Model")
-                                .disabled(self.busy || self.model_busy || !enabled)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_models(target.clone(), window, cx);
-                                })),
-                        )
+                        row.child(self.model_picker("project-manager-model", target, cx))
                     })
                     .when(pending > 0, |row| {
                         row.child(
@@ -1191,7 +1178,7 @@ impl Render for ProjectView {
                                 .debug_selector(|| "project-open-t3".into())
                                 .ghost()
                                 .icon(IconName::ExternalLink)
-                                .when(cfg!(target_os = "linux"), |button| button.label("Open in T3"))
+
                                 .tooltip("Open in T3")
                                 .on_click(move |_, _, cx| cx.open_url(&url)),
                         )
@@ -1300,9 +1287,6 @@ impl Render for ProjectView {
                         .child(error),
                 )
             })
-            .when(self.model_target.is_some(), |view| {
-                view.child(self.render_models(cx))
-            })
             .when(self.launch.open, |view| view.child(self.render_launch(cx)))
             .child(if self.executors_open {
                 self.render_executors(cx)
@@ -1332,7 +1316,7 @@ impl Render for ProjectView {
                                     cx.listener(|this, _, window, cx| this.send(None, window, cx)),
                                 ),
                         ).into_any_element();
-                view.child(composer)
+                view.child(div().debug_selector(|| "project-chat-composer".into()).child(composer))
             }).into_any_element()
     }
 }
