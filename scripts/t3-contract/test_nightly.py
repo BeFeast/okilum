@@ -125,6 +125,32 @@ class ContractHarness(unittest.TestCase):
                                          'http://127.0.0.1:1', Path('/probe'))
             self.assertNotIn('one-time-secret', str(raised.exception))
 
+    def test_native_failure_stage_labels_match_current_rust_boundaries(self):
+        # This is the client that supplies the fixed labels, including the stage
+        # used when malformed/missing stdin fields fail before any network action.
+        source = (nightly.ROOT / 'crates/okilum-t3/examples/nightly_contract.rs').read_text()
+        assignments = nightly.re.findall(r'(?:\*stage|let mut stage) = "([a-z_]+)";', source)
+        self.assertEqual(set(assignments), nightly.NATIVE_STAGES)
+
+    def test_malformed_input_preflight_is_reported_without_peer_details(self):
+        # serde input parsing leaves the real Rust boundary at preflight. Exercise
+        # the hosted failure path with that receipt, not a fabricated success flag.
+        with patch.object(nightly, 'fixture_thread', return_value='idle-thread'), \
+                patch.object(nightly, 'command', return_value='{"credential":"one-time-secret"}'), \
+                patch.object(nightly.subprocess, 'run') as launch:
+            cases = [('{"status":"FAIL","stage":"preflight","detail":"one-time-secret"}', 'preflight'),
+                     ('{"stage":"hosted_preflight"}', 'unclassified_client_exit'),
+                     ('{"stage":["preflight"]}', 'unclassified_client_exit'),
+                     ('malformed one-time-secret', 'unclassified_client_exit')]
+            for stdout, expected in cases:
+                with self.subTest(stdout=stdout):
+                    launch.return_value = Mock(returncode=1, stdout=stdout, stderr='one-time-secret input traceback')
+                    with self.assertRaises(ValueError) as raised:
+                        nightly.native_roundtrip(Path('/server'), Path('/base'), {},
+                                                 'http://127.0.0.1:1', Path('/probe'))
+                    self.assertIn('failed at ' + expected + ' (exit 1)', str(raised.exception))
+                    self.assertNotIn('one-time-secret', str(raised.exception))
+
     def test_mcp_setup_creates_only_idle_fixture_never_claims_native_dispatch(self):
         def response(value):
             result = Mock()

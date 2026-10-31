@@ -82,6 +82,28 @@ class ProbeTests(unittest.TestCase):
             else:
                 self.fail('descendant survived hard deadline')
 
+    def test_uninterruptible_leader_preserves_primary_failure_and_closes_stdin(self):
+        # No real D-state process is needed: both bounded reap attempts expire.
+        # The original diagnostic must survive, and credentials must lose their pipe.
+        for code in ('timeout', 'nonzero_exit', 'cleanup_failed'):
+            with self.subTest(code=code):
+                process = mock.Mock(pid=12345, returncode=7 if code == 'nonzero_exit' else 0)
+                if code == 'timeout':
+                    process.communicate.side_effect = probe.subprocess.TimeoutExpired('SECRET-ARGV', 1)
+                process.wait.side_effect = probe.subprocess.TimeoutExpired('SECRET-REAP-LOG', 5)
+                with mock.patch.object(probe.subprocess, 'Popen', return_value=process), \
+                     mock.patch.object(probe.os, 'killpg') as kill:
+                    with self.assertRaises(probe.ProbeFailure) as caught:
+                        probe.run_private(['/not-executed'], env={}, timeout=1, input_data=b'SECRET')
+                self.assertEqual(caught.exception.stage, 'subprocess')
+                self.assertEqual(caught.exception.code, code)
+                self.assertNotIn('SECRET', str(caught.exception))
+                self.assertEqual(process.wait.call_args_list,
+                                 [mock.call(timeout=0.5), mock.call(timeout=5)])
+                self.assertEqual(kill.call_args_list,
+                                 [mock.call(12345, signal.SIGTERM), mock.call(12345, signal.SIGKILL)])
+                process.stdin.close.assert_called_once_with()
+
     def test_private_environment_has_no_inherited_credentials(self):
         with mock.patch.dict(os.environ, {'OPENAI_API_KEY': 'SECRET', 'GITHUB_TOKEN': 'SECRET',
                                           'T3_TOKEN': 'SECRET', 'HTTP_PROXY': 'http://secret'}):
