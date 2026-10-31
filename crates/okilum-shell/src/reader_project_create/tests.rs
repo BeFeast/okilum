@@ -174,7 +174,10 @@ fn make_this_a_project_is_hidden_for_folders_that_are_projects(cx: &mut TestAppC
             !r.can_make_project("Dev/Areas/app"),
             "it has ops/project.yaml"
         );
-        assert!(!r.can_make_project(""), "never the vault itself");
+        assert!(
+            r.can_make_project(""),
+            "the vault root can be a local project"
+        );
         assert!(!r.can_make_project(".obsidian"));
     });
     // A project the Projects list knows, even before its manifest is seen.
@@ -261,6 +264,7 @@ fn code_draft(folder: &Path, icon: Option<ProjectIcon>) -> Draft {
     let mut draft = Draft::for_folder(folder);
     draft.name = "Tool".into();
     draft.set_kind(Kind::Code);
+    draft.set_create_in_t3(true); // This fixture deliberately exercises the explicit T3 path.
     draft.source = "/srv/src/tool".into();
     draft.icon = icon;
     draft
@@ -366,5 +370,41 @@ fn a_t3_failure_is_a_toast_and_the_manifest_stays(cx: &mut TestAppContext) {
             .projects
             .iter()
             .any(|p| p.folder == folder && p.environment.is_none()));
+    });
+}
+
+#[gpui::test]
+fn root_code_project_starts_locally_and_does_not_call_a_saved_remote_gateway(
+    cx: &mut TestAppContext,
+) {
+    let (_temp, root, reader, visual) = open(cx);
+    let t3 = Arc::new(FakeT3::default());
+    reader.update_in(visual, |r, window, cx| {
+        connect(r, &t3);
+        let dialog = cx.new(|cx| NewProjectDialog::new(&root, "", true, window, cx));
+        let mut draft = Draft::for_folder(&root);
+        draft.set_kind(Kind::Code);
+        assert!(!draft.create_in_t3());
+        r.create_project(dialog.downgrade(), root.clone(), draft, window, cx);
+    });
+    visual.run_until_parked();
+    assert!(root.join("ops/project.yaml").is_file());
+    assert!(
+        t3.creates.lock().unwrap().is_empty(),
+        "local creation must not dispatch remote project.create"
+    );
+    let manifest = std::fs::read_to_string(root.join("ops/project.yaml")).unwrap();
+    assert!(!manifest.contains("t3:"));
+    reader.read_with(visual, |r, _| {
+        assert!(r
+            .project_navigation
+            .discovery
+            .projects
+            .iter()
+            .any(|p| p.folder == root));
+        assert!(
+            !r.can_make_project(""),
+            "positive control: successful creation removes the duplicate-create action"
+        );
     });
 }

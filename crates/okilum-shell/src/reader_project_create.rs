@@ -27,7 +27,7 @@ impl Reader {
     /// The tree's folder menu offers «Make this a project…» only for a
     /// folder inside the vault that is not a project already.
     pub(super) fn can_make_project(&self, relative: &str) -> bool {
-        if self.single_file || relative.is_empty() || relative.starts_with('.') {
+        if self.single_file || relative.starts_with('.') {
             return false;
         }
         let folder = self.vault_root.join(relative);

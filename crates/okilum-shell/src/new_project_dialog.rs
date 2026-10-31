@@ -6,7 +6,7 @@
 //! The dialog edits an `okilum_t3::projects::create::Draft`: name (the
 //! folder's name until edited), kind, icon (T3's «Choose project icon»,
 //! opened by the host over this dialog), for code and hybrid where the
-//! code is, and «Create the project in T3» (on for code). The host writes
+//! code is, and optional «Create the project in T3». The host writes
 //! the project and closes the dialog: its `on_choice` handler is called
 //! with the window the button was pressed in.
 use crate::project_avatar;
@@ -93,8 +93,10 @@ impl NewProjectDialog {
         project_avatar::init(cx);
         let relative = clean_relative(folder);
         let draft = Draft::for_folder(&vault.join(&relative));
-        let folder_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("A folder in the vault"));
+        let folder_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("A folder in the vault; blank uses the vault root")
+        });
         folder_input.update(cx, |input, cx| {
             input.set_value(relative.clone(), window, cx)
         });
@@ -187,20 +189,21 @@ impl NewProjectDialog {
         clean_relative(&self.folder.read(cx).value())
     }
 
-    /// The chosen folder, absolute; `None` while none is typed.
+    /// The chosen folder, absolute; a blank path selects the vault root.
     pub fn folder(&self, cx: &App) -> Option<PathBuf> {
         let relative = self.relative(cx);
-        (!relative.is_empty()).then(|| {
+        Some(
             relative
                 .split('/')
-                .fold(self.vault.clone(), |path, part| path.join(part))
-        })
+                .filter(|part| !part.is_empty())
+                .fold(self.vault.clone(), |path, part| path.join(part)),
+        )
     }
 
     fn folder_changed(&mut self, relative: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.error = None;
         if !self.name_edited {
-            let name = relative.rsplit('/').next().unwrap_or_default().to_owned();
+            let name = create::folder_name(&self.vault.join(relative));
             if name != self.draft.name {
                 self.draft.name = name.clone();
                 self.name
@@ -247,9 +250,10 @@ impl NewProjectDialog {
             return Some("Choose a folder in the vault.".into());
         };
         let relative = self.relative(cx);
-        if relative
-            .split('/')
-            .any(|part| part.starts_with('.') || part == "..")
+        if !relative.is_empty()
+            && relative
+                .split('/')
+                .any(|part| part.starts_with('.') || part == "..")
         {
             return Some(format!("{relative} cannot be a project."));
         }
@@ -384,11 +388,15 @@ impl Render for NewProjectDialog {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         let kind = self.draft.kind;
-        let relative: SharedString = self.relative(cx).into();
-        let t3_hint = if kind == Kind::Code {
-            "T3 opens it in the checkout. The manager can be started later."
+        let relative: SharedString = if self.relative(cx).is_empty() {
+            "Vault root".into()
         } else {
-            "T3 opens it in this folder. The manager can be started later."
+            self.relative(cx).into()
+        };
+        let t3_hint = if kind == Kind::Code {
+            "Optional. Uses the selected T3 connection and its checkout; the project works locally without it."
+        } else {
+            "Optional. The project works locally without T3. A Manager can be connected later."
         };
         v_flex()
             .id("new-project-dialog")

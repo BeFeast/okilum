@@ -592,3 +592,22 @@ fn open_pr_reader_checks_real_responses_and_refuses_truncated_or_failed_sources(
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn local_board_omits_optional_metadata_and_rejects_unbound_remote_issue_identities() {
+    let local = Binding::parse_toml("version=1\ntitle='Local'\nissues=[]\n").unwrap();
+    assert!(local.goal.is_empty() && local.repository.is_empty() && local.stage_note.is_empty());
+    assert!(read_issues(&local).is_empty());
+    let invalid = Binding::parse_toml(
+        "version=1\ntitle='Local'\n[[issues]]\nnumber=42\nexpected='Result'\nexecutor='Editing'\n",
+    )
+    .unwrap();
+    assert!(invalid.issues.is_empty());
+    assert_eq!(invalid.card_problems.len(), 1);
+    assert!(invalid.card_problems[0].detail.contains("Set Repository"));
+    assert!(read_issues(&invalid).is_empty());
+    assert!(
+        !Binding::parse(CONFIG).unwrap().issues.is_empty(),
+        "positive control: existing bound issue cards remain readable"
+    );
+}

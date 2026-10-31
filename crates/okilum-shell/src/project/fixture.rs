@@ -24,6 +24,9 @@ pub(super) struct Fake {
     pub question_failure: Option<GatewayError>,
     pub model_writes: Mutex<Vec<ModelSelection>>,
     pub grown: Mutex<bool>,
+    pub local_projects: Mutex<Option<Vec<Project>>>,
+    pub local_creates: Mutex<Vec<String>>,
+    pub local_starts: Mutex<Vec<String>>,
 }
 impl ManagerGateway for Fake {
     fn status(&self) -> GatewayStatus {
@@ -45,6 +48,9 @@ impl ManagerGateway for Fake {
         })
     }
     fn list_projects(&self) -> Result<Vec<Project>> {
+        if let Some(projects) = self.local_projects.lock().unwrap().clone() {
+            return Ok(projects);
+        }
         Ok(vec![Project {
             id: "fixture-executors".into(),
             title: "Executors".into(),
@@ -56,6 +62,32 @@ impl ManagerGateway for Fake {
             }),
             ..Default::default()
         }])
+    }
+    fn create_project(&self, title: &str, root: &str) -> Result<Project> {
+        self.local_creates.lock().unwrap().push(root.into());
+        let project = Project {
+            id: "fixture-local".into(),
+            title: title.into(),
+            workspace_root: root.into(),
+            ..Default::default()
+        };
+        self.local_projects
+            .lock()
+            .unwrap()
+            .as_mut()
+            .expect("local fixture explicitly enabled")
+            .push(project.clone());
+        Ok(project)
+    }
+    fn read_project(&self, id: &str) -> Result<Project> {
+        self.list_projects()?
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| GatewayError::Protocol("Project not found".into()))
+    }
+    fn start_manager(&self, project: &str, _: &str, _: &str) -> Result<String> {
+        self.local_starts.lock().unwrap().push(project.into());
+        Ok("mcp:fixture-local-manager".into())
     }
     fn list_threads(&self, _: &str) -> Result<Vec<ThreadSummary>> {
         if let Some(error) = self.list_error.lock().unwrap().clone() {
@@ -69,6 +101,11 @@ impl ManagerGateway for Fake {
             return Err(GatewayError::Revoked);
         }
         let grown = *self.grown.lock().unwrap();
+        let project_id = if self.local_projects.lock().unwrap().is_some() {
+            "fixture-local"
+        } else {
+            "fixture-managers"
+        };
         let items = if q.after_position.is_some() {
             serde_json::json!([])
         } else {
@@ -78,7 +115,7 @@ impl ManagerGateway for Fake {
             ])
         };
         serde_json::from_value(serde_json::json!({
-            "thread":{"threadId":q.thread_id,"projectId":if self.wrong_project {"different-project"}else{"fixture-managers"},"title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
+            "thread":{"threadId":q.thread_id,"projectId":if self.wrong_project {"different-project"}else{project_id},"title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
             "items":items,"nextPosition":1,"hasMore":false
         })).map_err(|error|GatewayError::Protocol(error.to_string()))
     }
