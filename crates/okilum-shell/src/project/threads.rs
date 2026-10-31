@@ -406,7 +406,6 @@ impl ProjectView {
             }
         }
         self.threads.open = false;
-        self.draft_restore(window, cx);
         self.native_start(window, cx);
         cx.notify();
     }
