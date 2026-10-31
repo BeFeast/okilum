@@ -39,11 +39,7 @@ pub(super) fn read_note_in_command(display: &str, own_pid: u32) -> Result<Select
     read_note(display, own_pid, Instant::now() + TIMEOUT)
 }
 
-fn read_note(
-    display: &str,
-    own_pid: u32,
-    deadline: Instant,
-) -> Result<Selection, Error> {
+fn read_note(display: &str, own_pid: u32, deadline: Instant) -> Result<Selection, Error> {
     let (conn, screen) = RustConnection::connect(Some(display)).map_err(|_| Error::Unsupported)?;
     let reader = Reader::new(conn, screen, deadline)?;
     let result = reader.read(own_pid);
