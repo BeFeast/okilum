@@ -64,7 +64,7 @@ impl Block {
 
 /// A fence line: its character, length and info string. The same rule as
 /// [`lists::in_code`]: up to three spaces, three or more marks.
-fn fence(line: &str) -> Option<(char, usize, &str)> {
+pub(super) fn fence(line: &str) -> Option<(char, usize, &str)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent >= 4 {
         return None;

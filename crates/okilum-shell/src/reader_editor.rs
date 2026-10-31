@@ -1,5 +1,6 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
 mod code_comforts;
+mod external_edit;
 pub(crate) mod format;
 mod ime_guard;
 mod lists;
@@ -7,12 +8,18 @@ mod live_preview;
 mod paste_jobs;
 use super::*;
 use crate::platform::labels::Os;
+pub(crate) use external_edit::{OpenBlockExternally, StopBlockExternally};
 use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError, PasteMode};
 use gpui_component::input::projection::{
     ActiveSource, MarkerClick, MarkerKind, ProjectionProvider, SourceClick, SourceMutation,
     SourceProjection, SourceSnapshot,
 };
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
+
+/// The editor «Open block in …» names (#1993).
+pub(crate) fn external_editor_label() -> String {
+    external_edit::editor_label()
+}
 
 /// What a paste that inserted nothing tells the user (#1602); it is never
 /// silent. `None` for a second paste while the first is still reading.
@@ -86,6 +93,9 @@ pub(super) struct Editing {
     markdown: bool,
     /// Backspace right after the last list continuation (#1635).
     list_revert: Option<lists::PendingRevert>,
+    /// Code blocks open in an external editor (#1993); dropped with the
+    /// editor, which removes their temporary files.
+    external: external_edit::Sessions,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -252,6 +262,7 @@ impl Editing {
             menu_facts,
             markdown,
             list_revert,
+            external,
             _subscriptions,
         } = self;
         (store, move |store| Self {
@@ -274,6 +285,7 @@ impl Editing {
             menu_facts,
             markdown,
             list_revert,
+            external,
             _subscriptions,
         })
     }
@@ -846,6 +858,7 @@ impl Reader {
             menu_facts,
             markdown: !plain_file,
             list_revert: None,
+            external: Default::default(),
             _subscriptions: vec![
                 changed,
                 blur,
@@ -1644,6 +1657,8 @@ impl Reader {
         // the list keys; #1635: Enter, Tab and Backspace in lists, before the
         // input; #1636: the formatting keys.
         let column = self.code_comfort_actions(column, cx);
+        // #1993: the caret's code block in an external editor.
+        let column = self.external_block_actions(column, cx);
         let column = self.format_actions(column, cx);
         self.list_actions(column, cx)
             // #1611: the paste commands beside Cmd+V, and files dropped onto
