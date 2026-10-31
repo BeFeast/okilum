@@ -124,7 +124,8 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
             if restoring.await {
                 return;
             }
-            // Not one recorded vault could be opened: the last vault, as before.
+            // No saved window could be opened: try the default, then the
+            // existing last-used fallback when no default is configured.
         }
         cx.update(|cx| {
             if cx.global::<Startup>().superseded {
@@ -197,6 +198,9 @@ fn history(
 ) -> anyhow::Result<(PathBuf, Vec<PathBuf>, Option<Restore>)> {
     let directory = directory?;
     let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
+    // The caller tries the saved window set first. An explicit file/folder
+    // delivery supersedes this entire path; a default never redirects it.
+    let last = reader_history::ReadingHistory::default_vault(&directory)?.or(last);
     let restore = last.map(|root| {
         let intent = match reader_history::ReadingHistory::quick_document(&directory, &root) {
             Ok(Some(note)) if note.is_empty() => Err(anyhow::anyhow!(
@@ -622,6 +626,122 @@ mod tests {
     use super::*;
     // `gpui::*` brings its own `test`, which `#[gpui::test]` expands into.
     use ::core::prelude::v1::test;
+
+    fn default_priority(cx: &mut TestAppContext, explicit: bool) {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<_> = ["default", "restored", "explicit"]
+            .into_iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("note.md"), format!("# {name}\r\n")).unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        for root in &roots[..2] {
+            ReadingHistory::record_usable_document(&state, root, "note.md").unwrap();
+        }
+        ReadingHistory::set_default_vault(&state, Some(&roots[0])).unwrap();
+        std::fs::write(
+            state.join("open-windows.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "roots": [&roots[1]], "notes": ["note.md"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            cache_base_override: Some(state.join("cache")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_open::install(cx);
+            crate::reader_ui_state::install(&state, cx);
+            launch(base.clone(), cx);
+            if explicit {
+                // Deliver the explicit intent before startup's worker returns.
+                reader_open::finish_open(
+                    Ok(Opts {
+                        vault: Some(roots[2].clone()),
+                        note: Some("note.md".into()),
+                        ..base
+                    }),
+                    cx,
+                );
+            }
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let readers = reader_open::readers(cx);
+            assert_eq!(readers.len(), 1, "no extra default or restored window");
+            let reader = readers[0].read(cx);
+            assert_eq!(reader.vault_root, roots[if explicit { 2 } else { 1 }]);
+            assert!(
+                reader.document_ready(),
+                "positive control: usable note opened"
+            );
+            assert_eq!(reader.current_rel, "note.md");
+        });
+        assert_eq!(
+            ReadingHistory::default_vault(&state).unwrap(),
+            Some(roots[0].clone())
+        );
+        for (root, name) in roots.iter().zip(["default", "restored", "explicit"]) {
+            assert_eq!(
+                std::fs::read(root.join("note.md")).unwrap(),
+                format!("# {name}\r\n").as_bytes()
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn saved_windows_restore_before_the_default_vault(cx: &mut TestAppContext) {
+        default_priority(cx, false);
+    }
+
+    #[gpui::test]
+    fn explicit_open_supersedes_saved_windows_and_default_vault(cx: &mut TestAppContext) {
+        default_priority(cx, true);
+    }
+
+    #[test]
+    fn default_vault_precedes_last_used_only_in_the_startup_fallback() {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let default = fixture.path().join("default");
+        let recent = fixture.path().join("recent");
+        for root in [&default, &recent] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("note.md"), "# Synthetic note").unwrap();
+            ReadingHistory::record_usable_document(&state, root, "note.md").unwrap();
+        }
+        ReadingHistory::set_default_vault(&state, Some(&default)).unwrap();
+        let (_, _, selected) = history(Ok(state.clone())).unwrap();
+        let (root, intent) = selected.unwrap();
+        assert_eq!(root, default);
+        assert_eq!(intent.unwrap().root, default.canonicalize().unwrap());
+        std::fs::remove_dir_all(&default).unwrap();
+        let (_, roots, selected) = history(Ok(state.clone())).unwrap();
+        let (root, intent) = selected.unwrap();
+        assert_eq!(
+            root, default,
+            "a missing default must not silently select another vault"
+        );
+        assert!(intent.is_err());
+        assert!(roots.contains(&default), "unmounted defaults remain known");
+        ReadingHistory::set_default_vault(&state, None).unwrap();
+        let (_, _, selected) = history(Ok(state)).unwrap();
+        assert_eq!(
+            selected.unwrap().0,
+            recent,
+            "clearing the preference restores the existing last-used fallback"
+        );
+    }
 
     /// The start screen's state, read through its window.
     fn entry(cx: &mut TestAppContext) -> Entity<Entry> {

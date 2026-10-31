@@ -1011,6 +1011,36 @@ pub(crate) fn finish_open(resolved: Result<super::Opts>, cx: &mut App) {
     finish_open_from(resolved, None, cx);
 }
 
+/// Explicit Settings → Vaults action: bypass the destination preference, just
+/// like New Window. An already-open vault duplicates its shared session.
+pub(crate) fn open_vault_in_new_window(root: PathBuf, directory: PathBuf, cx: &mut App) {
+    super::reader_startup::supersede(cx);
+    let resolving = resolve(
+        super::Opts {
+            vault: Some(root),
+            session_directory: Some(directory.clone()),
+            #[cfg(test)]
+            cache_base_override: Some(directory.join("cache")),
+            ..Default::default()
+        },
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        let resolved = resolving.await;
+        cx.update(|cx| match resolved {
+            Ok(opts) => {
+                if let Some(source) = opts.vault.as_deref().and_then(|root| reader_of(root, cx)) {
+                    duplicate_window(source, None, cx).detach();
+                } else if let Err(error) = create_window(opts, None, None, cx) {
+                    show_error(error, cx);
+                }
+            }
+            Err(error) => show_error(error, cx),
+        });
+    })
+    .detach();
+}
+
 #[derive(Default)]
 struct LastReader(Option<WeakEntity<super::Reader>>);
 impl Global for LastReader {}

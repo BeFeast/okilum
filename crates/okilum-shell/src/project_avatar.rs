@@ -3,14 +3,14 @@
 //! the Manager panel's header. The icon is the one T3 Code shows: a project
 //! with a T3 counterpart takes T3's `projectIcon` and `faviconPath`; any
 //! other project takes `icon:` from its project.yaml. Without either, a logo
-//! in the project's folder, then a monogram coloured from the name.
+//! in the project's folder, then an icon for its project kind.
 use gpui::{
     div, img, prelude::*, px, rgb, AnyElement, App, FontWeight, Global, ObjectFit, SharedString,
 };
 use gpui_component::{ActiveTheme as _, Icon};
 use okilum_t3::projects::{
     icon::{self, Avatar, Counterpart, ProjectIcon},
-    Project,
+    Kind, Project,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,7 +40,7 @@ pub fn manual_icon(project: &Project, cx: &App) -> Option<ProjectIcon> {
     }
 }
 
-/// Manual icon > logo (T3's favicon, then one in the folder) > monogram.
+/// Manual icon > logo (T3's favicon, then one in the folder) > project kind.
 pub fn avatar(project: &Project, cx: &App) -> Avatar {
     let link = link(project, cx);
     let manual = match link {
@@ -50,7 +50,20 @@ pub fn avatar(project: &Project, cx: &App) -> Avatar {
     let logo = link
         .and_then(|link| link.logo.as_deref())
         .or(project.appearance.logo.as_deref());
-    icon::resolve(manual, logo, &project.name)
+    match icon::resolve(manual, logo, &project.name) {
+        // A deliberately chosen monogram remains a manual icon. Only the
+        // automatic name-derived fallback is replaced by the project's kind.
+        Avatar::Monogram { .. } => Avatar::Icon(ProjectIcon::Lucide {
+            name: match project.kind {
+                Kind::Code => "code-xml",
+                Kind::Knowledge => "book-open",
+                Kind::Hybrid => "layers",
+            }
+            .into(),
+            color: icon::IconColor::Gray,
+        }),
+        avatar => avatar,
+    }
 }
 
 struct LucideNames(Arc<BTreeSet<String>>);
@@ -144,4 +157,70 @@ pub fn render(avatar: &Avatar, size: f32, cx: &App) -> AnyElement {
 /// The project's avatar, `size` px square.
 pub fn project_avatar(project: &Project, size: f32, cx: &App) -> AnyElement {
     render(&avatar(project, cx), size, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn project_kind_fallback_keeps_local_and_explicit_t3_icons(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            for (kind, expected) in [
+                (Kind::Code, "code-xml"),
+                (Kind::Knowledge, "book-open"),
+                (Kind::Hybrid, "layers"),
+            ] {
+                let mut project = Project {
+                    folder: PathBuf::from("/vault/Dev/Areas/fixture"),
+                    name: "Same name".into(),
+                    kind,
+                    environment: None,
+                    manager_project: None,
+                    manager: okilum_t3::projects::Manager::NotStarted,
+                    appearance: Default::default(),
+                };
+                assert_eq!(
+                    avatar(&project, cx),
+                    Avatar::Icon(ProjectIcon::Lucide {
+                        name: expected.into(),
+                        color: icon::IconColor::Gray
+                    })
+                );
+                project.appearance.logo = Some(project.folder.join(".okilum/icon.png"));
+                assert_eq!(
+                    avatar(&project, cx),
+                    Avatar::Logo(project.appearance.logo.clone().unwrap())
+                );
+                let chosen = ProjectIcon::Monogram {
+                    text: "AB".into(),
+                    color: icon::IconColor::Blue,
+                };
+                project.appearance.icon = Some(chosen.clone());
+                assert_eq!(
+                    avatar(&project, cx),
+                    Avatar::Icon(chosen),
+                    "an explicit monogram is not replaced"
+                );
+                let t3 = ProjectIcon::Emoji {
+                    emoji: "🚀".into()
+                };
+                cx.set_global(ProjectIcons {
+                    links: [(
+                        project.folder.clone(),
+                        Counterpart {
+                            environment: "fixture".into(),
+                            project_id: "fixture".into(),
+                            icon: Some(t3.clone()),
+                            logo: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                });
+                assert_eq!(avatar(&project, cx), Avatar::Icon(t3));
+                cx.set_global(ProjectIcons::default());
+            }
+        });
+    }
 }

@@ -1048,11 +1048,15 @@ impl Reader {
                 tree_offset: self.tree_scroll.0.borrow().base_handle.offset(),
             });
         }
+        // A note requested before this explicit project selection cannot
+        // replace its Board when its asynchronous preparation finishes later.
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
         self.tree.scope_to(relative.as_str());
         self.tree_revealed = self.selected_file().to_owned();
         self.panel_widths.backlinks = self.panel_widths.backlinks.max(560.);
         self.tree_sticky.clear();
-        self.panels.open(reader_layout::Panel::Notes);
+        self.panels.close(reader_layout::Panel::Notes);
         self.panels.open(reader_layout::Panel::Backlinks);
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));

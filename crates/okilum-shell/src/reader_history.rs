@@ -99,6 +99,19 @@ pub(crate) struct ReadingHistory {
     quick_roots: std::collections::BTreeSet<PathBuf>,
     #[serde(default)]
     recent_roots: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    hidden_roots: std::collections::BTreeSet<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    last_opened: BTreeMap<PathBuf, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_root: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KnownVault {
+    pub root: PathBuf,
+    pub last_opened: Option<u64>,
+    pub is_default: bool,
 }
 
 // Closing a descriptor alone does not release a Unix flock if a concurrent
@@ -213,6 +226,19 @@ impl ReadingHistory {
         history
             .recent_roots
             .retain(|root| history.last_documents.contains_key(root));
+        history
+            .hidden_roots
+            .retain(|root| history.last_documents.contains_key(root));
+        history
+            .last_opened
+            .retain(|root, _| history.last_documents.contains_key(root));
+        if history.default_root.as_ref().is_some_and(|root| {
+            !history.last_documents.contains_key(root)
+                || history.hidden_roots.contains(root)
+                || history.quick_roots.contains(root)
+        }) {
+            history.default_root = None;
+        }
         Ok(Some(history))
     }
     /// #338 supplies a validated, already published usable document, not a pending
@@ -226,11 +252,24 @@ impl ReadingHistory {
         Self::record_document_mode(directory, root, document, false)
     }
 
+    #[cfg(test)]
     pub fn record_document_mode(
         directory: &Path,
         root: &Path,
         document: &str,
         single_file: bool,
+    ) -> Result<()> {
+        Self::record_document_opened(directory, root, document, single_file, None)
+    }
+
+    /// The session worker supplies a timestamp only on a usable vault opening,
+    /// not on each note change or a candidate that never published.
+    pub fn record_document_opened(
+        directory: &Path,
+        root: &Path,
+        document: &str,
+        single_file: bool,
+        opened_at: Option<u64>,
     ) -> Result<()> {
         validate_document(root, document)?;
         let _lock = Self::lock(directory, std::iter::once(root))?;
@@ -239,7 +278,11 @@ impl ReadingHistory {
             last_documents: BTreeMap::new(),
             quick_roots: Default::default(),
             recent_roots: Vec::new(),
+            hidden_roots: Default::default(),
+            last_opened: Default::default(),
+            default_root: None,
         });
+        state.hidden_roots.remove(root);
         if single_file {
             state.quick_roots.insert(root.to_owned());
         } else {
@@ -250,6 +293,12 @@ impl ReadingHistory {
             .insert(root.to_path_buf(), document.into());
         state.recent_roots.retain(|old| old != root);
         state.recent_roots.insert(0, root.to_path_buf());
+        if !single_file {
+            if let Some(opened_at) = opened_at {
+                let previous = state.last_opened.entry(root.to_path_buf()).or_default();
+                *previous = (*previous).max(opened_at);
+            }
+        }
         state.persist(directory)
     }
     /// Older history has no ordering: only a single root can be restored without guessing.
@@ -267,17 +316,89 @@ impl ReadingHistory {
         let Some(state) = Self::load(directory)? else {
             return Ok((None, Vec::new()));
         };
-        let last = state.recent_roots.first().cloned().or_else(|| {
-            (state.last_documents.len() == 1)
-                .then(|| state.last_documents.keys().next().unwrap().clone())
-        });
-        let mut roots = state.recent_roots;
-        for root in state.last_documents.into_keys() {
-            if !roots.contains(&root) {
-                roots.push(root);
+        let roots = state.listed_roots();
+        let last = state
+            .recent_roots
+            .iter()
+            .find(|root| !state.hidden_roots.contains(*root))
+            .cloned()
+            .or_else(|| (roots.len() == 1).then(|| roots[0].clone()));
+        Ok((last, roots))
+    }
+
+    fn listed_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        for root in self.recent_roots.iter().chain(self.last_documents.keys()) {
+            if !self.hidden_roots.contains(root) && !roots.contains(root) {
+                roots.push(root.clone());
             }
         }
-        Ok((last, roots))
+        roots
+    }
+
+    /// Known vaults, including paths that are temporarily absent/unmounted.
+    /// Quick-viewer folders do not become vaults merely by opening one file.
+    pub fn known_vault_roots(directory: &Path) -> Result<Vec<PathBuf>> {
+        Ok(Self::known_vaults(directory)?
+            .into_iter()
+            .map(|vault| vault.root)
+            .collect())
+    }
+
+    pub fn known_vaults(directory: &Path) -> Result<Vec<KnownVault>> {
+        let Some(state) = Self::load(directory)? else {
+            return Ok(Vec::new());
+        };
+        Ok(state
+            .listed_roots()
+            .into_iter()
+            .filter(|root| !state.quick_roots.contains(root))
+            .map(|root| KnownVault {
+                last_opened: state.last_opened.get(&root).copied(),
+                is_default: state.default_root.as_ref() == Some(&root),
+                root,
+            })
+            .collect())
+    }
+
+    pub fn default_vault(directory: &Path) -> Result<Option<PathBuf>> {
+        Ok(Self::load(directory)?.and_then(|state| state.default_root))
+    }
+
+    pub fn set_default_vault(directory: &Path, root: Option<&Path>) -> Result<()> {
+        let _lock = Self::lock(directory, std::iter::empty())?;
+        let Some(mut state) = Self::load(directory)? else {
+            if root.is_none() {
+                return Ok(());
+            }
+            bail!("Open this vault successfully before making it the default");
+        };
+        if let Some(root) = root {
+            if !state.listed_roots().iter().any(|known| known == root)
+                || state.quick_roots.contains(root)
+            {
+                bail!("Choose a known full vault as the default");
+            }
+        }
+        state.default_root = root.map(Path::to_path_buf);
+        state.persist(directory)
+    }
+
+    /// Hide only the list entry; retain the folder and its last reading place.
+    /// Publishing a usable document there again makes it recent/visible again.
+    pub fn remove_from_list(directory: &Path, root: &Path) -> Result<()> {
+        let _lock = Self::lock(directory, std::iter::empty())?;
+        let Some(mut state) = Self::load(directory)? else {
+            return Ok(());
+        };
+        if state.last_documents.contains_key(root) {
+            state.hidden_roots.insert(root.to_owned());
+            if state.default_root.as_deref() == Some(root) {
+                state.default_root = None;
+            }
+            state.persist(directory)?;
+        }
+        Ok(())
     }
 
     /// Remove a vault from the start screen's list and from restore (#1368).
@@ -289,6 +410,11 @@ impl ReadingHistory {
         };
         state.last_documents.remove(root);
         state.quick_roots.remove(root);
+        state.hidden_roots.remove(root);
+        state.last_opened.remove(root);
+        if state.default_root.as_deref() == Some(root) {
+            state.default_root = None;
+        }
         state.recent_roots.retain(|old| old != root);
         state.persist(directory)
     }
@@ -354,6 +480,174 @@ mod tests {
         assert_eq!(isolated_from(Some("relative/state".into())), None);
         assert_eq!(isolated_from(Some("".into())), None);
         assert_eq!(isolated_from(None), None);
+    }
+
+    #[test]
+    fn known_vaults_keep_unmounted_paths_but_not_quick_viewer_folders() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let available = fixture.path().join("vault");
+        let missing = fixture.path().join("unmounted");
+        let quick = fixture.path().join("quick");
+        fs::create_dir(&available).unwrap();
+        ReadingHistory::record_document_mode(&state, &available, "note.md", false).unwrap();
+        ReadingHistory::record_document_mode(&state, &missing, "offline.md", false).unwrap();
+        ReadingHistory::record_document_mode(&state, &quick, "file.md", true).unwrap();
+        let before = fs::read(state.join(FILE)).unwrap();
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            [missing.clone(), available]
+        );
+        assert!(!missing.exists(), "the absent mount is not created");
+        assert_eq!(
+            fs::read(state.join(FILE)).unwrap(),
+            before,
+            "listing is read-only"
+        );
+        assert!(
+            !serde_json::from_slice::<serde_json::Value>(&before)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("hidden_roots"),
+            "ordinary history serialization is unchanged"
+        );
+    }
+
+    #[test]
+    fn removing_a_known_vault_preserves_bytes_and_reading_place_and_reopen_readds_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        fs::create_dir(&vault).unwrap();
+        let bytes = b"# Synthetic note\r\n\xff\0";
+        fs::write(vault.join("note.md"), bytes).unwrap();
+        ReadingHistory::record_usable_document(&state, &other, "other.md").unwrap();
+        ReadingHistory::record_usable_document(&state, &vault, "note.md").unwrap();
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            [vault.clone(), other.clone()]
+        );
+        ReadingHistory::remove_from_list(&state, &vault).unwrap();
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            std::slice::from_ref(&other)
+        );
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap(),
+            (Some(other.clone()), vec![other])
+        );
+        assert_eq!(
+            ReadingHistory::last_document(&state, &vault)
+                .unwrap()
+                .as_deref(),
+            Some("note.md")
+        );
+        assert_eq!(fs::read(vault.join("note.md")).unwrap(), bytes);
+        assert_eq!(
+            fs::read_dir(&vault).unwrap().count(),
+            1,
+            "no sidecars or directory operations"
+        );
+        // The durable suppression survives a load; using the vault again re-adds it.
+        ReadingHistory::remove_from_list(&state, &vault).unwrap();
+        ReadingHistory::record_usable_document(&state, &vault, "note.md").unwrap();
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap().first(),
+            Some(&vault)
+        );
+        assert_eq!(fs::read(vault.join("note.md")).unwrap(), bytes);
+    }
+
+    #[test]
+    fn changing_invalid_or_busy_history_preserves_the_list_and_default() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("vault");
+        ReadingHistory::record_usable_document(&state, &vault, "note.md").unwrap();
+        let before = fs::read(state.join(FILE)).unwrap();
+        let lock = ReadingHistory::lock(&state, std::iter::empty()).unwrap();
+        assert!(ReadingHistory::remove_from_list(&state, &vault)
+            .unwrap_err()
+            .is::<Busy>());
+        assert!(ReadingHistory::set_default_vault(&state, Some(&vault))
+            .unwrap_err()
+            .is::<Busy>());
+        assert_eq!(fs::read(state.join(FILE)).unwrap(), before);
+        drop(lock);
+        fs::write(state.join(FILE), b"invalid JSON").unwrap();
+        assert!(ReadingHistory::remove_from_list(&state, &vault).is_err());
+        assert!(ReadingHistory::set_default_vault(&state, Some(&vault)).is_err());
+        assert_eq!(fs::read(state.join(FILE)).unwrap(), b"invalid JSON");
+    }
+
+    #[test]
+    fn vault_settings_preserve_legacy_dates_and_only_record_successful_openings() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let legacy = fixture.path().join("legacy");
+        let opened = fixture.path().join("opened");
+        ReadingHistory::record_document_mode(&state, &legacy, "old.md", false).unwrap();
+        ReadingHistory::record_document_opened(&state, &opened, "first.md", false, Some(100))
+            .unwrap();
+        ReadingHistory::record_document_mode(&state, &opened, "second.md", false).unwrap();
+        let rows = ReadingHistory::known_vaults(&state).unwrap();
+        assert_eq!(
+            rows[0].last_opened,
+            Some(100),
+            "note navigation is not another opening"
+        );
+        assert_eq!(
+            rows[1].last_opened, None,
+            "legacy records have no invented timestamp"
+        );
+        ReadingHistory::record_document_opened(&state, &opened, "second.md", false, Some(200))
+            .unwrap();
+        assert_eq!(
+            ReadingHistory::known_vaults(&state).unwrap()[0].last_opened,
+            Some(200)
+        );
+        assert!(!opened.exists(), "history recording never creates a vault");
+    }
+
+    #[test]
+    fn default_vault_roundtrips_and_removal_clears_only_the_preference_and_list_entry() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let offline = fixture.path().join("unmounted");
+        let quick = fixture.path().join("quick");
+        ReadingHistory::record_document_mode(&state, &offline, "note.md", false).unwrap();
+        ReadingHistory::record_document_mode(&state, &quick, "file.md", true).unwrap();
+        ReadingHistory::set_default_vault(&state, Some(&offline)).unwrap();
+        assert_eq!(
+            ReadingHistory::default_vault(&state).unwrap(),
+            Some(offline.clone())
+        );
+        assert!(ReadingHistory::known_vaults(&state).unwrap()[0].is_default);
+        let before = fs::read(state.join(FILE)).unwrap();
+        for invalid in [&quick, &fixture.path().join("unknown")] {
+            assert!(ReadingHistory::set_default_vault(&state, Some(invalid)).is_err());
+            assert_eq!(fs::read(state.join(FILE)).unwrap(), before);
+        }
+        ReadingHistory::remove_from_list(&state, &offline).unwrap();
+        assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
+        assert!(ReadingHistory::known_vaults(&state).unwrap().is_empty());
+        assert_eq!(
+            ReadingHistory::last_document(&state, &offline)
+                .unwrap()
+                .as_deref(),
+            Some("note.md")
+        );
+        assert!(
+            !offline.exists(),
+            "an unmounted default is retained until explicit removal, never created"
+        );
+        ReadingHistory::record_document_mode(&state, &offline, "note.md", false).unwrap();
+        assert!(
+            !ReadingHistory::known_vaults(&state).unwrap()[0].is_default,
+            "reopening does not silently restore a removed preference"
+        );
     }
 
     #[test]

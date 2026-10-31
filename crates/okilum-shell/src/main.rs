@@ -112,6 +112,7 @@ mod reader_settings_sync;
 #[cfg(target_os = "macos")]
 #[path = "reader_settings_sync_macos.rs"]
 mod reader_settings_sync;
+mod reader_settings_vaults;
 mod reader_shortcuts;
 mod reader_side_panel;
 mod reader_sidebar;
@@ -120,6 +121,7 @@ mod reader_stignore;
 mod reader_t3_settings;
 mod reader_table_copy;
 mod reader_title_nav;
+mod reader_vaults;
 mod reader_workbench;
 #[cfg(windows)]
 mod url_protocol;
@@ -4105,7 +4107,17 @@ impl Reader {
                 |_| title.to_string(),
             ))
             .debug_selector(|| "sidebar-vault-title".into())
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |menu, window, cx| {
+                if !name_items.contains(&SidebarNameItem::SwitchProject) {
+                    return reader_vaults::menu(
+                        menu,
+                        menu_reader.clone(),
+                        if modes_inline { actions } else { &[] },
+                        show_hidden,
+                        window,
+                        cx,
+                    );
+                }
                 let menu = name_items.iter().fold(menu, |menu, item| {
                     let label = item.label();
                     let root = menu_root.clone();
@@ -6591,7 +6603,7 @@ impl SidebarNameItem {
     fn label(self) -> SharedString {
         use platform::labels::Os;
         match self {
-            Self::SwitchVault => "Switch vault…".into(),
+            Self::SwitchVault => "Open folder…".into(),
             Self::RevealVault => Os::CURRENT.reveal_named("vault").into(),
             Self::VaultSettings => "Vault settings".into(),
             Self::SwitchProject => "Switch project…".into(),
@@ -7610,6 +7622,13 @@ fn main() {
             .expect("Cannot open Okilum resource directory");
         opts
     };
+
+    // Establish the per-user executable before instance handoff and updater
+    // initialization. The runtime then supplies the canonical APPIMAGE path.
+    #[cfg(target_os = "linux")]
+    if !linux_sprint::enabled() && opts.brain_endpoint.is_none() && !opts.managed_workspace {
+        app_footprint::enter_managed_appimage();
+    }
 
     let (instance_lock, instance_requests) = if opts.brain_endpoint.is_none()
         && !opts.managed_workspace
@@ -9932,7 +9951,7 @@ mod document_link_landing_tests {
         });
         assert_eq!(
             SidebarNameItem::SwitchVault.label().as_ref(),
-            "Switch vault…"
+            "Open folder…"
         );
         assert_eq!(
             SidebarNameItem::RevealVault.label().as_ref(),

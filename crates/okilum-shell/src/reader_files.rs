@@ -350,6 +350,8 @@ impl Reader {
         }
         match FilePreview::load(&self.vault_root, rel) {
             Ok(preview) => {
+                // Read before this choice moves focus to the document.
+                let tree_had_focus = self.tree_focus.contains_focused(window, cx);
                 self.cancel_pending_landing();
                 self.navigation.preparation_generation =
                     self.navigation.preparation_generation.wrapping_add(1);
@@ -451,6 +453,7 @@ impl Reader {
                 if reader_code_file::eligible(rel) {
                     self.focus_handle.focus(window, cx);
                 }
+                self.reopen_chosen_source(tree_had_focus, window, cx);
             }
             Err(error) => {
                 eprintln!("Cannot preview file {rel}: {error:#}");
@@ -978,7 +981,12 @@ mod tests {
         for name in ["sheet.csv", "sheet.tsv", "sheet.txt"] {
             reader.update_in(visual, |r, window, cx| {
                 r.preview_file(name, window, cx);
-                r.toggle_source(window, cx);
+                // The previous file was left in Edit; that chosen mode carries
+                // to the next editable file (GitHub #6).
+                assert_eq!(r.editing.is_some(), name != "sheet.csv");
+                if r.editing.is_none() {
+                    r.toggle_source(window, cx);
+                }
                 let input = r.editing.as_ref().unwrap().test_input();
                 assert_eq!(input.read(cx).value().as_ref(), source);
                 let start = source.find("original").unwrap();
