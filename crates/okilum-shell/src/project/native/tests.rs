@@ -7,6 +7,85 @@ use std::{
     thread,
 };
 use tungstenite::Message;
+
+#[gpui::test]
+fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(&mut stream);
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+        }
+        drop(reader);
+        let body =
+            json!({"ticket":"fixture-ticket","expiresAt":"2099-01-01T00:00:00Z"}).to_string();
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        drop(stream);
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        let request: Value =
+            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(request["tag"], "server.getConfig");
+        socket.send(Message::Text(json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"environment":{"environmentId":"actual-remote-env","label":"Server"}}}}).to_string().into())).unwrap();
+    });
+    let environment = Environment::new("local-alias-is-not-an-id", &origin).unwrap();
+    let expiry = chrono::Utc::now().timestamp() as u64 + 3600;
+    let token = NativeToken::from_secret(&environment, &serde_json::to_vec(&json!({"origin":origin,"access_token":"fixture-only","expires_at":expiry,"scope":"orchestration:read"})).unwrap()).unwrap();
+    let client =
+        Arc::new(NativeClient::new(environment.clone(), token, Duration::from_secs(2)).unwrap());
+    let temp = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            view.environment = Some(environment);
+            view.identity = None;
+            view.native.client = Some(client);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("project-open-t3")
+        .expect("native-only handoff without MCP identity");
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.opened_url().as_deref(),
+        Some("t3code://threads/actual-remote-env/mcp:fixture-manager")
+    );
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    view.read_with(visual, |view, _| {
+        assert_eq!(
+            view.identity.as_ref().unwrap().environment_id,
+            "actual-remote-env"
+        )
+    });
+    server.join().unwrap();
+}
+
 #[test]
 fn retry_backoff_is_bounded_and_classifies_auth_or_protocol_failures_as_terminal() {
     assert_eq!(delay(1), Duration::from_secs(1));

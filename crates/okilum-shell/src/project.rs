@@ -16,6 +16,7 @@ mod chat_ui;
 #[cfg(target_os = "linux")]
 mod composer;
 mod connections;
+mod desktop;
 mod executors;
 #[cfg(target_os = "linux")]
 mod feed;
@@ -84,6 +85,7 @@ pub(crate) struct ProjectView {
     model_error: Option<String>,
     model_busy: bool,
     model_open: bool,
+    opening_t3: bool,
     launch: launch::Form,
     local_setup: Option<setup::Form>,
     origin: Entity<InputState>,
@@ -327,6 +329,7 @@ impl ProjectView {
             model_error: None,
             model_busy: false,
             model_open: false,
+            opening_t3: false,
             launch: launch::Form::new(window, cx),
             local_setup: None,
             origin,
@@ -382,6 +385,9 @@ impl ProjectView {
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
+        if !active {
+            self.opening_t3 = false;
+        }
         #[cfg(target_os = "linux")]
         self.set_threads_active(active, window, cx);
         #[cfg(target_os = "linux")]
@@ -425,6 +431,7 @@ impl ProjectView {
                 }
                 self.environment = Some(env);
                 self.connection_details = false;
+                self.opening_t3 = false;
                 self.gateway = Some(gateway);
                 self.chat = self
                     .binding
@@ -458,6 +465,7 @@ impl ProjectView {
         self.gateway = None;
         self.identity = None;
         self.connection_details = false;
+        self.opening_t3 = false;
         self.last_poll_status = None;
         self.model_target = None;
         self.model_open = false;
@@ -1108,13 +1116,6 @@ impl ProjectView {
             .as_ref()
             .zip(self.chat.as_ref())
             .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
-        #[cfg(target_os = "linux")]
-        let open = open.or_else(|| {
-            self.native
-                .active()
-                .then(|| self.environment.as_ref().map(Environment::origin))
-                .flatten()
-        });
         #[cfg(target_os = "linux")]
         let history = {
             self.feed

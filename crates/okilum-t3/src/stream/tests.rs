@@ -701,6 +701,7 @@ fn disabled_native_client_cannot_fetch_history_or_request_a_socket_ticket() {
         native.project_threads("bound"),
         Err(StreamError::Closed)
     ));
+    assert!(matches!(native.server_identity(), Err(StreamError::Closed)));
     assert!(matches!(
         native.manager_models(&crate::models::Target {
             thread_id: "thread".into(),
@@ -709,6 +710,34 @@ fn disabled_native_client_cannot_fetch_history_or_request_a_socket_ticket() {
         Err(StreamError::Closed)
     ));
     assert_eq!(server.requests().len(), before);
+}
+
+#[test]
+fn native_desktop_identity_comes_from_server_config_and_never_from_the_alias() {
+    for environment in [
+        json!({"environmentId":"actual-server","label":"Remote"}),
+        json!({"label":"Missing ID"}),
+    ] {
+        let valid = environment.get("environmentId").is_some();
+        let fixture = Fixture::start(move |listener| {
+            ticket(&listener);
+            let mut socket = socket(&listener);
+            let request = read(&mut socket);
+            assert_eq!(request["tag"], "server.getConfig");
+            assert_eq!(request["payload"], json!({}));
+            send(
+                &mut socket,
+                json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"environment":environment}}}),
+            );
+        });
+        let result = client(&fixture.env).server_identity();
+        if valid {
+            assert_eq!(result.unwrap().environment_id, "actual-server");
+        } else {
+            assert!(matches!(result, Err(StreamError::Protocol(_))));
+        }
+        fixture.finish();
+    }
 }
 
 #[test]

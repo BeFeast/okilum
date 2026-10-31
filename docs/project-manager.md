@@ -32,6 +32,17 @@ unconfirmed command automatically. The macOS embedded Manager is unchanged.
 The sections below describe the earlier MCP-compatible surfaces and their
 incremental history; this Linux workspace supersedes their primary chat UI.
 
+### Open in T3 desktop (#2122)
+
+Linux's **Open in T3** hands the selected thread to the registered desktop
+handler using `t3code://threads/<environmentId>/<threadId>`. The environment ID
+comes from the authenticated server's `server.getConfig` response and is cached
+for that connection; a local environment alias or HTTP origin is not a thread
+destination. Failed identity discovery leaves the conversation intact and does
+not open a browser. T3's single-instance handler reveals its existing window or
+handles the same URI on startup. Machines using a separate T3 profile must
+register that profile's launcher as their `t3code` handler.
+
 The 22 October [project navigation contract](project-navigation.md) supersedes
 the current-note Project button and adds manager-only bindings for minimal
 projects. The native transport and chat behavior below remain the fallback.

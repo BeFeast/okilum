@@ -43,7 +43,10 @@ impl ProjectView {
             );
         }
         row = row.child(self.connection_line(status, cx));
-        if let Some(url) = open {
+        let can_open = open.is_some();
+        #[cfg(target_os = "linux")]
+        let can_open = can_open || (self.native.active() && self.chat.is_some());
+        if can_open {
             row = row.child(
                 Button::new("project-open-t3")
                     .debug_selector(|| "project-open-t3".into())
@@ -51,7 +54,8 @@ impl ProjectView {
                     .small()
                     .icon(IconName::ExternalLink)
                     .tooltip("Open in T3")
-                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                    .disabled(self.opening_t3)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_in_t3(window, cx))),
             );
         }
         row.into_any_element()

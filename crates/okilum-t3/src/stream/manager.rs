@@ -15,6 +15,17 @@ pub struct ManagerThread {
 }
 
 impl NativeClient {
+    /// The native environment identity comes from this server, never its local alias.
+    pub fn server_identity(&self) -> StreamResult<crate::ServerIdentity> {
+        let config = self.manager_rpc("server.getConfig", json!({}), false)?;
+        let identity: crate::ServerIdentity = serde_json::from_value(config["environment"].clone())
+            .map_err(|_| StreamError::Protocol("missing native environment identity"))?;
+        if identity.environment_id.trim().is_empty() || identity.label.trim().is_empty() {
+            return Err(StreamError::Protocol("invalid native environment identity"));
+        }
+        Ok(identity)
+    }
+
     fn manager_rpc(&self, method: &str, payload: Value, snapshot: bool) -> StreamResult<Value> {
         self.token.validate(&self.environment, crate::unix_now())?;
         let (socket, cancel) = self.open_socket()?;
