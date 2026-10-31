@@ -641,8 +641,9 @@ mod tests {
 
     #[test]
     fn malformed_manager_cell_names_the_registry_row_and_expected_form() {
-        let fixture = tempfile::tempdir().unwrap();
-        let folder = fixture.path().join("Synthetic project");
+        let fixture =
+            std::env::temp_dir().join(format!("okilum-registry-hint-{}", uuid::Uuid::new_v4()));
+        let folder = fixture.join("Synthetic project");
         let ops = folder.join("ops");
         std::fs::create_dir_all(&ops).unwrap();
         std::fs::write(
@@ -678,13 +679,17 @@ mod tests {
             manager_role(&corrected).unwrap(),
             Manager::Thread("mcp:current".into())
         );
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]
     fn discovered_registry_errors_keep_actionable_context_and_healthy_projects() {
-        let fixture = tempfile::tempdir().unwrap();
-        let broken = fixture.path().join("Проект with spaces");
-        let healthy = fixture.path().join("Healthy");
+        let fixture = std::env::temp_dir().join(format!(
+            "okilum-registry-discovery-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let broken = fixture.join("Проект with spaces");
+        let healthy = fixture.join("Healthy");
         for folder in [&broken, &healthy] {
             std::fs::create_dir_all(folder.join("ops")).unwrap();
             std::fs::write(
@@ -706,7 +711,7 @@ mod tests {
                 "# Registry 🧠\r\n\r\n```markdown\r\n| Manager | `mcp:example` |\r\n```\r\n| Role | Thread |\r\n| --- | --- |\r\n| Manager | {cell} |\r\n"
             );
             std::fs::write(&path, &registry).unwrap();
-            let discovered = discover(fixture.path());
+            let discovered = discover(&fixture);
             assert_eq!(discovered.projects.len(), 1, "{cell}");
             assert_eq!(discovered.projects[0].folder, healthy);
             assert_eq!(discovered.errors.len(), 1, "{cell}");
@@ -728,7 +733,7 @@ mod tests {
             "| Role | Thread |\n| --- | --- |\n| Manager | `mcp:current` [Manager](t3-thread://example) |\n",
         )
         .unwrap();
-        let discovered = discover(fixture.path());
+        let discovered = discover(&fixture);
         assert!(discovered.errors.is_empty(), "{:?}", discovered.errors);
         assert_eq!(discovered.projects.len(), 2);
         assert_eq!(
@@ -740,6 +745,7 @@ mod tests {
                 .manager,
             Manager::Thread("mcp:current".into())
         );
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]
