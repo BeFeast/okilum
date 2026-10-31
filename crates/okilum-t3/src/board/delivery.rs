@@ -84,6 +84,10 @@ pub struct Build {
     pub build: String,
     pub source: String,
     pub artifact: String,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub release_url: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
