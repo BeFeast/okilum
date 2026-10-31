@@ -22,7 +22,7 @@ post_install() {
     Notes and application state stay in their current locations.
     Download and signature-verification instructions: https://git.oklabs.uk/BeFeast/okilum/src/branch/main/docs/linux-releases.md
     After Linux Stable is announced, download without running it:
-    mkdir -p "$HOME/Applications" && curl -fL https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage -o "$HOME/Applications/Okilum.AppImage" && chmod +x "$HOME/Applications/Okilum.AppImage"
+    mkdir -p "$HOME/.local/share/okilum" && curl -fL https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage -o "$HOME/.local/share/okilum/Okilum.AppImage" && chmod +x "$HOME/.local/share/okilum/Okilum.AppImage"
     Follow the linked signature-verification instructions before opening it.
 MSG
 }

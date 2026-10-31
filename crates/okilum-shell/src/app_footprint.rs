@@ -37,6 +37,45 @@ pub(crate) fn roots() -> Vec<PathBuf> {
     roots.into_iter().filter(|p| p.is_absolute()).collect()
 }
 
+/// Relocate ordinary AppImage launches before any instance/update transaction.
+/// An in-flight update must acknowledge its original target first; its next
+/// ordinary launch performs migration. CLI/QA routes never reach this function.
+#[cfg(target_os = "linux")]
+pub(crate) fn enter_managed_appimage() {
+    use std::os::unix::process::CommandExt;
+    #[cfg(feature = "appimage-acceptance-harness")]
+    if crate::appimage_acceptance::active() {
+        return;
+    }
+    if std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_some() {
+        return;
+    }
+    let (Some(home), Some(source)) = (std::env::var_os("HOME"), std::env::var_os("APPIMAGE"))
+    else {
+        return;
+    };
+    let source = PathBuf::from(source);
+    let target = match okilum_appimage::installation::install(Path::new(&home), &source) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("AppImage installation: {error:#}");
+            return;
+        }
+    };
+    if target == source {
+        return;
+    }
+    let error = std::process::Command::new(target)
+        .args(std::env::args_os().skip(1))
+        .env_remove("APPIMAGE")
+        .env_remove("APPDIR")
+        .env_remove("LD_LIBRARY_PATH")
+        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+        .exec();
+    eprintln!("Cannot launch installed AppImage: {error}");
+    std::process::exit(1);
+}
+
 /// Ordinary Linux AppImage startup only; CLI commands and acceptance fixtures
 /// return before reaching this hook. The primary instance owns the background job.
 #[cfg(target_os = "linux")]
@@ -84,7 +123,13 @@ fn refresh_desktop_database(home: &Path) {
 #[cfg(target_os = "linux")]
 fn desktop_payload(home: &Path) -> Vec<PathBuf> {
     okilum_appimage::desktop::paths(home)
-        .map(|(desktop, icon)| vec![desktop, icon])
+        .map(|(desktop, icon)| {
+            let mut paths = vec![desktop, icon];
+            if let Ok((image, command)) = okilum_appimage::installation::paths(home) {
+                paths.extend([image, command]);
+            }
+            paths
+        })
         .unwrap_or_default()
         .into_iter()
         .filter(|path| path.symlink_metadata().is_ok())
@@ -94,7 +139,8 @@ fn desktop_payload(home: &Path) -> Vec<PathBuf> {
 #[cfg(target_os = "linux")]
 fn remove_appimage_desktop(home: &Path, report: &mut Report) {
     let before = desktop_payload(home);
-    let result = okilum_appimage::desktop::remove(home);
+    let result = okilum_appimage::desktop::remove(home)
+        .and_then(|()| okilum_appimage::installation::remove(home));
     for path in before {
         if path.symlink_metadata().is_err() {
             report.removed.push(path);
@@ -1052,7 +1098,7 @@ mod tests {
         ("crates/okilum-shell/src/linux_sprint.rs", 5),
         // Roots, crash dumps, the Velopack log folder, the Linux sync units,
         // the drafts export and the macOS home (all in the inventory).
-        ("crates/okilum-shell/src/app_footprint.rs", 12),
+        ("crates/okilum-shell/src/app_footprint.rs", 13),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.

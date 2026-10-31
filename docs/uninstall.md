@@ -169,3 +169,10 @@ whether to remove its private state tree. `~/Applications/Okilum.AppImage` and
 ordinary Okilum data/registrations are outside that inventory. Vaults opened
 explicitly in Sprint remain the user's canonical files, with ordinary editing
 and save/recovery guards.
+
+Linux managed AppImage (#2100): `~/.local/share/okilum/Okilum.AppImage`, its
+`.appimage-owner` marker/installation lock and the owned `~/.local/bin/okilum`
+symlink are removed by `--uninstall-data` after the existing quit/Sync guards.
+Foreign command files and unmarked installed images are refused, never deleted.
+The shared `.local/bin`, `.local/share` and legacy `~/Applications` directories
+are not recursively removed.

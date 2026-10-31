@@ -26,9 +26,9 @@ Download the signed Linux image from the selected channel (`stable` only after
 accepted promotion; otherwise explicit `beta`) and verify before opening:
 
 ```bash
-mkdir -p "$HOME/Applications"
-curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage -o "$HOME/Applications/Okilum.AppImage"
-curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage.sig -o "$HOME/Applications/Okilum.AppImage.sig"
+mkdir -p "$HOME/.local/share/okilum"
+curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage -o "$HOME/.local/share/okilum/Okilum.AppImage"
+curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage.sig -o "$HOME/.local/share/okilum/Okilum.AppImage.sig"
 curl -fL -A curl https://updates.befeast.com/okilum/arch/okilum-signing-key.asc -o /tmp/okilum-signing-key.asc
 gpg --show-keys --with-fingerprint /tmp/okilum-signing-key.asc
 ```
@@ -37,8 +37,8 @@ Require fingerprint `7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882` before import, th
 
 ```bash
 gpg --import /tmp/okilum-signing-key.asc
-gpg --verify "$HOME/Applications/Okilum.AppImage.sig" "$HOME/Applications/Okilum.AppImage"
-chmod +x "$HOME/Applications/Okilum.AppImage"
+gpg --verify "$HOME/.local/share/okilum/Okilum.AppImage.sig" "$HOME/.local/share/okilum/Okilum.AppImage"
+chmod +x "$HOME/.local/share/okilum/Okilum.AppImage"
 ```
 
 Notes and user state retain their existing paths. The migration does not remove
@@ -421,3 +421,11 @@ stages. A crash after rename but before startup confirmation must not erase the
 only recovery copy. The current transaction is created afterward. Symlinked and
 non-private directories are never pruned. At most two retained generations plus
 the current transaction coexist until the following preparation.
+
+Ordinary AppImage launch installs the executable at
+`~/.local/share/okilum/Okilum.AppImage` and creates `~/.local/bin/okilum`.
+The owned desktop entry and OpenVault action point at the installed image.
+Launching the legacy `~/Applications/Okilum.AppImage` migrates that exact file;
+other downloaded copies are retained. Foreign files in `~/Applications` survive.
+An active updater restart receipt is acknowledged at its original target before
+migration on the next ordinary launch. CLI-only commands do not install files.

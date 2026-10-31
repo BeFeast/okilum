@@ -14,6 +14,7 @@ use std::{
 };
 
 pub mod desktop;
+pub mod installation;
 
 pub const FINGERPRINT: &str = "7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882";
 const ORIGIN: &str = "https://updates.befeast.com/";
