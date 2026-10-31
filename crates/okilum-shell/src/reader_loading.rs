@@ -2870,6 +2870,7 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_component::WindowExt;
 
     // Exercise a failed read through the real asynchronous candidate-publication
     // path, independently of runner identity and platform file-sharing rules.
