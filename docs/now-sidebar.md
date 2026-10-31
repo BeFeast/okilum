@@ -1,20 +1,24 @@
 # Now sidebar, slice 1 (#1927)
 
-After first accepted discovery, vaults with at least one project unit default to
-**Now**. Units include project manifests and children of Projects, regardless of
-recent activity. Plain note vaults show only **Tree**, with no mode switch. Now
-can be explicitly enabled or disabled in Vault settings. The initial decision
-is stored once per vault; later discovery cannot override it or a manual choice.
-Existing persisted mode choices survive migration. Before discovery, the Tree
-remains visible instead of briefly showing an uninitialized Now surface.
+Second brain is an optional module (#2091, Oleg 2026-10-31). New vaults open
+**Tree**, regardless of project discovery. The **Tree | Now** tabs remain visible
+in vault mode; selecting Now explicitly enables the module for this vault and
+makes it the saved view. Existing explicit mode choices survive migration.
+Vault settings can disable Now without deleting its saved section state.
 
-When enabled, the header's icon segments switch between Now and the existing
-Tree, also with Cmd+Shift+Backslash on macOS or
-Ctrl+Shift+Backslash elsewhere. Reveal in Tree (Cmd/Ctrl+Shift+L) explicitly
-selects Tree and reveals the open file. Plain mode switching retains the tree
-object, expanded folders, cursor and scroll handle; it never reveals a new row.
-The mode persists per vault in application state. Single-folder viewers and
-project mode retain their existing tree surface.
+A vault with at least 100 prepared note-link edges or three date-only daily notes
+gets one inline offer to make Now its default. This is a contextual hint from the
+accepted snapshot, never a scan performed by rendering. **Use Now** enables it;
+**Not now** remembers refusal for that vault across restarts. A plain note vault
+and a project alone do not trigger the offer. Explicit activation or disabling
+also answers the offer. The shared Settings module switches belong to #2092.
+
+The header's icon tabs switch between Tree and Now, also with
+Cmd+Shift+Backslash on macOS or Ctrl+Shift+Backslash elsewhere. Reveal in Tree
+(Cmd/Ctrl+Shift+L) explicitly selects Tree and reveals the open file. Plain mode
+switching retains the tree object, expanded folders, cursor and scroll handle;
+it never reveals a new row. The mode persists per vault in application state.
+Single-folder viewers and project mode retain their existing tree surface.
 
 Now keeps the In progress, Changes and Pinned section headers visible, with
 counts and collapse controls. In progress groups compact, single-line project
@@ -45,8 +49,8 @@ Rescan instead of claiming live updates.
 
 Acceptance includes preserved Tree behavior, real-corpus counts and projection
 timings (full build <=150 ms; 20-file batch <=10 ms on maestro and M4), and
-delivery on Mac and Linux Sprint. Oleg's daily use for two weeks determines
-whether Now stays the default. Delivery alone does not prove human acceptance.
+beta delivery. Tree remains the default unless explicitly changed. Delivery
+alone does not prove human acceptance.
 P0 badges and Waiting for me share the later manager-state slice. Neither is
 inferred from activity. Unread state, origin filters, review queues, project Now mode,
 right-panel changes and Collections belong to later slices.

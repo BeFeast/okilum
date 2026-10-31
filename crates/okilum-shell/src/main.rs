@@ -4049,7 +4049,7 @@ impl Reader {
         } else {
             0.
         };
-        let modes_visible = self.sidebar.now_enabled() && !self.single_file && project.is_none();
+        let modes_visible = !self.single_file && project.is_none();
         let modes_inline = modes_visible && width >= 260.;
         let actions = if self.sidebar.left_mode == reader_sidebar::LeftMode::Now
             && !self.single_file
@@ -4264,6 +4264,15 @@ impl Reader {
             .when(modes_visible && !modes_inline, |header| {
                 header.child(div().px_3().py_1().child(self.render_left_modes(cx)))
             })
+            .when(
+                modes_visible
+                    && self.sidebar.offer_now(
+                        self.workbench_ready
+                            .as_ref()
+                            .is_some_and(|index| index.view.suggest_now),
+                    ),
+                |header| header.child(self.render_now_offer(cx)),
+            )
             .into_any_element()
     }
 

@@ -97,6 +97,7 @@ pub(super) fn update_index(
         index.replace_snapshot(snapshot, path);
     }
     let (now, midnight, yesterday) = clock();
+    index.update_context(snapshot);
     index.observed_at = now;
     index.refresh(now, midnight, yesterday);
 }
@@ -116,7 +117,10 @@ fn location(path: &str) -> String {
 impl Reader {
     pub(super) fn refresh_workbench_clock(&mut self, cx: &mut Context<Self>) {
         let minute = reader_sidebar::now() / 60;
-        if self.workbench_ready.is_none() || minute == self.workbench_clock_minute {
+        if !self.sidebar.now_enabled()
+            || self.workbench_ready.is_none()
+            || minute == self.workbench_clock_minute
+        {
             return;
         }
         self.workbench_clock_minute = minute;
@@ -179,7 +183,7 @@ impl Reader {
                     && this.watcher_generation == generation
                     && this.workbench_pending == pending
                 {
-                    if this.sidebar.initialize_now(index.view.project_count > 0) {
+                    if this.sidebar.initialize_now() {
                         this.save_sidebar(cx);
                     }
                     this.workbench_ready = Some(index);
@@ -206,9 +210,12 @@ impl Reader {
     ) {
         if self.single_file
             || self.project_navigation.active.is_some()
-            || !self.sidebar.now_enabled()
             || self.sidebar.left_mode == mode
         {
+            return;
+        }
+        if mode == LeftMode::Now && !self.sidebar.now_enabled() {
+            self.set_now_enabled(true, window, cx);
             return;
         }
         self.sidebar.left_mode = mode;
@@ -256,8 +263,8 @@ impl Reader {
             .bg(tokens.border_subtle.opacity(0.5))
             .children(
                 [
-                    ("left-mode-now", "Now", LeftMode::Now),
                     ("left-mode-tree", "Tree", LeftMode::Tree),
+                    ("left-mode-now", "Now", LeftMode::Now),
                 ]
                 .into_iter()
                 .map(|(id, label, mode)| {
@@ -297,6 +304,46 @@ impl Reader {
                                 reader.update(cx, |this, cx| this.set_left_mode(mode, window, cx));
                         })
                 }),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_now_offer(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .id("second-brain-offer")
+            .debug_selector(|| "second-brain-offer".into())
+            .px_3()
+            .py_1()
+            .gap_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(11.))
+                    .child("Make Now your default view?"),
+            )
+            .child(
+                Button::new("second-brain-enable")
+                    .ghost()
+                    .small()
+                    .label("Use Now")
+                    .tooltip("Enable Second brain for this vault")
+                    .debug_selector(|| "second-brain-enable".into())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.set_now_enabled(true, window, cx)),
+                    ),
+            )
+            .child(
+                Button::new("second-brain-dismiss")
+                    .ghost()
+                    .small()
+                    .label("Not now")
+                    .debug_selector(|| "second-brain-dismiss".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.sidebar.now_offer_answered = true;
+                        this.save_sidebar(cx);
+                        cx.notify();
+                    })),
             )
             .into_any_element()
     }
@@ -927,7 +974,8 @@ mod tests {
                 reader.loading = None;
                 reader.vault_root = temp.path().join("vault");
                 reader.sidebar = reader_sidebar::State::default();
-                reader.sidebar.initialize_now(true);
+                reader.sidebar.initialize_now();
+                reader.sidebar.choose_now(true);
                 reader.sidebar_path = Some(reader_sidebar::State::path(
                     &temp.path().join("state"),
                     &reader.vault_root,
@@ -1032,7 +1080,62 @@ mod tests {
     }
 
     #[gpui::test]
-    fn plain_vault_has_only_tree_until_manual_vault_preference_enables_now(
+    fn contextual_now_offer_accept_and_dismiss_survive_reopen(cx: &mut TestAppContext) {
+        for accept in [false, true] {
+            let (reader, visual, temp) = fixture(cx);
+            let now = reader_sidebar::now();
+            let mut index = Index::default();
+            for day in 1..=3 {
+                index.replace(&format!("Daily/2026-10-{day:02}.md"), "Daily", now);
+            }
+            index.refresh(now, now - 100, now - workbench::DAY);
+            assert!(index.view.suggest_now);
+            reader.update(visual, |r, cx| {
+                r.sidebar = reader_sidebar::State::default();
+                r.sidebar.initialize_now();
+                r.workbench = Arc::new(index);
+                r.workbench_ready = Some(r.workbench.clone());
+                r.workbench_clock_minute = now / 60;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("sidebar-tree-body").is_some());
+            assert!(visual.debug_bounds("left-mode-now").is_some());
+            assert!(visual.debug_bounds("second-brain-offer").is_some());
+            let button = visual
+                .debug_bounds(if accept {
+                    "second-brain-enable"
+                } else {
+                    "second-brain-dismiss"
+                })
+                .unwrap();
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.run_until_parked();
+            let path =
+                reader_sidebar::State::path(&temp.path().join("state"), &temp.path().join("vault"));
+            let reopened = reader_sidebar::State::load(&path);
+            assert_eq!(reopened.now_enabled(), accept);
+            assert_eq!(
+                reopened.left_mode,
+                if accept {
+                    LeftMode::Now
+                } else {
+                    LeftMode::Tree
+                }
+            );
+            assert!(reopened.now_offer_answered);
+            reader.update(visual, |r, cx| {
+                r.sidebar = reopened;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("second-brain-offer").is_none());
+            assert_eq!(visual.debug_bounds("now-sidebar").is_some(), accept);
+        }
+    }
+
+    #[gpui::test]
+    fn plain_vault_keeps_tree_and_visible_now_tab_until_explicit_activation(
         cx: &mut TestAppContext,
     ) {
         let (reader, visual, temp) = fixture(cx);
@@ -1045,7 +1148,7 @@ mod tests {
             r.vault = Arc::new(Vault::from_note_paths(["Note.md".into()]));
             r.current_rel = "Note.md".into();
             r.sidebar = reader_sidebar::State::default();
-            r.sidebar.initialize_now(false);
+            r.sidebar.initialize_now();
             r.workbench = Arc::new(index);
             r.workbench_ready = Some(r.workbench.clone());
             r.workbench_clock_minute = now / 60;
@@ -1054,8 +1157,11 @@ mod tests {
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("sidebar-tree-body").is_some());
-        assert!(visual.debug_bounds("left-mode-now").is_none());
-        reader.update_in(visual, |r, window, cx| r.set_now_enabled(true, window, cx));
+        assert!(visual.debug_bounds("left-mode-now").is_some());
+        assert!(visual.debug_bounds("second-brain-offer").is_none());
+        assert!(!reader.read_with(visual, |r, _| r.sidebar.now_enabled()));
+        let now_tab = visual.debug_bounds("left-mode-now").unwrap();
+        visual.simulate_click(now_tab.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("left-mode-now").is_some());
         assert!(visual.debug_bounds("now-sidebar").is_some());
@@ -1066,7 +1172,7 @@ mod tests {
         let path =
             reader_sidebar::State::path(&temp.path().join("state"), &temp.path().join("vault"));
         let mut reopened = reader_sidebar::State::load(&path);
-        assert!(!reopened.initialize_now(false));
+        assert!(!reopened.initialize_now());
         assert!(reopened.now_enabled());
         assert_eq!(reopened.left_mode, LeftMode::Tree);
     }
@@ -1180,7 +1286,9 @@ mod tests {
             "no pre-discovery Now flash"
         );
         assert!(!state.now_enabled());
-        assert!(state.initialize_now(true));
+        assert!(state.initialize_now());
+        assert_eq!(state.left_mode, LeftMode::Tree);
+        state.choose_now(true);
         assert_eq!(state.left_mode, LeftMode::Now);
         let mac = gpui::Keystroke::parse("cmd-|").unwrap();
         let binding =

@@ -34,6 +34,7 @@ pub struct Row {
 pub struct Index {
     notes: BTreeMap<String, Row>,
     discovered: Vec<Unit>,
+    linked_context: bool,
     pub view: View,
     /// Time of the last accepted source publication, independent of window aging.
     pub observed_at: u64,
@@ -41,6 +42,7 @@ pub struct Index {
 
 #[derive(Clone, Debug, Default)]
 pub struct View {
+    pub suggest_now: bool,
     pub active: Vec<Activity>,
     pub older: usize,
     pub days: Vec<Period>,
@@ -242,6 +244,7 @@ impl Index {
     ) -> Self {
         let mut index = Self {
             discovered: units,
+            linked_context: snapshot.has_note_links(100),
             observed_at: now,
             ..Self::default()
         };
@@ -265,6 +268,9 @@ impl Index {
 
     pub fn set_units(&mut self, units: Vec<Unit>) {
         self.discovered = units;
+    }
+    pub fn update_context(&mut self, snapshot: &Snapshot) {
+        self.linked_context = snapshot.has_note_links(100);
     }
     pub fn remove(&mut self, path: &str) {
         self.notes.remove(path);
@@ -361,6 +367,32 @@ impl Index {
         let mut view = View {
             built_at: now,
             project_count: units.len(),
+            suggest_now: self.linked_context
+                || self
+                    .notes
+                    .values()
+                    .filter(|row| {
+                        !row.noise
+                            && row.dated_name.is_some()
+                            && row
+                                .path
+                                .rsplit('/')
+                                .next()
+                                .and_then(|name| name.strip_suffix(".md"))
+                                .is_some_and(|name| {
+                                    name.len() == 10
+                                        && name.bytes().enumerate().all(|(position, byte)| {
+                                            if position == 4 || position == 7 {
+                                                byte == b'-'
+                                            } else {
+                                                byte.is_ascii_digit()
+                                            }
+                                        })
+                                })
+                    })
+                    .take(3)
+                    .count()
+                    == 3,
             ..View::default()
         };
         let week = now.saturating_sub(7 * DAY);
@@ -498,6 +530,52 @@ impl Index {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn context_offer_needs_links_or_daily_notes_not_project_discovery() {
+        let mut index = super::Index::default();
+        index.set_units(vec![super::Unit {
+            path: "Dev/Projects/App".into(),
+            ..Default::default()
+        }]);
+        index.replace("Dev/Projects/App/note.md", "Plain project", 100);
+        index.refresh(100, 0, 0);
+        assert_eq!(index.view.project_count, 1);
+        assert!(!index.view.suggest_now);
+        for day in 1..=2 {
+            index.replace(&format!("Daily/2026-10-{day:02}.md"), "Daily", 100);
+        }
+        index.refresh(100, 0, 0);
+        assert!(!index.view.suggest_now);
+        index.replace("Daily/2026-10-03.md", "Daily", 100);
+        index.refresh(100, 0, 0);
+        assert!(index.view.suggest_now);
+        index.remove("Daily/2026-10-03.md");
+        index.refresh(100, 0, 0);
+        assert!(!index.view.suggest_now);
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Target.md"), "Target").unwrap();
+        for note in 0..100 {
+            std::fs::write(root.path().join(format!("Note{note}.md")), "[[Target]]").unwrap();
+        }
+        let (_, snapshot, _) =
+            crate::vault::warm::reconcile(root.path(), None, false, &mut |_, _| Ok(())).unwrap();
+        let linked = super::Index::from_snapshot(&snapshot, vec![], 100, 0, 0);
+        assert!(
+            linked.view.suggest_now,
+            "prepared note links provide a positive control"
+        );
+        std::fs::remove_file(root.path().join("Note0.md")).unwrap();
+        let (_, snapshot, _) =
+            crate::vault::warm::reconcile(root.path(), Some(&snapshot), false, &mut |_, _| Ok(()))
+                .unwrap();
+        index.update_context(&snapshot);
+        index.refresh(100, 0, 0);
+        assert!(
+            !index.view.suggest_now,
+            "falling below the link threshold clears relevance"
+        );
+    }
+
     use super::*;
     #[test]
     fn short_project_identity_activity_and_domains_use_existing_snapshot_data() {

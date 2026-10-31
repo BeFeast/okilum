@@ -65,10 +65,11 @@ impl Section {
 pub struct State {
     #[serde(default)]
     pub left_mode: LeftMode,
-    /// None until the first accepted discovery; then persisted per vault.
-    /// Explicit Vault settings and mode choices take precedence over discovery.
+    /// Second brain is opt-in. Explicit choices are persisted per vault.
     #[serde(default)]
     pub now_enabled: Option<bool>,
+    #[serde(default)]
+    pub now_offer_answered: bool,
     #[serde(default)]
     pub now_collapsed: BTreeSet<String>,
     #[serde(default)]
@@ -149,28 +150,29 @@ impl State {
         self.now_enabled == Some(true)
     }
 
-    pub fn initialize_now(&mut self, has_projects: bool) -> bool {
+    pub fn initialize_now(&mut self) -> bool {
         if self.now_enabled.is_some() {
             return false;
         }
-        self.now_enabled = Some(has_projects);
-        self.left_mode = if has_projects {
-            LeftMode::Now
-        } else {
-            LeftMode::Tree
-        };
+        self.now_enabled = Some(false);
+        self.left_mode = LeftMode::Tree;
         self.now_collapsed
             .extend(["changes", "pins"].map(str::to_owned));
         true
     }
 
     pub fn choose_now(&mut self, enabled: bool) {
+        self.now_offer_answered = true;
         self.now_enabled = Some(enabled);
         self.left_mode = if enabled {
             LeftMode::Now
         } else {
             LeftMode::Tree
         };
+    }
+
+    pub fn offer_now(&self, relevant: bool) -> bool {
+        relevant && !self.now_enabled() && !self.now_offer_answered
     }
 
     /// Save from a background task. Saves are serialized and a snapshot older
@@ -361,7 +363,33 @@ pub fn age_label(then: u64, now: u64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn vault_project_default_is_chosen_once_and_manual_choices_survive_reopen() {
+    fn second_brain_offer_is_contextual_and_answers_persist_per_vault() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = State::path(directory.path(), Path::new("/linked-vault"));
+        let mut state = State::default();
+        state.initialize_now();
+        assert!(!state.offer_now(false));
+        assert!(state.offer_now(true));
+        state.now_offer_answered = true;
+        state.save(&path).unwrap();
+        let mut reopened = State::load(&path);
+        assert!(!reopened.offer_now(true));
+        assert!(!reopened.now_enabled());
+        assert_eq!(reopened.left_mode, LeftMode::Tree);
+        reopened.choose_now(true);
+        reopened.save(&path).unwrap();
+        let enabled = State::load(&path);
+        assert!(enabled.now_enabled());
+        assert_eq!(enabled.left_mode, LeftMode::Now);
+        assert!(!enabled.offer_now(true));
+        assert!(
+            State::load(&State::path(directory.path(), Path::new("/another-vault")))
+                .offer_now(true)
+        );
+    }
+
+    #[test]
+    fn tree_is_the_default_for_every_vault_and_manual_choices_survive_reopen() {
         let directory = tempfile::tempdir().unwrap();
         for has_projects in [false, true] {
             let root = directory
@@ -369,20 +397,13 @@ mod tests {
                 .join(if has_projects { "projects" } else { "notes" });
             let path = State::path(directory.path(), &root);
             let mut state = State::load(&path);
-            assert!(state.initialize_now(has_projects));
-            assert_eq!(state.now_enabled(), has_projects);
-            assert_eq!(
-                state.left_mode,
-                if has_projects {
-                    LeftMode::Now
-                } else {
-                    LeftMode::Tree
-                }
-            );
+            assert!(state.initialize_now());
+            assert!(!state.now_enabled());
+            assert_eq!(state.left_mode, LeftMode::Tree);
             state.save(&path).unwrap();
             let mut reopened = State::load(&path);
             assert!(
-                !reopened.initialize_now(!has_projects),
+                !reopened.initialize_now(),
                 "discovery cannot reset a stored decision"
             );
             assert_eq!(reopened, state);
@@ -390,7 +411,7 @@ mod tests {
             reopened.left_mode = LeftMode::Tree;
             reopened.save(&path).unwrap();
             let mut manual = State::load(&path);
-            assert!(!manual.initialize_now(false));
+            assert!(!manual.initialize_now());
             assert!(
                 manual.now_enabled(),
                 "manual enable wins in a plain note vault"
@@ -403,7 +424,7 @@ mod tests {
             manual.choose_now(false);
             manual.save(&path).unwrap();
             let mut disabled = State::load(&path);
-            assert!(!disabled.initialize_now(true));
+            assert!(!disabled.initialize_now());
             assert!(
                 !disabled.now_enabled(),
                 "manual disable wins even after discovering projects"
@@ -418,7 +439,7 @@ mod tests {
         for mode in ["tree", "now"] {
             std::fs::write(&path, format!("{{\"left_mode\":\"{mode}\"}}")).unwrap();
             let mut state = State::load(&path);
-            assert!(!state.initialize_now(false));
+            assert!(!state.initialize_now());
             assert!(state.now_enabled());
             assert_eq!(
                 state.left_mode,
