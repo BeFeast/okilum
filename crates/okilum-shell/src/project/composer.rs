@@ -115,6 +115,8 @@ impl Render for Composer {
         };
         let modes = h_flex().gap_1().children(modes);
         v_flex()
+            .id("project-composer")
+            .relative()
             .w_full()
             .gap_1()
             // Textarea propagates submit-on-enter. Consume that action here so
@@ -133,6 +135,7 @@ impl Render for Composer {
                     }
                 }),
             )
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(brand::palette(cx).selected))
             .on_drop(cx.listener(|_, paths: &ExternalPaths, _, cx| {
                 cx.emit(AttachmentRequested::Paths(paths.0.to_vec()))
             }))
@@ -181,13 +184,17 @@ impl Render for Composer {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use std::{cell::Cell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     #[gpui::test]
     fn native_paste_consumes_the_action_once_and_legacy_paste_still_works(cx: &mut TestAppContext) {
         cx.update(crate::test_init);
         let received = Rc::new(Cell::new(0));
         let insert = Rc::new(Cell::new(false));
+        let dropped = Rc::new(RefCell::new(Vec::new()));
         let (root, visual) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| TextareaState::new(window, cx));
             let composer = cx.new(|cx| {
@@ -196,10 +203,14 @@ mod tests {
                 composer.set_controls(true, false, cx);
                 let received = received.clone();
                 let insert = insert.clone();
+                let dropped = dropped.clone();
                 cx.subscribe_in(
                     &cx.entity(),
                     window,
                     move |this, _, event: &AttachmentRequested, window, cx| {
+                        if let AttachmentRequested::Paths(paths) = event {
+                            dropped.borrow_mut().extend(paths.clone());
+                        }
                         if matches!(event, AttachmentRequested::Paste) {
                             received.set(received.get() + 1);
                             // File paste stages a row without inserting its URI.
@@ -273,5 +284,37 @@ mod tests {
                 "First line\nSecond line"
             )
         });
+        composer.update(visual, |composer, cx| composer.set_native(true, false, cx));
+        visual.run_until_parked();
+        let center = visual
+            .debug_bounds("project-composer-input")
+            .unwrap()
+            .center();
+        let paths = vec![
+            PathBuf::from("/qa/screenshot.png"),
+            PathBuf::from("/qa/report.pdf"),
+            PathBuf::from("/qa/notes.txt"),
+        ];
+        // A real file drag moves the pointer before entering the drop target.
+        // FileDropEvent alone does not leave GPUI's keyboard modality.
+        visual.simulate_event(gpui::MouseMoveEvent {
+            position: center,
+            pressed_button: Some(MouseButton::Left),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        visual.update(|window, _| assert!(!window.last_input_was_keyboard()));
+        visual.simulate_event(gpui::FileDropEvent::Entered {
+            position: center,
+            paths: ExternalPaths(paths.clone().into_iter().collect()),
+        });
+        visual.run_until_parked();
+        visual.simulate_event(gpui::FileDropEvent::Submit { position: center });
+        visual.run_until_parked();
+        assert_eq!(
+            *dropped.borrow(),
+            paths,
+            "native file-drop events must retain all typed paths"
+        );
     }
 }
