@@ -374,6 +374,8 @@ for document in info.get('CFBundleDocumentTypes', []):
     document['LSHandlerRank'] = 'None'
 # Keep the working app's URL protocol exclusive to the working app.
 info.pop('CFBundleURLTypes', None)
+for service in info.get('NSServices', []):
+    service['NSPortName'] = 'Okilum Sprint'
 info.update(CFBundleExecutable='sprint-launch', CFBundleName='Okilum Sprint',
             CFBundleDisplayName='Okilum Sprint', SUEnableAutomaticChecks=False,
             NSHumanReadableCopyright=f'Sprint source {sha}')

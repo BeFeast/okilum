@@ -244,7 +244,30 @@ class MainHealthTests(unittest.TestCase):
         self.assertNotIn('looks like infrastructure', body)
         self.assertIn('- #3 by @ana (c3c3c3c3)', body)
 
-    def test_a_python_unittest_failure_blames_the_merges(self):
+    # Python unittest headers (#1968), as the shared lane prints them with and without the runner's
+    # timestamps. Python 3.11+ repeats the method inside the parentheses.
+    PY_FAIL = 'test_patch_numbers.PatchNumberTests.test_every_patch_has_a_unique_four_digit_number'
+    PY_ERROR = 'test_sign_code_guard.GuardTests.test_inventory_timeout_at_each_boundary'
+    PY_RUNNER_END = ("2026-10-24T18:34:59.3278955Z ⚙️ [runner]: exitcode '1': failure\n"
+                     '2026-10-24T18:35:02.0829698Z 🏁  Job failed\n')
+
+    def python_log(self, headers, summary, timestamped=True):
+        """A failed scripts/ci run: the hosted test output, the unittest headers, then the summary."""
+        lines = ['Hosted CI unavailable; no fallback success: Unknown hosted lane']
+        for header in headers:
+            lines += ['=' * 70, header, '-' * 70, 'Traceback (most recent call last):',
+                      '  File "x.py", line 1, in test', 'AssertionError: synthetic']
+        lines += ['-' * 70, 'Ran 126 tests in 18.918s', '', summary]
+        stamp = '2026-10-24T18:34:57.6438674Z ' if timestamped else ''
+        return ''.join(f'{stamp}{line}\n' for line in lines) + self.PY_RUNNER_END
+
+    def assert_awaiting(self, api, body, name):
+        self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed yet')
+        self.assertNotIn('looks like infrastructure', body)
+        self.assertIn(f'Failing tests:\n- `{name}`\n\n', body)
+        self.assertIn(health.AWAITING, body)
+
+    def test_a_python_unittest_failure_names_its_test_and_awaits_confirmation(self):
         # Run 11737 (shared lane, the same scripts/ci suite): the hosted test output, then a failure.
         log = ('2026-10-24T18:34:57.6383365Z Hosted CI unavailable; no fallback success: Unknown hosted lane\n'
                '2026-10-24T18:34:57.6438674Z FAIL: test_every_patch_has_a_unique_four_digit_number '
@@ -253,10 +276,14 @@ class MainHealthTests(unittest.TestCase):
                '2026-10-24T18:34:57.6439863Z FAILED (failures=1)\n'
                "2026-10-24T18:34:59.3278955Z ⚙️ [runner]: exitcode '1': failure\n"
                '2026-10-24T18:35:02.0829698Z 🏁  Job failed\n')
-        self.assertEqual(health.classify(log), ('code', []))
-        self.assert_blamed(*self.red_on_log(log))
+        self.assertEqual(health.classify(log), ('code', [self.PY_FAIL]))
+        self.assert_awaiting(*self.red_on_log(log), self.PY_FAIL)
+        plain = self.python_log([f'FAIL: test_every_patch_has_a_unique_four_digit_number ({self.PY_FAIL})'],
+                                'FAILED (failures=1)', timestamped=False)
+        self.assertEqual(health.classify(plain), ('code', [self.PY_FAIL]))
+        self.assert_awaiting(*self.red_on_log(plain), self.PY_FAIL)
 
-    def test_a_python_test_error_blames_the_merges(self):
+    def test_a_python_test_error_names_its_test_and_awaits_confirmation(self):
         # Run 10711: a test of scripts/windows timed out (an error, not a failure).
         log = ('2026-10-23T08:53:33.2590259Z ERROR: test_inventory_timeout_at_each_boundary '
                '(test_sign_code_guard.GuardTests.test_inventory_timeout_at_each_boundary)\n'
@@ -264,8 +291,53 @@ class MainHealthTests(unittest.TestCase):
                '2026-10-23T08:53:33.2592982Z FAILED (errors=1)\n'
                "2026-10-23T08:54:26.8027996Z ⚙️ [runner]: exitcode '1': failure\n"
                '2026-10-23T08:54:29.4699068Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', [self.PY_ERROR]))
+        self.assert_awaiting(*self.red_on_log(log), self.PY_ERROR)
+        plain = self.python_log([f'ERROR: test_inventory_timeout_at_each_boundary ({self.PY_ERROR})'],
+                                'FAILED (errors=1)', timestamped=False)
+        self.assertEqual(health.classify(plain), ('code', [self.PY_ERROR]))
+        self.assert_awaiting(*self.red_on_log(plain), self.PY_ERROR)
+
+    def test_two_python_failures_blame_the_merges_at_once(self):
+        log = self.python_log([f'ERROR: test_inventory_timeout_at_each_boundary ({self.PY_ERROR})',
+                               f'FAIL: test_every_patch_has_a_unique_four_digit_number ({self.PY_FAIL})'],
+                              'FAILED (failures=1, errors=1)')
+        self.assertEqual(health.classify(log), ('code', [self.PY_ERROR, self.PY_FAIL]), 'in log order')
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn(health.AWAITING, body)
+        self.assertIn(f'Failing tests:\n- `{self.PY_ERROR}`\n- `{self.PY_FAIL}`\n\n', body)
+
+    def test_a_repeated_python_header_is_one_failure(self):
+        # Each failing subTest prints its own header for the same test; Python before 3.11 names
+        # only the class inside the parentheses.
+        headers = [f'FAIL: test_every_patch_has_a_unique_four_digit_number ({self.PY_FAIL}) (number=1)',
+                   f'FAIL: test_every_patch_has_a_unique_four_digit_number ({self.PY_FAIL}) (number=2)',
+                   'FAIL: test_every_patch_has_a_unique_four_digit_number (test_patch_numbers.PatchNumberTests)']
+        log = self.python_log(headers, 'FAILED (failures=3)')
+        self.assertEqual(health.classify(log), ('code', [self.PY_FAIL]))
+        self.assert_awaiting(*self.red_on_log(log), self.PY_FAIL)
+
+    def test_an_unnamed_python_failure_summary_blames_the_merges(self):
+        log = self.python_log([], 'FAILED (errors=1)')
         self.assertEqual(health.classify(log), ('code', []))
-        self.assert_blamed(*self.red_on_log(log))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn(health.AWAITING, body)
+        self.assertNotIn('Failing tests:', body)
+
+    def test_a_passing_python_run_names_no_failure(self):
+        # A passing suite may print header-shaped output; without a FAILED summary it names nothing.
+        log = (self.python_log([f'FAIL: test_every_patch_has_a_unique_four_digit_number ({self.PY_FAIL})'], 'OK')
+               .replace(self.PY_RUNNER_END, '') +
+               '2026-10-24T18:35:00.0000000Z    Compiling okilum v0.1.0\n' + self.PY_RUNNER_END)
+        self.assertEqual(health.classify(log), ('unknown', []))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn('Failing tests:', body)
+        # The same suite failing is the positive control: the header is found.
+        self.assertEqual(health.classify(log.replace('Z OK\n', 'Z FAILED (failures=1)\n')),
+                         ('code', [self.PY_FAIL]))
 
     def test_a_log_cut_off_mid_compile_is_not_infrastructure(self):
         # Run 7379 stops while compiling, with no runner line: nothing says why it ended.

@@ -28,8 +28,18 @@ class DocumentTypesTests(unittest.TestCase):
         self.assertIn('public.plain-text', declaration['UTTypeConformsTo'])
         self.assertEqual(declaration['UTTypeTagSpecification']['public.filename-extension'], ['md'])
 
+    def assert_folder_service(self, info, port):
+        service, = info['NSServices']
+        self.assertEqual(service['NSMenuItem']['default'], 'Open in Okilum as Vault')
+        self.assertEqual(service['NSMessage'], 'openFolderAsVault')
+        self.assertEqual(service['NSPortName'], port)
+        self.assertEqual(service['NSSendFileTypes'], ['public.folder'])
+        self.assertEqual(set(service['NSSendTypes']), {'NSFilenamesPboardType', 'public.file-url'})
+
     def test_shipping_accepts_folders_and_markdown(self):
-        self.assert_drop_types(plistlib.loads(self.template().encode()), 'Alternate')
+        info = plistlib.loads(self.template().encode())
+        self.assert_drop_types(info, 'Alternate')
+        self.assert_folder_service(info, 'Okilum')
 
     def test_sprint_accepts_explicit_drops_without_default_or_url_associations(self):
         source = (ROOT / 'scripts/dev/okilum-sprint.sh').read_text()
@@ -41,6 +51,7 @@ class DocumentTypesTests(unittest.TestCase):
                            text=True, cwd=ROOT, check=True)
             info = plistlib.loads((stage / 'Contents/Info.plist').read_bytes())
         self.assert_drop_types(info, 'None')
+        self.assert_folder_service(info, 'Okilum Sprint')
         self.assertNotIn('CFBundleURLTypes', info)
         self.assertEqual(info['CFBundleIdentifier'], 'com.befeast.okilum.sprint')
 
