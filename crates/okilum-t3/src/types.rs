@@ -14,12 +14,18 @@ pub struct ServerIdentity {
 
 impl ServerIdentity {
     pub fn thread_url(&self, thread_id: &str) -> String {
-        let mut url = url::Url::parse("t3code://threads/").unwrap();
-        url.path_segments_mut()
+        // The desktop renderer uses the same environment/thread hash route as
+        // its app entry. Encode each segment before placing it in the fragment:
+        // slashes, hashes and queries inside IDs must never become navigation.
+        let mut route = url::Url::parse("https://route.invalid/").unwrap();
+        route
+            .path_segments_mut()
             .unwrap()
             .pop_if_empty()
             .push(&self.environment_id)
             .push(thread_id);
+        let mut url = url::Url::parse("t3code://app/").unwrap();
+        url.set_fragment(Some(route.path()));
         url.into()
     }
 }
@@ -389,6 +395,31 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&bare).unwrap(),
             json!({ "instanceId": "codex", "model": "gpt-6-astra" })
+        );
+    }
+}
+
+#[cfg(test)]
+mod desktop_link_tests {
+    use super::*;
+    #[test]
+    fn desktop_app_hash_route_preserves_thread_identity() {
+        let identity = ServerIdentity {
+            environment_id: "remote-env".into(),
+            label: "remote".into(),
+        };
+        assert_eq!(
+            identity.thread_url("mcp:launch:abc"),
+            "t3code://app/#/remote-env/mcp:launch:abc"
+        );
+        let url = url::Url::parse(&identity.thread_url("thread/with ?#% Ю")).unwrap();
+        assert_eq!(url.scheme(), "t3code");
+        assert_eq!(url.host_str(), Some("app"));
+        assert_eq!(url.path(), "/");
+        assert!(url.query().is_none());
+        assert_eq!(
+            url.fragment(),
+            Some("/remote-env/thread%2Fwith%20%3F%23%25%20%D0%AE")
         );
     }
 }
