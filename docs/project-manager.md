@@ -287,3 +287,31 @@ is marked. Esc or clicking outside dismisses the popover without discarding the
 draft or confirmed model. Thread IDs, runtime credential modes and scheduler
 migration diagnostics do not appear in the ordinary model picker. Applying still
 requires explicit confirmation and the same project verification and T3 readback.
+
+
+## Scoped conversations and retained drafts (#2134)
+
+The Linux Manager workspace switches and filters conversations only in the
+explicitly bound Manager and executor projects. **New thread** creates an idle
+conversation in the selected conversation's project, inheriting its confirmed
+model and interaction/runtime policy. It neither starts a provider turn nor
+changes the Area's canonical Manager binding. An unconfirmed creation retains
+its complete operation identity across restart; an explicit retry resumes that
+operation instead of creating another conversation.
+
+Composer drafts live in application state, outside the rebuildable index and
+vault. Their identity is the normalized server origin, project and thread;
+server aliases intentionally share a draft. Text changes are serialized to disk
+off the UI thread, and application quit waits for pending writes, including
+writers from already closed windows. Reconnection and thread switching retain
+independent drafts. A prepared send clears only the exact unchanged draft that
+was handed to durable message preparation, including its attachment metadata.
+
+The attachment adapter retains display metadata and confirmed asset references,
+not credentials, signed URLs, bytes or open file handles. Restart preserves each
+row: an unconfirmed upload needs file reselection, and a completed asset may be
+reused only for the same confirmed server environment. Slice 4 owns upload/tray
+integration; this storage contract does not claim that upload is implemented.
+A storage failure is visible and preserves the existing saved record; the user
+is told to retain/copy unsaved text before closing. Concurrent writers use
+revision checks rather than overwriting another window's saved draft.
