@@ -1163,7 +1163,8 @@ mod tests {
 
     #[test]
     fn a_user_can_collapse_and_reopen_the_response_preserved_by_stop() {
-        let stopped = run("run", RunState::Interrupted);
+        let mut stopped = run("run", RunState::Interrupted);
+        stopped.completed_at = Some(47_000);
         let mut session = Session::default();
         session.observe_latest(Some(&run("run", RunState::Running)));
         session.observe_latest(Some(&stopped));
