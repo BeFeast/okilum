@@ -238,7 +238,7 @@ fn history_merge_preserves_live_text_deduplicates_and_rejects_a_stale_cursor() {
     assert!(!p.take_changes().changed());
 }
 #[test]
-fn reasoning_and_tools_have_distinct_bounded_presentations() {
+fn reasoning_and_tools_retain_full_detail_separately_from_the_preview() {
     assert!(matches!(
         presentation::body(&message("a", 1, "reasoning")),
         presentation::Body::Reasoning(_)
@@ -249,7 +249,10 @@ fn reasoning_and_tools_have_distinct_bounded_presentations() {
         panic!("not compact")
     };
     assert!(label.starts_with("Command"));
-    assert!(detail.chars().count() <= 240 && !detail.contains('\n'));
+    assert!(detail.contains("secret output"));
+    assert!(detail.chars().count() > 500);
+    assert!(presentation::preview(&command).starts_with("cargo test"));
+    assert!(!presentation::preview(&command).starts_with("## Input"));
 }
 
 #[test]

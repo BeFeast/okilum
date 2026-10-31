@@ -10,6 +10,7 @@
 mod auth;
 mod manager;
 mod protocol;
+pub mod turn_item;
 pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
 

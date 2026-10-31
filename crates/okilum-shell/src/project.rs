@@ -21,6 +21,8 @@ mod executors;
 #[cfg(target_os = "linux")]
 mod feed;
 mod launch;
+#[cfg(target_os = "linux")]
+mod links;
 mod models;
 #[cfg(target_os = "linux")]
 mod native;
@@ -1503,6 +1505,8 @@ impl Reader {
                                     .replace('\\', "/");
                                 view
                             });
+                            #[cfg(target_os = "linux")]
+                            this.connect_manager_links(&project, window, cx);
                             cx.subscribe_in(
                                 &project,
                                 window,

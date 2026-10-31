@@ -287,3 +287,22 @@ is marked. Esc or clicking outside dismisses the popover without discarding the
 draft or confirmed model. Thread IDs, runtime credential modes and scheduler
 migration diagnostics do not appear in the ordinary model picker. Applying still
 requires explicit confirmation and the same project verification and T3 readback.
+
+
+## Readable native messages and activity (#2135)
+
+Messages, retained messages and expanded activity share the Reader's selectable
+Markdown style and exact code-block Copy action. External HTTP(S) links open in
+the system browser. Local file links resolve against the linked local project,
+with explicit notices for missing, ambiguous or outside-project destinations;
+they never inherit the currently open Reader note's directory. A valid local
+note link opens through the Reader, including a heading or `#L<number>` landing.
+
+Tool activity stays collapsed by default. Its bounded input/path/tool preview is
+independent of the complete available detail. Disclosure loads omitted output
+with `orchestration.getTurnItem` using the original source thread/item and
+revision, including inherited activity. A late response cannot replace another
+row or conversation. A missing/unsupported/abbreviated response stays explicitly
+incomplete; Open in T3 is not treated as completed in-panel parity. Live output
+may be refreshed, and terminal revisions replace stale live detail. Proposed
+plans preserve all Markdown, and todo lists retain every step and its status.
