@@ -1,9 +1,11 @@
 # AI Brain foundation contracts — ai-brain/v1
 
 Implementation contract for [the approved POC](ai-brain-poc.md), 2026-09-05.
-**Specified, not yet implemented.** JSON below describes transport-neutral domain
-values; these are not current cored commands or MCP tools. The existing reader
-[protocol v0.3](PROTOCOL.md) is unchanged. New transport exposure must advertise
+JSON below describes transport-neutral domain values. They are served by the
+separate `okilum-cored brain` entrypoint ([local service](ai-brain-service.md),
+[shared Rust types](../crates/okilum-brain/src/types.rs)); they are not JSON-lines
+reader ops or MCP tools. The existing reader [protocol v0.3](PROTOCOL.md) is
+unchanged. New transport exposure must advertise
 `ai-brain/v1`; incompatible schema changes require a new version.
 
 ## 1. Shared conventions and authority
