@@ -658,3 +658,19 @@ fn disclosure_fetches_full_output_from_the_inherited_source_item(cx: &mut TestAp
             .contains("FULL_OUTPUT_FINAL"));
     });
 }
+
+#[test]
+fn activity_preview_bounds_a_long_first_line_and_keeps_unicode_and_line_breaks() {
+    assert_eq!(
+        activity_preview(&"x".repeat(100_000)).as_ref(),
+        format!("{}…", "x".repeat(120))
+    );
+    assert_eq!(
+        activity_preview("café 🧠\r\nnot a preview").as_ref(),
+        "café 🧠"
+    );
+    assert_eq!(
+        activity_preview(&format!("{}\nnot a preview", "🧠".repeat(120))).as_ref(),
+        "🧠".repeat(120)
+    );
+}

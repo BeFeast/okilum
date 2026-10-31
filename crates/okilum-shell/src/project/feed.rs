@@ -34,7 +34,8 @@ enum Row {
 
 /// A bounded plain-text hint; full retained detail is built only on disclosure.
 fn activity_preview(text: &str) -> SharedString {
-    let mut chars = text.lines().next().unwrap_or("").chars();
+    // Bound work as well as visible length, even for a multi-megabyte line.
+    let mut chars = text.chars().take_while(|c| !matches!(c, '\n' | '\r'));
     let mut preview: String = chars.by_ref().take(120).collect();
     if chars.next().is_some() {
         preview.push('…');
