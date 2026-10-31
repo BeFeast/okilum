@@ -106,6 +106,7 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_title_nav::NavMenuOpen>("Open Recent or Pinned item", Navigation),
         entry::<DeleteNote>(Os::CURRENT.move_to_trash(), Notes),
         entry::<UndoTrash>(Os::CURRENT.undo_move_to_trash(), Notes),
+        entry::<RedoTrash>(Os::CURRENT.redo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),

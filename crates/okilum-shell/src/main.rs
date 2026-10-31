@@ -307,6 +307,7 @@ actions!(
         RenameTreeNote,
         DeleteNote,
         UndoTrash,
+        RedoTrash,
         RecoverLinkMoves,
         NoteSourceHistory,
         HistoryVersionNext,
@@ -524,6 +525,13 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("secondary-z", UndoTrash, Some("Reader && !Input")),
+        // Redo uses each platform's own Redo key, as the note editor does.
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-z", RedoTrash, Some("Reader && !Input")),
+        #[cfg(any(target_os = "linux", windows))]
+        KeyBinding::new("ctrl-y", RedoTrash, Some("Reader && !Input")),
+        #[cfg(any(target_os = "linux", windows))]
+        KeyBinding::new("ctrl-shift-z", RedoTrash, Some("Reader && !Input")),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
         KeyBinding::new("secondary-[", HistoryBack, ctx),
@@ -7111,6 +7119,10 @@ impl Render for Reader {
                     #[cfg(any(unix, windows))]
                     this.undo_last_trash(window, cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &RedoTrash, window, cx| {
+                #[cfg(any(unix, windows))]
+                this.redo_last_trash(window, cx);
             }))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
             .on_action(
