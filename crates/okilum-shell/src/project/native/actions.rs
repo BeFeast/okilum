@@ -616,6 +616,7 @@ impl ProjectView {
                     if let Err(e) = result { a.error=Some(format!("{e:#}. Delivery may be unconfirmed; retry the retained action or check in T3.")); }
                     cx.notify();
                 });
+                this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
                 cx.notify();
             });
         }).detach();
@@ -653,6 +654,7 @@ impl ProjectView {
                     }
                     cx.notify();
                 });
+                this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
             });
         })
         .detach();
