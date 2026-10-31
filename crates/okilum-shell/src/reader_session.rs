@@ -11,12 +11,14 @@ struct Published {
     vault: Arc<Vault>,
     searcher: Arc<Searcher>,
     tasks: Arc<okilum_core::tasks::Index>,
+    workbench: Arc<okilum_core::workbench::Index>,
     #[cfg(any(unix, windows))]
     candidates: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
     titles: Arc<std::collections::HashMap<String, String>>,
     version: u64,
     warnings: Vec<okilum_core::vault::UnreadableEntry>,
     network: bool,
+    limited_external_refresh: bool,
 }
 
 pub(crate) struct Session {
@@ -74,9 +76,14 @@ impl Reader {
         let session = Arc::new(Mutex::new(Session {
             published: Published {
                 network: self.loading.as_ref().is_some_and(|load| load.network),
+                limited_external_refresh: self
+                    .loading
+                    .as_ref()
+                    .is_some_and(|load| load.limited_external_refresh),
                 vault: self.vault.clone(),
                 searcher,
                 tasks: self.tasks_index.clone().unwrap_or_default(),
+                workbench: self.workbench.clone(),
                 #[cfg(any(unix, windows))]
                 candidates: self.move_index.clone(),
                 titles: self.backlink_titles.clone(),
@@ -170,18 +177,21 @@ impl Reader {
                 },
                 warnings: Vec::new(),
                 network: false,
+                limited_external_refresh: false,
                 network_waiting: false,
                 progress_revision: 0,
             });
         }
         if let Some(load) = self.loading.as_mut().filter(|load| !load.active) {
             load.network = published.network;
+            load.limited_external_refresh = published.limited_external_refresh;
             load.warnings = published.warnings;
         }
         self.shared_version = published.version;
         self.vault = published.vault;
         self.searcher = Some(published.searcher);
         self.tasks_index = Some(published.tasks);
+        self.publish_workbench(published.workbench, cx);
         #[cfg(any(unix, windows))]
         {
             self.move_index = published.candidates;
@@ -221,9 +231,14 @@ impl Reader {
         shared.watcher = self.watcher.take();
         shared.published = Published {
             network: self.loading.as_ref().is_some_and(|load| load.network),
+            limited_external_refresh: self
+                .loading
+                .as_ref()
+                .is_some_and(|load| load.limited_external_refresh),
             vault: self.vault.clone(),
             searcher,
             tasks: self.tasks_index.clone().unwrap_or_default(),
+            workbench: self.workbench.clone(),
             #[cfg(any(unix, windows))]
             candidates: self.move_index.clone(),
             titles: self.backlink_titles.clone(),
@@ -419,6 +434,14 @@ fn update(
     }
     published.vault = Arc::new(state.vault.clone());
     published.tasks = Arc::new(tasks);
+    let mut workbench = (*published.workbench).clone();
+    reader_workbench::update_index(
+        &mut workbench,
+        &state.snapshot,
+        &batch.removed,
+        &batch.changed,
+    );
+    published.workbench = Arc::new(workbench);
     #[cfg(any(unix, windows))]
     {
         published.candidates = Some(state.candidates.clone());
@@ -449,4 +472,9 @@ fn persist(
         state.set_search_generation(Some(generation));
     }
     state.persist_delta(index)
+}
+
+#[cfg(test)]
+pub(crate) fn has_native_watcher(session: &Shared) -> bool {
+    session.lock().unwrap().watcher.is_some()
 }

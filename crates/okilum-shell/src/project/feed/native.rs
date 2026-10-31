@@ -97,66 +97,87 @@ impl Feed {
             }
         }
     }
+    fn toggle_activity(&mut self, position: u64, cx: &mut Context<Self>) {
+        if !self.expanded.remove(&position) {
+            self.expanded.insert(position);
+        }
+        if let Some(index) = self.indices.get(&position).copied() {
+            self.scroller
+                .update(cx, |state, cx| state.remeasure_items(index..index + 1, cx));
+        }
+        cx.notify();
+    }
+
     pub(super) fn activity(&self, position: u64, message: &Message, cx: &mut App) -> AnyElement {
-        if message.kind == MessageKind::Reasoning {
-            let expanded = self.expanded.contains(&position);
-            let parent = self.parent.clone();
-            return v_flex()
-                .id(SharedString::from(format!("project-reasoning-{position}")))
-                .debug_selector(move || format!("project-reasoning-{position}"))
-                .child(
-                    Button::new(("project-reasoning-toggle", position as usize))
+        let reasoning = message.kind == MessageKind::Reasoning;
+        let (label, collapsible) = match &message.kind {
+            MessageKind::Reasoning => (SharedString::from("Reasoning"), true),
+            MessageKind::Compact { label, collapsible } => (label.clone(), *collapsible),
+            MessageKind::Chat => return div().into_any_element(),
+        };
+        let expanded = !collapsible || self.expanded.contains(&position);
+        let parent = self.parent.clone();
+        let kind = if reasoning { "reasoning" } else { "tool" };
+        v_flex()
+            .id(SharedString::from(format!("project-{kind}-{position}")))
+            .debug_selector(move || format!("project-{kind}-{position}"))
+            .mb_2()
+            .pl_3()
+            .border_l_1()
+            .border_color(brand::palette(cx).border_subtle)
+            .when(collapsible, |row| {
+                row.child(
+                    Button::new(("project-activity-toggle", position as usize))
                         .ghost()
-                        .label(if expanded {
-                            "Hide reasoning"
+                        .icon(if expanded {
+                            IconName::ChevronDown
                         } else {
-                            "Reasoning"
+                            IconName::ChevronRight
                         })
-                        .debug_selector(move || format!("project-reasoning-toggle-{position}"))
+                        .label(label.clone())
+                        .tooltip(if expanded {
+                            "Hide details"
+                        } else {
+                            "Show details"
+                        })
+                        .debug_selector(move || format!("project-{kind}-toggle-{position}"))
                         .on_click(move |_, _, cx| {
                             let _ = parent.update(cx, |view, cx| {
-                                view.feed.update(cx, |feed, cx| {
-                                    if !feed.expanded.remove(&position) {
-                                        feed.expanded.insert(position);
-                                    }
-                                    if let Some(index) = feed.indices.get(&position).copied() {
-                                        feed.scroller.update(cx, |state, cx| {
-                                            state.remeasure_items(index..index + 1, cx)
-                                        });
-                                    }
-                                    cx.notify();
-                                })
+                                view.feed
+                                    .update(cx, |feed, cx| feed.toggle_activity(position, cx))
                             });
                         }),
                 )
-                .when(expanded, |row| {
+            })
+            .when(!collapsible, |row| {
+                row.child(div().text_color(brand::palette(cx).text_muted).child(label))
+            })
+            .when(
+                collapsible && !expanded && !message.preview.is_empty(),
+                |row| {
                     row.child(
-                        TextView::markdown(
-                            ("project-reasoning", position as usize),
-                            message.text.clone(),
-                        )
-                        .selectable(true)
-                        .style(reader_text_style(cx.theme())),
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(brand::palette(cx).text_muted)
+                            .debug_selector(move || format!("project-{kind}-preview-{position}"))
+                            .child(message.preview.clone()),
                     )
-                })
-                .into_any_element();
-        }
-        let MessageKind::Compact(label) = &message.kind else {
-            return div().into_any_element();
-        };
-        v_flex()
-            .id(SharedString::from(format!("project-tool-{position}")))
-            .debug_selector(move || format!("project-tool-{position}"))
-            .child(
-                div()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(label.clone()),
+                },
             )
-            .when(!message.text.is_empty(), |row| {
+            .when(expanded && !message.text.is_empty(), |row| {
                 row.child(
-                    TextView::markdown(("project-tool", position as usize), message.text.clone())
-                        .selectable(true)
-                        .style(reader_text_style(cx.theme())),
+                    div()
+                        .debug_selector(move || format!("project-{kind}-detail-{position}"))
+                        .child(
+                            TextView::markdown(
+                                ("project-activity", position as usize),
+                                message.text.clone(),
+                            )
+                            .selectable(true)
+                            .style(reader_text_style(cx.theme())),
+                        ),
                 )
             })
             .into_any_element()

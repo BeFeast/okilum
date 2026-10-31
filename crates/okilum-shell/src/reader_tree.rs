@@ -795,6 +795,7 @@ mod tests {
         visual.simulate_resize(size(px(1200.), px(800.)));
         visual.run_until_parked();
         reader.update(visual, |reader, cx| {
+            reader.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             reader.panels.open(reader_layout::Panel::Notes);
             assert_eq!(
                 reader.backlink_titles.get("24q4.md").map(String::as_str),

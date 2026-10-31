@@ -953,3 +953,22 @@ Local image actions require a path inside the captured vault, including authored
 execution rechecks canonical containment, including placeholder Reveal/Download,
 so a replaced symlink cannot redirect the command. Source image lookup is limited
 to 64 KiB before resolver construction or parsing, for menus and modified clicks.
+
+
+### Bounded watcher batches and remote FUSE (#1945, 31 October 2026)
+
+Approved policy: retain the 300 ms quiet window after each relevant event,
+including repeated writes to an already-pending note. Ignored service paths,
+attachments and out-of-root events do not postpone pending note delivery.
+Release a nonempty batch after at most two seconds from its first relevant
+event, even if the event queue remains busy. Existing bulk thresholds and caller
+coalescing remain authoritative; this adds no scan or periodic timer.
+
+On Linux, known remote FUSE mounts (`fuse.sshfs`, `fuse.rclone`) retain their
+native watcher for local writes. Mount classification uses decoded mountinfo
+paths and the longest component prefix, so nested local mounts retain local
+behavior. The existing inline header control says “Auto-refresh limited” and
+offers Rescan for other clients' changes; it adds no modal or banner and exposes
+no filesystem paths. Local/unknown FUSE keeps its existing watcher behavior.
+NFS/SMB handling is unchanged. Other remote filesystem types and periodic scans
+are outside this change.

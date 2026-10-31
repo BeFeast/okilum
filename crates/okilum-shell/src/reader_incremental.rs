@@ -109,6 +109,7 @@ impl Reader {
         let hold = self.incremental_hold.take();
         let mut tasks = self.tasks_index.clone().unwrap_or_default();
         let mut projects = (*self.projects).clone();
+        let workbench = self.workbench.clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(test)]
             if let Some(hold) = hold { let _ = hold.recv().await; }
@@ -120,6 +121,9 @@ impl Reader {
             for path in &batch.changed { projects.replace_snapshot(&state.snapshot, path); }
             projects.refresh();
             let projects = Arc::new(projects);
+            let mut workbench = (*workbench).clone();
+            reader_workbench::update_index(&mut workbench, &state.snapshot, &batch.removed, &batch.changed);
+            let workbench = Arc::new(workbench);
             let mut tasks_changed = false;
             for path in &batch.removed { tasks_changed |= next_tasks.remove(path); }
             for path in &batch.changed {
@@ -164,7 +168,7 @@ impl Reader {
             if let Some(trace) = &worker_trace {
                 trace.event("incremental_update", serde_json::json!({"directory_hints":worker_changes.directories.len(), "topology_changed":batch.topology_changed, "changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
             }
-            Ok::<_, anyhow::Error>((state, tasks, projects, searcher, sources, titles, batch, published, inventory,
+            Ok::<_, anyhow::Error>((state, tasks, projects, workbench, searcher, sources, titles, batch, published, inventory,
                 { #[cfg(any(unix, windows))] { candidates } #[cfg(not(any(unix, windows)))] { None::<()> } }))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -182,6 +186,7 @@ impl Reader {
                             state,
                             tasks,
                             projects,
+                            workbench,
                             searcher,
                             sources,
                             titles,
@@ -194,6 +199,7 @@ impl Reader {
                             #[cfg(any(unix, windows))]
                             this.reminder_tick(cx);
                             this.projects = projects;
+                            this.publish_workbench(workbench, cx);
                             this.vault = published;
                             this.searcher = Some(searcher.clone());
                             #[cfg(any(unix, windows))]

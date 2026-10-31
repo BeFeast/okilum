@@ -1,5 +1,14 @@
 # Native project Board (#1767, #1859)
 
+The optional [delivery projection](board-delivery.md) (#1768) joins explicit
+platform/channel feeds, exact source/build inclusion and build-scoped scenario /
+human evidence. It adds a compact summary without restoring the removed stage
+header, and never publishes, installs or accepts a build.
+
+The optional [project-note context](board-context.md) (#1769) adds explicit
+attention, decisions and exact-build try notes, plus collapsed next-stage context.
+Current stage outcome/scope stays in linked notes, preserving #1795.
+
 The accepted Sprint Board UI and shared model now use the compatible Area
 manifest readers. Its live status remains a projection; explicit in-app Board
 authoring is described below. Editing a card never changes its Forgejo issue or

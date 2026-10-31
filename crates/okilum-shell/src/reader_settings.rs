@@ -313,24 +313,22 @@ pub(super) fn setting_row(
 }
 
 /// #774: «None» and the presets as swatches; the current one is ringed.
+/// A custom colour (#1399) adds its own swatch, drawn as it is shown.
 fn vault_color_swatches(root: &Path, cx: &App) -> impl IntoElement {
     let p = brand::palette(cx);
     let current = reader_ui_state::vault_color(root, cx);
-    let swatch = |color: Option<brand::VaultColor>| {
+    let swatch = |color: Option<brand::VaultColor>, selected: bool| {
         let root = root.to_owned();
-        let label = color.map_or("None", brand::VaultColor::label);
-        let selected = current == color;
+        let label: SharedString = match color {
+            Some(color @ brand::VaultColor::Custom(_)) => {
+                format!("{} {}", color.label(), color.key().to_uppercase()).into()
+            }
+            color => color.map_or("None", brand::VaultColor::label).into(),
+        };
+        let id = vault_color_swatch_id(color);
         div()
-            .id(SharedString::from(format!(
-                "settings-vault-color-{}",
-                color.map_or("none", brand::VaultColor::key)
-            )))
-            .debug_selector(move || {
-                format!(
-                    "settings-vault-color-{}",
-                    color.map_or("none", brand::VaultColor::key)
-                )
-            })
+            .id(SharedString::from(id.clone()))
+            .debug_selector(move || id.clone())
             .flex_none()
             .size(px(22.))
             .p(px(2.))
@@ -343,7 +341,7 @@ fn vault_color_swatches(root: &Path, cx: &App) -> impl IntoElement {
             })
             .cursor_pointer()
             .tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(label).build(window, cx)
+                gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx)
             })
             .child(div().size_full().rounded_full().map(|dot| match color {
                 Some(color) => dot.bg(color.color(cx)),
@@ -351,11 +349,40 @@ fn vault_color_swatches(root: &Path, cx: &App) -> impl IntoElement {
             }))
             .on_click(move |_, _, cx| reader_ui_state::set_vault_color(&root, color, cx))
     };
-    h_flex()
-        .gap_1()
-        .child(swatch(None))
-        .children(brand::VaultColor::ALL.map(|color| swatch(Some(color))))
+    h_flex().gap_1().children(
+        vault_color_swatch_choices(current)
+            .into_iter()
+            .map(|(color, selected)| swatch(color, selected)),
+    )
 }
+
+/// Every swatch in order with whether it is the current colour: «None»,
+/// the presets, then the custom colour when one is set.
+fn vault_color_swatch_choices(
+    current: Option<brand::VaultColor>,
+) -> Vec<(Option<brand::VaultColor>, bool)> {
+    let custom = current.filter(|color| matches!(color, brand::VaultColor::Custom(_)));
+    std::iter::once(None)
+        .chain(brand::VaultColor::ALL.map(Some))
+        .chain(custom.map(Some))
+        .map(|color| (color, color == current))
+        .collect()
+}
+
+/// `settings-vault-color-<key>`; every custom colour shares one id.
+fn vault_color_swatch_id(color: Option<brand::VaultColor>) -> String {
+    match color {
+        None => "settings-vault-color-none".into(),
+        Some(brand::VaultColor::Custom(_)) => "settings-vault-color-custom".into(),
+        Some(color) => format!("settings-vault-color-{}", color.key()),
+    }
+}
+
+/// #1399: help under «Custom colour», and the same line when the typed
+/// text is not a colour, so the row never changes height.
+const CUSTOM_COLOR_HELP: &str =
+    "Any colour as #RRGGBB. It may be shown lighter or darker to stay visible.";
+const CUSTOM_COLOR_INVALID: &str = "Not a colour. Type # and six hex digits, like #3A7BD5.";
 
 fn compact_vault_path(root: &Path) -> String {
     // The plain form, so a verbatim `\\?\C:\…` root still sits under the home folder (#1391).
@@ -501,6 +528,10 @@ struct Settings {
     editor_command: Option<(Entity<InputState>, Subscription)>,
     /// The build path of a new source-link mapping (#1165).
     map_from: Option<Entity<InputState>>,
+    /// The typed custom vault colour (#1399), made on first render.
+    vault_color_input: Option<(Entity<InputState>, Subscription)>,
+    /// The text the last Apply rejected as not a `#RRGGBB` colour.
+    vault_color_rejected: Option<SharedString>,
 }
 impl Settings {
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -556,6 +587,8 @@ impl Settings {
             _reader_changes: observer,
             editor_command: None,
             map_from: None,
+            vault_color_input: None,
+            vault_color_rejected: None,
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -613,6 +646,9 @@ impl Settings {
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         self.reader = reader;
         self.t3 = None;
+        // Another vault: the field starts from that vault's own colour.
+        self.vault_color_input = None;
+        self.vault_color_rejected = None;
         cx.notify();
     }
     fn vault(&self, cx: &App) -> Option<Entity<Reader>> {
@@ -810,6 +846,80 @@ impl Settings {
                 ))
             })
             .into_any_element()
+    }
+
+    /// #1399: a colour typed as `#RRGGBB`, applied by Apply or Enter. Text
+    /// that is not a whole colour stays in the field, is named as invalid
+    /// in place, and leaves the vault's colour as it was.
+    fn custom_vault_color_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = brand::palette(cx);
+        let invalid = self.vault_color_rejected.is_some();
+        let input = self
+            .vault_color_input
+            .as_ref()
+            .map(|(input, _)| input.clone());
+        h_flex()
+            .w_full()
+            .justify_between()
+            .gap_4()
+            .py_2()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child("Custom colour")
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-vault-color-custom-help".into())
+                            .text_sm()
+                            .text_color(if invalid { p.danger } else { p.text_muted })
+                            .child(if invalid {
+                                CUSTOM_COLOR_INVALID
+                            } else {
+                                CUSTOM_COLOR_HELP
+                            }),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_2()
+                    .children(input.map(|input| {
+                        div()
+                            .w(px(110.))
+                            .debug_selector(|| "settings-vault-color-input".into())
+                            .child(Input::new(&input).small())
+                    }))
+                    .child(
+                        Button::new("settings-vault-color-apply")
+                            .debug_selector(|| "settings-vault-color-apply".into())
+                            .outline()
+                            .small()
+                            .label("Apply")
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.apply_custom_vault_color(cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn apply_custom_vault_color(&mut self, cx: &mut Context<Self>) {
+        let (Some(reader), Some((input, _))) = (self.vault(cx), self.vault_color_input.as_ref())
+        else {
+            return;
+        };
+        let root = reader.read(cx).vault_root.clone();
+        let text = input.read(cx).value();
+        match brand::VaultColor::from_hex(&text) {
+            Some(color) => {
+                self.vault_color_rejected = None;
+                reader_ui_state::set_vault_color(&root, Some(color), cx);
+            }
+            None => self.vault_color_rejected = Some(text),
+        }
+        cx.notify();
     }
 
     /// Build paths of this vault's logs that open in a local checkout (#1165).
@@ -1166,6 +1276,8 @@ impl Settings {
                     let short_path = compact_vault_path(&root);
                     let color_root = root.clone();
                     let weak = reader.downgrade();
+                    let now_reader = weak.clone();
+                    let now_enabled = state.sidebar.now_enabled();
                     content
                         .child(
                             h_flex()
@@ -1234,6 +1346,21 @@ impl Settings {
                                 ),
                         )
                         .child(setting_row(
+                            "Now sidebar",
+                            "Show project activity alongside the file tree in this vault.",
+                            div().debug_selector(|| "settings-now-sidebar".into()).child(
+                                Switch::new("settings-now-sidebar-switch")
+                                    .accessibility_label("Now sidebar")
+                                    .checked(now_enabled)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = now_reader.update(cx, |reader, cx| {
+                                            reader.set_now_enabled(!now_enabled, window, cx)
+                                        });
+                                    }),
+                            ),
+                            cx,
+                        ))
+                        .child(setting_row(
                             "Show hidden files",
                             "Include hidden files in this vault’s sidebar.",
                             div()
@@ -1257,6 +1384,7 @@ impl Settings {
                             vault_color_swatches(&color_root, cx),
                             cx,
                         ))
+                        .child(self.custom_vault_color_row(cx))
                         .when(
                             reader_ui_state::vault_color(&color_root, cx).is_some(),
                             |content| {
@@ -1501,6 +1629,38 @@ impl Render for Settings {
                 }
             });
             self.editor_command = Some((input, subscription));
+        }
+        if self.vault_color_input.is_none() {
+            let current = self
+                .vault(cx)
+                .and_then(|reader| reader_ui_state::vault_color(&reader.read(cx).vault_root, cx))
+                .filter(|color| matches!(color, brand::VaultColor::Custom(_)))
+                .map(|color| color.key().to_uppercase())
+                .unwrap_or_default();
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("#RRGGBB")
+                    .default_value(current)
+            });
+            let subscription = cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::PressEnter { .. } => this.apply_custom_vault_color(cx),
+                    // Editing the rejected text clears the complaint; nothing
+                    // is applied while typing. Enter also reports a change
+                    // without editing, so compare the text itself.
+                    InputEvent::Change
+                        if this
+                            .vault_color_rejected
+                            .as_ref()
+                            .is_some_and(|rejected| *rejected != input.read(cx).value()) =>
+                    {
+                        this.vault_color_rejected = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            });
+            self.vault_color_input = Some((input, subscription));
         }
         if self.map_from.is_none() {
             self.map_from =
@@ -2701,6 +2861,276 @@ mod tests {
         visual.update(|_, cx| {
             assert_eq!(cx.global::<theme_picker::ThemeActionVault>().0, None);
         });
+    }
+
+    /// #1399: a custom colour is typed and applied through the real Settings
+    /// field; anything that is not a whole `#RRGGBB` is named in place and
+    /// changes nothing. The colour persists canonically, comes back after a
+    /// reload, is the one marked swatch, and every window of that vault (and
+    /// only that vault) draws it.
+    #[gpui::test]
+    fn custom_vault_colour_is_typed_applied_and_shown_in_every_window_of_that_vault(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let state = fixture.path().join("state");
+        let stored_path = state.join("reader-ui.json");
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let open = |vault: &Path, cx: &mut TestAppContext| {
+            let mut reader = None;
+            let window = cx.add_window(|window, cx| {
+                let view = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let view = reader.unwrap();
+            visual.simulate_resize(size(px(1200.), px(700.)));
+            view.update(&mut visual, |v, cx| {
+                v.loading = None;
+                v.vault_root = vault.to_owned();
+                v.panels.open(reader_layout::Panel::Notes);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            (view, visual)
+        };
+        let (first_reader, mut first) = open(&root, cx);
+        let (_, mut second) = open(&root, cx);
+        let (_, mut unrelated) = open(&other, cx);
+        fn open_settings<'a>(
+            reader: &Entity<Reader>,
+            cx: &'a mut TestAppContext,
+        ) -> (Entity<Settings>, &'a mut VisualTestContext) {
+            let reader = reader.downgrade();
+            let (view, visual) = cx.add_window_view(|window, cx| {
+                let settings = cx.new(|cx| {
+                    let mut settings = Settings::new(Some(reader), cx);
+                    settings.section = Section::Vault;
+                    settings
+                });
+                Root::new(settings, window, cx)
+            });
+            visual.simulate_resize(size(px(1400.), px(1000.)));
+            visual.run_until_parked();
+            let settings = view.read_with(visual, |root, _| {
+                root.view().clone().downcast::<Settings>().unwrap()
+            });
+            (settings, visual)
+        }
+        let (settings, visual) = open_settings(&first_reader, cx);
+        let redraw = |visual: &mut VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let click = |visual: &mut VisualTestContext, selector: &'static str| {
+            redraw(visual);
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered"));
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+        };
+        let select_all = if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        };
+        // Replace the field's text by typing, as a user would.
+        let type_in_field = |visual: &mut VisualTestContext, text: &str| {
+            click(visual, "settings-vault-color-input");
+            visual.simulate_keystrokes(select_all);
+            visual.simulate_keystrokes("backspace");
+            if !text.is_empty() {
+                visual.simulate_input(text);
+            }
+            visual.run_until_parked();
+        };
+        let current = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| reader_ui_state::vault_color(&root, cx))
+        };
+        let stored = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| reader_ui_state::flush(cx));
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&stored_path).unwrap()).unwrap();
+            json["vault_colors"][root.to_str().unwrap()]
+                .as_str()
+                .map(str::to_owned)
+        };
+        let invalid = |visual: &mut VisualTestContext| {
+            settings.read_with(visual, |settings, _| {
+                settings.vault_color_rejected.is_some()
+            })
+        };
+        let marked = |visual: &mut VisualTestContext| {
+            let choices = vault_color_swatch_choices(current(visual));
+            assert_eq!(
+                choices.iter().filter(|(_, selected)| *selected).count(),
+                1,
+                "exactly one swatch is marked: {choices:?}"
+            );
+            assert_eq!(
+                &choices[..9]
+                    .iter()
+                    .map(|(color, _)| *color)
+                    .collect::<Vec<_>>()[..],
+                &std::iter::once(None)
+                    .chain(brand::VaultColor::ALL.map(Some))
+                    .collect::<Vec<_>>()[..],
+                "None and every preset stay offered"
+            );
+            choices
+                .into_iter()
+                .find(|(_, selected)| *selected)
+                .unwrap()
+                .0
+        };
+
+        // Nothing set: «None» is marked, there is no custom swatch.
+        redraw(visual);
+        assert_eq!(marked(visual), None);
+        assert!(visual.debug_bounds("settings-vault-color-none").is_some());
+        assert!(visual.debug_bounds("settings-vault-color-custom").is_none());
+        // A preset first, so rejected text has a previous value to keep.
+        click(visual, "settings-vault-color-teal");
+        assert_eq!(current(visual), Some(brand::VaultColor::Teal));
+        assert_eq!(stored(visual).as_deref(), Some("teal"));
+        redraw(visual);
+        let help_before = visual
+            .debug_bounds("settings-vault-color-custom-help")
+            .unwrap();
+        let apply_before = visual.debug_bounds("settings-vault-color-apply").unwrap();
+
+        // Empty, partial and malformed text: named in place, nothing applied.
+        for (text, by_enter) in [
+            ("", false),
+            ("#3a7", true),
+            ("#3a7bd", false),
+            ("3a7bd5", false),
+            ("#3a7bdg", true),
+            ("#3a7bd5f", false),
+        ] {
+            type_in_field(visual, text);
+            assert!(!invalid(visual), "{text:?}: typing alone does not complain");
+            if by_enter {
+                visual.simulate_keystrokes("enter");
+                visual.run_until_parked();
+            } else {
+                click(visual, "settings-vault-color-apply");
+            }
+            assert!(invalid(visual), "{text:?} is named as not a colour");
+            assert_eq!(current(visual), Some(brand::VaultColor::Teal), "{text:?}");
+            assert_eq!(stored(visual).as_deref(), Some("teal"), "{text:?}");
+            redraw(visual);
+            assert_eq!(
+                visual
+                    .debug_bounds("settings-vault-color-custom-help")
+                    .unwrap()
+                    .size
+                    .height,
+                help_before.size.height,
+                "the complaint replaces the help line without moving the row"
+            );
+            assert_eq!(
+                visual.debug_bounds("settings-vault-color-apply").unwrap(),
+                apply_before
+            );
+        }
+        settings.read_with(visual, |settings, cx| {
+            let (input, _) = settings.vault_color_input.as_ref().unwrap();
+            assert_eq!(
+                input.read(cx).value().as_str(),
+                "#3a7bd5f",
+                "rejected text stays in the field to be corrected"
+            );
+        });
+        // Editing clears the complaint; Apply then takes a valid colour in
+        // any case and stores it canonically. Preset -> custom.
+        type_in_field(visual, "#3A7bD5");
+        assert!(!invalid(visual), "editing clears the complaint");
+        assert_eq!(current(visual), Some(brand::VaultColor::Teal), "not yet");
+        click(visual, "settings-vault-color-apply");
+        let typed = brand::VaultColor::Custom([0x3a, 0x7b, 0xd5]);
+        assert!(!invalid(visual));
+        assert_eq!(current(visual), Some(typed));
+        assert_eq!(stored(visual).as_deref(), Some("#3a7bd5"));
+        assert_eq!(marked(visual), Some(typed), "the custom swatch is marked");
+        redraw(visual);
+        assert!(visual.debug_bounds("settings-vault-color-custom").is_some());
+        assert!(
+            visual.debug_bounds("settings-title-tint").is_some(),
+            "a custom colour offers the title tint like a preset"
+        );
+        // Every window of this vault draws it; the other vault stays plain.
+        for window in [&mut first, &mut second] {
+            redraw(window);
+            assert!(window.debug_bounds("vault-accent-line").is_some());
+            assert!(window.debug_bounds("sidebar-vault-dot").is_some());
+        }
+        redraw(&mut unrelated);
+        assert!(
+            unrelated.debug_bounds("vault-accent-line").is_none(),
+            "positive control: only this vault's windows change"
+        );
+        // The swatch shows the colour actually drawn in the live theme.
+        visual.update(|_, cx| {
+            let shown = typed.color(cx);
+            let dark = cx.theme().is_dark();
+            assert_eq!(shown, typed.display(brand::theme_id(cx), dark));
+        });
+
+        // Reload: a new Store from the same directory and a fresh Settings
+        // window read the same colour back and prefill the field with it.
+        visual.update(|_, cx| reader_ui_state::flush(cx));
+        cx.update(|cx| reader_ui_state::install(&state, cx));
+        let (settings, visual) = open_settings(&first_reader, cx);
+        redraw(visual);
+        assert_eq!(
+            visual.update(|_, cx| reader_ui_state::vault_color(&root, cx)),
+            Some(typed)
+        );
+        assert!(visual.debug_bounds("settings-vault-color-custom").is_some());
+        settings.read_with(visual, |settings, cx| {
+            let (input, _) = settings.vault_color_input.as_ref().unwrap();
+            assert_eq!(input.read(cx).value().as_str(), "#3A7BD5");
+            assert!(settings.vault_color_rejected.is_none());
+        });
+
+        // Custom -> preset -> custom (by Enter) -> None.
+        click(visual, "settings-vault-color-pink");
+        let now = visual.update(|_, cx| reader_ui_state::vault_color(&root, cx));
+        assert_eq!(now, Some(brand::VaultColor::Pink));
+        redraw(visual);
+        assert!(
+            visual.debug_bounds("settings-vault-color-custom").is_none(),
+            "a preset leaves no custom swatch"
+        );
+        click(visual, "settings-vault-color-input");
+        visual.simulate_keystrokes(select_all);
+        visual.simulate_input("#FFFFFF");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        let now = visual.update(|_, cx| reader_ui_state::vault_color(&root, cx));
+        assert_eq!(now, Some(brand::VaultColor::Custom([255, 255, 255])));
+        click(visual, "settings-vault-color-none");
+        let now = visual.update(|_, cx| reader_ui_state::vault_color(&root, cx));
+        assert_eq!(now, None);
+        visual.update(|_, cx| reader_ui_state::flush(cx));
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&stored_path).unwrap()).unwrap();
+        assert!(json["vault_colors"].get(root.to_str().unwrap()).is_none());
+        for window in [&mut first, &mut second] {
+            redraw(window);
+            assert!(window.debug_bounds("vault-accent-line").is_none());
+        }
     }
 
     #[gpui::test]

@@ -74,6 +74,17 @@ fn the_legacy_index_and_service_directories_are_never_reported() {
         w.wait(Duration::from_millis(800)).is_none(),
         "nothing above is a note, so nothing must be reported"
     );
+    // Absence only proves filtering when this same watcher can observe a write.
+    fs::write(root.join("notes/real.md"), "# Positive control\n").unwrap();
+    let change = w
+        .wait(WAIT)
+        .expect("the same watcher must deliver a real note write");
+    assert_eq!(
+        change.changed.iter().collect::<Vec<_>>(),
+        vec!["notes/real.md"]
+    );
+    assert!(change.removed.is_empty(), "{change:?}");
+    assert!(change.directories.is_empty(), "{change:?}");
 }
 
 #[test]
@@ -158,6 +169,17 @@ fn reading_notes_is_not_a_change() {
         c.is_none(),
         "reading every note produced a change batch: {c:?}"
     );
+    // Prove the absence above was not a dead or misregistered watcher.
+    fs::write(root.join("notes/n0.md"), "# Edited positive control\n").unwrap();
+    let change = w
+        .wait(WAIT)
+        .expect("the same watcher must deliver the subsequent write");
+    assert_eq!(
+        change.changed.iter().collect::<Vec<_>>(),
+        vec!["notes/n0.md"]
+    );
+    assert!(change.removed.is_empty(), "{change:?}");
+    assert!(change.directories.is_empty(), "{change:?}");
 }
 
 #[test]

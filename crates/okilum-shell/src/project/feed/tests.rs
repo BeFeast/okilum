@@ -304,3 +304,186 @@ fn activity_rows_render_tools_and_keep_reasoning_collapsed(cx: &mut TestAppConte
         "ACTIVITY1787: reasoning disclosure is absent"
     );
 }
+
+#[gpui::test]
+fn tool_disclosure_keeps_latest_detail_without_repainting_hidden_output(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let (view, visual, _temp) = fixture(cx, 0);
+    let mut tool = message(1);
+    tool.kind = "command_execution".into();
+    tool.title = Some("Command · running".into());
+    tool.text = Some(format!(
+        "cargo check\n{}",
+        "output **detail**\n".repeat(2_000)
+    ));
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    feed.update(visual, |feed, cx| {
+        feed.apply(std::iter::once(&tool), None, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-tool-preview-1").is_some());
+    assert!(visual.debug_bounds("project-tool-detail-1").is_none());
+    let notified = Rc::new(Cell::new(0));
+    let _observer: Entity<()> = visual.update(|_, cx| {
+        cx.new(|cx| {
+            let counter = notified.clone();
+            cx.observe(&feed, move |_, _, _| counter.set(counter.get() + 1))
+                .detach();
+        })
+    });
+    let before = counters(&view, visual);
+    tool.text = Some("cargo check\n**Latest retained result**".into());
+    feed.update(visual, |feed, cx| {
+        feed.apply(std::iter::once(&tool), None, cx)
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        notified.get(),
+        0,
+        "hidden output must not invalidate the feed"
+    );
+    assert_eq!(counters(&view, visual), before);
+    feed.read_with(visual, |feed, _| {
+        assert_eq!(
+            feed.messages[&1].text.as_ref(),
+            tool.text.as_deref().unwrap()
+        );
+    });
+    let toggle = visual.debug_bounds("project-tool-toggle-1").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-tool-detail-1").is_some(),
+        "positive control: a real click expands the retained detail"
+    );
+    assert!(visual.debug_bounds("project-tool-preview-1").is_none());
+    assert!(notified.get() > 0);
+    assert!(counters(&view, visual).0 > before.0);
+
+    // Expanded output and changed status must still refresh visibly.
+    let notified_before = notified.get();
+    tool.text = Some("cargo check\nFinished".into());
+    tool.title = Some("Command · completed".into());
+    feed.update(visual, |feed, cx| {
+        feed.apply(std::iter::once(&tool), None, cx)
+    });
+    visual.run_until_parked();
+    assert!(notified.get() > notified_before);
+    let toggle = visual.debug_bounds("project-tool-toggle-1").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-tool-detail-1").is_none());
+    assert!(visual.debug_bounds("project-tool-preview-1").is_some());
+    let before_preview = notified.get();
+    tool.text = Some("cargo check --all-targets\nFinished".into());
+    feed.update(visual, |feed, cx| {
+        feed.apply(std::iter::once(&tool), None, cx)
+    });
+    visual.run_until_parked();
+    assert!(
+        notified.get() > before_preview,
+        "positive control: a changed collapsed preview refreshes"
+    );
+}
+
+#[gpui::test]
+fn questions_and_failures_stay_visible_and_reasoning_can_expand(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 0);
+    let mut reasoning = message(1);
+    reasoning.kind = "reasoning".into();
+    reasoning.text = Some("Retained reasoning".into());
+    let mut question = message(2);
+    question.kind = "user_input_request".into();
+    question.text = Some("Which branch?".into());
+    let mut error = message(3);
+    error.kind = "error".into();
+    error.text = Some("The request failed".into());
+    view.update(visual, |view, cx| {
+        view.feed.update(cx, |feed, cx| {
+            feed.apply([&reasoning, &question, &error].into_iter(), None, cx)
+        })
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-tool-detail-2").is_some());
+    assert!(visual.debug_bounds("project-tool-detail-3").is_some());
+    assert!(visual.debug_bounds("project-tool-toggle-2").is_none());
+    assert!(visual.debug_bounds("project-tool-toggle-3").is_none());
+    assert!(visual.debug_bounds("project-reasoning-detail-1").is_none());
+    let toggle = visual.debug_bounds("project-reasoning-toggle-1").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-reasoning-detail-1").is_some());
+    // The visible Open in T3 action still routes to the bound thread.
+    let open = visual.debug_bounds("project-open-t3").unwrap();
+    visual.simulate_click(open.center(), Modifiers::default());
+    let expected = view.read_with(visual, |view, _| {
+        view.identity
+            .as_ref()
+            .unwrap()
+            .thread_url(&view.chat.as_ref().unwrap().thread_id)
+    });
+    assert_eq!(visual.opened_url().as_deref(), Some(expected.as_str()));
+}
+
+#[gpui::test]
+fn native_activity_history_remains_virtualized_and_hidden_updates_are_quiet(
+    cx: &mut TestAppContext,
+) {
+    use okilum_t3::projection::TurnRow;
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let (view, visual, _temp) = fixture(cx, 0);
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    let rows: Vec<_> = (0..5_000).map(|index| Arc::new(TurnRow {
+        key: RowKey { thread: "native-fixture".into(), item: format!("tool-{index}") },
+        local: true,
+        item: Arc::new(serde_json::json!({"type": "command_execution", "status": "completed", "input": "x".repeat(240)})),
+    })).collect();
+    feed.update(visual, |feed, cx| {
+        feed.row_calls.set(0);
+        feed.apply_native(
+            NativeChanges {
+                order: Some(rows.iter().map(|row| row.key.clone()).collect()),
+                rows: rows.clone(),
+                reset: true,
+                ..Default::default()
+            },
+            &[],
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let before = counters(&view, visual);
+    assert!(
+        before.0 > 0 && before.0 <= 512,
+        "positive control: native activity rows rendered within budget: {}",
+        before.0
+    );
+    assert!(visual.debug_bounds("project-tool-toggle-5000").is_some());
+    assert!(visual.debug_bounds("project-tool-detail-5000").is_none());
+    let replacement = Arc::new(TurnRow {
+        key: rows.last().unwrap().key.clone(),
+        local: true,
+        item: Arc::new(
+            serde_json::json!({"type": "command_execution", "status": "completed", "input": format!("{}latest hidden detail", "x".repeat(121))}),
+        ),
+    });
+    feed.update(visual, |feed, cx| {
+        feed.apply_native(
+            NativeChanges {
+                rows: vec![replacement],
+                ..Default::default()
+            },
+            &[],
+            cx,
+        )
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        counters(&view, visual),
+        before,
+        "unchanged native preview must not lay out history"
+    );
+    feed.read_with(visual, |feed, _| {
+        assert!(feed.messages[&5000].text.ends_with("latest hidden detail"))
+    });
+}

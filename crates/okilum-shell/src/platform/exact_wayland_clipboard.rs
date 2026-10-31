@@ -125,6 +125,9 @@ pub(super) fn receive_selection(
         .find(|mime| mimes.iter().any(|value| value == mime));
     let mut requested = Vec::new();
     if note {
+        if mimes.iter().any(|mime| mime == "text/html") {
+            requested.push("text/html");
+        }
         if mimes.iter().any(|mime| mime == "text/uri-list") {
             requested.push("text/uri-list");
         }

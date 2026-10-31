@@ -13,7 +13,10 @@ from urllib.parse import quote
 
 def needed(event, published, source, platform):
     if event == 'push':
-        # Defensive no-op: secondary release workflows have no push trigger.
+        if published is None:
+            return True
+        if published.get('source') != source or published.get('platform') != platform:
+            raise ValueError('Invalid publication descriptor')
         return False
     if event in ('workflow_dispatch', 'pull_request'):
         return True
@@ -36,6 +39,15 @@ def main_tip():
             or any(c not in '0123456789abcdef' for c in fields[0])):
         raise ValueError('Cannot identify current main for scheduled build')
     return fields[0]
+
+
+def push_ready(source, platform, ref):
+    """Only the newest queued main snapshot may start a new platform build."""
+    if ref != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', source):
+        raise ValueError('Automatic beta requires exact main source')
+    if source != main_tip():
+        return False
+    return needed('push', descriptor(source, platform), source, platform)
 
 
 def scheduled_source(event, source, platform):
@@ -169,6 +181,8 @@ def select_macos_preview(event, source, env, now):
 def select_macos(event, source, env, now):
     if env.get('MACOS_PREVIEW_PR'):
         return select_macos_preview(event, source, env, now)
+    if event == 'push':
+        return push_ready(source, 'macos', env.get('GITHUB_REF')), source, False, 'Coalesced main beta push'
     tick = env.get('MACOS_BETA_TICK', '')
     if event != 'schedule' and not tick:
         return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
@@ -197,7 +211,7 @@ def descriptor(source, platform):
     url = f'https://updates.befeast.com/okilum/releases/{source}/{platform}.json'
     # curl uses the same public endpoint and transport as installed update clients.
     result = subprocess.run(['curl', '--silent', '--show-error', '--location',
-                             '--max-time', '30', '--write-out', '\n%{http_code}', url],
+                             '--max-time', '30', '--user-agent', 'curl/8', '--write-out', '\n%{http_code}', url],
                             check=True, capture_output=True, text=True)
     body, status = result.stdout.rsplit('\n', 1)
     if status == '404':
@@ -276,8 +290,11 @@ if __name__ == '__main__':
         if tip != source:
             print(f'Scheduled snapshot {source[:8]} is behind main; building main tip {tip[:8]}')
             source = tip
-        published = descriptor(source, args.platform) if event == 'schedule' else None
-        build = needed(event, published, source, args.platform)
+        if event == 'push':
+            build = push_ready(source, args.platform, os.environ.get('GITHUB_REF'))
+        else:
+            published = descriptor(source, args.platform) if event == 'schedule' else None
+            build = needed(event, published, source, args.platform)
         print('Build newest commit' if build else 'No build: coalescing or already published')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'build={str(build).lower()}\n')

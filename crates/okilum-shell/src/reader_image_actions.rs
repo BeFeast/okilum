@@ -7,6 +7,8 @@ use gpui_component::{
 };
 use std::io::Read;
 
+mod metadata;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     Reveal,
@@ -141,12 +143,8 @@ pub(super) fn decorate(
         .child(element)
         .tooltip({
             let target = target.clone();
-            move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(
-                    target.notice().unwrap_or("Right-click for image actions"),
-                )
-                .build(window, cx)
-            }
+            let reader = reader.clone();
+            move |window, cx| metadata::tooltip(reader.clone(), target.clone(), window, cx)
         })
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
             cx.stop_propagation();

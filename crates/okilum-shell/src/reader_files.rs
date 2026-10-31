@@ -135,26 +135,8 @@ pub(crate) fn menu(
 ) -> PopupMenu {
     // Installed editors first, next to «Open with default app» (#873).
     menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
-    let actions = [
-        (Os::CURRENT.reveal(), FileAction::Reveal),
-        ("Copy absolute path", FileAction::Absolute),
-        ("Copy vault path", FileAction::Relative),
-        ("Copy wikilink", FileAction::Wiki),
-        ("Copy Okilum link", FileAction::OkilumLink),
-        ("Open with default app", FileAction::Open),
-    ];
-    for (label, action) in actions {
-        let root = root.clone();
-        let rel = rel.clone();
-        // The bound Reader action only shows its key; the click acts on this row.
-        let item = match action {
-            FileAction::Reveal => PopupMenuItem::new(label).action(Box::new(super::RevealFile)),
-            FileAction::Relative => {
-                PopupMenuItem::new(label).action(Box::new(super::CopyVaultPath))
-            }
-            _ => PopupMenuItem::new(label),
-        };
-        menu = menu.item(item.on_click(move |_, window, cx| run(action, &root, &rel, window, cx)));
+    for item in row_items(&root, &rel) {
+        menu = menu.item(item);
     }
     #[cfg(target_os = "macos")]
     {
@@ -165,6 +147,33 @@ pub(crate) fn menu(
         );
     }
     menu
+}
+
+/// The file actions of the menu for `rel`; every click acts on `rel`, the item
+/// the menu was opened on, not on the open note.
+fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
+    let actions = [
+        (Os::CURRENT.reveal(), FileAction::Reveal),
+        ("Copy absolute path", FileAction::Absolute),
+        ("Copy vault path", FileAction::Relative),
+        ("Copy wikilink", FileAction::Wiki),
+        ("Copy Okilum link", FileAction::OkilumLink),
+        ("Open with default app", FileAction::Open),
+    ];
+    actions
+        .into_iter()
+        .map(|(label, action)| {
+            let (root, rel) = (root.to_path_buf(), rel.to_owned());
+            // The bound Reader action only shows its key; the click acts on this row.
+            // «Copy vault path» shows none: its shortcut copies the open note,
+            // not this row (#1733).
+            let item = match action {
+                FileAction::Reveal => PopupMenuItem::new(label).action(Box::new(super::RevealFile)),
+                _ => PopupMenuItem::new(label),
+            };
+            item.on_click(move |_, window, cx| run(action, &root, &rel, window, cx))
+        })
+        .collect()
 }
 
 pub(crate) struct FilePreview {
@@ -1051,6 +1060,129 @@ mod tests {
             });
         }
         assert_eq!(std::fs::read_to_string(root.join("note.md")).unwrap(), note);
+    }
+
+    fn clipboard_text(visual: &mut VisualTestContext) -> Option<String> {
+        visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+    }
+
+    fn set_clipboard(visual: &mut VisualTestContext, text: &str) {
+        let item = ClipboardItem::new_string(text.to_owned());
+        visual.update(|_, cx| cx.write_to_clipboard(item));
+    }
+
+    /// #1733: «Copy vault path» in a sidebar row menu copies that row, so it must
+    /// not show the global shortcut, which copies the open note instead.
+    #[gpui::test]
+    fn row_copy_vault_path_copies_the_row_and_shows_no_open_note_shortcut(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let open = "Открытая заметка A.md";
+        let row = "Папка с пробелами/Заметка B ✓.md";
+        let (open_text, row_text) = ("# A\n", "# B — строка\n");
+        std::fs::create_dir_all(root.join("Папка с пробелами")).unwrap();
+        std::fs::write(root.join(open), open_text).unwrap();
+        std::fs::write(root.join(row), row_text).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some(open.into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), open));
+
+        // The global shortcut exists, so a bound item would advertise it.
+        visual.update(|_, cx| {
+            let keymap = cx.key_bindings();
+            assert!(
+                keymap
+                    .borrow()
+                    .bindings_for_action(&CopyVaultPath)
+                    .next()
+                    .is_some(),
+                "Copy vault path keeps its global shortcut"
+            );
+        });
+        let items = row_items(&root, row);
+        let bound = |label: &str| {
+            items.iter().find_map(|item| match item {
+                PopupMenuItem::Item {
+                    label: shown,
+                    action,
+                    handler,
+                    ..
+                } if shown.as_ref() == label => {
+                    assert!(handler.is_some(), "{label} acts on the row");
+                    Some(action.as_ref().map(|a| a.name()))
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(
+            bound("Copy vault path"),
+            Some(None),
+            "the row item shows no shortcut"
+        );
+        // Positive control: the inspection sees an item's bound action.
+        assert_eq!(bound(Os::CURRENT.reveal()), Some(Some(RevealFile.name())));
+
+        // Choose «Copy vault path» in the production sidebar row menu for B.
+        set_clipboard(visual, "clipboard sentinel");
+        assert_eq!(
+            clipboard_text(visual).as_deref(),
+            Some("clipboard sentinel")
+        );
+        let popup = visual.update(|window, cx| {
+            let reader = reader.clone();
+            PopupMenu::build(window, cx, move |menu, window, cx| {
+                super::super::reader_item_menu(menu, &reader, row.into(), window, cx)
+            })
+        });
+        reader.update_in(visual, |r, window, cx| {
+            popup.focus_handle(cx).focus(window, cx);
+            r.file_menu = Some((popup.clone(), point(px(40.), px(40.))));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        // «Open in ▸» comes first when an editor is installed; then Reveal,
+        // Copy absolute path and Copy vault path.
+        let before = usize::from(!super::super::open_in::editors().is_empty());
+        let downs = vec!["down"; before + 3].join(" ");
+        visual.simulate_keystrokes(&format!("{downs} enter"));
+        visual.run_until_parked();
+        assert_eq!(clipboard_text(visual).as_deref(), Some(row));
+        reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), open));
+
+        // The global shortcut still copies the open note.
+        reader.update_in(visual, |r, window, cx| {
+            r.file_menu = None;
+            window.focus(&r.focus_handle, cx);
+        });
+        set_clipboard(visual, "clipboard sentinel");
+        visual.simulate_keystrokes("alt-cmd-c");
+        visual.run_until_parked();
+        assert_eq!(clipboard_text(visual).as_deref(), Some(open));
+
+        assert_eq!(std::fs::read_to_string(root.join(open)).unwrap(), open_text);
+        assert_eq!(std::fs::read_to_string(root.join(row)).unwrap(), row_text);
     }
 
     struct Fixture(PathBuf);

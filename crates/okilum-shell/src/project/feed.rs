@@ -12,18 +12,32 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 struct Message {
     user: bool,
     text: SharedString,
+    preview: SharedString,
     kind: MessageKind,
 }
 #[derive(Clone, PartialEq)]
 enum MessageKind {
     Chat,
     Reasoning,
-    Compact(SharedString),
+    Compact {
+        label: SharedString,
+        collapsible: bool,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Row {
     Message(u64),
     Retained(usize),
+}
+
+/// A bounded plain-text hint; full retained detail is built only on disclosure.
+fn activity_preview(text: &str) -> SharedString {
+    let mut chars = text.lines().next().unwrap_or("").chars();
+    let mut preview: String = chars.by_ref().take(120).collect();
+    if chars.next().is_some() {
+        preview.push('…');
+    }
+    preview.into()
 }
 
 pub(super) struct Feed {
@@ -152,27 +166,72 @@ impl Feed {
                 | "fork"
                 | "thread_created"
                 | "subagent"
-                | "dynamic_tool" => Some(MessageKind::Compact(
-                    item.title
+                | "dynamic_tool" => Some(MessageKind::Compact {
+                    label: item
+                        .title
                         .clone()
                         .unwrap_or_else(|| item.kind.replace('_', " "))
                         .into(),
-                )),
+                    // Questions, errors and notices stay visible without a click.
+                    collapsible: matches!(
+                        item.kind.as_str(),
+                        "command_execution"
+                            | "file_change"
+                            | "file_search"
+                            | "web_search"
+                            | "dynamic_tool"
+                    ),
+                }),
                 _ => None,
             };
-            let next = kind.map(|kind| Message {
-                user: item.kind == "user_message",
-                text: item.text.clone().unwrap_or_default().into(),
-                kind,
+            let next = kind.map(|kind| {
+                let text: SharedString = item.text.clone().unwrap_or_default().into();
+                let preview = if matches!(
+                    kind,
+                    MessageKind::Compact {
+                        collapsible: true,
+                        ..
+                    }
+                ) {
+                    activity_preview(&text)
+                } else {
+                    SharedString::default()
+                };
+                Message {
+                    user: item.kind == "user_message",
+                    text,
+                    preview,
+                    kind,
+                }
             });
             if self.messages.get(&item.position) != next.as_ref() {
                 topology |= self.messages.contains_key(&item.position) != next.is_some();
+                let hidden_detail_only = self
+                    .messages
+                    .get(&item.position)
+                    .zip(next.as_ref())
+                    .is_some_and(|(old, next)| {
+                        old.kind == next.kind
+                            && old.preview == next.preview
+                            && old.user == next.user
+                            && !self.expanded.contains(&item.position)
+                            && matches!(
+                                next.kind,
+                                MessageKind::Reasoning
+                                    | MessageKind::Compact {
+                                        collapsible: true,
+                                        ..
+                                    }
+                            )
+                    });
                 if let Some(next) = next {
                     self.messages.insert(item.position, next);
                 } else {
                     self.messages.remove(&item.position);
                 }
-                changed.push(item.position);
+                if !hidden_detail_only {
+                    changed.push(item.position);
+                }
             }
         }
         let mut records_changed = false;
@@ -250,17 +309,19 @@ impl Feed {
         remeasure.retain(|index| !inserted.contains(index));
         remeasure.sort_unstable();
         remeasure.dedup();
-        self.scroller.update(cx, |state, cx| {
-            let mut iter = remeasure.into_iter().peekable();
-            while let Some(start) = iter.next() {
-                let mut end = start + 1;
-                while iter.peek() == Some(&end) {
-                    iter.next();
-                    end += 1;
+        if !remeasure.is_empty() {
+            self.scroller.update(cx, |state, cx| {
+                let mut iter = remeasure.into_iter().peekable();
+                while let Some(start) = iter.next() {
+                    let mut end = start + 1;
+                    while iter.peek() == Some(&end) {
+                        iter.next();
+                        end += 1;
+                    }
+                    state.remeasure_items(start..end, cx);
                 }
-                state.remeasure_items(start..end, cx);
-            }
-        });
+            });
+        }
         if topology || !changed.is_empty() {
             cx.notify();
         }
@@ -278,7 +339,20 @@ impl Feed {
                 v_flex()
                     .id(SharedString::from(format!("project-message-{position}")))
                     .debug_selector(move || format!("project-message-{position}"))
-                    .gap_1()
+                    .gap_2()
+                    .mb_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(brand::palette(cx).border_subtle)
+                    .bg(if message.user {
+                        brand::palette(cx).selected
+                    } else {
+                        brand::palette(cx).surface
+                    })
+                    .when(message.user, |row| row.ml_6())
+                    .when(!message.user, |row| row.mr_6())
                     .child(
                         div()
                             .text_color(brand::palette(cx).text_muted)

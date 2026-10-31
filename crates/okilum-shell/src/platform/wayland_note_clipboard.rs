@@ -43,6 +43,7 @@ fn alias(mime: &str) -> &str {
         "image/tiff" => "public.tiff",
         "image/bmp" => "com.microsoft.bmp",
         "text/uri-list" => offer::FILE_URL,
+        "text/html" => "public.html",
         "text/plain;charset=utf-8" | "UTF8_STRING" | "text/plain" => "public.utf8-plain-text",
         _ => mime,
     }
@@ -179,6 +180,236 @@ mod tests {
             stamp: "20261026000000",
             ask_above: None,
         }
+    }
+
+    fn html_board(html: &[u8], plain: Option<&[u8]>) -> Board {
+        let mut mimes = vec!["text/html".into()];
+        if plain.is_some() {
+            mimes.push("text/plain".into());
+        }
+        let selection = receive_selection(&mimes, None, true, |mime, limit| {
+            assert_eq!(limit, offer::MAX_TEXT_BYTES);
+            Ok(match mime {
+                "text/html" => html.to_vec(),
+                "text/plain" => plain.unwrap().to_vec(),
+                other => panic!("unexpected MIME {other}"),
+            })
+        })
+        .unwrap();
+        let board = settle(Ok(selection), || panic!("native HTML must not fall back")).unwrap();
+        assert!(board.types().iter().any(|kind| kind == "public.html"));
+        assert_eq!(board.data("public.html").unwrap(), html);
+        board
+    }
+
+    #[test]
+    fn native_html_with_plain_fallback_and_html_only_reach_smart_paste() {
+        let root = tempfile::tempdir().unwrap();
+        let html = b"<p>Hello <strong>world</strong></p>";
+        for plain in [Some(b"Hello world".as_slice()), None] {
+            let board = html_board(html, plain);
+            let routed = router::route(&board, &context(root.path())).unwrap();
+            assert_eq!(routed.route, router::Route::RichText);
+            assert_eq!(routed.insert.as_deref(), Some("Hello **world**"));
+            assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
+        }
+    }
+
+    #[test]
+    fn native_html_and_pixels_keep_the_common_rich_text_and_image_precedence() {
+        let fixture = tempfile::tempdir().unwrap();
+        let image = png();
+        for (html, expected) in [
+            (
+                "<p><strong>Keep formatting</strong></p>",
+                router::Route::RichText,
+            ),
+            (
+                "<p><img src=\"https://example.invalid/image.png\"></p>",
+                router::Route::Image,
+            ),
+        ] {
+            let vault = fixture.path().join(format!("{expected:?}"));
+            std::fs::create_dir(&vault).unwrap();
+            let mimes = [
+                "text/html".into(),
+                "image/png".into(),
+                "text/plain;charset=utf-8".into(),
+                "text/plain".into(),
+            ];
+            let mut received = Vec::new();
+            let selection = receive_selection(&mimes, None, true, |mime, _| {
+                received.push(mime.to_owned());
+                Ok(match mime {
+                    "text/html" => html.as_bytes().to_vec(),
+                    "image/png" => image.clone(),
+                    "text/plain;charset=utf-8" => b"https://example.invalid/image.png".to_vec(),
+                    _ => panic!("only the preferred plain representation should be read"),
+                })
+            })
+            .unwrap();
+            assert_eq!(
+                received,
+                ["text/html", "image/png", "text/plain;charset=utf-8"]
+            );
+            let board = settle(Ok(selection), || {
+                panic!("a complete native offer must not fall back")
+            })
+            .unwrap();
+            assert!(board.types().iter().any(|kind| kind == "public.html"));
+            assert!(board.types().iter().any(|kind| kind == "public.png"));
+            let routed = router::route(&board, &context(&vault)).unwrap();
+            assert_eq!(routed.route, expected);
+            assert!(
+                routed.follow_up.is_none(),
+                "remote HTML source is not fetched when pixels win"
+            );
+            if expected == router::Route::RichText {
+                assert_eq!(routed.insert.as_deref(), Some("**Keep formatting**"));
+                assert!(routed.saved_files.is_empty());
+                assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 0);
+            } else {
+                assert_eq!(routed.saved_files.len(), 1);
+                let saved = &routed.saved_files[0];
+                assert_eq!(std::fs::read(saved).unwrap(), image);
+                assert_eq!(
+                    routed.insert.as_deref(),
+                    Some(format!("![[{}]]", saved.file_name().unwrap().to_str().unwrap()).as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_html_keeps_code_blocks_and_plain_files_literal_without_attachments() {
+        let vault = tempfile::tempdir().unwrap();
+        let plain = "<strong>literal markup</strong>\r\n<img src=\"file:///not-read.png\">";
+        let board = html_board(
+            b"<p><strong>Rich formatting</strong></p>",
+            Some(plain.as_bytes()),
+        );
+        let source = "```html\n\n```\n";
+        let mut code = context(vault.path());
+        code.source = source;
+        code.selection = 8..8;
+        let routed = router::route(&board, &code).unwrap();
+        assert_eq!(routed.route, router::Route::CodeBlockText);
+        // Literal routes retain transport bytes; document newlines normalize in the editor.
+        assert_eq!(routed.insert.as_deref(), Some(plain));
+        assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
+        let mut file = context(vault.path());
+        file.note_rel = None;
+        let routed = router::route(&board, &file).unwrap();
+        assert_eq!(routed.route, router::Route::FileText);
+        assert_eq!(routed.insert.as_deref(), Some(plain));
+        assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
+        // Same actual offer becomes rich Markdown in an ordinary note.
+        let routed = router::route(&board, &context(vault.path())).unwrap();
+        assert_eq!(routed.route, router::Route::RichText);
+        assert_eq!(routed.insert.as_deref(), Some("**Rich formatting**"));
+        assert_eq!(std::fs::read_dir(vault.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn native_html_local_image_publishes_an_embed_and_preserves_existing_files() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source-noext");
+        let original = png();
+        std::fs::write(&source, &original).unwrap();
+        let vault = fixture.path().join("vault");
+        let attachments = vault.join("attachments");
+        std::fs::create_dir_all(&attachments).unwrap();
+        let old = attachments.join("Existing.png");
+        std::fs::write(&old, &original).unwrap();
+        let html = format!(
+            "<p><img src=\"{}\"></p>",
+            url::Url::from_file_path(&source).unwrap()
+        );
+        // Positive control for the transport diagnosis: genuine plain text
+        // containing markup stays literal and never creates an attachment.
+        // Smart paste must retain the offered HTML MIME, not guess from text.
+        let plain_only = Board(vec![("text/plain".into(), html.as_bytes().to_vec())]);
+        let literal = router::route(&plain_only, &context(&vault)).unwrap();
+        assert_eq!(literal.route, router::Route::Text);
+        assert_eq!(literal.insert.as_deref(), Some(html.as_str()));
+        assert!(literal.saved_files.is_empty() && literal.follow_up.is_none());
+        assert_eq!(std::fs::read_dir(&attachments).unwrap().count(), 1);
+        let board = html_board(html.as_bytes(), Some(html.as_bytes()));
+        let routed = router::route(&board, &context(&vault)).unwrap();
+        assert_eq!(routed.route, router::Route::RichText);
+        assert!(routed.insert.is_none() && routed.saved_files.is_empty());
+        assert_eq!(std::fs::read_dir(&attachments).unwrap().count(), 1);
+        let Some(router::FollowUp::Rich { job, .. }) = routed.follow_up else {
+            panic!("local HTML image must use the existing background import");
+        };
+        let done = router::run_rich_job(job);
+        assert_eq!(done.files.len(), 1);
+        let saved = &done.files[0];
+        assert_eq!(saved.parent(), Some(attachments.as_path()));
+        assert_eq!(
+            done.text,
+            format!("![[{}]]", saved.file_name().unwrap().to_str().unwrap())
+        );
+        assert_eq!(std::fs::read(saved).unwrap(), original);
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert_eq!(std::fs::read(&old).unwrap(), original);
+    }
+
+    #[test]
+    fn native_html_plain_command_and_unformatted_html_keep_plain_text() {
+        let root = tempfile::tempdir().unwrap();
+        let board = html_board(
+            b"<p><strong>formatted</strong></p>",
+            Some(b"plain\r\nfallback"),
+        );
+        let mut cx = context(root.path());
+        cx.mode = router::Mode::Plain;
+        let routed = router::route(&board, &cx).unwrap();
+        assert_eq!(routed.route, router::Route::PlainText);
+        assert_eq!(routed.insert.as_deref(), Some("plain\nfallback"));
+        assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
+        let board = html_board(b"<span>plain words</span>", Some(b"plain fallback"));
+        let routed = router::route(&board, &context(root.path())).unwrap();
+        assert_eq!(routed.route, router::Route::Text);
+        assert_eq!(routed.insert.as_deref(), Some("plain fallback"));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn native_html_is_bounded_and_offer_change_never_becomes_a_partial_paste() {
+        let mimes = ["text/html".into(), "text/plain".into()];
+        let too_large = receive_selection(&mimes, None, true, |mime, limit| {
+            assert_eq!(mime, "text/html");
+            assert_eq!(limit, offer::MAX_TEXT_BYTES);
+            Ok(vec![b'x'; limit + 1])
+        });
+        assert!(matches!(too_large, Err(Error::TooLarge)));
+        let mut read_html = false;
+        let changed = receive_selection(&mimes, None, true, |mime, _| {
+            if mime == "text/html" {
+                read_html = true;
+                Ok(b"<strong>original offer</strong>".to_vec())
+            } else {
+                Err(Error::ChangedOffer)
+            }
+        });
+        assert!(read_html, "positive control: an HTML transfer completed");
+        assert!(settle(changed, || panic!("a changed offer must not use fallback")).is_err());
+        let text_only = receive_selection(&mimes, None, false, |mime, _| {
+            assert_eq!(mime, "text/plain", "text fields never request HTML");
+            Ok(b"exact text".to_vec())
+        })
+        .unwrap();
+        let board = settle(Ok(text_only), || panic!("exact text must not fall back")).unwrap();
+        assert_eq!(board.types(), vec![offer::UTF8_TEXT.to_owned()]);
+        let own = receive_selection(
+            &["pid/test".into(), "text/html".into()],
+            Some("pid/test"),
+            true,
+            |_, _| panic!("own HTML cannot be read through a UI-thread pipe"),
+        )
+        .unwrap();
+        assert!(matches!(own, Selection::Own));
     }
 
     #[test]
