@@ -6,6 +6,112 @@ use serde_json::json;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
+/// A request row observes only action state; editing an answer never rebuilds
+/// the virtualized feed. The source row and live authority must both match.
+pub(in crate::project) struct RequestCard {
+    actions: Entity<Actions>,
+    item: Arc<serde_json::Value>,
+    local: bool,
+    _actions: Subscription,
+}
+impl RequestCard {
+    pub(in crate::project) fn new(
+        actions: Entity<Actions>,
+        item: Arc<serde_json::Value>,
+        local: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let observation = cx.observe(&actions, |_, _, cx| cx.notify());
+        Self {
+            actions,
+            item,
+            local,
+            _actions: observation,
+        }
+    }
+    pub(in crate::project) fn set_item(
+        &mut self,
+        item: Arc<serde_json::Value>,
+        local: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.item != item || self.local != local {
+            self.item = item;
+            self.local = local;
+            cx.notify();
+        }
+    }
+}
+impl Render for RequestCard {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = self.item["requestId"].as_str().unwrap_or("");
+        let pending = self.local
+            && self
+                .actions
+                .read(cx)
+                .state
+                .requests
+                .iter()
+                .any(|r| r.id == id && r.item["id"] == self.item["id"]);
+        let mut row = v_flex().w_full().min_w_0().gap_1();
+        if pending {
+            row = row.child(
+                self.actions
+                    .update(cx, |actions, cx| actions.render_request(id, &self.item, cx)),
+            );
+        } else {
+            if self.item["type"] == "approval_request" {
+                for field in ["prompt", "reason", "decision"] {
+                    if let Some(text) = self.item[field].as_str() {
+                        row = row.child(div().whitespace_normal().child(text.to_owned()));
+                    }
+                }
+            } else if let Some(questions) = self.item["questions"].as_array() {
+                for question in questions {
+                    row = row.child(
+                        div()
+                            .whitespace_normal()
+                            .child(question["question"].as_str().unwrap_or("").to_owned()),
+                    );
+                    if let Some(options) = question["options"].as_array() {
+                        row = row.child(
+                            div().whitespace_normal().child(
+                                options
+                                    .iter()
+                                    .filter_map(|o| o["label"].as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                            ),
+                        );
+                    }
+                }
+                if let Some(answers) = self.item["questionAnswer"]["answers"].as_object() {
+                    for answer in answers.values() {
+                        let text = match answer {
+                            serde_json::Value::String(text) => text.clone(),
+                            serde_json::Value::Array(values) => values
+                                .iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            _ => answer.to_string(),
+                        };
+                        row = row.child(div().whitespace_normal().child(format!("Answer: {text}")));
+                    }
+                }
+            }
+            row = row.child(div().text_color(brand::palette(cx).text_muted).child(
+                if self.local && self.item["status"] == "pending" {
+                    "Waiting for supported response controls.".to_owned()
+                } else {
+                    self.item["status"].as_str().unwrap_or("Request").to_owned()
+                },
+            ));
+        }
+        row
+    }
+}
+
 pub(crate) struct Actions {
     parent: WeakEntity<ProjectView>,
     pub(crate) state: State,
@@ -57,7 +163,15 @@ impl Actions {
                 if self.inputs.contains_key(&key) {
                     continue;
                 }
-                let initial = question["initialAnswer"].as_str().unwrap_or("").to_owned();
+                let mut initial = question["initialAnswer"].as_str().unwrap_or("").to_owned();
+                if question["options"].as_array().is_some_and(|options| {
+                    options.iter().any(|o| {
+                        o["value"].as_str().or(o["label"].as_str()) == Some(initial.as_str())
+                    })
+                }) {
+                    self.selections.insert(key.clone(), vec![initial.clone()]);
+                    initial.clear();
+                }
                 let input = cx.new(|cx| {
                     InputState::new(window, cx)
                         .placeholder("Your answer")
@@ -70,11 +184,22 @@ impl Actions {
                 self.inputs.insert(key, input);
             }
         }
-        self.inputs.retain(|key, _| keep.contains(key));
-        self.selections.retain(|key, _| keep.contains(key));
-        self.subscriptions.retain(|key, _| keep.contains(key));
+        // An unsynchronized reconnect cannot resolve a user's pending draft.
+        if state.ready {
+            self.inputs.retain(|key, _| keep.contains(key));
+            self.selections.retain(|key, _| keep.contains(key));
+            self.subscriptions.retain(|key, _| keep.contains(key));
+        }
         self.state = state;
         cx.notify();
+    }
+    fn request_retained(&self, id: &str) -> bool {
+        self.records.iter().any(|r| matches!(&r.command.intent, Intent::Respond { request_id, .. } | Intent::Dismiss { request_id } if request_id == id))
+    }
+    fn retry_allowed(&self, record: &Record) -> bool {
+        record.sequence.is_some()
+            || (self.state.ready && matches!(record.command.intent, Intent::Message { .. }))
+            || self.state.allows(&record.command.intent)
     }
     fn intent(&self, request: &str, cx: &App) -> Intent {
         let mut answers = BTreeMap::new();
@@ -101,7 +226,13 @@ impl Actions {
                     answers.insert(
                         id.to_owned(),
                         if question["multiSelect"] == true {
-                            json!(selected)
+                            if self.state.requests.iter().any(|r| {
+                                r.id == request && r.response_mode.as_deref() == Some("message")
+                            }) {
+                                json!(serde_json::to_string(selected).expect("choices serialize"))
+                            } else {
+                                json!(selected)
+                            }
                         } else {
                             json!(selected[0])
                         },
@@ -116,9 +247,212 @@ impl Actions {
         }
     }
     fn dispatch(&self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.parent.update(cx, |view, cx| {
-            view.native_command(Some(intent), None, None, window, cx)
+        let parent = self.parent.clone();
+        // Release the request entity before the parent reads its live authority
+        // and marks the operation busy. A button callback otherwise re-borrows
+        // the Actions entity through native_command.
+        window.defer(cx, move |window, cx| {
+            let _ = parent.update(cx, |view, cx| {
+                view.native_command(Some(intent), None, None, window, cx)
+            });
         });
+    }
+}
+impl Actions {
+    pub(super) fn render_request(
+        &mut self,
+        id: &str,
+        item: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(request) = self
+            .state
+            .requests
+            .iter()
+            .find(|r| r.id == id && r.item["id"] == item["id"])
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let request_id = request.id.clone();
+        let retained = self.request_retained(&request_id);
+        let disabled =
+            self.busy || !self.enabled || !self.state.ready || !request.answerable || retained;
+        let mut card = v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .id(SharedString::from(format!("project-request-{request_id}")))
+            .debug_selector({
+                let id = request_id.clone();
+                move || format!("project-request-{id}")
+            });
+        if request.item["type"] == "approval_request" {
+            let label = request.item["prompt"]
+                .as_str()
+                .or(request.item["reason"].as_str())
+                .unwrap_or("Approval requested")
+                .to_owned();
+            card = card.child(div().whitespace_normal().child(label));
+            if let Some(reason) = request.item["reason"]
+                .as_str()
+                .filter(|r| Some(*r) != request.item["prompt"].as_str())
+            {
+                card = card.child(div().whitespace_normal().child(reason.to_owned()));
+            }
+            if let Some(app) = request.item["appName"].as_str() {
+                card = card.child(div().whitespace_normal().child(app.to_owned()));
+            }
+            if let Some(reason) = request.item["fullAccessOverride"].as_str() {
+                card = card.child(match reason {
+                    "ask_rule" => "Your approval rule requires this decision.",
+                    "provider_check" => "The provider requires this decision.",
+                    _ => "This action requires an additional approval.",
+                });
+            }
+            let options = request.item["options"]
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| {
+                    vec![
+                        json!({"decision":"accept","label":"Allow once"}),
+                        json!({"decision":"decline","label":"Decline"}),
+                    ]
+                });
+            let mut buttons = h_flex().items_start().flex_wrap().gap_1();
+            for (n, option) in options.iter().enumerate() {
+                let Some(decision) = option["decision"].as_str() else {
+                    continue;
+                };
+                let intent = Intent::Respond {
+                    request_id: request_id.clone(),
+                    decision: Some(decision.into()),
+                    answers: None,
+                };
+                let allowed = self.state.allows(&intent);
+                let mut decision_group = v_flex().min_w_0().gap_1().child(
+                    Button::new(SharedString::from(format!("approval-{request_id}-{n}")))
+                        .ghost()
+                        .label(option["label"].as_str().unwrap_or(decision).to_owned())
+                        .disabled(disabled || !allowed)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.dispatch(intent.clone(), window, cx)
+                        })),
+                );
+                if let Some(warning) = option["warning"].as_str() {
+                    decision_group =
+                        decision_group.child(div().whitespace_normal().child(warning.to_owned()));
+                }
+                buttons = buttons.child(decision_group);
+            }
+            card = card.child(buttons);
+        } else if let Some(questions) = request.item["questions"].as_array() {
+            for question in questions {
+                let Some(id) = question["id"].as_str() else {
+                    continue;
+                };
+                card = card.child(
+                    div()
+                        .whitespace_normal()
+                        .child(question["question"].as_str().unwrap_or("").to_owned()),
+                );
+                let key = (request_id.clone(), id.to_owned());
+                if let Some(options) = question["options"].as_array() {
+                    let mut buttons = h_flex().flex_wrap().gap_1();
+                    for (n, option) in options.iter().enumerate() {
+                        let Some(value) = option["value"].as_str().or(option["label"].as_str())
+                        else {
+                            continue;
+                        };
+                        let key = key.clone();
+                        let value = value.to_owned();
+                        let multi = question["multiSelect"] == true;
+                        let selected = self
+                            .selections
+                            .get(&key)
+                            .is_some_and(|s| s.contains(&value));
+                        buttons = buttons.child(
+                            Button::new(SharedString::from(format!(
+                                "answer-{}-{}-{n}",
+                                request_id, id
+                            )))
+                            .ghost()
+                            .label(format!(
+                                "{}{}",
+                                if selected { "✓ " } else { "" },
+                                option["label"].as_str().unwrap_or(&value)
+                            ))
+                            .tooltip(option["description"].as_str().unwrap_or("").to_owned())
+                            .disabled(disabled)
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    let choices = this.selections.entry(key.clone()).or_default();
+                                    if choices.contains(&value) {
+                                        choices.retain(|x| x != &value);
+                                    } else {
+                                        if !multi {
+                                            choices.clear();
+                                        }
+                                        choices.push(value.clone());
+                                    }
+                                    if let Some(input) = this.inputs.get(&key) {
+                                        input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx)
+                                        });
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                        );
+                    }
+                    card = card.child(buttons);
+                }
+                if question["allowCustomAnswer"] != false {
+                    if let Some(input) = self.inputs.get(&key) {
+                        card = card.child(Input::new(input).disabled(disabled).w_full());
+                    }
+                }
+            }
+            let intent = self.intent(&request_id, cx);
+            card = card.child(
+                Button::new(SharedString::from(format!("respond-{request_id}")))
+                    .ghost()
+                    .label("Send answers")
+                    .disabled(disabled || !self.state.allows(&intent))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.dispatch(intent.clone(), window, cx)
+                    })),
+            );
+            if request.dismissible {
+                let id = request_id.clone();
+                card = card.child(
+                    Button::new(SharedString::from(format!("dismiss-{request_id}")))
+                        .ghost()
+                        .label("Dismiss")
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.dispatch(
+                                Intent::Dismiss {
+                                    request_id: id.clone(),
+                                },
+                                window,
+                                cx,
+                            )
+                        })),
+                );
+            }
+        }
+        if retained {
+            card = card.child("Answer retained. Waiting for confirmation in the conversation.");
+        } else if !request.answerable {
+            card = card.child(
+                request
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "This request cannot be answered in this session.".into()),
+            );
+        }
+        card.into_any_element()
     }
 }
 impl Render for Actions {
@@ -135,9 +469,9 @@ impl Render for Actions {
             panel = panel.child(
                 Button::new("project-interrupt")
                     .ghost()
-                    .label("Interrupt")
+                    .label("Stop")
                     .debug_selector(|| "project-interrupt".into())
-                    .disabled(self.busy || !self.enabled || !self.state.ready)
+                    .disabled(self.busy || !self.enabled || !self.state.ready || self.records.iter().any(|r| matches!(&r.command.intent, Intent::Interrupt { run_id: id } if id == &run_id)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.dispatch(
                             Intent::Interrupt {
@@ -148,163 +482,6 @@ impl Render for Actions {
                         )
                     })),
             );
-        }
-        for request in &self.state.requests {
-            let request_id = request.id.clone();
-            let disabled = self.busy || !self.enabled || !self.state.ready || !request.answerable;
-            let mut card = v_flex()
-                .w_full()
-                .min_w_0()
-                .gap_1()
-                .id(SharedString::from(format!("project-request-{request_id}")))
-                .debug_selector({
-                    let id = request_id.clone();
-                    move || format!("project-request-{id}")
-                });
-            if request.item["type"] == "approval_request" {
-                let label = request.item["prompt"]
-                    .as_str()
-                    .or(request.item["reason"].as_str())
-                    .unwrap_or("Approval requested")
-                    .to_owned();
-                card = card.child(div().whitespace_normal().child(label));
-                let options = request.item["options"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        vec![
-                            json!({"decision":"accept","label":"Allow once"}),
-                            json!({"decision":"decline","label":"Decline"}),
-                        ]
-                    });
-                let mut buttons = h_flex().items_start().flex_wrap().gap_1();
-                for (n, option) in options.iter().enumerate() {
-                    let Some(decision) = option["decision"].as_str() else {
-                        continue;
-                    };
-                    let intent = Intent::Respond {
-                        request_id: request_id.clone(),
-                        decision: Some(decision.into()),
-                        answers: None,
-                    };
-                    let allowed = self.state.allows(&intent);
-                    let mut decision_group = v_flex().min_w_0().gap_1().child(
-                        Button::new(SharedString::from(format!("approval-{request_id}-{n}")))
-                            .ghost()
-                            .label(option["label"].as_str().unwrap_or(decision).to_owned())
-                            .disabled(disabled || !allowed)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.dispatch(intent.clone(), window, cx)
-                            })),
-                    );
-                    if let Some(warning) = option["warning"].as_str() {
-                        decision_group = decision_group
-                            .child(div().whitespace_normal().child(warning.to_owned()));
-                    }
-                    buttons = buttons.child(decision_group);
-                }
-                card = card.child(buttons);
-            } else if let Some(questions) = request.item["questions"].as_array() {
-                for question in questions {
-                    let Some(id) = question["id"].as_str() else {
-                        continue;
-                    };
-                    card = card.child(
-                        div()
-                            .whitespace_normal()
-                            .child(question["question"].as_str().unwrap_or("").to_owned()),
-                    );
-                    let key = (request_id.clone(), id.to_owned());
-                    if let Some(options) = question["options"].as_array() {
-                        let mut buttons = h_flex().flex_wrap().gap_1();
-                        for (n, option) in options.iter().enumerate() {
-                            let Some(value) = option["value"].as_str().or(option["label"].as_str())
-                            else {
-                                continue;
-                            };
-                            let key = key.clone();
-                            let value = value.to_owned();
-                            let multi = question["multiSelect"] == true;
-                            let selected = self
-                                .selections
-                                .get(&key)
-                                .is_some_and(|s| s.contains(&value));
-                            buttons = buttons.child(
-                                Button::new(SharedString::from(format!(
-                                    "answer-{}-{}-{n}",
-                                    request_id, id
-                                )))
-                                .ghost()
-                                .label(format!(
-                                    "{}{}",
-                                    if selected { "✓ " } else { "" },
-                                    option["label"].as_str().unwrap_or(&value)
-                                ))
-                                .tooltip(option["description"].as_str().unwrap_or("").to_owned())
-                                .disabled(disabled)
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        let choices =
-                                            this.selections.entry(key.clone()).or_default();
-                                        if choices.contains(&value) {
-                                            choices.retain(|x| x != &value);
-                                        } else {
-                                            if !multi {
-                                                choices.clear();
-                                            }
-                                            choices.push(value.clone());
-                                        }
-                                        if let Some(input) = this.inputs.get(&key) {
-                                            input.update(cx, |input, cx| {
-                                                input.set_value("", window, cx)
-                                            });
-                                        }
-                                        cx.notify();
-                                    },
-                                )),
-                            );
-                        }
-                        card = card.child(buttons);
-                    }
-                    if question["allowCustomAnswer"] != false {
-                        if let Some(input) = self.inputs.get(&key) {
-                            card = card.child(Input::new(input).w_full());
-                        }
-                    }
-                }
-                let intent = self.intent(&request_id, cx);
-                card = card.child(
-                    Button::new(SharedString::from(format!("respond-{request_id}")))
-                        .ghost()
-                        .label("Send answers")
-                        .disabled(disabled || !self.state.allows(&intent))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.dispatch(intent.clone(), window, cx)
-                        })),
-                );
-                if request.dismissible {
-                    let id = request_id.clone();
-                    card = card.child(
-                        Button::new(SharedString::from(format!("dismiss-{request_id}")))
-                            .ghost()
-                            .label("Dismiss")
-                            .disabled(self.busy || !self.enabled || !self.state.ready)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.dispatch(
-                                    Intent::Dismiss {
-                                        request_id: id.clone(),
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            })),
-                    );
-                }
-            }
-            if !request.answerable {
-                card = card.child("This request cannot be resumed here. Open in T3 to continue.");
-            }
-            panel = panel.child(card);
         }
         for record in self.records.iter().filter(|r| r.sequence.is_none()) {
             let retry = record.clone();
@@ -324,7 +501,12 @@ impl Render for Actions {
                     )))
                     .ghost()
                     .label("Retry same action")
-                    .disabled(self.busy || !self.enabled || !self.state.ready)
+                    .disabled(
+                        self.busy
+                            || !self.enabled
+                            || !self.state.ready
+                            || !self.retry_allowed(record),
+                    )
                     .on_click(move |_, window, cx| {
                         let _ = parent.update(cx, |view, cx| {
                             view.native_command(None, Some(retry.clone()), None, window, cx)
@@ -408,6 +590,9 @@ impl ProjectView {
         if intent
             .as_ref()
             .is_some_and(|i| !self.native.actions.read(cx).state.allows(i))
+            || retry
+                .as_ref()
+                .is_some_and(|r| !self.native.actions.read(cx).retry_allowed(r))
         {
             return;
         }
@@ -443,6 +628,7 @@ impl ProjectView {
                     if let Err(e) = result { a.error=Some(format!("{e:#}. Delivery may be unconfirmed; retry the retained action or check in T3.")); }
                     cx.notify();
                 });
+                this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
                 cx.notify();
             });
         }).detach();
@@ -480,6 +666,7 @@ impl ProjectView {
                     }
                     cx.notify();
                 });
+                this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
             });
         })
         .detach();
@@ -495,6 +682,20 @@ mod tests {
         net::TcpListener,
         thread,
     };
+
+    fn inert_native(view: &mut ProjectView) {
+        let environment = Environment::new("fixture", "http://127.0.0.1:9").unwrap();
+        let token = NativeToken::from_secret(&environment, &serde_json::to_vec(&json!({
+            "origin":environment.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,
+            "scope":"orchestration:read orchestration:operate"
+        })).unwrap()).unwrap();
+        view.native.client = Some(Arc::new(
+            NativeClient::new(environment.clone(), token, Duration::from_secs(1)).unwrap(),
+        ));
+        view.native.stream_ready = true;
+        view.environment = Some(environment);
+        view.threads.enabled = true;
+    }
 
     #[gpui::test]
     fn composer_uses_native_start_queue_and_pinned_steer_without_mcp_fallback(
@@ -654,6 +855,8 @@ mod tests {
                 item: json!({"type":"approval_request","options":[{"decision":"decline","label":"Decline"}]}),
                 answerable: true,
                 dismissible: false,
+                response_mode: Some("live".into()),
+                reason: None,
             }],
             ..Default::default()
         };
@@ -669,7 +872,9 @@ mod tests {
         }));
     }
     #[gpui::test]
-    fn question_keystrokes_leave_cached_history_and_parent_silent(cx: &mut TestAppContext) {
+    fn inline_question_keystrokes_keep_history_work_bounded_and_parent_silent(
+        cx: &mut TestAppContext,
+    ) {
         use std::{cell::Cell, rc::Rc};
         cx.update(|cx| {
             crate::test_init(cx);
@@ -680,9 +885,18 @@ mod tests {
             let view=cx.new(|cx| {
                 let mut view=super::super::super::fixture::view(temp.path().to_owned(),Arc::new(super::super::super::fixture::Fake::default()),window,cx);
                 view.active=false;
-                let message:okilum_t3::TimelineItem=serde_json::from_value(json!({"position":1,"itemId":"a","messageId":"m","type":"assistant_message","status":"completed","text":"Selectable retained history","updatedAt":"now"})).unwrap();
-                view.feed.update(cx,|feed,cx|feed.apply(std::iter::once(&message),Some(&[]),cx));
-                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request{id:"r".into(),item:json!({"type":"user_input_request","questions":[{"id":"q","question":"Your choice","options":[]}]}),answerable:true,dismissible:true}],..Default::default()},window,cx));
+                inert_native(&mut view);
+                let question = Arc::new(json!({"id":"request-row","threadId":"thread","ordinal":2,"status":"pending","type":"user_input_request","requestId":"r","questions":[{"id":"q","question":"Your choice","options":[]}]}));
+                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request{id:"r".into(),item:question.as_ref().clone(),answerable:true,dismissible:true,response_mode:Some("message".into()),reason:None}],..Default::default()},window,cx));
+                // Native history must contain real unrelated messages: the
+                // first native projection deliberately replaces any MCP rows.
+                let mut rows:Vec<_>=(0..1000).map(|n| Arc::new(okilum_t3::projection::TurnRow {
+                    key:okilum_t3::projection::RowKey{thread:"thread".into(),item:format!("history-{n}")},local:true,
+                    item:Arc::new(json!({"id":format!("history-{n}"),"threadId":"thread","ordinal":n,"status":"completed","type":"assistant_message","text":format!("Retained message {n}: **history stays available**.")}))
+                })).collect();
+                rows.push(Arc::new(okilum_t3::projection::TurnRow{key:okilum_t3::projection::RowKey{thread:"thread".into(),item:"request-row".into()},local:true,item:question}));
+                let order=rows.iter().map(|r|r.key.clone()).collect();
+                view.feed.update(cx,|feed,cx|feed.apply_native(okilum_t3::projection::Changes { rows,order:Some(order),..Default::default()}, &[],cx));
                 view
             });Root::new(view,window,cx)
         });
@@ -700,8 +914,15 @@ mod tests {
         visual.run_until_parked();
         visual.simulate_keystrokes("left");
         visual.run_until_parked();
-        let before = feed.read_with(visual, |f, _| (f.row_calls.get(), f.render_calls.get()));
-        assert!(before.0 > 0);
+        assert!(
+            visual.debug_bounds("project-request-r").is_some(),
+            "positive control: inline request is visible"
+        );
+        assert!(
+            visual.debug_bounds("project-message-1000").is_some(),
+            "positive control: real unrelated native history is visible"
+        );
+        feed.read_with(visual, |f, _| f.rendered_positions.borrow_mut().clear());
         let counts = Rc::new([Cell::new(0), Cell::new(0), Cell::new(0)]);
         let _observer: Entity<()> = visual.update(|_, cx| {
             cx.new(|cx| {
@@ -722,15 +943,163 @@ mod tests {
             input.read_with(visual, |i, _| i.value().to_string()),
             "answer"
         );
-        assert_eq!(
-            feed.read_with(visual, |f, _| (f.row_calls.get(), f.render_calls.get())),
-            before
-        );
+        // GPUI marks rendered ancestors dirty when an inline Input changes.
+        // Its list may repaint visible rows; it must not traverse all history
+        // or emit model notifications/remeasure requests for each character.
+        feed.read_with(visual, |f, _| {
+            let positions = f.rendered_positions.borrow();
+            let unique: std::collections::HashSet<_> = positions.iter().copied().collect();
+            assert!(
+                !unique.is_empty(),
+                "positive control: interactive list repainted"
+            );
+            assert!(
+                unique.len() <= 32,
+                "typing visited {} distinct rows",
+                unique.len()
+            );
+            assert!(
+                unique.iter().all(|position| *position > 900),
+                "typing rendered offscreen history: {unique:?}"
+            );
+        });
         assert_eq!(counts[0].get(), 0);
         assert_eq!(counts[1].get(), 0);
         assert!(
             counts[2].get() > 0,
             "positive control: action draft changed"
         );
+    }
+    #[gpui::test]
+    fn answer_choices_keep_exact_values_and_message_mode_is_string_only(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            super::super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::super::fixture::Fake::default()),
+                window,
+                cx,
+            )
+        });
+        view.update_in(visual, |view, window, cx| {
+            let item = json!({"id":"row","type":"user_input_request","questions":[
+                {"id":"one","question":"Choose","initialAnswer":" exact ","options":[{"label":"Label","value":" exact "}],"allowCustomAnswer":false},
+                {"id":"many","question":"Several","multiSelect":true,"options":[{"label":"A"},{"label":"B"}],"allowCustomAnswer":false},
+                {"id":"custom","question":"Why","options":[]}
+            ]});
+            view.native.actions.update(cx, |a,cx| {
+                let request=okilum_t3::actions::Request{id:"r".into(),item:item.clone(),answerable:true,dismissible:true,response_mode:Some("live".into()),reason:None};
+                a.set_state(State{ready:true,requests:vec![request],..Default::default()},window,cx);
+                assert_eq!(a.selections[&("r".into(),"one".into())],vec![" exact "]);
+                a.selections.insert(("r".into(),"many".into()),vec!["A".into(),"B".into()]);
+                a.inputs[&("r".into(),"custom".into())].update(cx,|i,cx|i.set_value("Because",window,cx));
+                let live=a.intent("r",cx);
+                assert!(a.state.allows(&live));
+                if let Intent::Respond{answers:Some(answers),..}=&live {
+                    assert_eq!(answers["one"],json!(" exact "));
+                    assert_eq!(answers["many"],json!(["A","B"]));
+                    assert_eq!(answers["custom"],json!("Because"));
+                } else {panic!("missing answers")}
+                a.state.requests[0].response_mode=Some("message".into());
+                let message=a.intent("r",cx);
+                assert!(a.state.allows(&message));
+                if let Intent::Respond{answers:Some(answers),..}=message {
+                    assert_eq!(answers["many"],json!("[\"A\",\"B\"]"));
+                } else {panic!("missing message answers")}
+                let draft=a.inputs[&("r".into(),"custom".into())].clone();
+                a.set_state(State::default(),window,cx);
+                assert_eq!(a.inputs[&("r".into(),"custom".into())],draft,"unsynchronized reconnect retains answers");
+                a.set_state(State{ready:true,..Default::default()},window,cx);
+                assert!(a.inputs.is_empty(),"confirmed resolution removes controls/drafts");
+            });
+        });
+    }
+    #[gpui::test]
+    fn accepted_requests_latch_and_stale_retries_never_change_target(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            super::super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::super::fixture::Fake::default()),
+                window,
+                cx,
+            )
+        });
+        view.update_in(visual,|v,_,cx|v.native.actions.update(cx,|a,_| {
+            a.state=State{ready:true,active_run:Some("new-run".into()),..Default::default()};
+            let response=Record{command:okilum_t3::actions::Command::new("thread",Intent::Respond{request_id:"resolved".into(),decision:Some("accept".into()),answers:None}),sequence:Some(17)};
+            a.records=vec![response.clone()];
+            assert!(a.request_retained("resolved"));
+            assert!(a.retry_allowed(&response),"acknowledged receipt is local only");
+            let mut uncertain=response;
+            uncertain.sequence=None;
+            assert!(!a.retry_allowed(&uncertain),"resolved requests cannot be re-sent");
+            uncertain.command.intent=Intent::Interrupt{run_id:"old-run".into()};
+            assert!(!a.retry_allowed(&uncertain),"Stop cannot move to the newer run");
+            uncertain.command.intent=Intent::message("Clarification".into(),DispatchMode::SteerActive{target_run_id:"old-run".into()});
+            assert!(a.retry_allowed(&uncertain),"message retries query the original command receipt even after run state changes");
+            assert_eq!(uncertain.command.wire().unwrap()["dispatchMode"]["targetRunId"],"old-run");
+        }));
+    }
+    #[gpui::test]
+    fn request_callback_releases_its_entity_before_parent_authority_checks(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            let mut view = super::super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            inert_native(&mut view);
+            view.native.actions.update(cx, |a, cx| {
+                a.set_state(
+                    State {
+                        ready: true,
+                        active_run: Some("exact-run".into()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            view
+        });
+        view.update_in(visual, |v, window, cx| {
+            v.native.actions.update(cx, |a, cx| {
+                a.dispatch(
+                    Intent::Interrupt {
+                        run_id: "exact-run".into(),
+                    },
+                    window,
+                    cx,
+                )
+            });
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, cx| {
+            assert!(!v.busy);
+            let a = v.native.actions.read(cx);
+            assert_eq!(
+                a.records.len(),
+                1,
+                "positive control: button path prepared the exact operation"
+            );
+            assert_eq!(
+                a.records[0].command.intent,
+                Intent::Interrupt {
+                    run_id: "exact-run".into()
+                }
+            );
+            assert!(
+                a.records[0].sequence.is_none(),
+                "refused local transport retains recoverable operation"
+            );
+        });
     }
 }

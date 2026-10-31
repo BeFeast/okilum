@@ -313,8 +313,7 @@ fn action_controls_follow_live_requests_and_capabilities_and_never_use_inherited
     approval["options"] = json!([{"decision":"accept","label":"Allow once"},{"decision":"decline","label":"Decline"}]);
     let mut initial = snapshot(vec![approval]);
     if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
-        projection["runtimeRequests"] =
-            json!([{"id":"request","status":"pending","responseCapability":{"type":"live"}}]);
+        projection["runtimeRequests"] = json!([{"id":"request","kind":"command","status":"pending","responseCapability":{"type":"live"}}]);
         projection["runs"] =
             json!([{"id":"run","ordinal":1,"status":"running","providerThreadId":"pt"}]);
         projection["providerThreads"] = json!([{"id":"pt","providerSessionId":"session"}]);
@@ -358,7 +357,7 @@ fn action_controls_follow_live_requests_and_capabilities_and_never_use_inherited
     p.apply(&[
         update(
             "runtime-request.updated",
-            json!({"id":"request","status":"resolved","responseCapability":{"type":"live"}}),
+            json!({"id":"request","kind":"command","status":"resolved","responseCapability":{"type":"live"}}),
         ),
         update(
             "run.updated",
@@ -381,15 +380,14 @@ fn action_controls_follow_live_requests_and_capabilities_and_never_use_inherited
     assert!(!p.take_changes().actions.unwrap().ready);
 }
 #[test]
-fn question_answers_preserve_option_values_multi_select_and_message_dismissal() {
+fn live_question_answers_preserve_option_values_and_multi_select() {
     use crate::actions::{DispatchMode, Intent};
     let mut question = message("q", 1, "user_input_request");
     question["requestId"] = json!("request");
     question["questions"] = json!([{"id":"one","question":"Choose","allowCustomAnswer":false,"options":[{"label":"Label","value":" value "}]},{"id":"many","question":"Choose several","multiSelect":true,"allowCustomAnswer":false,"options":[{"label":"A"},{"label":"B"}]}]);
     let mut initial = snapshot(vec![question]);
     if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
-        projection["runtimeRequests"] =
-            json!([{"id":"request","status":"pending","responseCapability":{"type":"message"}}]);
+        projection["runtimeRequests"] = json!([{"id":"request","kind":"user_input","status":"pending","responseCapability":{"type":"live"}}]);
         projection["providerThreads"] = json!([]);
         projection["providerSessions"] = json!([]);
     }
@@ -412,11 +410,255 @@ fn question_answers_preserve_option_values_multi_select_and_message_dismissal() 
         decision: None,
         answers: Some(invalid)
     }));
-    assert!(state.allows(&Intent::Dismiss {
+    assert!(!state.allows(&Intent::Dismiss {
         request_id: "request".into()
     }));
     assert!(state.allows(&Intent::message(
         "hello".into(),
         DispatchMode::StartImmediately
     )));
+}
+
+fn request_model(items: Vec<Value>, requests: Value) -> Projection {
+    let mut initial = snapshot(items);
+    if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
+        projection["runtimeRequests"] = requests;
+        projection["providerThreads"] = json!([]);
+        projection["providerSessions"] = json!([]);
+    }
+    let mut projection = Projection::new("thread", "project");
+    projection.apply(&[initial]).unwrap();
+    projection.take_changes();
+    projection
+}
+
+fn question_response(request: &str, answers: Value) -> crate::actions::Intent {
+    crate::actions::Intent::Respond {
+        request_id: request.into(),
+        decision: None,
+        answers: Some(serde_json::from_value(answers).unwrap()),
+    }
+}
+
+#[test]
+fn message_questions_encode_multi_selections_as_text_and_reconnect_without_live_sessions() {
+    use crate::actions::Intent;
+    let mut item = message("question", 1, "user_input_request");
+    item["requestId"] = json!("request");
+    item["responseMode"] = json!("message");
+    item["questions"] = json!([
+        {"id":"single","allowCustomAnswer":false,"options":[{"label":"Label","value":" exact "}]},
+        {"id":"multi","multiSelect":true,"allowCustomAnswer":false,"options":[{"label":"A","value":" A "},{"label":"B"}]},
+        {"id":"custom","options":[]},
+        {"id":"optional","required":false,"options":[]}
+    ]);
+    let pending = json!([{"id":"request","kind":"user_input","status":"pending","responseCapability":{"type":"message"}}]);
+    let mut projection = request_model(vec![item.clone()], pending.clone());
+    // Message mode forwards text to the agent: serialize selected values into
+    // JSON-array text rather than sending a provider-style array on the wire.
+    let selected = serde_json::to_string(&[" A ", "B"]).unwrap();
+    let response = question_response(
+        "request",
+        json!({
+            "single":" exact ", "multi":selected, "custom":"Full custom answer"
+        }),
+    );
+    let state = projection.action_state();
+    assert!(state.requests[0].answerable);
+    assert_eq!(state.requests[0].response_mode.as_deref(), Some("message"));
+    assert!(state.allows(&response));
+    assert!(state.allows(&Intent::Dismiss {
+        request_id: "request".into()
+    }));
+    assert!(!state.allows(&question_response(
+        "other-request",
+        json!({"single":" exact "})
+    )));
+    for invalid in [
+        json!([" A ", "B"]),
+        json!(serde_json::to_string(&[" A ", " A "]).unwrap()),
+        json!(serde_json::to_string(&["unknown"]).unwrap()),
+        json!(" A "),
+    ] {
+        assert!(!state.allows(&question_response(
+            "request",
+            json!({
+                "single":" exact ", "multi":invalid, "custom":"answer"
+            })
+        )));
+    }
+    projection
+        .apply(&[update(
+            "runtime-request.updated",
+            json!({
+                "id":"request","kind":"user_input","status":"resolved",
+                "responseCapability":{"type":"message"},"answers":{"single":" exact "}
+            }),
+        )])
+        .unwrap();
+    assert!(projection.action_state().requests.is_empty());
+    assert!(!projection.action_state().allows(&response));
+    let reconnected = request_model(vec![item], pending);
+    assert!(reconnected.action_state().allows(&response));
+    let mut resolved = reconnected;
+    resolved.requests.get_mut("request").unwrap()["status"] = json!("resolved");
+    assert!(!resolved.action_state().allows(&response));
+}
+
+#[test]
+fn ambiguous_unsupported_and_wrong_target_requests_never_grant_controls() {
+    let mut item = message("question", 1, "user_input_request");
+    item["requestId"] = json!("request");
+    item["questions"] = json!([{"id":"answer","options":[]}]);
+    let request = json!({"id":"request","kind":"user_input","status":"pending","nodeId":"node","runId":"run","responseCapability":{"type":"live"}});
+    assert!(request_model(vec![item.clone()], json!([request.clone()]))
+        .action_state()
+        .allows(&question_response(
+            "request",
+            json!({"answer":"positive control"})
+        )));
+    let mut duplicate = item.clone();
+    duplicate["id"] = json!("other-card");
+    assert!(
+        request_model(vec![item.clone(), duplicate], json!([request.clone()]))
+            .action_state()
+            .requests
+            .is_empty()
+    );
+    for kind in [
+        "auth_refresh",
+        "dynamic_tool_call",
+        "secret_request",
+        "future_kind",
+        "command",
+    ] {
+        let mut unsupported = request.clone();
+        unsupported["kind"] = json!(kind);
+        assert!(
+            request_model(vec![item.clone()], json!([unsupported]))
+                .action_state()
+                .requests
+                .is_empty(),
+            "{kind}"
+        );
+    }
+    for field in ["threadId", "runId", "nodeId"] {
+        let mut wrong_target = request.clone();
+        wrong_target[field] = json!("wrong-target");
+        assert!(
+            request_model(vec![item.clone()], json!([wrong_target]))
+                .action_state()
+                .requests
+                .is_empty(),
+            "{field}"
+        );
+    }
+    let mut not_resumable = request.clone();
+    not_resumable["responseCapability"] =
+        json!({"type":"not_resumable","reason":"Provider process is gone."});
+    let state = request_model(vec![item.clone()], json!([not_resumable])).action_state();
+    assert!(!state.requests[0].answerable);
+    assert!(!state.requests[0].dismissible);
+    assert_eq!(
+        state.requests[0].reason.as_deref(),
+        Some("Provider process is gone.")
+    );
+    let mut wrong_mode = item;
+    wrong_mode["responseMode"] = json!("message");
+    assert!(
+        !request_model(vec![wrong_mode], json!([request]))
+            .action_state()
+            .requests[0]
+            .answerable
+    );
+    let mut inherited = message("inherited", 1, "approval_request");
+    inherited["threadId"] = json!("ancestor");
+    inherited["requestId"] = json!("inherited-request");
+    let mut initial = snapshot(vec![]);
+    if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
+        projection["runtimeRequests"] = json!([{
+            "id":"inherited-request","kind":"command","status":"pending",
+            "responseCapability":{"type":"live"}
+        }]);
+        projection["providerThreads"] = json!([]);
+        projection["providerSessions"] = json!([]);
+        projection["visibleTurnItems"] = json!([{
+            "position":0,"visibility":"inherited","sourceThreadId":"ancestor",
+            "sourceItemId":"inherited","item":inherited
+        }]);
+    }
+    let mut projection = Projection::new("thread", "project");
+    projection.apply(&[initial]).unwrap();
+    assert_eq!(
+        projection.keys().len(),
+        1,
+        "positive control: inherited history is visible"
+    );
+    assert!(projection.action_state().requests.is_empty());
+}
+
+#[test]
+fn approvals_are_live_only_and_absent_options_only_allow_once_or_decline() {
+    use crate::actions::Intent;
+    let mut item = message("approval", 1, "approval_request");
+    item["requestId"] = json!("request");
+    let request = json!({"id":"request","kind":"command","status":"pending","responseCapability":{"type":"live"}});
+    let approve = |decision: &str| Intent::Respond {
+        request_id: "request".into(),
+        decision: Some(decision.into()),
+        answers: None,
+    };
+    let state = request_model(vec![item.clone()], json!([request.clone()])).action_state();
+    assert!(state.allows(&approve("accept")));
+    assert!(state.allows(&approve("decline")));
+    for decision in ["cancel", "acceptForSession", "acceptAlways"] {
+        assert!(!state.allows(&approve(decision)));
+    }
+    item["options"] = json!([{"decision":"acceptAlways","label":"Always allow this app","warning":"Persists approval"}]);
+    assert!(request_model(vec![item.clone()], json!([request.clone()]))
+        .action_state()
+        .allows(&approve("acceptAlways")));
+    for options in [json!([]), json!(null), json!("malformed")] {
+        item["options"] = options;
+        assert!(!request_model(vec![item.clone()], json!([request.clone()]))
+            .action_state()
+            .allows(&approve("accept")));
+    }
+    let mut message_request = request;
+    message_request["responseCapability"] = json!({"type":"message"});
+    assert!(
+        !request_model(vec![item], json!([message_request]))
+            .action_state()
+            .requests[0]
+            .answerable
+    );
+}
+
+#[test]
+fn malformed_question_ids_and_duplicate_multi_values_are_rejected() {
+    use crate::actions::valid_answers;
+    let answers = serde_json::from_value(json!({"q":[" exact ","B"]})).unwrap();
+    let question = json!({"id":"q","multiSelect":true,"allowCustomAnswer":false,"options":[{"label":"A","value":" exact "},{"label":"B"}]});
+    let mut item = json!({"questions":[question.clone()]});
+    assert!(valid_answers(&item, &answers));
+    for selections in [json!(["B", "B"]), json!(["exact"]), json!([7]), json!([])] {
+        assert!(!valid_answers(
+            &item,
+            &serde_json::from_value(json!({"q":selections})).unwrap()
+        ));
+    }
+    item["questions"] = json!([question.clone(), question]);
+    assert!(!valid_answers(&item, &answers));
+    for invalid_id in [json!(""), json!("  "), json!(null)] {
+        item["questions"] = json!([{"id":invalid_id,"options":[]}]);
+        assert!(!valid_answers(&item, &answers));
+    }
+    let custom_message = json!({
+        "responseMode":"message",
+        "questions":[{"id":"custom","multiSelect":true,"allowCustomAnswer":true,"options":[]}]
+    });
+    assert!(valid_answers(
+        &custom_message,
+        &serde_json::from_value(json!({"custom":"A custom multi-choice answer"})).unwrap()
+    ));
 }

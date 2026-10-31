@@ -274,6 +274,10 @@ impl ProjectView {
         #[cfg(target_os = "linux")]
         let composer = cx.new(|cx| composer::Composer::new(compose.clone(), cx));
         #[cfg(target_os = "linux")]
+        let native = native::Native::new(window, cx);
+        #[cfg(target_os = "linux")]
+        feed.update(cx, |feed, _| feed.actions = Some(native.actions.clone()));
+        #[cfg(target_os = "linux")]
         let input = cx.subscribe_in(
             &composer,
             window,
@@ -371,7 +375,7 @@ impl ProjectView {
             #[cfg(target_os = "linux")]
             composer,
             #[cfg(target_os = "linux")]
-            native: native::Native::new(window, cx),
+            native,
             #[cfg(target_os = "linux")]
             threads: threads::Directory::default(),
         }

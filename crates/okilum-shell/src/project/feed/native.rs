@@ -47,6 +47,33 @@ impl Feed {
                 attachment_changes.push(position);
             }
             self.retain_detail_source(position, &row, cx);
+            if matches!(
+                row.item["type"].as_str(),
+                Some("approval_request" | "user_input_request")
+            ) {
+                if let Some(actions) = &self.actions {
+                    if let Some(card) = self.request_cards.get(&position) {
+                        card.update(cx, |card, cx| {
+                            card.set_item(row.item.clone(), row.local, cx)
+                        });
+                    } else {
+                        let actions = actions.clone();
+                        self.request_cards.insert(
+                            position,
+                            cx.new(|cx| {
+                                super::super::native::actions::RequestCard::new(
+                                    actions,
+                                    row.item.clone(),
+                                    row.local,
+                                    cx,
+                                )
+                            }),
+                        );
+                    }
+                }
+            } else {
+                self.request_cards.remove(&position);
+            }
             previews.insert(
                 position,
                 activity_preview(&presentation::preview(&row.item)),
@@ -106,6 +133,7 @@ impl Feed {
     }
     fn remove_native(&mut self, key: &RowKey) {
         if let Some(position) = self.native_positions.remove(key) {
+            self.request_cards.remove(&position);
             self.messages.remove(&position);
             self.expanded.remove(&position);
             self.details.remove(&position);
@@ -117,6 +145,16 @@ impl Feed {
                         self.projected.remove(&id);
                     }
                 }
+            }
+        }
+    }
+    pub(in crate::project) fn requests_changed(&self, cx: &mut Context<Self>) {
+        // Projection changes may replace controls without updating the source
+        // item. Only those state changes remeasure rows, never draft keystrokes.
+        for position in self.request_cards.keys() {
+            if let Some(index) = self.indices.get(position).copied() {
+                self.scroller
+                    .update(cx, |state, cx| state.remeasure_items(index..index + 1, cx));
             }
         }
     }
@@ -133,6 +171,15 @@ impl Feed {
     }
 
     pub(super) fn activity(&self, position: u64, message: &Message, cx: &mut App) -> AnyElement {
+        if let Some(card) = self.request_cards.get(&position) {
+            return div()
+                .mb_2()
+                .pl_3()
+                .border_l_1()
+                .border_color(brand::palette(cx).border_subtle)
+                .child(card.clone())
+                .into_any_element();
+        }
         let reasoning = message.kind == MessageKind::Reasoning;
         let (label, collapsible) = match &message.kind {
             MessageKind::Reasoning => (SharedString::from("Reasoning"), true),

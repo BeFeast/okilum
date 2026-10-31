@@ -46,6 +46,8 @@ fn activity_preview(text: &str) -> SharedString {
 
 pub(super) struct Feed {
     parent: WeakEntity<ProjectView>,
+    pub(super) actions: Option<Entity<super::native::actions::Actions>>,
+    request_cards: HashMap<u64, Entity<super::native::actions::RequestCard>>,
     messages: BTreeMap<u64, Message>,
     ids: BTreeMap<u64, String>,
     projected: HashMap<String, usize>,
@@ -65,6 +67,8 @@ pub(super) struct Feed {
     #[cfg(test)]
     pub(super) row_calls: std::cell::Cell<usize>,
     #[cfg(test)]
+    pub(super) rendered_positions: std::cell::RefCell<Vec<u64>>,
+    #[cfg(test)]
     pub(super) render_calls: std::cell::Cell<usize>,
 }
 impl Feed {
@@ -73,6 +77,8 @@ impl Feed {
         let scroll = cx.observe(&scroller, |_, _, cx| cx.notify());
         Self {
             parent,
+            actions: None,
+            request_cards: HashMap::new(),
             messages: BTreeMap::new(),
             ids: BTreeMap::new(),
             projected: HashMap::new(),
@@ -92,10 +98,13 @@ impl Feed {
             #[cfg(test)]
             row_calls: std::cell::Cell::new(0),
             #[cfg(test)]
+            rendered_positions: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
             render_calls: std::cell::Cell::new(0),
         }
     }
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
+        self.request_cards.clear();
         self.messages.clear();
         self.ids.clear();
         self.projected.clear();
@@ -345,6 +354,8 @@ impl Feed {
         self.row_calls.set(self.row_calls.get() + 1);
         match self.rows.get(index) {
             Some(Row::Message(position)) => {
+                #[cfg(test)]
+                self.rendered_positions.borrow_mut().push(*position);
                 let message = &self.messages[position];
                 let position = *position;
                 if message.kind != MessageKind::Chat {
