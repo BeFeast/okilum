@@ -29,7 +29,7 @@ class HostedPRTests(unittest.TestCase):
                 self.assertEqual(push.call_args.args[1], SHA)
                 self.assertEqual(wait.call_args.args[1:], (branch, SHA))
                 self.assertEqual(wait.call_args.kwargs, dict(workflow=f'.github/workflows/forgejo-{lane}.yml',
-                    job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout))
+                    job_name=job, build_step=step, queue_timeout=60 if lane == 'fast' else 1800, run_timeout=timeout))
 
     def test_unknown_lane_never_pushes(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {

@@ -6,25 +6,8 @@
 name: excalidraw-compat
 
 on:
-  pull_request:
-    paths:
-      - 'crates/okilum-core/src/excalidraw/**'
-      - 'crates/okilum-core/tests/excalidraw_write.rs'
-      - 'crates/okilum-core/tests/fixtures/excalidraw/**'
-      - 'crates/okilum-shell/src/reader_drawing.rs'
-      - 'scripts/excalidraw-compat/**'
-      - '.forgejo/workflows/excalidraw-compat.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'crates/okilum-core/src/excalidraw/**'
-      - 'crates/okilum-core/tests/excalidraw_write.rs'
-      - 'crates/okilum-core/tests/fixtures/excalidraw/**'
-      - 'crates/okilum-shell/src/reader_drawing.rs'
-      - 'scripts/excalidraw-compat/**'
-      - '.forgejo/workflows/excalidraw-compat.yml'
   schedule:
-    - cron: '41 2 * * *'
+    - cron: '5 22 * * 2,6'
   workflow_dispatch:
 
 concurrency:

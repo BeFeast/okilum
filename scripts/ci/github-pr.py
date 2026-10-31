@@ -10,6 +10,7 @@ spec = importlib.util.spec_from_file_location('transport', Path(__file__).with_n
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 LANES = {
+    'fast': ('fast', 'All fast platform builds passed', 540),
     'shared': ('shared', 'Run every shared suite', 3600),
     'linux': ('linux', 'Run full Linux gate', 5400),
     'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
@@ -45,7 +46,7 @@ def main():
         transport.push_head(branch, sha, token)
         pushed = True
         result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
-            job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
+            job_name=job, build_step=step, queue_timeout=60 if lane == 'fast' else 1800, run_timeout=timeout)
         print(message)
     except transport.Unavailable as error:
         print(f'Hosted CI unavailable; no fallback success: {error}')

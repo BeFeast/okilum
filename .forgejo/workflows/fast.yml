@@ -1,0 +1,28 @@
+name: fast
+on:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: fast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: bridge
+    timeout-minutes: 10
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Three platform builds and fast unit tests
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_LANE: fast
+        run: python3 scripts/ci/github-pr.py

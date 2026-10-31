@@ -22,13 +22,20 @@ def source_identity(source, workflow):
 
 def route(env):
     lane = env.get('MACOS_LANE') or 'local'
+    if env.get('GITHUB_EVENT_NAME') == 'push':
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        # Daytime beta cannot occupy the corporate M4. The existing 03:05
+        # lane switch owns nighttime local admission.
+        if datetime.now(ZoneInfo('Asia/Jerusalem')).hour >= 9:
+            lane = 'hosted'
     if lane not in ['local', 'hosted']:
         raise ValueError('Unsupported Mac delivery lane; no fallback')
     source = source_identity(env.get('PRODUCT_SOURCE'), env.get('GITHUB_SHA'))
     if source != env['GITHUB_SHA'] and (lane != 'hosted' or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
         raise ValueError('Explicit older source requires manual hosted artifact route')
-    if lane == 'hosted' and env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
-        raise ValueError('Hosted scheduled shipping disabled until approved signing route exists; no local fallback')
+    if lane == 'hosted' and env.get('GITHUB_EVENT_NAME') not in ('workflow_dispatch', 'push'):
+        raise ValueError('Hosted shipping requires a trusted main push or explicit dispatch; no local fallback')
     with open(env['GITHUB_OUTPUT'], 'a') as output:
         output.write(f'lane={lane}\nsource={source}\n')
 
@@ -110,8 +117,13 @@ def build(env):
                'delivery_script_sha256': tool_hashes,
                'publication': 'NONE; QA artifact only, not Stable or beta feed', 'assets': files}
     (output / 'provenance.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    # The Sparkle private key stays in Forgejo; this public metadata is signed
+    # there only after the hosted artifact/source/digests are checked.
+    metadata = {k: values[k] for k in ['BUILD', 'DISPLAY_VERSION', 'SOURCE_SHA', 'SOURCE_TREE']}
+    metadata.update(archive=Path(values['ARCHIVE']).name, dmg=Path(values['DMG']).name)
+    (output / 'release.json').write_text(json.dumps(metadata))
     # Only release payloads and nonsecret provenance leave this job; no keychains/env.
-    keep = {x['name'] for x in files} | {'provenance.json'}
+    keep = {x['name'] for x in files} | {'provenance.json', 'release.json'}
     destination = output.parent / 'shipping-download'
     destination.mkdir()
     for name in keep:

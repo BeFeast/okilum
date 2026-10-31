@@ -1,0 +1,69 @@
+# Exact-source unsigned PR validation. Publishing and full acceptance are separate.
+name: forgejo-fast
+on:
+  push:
+    branches: [main, 'forgejo-fast-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: fast-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, platform: linux}
+          - {os: windows-2022, platform: windows}
+          - {os: macos-15, platform: macos}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch bytes
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config curl git \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: fast-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff', 'scripts/ci/fast.sh') }}
+      - name: Build desktop and run fast unit tests
+        shell: bash
+        run: bash scripts/ci/fast.sh
+      - uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+  fast:
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: All fast platform builds passed
+        env:
+          RESULT: ${{ needs.build.result }}
+        run: python3 scripts/ci/gate-step.py --name 'All fast platform builds passed' -- bash -c 'test "$RESULT" = success'

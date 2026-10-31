@@ -4,7 +4,7 @@ name: forgejo-macos
 
 on:
   push:
-    branches: [main, 'forgejo-pr/**']
+    branches: ['forgejo-pr/**']
 
 permissions:
   contents: read
