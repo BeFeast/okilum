@@ -282,5 +282,47 @@ mod tests {
         assert_eq!(std::fs::read(vault.join("note.md")).unwrap(), bytes);
         assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 1);
         assert!(!absent.exists());
+        // A temporarily unmounted vault can remain the default. Remounting
+        // and refreshing changes availability, never its identity/preference.
+        let make_default = visual.debug_bounds("vaults-default-0").unwrap();
+        visual.simulate_click(make_default.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            ReadingHistory::default_vault(&state).unwrap(),
+            Some(absent.clone())
+        );
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.rows[0].available, Some(false));
+            assert!(view.rows[0].vault.is_default);
+            assert!(view.rows[0].vault.last_opened.is_none());
+        });
+        std::fs::create_dir(&absent).unwrap();
+        let offline_bytes = b"# Remounted\r\n";
+        std::fs::write(absent.join("offline.md"), offline_bytes).unwrap();
+        view.update(visual, |view, cx| view.reload(cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.rows.len(), 1);
+            assert_eq!(view.rows[0].vault.root, absent);
+            assert_eq!(view.rows[0].available, Some(true));
+            assert!(view.rows[0].vault.is_default);
+            assert!(
+                view.rows[0].vault.last_opened.is_none(),
+                "Refresh is not a successful vault opening"
+            );
+        });
+        let clear_default = visual.debug_bounds("vaults-default-0").unwrap();
+        visual.simulate_click(clear_default.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            [absent.clone()]
+        );
+        assert_eq!(
+            std::fs::read(absent.join("offline.md")).unwrap(),
+            offline_bytes
+        );
+        assert_eq!(std::fs::read(vault.join("note.md")).unwrap(), bytes);
     }
 }
