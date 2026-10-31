@@ -70,6 +70,9 @@ pub struct State {
     pub now_enabled: Option<bool>,
     #[serde(default)]
     pub now_offer_answered: bool,
+    /// The contextual Agents offer was answered for this vault folder.
+    #[serde(default)]
+    pub agents_offer_answered: bool,
     #[serde(default)]
     pub now_collapsed: BTreeSet<String>,
     #[serde(default)]
@@ -195,7 +198,10 @@ impl State {
         let parent = path.parent().context("sidebar state has no directory")?;
         std::fs::create_dir_all(parent)?;
         let temporary = parent.join(format!(".sidebar-{}.json", uuid::Uuid::new_v4()));
-        std::fs::write(&temporary, serde_json::to_vec(self)?)?;
+        // A stale sidebar snapshot from another window cannot undo an opt-out.
+        let mut next = self.clone();
+        next.agents_offer_answered |= Self::load(path).agents_offer_answered;
+        std::fs::write(&temporary, serde_json::to_vec(&next)?)?;
         std::fs::rename(&temporary, path).inspect_err(|_| {
             let _ = std::fs::remove_file(&temporary);
         })?;
@@ -362,6 +368,21 @@ pub fn age_label(then: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agents_offer_decline_survives_a_stale_window_save_and_is_folder_scoped() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = State::path(directory.path(), Path::new("/checkout"));
+        let stale = State::default();
+        let mut declined = stale.clone();
+        declined.agents_offer_answered = true;
+        declined.save(&path).unwrap();
+        stale.save(&path).unwrap();
+        assert!(State::load(&path).agents_offer_answered);
+        assert!(
+            !State::load(&State::path(directory.path(), Path::new("/notes"))).agents_offer_answered
+        );
+    }
+
     #[test]
     fn second_brain_offer_is_contextual_and_answers_persist_per_vault() {
         let directory = tempfile::tempdir().unwrap();

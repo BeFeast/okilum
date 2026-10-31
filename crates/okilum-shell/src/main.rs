@@ -137,6 +137,8 @@ mod input_frame_cost_tests;
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
+mod reader_agents_context;
+mod reader_agents_offer;
 mod reader_features;
 #[cfg(test)]
 use reader_features::test_init;
@@ -1738,6 +1740,7 @@ struct Reader {
     /// #1508), app state.
     sidebar: reader_sidebar::State,
     sidebar_path: Option<PathBuf>,
+    agents_offer: reader_agents_offer::Offer,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
     workbench: Arc<okilum_core::workbench::Index>,
@@ -2042,6 +2045,7 @@ impl Reader {
             tree_scroll: UniformListScrollHandle::new(),
             sidebar: reader_sidebar::State::default(),
             sidebar_path: None,
+            agents_offer: reader_agents_offer::Offer::default(),
             inbox: Vec::new(),
             projects: Arc::default(),
             workbench: Arc::default(),
@@ -3051,6 +3055,7 @@ impl Reader {
             return;
         }
         self.load_sidebar_state();
+        self.refresh_agents_offer(cx);
         if self.tree.show_hidden() != self.sidebar.show_hidden {
             self.tree.set_show_hidden(self.sidebar.show_hidden);
             self.tree_revealed.clear();
@@ -4446,7 +4451,7 @@ impl Reader {
 
     /// `![alt](relative path)` → `![alt](file:///abs%20path)` via resolve_asset.
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree
+        let content = if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree
             || !self.sidebar.now_enabled()
             || self.single_file
             || self.project_navigation.active.is_some()
@@ -4454,7 +4459,31 @@ impl Reader {
             self.render_tree(window, cx)
         } else {
             self.render_workbench(window, cx)
-        }
+        };
+        div()
+            .relative()
+            .size_full()
+            .child(
+                div()
+                    .size_full()
+                    .pb(if self.agents_offer_slot(cx) {
+                        px(32.)
+                    } else {
+                        px(0.)
+                    })
+                    .child(content),
+            )
+            .when(self.show_agents_offer(cx), |view| {
+                view.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .child(self.render_agents_offer(cx)),
+                )
+            })
+            .into_any_element()
     }
 
     /// docs/design/reader.md §Sidebar: the real folder hierarchy only
