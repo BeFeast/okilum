@@ -147,31 +147,9 @@ impl Board {
                     )
                 });
                 let id = format!("board-delivery-{}-{}", platform.label(), channel.label());
-                let mut problem_url = url.clone().unwrap_or_else(|| {
+                let problem_url = url.clone().unwrap_or_else(|| {
                     format!("{}/releases", binding.repository.trim_end_matches('/'))
                 });
-                // Only freshly observed OPEN PR references may contribute CI
-                // diagnostics. Historical/closed PR failures never enter Board.
-                for pr in self
-                    .snapshot
-                    .forgejo
-                    .value
-                    .values()
-                    .filter(|issue| issue.state == "open")
-                    .flat_map(|issue| issue.open_pull_requests.iter())
-                {
-                    if let Some(ci) = self.delivery.ci.get(pr) {
-                        if facts::problem(ci, now(), binding.refresh_seconds).is_some()
-                            || ci.value.state == "failure"
-                        {
-                            if let Some(link) = ci.value.links.first() {
-                                issue = true;
-                                problem_url = link.clone();
-                                break;
-                            }
-                        }
-                    }
-                }
                 line = line.child(
                     Button::new(SharedString::from(id.clone()))
                         .ghost()
