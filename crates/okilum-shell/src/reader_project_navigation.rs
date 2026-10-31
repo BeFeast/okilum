@@ -23,6 +23,21 @@ fn cached_project_icons(
     okilum_t3::projects::icon::cache::load(&state.join("project-logos"), projects, &origins)
 }
 
+/// Drop cached metadata of this vault's renamed, deleted or rebound projects
+/// (#1948). `projects` is the vault's whole discovery; a one-project refresh
+/// never collects. Without readable T3 connections nothing is collected.
+fn collect_project_icons(state: Option<&Path>, vault: &Path, projects: &[Project]) {
+    let Some(state) = state else { return };
+    let Ok(origins) = project::browser_connections(state, projects) else {
+        return;
+    };
+    let cache = state.join("project-logos");
+    if let Err(error) = okilum_t3::projects::icon::cache::collect(&cache, vault, projects, &origins)
+    {
+        eprintln!("Project icon cache: {error:#}");
+    }
+}
+
 fn store_project_icons(
     state: Option<&Path>,
     projects: &[Project],
@@ -384,6 +399,7 @@ impl Reader {
                 .spawn(async move {
                     let discovery = okilum_t3::projects::discover(&vault);
                     let icons = cached_project_icons(state.as_deref(), &discovery.projects);
+                    collect_project_icons(state.as_deref(), &vault, &discovery.projects);
                     (discovery, icons)
                 })
                 .await;
@@ -450,6 +466,7 @@ impl Reader {
                 .spawn(async move {
                     let discovery = okilum_t3::projects::discover(&scan);
                     let icons = cached_project_icons(state.as_deref(), &discovery.projects);
+                    collect_project_icons(state.as_deref(), &scan, &discovery.projects);
                     (discovery, icons)
                 })
                 .await;
@@ -1445,6 +1462,93 @@ mod icon_save_tests {
     fn connect(reader: &mut Reader, t3: &Arc<IconT3>) {
         let gateway: Arc<dyn okilum_t3::ManagerGateway> = t3.clone();
         reader.project_navigation.t3_gateways = Gateways::from([("test".to_owned(), gateway)]);
+    }
+
+    /// #1948: a vault's discovery drops cached metadata of its deleted
+    /// projects, keeps the live one, and never touches another vault's.
+    #[gpui::test]
+    fn discovery_collects_metadata_of_deleted_projects_only(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        let project_at = |folder: &Path, id: &str| {
+            std::fs::create_dir_all(folder.join("ops")).unwrap();
+            std::fs::write(
+                folder.join("ops/project.yaml"),
+                format!("name: {id}\nt3:\n  environment: test\n  origin: https://t3.example\n  executor: {{project_id: {id}}}\n"),
+            )
+            .unwrap();
+            let project = Project::read(folder).unwrap();
+            let refresh = okilum_t3::projects::icon::CounterpartRefresh {
+                confirmed: [project.folder.clone()].into_iter().collect(),
+                links: [(
+                    project.folder.clone(),
+                    Counterpart {
+                        environment: "test".into(),
+                        project_id: id.into(),
+                        icon: Some(ProjectIcon::Emoji {
+                            emoji: "🚀".into()
+                        }),
+                        logo: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            };
+            store_project_icons(Some(&state), std::slice::from_ref(&project), &refresh);
+            project
+        };
+        let live = project_at(&root.join("Live"), "live");
+        let deleted = project_at(&root.join("Deleted"), "deleted");
+        let other_vault = project_at(&temp.path().join("other/Elsewhere"), "elsewhere");
+        let entries = || {
+            std::fs::read_dir(state.join("project-logos/counterparts-v1"))
+                .unwrap()
+                .count()
+        };
+        assert_eq!(entries(), 3, "positive control: every entry was written");
+        std::fs::remove_dir_all(&deleted.folder).unwrap();
+
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, _, cx| r.ensure_palette_projects(cx));
+        visual.run_until_parked();
+
+        assert_eq!(entries(), 2, "only the deleted project's entry is gone");
+        assert!(
+            cached_project_icons(Some(&state), std::slice::from_ref(&live))
+                .contains_key(&live.folder)
+        );
+        assert!(
+            cached_project_icons(Some(&state), std::slice::from_ref(&other_vault))
+                .contains_key(&other_vault.folder),
+            "another vault sharing the cache keeps its binding"
+        );
     }
 
     #[gpui::test]

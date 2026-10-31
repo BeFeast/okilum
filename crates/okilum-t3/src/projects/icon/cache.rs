@@ -123,5 +123,83 @@ pub fn store(
     Ok(())
 }
 
+/// Remove metadata no project of `vault` can load any more: its folder was
+/// renamed or deleted, or its binding (environment, T3 origin, executor,
+/// checkout) changed. `projects` must be the whole discovery of `vault`.
+///
+/// Only local facts decide; T3 is never asked, so an offline or failed
+/// refresh cannot clear an icon. Kept on purpose:
+/// - entries outside `vault` (another vault sharing this cache);
+/// - a folder that is not discovered but still has a project manifest
+///   (a broken manifest, a folder discovery does not walk, a symlinked
+///   second vault);
+/// - a project whose environment has no known origin: its binding cannot
+///   be resolved, so it is not declared obsolete.
+///
+/// Returns how many entries were removed. Blocks; run it off the UI thread.
+pub fn collect(
+    cache: &Path,
+    vault: &Path,
+    projects: &[Project],
+    origins: &BTreeMap<String, String>,
+) -> anyhow::Result<usize> {
+    let directory = cache.join("counterparts-v1");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let current: BTreeMap<&Path, &Project> =
+        projects.iter().map(|p| (p.folder.as_path(), p)).collect();
+    let mut removed = 0;
+    for file in entries {
+        let path = file?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json")
+            || !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= 64 * 1024)
+        {
+            continue;
+        }
+        // Unreadable entries are left alone: they are not loaded either, and
+        // the folder they name is unknown.
+        let Some(entry) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Entry>(&bytes).ok())
+        else {
+            continue;
+        };
+        let folder = entry.binding.folder.as_path();
+        if !folder.starts_with(vault) {
+            continue;
+        }
+        let obsolete = match current.get(folder) {
+            Some(project) if project.environment.is_none() => true,
+            Some(project) => {
+                Binding::new(project, origins).is_some_and(|binding| binding != entry.binding)
+            }
+            None => !has_manifest(folder),
+        };
+        if !obsolete {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(removed)
+}
+
+/// True unless the manifest is known to be gone; an unreadable folder keeps
+/// its entry.
+fn has_manifest(folder: &Path) -> bool {
+    ["project.toml", "project.yaml"].iter().any(|name| {
+        !matches!(
+            std::fs::symlink_metadata(folder.join("ops").join(name)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests;
