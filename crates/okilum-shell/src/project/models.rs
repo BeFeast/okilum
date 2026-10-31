@@ -2,6 +2,9 @@ use super::*;
 use gpui_component::popover::Popover;
 use okilum_t3::{models::Target, ModelSelection};
 
+#[cfg(test)]
+mod tests;
+
 impl ProjectView {
     pub(super) fn manager_model_target(&self) -> Option<Target> {
         let binding = self.binding.as_ref()?;
@@ -75,10 +78,10 @@ impl ProjectView {
                 })
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
-                this.model_busy = false;
                 if this.generation == generation
                     && this.model_target.as_ref() == Some(&requested_target)
                 {
+                    this.model_busy = false;
                     match result {
                         Ok(snapshot) => {
                             this.models = Some(snapshot);
@@ -214,7 +217,7 @@ impl ProjectView {
                     .child(if self.connection_details {
                         error.clone()
                     } else {
-                        "Could not confirm the model. Refresh or open T3 to continue.".into()
+                        "Could not load or confirm the model. Refresh to try again.".into()
                     }),
             );
         }
