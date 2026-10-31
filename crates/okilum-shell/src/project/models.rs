@@ -15,6 +15,63 @@ pub(super) struct PickerUi {
 }
 
 impl ProjectView {
+    fn can_read_models(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(client) = self.native.model_client() {
+            return client.access_allowed();
+        }
+        self.gateway.as_ref().is_some_and(|gateway| {
+            matches!(
+                gateway.status(),
+                GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
+            )
+        })
+    }
+
+    fn can_write_models(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(client) = self.native.model_client() {
+            return client.access_allowed() && client.can_operate();
+        }
+        self.identity.is_some() && self.can_read_models()
+    }
+
+    fn settle_model_layout(&self, focus_search: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.model_target.clone() else {
+            return;
+        };
+        let generation = self.generation;
+        // Platform callbacks run BEFORE draw. The second callback is after
+        // the popup's first draw, when input and scroll geometry both exist.
+        cx.on_next_frame(window, move |_, window, cx| {
+            cx.on_next_frame(window, move |this, window, cx| {
+                if this.generation != generation
+                    || !this.model_open
+                    || this.model_target.as_ref() != Some(&target)
+                {
+                    return;
+                }
+                let Some(input) = &this.model_ui.search else {
+                    return;
+                };
+                if focus_search {
+                    input.update(cx, |input, cx| input.focus(window, cx));
+                }
+                if input.read(cx).value().trim().is_empty() {
+                    if let Some(index) = this.models.as_ref().and_then(|snapshot| {
+                        snapshot
+                            .picker_choices(this.model_ui.provider.as_deref().unwrap_or(""), "")
+                            .iter()
+                            .position(|choice| choice.current)
+                    }) {
+                        this.model_ui.scroll.scroll_to_item(index);
+                    }
+                }
+                cx.notify();
+            });
+        });
+    }
+
     pub(super) fn manager_model_target(&self) -> Option<Target> {
         let binding = self.binding.as_ref()?;
         #[cfg(target_os = "linux")]
@@ -36,11 +93,13 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model_busy || self.busy {
+        if self.busy || !self.can_read_models() {
             return;
         }
         if self.model_target.as_ref() != Some(&target) {
             self.models = None;
+            self.model_busy = false;
+            self.model_error = None;
         }
         self.model_target = Some(target);
         self.model_ui.follow_current = true;
@@ -63,8 +122,12 @@ impl ProjectView {
                 input.focus(window, cx);
             });
         self.model_open = true;
-        self.model_candidate = None;
-        self.model_request(None, window, cx);
+        self.settle_model_layout(true, window, cx);
+        if !self.model_busy {
+            self.model_candidate = None;
+            self.model_request(None, window, cx);
+        }
+        cx.notify();
     }
 
     fn model_request(
@@ -73,7 +136,14 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model_busy || self.busy || !self.can_send() {
+        if self.model_busy
+            || self.busy
+            || (if selection.is_some() {
+                !self.can_write_models()
+            } else {
+                !self.can_read_models()
+            })
+        {
             return;
         }
         let Some(target) = self.model_target.clone() else {
@@ -121,22 +191,8 @@ impl ProjectView {
                                 this.model_ui.provider = Some(snapshot.configuration.model_selection.instance_id.clone());
                             }
                             this.model_ui.follow_current = false;
-                            if let Some(index) = snapshot.picker_choices(this.model_ui.provider.as_deref().unwrap_or(""), "").iter().position(|choice| choice.current) {
-                                // ScrollHandle learns overflow/child geometry during
-                                // the first layout; reveal after that layout exists.
-                                let target = requested_target.clone();
-                                cx.on_next_frame(window, move |this, _, cx| {
-                                    if this.generation == generation
-                                        && this.model_open
-                                        && this.model_target.as_ref() == Some(&target)
-                                        && this.model_ui.search.as_ref().is_some_and(|input| input.read(cx).value().trim().is_empty())
-                                    {
-                                        this.model_ui.scroll.scroll_to_item(index);
-                                        cx.notify();
-                                    }
-                                });
-                            }
                             this.models = Some(snapshot);
+                            this.settle_model_layout(false, window, cx);
                             this.model_candidate = None;
                             this.model_error = None;
                         }
@@ -156,6 +212,7 @@ impl ProjectView {
                             } else {
                                 "Cannot read thread models; no change was requested"
                             };
+                            eprintln!("Manager model request failed ({action}): {error:#}");
                             this.model_error = Some(format!(
                                 "{action}. {error:#} Refresh to read the current configuration; no automatic retry."
                             ));
@@ -210,7 +267,15 @@ impl ProjectView {
                 "Model".into()
             });
         let owner = cx.entity().downgrade();
+        let search_focus = self
+            .model_ui
+            .search
+            .as_ref()
+            .map(|input| input.read(cx).focus_handle(cx));
         Popover::new(id)
+            .when_some(search_focus.as_ref(), |popover, focus| {
+                popover.track_focus(focus)
+            })
             .anchor(Anchor::TopRight)
             .open(self.model_open && is_target)
             .trigger(
@@ -223,7 +288,7 @@ impl ProjectView {
                     .label(label)
                     .icon(IconName::ChevronDown)
                     .tooltip("Choose model")
-                    .disabled(self.busy || !self.can_send()),
+                    .disabled(self.busy || !self.can_read_models()),
             )
             .on_open_change(move |open, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
@@ -251,7 +316,7 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model_busy || !self.can_send() {
+        if self.model_busy || self.busy || !self.can_write_models() {
             return;
         }
         self.model_candidate = Some(selection.clone());
