@@ -655,3 +655,20 @@ fn a_counterpart_without_a_local_checkout_fetches_and_caches_its_logo() {
     assert_eq!(server.requests().len(), 2);
     std::fs::remove_dir_all(cache).unwrap();
 }
+
+#[test]
+fn local_okilum_icon_and_public_favicon_are_found_without_network() {
+    let root = std::env::temp_dir().join(format!("okilum-local-icon-{}", uuid::Uuid::new_v4()));
+    let root = &root;
+    std::fs::create_dir_all(root.join(".okilum")).unwrap();
+    std::fs::create_dir_all(root.join("public")).unwrap();
+    let favicon = root.join("public/favicon.png");
+    std::fs::write(&favicon, b"synthetic icon bytes").unwrap();
+    assert_eq!(find_logo(root), Some(favicon.clone()));
+    let custom = root.join(".okilum/icon");
+    std::fs::write(&custom, b"synthetic custom icon bytes").unwrap();
+    assert_eq!(find_logo(root), Some(custom.clone()));
+    std::fs::write(&custom, []).unwrap();
+    assert_eq!(find_logo(root), Some(favicon));
+    std::fs::remove_dir_all(root).unwrap();
+}

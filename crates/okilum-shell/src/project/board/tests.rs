@@ -264,6 +264,36 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.run_until_parked();
     assert!(visual.debug_bounds("project-board").is_some());
     assert!(visual.debug_bounds("board-attention").is_some());
+    reader.read_with(visual, |reader, _| {
+        assert!(
+            !reader.panels.notes,
+            "project entry starts with Board and Manager; tree is opt-in"
+        );
+        assert!(reader.panels.backlinks);
+    });
+    // A source publication for the retained note must update that document
+    // without silently replacing the explicit project surface (#2099).
+    reader.update_in(visual, |reader, window, cx| {
+        reader.reconcile_inventory_document(
+            &[(
+                "start.md".to_owned(),
+                "# Background refresh\nChanged bytes\n".to_owned(),
+            )]
+            .into_iter()
+            .collect(),
+            window,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, _| {
+        assert!(
+            reader.note_source.contains("Changed bytes"),
+            "positive control: background replacement was applied"
+        );
+        assert!(reader.project_navigation.board_visible);
+    });
+    assert!(visual.debug_bounds("project-board").is_some());
     reader.update_in(visual, |reader, window, cx| {
         assert!(reader.project_navigation.board_visible);
         let manager = reader.project.clone().expect("actual native Manager");

@@ -1828,7 +1828,11 @@ impl Reader {
                     history_index: Some(this.navigation.history_ix),
                     restore_position: Some(position),
                 };
+                // A watcher refresh updates the retained document, not the
+                // user's project surface. Explicit note navigation still leaves Board.
+                let board_visible = this.project_navigation.board_visible;
                 this.accept_prepared_document(request, result, window, cx);
+                this.project_navigation.board_visible = board_visible;
             });
         })
         .detach();
