@@ -56,6 +56,8 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 # Portable, independently extractable exact brain archives.
 tar = { version = "0.4", optional = true }
 url = "2"
+# Explicit Windows OS-trust/PAC policy, also in independent core test builds.
+okilum-http = { path = "../okilum-http" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 # Reuse the existing HTTP runtime/channel versions for cancellable remote sessions.
 tokio = { version = "1", features = ["rt", "sync", "macros", "time", "net"] }
