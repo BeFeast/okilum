@@ -7774,6 +7774,106 @@ mod quick_view_tests {
         });
     }
 
+    /// #8: in a folder opened with Open folder…, files another application
+    /// creates or deletes appear in and leave the tree, Markdown or not,
+    /// through the incremental path rather than a full rescan.
+    #[gpui::test]
+    fn open_folder_lists_external_file_creates_and_deletes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("folder");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
+        std::fs::write(root.join("old.txt"), "existing attachment").unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        index_dir: Some(fixture.path().join("cache")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        let settle = |done: &dyn Fn(&Reader) -> bool, visual: &mut gpui::VisualTestContext| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                reader.update_in(visual, |v, window, cx| v.poll_vault(window, cx));
+                visual.run_until_parked();
+                if reader.read_with(visual, |v, _| done(v)) {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "tree rows: {:?}",
+                    reader.read_with(visual, |v, _| v
+                        .tree
+                        .rows
+                        .iter()
+                        .map(|row| row.path.clone())
+                        .collect::<Vec<_>>())
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+        settle(
+            &|v| {
+                !v.single_file
+                    && v.watcher.is_some()
+                    && v.incremental_state.is_some()
+                    && !v.loading.as_ref().is_some_and(|load| load.active)
+            },
+            visual,
+        );
+        let generation = reader.read_with(visual, |v, _| {
+            assert!(v.tree.rows.iter().any(|row| row.path == "old.txt"));
+            v.loading.as_ref().unwrap().generation
+        });
+        let listed = |v: &Reader, path: &str| v.tree.rows.iter().any(|row| row.path == path);
+        // Real disk operations from outside the Reader; no injected Changes.
+        // The Markdown create is the positive control that the watcher fired.
+        std::fs::write(root.join("external.md"), "# External").unwrap();
+        std::fs::write(root.join("report.pdf"), b"pdf from another app").unwrap();
+        std::fs::write(root.join("docs/data.csv"), "a,b").unwrap();
+        std::fs::remove_file(root.join("old.txt")).unwrap();
+        reader.update(visual, |v, _| v.tree.set_expanded("docs", true));
+        settle(
+            &|v| {
+                listed(v, "external.md")
+                    && listed(v, "report.pdf")
+                    && listed(v, "docs/data.csv")
+                    && !listed(v, "old.txt")
+            },
+            visual,
+        );
+        std::fs::remove_file(root.join("report.pdf")).unwrap();
+        std::fs::remove_file(root.join("docs/data.csv")).unwrap();
+        settle(
+            &|v| !listed(v, "report.pdf") && !listed(v, "docs/data.csv"),
+            visual,
+        );
+        reader.read_with(visual, |v, _| {
+            assert!(listed(v, "external.md") && listed(v, "docs"));
+            assert_eq!(
+                v.loading.as_ref().unwrap().generation,
+                generation,
+                "attachment changes are applied without a full rescan"
+            );
+        });
+    }
+
     #[gpui::test]
     fn quick_upgrade_preserves_relative_image_and_viewport(cx: &mut TestAppContext) {
         check_quick_upgrade(cx, false);
