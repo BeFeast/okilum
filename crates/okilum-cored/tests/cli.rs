@@ -47,10 +47,20 @@ impl Sandbox {
 
     /// Every entry under the cwd other than the vault's own notes, sorted, so a
     /// stray directory created anywhere in the sandbox shows up by name.
-    fn strays(&self) -> Vec<String> {
+    ///
+    /// Entries stay `PathBuf`s and the expected ones are built with
+    /// `Path::join`, so the comparison is by path components and holds on
+    /// Windows, where `strip_prefix` yields `vault\demo.md`, not `vault/demo.md`.
+    fn strays(&self) -> Vec<PathBuf> {
+        let vault = Path::new("vault");
+        let expected = [
+            vault.to_path_buf(),
+            vault.join("demo.md"),
+            vault.join("alpha.md"),
+        ];
         let mut found = Vec::new();
         collect(&self.cwd, &self.cwd, &mut found);
-        found.retain(|p| !["vault", "vault/demo.md", "vault/alpha.md"].contains(&p.as_str()));
+        found.retain(|p| !expected.contains(p));
         found.sort();
         found
     }
@@ -62,11 +72,11 @@ fn write_vault(root: &Path) {
     fs::write(root.join("alpha.md"), "# Alpha\n\nback to [[demo]]\n").unwrap();
 }
 
-fn collect(base: &Path, dir: &Path, out: &mut Vec<String>) {
+fn collect(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         let rel = path.strip_prefix(base).unwrap();
-        out.push(rel.to_string_lossy().into_owned());
+        out.push(rel.to_path_buf());
         if path.is_dir() {
             collect(base, &path, out);
         }
@@ -92,7 +102,7 @@ fn assert_missing_value(sandbox: &Sandbox, output: &Output, flag: &str, untouche
         "must stop before scanning: {err}"
     );
     assert!(output.stdout.is_empty(), "nothing on stdout");
-    assert_eq!(sandbox.strays(), Vec::<String>::new(), "nothing created");
+    assert_eq!(sandbox.strays(), Vec::<PathBuf>::new(), "nothing created");
     for path in untouched {
         assert!(!path.exists(), "{} must not be created", path.display());
     }
@@ -112,6 +122,24 @@ fn assert_indexed(output: &Output, index_dir: &Path) {
             .is_some(),
         "{} must hold the built index",
         index_dir.display()
+    );
+}
+
+// Positive control for the "nothing created" check in `assert_missing_value`:
+// a fresh sandbox reports no strays, and directories a misparsed flag would
+// create, at the top level or inside the vault, are reported by name.
+#[test]
+fn strays_reports_only_entries_outside_the_vault_notes() {
+    let s = Sandbox::new();
+    assert_eq!(s.strays(), Vec::<PathBuf>::new());
+    fs::create_dir(s.cwd.join("--help")).unwrap();
+    fs::create_dir(s.vault.join(".okilum-index")).unwrap();
+    assert_eq!(
+        s.strays(),
+        vec![
+            PathBuf::from("--help"),
+            Path::new("vault").join(".okilum-index"),
+        ]
     );
 }
 
