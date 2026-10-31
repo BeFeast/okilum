@@ -12,6 +12,7 @@ type Result<T> = std::result::Result<T, GatewayError>;
 pub(super) struct Fake {
     pub revoked: bool,
     pub many_models: bool,
+    pub model_catalog: Mutex<Option<Capabilities>>,
     pub connection_status: Option<GatewayStatus>,
     pub wrong_project: bool,
     pub fail_first: bool,
@@ -143,6 +144,9 @@ impl ManagerGateway for Fake {
         Ok(vec!["question-1".into()])
     }
     fn capabilities(&self) -> Result<Capabilities> {
+        if let Some(catalog) = self.model_catalog.lock().unwrap().clone() {
+            return Ok(catalog);
+        }
         let mut models = vec![
             serde_json::json!({"id":"gpt-6.1-sol"}),
             serde_json::json!({"id":"gpt-6-astra"}),

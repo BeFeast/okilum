@@ -694,3 +694,83 @@ fn activity_preview_bounds_a_long_first_line_and_keeps_unicode_and_line_breaks()
         "🧠".repeat(120)
     );
 }
+
+#[gpui::test]
+fn prompt_history_uses_native_chronology_and_row_keys_across_id_retirement(
+    cx: &mut TestAppContext,
+) {
+    use super::super::composer::history::{self, Direction, Position};
+    use okilum_t3::projection::TurnRow;
+    let (view, visual, _temp) = fixture(cx, 0);
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    let key = |id: &str| RowKey {
+        thread: "mcp:history".into(),
+        item: id.into(),
+    };
+    let row = |id: &str, text: &str| {
+        Arc::new(TurnRow {
+            key: key(id),
+            local: true,
+            item: Arc::new(
+                serde_json::json!({"id":id,"type":"user_message","text":text,"status":"completed"}),
+            ),
+        })
+    };
+    feed.update(visual, |feed, cx| {
+        feed.apply_native(
+            NativeChanges {
+                // Allocation positions intentionally disagree with chronology.
+                rows: vec![
+                    row("newest", "same"),
+                    row("oldest", "older"),
+                    row("optimistic", "same"),
+                ],
+                order: Some(vec![key("oldest"), key("optimistic"), key("newest")]),
+                ..Default::default()
+            },
+            &[],
+            cx,
+        );
+    });
+    let before = feed.read_with(visual, |feed, _| feed.prompt_history());
+    assert_eq!(
+        before
+            .iter()
+            .map(|entry| entry.prompt.as_str())
+            .collect::<Vec<_>>(),
+        ["older", "same"]
+    );
+    assert_eq!(
+        before[1].id,
+        key("newest").element_id(),
+        "missing messageId must not become an allocation-slot identity"
+    );
+    feed.update(visual, |feed, cx| {
+        feed.apply_native(
+            NativeChanges {
+                rows: vec![row("acknowledged", "same")],
+                removed: vec![key("newest")],
+                order: Some(vec![key("oldest"), key("optimistic"), key("acknowledged")]),
+                ..Default::default()
+            },
+            &[],
+            cx,
+        );
+    });
+    let after = feed.read_with(visual, |feed, _| feed.prompt_history());
+    assert_eq!(after[1].id, key("acknowledged").element_id());
+    let step = history::step(
+        Direction::Backward,
+        &after,
+        Some(&Position {
+            entry_id: before[1].id.clone(),
+            recalled: "same".into(),
+        }),
+        "same",
+    )
+    .unwrap();
+    assert_eq!(
+        step.prompt, "older",
+        "retired ID resolves through newest identical prompt"
+    );
+}

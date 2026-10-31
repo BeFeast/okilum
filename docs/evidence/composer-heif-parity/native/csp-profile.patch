@@ -1,0 +1,11 @@
+--- /home/god/work/qa-evidence/composer-parity/heic-spike/native/sources/libheif-763bc8bb87788d64d39ece623ceed988de12dc5b/libheif/plugins/decoder_libde265.cc	2026-05-25 22:10:58.000000000 +0300
++++ /home/god/work/qa-evidence/composer-parity/heic-spike/native/sources/libheif-csp-profile/libheif/plugins/decoder_libde265.cc	2026-11-01 00:11:33.781395490 +0200
+@@ -178,7 +178,7 @@
+   heif_error err = {heif_error_Ok, heif_suberror_Unspecified, kSuccess};
+ 
+   decoder->ctx = de265_new_decoder();
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(OKILUM_HEIC_CSP_FILTER_PROFILE)
+   // Speed up decoding from JavaScript.
+   de265_set_parameter_bool(decoder->ctx, DE265_DECODER_PARAM_DISABLE_DEBLOCKING, 1);
+   de265_set_parameter_bool(decoder->ctx, DE265_DECODER_PARAM_DISABLE_SAO, 1);

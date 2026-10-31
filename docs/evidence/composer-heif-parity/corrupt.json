@@ -1,0 +1,110 @@
+[
+  {
+    "fixture": "empty",
+    "candidate": "heic-rs",
+    "error": "source limit rejected 0 bytes before read/decode",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0024,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "empty",
+    "candidate": "heic-decoder",
+    "error": "source limit rejected 0 bytes before read/decode",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0022,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-64",
+    "candidate": "heic-rs",
+    "error": "probe: truncated file: ran out of bytes reading box body",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0021,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-64",
+    "candidate": "heic-decoder",
+    "error": "probe: malformed ISOBMFF box: meta box out of bounds",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0021,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-8",
+    "candidate": "heic-rs",
+    "error": "probe: truncated file: ran out of bytes reading box body",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0021,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-8",
+    "candidate": "heic-decoder",
+    "error": "probe: not a HEIF/HEIC file: missing meta box",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0021,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "not-heif",
+    "candidate": "heic-rs",
+    "error": "probe: box ` is ` declares an implausible size of 1416128883 bytes",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0023,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "not-heif",
+    "candidate": "heic-decoder",
+    "error": "probe: not a HEIF/HEIC file: missing ftyp box",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0024,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "source-over-50MiB",
+    "candidate": "heic-rs",
+    "error": "source limit rejected 52428801 bytes before read/decode",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0024,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "source-over-50MiB",
+    "candidate": "heic-decoder",
+    "error": "source limit rejected 52428801 bytes before read/decode",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0025,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "truncated-half",
+    "candidate": "heic-rs",
+    "error": "decode: truncated file: ran out of bytes reading item extent in file",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0024,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "truncated-half",
+    "candidate": "heic-decoder",
+    "error": "probe: truncated input: needed 111554 more byte(s) at offset 343",
+    "status": "error",
+    "exit_code": 1,
+    "wall_seconds": 0.0024,
+    "gate": "PASS"
+  }
+]

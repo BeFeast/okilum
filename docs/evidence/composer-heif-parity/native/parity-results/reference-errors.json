@@ -1,0 +1,80 @@
+[
+  {
+    "fixture": "nokia-C013.heic",
+    "source_sha256": "433057d6ee4faf13490fd616921889eabd7194e9e1bea9748be7e941d880255e",
+    "timeout_seconds": 30,
+    "address_space_limit_bytes": 2147483648,
+    "T3-CSP-reference": {
+      "exit_code": 1,
+      "stdout": "Decoding image failed heif_image_handle {} {\n  code: ctor {},\n  subcode: ctor {},\n  message: 'Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 132496\\n'\n}\n{\"status\":\"error\",\"error\":\"Error: HEIF processing error\"}\n",
+      "stderr": "",
+      "wall_seconds": 0.737,
+      "rgba_exists": false,
+      "crash": false,
+      "timeout": false
+    },
+    "CSP-bounded-failclosed": {
+      "exit_code": 1,
+      "stdout": "{\"status\":\"error\",\"error\":\"decode: Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 132496\\n\"}\n",
+      "stderr": "",
+      "wall_seconds": 0.0137,
+      "rgba_exists": false,
+      "crash": false,
+      "timeout": false
+    },
+    "backend_matching_error_gate": "PASS",
+    "product_gui_visible_error": "NOT TESTED; requires later adapter/native UI acceptance"
+  },
+  {
+    "fixture": "nokia-MIAF007.heic",
+    "source_sha256": "370489520fd6f97dab4dbf2e81c1d77f9e19b0bfb28996245a2dc313af8ea81c",
+    "timeout_seconds": 30,
+    "address_space_limit_bytes": 2147483648,
+    "T3-CSP-reference": {
+      "exit_code": 1,
+      "stdout": "Decoding image failed heif_image_handle {} {\n  code: ctor {},\n  subcode: ctor {},\n  message: 'Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 298496\\n'\n}\n{\"status\":\"error\",\"error\":\"Error: HEIF processing error\"}\n",
+      "stderr": "",
+      "wall_seconds": 0.4108,
+      "rgba_exists": false,
+      "crash": false,
+      "timeout": false
+    },
+    "CSP-bounded-failclosed": {
+      "exit_code": 1,
+      "stdout": "{\"status\":\"error\",\"error\":\"decode: Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 298496\\n\"}\n",
+      "stderr": "",
+      "wall_seconds": 0.0071,
+      "rgba_exists": false,
+      "crash": false,
+      "timeout": false
+    },
+    "backend_matching_error_gate": "PASS",
+    "product_gui_visible_error": "NOT TESTED; requires later adapter/native UI acceptance"
+  },
+  {
+    "fixture": "clap_cropped.heic",
+    "source_sha256": "54c62d0cb9e3ee09537788f9af59fff245791a681a80a16b27da1c23488a8e29",
+    "timeout_seconds": 30,
+    "address_space_limit_bytes": 2147483648,
+    "T3-CSP-reference": {
+      "exit_code": 1,
+      "stdout": "Decoding image failed heif_image_handle {} {\n  code: ctor {},\n  subcode: ctor {},\n  message: 'Memory allocation error: Security limit exceeded: Image size 256x256 exceeds the maximum image size 16384\\n'\n}\n{\"status\":\"error\",\"error\":\"Error: HEIF processing error\"}\n",
+      "stderr": "",
+      "wall_seconds": 0.3978,
+      "rgba_exists": false,
+      "crash": false,
+      "timeout": false
+    },
+    "CSP-bounded-failclosed": {
+      "exit_code": 1,
+      "stdout": "{\"status\":\"error\",\"error\":\"decode: Memory allocation error: Security limit exceeded: Image size 256x256 exceeds the maximum image size 16384\\n\"}\n",
+      "stderr": "",
+      "wall_seconds": 0.0102,
+      "rgba_exists": false,
+      "crash": false,
+      "timeout": false
+    },
+    "backend_matching_error_gate": "PASS",
+    "product_gui_visible_error": "NOT TESTED; requires later adapter/native UI acceptance"
+  }
+]

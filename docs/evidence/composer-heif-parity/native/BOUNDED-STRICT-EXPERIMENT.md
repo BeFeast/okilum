@@ -1,0 +1,3 @@
+# Preregistered CSP-bounded-strict QA profile
+
+Retain CSP-bounded SPS guard and instrumentation exactly. Before measurements, enable supported heif_decoding_options.strict_decoding=1; inspect and reject every nonzero heif_image decoding warning count before output allocation/write. No upstream/plugin behavior change or pixel-tolerance relaxation. Re-run unchanged valid reference gate, finite corrupt controls, original-SPS+PPS small-ispe HEIF positive control and oversized in-band SPS+PPS negative control. Expected normal error before RGBA is necessary for corrupt negative control; if supported strict/warning policy cannot propagate error8, explicitly report failure. Existing profile reports/data unchanged. No adoption from partial evidence.

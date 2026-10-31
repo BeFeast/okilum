@@ -1,0 +1,42 @@
+--- a/libde265/sps.cc
++++ b/libde265/sps.cc
+@@ -248,6 +248,13 @@
+     return DE265_ERROR_CODED_PARAMETER_OUT_OF_RANGE;
+   }
+ 
++  // QA CSP-bounded profile: reject coded area before derived/frame allocations.
++  const uint64_t coded_pixels = uint64_t(pic_width_in_luma_samples) *
++                                uint64_t(pic_height_in_luma_samples);
++  if (coded_pixels > UINT64_C(64000000)) {
++    return DE265_ERROR_CODED_PARAMETER_OUT_OF_RANGE;
++  }
++
+   conformance_window_flag = get_bits(br,1);
+ 
+   if (conformance_window_flag) {
+@@ -509,6 +516,7 @@
+   MinCbSizeY = 1 << Log2MinCbSizeY;
+   CtbSizeY = 1 << Log2CtbSizeY;
+ 
++  fprintf(stderr, "QA_DERIVED_GEOMETRY %d %d\n", pic_width_in_luma_samples, pic_height_in_luma_samples);
+   PicWidthInMinCbsY = ceil_div(pic_width_in_luma_samples, MinCbSizeY);
+   PicWidthInCtbsY   = ceil_div(pic_width_in_luma_samples, CtbSizeY);
+   PicHeightInMinCbsY = ceil_div(pic_height_in_luma_samples, MinCbSizeY);
+--- a/libde265/image.cc
++++ b/libde265/image.cc
+@@ -23,6 +23,7 @@
+ #include "en265.h"
+ 
+ #include <stdlib.h>
++#include <stdio.h>
+ #include <string.h>
+ #include <assert.h>
+ 
+@@ -240,6 +241,7 @@
+                                      de265_PTS pts, void* user_data,
+                                      bool useCustomAllocFunc)
+ {
++  fprintf(stderr, "QA_FRAME_ALLOCATION %d %d\n", w, h);
+   //if (allocMetadata) { assert(sps); }
+   if (allocMetadata) { assert(sps); }
+ 

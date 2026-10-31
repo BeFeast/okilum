@@ -1,0 +1,3 @@
+{"status":"features","libheif":"1.22.2","libde265":"1.0.16","decoder_count":1,"encoder_count":0,"decoder":"libde265 HEVC decoder, version 1.0.16"}
+closure decoders=1 encoders=0
+decoder libde265 libde265 HEVC decoder, version 1.0.16

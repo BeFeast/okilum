@@ -200,7 +200,7 @@ fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread
     visual.run_until_parked();
     assert_eq!(
         visual.opened_url().as_deref(),
-        Some("t3code://app/#/actual-remote-env/mcp:fixture-manager")
+        Some("t3code://threads/actual-remote-env/mcp:fixture-manager")
     );
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<ProjectView>().unwrap()

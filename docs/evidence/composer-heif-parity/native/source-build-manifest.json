@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "experiment": "Linux static libheif/libde265 exact T3 CSP decode profile",
+  "scope": "QA only, no product integration",
+  "host": "baldr x86_64",
+  "gate_sha256": "f66dabe3863f9401b7fdadcfc13328ebd96a44959d9359e7cd398c7f255ed8d5",
+  "sources": [
+    {
+      "name": "libheif",
+      "version": "1.22.2",
+      "git_commit": "763bc8bb87788d64d39ece623ceed988de12dc5b",
+      "source_url": "https://codeload.github.com/strukturag/libheif/tar.gz/763bc8bb87788d64d39ece623ceed988de12dc5b",
+      "archive_sha256": "0a3559b557793d8d634d071ee7181af34f2b69b0d61cd48a0dcdbfe4ea79fc43",
+      "bytes": 2006398,
+      "status": "source-built in this experiment; see profiles, patches and closure evidence"
+    },
+    {
+      "name": "libde265",
+      "version": "1.0.16",
+      "git_commit": "7ba65889d3d6d8a0d99b5360b028243ba843be3a",
+      "source_url": "https://codeload.github.com/strukturag/libde265/tar.gz/7ba65889d3d6d8a0d99b5360b028243ba843be3a",
+      "archive_sha256": "9dedf12d5b5047c270d1fc54f5d92fc29d9ea21b94d3f2d998200258353189a0",
+      "bytes": 439851,
+      "status": "source-built in this experiment; see profiles, patches and closure evidence"
+    }
+  ],
+  "configuration": {
+    "codec_linkage": "static exact archives",
+    "encoder_count": 0,
+    "decoder_count": 1,
+    "decoder": "libde2651.0.16",
+    "plugin_loading": false,
+    "external_codecs": false,
+    "sharpyuv": false,
+    "source_cap_bytes": 52428800,
+    "context_max_image_size_pixels": 64000000,
+    "image_selection": "first top-level image ID, not primary",
+    "rgba": "interleaved RGBA8, transformations applied, default color options",
+    "threads": 1
+  },
+  "profiles": {
+    "stock": {
+      "quality": {
+        "FAIL": 9,
+        "UNKNOWN": 3
+      },
+      "filter_behavior": "upstream native default",
+      "common_patch": "decode-only-mask.patch"
+    },
+    "csp-profile": {
+      "quality": {
+        "PASS": 9,
+        "UNKNOWN": 3
+      },
+      "filter_behavior": "same existing branch as __EMSCRIPTEN__: deblocking and SAO disabled; explicit QA define only",
+      "common_patch": "decode-only-mask.patch",
+      "profile_patch": "csp-profile.patch"
+    }
+  },
+  "resource_gate": "NOT PROVEN: in-band SPS replacement can reach libde265 without application 64M area check",
+  "adoption": "NOT ACCEPTED; no Rust FFI/product integration route until remaining resource gate passes",
+  "corrupt_resource_controls": {
+    "stock": 8,
+    "csp-profile": 8,
+    "errors_without_abort_or_output": 16
+  },
+  "raw_outputs_host_path": "baldr:/home/god/work/qa-evidence/composer-parity/heic-spike/native/results",
+  "runtime_dynamic_dependencies": "standard C/C++ runtime only (see logs/*-ldd.txt, host-runtime.txt)",
+  "files": {
+    "build.sh": "b3879d944d91a2879e66247a517f7770fef1e4d095fd1e2b6e673e39350139e0",
+    "decode.cc": "951f7e5c7884d021b3a8069170bf019cda4dd562fb7abb770c1220ae1301f33e",
+    "decode-only-mask.patch": "4315a1ac0e76a70e7b27cae22d1f87842ec0412ff385f0a145c961ad4f41a22b",
+    "csp-profile.patch": "d121e8bdd1d13725c5e8c4ef04c9bbf3306301f775c5258c86c043b473848529",
+    "csp-decoder_libde265.cc": "a692b92dd576b4e02bc022d3c9005f6435eac838025287509be1d7552c11c145",
+    "EXPERIMENT.md": "bd7ea6723a22519ab26c14f62ec02ee82af6150dc345216314685a07f48fdd63",
+    "RESOURCE-PATH.md": "322dfd45d6ec1c9caf7cc3c2021c776243ee631963c518fbb530d1b88d8e2972",
+    "measure-native.py": "8aed113adc722374f5ee42b5248aa968285309dba02b7505d68350e27386039c",
+    "stock-CMakeCache.txt": "6a6339d6b9df416fe90d0ef666f588d7fb048d6085700fe6701b7d48c3e5f85b",
+    "csp-profile-CMakeCache.txt": "3f5dac38c278582063d56afe95bae816db21bdb9fee2ed8d3dd3811aa079bba1",
+    "REPORT.md": "86b8c1edf55c0b9eba7c9bc243a68264ed5a6e3d2f256f7de213e09f99db9602"
+  }
+}

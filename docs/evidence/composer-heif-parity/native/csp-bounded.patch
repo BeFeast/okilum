@@ -1,0 +1,16 @@
+--- a/libde265/sps.cc
++++ b/libde265/sps.cc
+@@ -248,6 +248,13 @@
+     return DE265_ERROR_CODED_PARAMETER_OUT_OF_RANGE;
+   }
+ 
++  // QA CSP-bounded profile: reject coded area before derived/frame allocations.
++  const uint64_t coded_pixels = uint64_t(pic_width_in_luma_samples) *
++                                uint64_t(pic_height_in_luma_samples);
++  if (coded_pixels > UINT64_C(64000000)) {
++    return DE265_ERROR_CODED_PARAMETER_OUT_OF_RANGE;
++  }
++
+   conformance_window_flag = get_bits(br,1);
+ 
+   if (conformance_window_flag) {

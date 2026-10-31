@@ -156,8 +156,8 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
     let dropdown = visual
         .debug_bounds("project-model-panel")
         .expect("model dropdown");
-    assert!(dropdown.size.width <= px(272.));
-    assert!(dropdown.size.height <= px(320.));
+    assert!(dropdown.size.width <= px(440.));
+    assert!(dropdown.size.height <= px(360.));
     assert_eq!(
         visual.debug_bounds("project-chat-history"),
         Some(history_before),
@@ -181,8 +181,8 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
         "model names share a left edge regardless of label width"
     );
     assert!(
-        first_label.origin.x - dropdown.origin.x < px(40.),
-        "model names must align near the dropdown's left edge"
+        first_label.origin.x - dropdown.origin.x < px(180.),
+        "model names must align inside the provider rail"
     );
     assert!(
         gateway.model_writes.lock().unwrap().is_empty(),
@@ -193,13 +193,13 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
         .expect("model from live catalog");
     visual.simulate_click(alternative.center(), Modifiers::default());
     visual.run_until_parked();
-    assert!(
-        gateway.model_writes.lock().unwrap().is_empty(),
-        "selection requires explicit Apply"
+    assert_eq!(
+        gateway.model_writes.lock().unwrap().len(),
+        1,
+        "a click selects without Apply"
     );
-    let apply = visual.debug_bounds("project-model-apply").unwrap();
-    visual.simulate_click(apply.center(), Modifiers::default());
-    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-model-panel").is_none());
+    assert!(visual.debug_bounds("project-model-apply").is_none());
     view.read_with(visual, |view, cx| {
         assert_eq!(
             view.models
@@ -220,11 +220,11 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
         code: "capability_denied".into(),
         message: "Cannot configure full-access thread".into(),
     });
+    let trigger = visual.debug_bounds("project-manager-model").unwrap();
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.run_until_parked();
     let original = visual.debug_bounds("project-model-choice-0").unwrap();
     visual.simulate_click(original.center(), Modifiers::default());
-    visual.run_until_parked();
-    let apply = visual.debug_bounds("project-model-apply").unwrap();
-    visual.simulate_click(apply.center(), Modifiers::default());
     visual.run_until_parked();
     view.read_with(visual, |view, cx| {
         assert!(view

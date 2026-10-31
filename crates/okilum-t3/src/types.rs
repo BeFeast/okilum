@@ -14,18 +14,14 @@ pub struct ServerIdentity {
 
 impl ServerIdentity {
     pub fn thread_url(&self, thread_id: &str) -> String {
-        // The desktop renderer uses the same environment/thread hash route as
-        // its app entry. Encode each segment before placing it in the fragment:
-        // slashes, hashes and queries inside IDs must never become navigation.
-        let mut route = url::Url::parse("https://route.invalid/").unwrap();
-        route
-            .path_segments_mut()
+        // Upstream promptLinkAppPath accepts the threads host. Encode each ID
+        // as a path segment; app/# is the renderer URL, not an external link.
+        let mut url = url::Url::parse("t3code://threads/").unwrap();
+        url.path_segments_mut()
             .unwrap()
             .pop_if_empty()
             .push(&self.environment_id)
             .push(thread_id);
-        let mut url = url::Url::parse("t3code://app/").unwrap();
-        url.set_fragment(Some(route.path()));
         url.into()
     }
 }
@@ -403,23 +399,20 @@ mod tests {
 mod desktop_link_tests {
     use super::*;
     #[test]
-    fn desktop_app_hash_route_preserves_thread_identity() {
+    fn upstream_desktop_threads_route_preserves_thread_identity() {
         let identity = ServerIdentity {
             environment_id: "remote-env".into(),
             label: "remote".into(),
         };
         assert_eq!(
             identity.thread_url("mcp:launch:abc"),
-            "t3code://app/#/remote-env/mcp:launch:abc"
+            "t3code://threads/remote-env/mcp:launch:abc"
         );
         let url = url::Url::parse(&identity.thread_url("thread/with ?#% Ю")).unwrap();
         assert_eq!(url.scheme(), "t3code");
-        assert_eq!(url.host_str(), Some("app"));
-        assert_eq!(url.path(), "/");
+        assert_eq!(url.host_str(), Some("threads"));
+        assert!(url.fragment().is_none());
         assert!(url.query().is_none());
-        assert_eq!(
-            url.fragment(),
-            Some("/remote-env/thread%2Fwith%20%3F%23%25%20%D0%AE")
-        );
+        assert_eq!(url.path(), "/remote-env/thread%2Fwith%20%3F%23%25%20%D0%AE");
     }
 }

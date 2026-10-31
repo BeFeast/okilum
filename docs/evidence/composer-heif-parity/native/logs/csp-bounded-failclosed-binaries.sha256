@@ -1,0 +1,4 @@
+b2a166166dcf74e9d950c69a16fee73fb424d1960a804bf0a360e06709263347  /home/god/work/qa-evidence/composer-parity/heic-spike/native/decode-csp-bounded-failclosed
+6e23630606e22cf22ccbc4a953b6d49c89ede820e38fa1da42d66b6e36373db7  /home/god/work/qa-evidence/composer-parity/heic-spike/native/prefix/csp-bounded-failclosed/lib/libheif.a
+ac971b377500440d6517f52c8ee4e5833413103ba0c52d29fddef55a37ad1097  /home/god/work/qa-evidence/composer-parity/heic-spike/native/prefix/de265-csp-bounded/lib/libde265.a
+5959915f744cded22bfe8cae334fa7281224a24d8ac463630e32d61b8cb70f99  /home/god/work/qa-evidence/composer-parity/heic-spike/native/sources/libheif-csp-bounded-failclosed/libheif/plugins/decoder_libde265.cc

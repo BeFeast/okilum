@@ -86,6 +86,7 @@ pub(crate) struct ProjectView {
     executors: Option<okilum_t3::executors::Snapshot>,
     executors_error: Option<String>,
     model_target: Option<okilum_t3::models::Target>,
+    model_ui: models::PickerUi,
     models: Option<okilum_t3::models::Snapshot>,
     model_candidate: Option<okilum_t3::ModelSelection>,
     model_error: Option<String>,
@@ -272,7 +273,11 @@ impl ProjectView {
         #[cfg(target_os = "linux")]
         let feed = cx.new(|cx| feed::Feed::new(parent, cx));
         #[cfg(target_os = "linux")]
-        let composer = cx.new(|cx| composer::Composer::new(compose.clone(), cx));
+        let composer = cx.new(|cx| {
+            let mut composer = composer::Composer::new(compose.clone(), cx);
+            composer.bind_history(feed.clone());
+            composer
+        });
         #[cfg(target_os = "linux")]
         let native = native::Native::new(window, cx);
         #[cfg(target_os = "linux")]
@@ -293,6 +298,15 @@ impl ProjectView {
                 this.attachment_request(request, window, cx)
             },
         );
+        #[cfg(target_os = "linux")]
+        cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, _: &composer::HistoryRecalled, window, cx| {
+                this.draft_changed(window, cx);
+            },
+        )
+        .detach();
         let weak = cx.weak_entity();
         let connection =
             window.observe_global::<reader_t3_settings::Connection>(cx, move |window, cx| {
@@ -347,6 +361,7 @@ impl ProjectView {
             executors: None,
             executors_error: None,
             model_target: None,
+            model_ui: Default::default(),
             models: None,
             model_candidate: None,
             model_error: None,
@@ -480,6 +495,7 @@ impl ProjectView {
                 #[cfg(target_os = "linux")]
                 self.draft_prepare_identity(window, cx);
                 self.model_target = None;
+                self.model_ui = Default::default();
                 self.model_open = false;
                 self.model_busy = false;
                 self.models = None;
@@ -510,6 +526,7 @@ impl ProjectView {
         self.opening_t3 = false;
         self.last_poll_status = None;
         self.model_target = None;
+        self.model_ui = Default::default();
         self.model_open = false;
         self.model_busy = false;
         self.models = None;
@@ -1195,6 +1212,7 @@ impl ProjectView {
             self.composer.update(cx, |composer, cx| {
                 composer.set_native(self.native.active(), can_steer, cx);
                 composer.set_attachments(has_attachments, can_attach, cx);
+                composer.set_history_blocked(_pending > 0);
                 composer.set_controls(enabled && native_ready, self.busy, cx)
             });
             div()

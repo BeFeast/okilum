@@ -125,6 +125,32 @@ impl Feed {
             render_calls: std::cell::Cell::new(0),
         }
     }
+    /// Sent user prompts in chronological projection order. Native positions
+    /// are allocation slots, not chronology; their RowKey element IDs survive
+    /// pagination and updates independently of optional messageId receipts.
+    pub(super) fn prompt_history(&self) -> Vec<super::composer::history::Entry> {
+        let ordered: Vec<_> = self.native_order.as_ref().map_or_else(
+            || self.messages.keys().copied().collect(),
+            |order| order.clone(),
+        );
+        super::composer::history::build_entries(ordered.into_iter().filter_map(|position| {
+            let message = self.messages.get(&position)?;
+            (message.user && matches!(message.kind, MessageKind::Chat)).then_some(
+                super::composer::history::Message {
+                    id: &message.source_id,
+                    role: "user",
+                    text: message.text.as_str(),
+                },
+            )
+        }))
+    }
+
+    pub(super) fn history_has_requests(&self, cx: &App) -> bool {
+        self.actions
+            .as_ref()
+            .is_some_and(|actions| !actions.read(cx).state.requests.is_empty())
+    }
+
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
         self.request_cards.clear();
         self.messages.clear();

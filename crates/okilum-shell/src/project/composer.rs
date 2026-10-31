@@ -1,5 +1,6 @@
 //! Linux composer invalidates its own controls, never the history entity.
 use super::*;
+pub(super) mod history;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
@@ -9,6 +10,8 @@ pub(super) enum Mode {
 }
 pub(super) struct SendRequested;
 impl EventEmitter<SendRequested> for Composer {}
+pub(super) struct HistoryRecalled;
+impl EventEmitter<HistoryRecalled> for Composer {}
 pub(super) enum AttachmentRequested {
     Choose,
     Paths(Vec<PathBuf>),
@@ -25,6 +28,9 @@ pub(super) struct Composer {
     busy: bool,
     has_attachments: bool,
     can_attach: bool,
+    history_feed: Option<Entity<feed::Feed>>,
+    history_position: Option<history::Position>,
+    history_blocked: bool,
     _input: Subscription,
 }
 impl Composer {
@@ -55,8 +61,81 @@ impl Composer {
             busy: false,
             has_attachments: false,
             can_attach: false,
+            history_feed: None,
+            history_position: None,
+            history_blocked: false,
             _input: subscription,
         }
+    }
+    pub(super) fn bind_history(&mut self, feed: Entity<feed::Feed>) {
+        self.history_feed = Some(feed);
+    }
+    pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+        if self.history_position.take().is_some() {
+            cx.notify();
+        }
+    }
+    pub(super) fn set_history_blocked(&mut self, blocked: bool) {
+        self.history_blocked = blocked;
+    }
+    fn navigate_history(
+        &mut self,
+        direction: history::Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = window.modifiers();
+        if modifiers.shift
+            || modifiers.alt
+            || modifiers.control
+            || modifiers.platform
+            || modifiers.function
+        {
+            return false;
+        }
+        let Some(feed) = &self.history_feed else {
+            return false;
+        };
+        let input = self.input.read(cx);
+        if self.history_blocked
+            || self.has_attachments
+            || feed.read(cx).history_has_requests(cx)
+            || !input.focus_handle(cx).is_focused(window)
+            || input.presentation().is_disabled()
+            || !input.is_editable()
+            || input.ime_settling(cx)
+            || input.completion_active(cx)
+            || !input.selected_range().is_empty()
+        {
+            return false;
+        }
+        let prompt = input.value().to_string();
+        // Avoid both a layout read and a history rebuild for ordinary typing.
+        if self.history_position.is_none() && !prompt.is_empty() {
+            return false;
+        }
+        if !input.is_caret_on_visual_edge(direction == history::Direction::Forward) {
+            return false;
+        }
+        let entries = feed.read(cx).prompt_history();
+        let Some(step) =
+            history::step(direction, &entries, self.history_position.as_ref(), &prompt)
+        else {
+            return false;
+        };
+        self.history_position = step.position;
+        self.input.update(cx, |input, cx| {
+            let end = step.prompt.len();
+            input.set_value(step.prompt, window, cx);
+            input.set_selected_range(end..end, cx);
+        });
+        // Programmatic set_value deliberately emits no InputEvent. Publish one
+        // explicit recall event so the parent's existing draft writer captures
+        // it, without teaching durable draft storage about history position.
+        cx.emit(HistoryRecalled);
+        cx.stop_propagation();
+        cx.notify();
+        true
     }
     fn prompt_validation(&self, cx: &App) -> Option<String> {
         self.native
@@ -128,6 +207,20 @@ impl Render for Composer {
             .relative()
             .w_full()
             .gap_1()
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::MoveUp, window, cx| {
+                    if !this.navigate_history(history::Direction::Backward, window, cx) {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::MoveDown, window, cx| {
+                    if !this.navigate_history(history::Direction::Forward, window, cx) {
+                        cx.propagate();
+                    }
+                }),
+            )
             // Textarea propagates submit-on-enter. Consume that action here so
             // the platform input fallback cannot insert a newline before send.
             .on_action(|_: &gpui_component::input::Enter, _, _| {})
@@ -396,5 +489,270 @@ mod tests {
             1,
             "positive control: the boundary prompt dispatches once"
         );
+    }
+    #[gpui::test]
+    fn prompt_history_keys_preserve_typed_selected_attached_and_modified_input(
+        cx: &mut TestAppContext,
+    ) {
+        use okilum_t3::projection::{Changes, RowKey, TurnRow};
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let mut project = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = super::super::fixture::view(
+                    temp.path().to_owned(),
+                    Arc::new(super::super::fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                view.active = false;
+                view.compose.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                    input.focus(window, cx);
+                });
+                view
+            });
+            let composer = view.read(cx).composer.clone();
+            project = Some(view);
+            Root::new(composer, window, cx)
+        });
+        let project = project.unwrap();
+        let composer = project.read_with(visual, |view, _| view.composer.clone());
+        project.update(visual, |view, cx| view.feed.update(cx, |feed, cx| {
+            let key = |id: &str| RowKey { thread: "history".into(), item: id.into() };
+            let row = |id: &str, text: &str| Arc::new(TurnRow { key: key(id), local: true, item: Arc::new(serde_json::json!({"id":id,"type":"user_message","text":text,"status":"completed"})) });
+            feed.apply_native(Changes { rows: vec![row("first", "first"), row("last", "second")], order: Some(vec![key("first"), key("last")]), ..Default::default() }, &[], cx);
+        }));
+        visual.simulate_resize(size(px(600.), px(600.)));
+        visual.run_until_parked();
+        composer.update_in(visual, |composer, window, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.focus(window, cx))
+        });
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(
+                composer
+                    .history_feed
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .prompt_history()
+                    .len(),
+                2,
+                "positive control: visible thread has two recallable user prompts"
+            );
+            assert!(
+                composer.input.read(cx).is_caret_on_visual_edge(false),
+                "positive control: empty input is on its top visual edge"
+            );
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(
+                composer.input.read(cx).value().as_str(),
+                "second",
+                "positive control: unmodified Up recalled the latest prompt"
+            )
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), "first")
+        });
+        visual.simulate_keystrokes("down");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("down");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert!(composer.input.read(cx).value().is_empty())
+        });
+        // Any modifier is native caret/selection navigation, never recall.
+        for key in ["shift-up", "ctrl-up", "alt-up", "cmd-up"] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            composer.read_with(visual, |composer, cx| {
+                assert!(
+                    composer.input.read(cx).value().is_empty(),
+                    "{key} recalled text"
+                )
+            });
+        }
+        composer.update_in(visual, |composer, window, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.set_value("typed", window, cx));
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), "typed")
+        });
+        composer.update_in(visual, |composer, window, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            composer.set_attachments(true, true, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert!(composer.input.read(cx).value().is_empty())
+        });
+        composer.update(visual, |composer, cx| {
+            composer.set_attachments(false, true, cx);
+            composer.set_history_blocked(true);
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert!(
+                composer.input.read(cx).value().is_empty(),
+                "pending question must block recall"
+            )
+        });
+        composer.update(visual, |composer, _| composer.set_history_blocked(false));
+        project.update(visual, |view, cx| {
+            view.native.actions.update(cx, |actions, _| {
+                actions.state.requests.push(okilum_t3::actions::Request {
+                    id: "pending".into(),
+                    item: serde_json::json!({"type":"approval_request"}),
+                    answerable: true,
+                    dismissible: false,
+                    response_mode: Some("live".into()),
+                    reason: None,
+                });
+            })
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert!(
+                composer.input.read(cx).value().is_empty(),
+                "live native approval blocks recall without waiting for a parent render"
+            )
+        });
+        project.update(visual, |view, cx| {
+            view.native
+                .actions
+                .update(cx, |actions, _| actions.state.requests.clear())
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.update(visual, |composer, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.set_selected_range(0..3, cx))
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(
+                composer.input.read(cx).value().as_str(),
+                "second",
+                "selected recall must not be replaced with older text"
+            )
+        });
+    }
+    #[gpui::test]
+    fn prompt_history_respects_soft_wrap_then_uses_resized_visual_edges(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler as _;
+        use okilum_t3::projection::{Changes, RowKey, TurnRow};
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let long = "one two three four five six seven eight nine ten ".repeat(3);
+        let mut project = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = super::super::fixture::view(
+                    temp.path().to_owned(),
+                    Arc::new(super::super::fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                view.active = false;
+                view.compose.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                    input.focus(window, cx);
+                });
+                view
+            });
+            let composer = view.read(cx).composer.clone();
+            project = Some(view);
+            Root::new(composer, window, cx)
+        });
+        let project = project.unwrap();
+        let composer = project.read_with(visual, |view, _| view.composer.clone());
+        project.update(visual, |view, cx| view.feed.update(cx, |feed, cx| {
+            let key = |id: &str| RowKey { thread: "wrap-history".into(), item: id.into() };
+            let row = |id: &str, text: &str| Arc::new(TurnRow { key: key(id), local: true, item: Arc::new(serde_json::json!({"id":id,"type":"user_message","text":text,"status":"completed"})) });
+            feed.apply_native(Changes { rows: vec![row("first", "first"), row("last", &long)], order: Some(vec![key("first"), key("last")]), ..Default::default() }, &[], cx);
+        }));
+        visual.simulate_resize(size(px(260.), px(600.)));
+        visual.run_until_parked();
+        composer.update_in(visual, |composer, window, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.focus(window, cx))
+        });
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert!(
+                composer.input.read(cx).is_caret_on_visual_edge(false),
+                "positive control: empty input is on its top edge before recall"
+            )
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), long.trim());
+            assert!(
+                !composer.input.read(cx).is_caret_on_visual_edge(false),
+                "positive control: recalled prompt ends below its first visual row"
+            );
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(
+                composer.input.read(cx).value().as_str(),
+                long.trim(),
+                "Up inside a wrapped prompt moves the caret instead of replacing text"
+            )
+        });
+        visual.simulate_resize(size(px(4000.), px(600.)));
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert!(
+                composer.input.read(cx).is_caret_on_visual_edge(false),
+                "positive control: wide resize puts the same caret on the first row"
+            )
+        });
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), "first")
+        });
+        composer.update_in(visual, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(0..5), "first", Some(5..5), window, cx);
+            })
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("down");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(
+                composer.input.read(cx).value().as_str(),
+                "first",
+                "IME candidate navigation must not recall a newer prompt"
+            )
+        });
     }
 }
