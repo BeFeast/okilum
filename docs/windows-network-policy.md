@@ -26,11 +26,13 @@ direct loopback transports must retain their distinct trust boundaries.
 
 Existing remote-log request/auth/redirect/cancellation fixtures also assert the
 production client's User-Agent and safe HTTP 407 response. Shared builder tests
-cover real async requests and no-follow behavior. Windows acceptance must use the
+cover real async requests and no-follow behavior. Corporate-network acceptance in the nightly full gate should extend the
 existing isolated hosted TLS/root/static-proxy/PAC fixture with both negative
 (untrusted CA and bundled-root/direct legacy) and positive controls and retained
 CONNECT receipts. Crate-only core Windows tests must use the production builder.
-No hosted evidence or installed-network acceptance is claimed by this design.
+No hosted TLS-inspection or installed-network acceptance is claimed by these
+unit tests. Under the 31 October process v2, this networking-only change has no
+extra pre-merge native attempt; full/native checks belong to the Stable night.
 Under the current networking-only scope there is no VM 150 install/update gate.
 
 Future slices decide per-request proxy refresh for multi-origin clients,
