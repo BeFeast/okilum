@@ -66,7 +66,10 @@ impl Feed {
     pub(super) fn load_detail(&mut self, position: u64, cx: &mut Context<Self>) {
         // Projection application and disclosure may run inside the parent's
         // update. Read its client only after that borrow has been released.
-        cx.defer(move |this, cx| this.load_detail_now(position, cx));
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = this.update(cx, |this, cx| this.load_detail_now(position, cx));
+        });
     }
 
     fn load_detail_now(&mut self, position: u64, cx: &mut Context<Self>) {

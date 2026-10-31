@@ -34,6 +34,10 @@ pub(super) struct Native {
     metadata: Metadata,
 }
 impl Native {
+    #[cfg(test)]
+    pub(super) fn set_detail_test_client(&mut self, client: Arc<NativeClient>) {
+        self.client = Some(client);
+    }
     pub(super) fn new(window: &mut Window, cx: &mut Context<ProjectView>) -> Self {
         let parent = cx.entity().downgrade();
         let actions = cx.new(|_| actions::Actions::new(parent));

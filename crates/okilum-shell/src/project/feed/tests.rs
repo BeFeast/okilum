@@ -629,7 +629,7 @@ fn disclosure_fetches_full_output_from_the_inherited_source_item(cx: &mut TestAp
     let feed = view.read_with(visual, |view, _| view.feed.clone());
     view.update(visual, |view, _| {
         view.environment = Some(env);
-        view.native.client = Some(client);
+        view.native.set_detail_test_client(client);
     });
     let key = RowKey {
         thread: "inherited-source".into(),
