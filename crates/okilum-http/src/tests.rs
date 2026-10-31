@@ -149,3 +149,44 @@ fn two_transport_failures_stop_after_the_alternate() {
     assert!(result.is_err());
     assert_eq!(attempts, ["primary", "alternate"]);
 }
+
+#[test]
+fn async_builder_preserves_no_redirect_and_user_agent_with_tighter_timeouts() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/kibana", listener.local_addr().unwrap());
+    let task = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        // Following this redirect would fail the request instead of returning302.
+        stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/never-follow\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        String::from_utf8(request).unwrap()
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let response = async_builder(&endpoint, "slice1", Duration::from_secs(10))
+            .unwrap()
+            .connect_timeout(Duration::from_secs(3))
+            .build()
+            .unwrap()
+            .get(&endpoint)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 302);
+    });
+    let request = task.join().unwrap().to_ascii_lowercase();
+    assert!(request.starts_with("get /kibana "));
+    assert!(request.contains("user-agent: okilum/slice1 ("));
+    assert!(async_builder("file:///private", "test", Duration::from_secs(1)).is_err());
+}

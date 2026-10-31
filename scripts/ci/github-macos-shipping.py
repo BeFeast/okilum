@@ -17,8 +17,8 @@ STEP = 'Build, sign and notarize exact product source'
 
 def identity(env):
     if (env.get('GITHUB_REF') != 'refs/heads/main'
-            or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
-        raise ValueError('Hosted shipping artifacts require a manual trusted main run')
+            or env.get('GITHUB_EVENT_NAME') not in ('workflow_dispatch', 'push')):
+        raise ValueError('Hosted shipping artifacts require a trusted main push or manual run')
     if env.get('GITHUB_RUN_ATTEMPT') != '1':
         raise ValueError('Shipping producer reruns are forbidden')
     source = env.get('PRODUCT_SOURCE', '')
@@ -49,8 +49,23 @@ def main():
     api = bridge.GitHub()
     api.log_quota()
     remote = api.request('git/ref/heads/main')
-    if remote['object']['sha'] != tooling:
-        raise ValueError('Mirror main is not the reviewed workflow SHA; no dispatch')
+    # Push and mirror run independently. Wait only for the trusted mirror,
+    # accepting newer tooling solely when it is also on Forgejo main.
+    mirror_deadline = time.monotonic() + 120
+    while remote['object']['sha'] != tooling:
+        candidate = remote['object']['sha']
+        if not re.fullmatch('[0-9a-f]{40}', candidate):
+            raise ValueError('Invalid mirror main identity')
+        subprocess.run(['git', 'fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main'], check=True)
+        trusted = subprocess.run(['git', 'merge-base', '--is-ancestor', candidate, 'origin/main']).returncode == 0
+        contains_source = subprocess.run(['git', 'merge-base', '--is-ancestor', source, candidate]).returncode == 0
+        if trusted and contains_source:
+            tooling = candidate
+            break
+        if time.monotonic() >= mirror_deadline:
+            raise ValueError('Mirror has not reached the trusted product source; no dispatch')
+        time.sleep(5)
+        remote = api.request('git/ref/heads/main')
     label = f"Mac shipping Forgejo {os.environ['GITHUB_RUN_ID']} attempt {os.environ['GITHUB_RUN_ATTEMPT']}"
     data = {'ref': 'main', 'inputs': {'source': source, 'build': build,
             'producer': os.environ['GITHUB_RUN_ID'], 'producer_number': os.environ['GITHUB_RUN_NUMBER'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
@@ -83,6 +98,20 @@ def main():
                 print(json.dumps({'event': 'signed_artifact_available', 'source': source,
                                   'workflow_sha': tooling, 'build': build, 'run': run['html_url'],
                                   'artifact': matches[0], 'publication': 'NONE; QA download only'}))
+                if os.environ.get('GITHUB_EVENT_NAME') == 'push':
+                    import sys
+                    sys.path.insert(0, str(Path(__file__).parents[1] / 'releases'))
+                    import appimage_artifact
+                    import macos_hosted_handoff
+                    from sparkle_sign import sign_archive
+                    destination = Path(os.environ['RUNNER_TEMP']) / 'publish'
+                    data = appimage_artifact.download(api.token, matches[0]['id'])
+                    metadata = macos_hosted_handoff.stage(data, matches[0], source, tooling,
+                        build, os.environ['GITHUB_RUN_ID'], run['id'], destination)
+                    metadata['SIGNATURE'] = sign_archive(destination / metadata['archive'],
+                        os.environ['SPARKLE_ED_PRIVATE_KEY'])
+                    (destination / 'release.json').write_text(json.dumps(metadata))
+                    print('Hosted signed Mac payload ready for protected beta publication')
                 return
         time.sleep(bridge.poll_delay())
     raise TimeoutError('Hosted shipping deadline; no cancel/retry/fallback')

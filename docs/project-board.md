@@ -1,5 +1,14 @@
 # Native project Board (#1767, #1859)
 
+The optional [delivery projection](board-delivery.md) (#1768) joins explicit
+platform/channel feeds, exact source/build inclusion and build-scoped scenario /
+human evidence. It adds a compact summary without restoring the removed stage
+header, and never publishes, installs or accepts a build.
+
+The optional [project-note context](board-context.md) (#1769) adds explicit
+attention, decisions and exact-build try notes, plus collapsed next-stage context.
+Current stage outcome/scope stays in linked notes, preserving #1795.
+
 The accepted Sprint Board UI and shared model now use the compatible Area
 manifest readers. Its live status remains a projection; explicit in-app Board
 authoring is described below. Editing a card never changes its Forgejo issue or
@@ -309,3 +318,13 @@ separate contract; a valid cookie alone does not satisfy the orchestration schem
 A TCP regression rejects the previous header-less request with 400 and accepts
 the real client with the required header and same cookie. An authenticated native
 server reproduction is separate; no cookie/token is copied for this diagnosis.
+
+## Local empty Boards (#2033 slice 1)
+
+Goal and Repository are now optional when creating a Board. An unbound Board
+shows a quiet Local Board state with inactive PR/CI links; add Repository in
+Manage board → Board details later. Explicitly supplied URLs retain validation
+and known-project matching. A bound repository cannot be retargeted. No executor
+or stage is required to create the empty Board. Local cards use an independent
+sidecar and draft-only discussion; verified local Manager launch follows
+separately. See [local project start](local-project-start.md).

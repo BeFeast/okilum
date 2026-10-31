@@ -32,6 +32,8 @@ impl Availability {
 #[derive(Default)]
 struct Entries {
     rows: Vec<(PathBuf, Availability)>,
+    inline_actions: Vec<SidebarAction>,
+    show_hidden: bool,
     loaded: bool,
     removing: std::collections::BTreeSet<PathBuf>,
     error: Option<String>,
@@ -45,10 +47,16 @@ type Model = Rc<RefCell<Entries>>;
 pub(super) fn menu(
     menu: PopupMenu,
     reader: WeakEntity<Reader>,
+    inline_actions: &[SidebarAction],
+    show_hidden: bool,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    let model = Model::default();
+    let model = Rc::new(RefCell::new(Entries {
+        inline_actions: inline_actions.to_vec(),
+        show_hidden,
+        ..Entries::default()
+    }));
     let directory = reader
         .upgrade()
         .and_then(|reader| reader.read(cx).session_directory.clone());
@@ -223,6 +231,8 @@ fn populate(
             }),
         );
     }
+    let inline_actions = state.inline_actions.clone();
+    let show_hidden = state.show_hidden;
     drop(state);
     let reveal = current.clone();
     let settings_reader = reader.clone();
@@ -242,6 +252,19 @@ fn populate(
                 reader_settings::show_vault(Some(settings_reader.clone()), cx)
             }),
         );
+    }
+    // Keep the header actions when asynchronous vault availability/removal
+    // rebuilds this menu; inline sidebar modes occupy their former slots.
+    if !inline_actions.is_empty() {
+        menu = inline_actions
+            .iter()
+            .fold(menu.separator(), |menu, &action| {
+                menu.item(
+                    PopupMenuItem::new(action.label())
+                        .checked(action == SidebarAction::ShowHidden && show_hidden)
+                        .on_click(sidebar_action_click(reader.clone(), action)),
+                )
+            });
     }
     menu
 }

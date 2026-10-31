@@ -53,6 +53,12 @@ color emoji fallback keep their existing typography.
 
 ## 1. What Okilum is
 
+**Second brain module (#1927 / #2091, Oleg 2026-10-31):** [Now and Tree](now-sidebar.md)
+keeps Tree as the initial sidebar in every vault, with Now visible alongside it.
+Now is explicitly enabled by the user; link-rich or daily-note vaults receive
+one remembered inline offer. Saved manual choices and the existing Tree state
+survive switching. No note metadata changes are required.
+
 **Image import (#1743, 2026-10-29):** [WebP image paste and import](image-import.md)
 defines app-wide conversion, quality and optional original retention, with
 native disk/link/Undo acceptance before merge. JPEG XL remains separate.
@@ -72,6 +78,12 @@ Explicit manager creation retains launch intent and revision-aware registry writ
 **Project Board and compatible Area manifests (2026-10-27/29, #1767, #1859):**
 [Native project Board](project-board.md) adds an explicitly bound read-only stage
 projection in the center, related-note navigation and draft-only Manager context.
+[Board delivery](board-delivery.md) adds an optional read-only platform/channel
+summary with exact build/source, independent source health, linked scenarios and
+explicit human evidence. Publication, installation and acceptance remain separate.
+[Project-note context](board-context.md) adds attention, decisions and exact-build
+try notes with draft-only discussion and collapsed next-stage context; current
+stage outcome/scope remains in linked notes (Oleg, 2026-10-30).
 [TOML manifests](area-manifests.md) prefer TOML with absence-only legacy YAML
 fallback. Invalid cards retain precise visible diagnostics beside healthy cards.
 Delivery/human acceptance and execution mutations remain separate.
@@ -93,6 +105,14 @@ Product pillars, in the order they will be defended when they conflict:
 4. A transparent knowledge layer: raw → wiki → indexes → cited traversal. Vector and
    semantic retrieval only on measured need.
 5. A safe multi-device story.
+
+**Local project onboarding (#2033, path A, Oleg 2026-10-30):**
+[Local project start](local-project-start.md) lets any ordinary vault folder,
+including its root, become a local project and create an empty Board without
+mandatory goal/repository/executor/stage. Local cards use a separate portable
+TOML sidecar and explicit manual task state, independent of issue/build evidence.
+Verified local T3 Manager binding (#1801) follows in slice 3 and is not claimed
+by these local-start slices.
 
 ## 2. Canonical data
 

@@ -3,6 +3,9 @@ name: forgejo-linux
 on:
   push:
     branches: [main, 'forgejo-linux-pr/**']
+  schedule:
+    - cron: '5 22 * * 2,6'
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -10,6 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   linux-checks:
+    if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     # The vendored gpui-kit tests (scripts/ci/vendor-tests.sh) add ~25 min when they run.
     timeout-minutes: 90
@@ -77,8 +81,36 @@ jobs:
             build-essential cmake pkg-config curl git mold file patchelf gpgv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1
+      - uses: actions/cache@v4
+        if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: beta-appimage-v2-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
       - name: Build exact-source AppImage once
+        if: github.event_name != 'schedule'
         run: bash scripts/appimage/build.sh
+      - name: Reuse original main AppImage for nightly acceptance
+        if: github.event_name == 'schedule'
+        env:
+          MIRROR_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYREUSE'
+          import os, sys, tempfile
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/releases')
+          import appimage_handoff as handoff
+          api = handoff.artifact.transport.GitHub()
+          with tempfile.TemporaryDirectory() as temporary:
+              transfer = Path(temporary)
+              handoff.stage(api, os.environ['GITHUB_SHA'], transfer,
+                  lambda aid: handoff.artifact.download(api.token, aid))
+              handoff.unpack(transfer, Path('dist/appimage'))
+              Path('dist/retained').mkdir(parents=True, exist_ok=True)
+              Path('dist/retained/acceptance.json').write_bytes((transfer / 'acceptance.json').read_bytes())
+          PYREUSE
       # Deliver bytes before compatibility testing; failed smoke is visible evidence.
       - uses: actions/upload-artifact@v4
         id: producer
@@ -91,7 +123,14 @@ jobs:
             dist/appimage/bundled-libraries.txt
           retention-days: 7
           if-no-files-found: error
+      - name: Verify AppImage package
+        run: |
+          cd dist/appimage
+          sha256sum -c SHA256SUMS
+          chmod +x Okilum-x86_64.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ./Okilum-x86_64.AppImage --help
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         run: |
           set -euo pipefail
           mkdir -p dist/appimage/evidence
@@ -103,9 +142,11 @@ jobs:
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
           done
       - name: Verify signed AppImage installation with disposable CI key
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           APPIMAGE_ARTIFACT_ID: ${{ steps.producer.outputs.artifact-id }}
+          APPIMAGE_RETAINED_RECEIPT: ${{ github.event_name == 'schedule' && 'dist/retained/acceptance.json' || '' }}
         run: |
           set -euo pipefail
           python3 scripts/releases/appimage_ci.py dist/appimage \
@@ -130,4 +171,4 @@ jobs:
         env:
           CHECKS: ${{ needs.linux-checks.result }}
           APPIMAGE: ${{ needs.appimage.result }}
-        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -c 'test "$CHECKS" = success && test "$APPIMAGE" = success'
+        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -c 'if [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then test "$CHECKS" = skipped; else test "$CHECKS" = success; fi; test "$APPIMAGE" = success'

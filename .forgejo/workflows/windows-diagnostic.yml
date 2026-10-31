@@ -1,23 +1,8 @@
 name: windows-release
 
 on:
-  pull_request:
-    paths:
-      - 'scripts/windows/**'
-      - 'scripts/windows-*.py'
-      - 'scripts/build-windows-ci.sh'
-      - 'packaging/**'
-      - 'scripts/releases/**'
-      - '.forgejo/workflows/windows-diagnostic.yml'
-      - '.github/workflows/forgejo-windows-release.yml'
-      - 'scripts/ci/github-pr.py'
-      - 'scripts/ci/build-windows-native.ps1'
-      - 'scripts/ci/windows-rustc.rs'
-      - 'scripts/ci/stage-windows-shaders.py'
-  # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
-  schedule:
-    - cron: "0 * * * *"
-  # Build any PR branch manually when shared dependencies need release validation.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       cache-benchmark:
@@ -35,7 +20,7 @@ on:
 
 concurrency:
   group: windows-build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   select:
@@ -127,6 +112,11 @@ jobs:
         run: |
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
+      - name: Restore beta compiler dependencies
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: target/x86_64-pc-windows-msvc/
+          key: beta-windows-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
       - name: Cross-compile Reader and install packager
         run: |
           export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
@@ -143,7 +133,7 @@ jobs:
       - name: Decide signing
         id: signing
         env:
-          BACKEND: ${{ vars.OKILUM_WINDOWS_SIGN_BACKEND }}
+          BACKEND: ${{ github.event_name != 'push' && vars.OKILUM_WINDOWS_SIGN_BACKEND || '' }}
           READY: ${{ vars.OKILUM_WINDOWS_SIGNER_READY }}
         run: |
           on=false

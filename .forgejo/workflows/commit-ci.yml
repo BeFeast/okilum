@@ -1,8 +1,6 @@
 # Heavy checks run in the public mirror; this job only pushes/waits/reports.
 name: commit-ci
 on:
-  push:
-    branches: ['ci/**']
   workflow_dispatch:
     inputs:
       lane:

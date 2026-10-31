@@ -4,8 +4,11 @@ use okilum_t3::board::{Binding, Column, Snapshot, Source};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod appearance;
+mod delivery;
 mod live;
+mod local;
 mod manage;
+mod notes;
 
 type IssueReader = fn(&Binding) -> Vec<(u64, Result<okilum_t3::board::Issue, String>)>;
 
@@ -28,6 +31,17 @@ pub(crate) struct Board {
     notice: Option<String>,
     editor: Option<manage::Editor>,
     editor_loading: bool,
+    local_cards: okilum_t3::board::local::Snapshot,
+    local_loading: bool,
+    local_generation: u64,
+    selected_local: Option<String>,
+    local_editor: Option<local::Editor>,
+    delivery: okilum_t3::board::delivery::Snapshot,
+    delivery_loading: bool,
+    project_notes: okilum_t3::board::context::Snapshot,
+    notes_loading: bool,
+    notes_expanded: bool,
+    next_stage_open: bool,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -116,6 +130,17 @@ impl Board {
             notice: None,
             editor: None,
             editor_loading: false,
+            local_cards: Default::default(),
+            local_loading: false,
+            local_generation: 0,
+            selected_local: None,
+            local_editor: None,
+            delivery: Default::default(),
+            delivery_loading: false,
+            project_notes: Default::default(),
+            notes_loading: false,
+            notes_expanded: false,
+            next_stage_open: false,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -142,6 +167,12 @@ impl Board {
                             this.snapshot.invalidate();
                             this.snapshot.forgejo = Source::default();
                             this.selected = None;
+                            this.delivery = Default::default();
+                            this.delivery_loading = false;
+                            this.project_notes = Default::default();
+                            this.notes_loading = false;
+                            this.notes_expanded = false;
+                            this.next_stage_open = false;
                         }
                         if let Some(next) = &binding {
                             if next.registry_error.as_ref()
@@ -198,6 +229,8 @@ impl Board {
         }
         self.snapshot.invalidate();
         self.snapshot.t3 = Source::default();
+        self.delivery_loading = false;
+        self.notes_loading = false;
         self.manager = Some(manager);
         if self.active {
             self.refresh(window, cx);
@@ -213,6 +246,10 @@ impl Board {
             return;
         }
         self.active = visible;
+        self.local_loading = false;
+        self.local_generation = self.local_generation.wrapping_add(1);
+        self.delivery_loading = false;
+        self.notes_loading = false;
         self.ticker = None; // Dropping the task cancels the visible-only timer.
         self.snapshot.invalidate();
         if visible {
@@ -248,9 +285,12 @@ impl Board {
         let Some(binding) = self.binding.clone() else {
             return;
         };
+        self.refresh_local_cards(window, cx);
         let Some(ticket) = self.snapshot.begin() else {
             return;
         }; // Coalesce overlapping refreshes.
+        self.refresh_delivery(ticket.clone(), window, cx);
+        self.refresh_project_notes(ticket.clone(), window, cx);
         let forgejo_ticket = ticket.clone();
         let read_issues = self.read_issues;
         let needs_threads = binding
@@ -342,6 +382,15 @@ impl Board {
                 format!("Executor registry: {}", status_detail(detail)),
                 self.binding_read,
             ));
+        }
+        if let Some(detail) = &self.local_cards.error {
+            problems.push((
+                format!("Local cards: {}", status_detail(detail)),
+                self.local_cards.last_success,
+            ));
+        }
+        for detail in &self.local_cards.value.problems {
+            problems.push((detail.clone(), self.local_cards.last_success));
         }
         let interval = self
             .binding
@@ -608,6 +657,7 @@ impl Board {
                             ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected_local = None;
                         this.selected = (this.selected != Some(number)).then_some(number);
                         cx.notify();
                     })),
@@ -743,6 +793,9 @@ impl Board {
             );
         }
         if self.selected == Some(number) {
+            if self.delivery.enabled() {
+                card = card.child(self.delivery_details(scope, binding, cx));
+            }
             let url = binding.issue_url(number);
             let context = self.context(scope);
             let mut actions = h_flex()
@@ -839,6 +892,9 @@ impl Board {
 }
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.local_editor.is_some() {
+            return self.render_local_management(window, cx);
+        }
         if self.editor.is_some() {
             return self.render_management(window, cx);
         }
@@ -856,9 +912,13 @@ impl Render for Board {
             .bg(colors.canvas)
             .text_color(colors.text)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && this.selected.take().is_some() {
-                    cx.stop_propagation();
-                    cx.notify();
+                if event.keystroke.key == "escape" {
+                    let issue = this.selected.take().is_some();
+                    let local = this.selected_local.take().is_some();
+                    if issue || local {
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
                 }
             }));
         if let Some(problem) = self.problem(now()) {
@@ -873,18 +933,53 @@ impl Render for Board {
         let Some(binding) = self.binding.as_ref() else {
             if !self.binding_loading && self.binding_error.is_none() {
                 root = root.child(
-                    v_flex().flex_1().items_center().justify_center().gap_3()
+                    v_flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .gap_3()
                         .debug_selector(|| "board-empty".into())
-                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Keep project work in view"))
-                        .child(div().text_size(px(13.)).text_color(colors.text_muted).child("A Board brings the project's issues, expected results and executors together."))
-                        .child(Button::new("board-create").debug_selector(|| "board-create".into()).primary().label("Create board")
-                            .disabled(self.editor_loading).on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))))
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Keep project work in view"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(colors.text_muted)
+                                .child(
+                                    "A Board keeps local tasks and linked project issues in view.",
+                                ),
+                        )
+                        .child(
+                            Button::new("board-create")
+                                .debug_selector(|| "board-create".into())
+                                .primary()
+                                .label("Create board")
+                                .disabled(self.editor_loading)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_management(window, cx)
+                                })),
+                        ),
                 );
             }
             return root.into_any_element();
         };
+        if binding.repository.is_empty() {
+            root = root.child(div().debug_selector(|| "board-local".into())
+                .text_size(px(12.)).text_color(colors.text_muted)
+                .child("Local Board · PR and CI links are inactive. Add Repository in Manage board → Board details when needed."));
+        }
         if let Some(attention) = self.attention(binding, cx) {
             root = root.child(attention);
+        }
+        if self.delivery.enabled() {
+            root = root.child(self.delivery_summary(binding, cx));
+        }
+        if let Some(notes) = self.render_project_notes(binding, cx) {
+            root = root.child(notes);
         }
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
@@ -911,12 +1006,15 @@ impl Render for Board {
                 .iter()
                 .filter(|scope| {
                     self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-                        && okilum_t3::board::column(
-                            scope,
-                            self.snapshot.forgejo.value.get(&scope.number),
-                            &self.snapshot.t3.value,
-                        ) == column
+                        && self.delivery_column(scope) == column
                 })
+                .collect();
+            let local_cards: Vec<_> = self
+                .local_cards
+                .value
+                .cards
+                .iter()
+                .filter(|card| self.filter.is_none() && card.state.column() == column)
                 .collect();
             let (color, glyph) = appearance::stage(column, cx);
             let mut lane = v_flex()
@@ -947,6 +1045,7 @@ impl Render for Board {
                                 .text_color(colors.text_muted)
                                 .child(
                                     (scopes.len()
+                                        + local_cards.len()
                                         + if column == Column::Queue {
                                             binding.card_problems.len()
                                         } else {
@@ -959,7 +1058,21 @@ impl Render for Board {
             for scope in scopes {
                 lane = lane.child(self.card(scope, column, binding, cx));
             }
+            for card in local_cards {
+                lane = lane.child(self.local_card(card, cx));
+            }
             if column == Column::Queue {
+                lane = lane.child(
+                    Button::new("board-local-add")
+                        .debug_selector(|| "board-local-add".into())
+                        .ghost()
+                        .small()
+                        .label("Add card")
+                        .disabled(self.editor_loading)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_local_management(local::Mode::Add, window, cx)
+                        })),
+                );
                 for (index, problem) in binding.card_problems.iter().enumerate() {
                     let title = problem
                         .number
@@ -989,7 +1102,7 @@ impl Render for Board {
             .issues
             .iter()
             .filter(|scope| {
-                scope.stage == Some(okilum_t3::board::HumanStage::Verified)
+                self.delivery_column(scope) == Column::Verified
                     && self.filter.as_ref().is_none_or(|f| f == &scope.executor)
             })
             .count();

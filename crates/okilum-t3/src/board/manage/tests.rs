@@ -250,7 +250,10 @@ fn invalid_inputs_report_each_field_and_do_not_write_or_resolve_another_reposito
     details.goal = "".into();
     let error = s.save(&Change::Details(details)).unwrap_err();
     let fields = &error.downcast_ref::<Problems>().unwrap().0;
-    assert!(fields.contains_key("goal") && fields.contains_key("stage_note"));
+    assert!(
+        !fields.contains_key("goal") && fields.contains_key("stage_note"),
+        "optional goal does not relax path validation"
+    );
 }
 
 #[test]
@@ -339,13 +342,11 @@ fn create_without_project_repository_or_planning_accepts_explicit_form_repositor
     let session = a.session();
     let mut details = session.details();
     assert!(details.repository.is_empty() && details.stage_note.is_empty());
-    let error = session.save(&Change::Details(details.clone())).unwrap_err();
-    let problems = &error.downcast_ref::<Problems>().unwrap().0;
-    assert!(problems["repository"].contains("Board management"));
-    assert!(!problems.contains_key("stage_note"));
-    assert!(!a.file("board.toml").exists());
+    let local = session.save(&Change::Details(details.clone())).unwrap();
+    assert!(Binding::read(&a.0).unwrap().unwrap().repository.is_empty());
+    assert!(a.file("board.toml").exists());
     details.repository = "https://git.example/Team/pulse".into();
-    let saved = session.save(&Change::Details(details)).unwrap();
+    let saved = local.save(&Change::Details(details)).unwrap();
     let board = Binding::read(&a.0).unwrap().unwrap();
     assert_eq!(board.repository, "https://git.example/Team/pulse");
     assert!(board.stage_note.is_empty());
@@ -364,4 +365,35 @@ fn create_without_project_repository_or_planning_accepts_explicit_form_repositor
         .to_string()
         .contains("fixed after creation"));
     assert_eq!(std::fs::read(a.file("board.toml")).unwrap(), before);
+}
+
+#[test]
+fn local_board_creates_without_goal_repository_stage_or_executor_and_never_fetches_issues() {
+    let a = Area::new();
+    std::fs::write(a.file("project.yaml"), "name: Local\nkind: code\n").unwrap();
+    std::fs::remove_file(a.0.join("planning/stage.md")).unwrap();
+    let s = a.session();
+    let d = s.details();
+    assert!(d.goal.is_empty() && d.repository.is_empty() && d.stage_note.is_empty());
+    let created = s.save(&Change::Details(d)).unwrap();
+    assert!(created.cards().is_empty());
+    let b = Binding::read(&a.0).unwrap().unwrap();
+    assert!(b.goal.is_empty() && b.repository.is_empty() && b.stage_note.is_empty());
+    assert!(super::super::read_issues(&b).is_empty());
+    let before = std::fs::read(a.file("board.toml")).unwrap();
+    assert!(created
+        .save(&Change::Add(card("42")))
+        .unwrap_err()
+        .to_string()
+        .contains("Set Repository"));
+    assert_eq!(std::fs::read(a.file("board.toml")).unwrap(), before);
+    let mut details = created.details();
+    details.repository = "https://git.example/Team/local".into();
+    let bound = created.save(&Change::Details(details)).unwrap();
+    let added = bound.save(&Change::Add(card("42"))).unwrap();
+    assert_eq!(
+        added.cards()[0]["number"],
+        42,
+        "positive control: explicit binding enables Forgejo cards"
+    );
 }

@@ -2,23 +2,8 @@
 name: brain-ci
 
 on:
-  pull_request:
-    paths:
-      - 'crates/okilum-brain/**'
-      - 'crates/okilum-cored/**'
-      - '.forgejo/workflows/brain-ci.yml'
-      - '.github/workflows/forgejo-brain.yml'
-      - 'scripts/ci/github-pr.py'
-  push:
-    branches: [main]
-    paths:
-      - 'crates/okilum-brain/**'
-      - 'crates/okilum-cored/**'
-      - '.forgejo/workflows/brain-ci.yml'
-      - '.github/workflows/forgejo-brain.yml'
-      - 'scripts/ci/github-pr.py'
   schedule:
-    - cron: '17 3 * * *'
+    - cron: '5 22 * * 2,6'
   workflow_dispatch:
 
 concurrency:

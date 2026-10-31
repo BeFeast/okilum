@@ -1,28 +1,15 @@
-# fmt, clippy and tests on pull requests and pushes to main.
-#
-# `ubuntu-latest` is the label the BeFeast org runner (linux-ci-host) maps to
-# ghcr.io/catthehacker/ubuntu:act-24.04 — the same label maestro, pomoi and
-# ok-gobot use. It is a plain Ubuntu image with sudo/apt and node (checkout is a
-# JS action, so a bare `container: rust` would not work — see halenote's ci.yml
-# for the post-mortem). Rust is installed with rustup rather than an action
-# because no pinned toolchain action is mirrored on code.forgejo.org.
-#
-# The shell crate links against wayland/xkbcommon/fontconfig/freetype/xcb (see
-# README "Building"), and vendor/gpui-component (longbridge/gpui-kit) is not committed:
-# scripts/vendor-setup.sh clones the pinned revision and applies the patch set.
+# Full acceptance only: Tuesday/Saturday night before Wednesday/Sunday Stable.
+# No PR/main-push trigger. Process v2 uses fast.yml for merge admission.
 name: ci
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '5 22 * * 2,6'
+  workflow_dispatch:
 
-# A PR supersedes its own stale checks. Every main commit gets its own full run, so a
-# red main names the merge that broke it (main-health); merges land about every 11
-# minutes and a Linux run takes about 11, so cancelling hid most results.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -32,8 +19,8 @@ jobs:
   native-scope:
     # This host coordinator must not execute scripts from untrusted forks.
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name != 'push' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: bridge
     timeout-minutes: 3
     outputs:
@@ -66,9 +53,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
       - name: Select native PR check
         id: native-scope
-        if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          FULL_EVENT: ${{ github.event_name }}
           FORGEJO_URL: ${{ github.server_url }}
           REPOSITORY: ${{ github.repository }}
           MACOS_LANE: ${{ vars.OKILUM_MACOS_LANE }}
@@ -77,7 +64,9 @@ jobs:
           # In the M4 window a PR uses the M4 only while it is idle, otherwise hosted (2026-10-11).
           echo "macos_lane=$(python3 scripts/ci/macos-lane.py)" >> "$GITHUB_OUTPUT"
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
+          if [ "$FULL_EVENT" != pull_request ]; then needed=true; else
+            needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
+          fi
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
 
   # Shared Rust crates are independently required. The GUI/platform/release lanes
@@ -94,7 +83,7 @@ jobs:
         env:
           SHARED_LANE: ${{ vars.OKILUM_SHARED_LANE }}
           EVENT: ${{ github.event_name }}
-          TRUSTED: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           MEASURE_UNTIL: ${{ vars.OKILUM_SHARED_MEASURE_UNTIL }}
           MEASURE_FIRST_RUN: ${{ vars.OKILUM_SHARED_MEASURE_FIRST_RUN }}
           RUN_NUMBER: ${{ github.run_number }}
@@ -405,7 +394,7 @@ jobs:
       github.event_name == 'pull_request' &&
       (vars.OKILUM_LINUX_LANE == 'hosted' ||
        vars.OKILUM_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: bridge
     # Must exceed github-linux.py queue_timeout + run_timeout (15 + 90 min).
     timeout-minutes: 110
@@ -415,7 +404,7 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Run exact PR head on GitHub Linux
         id: remote
@@ -424,8 +413,8 @@ jobs:
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/ci/github-linux.py
 
   # A red main is reported to its suspects and to the "main is red" issue; a green
@@ -434,7 +423,7 @@ jobs:
   main-health:
     needs: [linux-local]
     if: >-
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       (needs.linux-local.result == 'success' || needs.linux-local.result == 'failure')
     runs-on: bridge
     timeout-minutes: 5
@@ -484,10 +473,10 @@ jobs:
     needs: native-scope
     if: >-
       needs.native-scope.outputs.macos_lane == 'hosted' &&
-      github.event_name == 'pull_request' &&
+      github.event_name != 'push' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # Configure only after the dedicated bridge runner is registered.
     runs-on: ${{ vars.MACOS_BRIDGE_RUNNER || 'light' }}
     # Must exceed github-macos.py QUEUE_TIMEOUT + RUN_TIMEOUT (180 + 40 min):
@@ -499,7 +488,7 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Run the exact PR head on GitHub macOS
         id: remote
@@ -508,8 +497,8 @@ jobs:
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/ci/github-macos.py run
 
   macos-local:
@@ -518,10 +507,10 @@ jobs:
     # and moved to a trusted same-repository branch; the final gate fails closed.
     if: >-
       needs.native-scope.outputs.macos_lane == 'local' &&
-      github.event_name == 'pull_request' &&
+      github.event_name != 'push' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos
     timeout-minutes: 20
     # LAN cache credentials belong only to the trusted local fallback (#563).
@@ -537,7 +526,7 @@ jobs:
       - name: Check out the exact source from the runner server
         shell: bash
         env:
-          CHECKOUT_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECKOUT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CHECKOUT_REPOSITORY: ${{ github.repository }}
           CHECKOUT_SERVER_URL: ${{ github.server_url }}
         run: |
@@ -603,17 +592,17 @@ jobs:
   windows-github:
     needs: native-scope
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name != 'push' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: bridge
     timeout-minutes: 120
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Run the exact PR head's first-run tests on GitHub Windows
         env:
@@ -621,8 +610,8 @@ jobs:
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
@@ -630,17 +619,17 @@ jobs:
   perf-linux:
     needs: native-scope
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name != 'push' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: bridge
     timeout-minutes: 100
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Run main and PR input A/B in one GitHub Linux job
         env:
@@ -648,8 +637,8 @@ jobs:
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_LANE: perf-linux
         run: python3 scripts/ci/github-pr.py
 
@@ -657,12 +646,7 @@ jobs:
   # delay this coordinator. The serialized signer revalidates the current head.
   macos-preview:
     needs: [native-scope, macos]
-    if: >-
-      always() && github.event_name == 'pull_request' &&
-      vars.OKILUM_MACOS_PR_PREVIEWS == 'true' &&
-      needs.macos.result == 'success' && needs.native-scope.outputs.macos == 'true' &&
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: false
     runs-on: publish
     permissions:
       contents: read
@@ -680,13 +664,13 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
           MACOS_PR_PREVIEWS_ENABLED: ${{ vars.OKILUM_MACOS_PR_PREVIEWS }}
-          MACOS_PREVIEW_PR: ${{ github.event.pull_request.number }}
-          MACOS_PREVIEW_HEAD: ${{ github.event.pull_request.head.sha }}
+          MACOS_PREVIEW_PR: ${{ github.event.pull_request.number || github.run_number }}
+          MACOS_PREVIEW_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/releases/coalesce.py macos
 
   macos:
     needs: [native-scope, macos-github, macos-local]
-    if: always() && github.event_name == 'pull_request'
+    if: always() && github.event_name != 'push'
     runs-on: bridge
     timeout-minutes: 2
     steps:

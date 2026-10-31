@@ -1,23 +1,8 @@
 name: inbox-ci
 
 on:
-  pull_request:
-    paths:
-      - 'inbox/**'
-      - 'web/inbox/**'
-      - 'crates/okilum-sync/**'
-      - '.forgejo/workflows/inbox-ci.yml'
-      - '.github/workflows/forgejo-inbox.yml'
-      - 'scripts/ci/github-pr.py'
-  push:
-    branches: [main]
-    paths:
-      - 'inbox/**'
-      - 'web/inbox/**'
-      - 'crates/okilum-sync/**'
-      - '.forgejo/workflows/inbox-ci.yml'
-      - '.github/workflows/forgejo-inbox.yml'
-      - 'scripts/ci/github-pr.py'
+  schedule:
+    - cron: '5 22 * * 2,6'
   workflow_dispatch:
 
 concurrency:

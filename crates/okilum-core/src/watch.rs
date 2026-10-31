@@ -8,7 +8,9 @@
 //! - **Events are coalesced, not forwarded.** Editors write a file several
 //!   times per save (temp file, rename, chmod), and a `git checkout` or a
 //!   Syncthing sync lands hundreds of files inside a second. The watcher
-//!   collects paths for a quiet window and hands over one batch.
+//!   collects paths for a 300 ms quiet window after relevant events and hands
+//!   over one batch. Ignored activity does not extend it; repeated writes to an
+//!   already-pending note do. A 2 s maximum age bounds continuous-write batches.
 //! - **The watcher does not rescan or reindex.** It reports which notes
 //!   changed; the caller decides whether that is a handful of `update_note`
 //!   calls or a full rescan. A vault scan is 0.8–1.6 s on ~4000 notes, and only
@@ -59,6 +61,28 @@ pub const BULK_THRESHOLD: usize = 50;
 
 /// How long the vault must be quiet before a batch is released.
 pub const QUIET_WINDOW: Duration = Duration::from_millis(300);
+
+/// Bound delivery during sustained writes; callers retain normal bulk handling.
+pub const MAX_BATCH_AGE: Duration = Duration::from_secs(2);
+
+#[cfg(target_os = "linux")]
+mod mounts;
+
+/// Keep native watches on remote FUSE, but do not promise other clients' writes.
+/// This preparation-worker probe never starts a scan or a periodic timer.
+pub fn is_remote_fuse_root(root: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        std::fs::read("/proc/self/mountinfo")
+            .is_ok_and(|info| mounts::remote_fuse_mount(&root, &info))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = root;
+        false
+    }
+}
 
 /// Native local watchers cannot promise visibility of another network client's
 /// writes. Probe on the preparation worker, never on the UI thread.
@@ -112,6 +136,7 @@ pub struct VaultWatcher {
     folders: Option<BTreeSet<String>>,
     pending: Changes,
     last_event: Option<Instant>,
+    first_event: Option<Instant>,
 }
 
 impl VaultWatcher {
@@ -130,6 +155,7 @@ impl VaultWatcher {
             folders: None,
             pending: Changes::default(),
             last_event: None,
+            first_event: None,
         })
     }
 
@@ -148,6 +174,7 @@ impl VaultWatcher {
             folders: Some(BTreeSet::new()),
             pending: Changes::default(),
             last_event: None,
+            first_event: None,
         })
     }
 
@@ -179,6 +206,7 @@ impl VaultWatcher {
                     watched.insert(folder.clone());
                     self.pending.directories.insert(folder);
                     self.last_event.get_or_insert_with(Instant::now);
+                    self.first_event.get_or_insert_with(Instant::now);
                 }
                 Err(error) => {
                     // Disappearance between enumeration and subscription is an
@@ -195,6 +223,7 @@ impl VaultWatcher {
                                 .directories
                                 .insert(crate::vault::note_path(parent));
                             self.last_event.get_or_insert_with(Instant::now);
+                            self.first_event.get_or_insert_with(Instant::now);
                         }
                     } else if first_error.is_none() {
                         first_error = Some(error);
@@ -226,18 +255,24 @@ impl VaultWatcher {
     /// Drain whatever the OS has delivered, then release a batch if the vault
     /// has been quiet for [`QUIET_WINDOW`]. Non-blocking; call it from a timer.
     pub fn poll(&mut self) -> Option<Changes> {
-        while let Ok(ev) = self.rx.try_recv() {
+        // Check before taking another event so a continuously filled queue
+        // cannot hide an expired batch behind an unbounded drain.
+        while !self.batch_expired() {
+            let Ok(ev) = self.rx.try_recv() else { break };
             let ev = match ev {
                 Ok(ev) => ev,
                 Err(_) => {
                     self.pending.rescan = true;
-                    self.last_event = Some(Instant::now());
+                    self.relevant_event();
                     continue;
                 }
             };
-            if ev.need_rescan() {
+            // Rescan is an explicit lost-events flag, not a Create/Remove
+            // event kind. It applies to the whole watch even on a service path.
+            let mut relevant = ev.need_rescan();
+            if relevant {
                 self.pending.rescan = true;
-                self.last_event = Some(Instant::now());
+                self.relevant_event();
             }
             // Only writes count. notify's inotify backend also subscribes to
             // OPEN and CLOSE_NOWRITE, so a plain read of a note arrives here as
@@ -263,10 +298,12 @@ impl VaultWatcher {
                     let parent = relative.parent().map(crate::vault::note_path);
                     if let Some(parent) = parent.filter(|parent| folders.contains(parent)) {
                         self.pending.directories.insert(parent);
+                        relevant = true;
                     }
                     let path = crate::vault::note_path(relative);
                     if folders.contains(&path) {
                         self.pending.directories.insert(path);
+                        relevant = true;
                     }
                     continue;
                 }
@@ -303,10 +340,12 @@ impl VaultWatcher {
                     self.pending
                         .directories
                         .insert(crate::vault::note_path(relative));
+                    relevant = true;
                 }
                 let Some(rel) = self.relevant(p) else {
                     continue;
                 };
+                relevant = true;
                 // Existence on disk is the truth, not the event kind: a
                 // rename delivers Remove for the old name and Create for the
                 // new, and an editor's atomic save can look like either.
@@ -318,11 +357,14 @@ impl VaultWatcher {
                     self.pending.changed.insert(rel);
                 }
             }
-            self.last_event = Some(Instant::now());
+            if relevant {
+                self.relevant_event();
+            }
         }
         let quiet = self.last_event.is_some_and(|t| t.elapsed() >= QUIET_WINDOW);
-        if quiet && !self.pending.is_empty() {
+        if (quiet || self.batch_expired()) && !self.pending.is_empty() {
             self.last_event = None;
+            self.first_event = None;
             return Some(std::mem::take(&mut self.pending));
         }
         None
@@ -338,7 +380,21 @@ impl VaultWatcher {
             return None;
         }
         self.last_event = None;
+        self.first_event = None;
         Some(std::mem::take(&mut self.pending))
+    }
+
+    fn relevant_event(&mut self) {
+        let now = Instant::now();
+        self.first_event.get_or_insert(now);
+        self.last_event = Some(now);
+    }
+
+    fn batch_expired(&self) -> bool {
+        !self.pending.is_empty()
+            && self
+                .first_event
+                .is_some_and(|t| t.elapsed() >= MAX_BATCH_AGE)
     }
 
     /// Block until a batch is ready or `timeout` passes. For tests and CLIs;
@@ -360,6 +416,113 @@ impl VaultWatcher {
 #[cfg(test)]
 mod topology_tests {
     use super::*;
+    fn controlled_watcher(root: &Path) -> (VaultWatcher, mpsc::Sender<notify::Result<Event>>) {
+        let mut watcher = VaultWatcher::new(root).unwrap();
+        let (tx, rx) = mpsc::channel();
+        watcher.rx = rx;
+        (watcher, tx)
+    }
+
+    fn write_event(path: PathBuf) -> notify::Result<Event> {
+        Ok(
+            Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Any,
+            )))
+            .add_path(path),
+        )
+    }
+
+    #[test]
+    fn ignored_events_do_not_postpone_an_already_quiet_note() {
+        let temp = tempfile::tempdir().unwrap();
+        let note = temp.path().join("a.md");
+        std::fs::write(&note, "note").unwrap();
+        let (mut watcher, tx) = controlled_watcher(temp.path());
+        tx.send(write_event(note)).unwrap();
+        assert!(watcher.poll().is_none());
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        for path in [
+            temp.path().join(".git/index"),
+            temp.path().join("image.png"),
+            temp.path().join(".okilum-save-test"),
+            temp.path().parent().unwrap().join("outside.md"),
+        ] {
+            for kind in [
+                EventKind::Create(notify::event::CreateKind::File),
+                EventKind::Remove(notify::event::RemoveKind::File),
+                EventKind::Modify(notify::event::ModifyKind::Data(
+                    notify::event::DataChange::Any,
+                )),
+            ] {
+                let event = Event::new(kind).add_path(path.clone());
+                assert!(
+                    !event.need_rescan(),
+                    "ordinary event kind is not a lost-events flag"
+                );
+                tx.send(Ok(event)).unwrap();
+            }
+        }
+        let batch = watcher
+            .poll()
+            .expect("ignored activity must not reset quiet time");
+        assert_eq!(batch.changed, BTreeSet::from(["a.md".into()]));
+        assert!(batch.removed.is_empty() && batch.directories.is_empty());
+        assert!(watcher.first_event.is_none());
+    }
+
+    #[test]
+    fn explicit_lost_events_flag_requires_rescan_even_on_an_ignored_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut watcher, tx) = controlled_watcher(temp.path());
+        tx.send(Ok(Event::new(EventKind::Other)
+            .add_path(temp.path().join(".git/index"))
+            .set_flag(notify::event::Flag::Rescan)))
+            .unwrap();
+        assert!(watcher.poll().is_none());
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        assert!(
+            watcher.poll().unwrap().rescan,
+            "lost-event recovery cannot be filtered by its path"
+        );
+    }
+
+    #[test]
+    fn repeated_relevant_writes_extend_quiet_time_but_not_maximum_batch_age() {
+        let temp = tempfile::tempdir().unwrap();
+        let note = temp.path().join("a.md");
+        std::fs::write(&note, "note").unwrap();
+        let (mut watcher, tx) = controlled_watcher(temp.path());
+        tx.send(write_event(note.clone())).unwrap();
+        watcher.poll();
+        let first = watcher.first_event;
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        tx.send(write_event(note.clone())).unwrap();
+        assert!(
+            watcher.poll().is_none(),
+            "repeat of the SAME note still extends quiet time"
+        );
+        assert_eq!(watcher.first_event, first);
+        assert!(watcher.last_event.unwrap().elapsed() < QUIET_WINDOW);
+        // Even queued relevant writes cannot postpone delivery past the limit.
+        watcher.first_event = Some(Instant::now() - MAX_BATCH_AGE);
+        tx.send(write_event(note)).unwrap();
+        let batch = watcher
+            .poll()
+            .expect("maximum age bounds a continuous write stream");
+        assert_eq!(batch.changed, BTreeSet::from(["a.md".into()]));
+        assert!(watcher.first_event.is_none());
+        assert!(
+            watcher.poll().is_none(),
+            "queued write begins the next batch"
+        );
+        assert!(watcher.first_event.is_some());
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        assert_eq!(
+            watcher.poll().unwrap().changed,
+            BTreeSet::from(["a.md".into()])
+        );
+    }
+
     #[test]
     fn browsed_folders_report_attachments_without_enrolling_descendants() {
         let temp = tempfile::tempdir().unwrap();
