@@ -7595,6 +7595,13 @@ fn main() {
         opts
     };
 
+    // Establish the per-user executable before instance handoff and updater
+    // initialization. The runtime then supplies the canonical APPIMAGE path.
+    #[cfg(target_os = "linux")]
+    if !linux_sprint::enabled() && opts.brain_endpoint.is_none() && !opts.managed_workspace {
+        app_footprint::enter_managed_appimage();
+    }
+
     let (instance_lock, instance_requests) = if opts.brain_endpoint.is_none()
         && !opts.managed_workspace
     {
