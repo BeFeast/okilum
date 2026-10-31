@@ -794,7 +794,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         self.trace_file_operation(operation, "blocked", path, Some(reason), cx);
-        self.link_notice = Some(reason.to_owned());
+        self.link_notice = Some(reason.to_owned().into());
         cx.notify();
     }
 }
