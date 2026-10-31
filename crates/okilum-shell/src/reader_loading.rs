@@ -1705,6 +1705,12 @@ impl Reader {
         }
         if self.editing.is_some() {
             self.refresh_source_from_disk(window, cx);
+            self.track_deleted_note(sources, cx);
+            self.refresh_link_preparation(cx);
+            return;
+        }
+        // A deleted note stays on screen with its own notice (#1986).
+        if self.track_deleted_note(sources, cx) {
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1746,7 +1752,7 @@ impl Reader {
         self.reconcile_document_source(None, window, cx);
     }
 
-    fn reconcile_document_source(
+    pub(super) fn reconcile_document_source(
         &mut self,
         raw: Option<String>,
         window: &mut Window,
@@ -2132,6 +2138,18 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A deleted note asks before its contents are left behind (#1986).
+        let other = opts.vault.as_ref() != Some(&self.vault_root)
+            || opts.open_path.is_some()
+            || opts.note.as_deref() != Some(self.current_rel.as_str());
+        if other && self.leaving_deleted_note(None) {
+            self.ask_leaving_deleted_note(
+                Box::new(move |this, window, cx| this.start_loading(opts, window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
         if !self.leave_source(cx) {
             return;
         }
@@ -4940,10 +4958,9 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert!(v
-                .link_notice
-                .as_ref()
-                .is_some_and(|notice| notice.contains("no longer available")));
+            // #1986: the deleted-note notice keeps the last contents on screen.
+            assert!(v.deleted_current().is_some(), "{:?}", v.link_notice);
+            assert!(v.note_source.contains("ScanTimePositiveControl"));
             assert_eq!(v.current_rel, "start.md");
             assert_eq!(v.navigation.history, history);
         });
