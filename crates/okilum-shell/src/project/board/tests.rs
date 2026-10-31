@@ -601,3 +601,154 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
         }
     }
 }
+
+#[gpui::test]
+fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
+    cx: &mut TestAppContext,
+) {
+    use okilum_t3::board::delivery as d;
+    cx.update(gpui_component::init);
+    let area = tempfile::tempdir().unwrap();
+    std::fs::write(area.path().join("scenario.md"), "# Exact Board scenario\n").unwrap();
+    let mut binding = Binding::parse(include_str!(
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+    ))
+    .unwrap();
+    binding.issues.truncate(1);
+    binding.issues[0].pull_requests = vec![42];
+    binding.issues[0].stage = Some(okilum_t3::board::HumanStage::Verified);
+    let number = binding.issues[0].number;
+    let source = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let platform = if cfg!(target_os = "macos") {
+        d::Platform::Macos
+    } else if cfg!(target_os = "windows") {
+        d::Platform::Windows
+    } else {
+        d::Platform::Linux
+    };
+    let build = d::Build {
+        platform,
+        channel: d::Channel::Beta,
+        build: "100".into(),
+        source: source.into(),
+        artifact: "https://updates.example/exact-build.zip".into(),
+    };
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| {
+            let mut b = Board::with_reader(
+                area.path().into(),
+                okilum_t3::board::read_issues,
+                window,
+                cx,
+            );
+            b.binding = Some(binding.clone());
+            assert_eq!(
+                b.delivery_column(&binding.issues[0]),
+                Column::Verified,
+                "positive control: old explicit-stage projection"
+            );
+            b.delivery.accept(
+                d::Update {
+                    config: Ok(Some(d::Config {
+                        version: 1,
+                        feeds: vec![d::Feed {
+                            platform,
+                            channel: d::Channel::Beta,
+                            url: "https://updates.example/feed.json".into(),
+                            format: d::Format::Receipt,
+                            metadata: None,
+                            artifact_name: None,
+                            next: "Try this exact scenario".into(),
+                            blocker: None,
+                        }],
+                        evidence: vec!["scenario.md".into()],
+                    })),
+                    feeds: vec![((platform, d::Channel::Beta), Ok(Some(build.clone())))],
+                    artifacts: vec![(build.artifact.clone(), Ok(d::Artifact { available: true }))],
+                    ci: vec![(
+                        42,
+                        Ok(d::Ci {
+                            pr: 42,
+                            source: source.into(),
+                            state: "success".into(),
+                            links: vec![],
+                            inclusion: std::collections::BTreeMap::from([(
+                                source.into(),
+                                Ok(true),
+                            )]),
+                        }),
+                    )],
+                    evidence: vec![("scenario.md".into(), Ok(Vec::new()))],
+                },
+                now(),
+            );
+            b.selected = Some(number);
+            assert_ne!(
+                b.delivery_column(&binding.issues[0]),
+                Column::Verified,
+                "legacy flag cannot bypass exact evidence"
+            );
+            b
+        });
+        entity = Some(board.clone());
+        Root::new(board, window, cx)
+    });
+    let board = entity.unwrap();
+    visual.simulate_resize(size(px(1000.), px(1000.)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-delivery").is_some());
+    assert!(visual.debug_bounds("board-delivery-Mac-Beta").is_some());
+    assert!(visual
+        .debug_bounds("board-delivery-Windows-Stable")
+        .is_some());
+    assert!(visual.debug_bounds("board-delivery-Linux-Sprint").is_some());
+    assert!(visual.debug_bounds("board-refresh").is_none());
+    assert!(visual.debug_bounds("board-plan").is_none());
+    board.update(visual, |board, cx| {
+        board
+            .delivery
+            .evidence
+            .get_mut("scenario.md")
+            .unwrap()
+            .value = vec![d::Evidence {
+            issue: number,
+            pr: 42,
+            platform,
+            channel: d::Channel::Beta,
+            build: "100".into(),
+            source: source.into(),
+            artifact: build.artifact.clone(),
+            scenario: "Open this exact Board build".into(),
+            installed_at: Some("2026-10-30T12:00:00Z".into()),
+            accepted_by: None,
+            accepted_at: None,
+            note: "scenario.md".into(),
+        }];
+        assert_eq!(board.delivery_column(&binding.issues[0]), Column::Ready);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let target = match platform {
+        d::Platform::Macos => "board-delivery-Mac-Beta",
+        d::Platform::Windows => "board-delivery-Windows-Beta",
+        d::Platform::Linux => "board-delivery-Linux-Beta",
+    };
+    let button = visual
+        .debug_bounds(target)
+        .expect("real exact-build summary button");
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.opened_url().as_deref(),
+        Some(build.artifact.as_str()),
+        "only explicit Artifact open, no install/dispatch"
+    );
+    board.read_with(visual, |board, _| {
+        assert!(board.delivery.ci[&42].value.state == "success");
+        assert_eq!(
+            board.delivery.evidence["scenario.md"].value[0].accepted_by, None,
+            "opening never accepts"
+        );
+    });
+}

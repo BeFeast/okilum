@@ -72,6 +72,9 @@ Explicit manager creation retains launch intent and revision-aware registry writ
 **Project Board and compatible Area manifests (2026-10-27/29, #1767, #1859):**
 [Native project Board](project-board.md) adds an explicitly bound read-only stage
 projection in the center, related-note navigation and draft-only Manager context.
+[Board delivery](board-delivery.md) adds an optional read-only platform/channel
+summary with exact build/source, independent source health, linked scenarios and
+explicit human evidence. Publication, installation and acceptance remain separate.
 [TOML manifests](area-manifests.md) prefer TOML with absence-only legacy YAML
 fallback. Invalid cards retain precise visible diagnostics beside healthy cards.
 Delivery/human acceptance and execution mutations remain separate.

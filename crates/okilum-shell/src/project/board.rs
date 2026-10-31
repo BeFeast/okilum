@@ -4,6 +4,7 @@ use okilum_t3::board::{Binding, Column, Snapshot, Source};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod appearance;
+mod delivery;
 mod live;
 mod local;
 mod manage;
@@ -34,6 +35,8 @@ pub(crate) struct Board {
     local_generation: u64,
     selected_local: Option<String>,
     local_editor: Option<local::Editor>,
+    delivery: okilum_t3::board::delivery::Snapshot,
+    delivery_loading: bool,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -127,6 +130,8 @@ impl Board {
             local_generation: 0,
             selected_local: None,
             local_editor: None,
+            delivery: Default::default(),
+            delivery_loading: false,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -153,6 +158,8 @@ impl Board {
                             this.snapshot.invalidate();
                             this.snapshot.forgejo = Source::default();
                             this.selected = None;
+                            this.delivery = Default::default();
+                            this.delivery_loading = false;
                         }
                         if let Some(next) = &binding {
                             if next.registry_error.as_ref()
@@ -226,6 +233,7 @@ impl Board {
         self.active = visible;
         self.local_loading = false;
         self.local_generation = self.local_generation.wrapping_add(1);
+        self.delivery_loading = false;
         self.ticker = None; // Dropping the task cancels the visible-only timer.
         self.snapshot.invalidate();
         if visible {
@@ -265,6 +273,7 @@ impl Board {
         let Some(ticket) = self.snapshot.begin() else {
             return;
         }; // Coalesce overlapping refreshes.
+        self.refresh_delivery(ticket.clone(), window, cx);
         let forgejo_ticket = ticket.clone();
         let read_issues = self.read_issues;
         let needs_threads = binding
@@ -767,6 +776,9 @@ impl Board {
             );
         }
         if self.selected == Some(number) {
+            if self.delivery.enabled() {
+                card = card.child(self.delivery_details(scope, binding, cx));
+            }
             let url = binding.issue_url(number);
             let context = self.context(scope);
             let mut actions = h_flex()
@@ -946,6 +958,9 @@ impl Render for Board {
         if let Some(attention) = self.attention(binding, cx) {
             root = root.child(attention);
         }
+        if self.delivery.enabled() {
+            root = root.child(self.delivery_summary(binding, cx));
+        }
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
@@ -971,11 +986,7 @@ impl Render for Board {
                 .iter()
                 .filter(|scope| {
                     self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-                        && okilum_t3::board::column(
-                            scope,
-                            self.snapshot.forgejo.value.get(&scope.number),
-                            &self.snapshot.t3.value,
-                        ) == column
+                        && self.delivery_column(scope) == column
                 })
                 .collect();
             let local_cards: Vec<_> = self
@@ -1071,7 +1082,7 @@ impl Render for Board {
             .issues
             .iter()
             .filter(|scope| {
-                scope.stage == Some(okilum_t3::board::HumanStage::Verified)
+                self.delivery_column(scope) == Column::Verified
                     && self.filter.as_ref().is_none_or(|f| f == &scope.executor)
             })
             .count();
