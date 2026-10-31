@@ -37,6 +37,7 @@ jobs:
           sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config curl git \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev
       - uses: actions/cache/restore@v4
+        continue-on-error: true
         id: cache
         with:
           path: |
@@ -50,6 +51,7 @@ jobs:
         shell: bash
         run: bash scripts/ci/fast.sh
       - uses: actions/cache/save@v4
+        continue-on-error: true
         if: always() && !cancelled() && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
