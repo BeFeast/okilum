@@ -29,8 +29,8 @@ class ProcessV2(unittest.TestCase):
         data = workflow('.github/workflows/forgejo-fast.yml')
         platforms = data['jobs']['build']['strategy']['matrix']['include']
         self.assertEqual({p['platform'] for p in platforms}, {'linux', 'windows', 'macos'})
-        self.assertEqual(data['jobs']['fast']['needs'], 'build')
-        self.assertEqual(data['jobs']['fast']['if'], 'always()')
+        self.assertEqual(set(data['jobs']), {'build'})
+        self.assertIn('timeout-minutes: 6', (ROOT / '.github/workflows/forgejo-fast.yml').read_text())
         local = workflow('.forgejo/workflows/fast.yml')
         self.assertEqual(local['jobs']['check']['timeout-minutes'], '10')
         script = (ROOT / 'scripts/ci/fast.sh').read_text()

@@ -10,9 +10,14 @@ acceptance. P0/P1 releases may run outside that cycle.
 It uses an exact-head hosted matrix: Linux, Windows and macOS desktop/supervisor
 builds plus the deterministic okilum-paste library unit tests. The aggregate
 fails if any platform fails, skips or times out. The bridge is bounded to ten
-minutes including queue time; the platform job has a seven-minute bound (two minutes for hosted queue,
-one minute for checkout/transport). Cold
+minutes including queue time; the build step has a six-minute bound with time retained for cache persistence.
+The bridge checks all three exact platform receipts directly, requiring source,
+run/attempt, runner label and successful executed build/test step. It does not
+need a fourth hosted aggregate runner. The API run summary may lag the actual
+jobs; explicit cancelled/failed records and missing/skipped steps never pass. Cold
 caches or unavailable hosted capacity are real failures, never fallback success.
+PR-local fast refs persist until PR-close cleanup so compiler caches survive
+corrective pushes; updates are normal fast-forwards, never force pushes.
 The first production timing must be measured rather than inferred from timeout.
 
 No approval requirement blocks merge. Review happens asynchronously after merge;

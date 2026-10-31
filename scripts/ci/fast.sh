@@ -11,15 +11,15 @@ if [ "${RUNNER_OS:-}" = Windows ]; then
     python scripts/ci/test-icon.py target/fast/okilum.ico
     export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/fast/okilum.ico")"
 fi
-build_args=()
-if [ "${RUNNER_OS:-}" = Windows ]; then build_args=(--no-default-features); fi
+set -- cargo build --locked -p okilum-shell -p okilum-sync-supervisor
+if [ "${RUNNER_OS:-}" = Windows ]; then set -- "$@" --no-default-features; fi
 if [ "${RUNNER_OS:-}" = macOS ]; then
     export CC=/usr/bin/clang CXX=/usr/bin/clang++
     export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
     python3 scripts/updater/sparkle.py fetch "$RUNNER_TEMP/Sparkle.tar.xz"
     python3 scripts/updater/sparkle.py prepare --archive "$RUNNER_TEMP/Sparkle.tar.xz" --destination vendor/sparkle
 fi
-cargo build --locked -p okilum-shell -p okilum-sync-supervisor "${build_args[@]}"
+"$@"
 # Pure HTML/Markdown parsing tests, no UI, process trees, network or timers.
 cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"
