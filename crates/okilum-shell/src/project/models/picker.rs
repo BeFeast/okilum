@@ -91,6 +91,7 @@ impl ProjectView {
                         .disabled(self.model_busy)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.model_ui.provider = Some(id.clone());
+                            this.model_ui.follow_current = false;
                             this.model_ui.scroll.set_offset(point(px(0.), px(0.)));
                             cx.notify();
                         })),

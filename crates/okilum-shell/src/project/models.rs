@@ -11,6 +11,7 @@ pub(super) struct PickerUi {
     changes: Option<Subscription>,
     provider: Option<String>,
     scroll: ScrollHandle,
+    follow_current: bool,
 }
 
 impl ProjectView {
@@ -42,6 +43,7 @@ impl ProjectView {
             self.models = None;
         }
         self.model_target = Some(target);
+        self.model_ui.follow_current = true;
         self.model_ui.provider = self
             .models
             .as_ref()
@@ -115,11 +117,24 @@ impl ProjectView {
                     this.model_busy = false;
                     match result {
                         Ok(snapshot) => {
-                            if this.model_ui.provider.is_none() {
+                            if this.model_ui.follow_current || this.model_ui.provider.is_none() {
                                 this.model_ui.provider = Some(snapshot.configuration.model_selection.instance_id.clone());
                             }
+                            this.model_ui.follow_current = false;
                             if let Some(index) = snapshot.picker_choices(this.model_ui.provider.as_deref().unwrap_or(""), "").iter().position(|choice| choice.current) {
-                                this.model_ui.scroll.scroll_to_item(index);
+                                // ScrollHandle learns overflow/child geometry during
+                                // the first layout; reveal after that layout exists.
+                                let target = requested_target.clone();
+                                cx.on_next_frame(window, move |this, _, cx| {
+                                    if this.generation == generation
+                                        && this.model_open
+                                        && this.model_target.as_ref() == Some(&target)
+                                        && this.model_ui.search.as_ref().is_some_and(|input| input.read(cx).value().trim().is_empty())
+                                    {
+                                        this.model_ui.scroll.scroll_to_item(index);
+                                        cx.notify();
+                                    }
+                                });
                             }
                             this.models = Some(snapshot);
                             this.model_candidate = None;
