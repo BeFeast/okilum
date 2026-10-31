@@ -1,15 +1,15 @@
-# Signed Mac beta ticks until 2026-10-26 03:00 UTC, then only daily 10:30 UTC.
-# A lightweight tick dispatches main; green PRs dispatch their verified branch.
-# See docs/macos-auto-update.md.
+# Process v2: coalesced main beta, hosted by day and existing M4 lane at night.
 name: macos-release
 
 on:
-  # Daily window outside corporate VPN hours; the runner is free between ticks. Manual build now bypasses it.
-  schedule:
-    - cron: "30 10 * * *"
-    - cron: "*/10 * * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
+      full_acceptance:
+        description: 'Explicit manual full native regressions; automatic beta only builds'
+        type: boolean
+        default: false
       beta_tick:
         description: 'Internal automatic selector: frequent or daily; empty keeps manual behavior'
         required: false
@@ -139,6 +139,7 @@ jobs:
           bash scripts/build-macos-ci.sh "$RUNNER_TEMP/release"
 
       - name: Check the macOS pasteboard adapter on an isolated named pasteboard
+        if: inputs.full_acceptance == true || inputs.full_acceptance == 'true'
         shell: bash
         env:
           MACOS_PR_PREVIEW: ${{ needs.select.outputs.preview }}
@@ -222,7 +223,7 @@ jobs:
 
   hosted-artifact:
     needs: select
-    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && github.event_name == 'workflow_dispatch'
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     runs-on: bridge
     timeout-minutes: 105
     steps:
@@ -259,6 +260,20 @@ jobs:
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PRODUCT_SOURCE: ${{ needs.select.outputs.source }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
           OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
         run: python3 scripts/ci/github-macos-shipping.py
+
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: github.event_name == 'push'
+        with:
+          name: macos-publication
+          path: ${{ runner.temp }}/publish/*
+          retention-days: 7
+      - name: Dispatch protected hosted beta publication
+        if: github.event_name == 'push'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: python3 scripts/releases/publication.py dispatch macos

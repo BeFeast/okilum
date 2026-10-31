@@ -15,8 +15,9 @@ class CoalescingTests(unittest.TestCase):
             self.assertTrue(module.needed('schedule', None, 'new', platform))
             self.assertFalse(module.needed('schedule', {'source': 'new', 'platform': platform}, 'new', platform))
 
-    def test_push_cancels_without_compiling_and_manual_build_bypasses_window(self):
-        self.assertFalse(module.needed('push', None, 'new', 'macos'))
+    def test_push_builds_unpublished_source_and_manual_build_bypasses_window(self):
+        self.assertTrue(module.needed('push', None, 'new', 'macos'))
+        self.assertFalse(module.needed('push', {'source': 'new', 'platform': 'macos'}, 'new', 'macos'))
         for event in ['workflow_dispatch', 'pull_request']:
             self.assertTrue(module.needed(event, {'source': 'new', 'platform': 'macos'}, 'new', 'macos'))
 
@@ -75,8 +76,8 @@ class LinuxWindowTests(unittest.TestCase):
     def test_linux_workflow_uses_light_selector_and_preserves_publication(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.forgejo/workflows/linux-release.yml').read_text()
-        self.assertIn('cron: "*/30 * * * *"', workflow)
-        self.assertNotIn('  push:', workflow)
+        self.assertNotIn('  schedule:', workflow)
+        self.assertIn('  push:', workflow)
         self.assertIn('  workflow_dispatch:', workflow)
         self.assertIn('runs-on: bridge', workflow)
         # The release checkout builds the commit select chose (main tip on a tick).
@@ -275,8 +276,8 @@ class MacBetaWindowTests(unittest.TestCase):
 
     def test_workflow_keeps_tick_off_mac_and_preserves_publication(self):
         workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/macos-release.yml').read_text()
-        self.assertIn('cron: "*/10 * * * *"', workflow)
-        self.assertIn('cron: "30 10 * * *"', workflow)
+        self.assertNotIn('  schedule:', workflow)
+        self.assertIn('  push:', workflow)
         self.assertIn('runs-on: publish', workflow)
         self.assertIn("if: steps.select.outputs.build == 'true'", workflow)
         self.assertIn("if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'local'", workflow)

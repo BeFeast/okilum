@@ -76,7 +76,9 @@ def eligible(run, platform, head, preview=None):
 
 
 def snapshot_run(run, platform):
-    return platform == 'linux' or run['trigger_event'] in ['schedule', 'workflow_dispatch']
+    # Finish useful source-pinned main builds while newer main commits queue.
+    # Published build numbers remain monotonic; advancing main must not starve beta.
+    return run['trigger_event'] in ['push', 'schedule', 'workflow_dispatch']
 
 
 def published_build(store, platform):

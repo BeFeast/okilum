@@ -59,6 +59,13 @@ jobs:
           OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
           OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
         run: python3 scripts/releases/macos-hosted.py preflight
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ~/.cache/okilum-macos/reader-arm64/
+          key: beta-macos-v2-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
       - name: Build, sign and notarize exact product source
         env:
           PRODUCT_SOURCE: ${{ inputs.source }}

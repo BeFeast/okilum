@@ -116,7 +116,7 @@ class ShippingPolicy(unittest.TestCase):
                         (out / 'app.dmg').write_bytes(b'signed dmg fixture')
                         (out / 'release.env').write_text(
                             'SOURCE_SHA=' + (WORKFLOW if wrong == 'source' else SOURCE)
-                            + '\nSOURCE_TREE=' + 'c' * 40 + '\nBUILD=5600\n'
+                            + '\nSOURCE_TREE=' + 'c' * 40 + '\nBUILD=5600\nDISPLAY_VERSION=0.1.5600\n'
                             + 'ARCHIVE=' + str(out / 'app.zip') + '\nDMG=' + str(out / 'app.dmg') + '\n')
                         for n in ['notarization.json', 'notarization-dmg.json']:
                             (out / n).write_text(json.dumps({'status': 'Invalid' if wrong == 'notary' else 'Accepted'}))
@@ -134,7 +134,7 @@ class ShippingPolicy(unittest.TestCase):
                             self.assertEqual(receipt['workflow_sha'], WORKFLOW)
                             self.assertEqual(receipt['build'], 5600)
                             self.assertEqual({x.name for x in Path('dist/shipping-download').iterdir()},
-                                             {'app.zip', 'app.dmg', 'provenance.json'})
+                                             {'app.zip', 'app.dmg', 'provenance.json', 'release.json'})
                 finally:
                     os.chdir(old)
 
@@ -143,7 +143,7 @@ class ShippingPolicy(unittest.TestCase):
         fj = (root / '.forgejo/workflows/macos-release.yml').read_text()
         gh = (root / '.github/workflows/forgejo-macos-shipping.yml').read_text()
         self.assertIn("needs.select.outputs.lane == 'local'", fj)
-        self.assertIn("needs.select.outputs.lane == 'hosted' && github.event_name == 'workflow_dispatch'", fj)
+        self.assertIn("needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')", fj)
         self.assertIn('python3 scripts/releases/macos-hosted.py route', fj)
         self.assertIn('persist-credentials: false', gh)
         self.assertNotIn('secrets.MIRROR_TOKEN', gh)

@@ -29,7 +29,9 @@ import sys
 import urllib.parse
 import urllib.request
 
-LANES = ('ci / linux-local (push)', 'ci / linux-github (push)')
+LANES = tuple(f'ci / {lane} ({event})'
+              for event in ('push', 'schedule', 'workflow_dispatch')
+              for lane in ('linux-local', 'linux-github'))
 ISSUE_TITLE = 'main is red'
 RULE = ('Rule: whoever merged the commit that turned main red reverts it or lands a fix '
         'within 20 minutes (AGENTS.md, "Red main").')

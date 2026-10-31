@@ -1,0 +1,9 @@
+# Process v2: Sprint is retired. Beta follows main on every merge.
+name: sprint-retired
+on: {}
+jobs:
+  retired:
+    if: false
+    runs-on: light
+    steps:
+      - run: echo 'Sprint retired; use main beta'
