@@ -501,8 +501,14 @@ fn native_activity_history_remains_virtualized_and_hidden_updates_are_quiet(
         "positive control: native activity rows rendered within budget: {}",
         before.0
     );
-    assert!(visual.debug_bounds("project-tool-toggle-5000").is_some());
-    assert!(visual.debug_bounds("project-tool-detail-5000").is_none());
+    let toggle = visual
+        .debug_bounds("manager-work-toggle")
+        .expect("positive control: native history renders a work group");
+    assert!(visual.debug_bounds("manager-work-details").is_none());
+    feed.read_with(visual, |feed, _| {
+        assert_eq!(feed.canonical_rows.len(), 5_000);
+        assert_eq!(feed.rows.len(), 1, "one bounded outer work summary");
+    });
     let replacement = Arc::new(TurnRow {
         key: rows.last().unwrap().key.clone(),
         local: true,
@@ -528,6 +534,20 @@ fn native_activity_history_remains_virtualized_and_hidden_updates_are_quiet(
     );
     feed.read_with(visual, |feed, _| {
         assert!(feed.messages[&5000].text.contains("latest hidden detail"))
+    });
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("manager-work-details").is_some(),
+        "positive control: actual disclosure renders the nested work list"
+    );
+    assert!(visual.debug_bounds("project-tool-toggle-1").is_some());
+    assert!(
+        visual.debug_bounds("project-tool-toggle-5000").is_none(),
+        "the same rendered list leaves distant members virtualized"
+    );
+    feed.read_with(visual, |feed, _| {
+        assert_eq!(feed.rows.len(), 2, "only one outer details row");
     });
 }
 

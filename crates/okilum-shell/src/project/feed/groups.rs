@@ -76,6 +76,46 @@ fn run_state(value: &str) -> plan::RunState {
         _ => Unknown,
     }
 }
+
+// Match T3's rendered-output failure check, never the authored tool input.
+fn output_looks_failed(output: &Value) -> bool {
+    match output {
+        Value::String(text) => {
+            let normalized = text.to_lowercase();
+            [
+                "file not found",
+                "no files found",
+                "enoent",
+                "no such file or directory",
+                "no such file",
+                "commandnotfoundexception",
+                "command not found",
+                "is not recognized as the name of a cmdlet",
+                "a parameter cannot be found that matches parameter name",
+            ]
+            .iter()
+            .any(|needle| normalized.contains(needle))
+                || (normalized.contains("cannot find path")
+                    && normalized.contains("because it does not exist"))
+                || (normalized.contains("is not recognized") && normalized.contains("the term '"))
+                || {
+                    static EXIT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
+                        || {
+                            regex::Regex::new(
+                                r"(?i)<exited with exit code\s+[1-9]\d*\s*>|exit(?:ed)? with exit code\s+[1-9]\d*|exit code\s*[:\s]\s*[1-9]\d*\b",
+                            )
+                            .expect("audited T3 output failure expression")
+                        },
+                    );
+                    EXIT.is_match(text)
+                }
+        }
+        Value::Array(values) => values.iter().any(output_looks_failed),
+        Value::Object(values) => values.values().any(output_looks_failed),
+        _ => false,
+    }
+}
+
 fn classify(item: &Value) -> plan::RowKind {
     use plan::{Barrier, RowKind, WorkStatus};
     let kind = item["type"].as_str().unwrap_or("");
@@ -94,19 +134,32 @@ fn classify(item: &Value) -> plan::RowKind {
         "reasoning" | "command_execution" | "file_change" | "file_search" | "web_search"
         | "dynamic_tool" | "todo_list" | "notification" | "system_notice" => {
             let status = match item["status"].as_str() {
-                Some("running" | "streaming" | "in_progress" | "preparing" | "started") => {
-                    WorkStatus::InProgress
-                }
+                Some(
+                    "pending" | "running" | "waiting" | "streaming" | "inProgress" | "in_progress"
+                    | "preparing" | "started",
+                ) => WorkStatus::InProgress,
                 Some("completed") => WorkStatus::Completed,
                 Some("failed") => WorkStatus::Failed,
                 Some("declined") => WorkStatus::Declined,
-                Some("interrupted" | "cancelled") => WorkStatus::Stopped,
+                Some("interrupted" | "cancelled" | "stopped") => WorkStatus::Stopped,
                 _ => WorkStatus::Unspecified,
             };
             let tool_like = matches!(
                 kind,
-                "command_execution" | "file_change" | "file_search" | "web_search" | "dynamic_tool"
-            );
+                "reasoning"
+                    | "command_execution"
+                    | "file_change"
+                    | "file_search"
+                    | "web_search"
+                    | "dynamic_tool"
+            ) || matches!(item["tone"].as_str(), Some("tool" | "thinking"));
+            let output_failed = item["outputIndicatesFailure"] == true
+                || item["exitCode"].as_i64().is_some_and(|code| code != 0)
+                || item["output"]["isError"] == true
+                || (tool_like && output_looks_failed(&item["output"]));
+            let failed =
+                output_failed || matches!(status, WorkStatus::Failed | WorkStatus::Declined);
+            let thinking = kind == "reasoning" || item["tone"] == "thinking";
             let tool_call_id = item["toolCallId"]
                 .as_str()
                 .filter(|id| !id.is_empty())
@@ -134,10 +187,13 @@ fn classify(item: &Value) -> plan::RowKind {
                 tool_like,
                 tool_call_id,
                 status,
-                output_failed: item["outputIndicatesFailure"] == true
-                    || item["exitCode"].as_i64().is_some_and(|code| code != 0)
-                    || item["output"]["isError"] == true,
-                neutral: item["tone"] == "neutral" || item["status"] == "neutral",
+                output_failed,
+                neutral: item["tone"] == "neutral"
+                    || item["status"] == "neutral"
+                    || (tool_like
+                        && !failed
+                        && (thinking
+                            || matches!(status, WorkStatus::InProgress | WorkStatus::Stopped))),
                 task_progress: item["kind"] == "task.progress",
                 lifecycle,
             })
@@ -1128,6 +1184,51 @@ mod tests {
         assert_eq!(duration_label(47_000), "47s");
         assert_eq!(duration_label(3_661_000), "1h 1m 1s");
         assert!(timestamp(&json!({"startedAt":"not a date"}), &["startedAt"]).is_none());
+    }
+
+    #[test]
+    fn native_work_status_and_rendered_output_match_t3_presentation() {
+        let work = |value: Value| {
+            let plan::RowKind::Work(work) = classify(&value) else {
+                panic!("known native work");
+            };
+            work
+        };
+        for status in ["pending", "running", "waiting", "inProgress"] {
+            let fact = work(json!({"type":"command_execution", "status":status}));
+            assert_eq!(fact.status, plan::WorkStatus::InProgress, "{status}");
+            assert!(fact.neutral, "inactive work hides a neutral {status} row");
+        }
+        for status in ["cancelled", "interrupted", "stopped"] {
+            let fact = work(json!({"type":"command_execution", "status":status}));
+            assert_eq!(fact.status, plan::WorkStatus::Stopped, "{status}");
+            assert!(fact.neutral);
+        }
+        let thinking = work(json!({"type":"reasoning", "status":"completed"}));
+        assert!(thinking.tool_like && thinking.neutral);
+        let failed_thinking = work(json!({"type":"reasoning", "status":"failed"}));
+        assert!(failed_thinking.failed() && !failed_thinking.neutral);
+        let success = work(json!({"type":"command_execution", "status":"completed"}));
+        assert!(!success.neutral && !success.failed());
+        for output in [
+            "File not found",
+            "ENOENT: open failed",
+            "No such file or directory",
+            "The term 'bad' is not recognized",
+            "Cannot find path X because it does not exist",
+            "<exited with exit code 2>",
+            "Exited with exit code 19",
+            "Exit code: 3",
+        ] {
+            let fact =
+                work(json!({"type":"command_execution", "status":"completed", "output":output}));
+            assert!(fact.failed() && !fact.neutral, "{output}");
+            let command_only = work(
+                json!({"type":"command_execution", "status":"completed", "input":output, "output":"Exit code: 0"}),
+            );
+            assert!(!command_only.failed(), "authored input: {output}");
+        }
+        assert!(work(json!({"type":"dynamic_tool", "status":"completed", "output":{"content":[{"type":"text", "text":"command not found"}]}})).failed());
     }
 
     #[test]
