@@ -78,13 +78,16 @@ impl State {
     /// A directory notification is a hint about its immediate children, not a
     /// dropped-event signal. Existing subtrees remain untouched; only new trees
     /// are enumerated recursively. MustScan/overflow still requires reconcile.
+    /// Regular non-note files found or missing there are attachment identities
+    /// (#8): the tree lists them, so their creation and removal is topology.
     fn expand_topology(
         &self,
         input: &crate::Changes,
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
-    ) -> Result<(crate::Changes, BTreeMap<String, bool>)> {
+    ) -> Result<Topology> {
         let mut changes = input.clone();
         let mut directories = BTreeMap::new();
+        let mut attachments = BTreeMap::new();
         // Existing save batches need no cloned inventory lookup or directory I/O.
         if input.directories.is_empty()
             && input.changed.iter().all(|path| {
@@ -99,7 +102,7 @@ impl State {
                     })
             })
         {
-            return Ok((changes, directories));
+            return Ok((changes, directories, attachments));
         }
 
         let known: BTreeMap<_, _> = self
@@ -138,7 +141,10 @@ impl State {
                 continue;
             }
             ensure!(
-                changes.changed.len() + changes.removed.len() + directories.len()
+                changes.changed.len()
+                    + changes.removed.len()
+                    + directories.len()
+                    + attachments.len()
                     < crate::watch::BULK_THRESHOLD,
                 "Bulk topology requires reconciliation"
             );
@@ -152,10 +158,25 @@ impl State {
                         .any(|name| name.to_lowercase() == path.to_lowercase()),
                 "Case-only directory identity requires reconciliation"
             );
-            if known.get(&path) == Some(&EntryKind::Attachment) {
-                let meta = std::fs::symlink_metadata(&absolute)?;
-                if meta.is_file() && !meta.file_type().is_symlink() {
-                    continue;
+            // A renamed file is reported under its own name, because a moved
+            // tree looks the same. A regular file is a hint about its parent.
+            if !path.is_empty()
+                && known
+                    .get(&path)
+                    .is_none_or(|kind| *kind == EntryKind::Attachment)
+            {
+                match std::fs::symlink_metadata(&absolute) {
+                    Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
+                        if !known.contains_key(&path) {
+                            pending.insert(note_path(
+                                Path::new(&path).parent().unwrap_or(Path::new("")),
+                            ));
+                        }
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
                 }
             }
             // Validate every ancestor, including an existing directory swapped
@@ -183,7 +204,9 @@ impl State {
                             EntryKind::Directory => {
                                 directories.insert(name.clone(), false);
                             }
-                            _ => bail!("Removed non-note topology requires reconciliation"),
+                            EntryKind::Attachment => {
+                                attachments.insert(name.clone(), false);
+                            }
                         }
                     }
                 }
@@ -196,7 +219,10 @@ impl State {
             for entry in std::fs::read_dir(&absolute)? {
                 checkpoint("Checking changed folders", visited.len())?;
                 ensure!(
-                    changes.changed.len() + changes.removed.len() + directories.len()
+                    changes.changed.len()
+                        + changes.removed.len()
+                        + directories.len()
+                        + attachments.len()
                         < crate::watch::BULK_THRESHOLD,
                     "Bulk topology requires reconciliation"
                 );
@@ -258,11 +284,18 @@ impl State {
                         );
                         changes.changed.insert(child);
                     }
-                } else {
-                    ensure!(
-                        known.get(&child) == Some(&EntryKind::Attachment),
-                        "New non-note topology requires reconciliation"
-                    );
+                } else if kind.is_file() {
+                    match known.get(&child) {
+                        Some(EntryKind::Attachment) => {}
+                        None => {
+                            ensure!(
+                                !super::super::cloud_placeholder(&entry.path()),
+                                "New placeholder requires reconciliation"
+                            );
+                            attachments.insert(child, true);
+                        }
+                        Some(_) => bail!("Changed entry kind requires reconciliation"),
+                    }
                 }
             }
             for (name, kind) in children
@@ -279,17 +312,19 @@ impl State {
                         EntryKind::Directory => {
                             pending.insert(name.clone());
                         }
-                        _ => bail!("Removed non-note topology requires reconciliation"),
+                        EntryKind::Attachment => {
+                            attachments.insert(name.clone(), false);
+                        }
                     }
                 }
             }
         }
         ensure!(
-            changes.changed.len() + changes.removed.len() + directories.len()
+            changes.changed.len() + changes.removed.len() + directories.len() + attachments.len()
                 < crate::watch::BULK_THRESHOLD,
             "Bulk topology requires reconciliation"
         );
-        Ok((changes, directories))
+        Ok((changes, directories, attachments))
     }
 
     pub fn apply(
@@ -314,7 +349,7 @@ impl State {
             !changes.rescan,
             "Dropped events require full reconciliation"
         );
-        let (changes, directories) = self.expand_topology(changes, checkpoint)?;
+        let (changes, directories, attachments) = self.expand_topology(changes, checkpoint)?;
         ensure!(
             !changes.removed.iter().any(|removed| changes
                 .changed
@@ -326,13 +361,13 @@ impl State {
         let touched: BTreeSet<_> = changes.changed.union(&changes.removed).cloned().collect();
         let old_aliases = self.vault.aliases.clone();
         let mut affected = touched.clone();
-        for path in directories.keys() {
+        for path in directories.keys().chain(attachments.keys()) {
             affected.extend(self.candidates.referrers_for(path));
         }
         let mut removed = BTreeSet::new();
         let mut changed = BTreeSet::new();
         let mut reads = 0;
-        let mut topology_changed = !directories.is_empty();
+        let mut topology_changed = !directories.is_empty() || !attachments.is_empty();
         // Validate the entire batch before mutating: never follow a newly-created
         // symlink, service entry, non-note, or unobserved ancestor directory.
         let mut identities = Vec::new();
@@ -407,6 +442,9 @@ impl State {
             }
         }
         self.vault.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        for (path, present) in &attachments {
+            self.vault.set_attachment_identity(path, *present);
+        }
         let mut targets: BTreeSet<_> = self
             .vault
             .backlink_map
@@ -561,7 +599,7 @@ impl State {
                 .sources
                 .insert(path.clone(), self.snapshot.sources.get(path).cloned());
         }
-        for path in directories.keys() {
+        for path in directories.keys().chain(attachments.keys()) {
             self.delta.entries.insert(
                 path.clone(),
                 self.vault.entries.iter().find(|e| e.path == *path).cloned(),
@@ -592,6 +630,13 @@ impl State {
         })
     }
 }
+
+/// Expanded note changes, discovered/removed directories and attachments.
+type Topology = (
+    crate::Changes,
+    BTreeMap<String, bool>,
+    BTreeMap<String, bool>,
+);
 
 fn input_directory_scope(
     path: &Path,
@@ -649,7 +694,10 @@ impl Delta {
             ensure!(
                 relative(path)
                     && entry.as_ref().is_none_or(|entry| entry.path == *path
-                        && matches!(entry.kind, EntryKind::Markdown | EntryKind::Directory)),
+                        && matches!(
+                            entry.kind,
+                            EntryKind::Markdown | EntryKind::Directory | EntryKind::Attachment
+                        )),
                 "Invalid incremental inventory identity"
             );
         }
@@ -1096,7 +1144,97 @@ mod tests {
             .err()
             .unwrap()
             .to_string()
-            .contains("non-note topology"));
+            .contains("New placeholder requires reconciliation"));
+    }
+
+    /// #8: files created or deleted by another application are listed without
+    /// a full reconcile, and match what a fresh scan would list.
+    #[test]
+    fn attachment_hints_add_and_remove_listed_files_without_reconcile() {
+        let (temp, mut state) = fixture();
+        let root = state.vault.root.clone();
+        let cache = temp.path().join("cache");
+        save_provisional(&state.snapshot, &state.vault, &cache, None).unwrap();
+        let listed = |state: &State, path: &str| {
+            state
+                .vault
+                .entries
+                .iter()
+                .any(|entry| entry.path == path && entry.kind == EntryKind::Attachment)
+        };
+        std::fs::write(root.join("report.pdf"), b"pdf").unwrap();
+        std::fs::write(root.join("dir/notes.txt"), b"text").unwrap();
+        std::fs::write(root.join("dir/Missing"), b"embedded by A").unwrap();
+        let batch = state
+            .apply_with_reader(
+                &crate::Changes {
+                    directories: BTreeSet::from(["".into(), "dir".into()]),
+                    ..Default::default()
+                },
+                &mut |_, _| Ok(()),
+                &mut |path| panic!("attachment discovery must not read {}", path.display()),
+            )
+            .unwrap();
+        assert!(batch.topology_changed && batch.changed.is_empty() && batch.read == 0);
+        assert!(
+            batch.affected.contains("A.md"),
+            "a referrer of a new attachment name is re-resolved"
+        );
+        assert!(listed(&state, "report.pdf") && listed(&state, "dir/notes.txt"));
+        assert_eq!(
+            state.vault.resolve_asset("Missing", "A.md"),
+            Some(root.join("dir/Missing"))
+        );
+        compare(&state);
+        // A renamed attachment is reported under its new and old names.
+        std::fs::rename(root.join("report.pdf"), root.join("dir/report.pdf")).unwrap();
+        std::fs::remove_file(root.join("dir/notes.txt")).unwrap();
+        state
+            .apply(
+                &crate::Changes {
+                    directories: BTreeSet::from([
+                        "report.pdf".into(),
+                        "dir/report.pdf".into(),
+                        "dir".into(),
+                    ]),
+                    ..Default::default()
+                },
+                &mut |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(!listed(&state, "report.pdf") && !listed(&state, "dir/notes.txt"));
+        assert!(listed(&state, "dir/report.pdf"));
+        compare(&state);
+        // A removed folder takes its attachments with it.
+        std::fs::remove_dir_all(root.join("dir")).unwrap();
+        state
+            .apply(
+                &crate::Changes {
+                    directories: BTreeSet::from(["dir".into()]),
+                    ..Default::default()
+                },
+                &mut |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(!listed(&state, "dir/report.pdf") && !listed(&state, "dir/Missing"));
+        assert_eq!(state.vault.resolve_asset("Missing", "A.md"), None);
+        compare(&state);
+        // The persisted delta carries the attachment rows across a warm restart.
+        std::fs::write(root.join("late.png"), b"png").unwrap();
+        state
+            .apply(
+                &crate::Changes {
+                    directories: BTreeSet::from(["".into()]),
+                    ..Default::default()
+                },
+                &mut |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(listed(&state, "late.png"));
+        compare(&state);
+        state.persist_delta(&cache).unwrap();
+        let loaded = Snapshot::load_checked(&cache, &root).unwrap();
+        assert_eq!(loaded.entries, state.vault.entries);
     }
 
     #[test]

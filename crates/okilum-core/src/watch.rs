@@ -17,7 +17,8 @@
 //!   the caller knows whether it is worth paying.
 //! - **Notes and directory topology matter.** Service directories and non-note
 //!   file writes are excluded; ordinary dot/underscore folders remain searchable.
-//!   Directory events report scope hints: a populated tree can arrive before
+//!   Creating or removing a non-note file reports its folder as a hint, because
+//!   the tree lists attachments too (#8). Directory events report scope hints: a populated tree can arrive before
 //!   recursive watches observe its individual files. Only lost events force rescan. The legacy in-vault
 //!   index directory is excluded to avoid reacting to its own writes.
 
@@ -341,6 +342,17 @@ impl VaultWatcher {
                         .directories
                         .insert(crate::vault::note_path(relative));
                     relevant = true;
+                } else if matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_))
+                    && p.extension()
+                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("md"))
+                {
+                    // An attachment appearing or disappearing changes the
+                    // listed inventory (#8); its content writes still do not.
+                    let parent = relative.parent().unwrap_or(Path::new(""));
+                    self.pending
+                        .directories
+                        .insert(crate::vault::note_path(parent));
+                    relevant = true;
                 }
                 let Some(rel) = self.relevant(p) else {
                     continue;
@@ -441,19 +453,31 @@ mod topology_tests {
         tx.send(write_event(note)).unwrap();
         assert!(watcher.poll().is_none());
         watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
-        for path in [
-            temp.path().join(".git/index"),
-            temp.path().join("image.png"),
-            temp.path().join(".okilum-save-test"),
-            temp.path().parent().unwrap().join("outside.md"),
+        let topology = [
+            EventKind::Create(notify::event::CreateKind::File),
+            EventKind::Remove(notify::event::RemoveKind::File),
+        ];
+        let write = EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Any,
+        ));
+        for (path, kinds) in [
+            (
+                temp.path().join(".git/index"),
+                &[topology[0], topology[1], write][..],
+            ),
+            // An attachment's content write is ignored; its creation and
+            // removal are inventory changes (#8).
+            (temp.path().join("image.png"), &[write][..]),
+            (
+                temp.path().join(".okilum-save-test"),
+                &[topology[0], topology[1], write][..],
+            ),
+            (
+                temp.path().parent().unwrap().join("outside.md"),
+                &[topology[0], topology[1], write][..],
+            ),
         ] {
-            for kind in [
-                EventKind::Create(notify::event::CreateKind::File),
-                EventKind::Remove(notify::event::RemoveKind::File),
-                EventKind::Modify(notify::event::ModifyKind::Data(
-                    notify::event::DataChange::Any,
-                )),
-            ] {
+            for kind in kinds.iter().copied() {
                 let event = Event::new(kind).add_path(path.clone());
                 assert!(
                     !event.need_rescan(),
@@ -468,6 +492,46 @@ mod topology_tests {
         assert_eq!(batch.changed, BTreeSet::from(["a.md".into()]));
         assert!(batch.removed.is_empty() && batch.directories.is_empty());
         assert!(watcher.first_event.is_none());
+    }
+
+    /// #8: a file another application creates or deletes in an open folder
+    /// must reach the listed inventory. Content writes stay ignored.
+    #[test]
+    fn attachment_creation_and_removal_report_their_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("docs")).unwrap();
+        let (mut watcher, tx) = controlled_watcher(temp.path());
+        let data = EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Any,
+        ));
+        tx.send(Ok(
+            Event::new(data).add_path(temp.path().join("docs/report.pdf"))
+        ))
+        .unwrap();
+        assert!(watcher.poll().is_none());
+        assert!(
+            watcher.pending.is_empty() && watcher.last_event.is_none(),
+            "an attachment content write is not inventory"
+        );
+        std::fs::write(temp.path().join("docs/report.pdf"), b"pdf").unwrap();
+        tx.send(Ok(Event::new(EventKind::Create(
+            notify::event::CreateKind::File,
+        ))
+        .add_path(temp.path().join("docs/report.pdf"))))
+            .unwrap();
+        tx.send(Ok(Event::new(EventKind::Remove(
+            notify::event::RemoveKind::File,
+        ))
+        .add_path(temp.path().join("gone.txt"))))
+            .unwrap();
+        assert!(watcher.poll().is_none());
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        let batch = watcher.poll().expect("attachment topology is relevant");
+        assert_eq!(
+            batch.directories,
+            BTreeSet::from(["".to_string(), "docs".to_string()])
+        );
+        assert!(batch.changed.is_empty() && batch.removed.is_empty() && !batch.rescan);
     }
 
     #[test]

@@ -908,6 +908,49 @@ impl Vault {
         self.rebuild_alias_map();
     }
 
+    /// Apply a validated regular non-note file identity without a directory walk.
+    /// The bare-filename asset lookup keeps the warm-load precedence: the first
+    /// attachment with that name in path order.
+    fn set_attachment_identity(&mut self, path: &str, present: bool) {
+        let lower = path.to_lowercase();
+        self.entries.retain(|entry| entry.path != path);
+        self.occupied_paths.remove(&lower);
+        self.non_directory_paths.remove(&lower);
+        self.symlink_paths.remove(&lower);
+        if present {
+            self.occupied_paths.insert(lower);
+            self.non_directory_paths.insert(path.to_lowercase());
+            self.entries.push(VaultEntry {
+                path: path.into(),
+                kind: EntryKind::Attachment,
+            });
+            self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+        let name = Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let first = self
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Attachment)
+            .find(|entry| {
+                Path::new(&entry.path)
+                    .file_name()
+                    .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
+            })
+            .map(|entry| self.root.join(&entry.path));
+        match first {
+            Some(first) => {
+                self.asset_map.insert(name, first);
+            }
+            None => {
+                self.asset_map.remove(&name);
+            }
+        }
+    }
+
     fn refresh_backlinks_from(
         &mut self,
         selected: &std::collections::BTreeSet<String>,
