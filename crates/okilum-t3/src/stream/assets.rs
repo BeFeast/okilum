@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 
 // Deployed T3 chatAttachment contract (0.1.7-nightly.20261031.3991).
+pub const MAX_ATTACHMENTS: usize = 8;
 pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_TOTAL_IMAGE_BYTES: u64 = 80 * 1024 * 1024;
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
@@ -137,6 +138,11 @@ impl ChatAttachment {
 }
 
 pub fn validate_attachments(attachments: &[ChatAttachment]) -> StreamResult<()> {
+    if attachments.len() > MAX_ATTACHMENTS {
+        return Err(StreamError::Protocol(
+            "a message supports at most 8 attachments",
+        ));
+    }
     let mut image_bytes = 0_u64;
     for attachment in attachments {
         attachment.validate()?;

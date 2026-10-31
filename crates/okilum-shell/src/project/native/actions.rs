@@ -532,6 +532,11 @@ impl ProjectView {
             return;
         }
         let draft = self.compose.read(cx).value().to_string();
+        if let Some(error) = okilum_t3::actions::prompt_length_validation(&draft) {
+            self.error = Some(error);
+            cx.notify();
+            return;
+        }
         let attachments = match self.prepared_attachments() {
             Ok(attachments) => attachments,
             Err(error) => {
@@ -1101,5 +1106,58 @@ mod tests {
                 "refused local transport retains recoverable operation"
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod composer_limit_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn oversized_native_prompt_is_not_retained_and_keeps_the_draft(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let env = Environment::new("fixture", "http://127.0.0.1:1").unwrap();
+        let token = NativeToken::from_secret(&env, &serde_json::to_vec(&json!({"origin":env.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read orchestration:operate"})).unwrap()).unwrap();
+        let client =
+            Arc::new(NativeClient::new(env.clone(), token, Duration::from_millis(10)).unwrap());
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = super::super::super::fixture::view(
+                    temp.path().to_owned(),
+                    Arc::new(super::super::super::fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                view.active = false;
+                view.environment = Some(env);
+                view.native.client = Some(client);
+                view.native.stream_ready = true;
+                view.compose.update(cx, |input, cx| {
+                    input.set_value("x".repeat(120_000), window, cx)
+                });
+                assert!(
+                    view.can_send(),
+                    "positive control: valid prompt reaches send preflight"
+                );
+                view
+            });
+            Root::new(view, window, cx)
+        });
+        let view = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ProjectView>().unwrap()
+        });
+        view.update_in(visual, |view, window, cx| {
+            let draft = "x".repeat(120_001);
+            view.compose.update(cx, |input, cx| input.set_value(draft.clone(), window, cx));
+            view.native_send(window, cx);
+            assert_eq!(view.compose.read(cx).value().as_str(), draft);
+            assert_eq!(view.error.as_deref(), Some("Prompt is 1 character over the 120,000-character limit. Shorten or split it before sending."));
+            assert!(!view.busy);
+            assert!(view.native.actions.read(cx).records.is_empty());
+            assert!(!temp.path().join("t3-native-commands").exists());
+        });
+        visual.run_until_parked();
     }
 }

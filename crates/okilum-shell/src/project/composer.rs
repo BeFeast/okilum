@@ -38,6 +38,7 @@ impl Composer {
             if matches!(event, InputEvent::PressEnter { shift: false, .. })
                 && this.enabled
                 && !this.busy
+                && this.prompt_validation(cx).is_none()
                 && !this.input.read(cx).ime_settling(cx)
                 && (this.has_attachments || !this.input.read(cx).value().trim().is_empty())
             {
@@ -56,6 +57,13 @@ impl Composer {
             can_attach: false,
             _input: subscription,
         }
+    }
+    fn prompt_validation(&self, cx: &App) -> Option<String> {
+        self.native
+            .then(|| {
+                okilum_t3::actions::prompt_length_validation(self.input.read(cx).value().as_str())
+            })
+            .flatten()
     }
     pub(super) fn set_native(&mut self, native: bool, steer: bool, cx: &mut Context<Self>) {
         if (self.native, self.steer) != (native, steer) {
@@ -89,6 +97,7 @@ impl Composer {
 }
 impl Render for Composer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let validation = self.prompt_validation(cx);
         let modes = if self.native {
             [
                 (Mode::Auto, "Send"),
@@ -170,6 +179,7 @@ impl Render for Composer {
                             .tooltip("Send to manager")
                             .disabled(
                                 self.busy
+                                    || validation.is_some()
                                     || !self.enabled
                                     || (!self.has_attachments
                                         && self.input.read(cx).value().trim().is_empty()),
@@ -177,6 +187,15 @@ impl Render for Composer {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
                     ),
             )
+            .when_some(validation, |composer, message| {
+                composer.child(
+                    div()
+                        .debug_selector(|| "project-prompt-length-validation".into())
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(message),
+                )
+            })
     }
 }
 
@@ -315,6 +334,69 @@ mod tests {
             *dropped.borrow(),
             paths,
             "native file-drop events must retain all typed paths"
+        );
+    }
+    #[gpui::test]
+    fn oversized_prompt_blocks_enter_and_click_without_changing_the_draft(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let sends = Rc::new(Cell::new(0));
+        let observed = sends.clone();
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
+            let composer = cx.new(|cx| {
+                let mut composer = Composer::new(input, cx);
+                composer.set_native(true, false, cx);
+                composer.set_controls(true, false, cx);
+                cx.subscribe(&cx.entity(), move |_, _, _: &SendRequested, _| {
+                    observed.set(observed.get() + 1);
+                })
+                .detach();
+                composer
+            });
+            Root::new(composer, window, cx)
+        });
+        let composer = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Composer>().unwrap()
+        });
+        let oversized = "a".repeat(120_001);
+        composer.update_in(visual, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                input.set_value(oversized.clone(), window, cx);
+                input.focus(window, cx);
+            });
+            assert_eq!(composer.prompt_validation(cx).as_deref(), Some("Prompt is 1 character over the 120,000-character limit. Shorten or split it before sending."));
+        });
+        visual.run_until_parked();
+        assert!(visual
+            .debug_bounds("project-prompt-length-validation")
+            .is_some());
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        visual.simulate_click(
+            visual.debug_bounds("project-send").unwrap().center(),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(sends.get(), 0);
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), oversized);
+        });
+        composer.update_in(visual, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                input.set_value("a".repeat(120_000), window, cx);
+                input.focus(window, cx);
+            });
+        });
+        visual.run_until_parked();
+        assert!(visual
+            .debug_bounds("project-prompt-length-validation")
+            .is_none());
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(
+            sends.get(),
+            1,
+            "positive control: the boundary prompt dispatches once"
         );
     }
 }

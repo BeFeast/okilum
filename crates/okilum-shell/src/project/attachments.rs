@@ -4,8 +4,8 @@ use super::*;
 use okilum_t3::{
     chat_drafts::{Attachment, AttachmentKind as DraftKind, AttachmentState},
     stream::{
-        AttachmentKind, AttachmentMetadata, ChatAttachment, NativeClient, MAX_FILE_BYTES,
-        MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
+        AttachmentKind, AttachmentMetadata, ChatAttachment, NativeClient, MAX_ATTACHMENTS,
+        MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
     },
 };
 use std::{collections::HashMap, io::Read};
@@ -369,9 +369,14 @@ impl ProjectView {
             return;
         }
         let mut rows = self.draft_attachments().to_vec();
+        let mut rejected = false;
         for (index, path) in paths.iter().enumerate() {
             let id = if index == 0 { replace.clone() } else { None }
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            if rows.len() >= MAX_ATTACHMENTS && !rows.iter().any(|row| row.id == id) {
+                rejected = true;
+                continue;
+            }
             let name = path
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -399,7 +404,8 @@ impl ProjectView {
                 },
             );
         }
-        self.attachments.notice = None;
+        self.attachments.notice =
+            rejected.then(|| "You can attach up to 8 files per message.".into());
         self.draft_set_attachments(rows, window, cx);
         self.attachment_start_next(window, cx);
     }
@@ -409,6 +415,11 @@ impl ProjectView {
             return;
         };
         if !self.attachment_can_add() {
+            return;
+        }
+        if self.draft_attachments().len() >= MAX_ATTACHMENTS {
+            self.attachments.notice = Some("You can attach up to 8 files per message.".into());
+            cx.notify();
             return;
         }
         let id = uuid::Uuid::new_v4().to_string();
@@ -864,6 +875,59 @@ mod tests {
                 view.compose.read(cx).value().as_str(),
                 "Keep this\nmultiline text"
             );
+            // Pending rows reserve slots synchronously, before preparation/upload.
+            let paths: Vec<_> = (0..8)
+                .map(|n| {
+                    PathBuf::from(format!(
+                        "/missing/{n}.{}",
+                        if n % 2 == 0 { "png" } else { "txt" }
+                    ))
+                })
+                .collect();
+            view.attach_paths(&paths, None, window, cx);
+            let first_eight = view.draft_attachments().to_vec();
+            assert_eq!(first_eight.len(), MAX_ATTACHMENTS);
+            assert!(first_eight
+                .iter()
+                .all(|row| row.state == AttachmentState::Pending));
+            assert_eq!(
+                first_eight
+                    .iter()
+                    .filter(|row| row.kind == DraftKind::Image)
+                    .count(),
+                4
+            );
+            view.attach_image(vec![1, 2, 3], window, cx);
+            view.attach_paths(&[PathBuf::from("/missing/ninth.txt")], None, window, cx);
+            assert_eq!(view.draft_attachments(), first_eight);
+            assert_eq!(
+                view.attachments.sources.len(),
+                MAX_ATTACHMENTS,
+                "no ninth source or upload"
+            );
+            assert_eq!(
+                view.attachments.notice.as_deref(),
+                Some("You can attach up to 8 files per message.")
+            );
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "Keep this\nmultiline text"
+            );
+            // Reselect replaces its slot at capacity; removal releases one slot.
+            let replace_id = first_eight[0].id.clone();
+            view.attach_paths(
+                &[PathBuf::from("/missing/reselected.txt")],
+                Some(replace_id.clone()),
+                window,
+                cx,
+            );
+            assert_eq!(view.draft_attachments().len(), MAX_ATTACHMENTS);
+            assert_eq!(view.draft_attachments()[0].id, replace_id);
+            assert_eq!(view.draft_attachments()[0].name, "reselected.txt");
+            view.remove_attachment(&replace_id, window, cx);
+            view.attach_image(vec![1, 2, 3], window, cx);
+            assert_eq!(view.draft_attachments().len(), MAX_ATTACHMENTS);
+            assert!(view.attachments.notice.is_none());
             let identity = ServerIdentity {
                 environment_id: "native-environment".into(),
                 label: "Fixture".into(),
