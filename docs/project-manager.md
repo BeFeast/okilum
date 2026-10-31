@@ -17,6 +17,15 @@ scrolling away preserves position and **Jump to latest** resumes following.
 Thread IDs, credential details and scheduler limitations are available only
 through **… → Diagnostics**, outside the conversation.
 
+The Linux composer starts with three visible lines, grows up to ten, and then
+scrolls within the draft. Enter sends once; Shift+Enter adds a newline. Pasting
+multiline text and confirming an active IME composition do not send a message.
+The searchable thread picker supplies the conversation title once. Scrolling
+up automatically loads earlier server pages while preserving the retained
+history and read anchor. A failed page offers an explicit retry instead of
+retrying during every repaint. New messages follow the bottom only while the
+reader remains there; **Jump to latest** resumes following after reading above.
+
 **Pair** first restores the origin-bound native session from OS credential
 storage. A device enrollment already registered there can be exchanged once
 and removed after the resulting session is saved. This does not convert MCP

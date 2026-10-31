@@ -545,7 +545,20 @@ impl ProjectView {
             }
         }));
     }
+    pub(super) fn prefetch_native_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A failed page remains an explicit retry; painting must not start a
+        // retry chain. Existing loaded history remains usable.
+        if self.native.error.is_none() && self.native.metadata.has_more_history {
+            self.native_history(window, cx);
+        }
+    }
     fn native_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active
+            || self.threads.selected.is_some()
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
+            return;
+        }
         if self.native.history_busy {
             return;
         }
@@ -562,6 +575,7 @@ impl ProjectView {
             return;
         };
         self.native.history_busy = true;
+        self.native.error = None;
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
             let model = retained.clone();
@@ -636,7 +650,11 @@ impl ProjectView {
             view = view.child(
                 Button::new("project-live-history")
                     .ghost()
-                    .label("Load earlier activity")
+                    .label(if self.native.history_busy {
+                        "Loading earlier messages…"
+                    } else {
+                        "Load earlier messages"
+                    })
                     .disabled(self.native.history_busy)
                     .on_click(cx.listener(|this, _, window, cx| this.native_history(window, cx))),
             );

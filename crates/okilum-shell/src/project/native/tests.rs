@@ -9,6 +9,134 @@ use std::{
 use tungstenite::Message;
 
 #[gpui::test]
+fn scrolling_to_the_oldest_row_loads_a_real_history_page_without_losing_the_anchor(
+    cx: &mut TestAppContext,
+) {
+    use okilum_t3::{projection::Projection, stream::ThreadUpdate};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    cx.update(crate::test_init);
+    let thread_id = "mcp:fixture-manager";
+    let message = |n: u64| json!({"id":format!("history-{n}"),"threadId":thread_id,"ordinal":n,"type":"assistant_message","text":format!("Message {n}\n\nRetained history"),"status":"completed","runId":null,"nodeId":null});
+    let row = |item: Value| json!({"sourceThreadId":thread_id,"sourceItemId":item["id"],"visibility":"local","item":item});
+    let page: Vec<_> = (0..50).map(|n| row(message(n))).collect();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counter = requests.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(&mut stream);
+        let mut request = String::new();
+        reader.read_line(&mut request).unwrap();
+        assert!(request.starts_with("GET "), "history never sends a command");
+        assert!(request.contains("/history?cursor=older-page"));
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+        }
+        drop(reader);
+        counter.fetch_add(1, Ordering::SeqCst);
+        let body = json!({"items":page,"nextCursor":null,"hasMoreHistory":false}).to_string();
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+    });
+    let environment = Environment::new("history", &origin).unwrap();
+    let expiry = chrono::Utc::now().timestamp() as u64 + 3600;
+    let token = NativeToken::from_secret(&environment,&serde_json::to_vec(&json!({"origin":origin,"access_token":"fixture-readonly","expires_at":expiry,"scope":"orchestration:read"})).unwrap()).unwrap();
+    let client =
+        Arc::new(NativeClient::new(environment.clone(), token, Duration::from_secs(2)).unwrap());
+    let items: Vec<_> = (50..100).map(message).collect();
+    let mut model = Projection::new(thread_id, "fixture-managers");
+    model.apply(&[ThreadUpdate::Snapshot {sequence:10,projection:json!({"thread":{"id":thread_id,"projectId":"fixture-managers","title":"History"},"runs":[],"attempts":[],"turnItems":items,"visibleTurnItems":items.iter().cloned().map(row).collect::<Vec<_>>()}),history_cursor:Some("older-page".into()),has_more_history:true,payload_budget_exceeded:false,latest_local_turn_ordinal:Some(99)}]).unwrap();
+    let changes = model.take_changes();
+    // Native positions are allocated from the unordered changed-row batch,
+    // independently of chronological order. Track the actual oldest message.
+    let oldest_position = changes
+        .rows
+        .iter()
+        .position(|row| row.key.item == "history-50")
+        .unwrap()
+        + 1;
+    let oldest_selector: &'static str =
+        Box::leak(format!("project-message-{oldest_position}").into_boxed_str());
+    let temp = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            view.environment = Some(environment);
+            view.native.client = Some(client);
+            view.native.metadata = changes.metadata.clone().unwrap();
+            view.native.retained = Some(Arc::new(Mutex::new(Retained {
+                model,
+                cursor: None,
+                valid: true,
+                epoch: 0,
+            })));
+            view.feed
+                .update(cx, |feed, cx| feed.apply_native(changes, &[], cx));
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(760.), px(900.)));
+    visual.run_until_parked();
+    assert!(
+        requests.load(Ordering::SeqCst) == 0,
+        "the live edge must not eagerly download old pages"
+    );
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    let history = visual.debug_bounds("project-history").unwrap();
+    for _ in 0..16 {
+        if requests.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: history.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(4000.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "reaching old history loads exactly one page"
+    );
+    assert!(
+        visual.debug_bounds(oldest_selector).is_some(),
+        "the previously oldest message remains the read anchor after prepending"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(!view.native.metadata.has_more_history);
+        assert_eq!(
+            view.native
+                .retained
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .keys()
+                .len(),
+            100
+        );
+    });
+    server.join().unwrap();
+}
+
+#[gpui::test]
 fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread(
     cx: &mut TestAppContext,
 ) {
