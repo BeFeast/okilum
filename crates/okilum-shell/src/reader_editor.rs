@@ -1,4 +1,5 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
+mod block_entry;
 mod code_comforts;
 mod external_edit;
 pub(crate) mod format;
@@ -11,6 +12,7 @@ mod paste_jobs;
 mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
+pub(crate) use block_entry::OpenRenderedBlock;
 pub(crate) use external_edit::{OpenBlockExternally, StopBlockExternally};
 use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError, PasteMode};
 use gpui_component::input::projection::{
@@ -1674,6 +1676,9 @@ impl Reader {
         // input; #1636: the formatting keys.
         // #1921: the link list takes its keys before everything else.
         let column = self.link_complete_actions(column, cx);
+        // #1642: Enter on a rendered block Esc returned to, before the code,
+        // list and input keys.
+        let column = self.block_entry_actions(column, cx);
         let column = self.code_comfort_actions(column, cx);
         // #1993: the caret's code block in an external editor.
         let column = self.external_block_actions(column, cx);
@@ -1872,7 +1877,7 @@ fn live_blocks(
         let Some(this) = reader.upgrade() else {
             return div().into_any_element();
         };
-        let (vault, states, identities, code_source) = {
+        let (vault, states, identities, code_source, focused) = {
             let this = this.read(cx);
             (
                 this.vault.clone(),
@@ -1881,6 +1886,9 @@ fn live_blocks(
                 this.editing
                     .as_ref()
                     .and_then(|editing| editing.live_preview.block_markdown(source)),
+                // The block Esc returned to: Enter or F2 opens it (#1642).
+                this.valid_block_focus(cx)
+                    .is_some_and(|focus| focus.block == (block.source.start.0..block.source.end.0)),
             )
         };
         let markdown = {
@@ -1921,10 +1929,29 @@ fn live_blocks(
             }
             entry.1.clone()
         };
+        // A press on an image lands on its embed's source, not on whatever
+        // raw text lies under the pointer (#1642). A table cell's own press
+        // (above) is recorded first and kept.
+        let on_image = image_embed_start(source).map(|at| {
+            let press = press.clone();
+            let offset = block.source.start.0 + at;
+            move |event: &gpui::MouseDownEvent, _: &mut Window, _: &mut App| {
+                if let Ok(mut slot) = press.lock() {
+                    if slot.is_none_or(|known| known.position != event.position) {
+                        *slot = Some(gpui_component::input::projection::BlockPress {
+                            position: event.position,
+                            offset: gpui_component::input::projection::SourceByte(offset),
+                        });
+                    }
+                }
+            }
+        });
         let font_size = px(reader_ui_state::font_size(cx));
         // A missing image must not hide its source behind a blank row.
         if markdown.contains("okilum-asset://unavailable") {
             return div()
+                .debug_selector(|| "live-image-unavailable".into())
+                .when_some(on_image, |this, f| this.on_mouse_down(MouseButton::Left, f))
                 .text_size(font_size)
                 .text_color(cx.theme().muted_foreground)
                 .child(format!("Image unavailable \u{b7} {source}"))
@@ -1956,11 +1983,14 @@ fn live_blocks(
                 }
             }
         };
+        let focus_ring = brand::palette(cx).focus;
         div()
             // At least one line while an image loads: one height change, not
             // a shrink to padding and a grow.
             .min_h(window.line_height())
             .w_full()
+            .relative()
+            .when_some(on_image, |this, f| this.on_mouse_down(MouseButton::Left, f))
             .child(
                 // Each block is its own document: its position in the note
                 // keeps identical callouts' fold state apart (#1067).
@@ -1984,8 +2014,29 @@ fn live_blocks(
                 .text_size(font_size)
                 .w_full(),
             )
+            // Drawn over the block, not around it: its height is unchanged.
+            .when(focused, |this| {
+                this.child(
+                    div()
+                        .debug_selector(|| "live-block-focus".into())
+                        .absolute()
+                        .inset_0()
+                        .rounded(cx.theme().radius)
+                        .border_2()
+                        .border_color(focus_ring),
+                )
+            })
             .into_any_element()
     })
+}
+
+/// Where a rendered block made of one image embed (`![[x.png]]` or
+/// `![alt](x.png)`) starts its embed, past any indentation; None for any
+/// other block.
+fn image_embed_start(source: &str) -> Option<usize> {
+    let body = source.trim();
+    (body.starts_with("![") && !body.contains('\n'))
+        .then(|| source.len() - source.trim_start().len())
 }
 
 /// Lines that keep one alignment when paragraphs take their own direction:
