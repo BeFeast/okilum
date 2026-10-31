@@ -126,6 +126,16 @@ fn current_near_the_end_of_a_large_catalog_is_visible_when_opened(cx: &mut TestA
     let trigger = visual.debug_bounds("project-manager-model").unwrap();
     visual.simulate_click(trigger.center(), Modifiers::default());
     visual.run_until_parked();
+    // TestAppContext drains tasks but does not deliver display callbacks.
+    // Positive control: deliver the requested post-layout frame explicitly.
+    visual.update(|window, cx| {
+        assert!(
+            window.simulate_next_frame(cx) > 0,
+            "reveal requested a frame"
+        );
+        window.draw(cx).clear(cx);
+    });
+    visual.run_until_parked();
     let list = visual.debug_bounds("project-model-choices").unwrap();
     let current = visual.debug_bounds("project-model-current-41").unwrap();
     assert!(
