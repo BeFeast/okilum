@@ -363,6 +363,14 @@ impl ProjectView {
                         (stream, result, changed)
                     })
                     .await;
+                let terminal_error = matches!(
+                    &result,
+                    Err(StreamError::Expired
+                        | StreamError::PairingRequired
+                        | StreamError::WrongOrigin
+                        | StreamError::MissingReadPermission
+                        | StreamError::Closed)
+                );
                 let message = result.as_ref().err().map(ToString::to_string);
                 let accepted = this
                     .update_in(cx, |this, window, cx| {
@@ -383,7 +391,7 @@ impl ProjectView {
                         true
                     })
                     .unwrap_or(false);
-                if !accepted {
+                if !accepted || terminal_error {
                     return;
                 }
                 if result.is_ok() {
