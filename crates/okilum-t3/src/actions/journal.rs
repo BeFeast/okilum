@@ -202,6 +202,62 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Barrier,
     };
+    #[test]
+    fn attachment_only_delivery_retains_the_exact_asset_on_reopen_and_lost_ack() {
+        use crate::stream::{AttachmentKind, AttachmentMetadata, ChatAttachment, StreamError};
+        let directory = Directory::new();
+        let environment = Environment::new("fixture", "http://localhost:9999").unwrap();
+        let journal = Journal::new(directory.path(), &environment, "qa-thread");
+        let attachment = ChatAttachment {
+            id: "uploaded-asset".into(),
+            metadata: AttachmentMetadata {
+                kind: AttachmentKind::File,
+                name: "report.txt".into(),
+                mime_type: "text/plain".into(),
+                size_bytes: 7,
+            },
+            source: None,
+        };
+        let record = journal
+            .prepare(Intent::message_with_attachments(
+                "".into(),
+                DispatchMode::StartImmediately,
+                vec![attachment],
+            ))
+            .unwrap();
+        let original = record.command.wire().unwrap();
+        assert_eq!(original["text"], "");
+        assert_eq!(original["attachments"][0]["id"], "uploaded-asset");
+        assert!(journal.send(&record, |_| Err(StreamError::Closed)).is_err());
+        let reopened = Journal::new(directory.path(), &environment, "qa-thread");
+        let retained = reopened.records().unwrap().pop().unwrap();
+        assert_eq!(retained, record);
+        let acknowledged = reopened
+            .send(&retained, |command| {
+                assert_eq!(command.wire().unwrap(), original);
+                Ok(7)
+            })
+            .unwrap();
+        assert_eq!(
+            reopened
+                .send(&acknowledged, |_| panic!(
+                    "acknowledged attachment must not send again"
+                ))
+                .unwrap()
+                .sequence,
+            Some(7)
+        );
+        let legacy: Intent = serde_json::from_value(json!({"type":"message.dispatch","text":"old text-only draft","messageId":"legacy","dispatchMode":{"type":"start_immediately"}})).unwrap();
+        assert!(
+            Command::new("qa-thread", legacy).wire().unwrap()["attachments"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(journal
+            .prepare(Intent::message("".into(), DispatchMode::StartImmediately))
+            .is_err());
+    }
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {

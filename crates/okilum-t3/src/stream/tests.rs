@@ -761,6 +761,306 @@ fn model_thread(listener: &TcpListener, thread: Value) {
     ack(&mut socket);
 }
 
+fn attachment_rpc(listener: &TcpListener, tag: &str, payload: Value, result: Value) {
+    ticket(listener);
+    let mut socket = socket(listener);
+    let request = read(&mut socket);
+    assert_eq!(request["tag"], tag);
+    assert_eq!(request["payload"], payload);
+    send(
+        &mut socket,
+        json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":result}}),
+    );
+}
+
+fn attachment_client(environment: &Environment) -> NativeClient {
+    let mut secret = serde_json::from_slice::<Value>(&token(environment).to_secret()).unwrap();
+    secret["scope"] = json!("orchestration:read orchestration:operate");
+    NativeClient::new(
+        environment.clone(),
+        NativeToken::from_secret(environment, &serde_json::to_vec(&secret).unwrap()).unwrap(),
+        Duration::from_secs(2),
+    )
+    .unwrap()
+}
+
+fn attachment_metadata(kind: AttachmentKind, size_bytes: u64) -> AttachmentMetadata {
+    AttachmentMetadata {
+        kind,
+        name: "capture.png".into(),
+        mime_type: if kind == AttachmentKind::Image {
+            "image/png"
+        } else {
+            "application/octet-stream"
+        }
+        .into(),
+        size_bytes,
+    }
+}
+
+#[test]
+fn attachment_upload_download_carry_real_bytes_without_forwarding_the_bearer() {
+    let bytes = vec![0_u8, 255, 1, 2, 0, 3];
+    let expected = bytes.clone();
+    let metadata = attachment_metadata(AttachmentKind::Image, bytes.len() as u64);
+    let requested = serde_json::to_value(&metadata).unwrap();
+    let fixture = Fixture::start(move |listener| {
+        attachment_rpc(
+            &listener,
+            "attachments.createUploadUrl",
+            requested,
+            json!({"attachmentId":"qa-image","relativeUrl":"/api/upload?signature=fixture-signed","expiresAt":9999999999999_u64}),
+        );
+        let mut upload = accept(&listener);
+        let mut reader = BufReader::new(&mut upload);
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            headers.push_str(&line);
+        }
+        assert!(headers.starts_with("POST /api/upload?signature=fixture-signed HTTP/1.1\r\n"));
+        assert!(
+            !headers.to_ascii_lowercase().contains("authorization:"),
+            "signed HTTP must never receive the native bearer"
+        );
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("content-type: image/png"));
+        let mut actual = vec![0; expected.len()];
+        reader.read_exact(&mut actual).unwrap();
+        assert_eq!(
+            actual, expected,
+            "positive control: actual binary bytes crossed HTTP"
+        );
+        drop(reader);
+        write!(
+            upload,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        drop(upload);
+        attachment_rpc(
+            &listener,
+            "assets.createUrl",
+            json!({"resource":{"_tag":"attachment","attachmentId":"qa-image","fileName":"capture.png","mimeType":"image/png"}}),
+            json!({"relativeUrl":"/api/asset?signature=fixture-download","expiresAt":9999999999999_u64}),
+        );
+        let mut download = accept(&listener);
+        let mut reader = BufReader::new(&mut download);
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            headers.push_str(&line);
+        }
+        assert!(headers.starts_with("GET /api/asset?signature=fixture-download HTTP/1.1\r\n"));
+        assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+        drop(reader);
+        write!(download,"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",expected.len()).unwrap();
+        download.write_all(&expected).unwrap();
+        drop(download);
+        attachment_rpc(
+            &listener,
+            "attachments.delete",
+            json!({"attachmentId":"qa-image"}),
+            json!({}),
+        );
+    });
+    let native = attachment_client(&fixture.env);
+    let uploaded = native.upload_attachment(&metadata, bytes.clone()).unwrap();
+    assert_eq!(uploaded.id, "qa-image");
+    assert_eq!(uploaded.metadata, metadata);
+    let retained = serde_json::to_string(&uploaded).unwrap();
+    assert!(!retained.contains("signature") && !retained.contains(BEARER));
+    assert_eq!(native.download_attachment(&uploaded).unwrap(), bytes);
+    native.delete_attachment(&uploaded.id).unwrap();
+    fixture.finish();
+}
+
+#[test]
+fn attachment_transfer_rejects_foreign_or_expired_urls_without_exposing_them() {
+    for relative in [
+        "https://foreign.invalid/secret",
+        "//foreign.invalid/secret",
+        "/api/upload#secret",
+    ] {
+        let metadata = attachment_metadata(AttachmentKind::File, 1);
+        let payload = serde_json::to_value(&metadata).unwrap();
+        let fixture = Fixture::start(move |listener| {
+            attachment_rpc(
+                &listener,
+                "attachments.createUploadUrl",
+                payload,
+                json!({"attachmentId":"qa-file","relativeUrl":relative,"expiresAt":9999999999999_u64}),
+            );
+        });
+        let error = attachment_client(&fixture.env)
+            .upload_attachment(&metadata, vec![42])
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("secret") && !error.to_string().contains("foreign.invalid")
+        );
+        fixture.finish();
+    }
+    let metadata = attachment_metadata(AttachmentKind::File, 1);
+    let payload = serde_json::to_value(&metadata).unwrap();
+    let fixture = Fixture::start(move |listener| {
+        attachment_rpc(
+            &listener,
+            "attachments.createUploadUrl",
+            payload,
+            json!({"attachmentId":"qa-file","relativeUrl":"/api/upload?signature=secret","expiresAt":1}),
+        )
+    });
+    assert_eq!(
+        attachment_client(&fixture.env).upload_attachment(&metadata, vec![42]),
+        Err(StreamError::Protocol("attachment transfer URL expired"))
+    );
+    fixture.finish();
+}
+
+#[test]
+fn attachment_upload_error_or_redirect_never_becomes_a_confirmed_reference() {
+    for status in [0, 500, 307] {
+        let metadata = attachment_metadata(AttachmentKind::File, 1);
+        let payload = serde_json::to_value(&metadata).unwrap();
+        let fixture = Fixture::start(move |listener| {
+            attachment_rpc(
+                &listener,
+                "attachments.createUploadUrl",
+                payload,
+                json!({"attachmentId":"qa-file","relativeUrl":"/api/upload?signature=fixture","expiresAt":9999999999999_u64}),
+            );
+            let mut stream = accept(&listener);
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut bytes = [0; 1];
+            reader.read_exact(&mut bytes).unwrap();
+            assert_eq!(bytes, [42]);
+            drop(reader);
+            if status != 0 {
+                write!(stream,"HTTP/1.1 {status} Error\r\nLocation: https://foreign.invalid/never-follow\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            }
+            drop(stream);
+            attachment_rpc(
+                &listener,
+                "attachments.delete",
+                json!({"attachmentId":"qa-file"}),
+                json!({}),
+            );
+        });
+        assert_eq!(
+            attachment_client(&fixture.env).upload_attachment(&metadata, vec![42]),
+            Err(if status == 0 {
+                StreamError::Unreachable
+            } else {
+                StreamError::Http(status)
+            })
+        );
+        fixture.finish();
+    }
+}
+
+#[test]
+fn attachment_download_rejects_truncated_bytes() {
+    let fixture = Fixture::start(|listener| {
+        attachment_rpc(
+            &listener,
+            "assets.createUrl",
+            json!({"resource":{"_tag":"attachment","attachmentId":"qa-file","fileName":"capture.png","mimeType":"application/octet-stream"}}),
+            json!({"relativeUrl":"/api/asset","expiresAt":9999999999999_u64}),
+        );
+        let mut stream = accept(&listener);
+        let mut reader = BufReader::new(&mut stream);
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        drop(reader);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+    });
+    let attachment = ChatAttachment {
+        id: "qa-file".into(),
+        metadata: attachment_metadata(AttachmentKind::File, 1),
+        source: None,
+    };
+    assert_eq!(
+        client(&fixture.env).download_attachment(&attachment),
+        Err(StreamError::Protocol(
+            "attachment download size does not match"
+        ))
+    );
+    fixture.finish();
+}
+
+#[test]
+fn attachment_validation_preserves_the_contract_limits_and_rejects_changed_bytes_before_rpc() {
+    assert!(attachment_metadata(AttachmentKind::Image, MAX_IMAGE_BYTES)
+        .validate()
+        .is_ok());
+    assert!(
+        attachment_metadata(AttachmentKind::Image, MAX_IMAGE_BYTES + 1)
+            .validate()
+            .is_err()
+    );
+    assert!(attachment_metadata(AttachmentKind::File, MAX_FILE_BYTES)
+        .validate()
+        .is_ok());
+    assert!(
+        attachment_metadata(AttachmentKind::File, MAX_FILE_BYTES + 1)
+            .validate()
+            .is_err()
+    );
+    let image = ChatAttachment {
+        id: "qa-image".into(),
+        metadata: attachment_metadata(AttachmentKind::Image, MAX_IMAGE_BYTES),
+        source: None,
+    };
+    assert!(validate_attachments(&vec![image.clone(); 8]).is_ok());
+    assert!(validate_attachments(&vec![image; 9]).is_err());
+    let server = FakeServer::start(|_| Response::empty(503));
+    let environment = Environment::new("fixture", &server.origin).unwrap();
+    let native = attachment_client(&environment);
+    let metadata = attachment_metadata(AttachmentKind::File, 1);
+    assert!(native.upload_attachment(&metadata, vec![1]).is_err());
+    assert!(
+        !server.requests().is_empty(),
+        "positive control: valid upload reaches the ticket endpoint"
+    );
+    let before = server.requests().len();
+    assert_eq!(
+        native.upload_attachment(&metadata, vec![1, 2]),
+        Err(StreamError::Protocol(
+            "attachment bytes changed before upload"
+        ))
+    );
+    assert_eq!(
+        server.requests().len(),
+        before,
+        "a changed local draft must never request an upload URL"
+    );
+}
+
 fn model_catalog(listener: &TcpListener) {
     ticket(listener);
     let mut socket = socket(listener);
