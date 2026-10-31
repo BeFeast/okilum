@@ -1927,8 +1927,10 @@ mod tests {
             .into_iter()
             .filter(|feature| feature.available())
         {
-            let selector = format!("settings-feature-{}", feature.key());
-            let toggle = visual.debug_bounds(&selector).unwrap();
+            // `debug_bounds` takes a `'static` selector.
+            let selector: &'static str =
+                Box::leak(format!("settings-feature-{}", feature.key()).into_boxed_str());
+            let toggle = visual.debug_bounds(selector).unwrap();
             visual.simulate_click(toggle.center(), Modifiers::default());
             visual.run_until_parked();
             visual.update(|_, cx| {
