@@ -126,6 +126,7 @@ impl Render for Composer {
                         && this.input.read(cx).focus_handle(cx).is_focused(window)
                         && !this.input.read(cx).presentation().is_disabled()
                     {
+                        cx.stop_propagation();
                         cx.emit(AttachmentRequested::Paste);
                     } else {
                         cx.propagate();
@@ -173,5 +174,104 @@ impl Render for Composer {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use std::{cell::Cell, rc::Rc};
+
+    #[gpui::test]
+    fn native_paste_consumes_the_action_once_and_legacy_paste_still_works(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let received = Rc::new(Cell::new(0));
+        let insert = Rc::new(Cell::new(false));
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| TextareaState::new(window, cx));
+            let composer = cx.new(|cx| {
+                let mut composer = Composer::new(input, cx);
+                composer.set_native(true, false, cx);
+                composer.set_controls(true, false, cx);
+                let received = received.clone();
+                let insert = insert.clone();
+                cx.subscribe_in(
+                    &cx.entity(),
+                    window,
+                    move |this, _, event: &AttachmentRequested, window, cx| {
+                        if matches!(event, AttachmentRequested::Paste) {
+                            received.set(received.get() + 1);
+                            // File paste stages a row without inserting its URI.
+                            // Text paste uses the same production InputState::insert.
+                            if insert.get() {
+                                let text = cx.read_from_clipboard().unwrap().text().unwrap();
+                                this.input
+                                    .update(cx, |input, cx| input.insert(text, window, cx));
+                            }
+                        }
+                    },
+                )
+                .detach();
+                composer
+            });
+            Root::new(composer, window, cx)
+        });
+        let composer = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Composer>().unwrap()
+        });
+        composer.update_in(visual, |composer, window, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.focus(window, cx))
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                "file:///typed-file.txt".into(),
+            ))
+        });
+        visual.simulate_keystrokes("ctrl-v");
+        visual.run_until_parked();
+        assert_eq!(received.get(), 1);
+        composer.read_with(visual, |composer, cx| {
+            assert!(
+                composer.input.read(cx).value().is_empty(),
+                "file URI must not reach the default text Paste handler"
+            )
+        });
+        insert.set(true);
+        visual.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                "First line\nSecond line".into(),
+            ))
+        });
+        visual.simulate_keystrokes("ctrl-v");
+        visual.run_until_parked();
+        assert_eq!(received.get(), 2);
+        composer.update_in(visual, |composer, window, cx| {
+            assert_eq!(
+                composer.input.read(cx).value().as_str(),
+                "First line\nSecond line"
+            );
+            composer
+                .input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            composer.set_native(false, false, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("ctrl-v");
+        visual.run_until_parked();
+        assert_eq!(
+            received.get(),
+            2,
+            "legacy text Paste must use its original handler"
+        );
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(
+                composer.input.read(cx).value().as_str(),
+                "First line\nSecond line"
+            )
+        });
     }
 }
