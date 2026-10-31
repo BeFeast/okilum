@@ -12,8 +12,8 @@ mod auth;
 mod manager;
 mod protocol;
 pub use assets::{
-    validate_attachments, AttachmentKind, AttachmentMetadata, ChatAttachment, MAX_FILE_BYTES,
-    MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
+    validate_attachments, AttachmentKind, AttachmentMetadata, ChatAttachment, MAX_ATTACHMENTS,
+    MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
 };
 pub mod thread_create;
 pub mod turn_item;

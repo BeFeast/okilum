@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+mod prompt;
+pub use prompt::{prompt_length_validation, MAX_PROMPT_UNITS};
+
 mod journal;
 mod state;
 pub use journal::{Journal, Record};
@@ -101,6 +104,7 @@ impl Intent {
                 mode,
             } => {
                 (!text.trim().is_empty() || !attachments.is_empty())
+                    && prompt_length_validation(text).is_none()
                     && crate::stream::validate_attachments(attachments).is_ok()
                     && !message_id.is_empty()
                     && match mode {
