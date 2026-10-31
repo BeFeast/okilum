@@ -101,7 +101,9 @@ PY
   tar -xzf "$cache_stage/archive.tgz" -C "$cache_stage" || return 1
 }
 
-if ! _enable_release_cache; then
+if [[ ${OKILUM_RELEASE_CACHE:-auto} == off ]]; then
+  echo 'Shared compiler cache disabled; direct rustc uses the existing Cargo target'
+elif ! _enable_release_cache; then
   unset RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR
   echo '::warning::Shared compiler cache unavailable; building without sccache'
 fi
