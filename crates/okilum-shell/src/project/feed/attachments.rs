@@ -4,8 +4,8 @@ use gpui_component::WindowExt as _;
 use okilum_t3::stream::{AttachmentKind, ChatAttachment, NativeClient};
 use serde_json::Value;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Weak,
+    atomic::{AtomicUsize, Ordering},
 };
 
 const MAX_TRANSFERS: usize = 2;
@@ -690,6 +690,22 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    /// Root owns dialog state, while window content draws its overlay layer.
+    /// Match the production Reader host rather than opening an invisible dialog
+    /// into a bare ProjectView, which has no overlay layer of its own.
+    struct DialogHost {
+        manager: Entity<ProjectView>,
+    }
+    impl Render for DialogHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .relative()
+                .size_full()
+                .child(self.manager.clone())
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
     fn png() -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(1200, 900)
@@ -770,7 +786,10 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use std::sync::Mutex;
-        cx.update(crate::test_init);
+        cx.update(|cx| {
+            crate::test_init(cx);
+            cx.set_reduce_motion(true);
+        });
         let state = tempfile::tempdir().unwrap();
         let environment = Environment::new("fixture", "http://127.0.0.1:1").unwrap();
         let bytes = png();
@@ -806,12 +825,19 @@ mod tests {
                 view.active = true;
                 view
             });
-            Root::new(view, window, cx)
+            let host = cx.new(|_| DialogHost { manager: view });
+            Root::new(host, window, cx)
         });
         visual.simulate_resize(size(px(760.), px(1000.)));
         visual.run_until_parked();
-        let view = root.read_with(visual, |root, _| {
-            root.view().clone().downcast::<ProjectView>().unwrap()
+        let view = root.read_with(visual, |root, cx| {
+            root.view()
+                .clone()
+                .downcast::<DialogHost>()
+                .unwrap()
+                .read(cx)
+                .manager
+                .clone()
         });
         let mut downloaded = observed.lock().unwrap().clone();
         downloaded.sort();
@@ -832,9 +858,11 @@ mod tests {
             "images share a two-column grid row"
         );
         assert!(second.right() - first.left() <= px(420.));
-        assert!(visual
-            .debug_bounds("history-attachment-99-0-Preview")
-            .is_none());
+        assert!(
+            visual
+                .debug_bounds("history-attachment-99-0-Preview")
+                .is_none()
+        );
         view.update(visual, |view, cx| {
             view.native.set_detail_test_client(client(&environment));
             view.feed.update(cx, |_, cx| cx.notify());
@@ -862,26 +890,54 @@ mod tests {
             1,
             "positive control: scrolling the old image into view starts its download"
         );
+        feed.read_with(visual, |feed, cx| {
+            let asset = parsed(&feed.attachments.rows[&0][0]).unwrap();
+            assert!(feed.attachments.contains(0, &asset));
+            let key = AssetKey::new(&environment.origin(), &asset);
+            let Some(Download::Ready {
+                path,
+                thumbnail: Some(_),
+                original: Some(original),
+                ..
+            }) = feed.attachments.downloads.get(&key) else {
+                panic!("positive control: original image and thumbnail are fully downloaded before clicking");
+            };
+            assert!(path.is_file());
+            assert_eq!(original.id(), gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.clone()).id());
+            let parent = feed.parent.upgrade().unwrap();
+            let client = parent.read(cx).native.model_client().unwrap();
+            assert!(current_access(&feed.parent, &environment.origin(), &client, cx));
+        });
+        // Refresh hitboxes after download-driven remeasurement before choosing
+        // the click point. A started fetch is not a completed/painted thumbnail.
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         let before = visual.debug_bounds("history-image-0-0").unwrap();
-        assert!(!feed.read_with(visual, |feed, cx| feed
-            .scroller
-            .read(cx)
-            .is_following_tail()));
+        let viewport = visual.debug_bounds("project-history").unwrap();
+        assert!(before.center().y >= viewport.top() && before.center().y < viewport.bottom());
+        assert!(before.center().x >= viewport.left() && before.center().x < viewport.right());
+        assert!(!feed.read_with(visual, |feed, cx| {
+            feed.scroller.read(cx).is_following_tail()
+        }));
         visual.simulate_click(before.center(), Modifiers::default());
         visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("dialog-layer").is_some(),
+            "positive control: the real click opened the host's visible dialog layer"
+        );
         assert!(visual.debug_bounds("history-image-expanded").is_some());
         visual.update(|window, cx| window.close_dialog(cx));
         visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         assert!(visual.debug_bounds("history-image-expanded").is_none());
         assert_eq!(
             visual.debug_bounds("history-image-0-0").unwrap(),
             before,
             "closing expansion preserves the exact visible anchor"
         );
-        assert!(!feed.read_with(visual, |feed, cx| feed
-            .scroller
-            .read(cx)
-            .is_following_tail()));
+        assert!(!feed.read_with(visual, |feed, cx| {
+            feed.scroller.read(cx).is_following_tail()
+        }));
         assert_eq!(
             observed.lock().unwrap().len(),
             3,

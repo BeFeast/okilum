@@ -335,7 +335,10 @@ mod tests {
     fn actual_click_and_keyboard_copy_the_full_authored_message_with_feedback(
         cx: &mut TestAppContext,
     ) {
-        let full = format!("# Report\n\n| Name | Result |\n| --- | --- |\n| Build | Passed |\n\n```rust\nlet brain = \"🧠\";\n```\n\n{}\nAUTHORED END\r\n", "Long retained paragraph. ".repeat(5000));
+        let full = format!(
+            "# Report\n\n| Name | Result |\n| --- | --- |\n| Build | Passed |\n\n```rust\nlet brain = \"🧠\";\n```\n\n{}\nAUTHORED END\r\n",
+            "Long retained paragraph. ".repeat(5000)
+        );
         assert!(full.len() > 100_000);
         for user in [true, false] {
             let (_feed, visual) =
@@ -357,10 +360,13 @@ mod tests {
                 "sentinel",
                 "success feedback disables repeated activation"
             );
-            visual.executor().advance_clock(Duration::from_millis(1199));
+            // Event helpers and rendered frames also advance the test clock.
+            // Observe both sides of the production 1200 ms deadline with room
+            // for those frames instead of measuring from the last helper call.
+            visual.executor().advance_clock(Duration::from_millis(1000));
             visual.run_until_parked();
             assert!(visual.debug_bounds("project-message-copied-1").is_some());
-            visual.executor().advance_clock(Duration::from_millis(1));
+            visual.executor().advance_clock(Duration::from_millis(300));
             visual.run_until_parked();
             assert!(visual.debug_bounds("project-message-copy-1").is_some());
             activate_keyboard(visual, "project-message-copied-1");
@@ -421,8 +427,18 @@ mod tests {
         feed.update(visual, |feed, cx| feed.set_copy_active_runs([], cx));
         visual.run_until_parked();
         let button = visual.debug_bounds("project-message-copy-3").unwrap();
-        // Update retained source without drawing. The already rendered callback
-        // must read the latest body rather than captured display text.
+        // Inject a same-geometry source flush without notifying/drawing: the
+        // existing rendered callback must read retained text at activation.
+        feed.update(visual, |feed, _| {
+            feed.messages.get_mut(&3).unwrap().text = "Latest source body".into();
+        });
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(clipboard(visual), "Latest source body");
+        visual.executor().advance_clock(Duration::from_millis(1300));
+        visual.run_until_parked();
+        // A real multiline flush remeasures the footer. Activate its current
+        // geometry rather than clicking the old one-line footer location.
         feed.update(visual, |feed, cx| {
             feed.apply(
                 std::iter::once(&message(
@@ -436,6 +452,8 @@ mod tests {
                 cx,
             )
         });
+        visual.run_until_parked();
+        let button = visual.debug_bounds("project-message-copy-3").unwrap();
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(clipboard(visual), "Final flush\n\n```txt\nexact bytes\n```");
@@ -559,9 +577,10 @@ mod tests {
         });
         visual.run_until_parked();
         feed.read_with(visual, |feed, _| {
-            assert!(feed
-                .copy_text(feed.native_positions[&final_row.key])
-                .is_none())
+            assert!(
+                feed.copy_text(feed.native_positions[&final_row.key])
+                    .is_none()
+            )
         });
         feed.update(visual, |feed, cx| feed.set_copy_active_runs([], cx));
         visual.run_until_parked();
