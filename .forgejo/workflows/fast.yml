@@ -59,7 +59,8 @@ jobs:
           # One persistent local target, independent of checkout cleanup. Never
           # overwrite another builder's cache or contend on an unbounded lock. Waiting shares the five-minute job budget.
           exec 9>"$HOME/.cache/okilum-fast/build.lock"
-          flock -w 240 9
+          echo "Waiting for local fast target (bounded to 240s)"
+          flock -w 240 9 || { echo "Local fast target remained busy; no compile/test verdict"; exit 1; }
           source scripts/ci/release-cache.sh
           bash scripts/ci/fast.sh
       - name: Compiler cache receipt
