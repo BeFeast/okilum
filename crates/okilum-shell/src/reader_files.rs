@@ -290,11 +290,13 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.prepared_links.get(url).is_some_and(|state| {
+        // #2025: every link offers its full address and its text; a file in
+        // the vault adds its file actions below them.
+        let address = self.link_address(url);
+        let text = self.pressed_link_text(url);
+        let resolved = !self.prepared_links.get(url).is_some_and(|state| {
             state.status != okilum_core::document_links::prepared::LinkStatus::Resolved
-        }) {
-            return;
-        }
+        });
         let action_url = self
             .prepared_links
             .get(url)
@@ -308,12 +310,34 @@ impl Reader {
                     .strip_prefix(WIKI_SCHEME)
                     .map(|s| split_open_url(s).0)
             });
-        let Some(rel) = rel else {
+        let rel = rel.filter(|_| resolved);
+        if rel.is_none() && text.is_none() && address.is_none() {
             return;
-        };
+        }
         let root = self.vault_root.clone();
-        let popup = PopupMenu::build(window, cx, move |m, window, cx| {
-            menu(m, root.clone(), rel.clone(), window, cx)
+        let popup = PopupMenu::build(window, cx, move |mut m, window, cx| {
+            let address = address.clone();
+            m = m.item(
+                PopupMenuItem::new("Copy link address")
+                    .disabled(address.is_none())
+                    .on_click(move |_, window, cx| {
+                        if let Some(address) = address.clone() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(address));
+                            reader_toast::transient("Link copied", window, cx);
+                        }
+                    }),
+            );
+            if let Some(text) = text.clone() {
+                m = m.item(
+                    PopupMenuItem::new("Copy link text").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()))
+                    }),
+                );
+            }
+            match rel.clone() {
+                Some(rel) => menu(m.separator(), root.clone(), rel, window, cx),
+                None => m,
+            }
         });
         cx.subscribe(&popup, |this, _, _: &DismissEvent, cx| {
             this.file_menu = None;
