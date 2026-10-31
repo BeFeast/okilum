@@ -23,15 +23,23 @@ function WaitFor($name,[scriptblock]$Probe,$seconds=120){
  while($clock.Elapsed.TotalSeconds -lt $seconds){$r=&$Probe;if($r){return $r};Start-Sleep -Milliseconds 1000}
  throw ('HARNESS readiness deadline: '+$name)
 }
+function ObserveProcess($Process){
+ $row=@{pid=$Process.Id}
+ try{
+  $row.session=$Process.SessionId;$start=$Process.StartTime
+  if(!$start){throw 'Process exited before StartTime observation'}
+  $row.start_utc=$start.ToUniversalTime().ToString('o');$row.exe=$Process.MainModule.FileName
+  if(!$row.exe){throw 'Process exited before executable observation'}
+  $row.sha256=(Get-FileHash $row.exe).Hash.ToLowerInvariant()
+  $v=[Diagnostics.FileVersionInfo]::GetVersionInfo($row.exe);$row.version_info=@{file=$v.FileVersion;product=$v.ProductVersion}
+ }catch{$row.observation_error=$_.Exception.Message}
+ $row
+}
 function AssertApp($folder){
  $tag=if($folder -ceq $folders[0]){'cold'}else{'warm'}
  $id=ReadJson (Join-Path $state 'reader-instance.json');$windows=ReadJson (Join-Path $state 'open-windows.json')
  $facts=ReadJson (Join-Path $state 'whats-new.json')
- $census=@(Get-Process okilum -EA SilentlyContinue|ForEach-Object {
-  $row=@{pid=$_.Id;session=$_.SessionId;start_utc=$_.StartTime.ToUniversalTime().ToString('o')}
-  try{$row.exe=$_.MainModule.FileName;$row.sha256=(Get-FileHash $row.exe).Hash.ToLowerInvariant();$v=[Diagnostics.FileVersionInfo]::GetVersionInfo($row.exe);$row.version_info=@{file=$v.FileVersion;product=$v.ProductVersion}}catch{$row.observation_error=$_.Exception.Message}
-  $row
- })
+ $census=@(Get-Process okilum -EA SilentlyContinue|ForEach-Object {ObserveProcess $_})
  $snapshot=@{utc=[DateTime]::UtcNow.ToString('o');tag=$tag;requested_folder=$folder;reader_instance=$id;windows=$windows;facts=$facts;processes=$census;sq_version=if(Test-Path "$install/current/sq.version"){[IO.File]::ReadAllText("$install/current/sq.version")}}
  SaveJson ($tag+'-identity.json') $snapshot
  (ConvertTo-Json -InputObject $snapshot -Depth 12 -Compress)|Add-Content (Join-Path $fixture 'identity-samples.jsonl') -Encoding UTF8
@@ -39,10 +47,10 @@ function AssertApp($folder){
  if([IO.Path]::GetFullPath(([string]$windows.roots[0]).Replace('\\?\','')).TrimEnd('\') -ine [IO.Path]::GetFullPath($folder).TrimEnd('\')){return $null}
  $observed=@($census|Where-Object {$_.pid -eq $id.pid})
  if(!$observed.Count){return $null};$actual=$observed[0]
- if($actual.observation_error){throw ('HARNESS: identity observation failed '+$actual.observation_error)}
+ if($actual.observation_error){return $null}
  if($actual.session -ne 1 -or !$actual.exe.StartsWith($install+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Foreign app identity'}
  if($actual.sha256 -cne $c.exe_sha256){throw 'PRODUCT FAIL: wrong installed executable; actual identity retained'}
- if(!$facts){return $null}
+ if(!$facts -or $census.Count -ne 1){return $null}
  if($facts.source -cne $c.source){throw 'PRODUCT FAIL: wrong runtime source'}
  $w=Wins|Where-Object {$_.Pid -eq $actual.pid -and $_.Class -eq 'Zed::Window'}|Select-Object -First 1
  if(!$w){return $null}

@@ -94,6 +94,7 @@ def execute(manifest, directory, grant):
         with zipfile.ZipFile(e / 'helpers.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
             archive.write(Path(__file__).with_name('driver.ps1'), 'folder-verb/driver.ps1')
             archive.write(Path(__file__).with_name('update-isolation.ps1'), 'folder-verb/update-isolation.ps1')
+            archive.write(Path(__file__).with_name('test-process-observation.ps1'), 'folder-verb/test-process-observation.ps1')
             archive.write(H / 'autosave-gate/session-quiet.ps1', 'session-quiet.ps1')
             archive.write(H / 'step-envelope.ps1', 'controls/step-envelope.ps1')
             archive.write(H / 'autosave-gate/child-control.ps1', 'controls/child-control.ps1')
@@ -109,7 +110,7 @@ def execute(manifest, directory, grant):
         ps('update-isolation', '. "C:/Users/Public/okilum-qa/folder-verb/update-isolation.ps1";BlockPrUpdateFeed "C:/Users/Public/okilum-qa/folder-verb";exit 0', 60)
         gate = (H / 'autosave-gate/gate-run.sh').read_text()
         control = gate.split('cat > "$E/first-envelope-control.ps1" <<\'PS\'\n', 1)[1].split('\nPS\n', 1)[0]
-        (e / 'control.ps1').write_text(control)
+        (e / 'control.ps1').write_text(control + '\n. "$Q/folder-verb/test-process-observation.ps1"\n')
         desktop('controls', e / 'control.ps1', 330)
         quiet = True
         ps('machine-quiet', '. "C:/Users/Public/okilum-qa/session-quiet.ps1";PrepareQuietMachine "C:/Users/Public/okilum-qa";exit 0', 90)
