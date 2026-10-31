@@ -237,12 +237,10 @@ impl Project {
         };
         let manifest_manager = &doc["t3"]["manager"];
         // A present role registry is authoritative, including explicit not-started.
-        let manager = match std::fs::read_to_string(folder.join("ops/thread-ids.md")) {
+        let registry_path = folder.join("ops/thread-ids.md");
+        let manager = match std::fs::read_to_string(&registry_path) {
             Ok(registry) => manager_role(&registry).with_context(|| {
-                format!(
-                    "Check Manager registry {}",
-                    folder.join("ops/thread-ids.md").display()
-                )
+                format!("Check Manager registry {}", registry_path.display())
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 match manifest_manager.get("thread_id").and_then(|v| v.as_str()) {
