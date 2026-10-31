@@ -28,13 +28,14 @@ class ProcessV2(unittest.TestCase):
     def test_fast_lane_is_local_linux_with_five_minute_budget(self):
         local = workflow('.forgejo/workflows/fast.yml')
         job = local['jobs']['check']
-        self.assertEqual(job['runs-on'], 'heavy')
+        self.assertEqual(job['runs-on'], 'fast-linux')
         self.assertEqual(job['timeout-minutes'], '5')
         text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertNotIn('github-pr.py', text)
-        self.assertIn('release-cache.sh', text)
-        self.assertIn('CARGO_TARGET_DIR', text)
-        self.assertIn('flock -w 240', text)
+        self.assertIn('fast-local.sh', text)
+        pool = (ROOT / 'scripts/ci/fast-local.sh').read_text()
+        self.assertIn('CARGO_TARGET_DIR', pool)
+        self.assertIn('flock -n', pool)
         self.assertFalse((ROOT / '.github/workflows/forgejo-fast.yml').exists())
         script = (ROOT / 'scripts/ci/fast.sh').read_text()
         self.assertIn('cargo build --locked -p okilum-shell -p okilum-sync-supervisor', script)
