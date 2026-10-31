@@ -1209,6 +1209,21 @@ impl Settings {
                         cx,
                     ))
                     .child(setting_row(
+                        "Show the open note in the file tree",
+                        "Opening a note expands its folders and selects it in the sidebar. When off, Reveal in sidebar does this on request.",
+                        div()
+                            .debug_selector(|| "settings-tree-auto-reveal-control".into())
+                            .child(
+                                Switch::new("settings-tree-auto-reveal")
+                                    .accessibility_label("Show the open note in the file tree")
+                                    .checked(reader_ui_state::tree_auto_reveal(cx))
+                                    .on_click(|value, _, cx| {
+                                        reader_ui_state::set_tree_auto_reveal(*value, cx)
+                                    }),
+                            ),
+                        cx,
+                    ))
+                    .child(setting_row(
                         "Show labels on toolbar buttons",
                         "Show names beside icons when there is room.",
                         div()
@@ -1927,8 +1942,10 @@ mod tests {
             .into_iter()
             .filter(|feature| feature.available())
         {
-            let selector = format!("settings-feature-{}", feature.key());
-            let toggle = visual.debug_bounds(&selector).unwrap();
+            // Debug selectors are 'static; one short string per feature.
+            let selector: &'static str =
+                Box::leak(format!("settings-feature-{}", feature.key()).into_boxed_str());
+            let toggle = visual.debug_bounds(selector).unwrap();
             visual.simulate_click(toggle.center(), Modifiers::default());
             visual.run_until_parked();
             visual.update(|_, cx| {
