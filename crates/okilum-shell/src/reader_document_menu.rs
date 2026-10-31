@@ -450,6 +450,21 @@ impl Reader {
                             if !editing || (!live && !show_presentation) {
                                 menu = menu.menu("Live Preview", Box::new(OpenLivePreview));
                             }
+                            // #1643: here too, for Linux and Windows,
+                            // which have no menu bar.
+                            if editing {
+                                menu = menu
+                                    .menu_with_check(
+                                        "Focus mode",
+                                        reader_ui_state::focus_mode(cx),
+                                        Box::new(ToggleFocusMode),
+                                    )
+                                    .menu_with_check(
+                                        "Typewriter mode",
+                                        reader_ui_state::typewriter_mode(cx),
+                                        Box::new(ToggleTypewriterMode),
+                                    );
+                            }
                             if editing && live && !show_presentation {
                                 let reader = reader.clone();
                                 menu = menu.item(PopupMenuItem::new("Source").on_click(

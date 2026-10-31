@@ -4,12 +4,18 @@ use super::*;
 use okilum_t3::stream::{shell, CancelSubscription, StreamError};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+mod create;
+#[cfg(feature = "project-ui-harness")]
+pub(in crate::project) mod native_fixture;
 
 #[derive(Default)]
 pub(super) struct Directory {
     pub enabled: bool,
     pub selected: Option<String>,
-    pub views: BTreeMap<(String, String), Entity<ProjectView>>,
+    pub views: BTreeMap<(String, String, String), Entity<ProjectView>>,
+    pub(super) draft: super::drafts::State,
+    create_busy: bool,
+    create_error: Option<String>,
     pub model: Option<Arc<Mutex<shell::Directory>>>,
     open: bool,
     input: Option<Entity<InputState>>,
@@ -82,7 +88,6 @@ mod tests {
                 ])]);
                 view.threads.model = Some(Arc::new(Mutex::new(directory)));
                 view.active = true;
-                view.compose.update(cx, |input, cx| input.set_value("Keep manager draft", window, cx));
                 view
             });
             entity = Some(view.clone());
@@ -92,7 +97,13 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("manager-workspace").is_some());
         view.update_in(visual, |view, window, cx| {
+            view.compose.update(cx, |input, cx| {
+                input.set_value("Keep manager draft", window, cx)
+            });
             view.select_native_thread("executor-a".into(), window, cx);
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
             let child = view.native_thread_view("executor-a").unwrap().clone();
             child.update(cx, |child, cx| {
                 assert_eq!(child.chat.as_ref().unwrap().thread_id, "executor-a");
@@ -119,6 +130,19 @@ mod tests {
                 "equal thread IDs on another origin cannot reuse drafts"
             );
             view.environment = original;
+            let directory = view.threads.model.as_ref().unwrap().clone();
+            directory
+                .lock()
+                .unwrap()
+                .apply(&[shell::Update::Thread(row("executor-a", "managers"), true)]);
+            assert!(
+                view.native_thread_view("executor-a").is_none(),
+                "equal origin/thread IDs in another project cannot reuse drafts"
+            );
+            directory
+                .lock()
+                .unwrap()
+                .apply(&[shell::Update::Thread(row("executor-a", "executors"), true)]);
             view.select_manager_thread(window, cx);
             assert_eq!(view.compose.read(cx).value().as_str(), "Keep manager draft");
             reader_features::set_enabled(reader_features::Feature::Agents, false, cx);
@@ -150,10 +174,12 @@ impl Directory {
         }
         let (enabled, epoch) = (self.enabled, self.epoch);
         let views = std::mem::take(&mut self.views);
+        let draft = std::mem::take(&mut self.draft);
         *self = Self::default();
         self.enabled = enabled;
         self.epoch = epoch;
         self.views = views;
+        self.draft = draft;
     }
 }
 impl Drop for Directory {
@@ -164,7 +190,15 @@ impl Drop for Directory {
 impl ProjectView {
     pub(super) fn native_thread_view(&self, id: &str) -> Option<&Entity<ProjectView>> {
         let origin = self.environment.as_ref()?.origin();
-        self.threads.views.get(&(origin, id.to_owned()))
+        let project = self.threads.model.as_ref().and_then(|model| {
+            model
+                .lock()
+                .unwrap()
+                .threads
+                .get(id)
+                .map(|row| row.project_id.clone())
+        })?;
+        self.threads.views.get(&(origin, project, id.to_owned()))
     }
     pub(super) fn rebind_selected_native_thread(
         &self,
@@ -195,10 +229,18 @@ impl ProjectView {
             self.threads.pause();
         }
         let origin = self.environment.as_ref().map(Environment::origin);
-        for ((server, id), view) in &self.threads.views {
+        for ((server, project, id), view) in &self.threads.views {
             let selected = active
                 && origin.as_ref() == Some(server)
-                && self.threads.selected.as_ref() == Some(id);
+                && self.threads.selected.as_ref() == Some(id)
+                && self.threads.model.as_ref().is_some_and(|model| {
+                    model
+                        .lock()
+                        .unwrap()
+                        .threads
+                        .get(id)
+                        .is_some_and(|row| &row.project_id == project)
+                });
             view.update(cx, |view, cx| view.set_active(selected, window, cx));
         }
         if active {
@@ -388,6 +430,7 @@ impl ProjectView {
         let Some(row) = row else {
             return;
         };
+        self.draft_flush(cx);
         let Some((client, expiry)) = self.native.connection() else {
             return;
         };
@@ -401,7 +444,7 @@ impl ProjectView {
         }
         self.native.pause();
         binding.manager.thread_id = Some(row.id.clone());
-        binding.manager.project_id = Some(row.project_id);
+        binding.manager.project_id = Some(row.project_id.clone());
         let view = if let Some(view) = self.native_thread_view(&id) {
             view.clone()
         } else {
@@ -418,7 +461,11 @@ impl ProjectView {
             });
             cx.observe(&view, |_, _, cx| cx.notify()).detach();
             self.threads.views.insert(
-                (self.environment.as_ref().unwrap().origin(), id.clone()),
+                (
+                    self.environment.as_ref().unwrap().origin(),
+                    row.project_id.clone(),
+                    id.clone(),
+                ),
                 view.clone(),
             );
             view
@@ -485,6 +532,27 @@ impl ProjectView {
                                 })),
                         )
                         .child(div().flex_1())
+                        .child(
+                            Button::new("manager-new-thread")
+                                .ghost()
+                                .small()
+                                .label(if self.threads.create_busy {
+                                    "Creating…"
+                                } else {
+                                    "New thread"
+                                })
+                                .debug_selector(|| "manager-new-thread".into())
+                                .disabled(
+                                    self.threads.create_busy
+                                        || self
+                                            .native
+                                            .connection()
+                                            .is_none_or(|(c, _)| !c.can_operate()),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.create_native_thread(window, cx)
+                                })),
+                        )
                         .when(!self.native.active(), |line| {
                             line.child(
                                 Button::new("manager-native-pair")
@@ -508,6 +576,32 @@ impl ProjectView {
                             )
                         }),
                 );
+        if let Some(error) = self.threads.create_error.as_deref() {
+            view = view.child(
+                div()
+                    .text_color(cx.theme().danger)
+                    .whitespace_normal()
+                    .child(error.to_owned()),
+            );
+        }
+        let draft_notice = if let Some(child) = self
+            .threads
+            .selected
+            .as_deref()
+            .and_then(|id| self.native_thread_view(id))
+        {
+            child.read(cx).draft_notice().map(str::to_owned)
+        } else {
+            self.draft_notice().map(str::to_owned)
+        };
+        if let Some(error) = draft_notice {
+            view = view.child(
+                div()
+                    .text_color(cx.theme().danger)
+                    .whitespace_normal()
+                    .child(error),
+            );
+        }
         if self.threads.error.is_some() {
             view = view.child(
                 div()
