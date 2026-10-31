@@ -49,6 +49,7 @@ mod reader_create;
 #[cfg(windows)]
 mod reader_creation_undo_windows;
 mod reader_deep_link;
+mod reader_deleted_note;
 mod reader_delimited;
 mod reader_diagnostics;
 mod reader_document_menu;
@@ -1653,6 +1654,12 @@ struct Reader {
     current_rel: String,
     current_title: String,
     link_notice: Option<reader_toast::Notice>,
+    /// The note on screen was deleted outside Okilum (#1986).
+    deleted_note: Option<reader_deleted_note::DeletedNote>,
+    displayed_deleted_notice: Option<(String, reader_deleted_note::Disk)>,
+    deleted_notice_generation: u64,
+    /// «Save the deleted note?» is open; a second navigation does not stack another.
+    deleted_note_asking: bool,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
@@ -1970,6 +1977,10 @@ impl Reader {
             current_rel: String::new(),
             current_title: String::new(),
             link_notice: None,
+            deleted_note: None,
+            displayed_deleted_notice: None,
+            deleted_notice_generation: 0,
+            deleted_note_asking: false,
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
@@ -3844,6 +3855,9 @@ impl Reader {
         let file_root = self.vault_root.clone();
         let root = self.selected_title();
         let parent_menu = folders.clone();
+        let deleted = self
+            .deleted_current()
+            .is_some_and(|deleted| deleted.disk == reader_deleted_note::Disk::Missing);
         h_flex()
             .id("reader-breadcrumbs")
             .flex_1()
@@ -3939,6 +3953,10 @@ impl Reader {
                         this.reveal_in_tree(&current, window, cx)
                     }))
                     .child(self.selected_title())
+                    // A note deleted outside Okilum is struck through (#1986).
+                    .when(deleted, |title| {
+                        title.line_through().text_color(p.text_muted)
+                    })
                     .tooltip(move |window, cx| {
                         gpui_component::tooltip::Tooltip::new(root.clone()).build(window, cx)
                     })
@@ -3952,6 +3970,26 @@ impl Reader {
                         )
                     }),
             )
+            .when(deleted, |row| {
+                row.child(
+                    div()
+                        .id("reader-document-deleted")
+                        .debug_selector(|| "reader-document-deleted".into())
+                        .flex_none()
+                        .text_color(p.text_muted)
+                        .cursor_pointer()
+                        .hover(move |d| d.text_color(p.text))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, _, cx| this.reshow_deleted_notice(cx)))
+                        .child("Deleted")
+                        .tooltip(|window, cx| {
+                            gpui_component::tooltip::Tooltip::new(
+                                "Deleted from disk: restore it or save it elsewhere",
+                            )
+                            .build(window, cx)
+                        }),
+                )
+            })
             .into_any_element()
     }
 

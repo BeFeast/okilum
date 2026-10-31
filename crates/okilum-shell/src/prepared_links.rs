@@ -307,6 +307,29 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A deleted note asks before its contents are left behind (#1986).
+        if self.leaving_deleted_note(Some(rel)) {
+            let retry = rel.to_owned();
+            let jump = location.0.map(str::to_owned);
+            let heading = location.1.map(str::to_owned);
+            let history = self.navigation.history_nav;
+            self.ask_leaving_deleted_note(
+                Box::new(move |this, window, cx| {
+                    let outer = std::mem::replace(&mut this.navigation.history_nav, history);
+                    this.prepare_document_target(
+                        &retry,
+                        (jump.as_deref(), heading.as_deref()),
+                        landing,
+                        window,
+                        cx,
+                    );
+                    this.navigation.history_nav = outer;
+                }),
+                window,
+                cx,
+            );
+            return;
+        }
         if !self.leave_source(cx) {
             return;
         }

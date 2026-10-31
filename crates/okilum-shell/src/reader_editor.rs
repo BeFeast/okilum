@@ -106,6 +106,11 @@ fn edit_error_text(error: &anyhow::Error) -> String {
     .into()
 }
 
+/// The editor's notice for a note that went away (the deleted-note notice of
+/// #1986 says more and replaces it).
+pub(super) const MOVED_OR_DELETED_NOTICE: &str =
+    "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft.";
+
 const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
 
@@ -136,7 +141,7 @@ fn file_access_notice(error: &anyhow::Error) -> &'static str {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     }) {
-        "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft."
+        MOVED_OR_DELETED_NOTICE
     } else {
         "Okilum couldn’t access this file. Your edits are still here. Copy them or close, keeping a draft."
     }
@@ -1025,6 +1030,82 @@ impl Reader {
         if let Some((input_id, epoch)) = resume_autosave {
             self.schedule_autosave(input_id, epoch, cx);
         }
+        cx.notify();
+    }
+
+    /// The editor's current buffer, while editing.
+    pub(super) fn source_text(&self, cx: &App) -> Option<String> {
+        self.editing
+            .as_ref()
+            .map(|editing| editing.input.read(cx).value().to_string())
+    }
+
+    /// Drop the editor's «moved or deleted» notice; the deleted-note notice
+    /// (#1986) is showing.
+    pub(super) fn clear_moved_or_deleted_notice(&mut self) {
+        if self.link_notice.as_deref() == Some(MOVED_OR_DELETED_NOTICE) {
+            self.link_notice = None;
+        }
+    }
+
+    /// The edited file is back at its place (#1986). The editor's disk refresh
+    /// has already compared it: a different file is a conflict and keeps its
+    /// choices; otherwise the earlier «file is gone» failure is over.
+    pub(super) fn source_file_returned(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if !editing.conflict_detected {
+            editing.save_failed = false;
+            self.clear_moved_or_deleted_notice();
+        }
+        cx.notify();
+    }
+
+    /// The editor's buffer was just written back at the note's own place
+    /// (#1986): that file is its base now. False when the editor can no
+    /// longer reach the file (its folder was recreated) and must reopen it.
+    pub(super) fn source_restored(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(editing) = &mut self.editing else {
+            return true;
+        };
+        let text = editing.input.read(cx).value().to_string();
+        match editing.store.reload() {
+            Ok(()) => {
+                if editing.store.text() != text {
+                    let updated = editing.store.text().to_owned();
+                    editing
+                        .input
+                        .update(cx, |input, cx| input.set_value(updated, window, cx));
+                }
+                editing.conflict = None;
+                editing.conflict_detected = false;
+                editing.compare = false;
+                editing.save_failed = false;
+                self.clear_moved_or_deleted_notice();
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                eprintln!("The restored note could not be reopened in the editor: {error:#}");
+                let _ = editing.store.saved_as(text);
+                false
+            }
+        }
+    }
+
+    /// The buffer of a deleted note was saved elsewhere (#1986): nothing is
+    /// left to protect for the deleted file, so leaving it keeps no draft.
+    pub(super) fn source_saved_elsewhere(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        let text = editing.input.read(cx).value().to_string();
+        if let Err(error) = editing.store.saved_as(text) {
+            eprintln!("Could not mark the saved draft: {error:#}");
+        }
+        editing.save_failed = false;
+        self.clear_moved_or_deleted_notice();
         cx.notify();
     }
 

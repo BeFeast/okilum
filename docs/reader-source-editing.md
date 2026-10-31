@@ -133,6 +133,30 @@ File permissions are preserved. Symlinks, hard-linked notes and unsupported
 atomic-exchange filesystems fail closed. Native GUI behavior on macOS is checked
 on the beta build by the user; automated source and lifecycle tests run in CI.
 
+## Notes deleted outside Okilum (#1986)
+
+When the note on screen is deleted by a file manager, `git checkout`, sync or
+a script, Read and the editor keep showing its contents. A persistent notice
+over the note (no modal, no layout row) says it was deleted and offers
+**Restore**, which writes the contents back at the note's own place, and
+**Save As…**. Restore never replaces a file that appeared there meanwhile; in
+the editor the restored file becomes the editor's base, so saving continues.
+The header strikes the title through and adds **Deleted**; clicking it shows
+the notice again after it was closed.
+
+In Read, opening another note, file or vault first asks **Save As… / Don’t
+Save / Cancel**. Save As… continues to the chosen note once the contents are
+written; Cancel stays. The editor does not ask: leaving keeps its buffer as a
+durable draft (More → Recover notes), as before, so navigation never depends
+on saving a deleted path.
+
+If the file returns at the same place with the same contents, the notice and
+the marker go away. If it returns with different contents, Read keeps the
+earlier version on screen and offers **Reload from disk** or Save As…; it never
+silently replaces the only copy. The editor keeps its existing conflict choices
+(Reload, Keep my version, Compare) for that case. The deleted note does not
+remain in the folder tree; a list of recently deleted notes is out of scope.
+
 ## Unicode pointer safety (#398)
 
 Ordinary source clicks position the cursor. Command-click (the platform primary
