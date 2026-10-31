@@ -83,7 +83,7 @@ impl Reader {
             manager,
             window,
             |this, manager, request: &OpenFile, window, cx| {
-                if this.project.as_ref() != Some(&manager)
+                if this.project.as_ref() != Some(manager)
                     || this.project_navigation.active.as_ref().map(|p| &p.folder)
                         != Some(&request.area)
                 {

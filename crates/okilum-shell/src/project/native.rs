@@ -385,6 +385,7 @@ impl ProjectView {
         }
         self.native.pause();
         self.native.client = Some(client);
+        self.attachments.connection_changed();
         self.native.error = None;
         self.native.stream_error = None;
         self.native.expires_at = Some(expiry);
