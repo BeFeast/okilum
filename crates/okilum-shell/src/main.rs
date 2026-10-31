@@ -118,6 +118,7 @@ mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
 mod reader_t3_settings;
+mod reader_table_copy;
 mod reader_title_nav;
 #[cfg(windows)]
 mod url_protocol;
@@ -1261,7 +1262,9 @@ fn markdown_plugins_at(
     let render_image = image_resolver.clone();
     let embed_link_handler = link_handler.clone();
     let footnote_link_handler = link_handler.clone();
-    view.selection_format(sel_format)
+    // Read mode only: a right-click on a table offers to copy it (#2025).
+    reader_table_copy::install(view, image_actions.clone(), live)
+        .selection_format(sel_format)
         .code_block_language(reader_code_language::resolver())
         .code_block_actions(reader_code::actions)
         .markdown_block_parser(reader_mermaid::parse)
