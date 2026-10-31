@@ -13,6 +13,7 @@ use gpui_component::input::projection::{
 use okilum_core::{
     source_classifier::{self, Classification, RetainedPresentation, Style},
     source_projection::{Active, Bias, Projection, Snapshot},
+    tex,
 };
 
 #[path = "source_presentation/code_syntax.rs"]
@@ -76,6 +77,20 @@ pub struct CachedProvider {
     tables: Vec<(Range<usize>, String)>,
     fenced_blocks: HashMap<String, String>,
     syntax: code_syntax::CodeSyntax,
+    /// One-line renderings of inline formulas by their TeX, None when the TeX
+    /// cannot be drawn (#1645). Filled on first use; bounded.
+    formulas: Mutex<HashMap<Box<str>, Option<Arc<tex::Linear>>>>,
+}
+
+/// Distinct formulas remembered per classification; typing a new formula
+/// elsewhere in a note with more simply starts again.
+const FORMULA_CACHE: usize = 512;
+
+/// The inline formula holding the caret: its `$…$` source range and TeX.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FormulaAt {
+    pub range: Range<usize>,
+    pub tex: String,
 }
 
 impl CachedProvider {
@@ -181,7 +196,98 @@ impl CachedProvider {
             classified,
             links,
             tables,
+            formulas: Default::default(),
         }
+    }
+
+    /// The formula a caret at `cursor` reveals (edges included), when the
+    /// projection has been composed for exactly this source revision. Looks
+    /// at the caret's line only: inline formulas never span lines.
+    #[allow(dead_code)] // Standalone projection examples have no preview card.
+    pub(crate) fn formula_at(
+        &self,
+        stamp: gpui_component::input::projection::SourceStamp,
+        cursor: usize,
+    ) -> Option<FormulaAt> {
+        let retained = self.retained.lock().ok()?;
+        let snapshot = retained.snapshot();
+        if snapshot.generation() != stamp.generation
+            || snapshot.document() != stamp.document.to_string()
+        {
+            return None;
+        }
+        let text = snapshot.source();
+        let cursor = cursor.min(text.len());
+        let line_start = text[..cursor].rfind('\n').map_or(0, |at| at + 1);
+        let styles = retained.styles();
+        let first = styles.partition_point(|s| s.range.start < line_start);
+        styles[first..]
+            .iter()
+            .take_while(|s| s.range.start <= cursor + 1)
+            .filter(|s| s.style == Style::Math)
+            .map(|s| s.range.start - 1..s.range.end + 1)
+            .find(|outer| outer.start <= cursor && cursor <= outer.end)
+            .and_then(|outer| {
+                Some(FormulaAt {
+                    tex: text.get(outer.start + 1..outer.end - 1)?.to_owned(),
+                    range: outer,
+                })
+            })
+    }
+
+    fn formula(&self, tex: &str) -> Option<Arc<tex::Linear>> {
+        let mut formulas = self.formulas.lock().ok()?;
+        if let Some(known) = formulas.get(tex) {
+            return known.clone();
+        }
+        if formulas.len() >= FORMULA_CACHE {
+            formulas.clear();
+        }
+        let rendered = tex::linear(tex).ok().map(Arc::new);
+        formulas.insert(tex.into(), rendered.clone());
+        rendered
+    }
+
+    /// Inline formulas whose delimiters this reveal conceals, drawn in place
+    /// of their TeX. A formula the caret touches keeps its source; one that
+    /// cannot be drawn shows its exact source, delimiters included.
+    fn math_overlay(
+        &self,
+        projection: &Projection,
+        styles: &[source_classifier::StyleSpan],
+    ) -> Option<MathOverlay> {
+        let snapshot = projection.snapshot();
+        let source = snapshot.source();
+        let map = |offset| projection.source_to_display(snapshot, offset).ok();
+        let mut segments = Vec::new();
+        for style in styles.iter().filter(|s| s.style == Style::Math) {
+            let content = style.range.clone();
+            let (Some(open), Some(start), Some(end), Some(close)) = (
+                map(content.start - 1),
+                map(content.start),
+                map(content.end),
+                map(content.end + 1),
+            ) else {
+                continue;
+            };
+            if open != start || end != close || start >= end {
+                continue; // Revealed: the caret is on it.
+            }
+            let (Some(tex), Some(authored)) = (
+                source.get(content.clone()),
+                source.get(content.start - 1..content.end + 1),
+            ) else {
+                continue;
+            };
+            let rendered = self.formula(tex).unwrap_or_else(|| {
+                Arc::new(tex::Linear {
+                    text: authored.to_owned(),
+                    runs: Vec::new(),
+                })
+            });
+            segments.push((start..end, rendered));
+        }
+        (!segments.is_empty()).then(|| MathOverlay::new(projection.display(), segments))
     }
     /// Off-thread preparation keeps standalone list continuations from turning
     /// a fence indented by four spaces into literal indented code.
@@ -299,6 +405,10 @@ impl CachedProvider {
             self.syntax.project(source, &projection, theme, &mut styles);
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
+        let math = self.math_overlay(&projection, retained.styles());
+        if let Some(math) = &math {
+            styles = math.restyle(styles);
+        }
         let blocks = table_blocks(
             &source.text,
             self.current_tables(&current, &source.text),
@@ -315,7 +425,144 @@ impl CachedProvider {
             styles,
             line_scales,
             blocks,
+            math,
         }))
+    }
+}
+
+/// Core display text with inline formulas replaced by their one-line
+/// rendering (#1645). Formulas never contain a line break, so projected line
+/// numbers, blocks and heading scales stay those of the core display. A
+/// position inside a drawn formula snaps to its edges, like concealed syntax.
+struct MathOverlay {
+    text: String,
+    /// Sorted, disjoint: the formula's core display range, the range drawn in
+    /// its place, and its glyph runs relative to that range.
+    segments: Vec<MathSegment>,
+}
+
+struct MathSegment {
+    core: Range<usize>,
+    shown: Range<usize>,
+    runs: Vec<tex::Run>,
+}
+
+impl MathOverlay {
+    fn new(display: &str, formulas: Vec<(Range<usize>, Arc<tex::Linear>)>) -> Self {
+        let mut text = String::with_capacity(display.len());
+        let mut segments = Vec::with_capacity(formulas.len());
+        let mut at = 0;
+        for (core, rendered) in formulas {
+            text.push_str(&display[at..core.start]);
+            let start = text.len();
+            text.push_str(&rendered.text);
+            segments.push(MathSegment {
+                shown: start..text.len(),
+                core: core.clone(),
+                runs: rendered.runs.clone(),
+            });
+            at = core.end;
+        }
+        text.push_str(&display[at..]);
+        Self { text, segments }
+    }
+
+    fn forward(&self, core: usize, bias: ConcealBias) -> usize {
+        let index = self.segments.partition_point(|s| s.core.end <= core);
+        match self.segments.get(index) {
+            Some(s) if s.core.start < core => match bias {
+                ConcealBias::Left => s.shown.start,
+                ConcealBias::Right => s.shown.end,
+            },
+            _ => index.checked_sub(1).map_or(core, |i| {
+                let s = &self.segments[i];
+                core - s.core.end + s.shown.end
+            }),
+        }
+    }
+
+    fn back(&self, shown: usize, bias: ConcealBias) -> usize {
+        let index = self.segments.partition_point(|s| s.shown.end <= shown);
+        match self.segments.get(index) {
+            Some(s) if s.shown.start < shown => match bias {
+                ConcealBias::Left => s.core.start,
+                ConcealBias::Right => s.core.end,
+            },
+            _ => index.checked_sub(1).map_or(shown, |i| {
+                let s = &self.segments[i];
+                shown - s.shown.end + s.core.end
+            }),
+        }
+    }
+
+    /// Move core-display style runs onto the drawn text and give each drawn
+    /// formula its own runs: letters italic, the surrounding style kept.
+    fn restyle(&self, runs: Vec<ProjectionStyle>) -> Vec<ProjectionStyle> {
+        let mut out = Vec::with_capacity(runs.len() + self.segments.len());
+        let mut covering: Vec<Option<ProjectionStyle>> = vec![None; self.segments.len()];
+        for mut run in runs {
+            let start = self.forward(run.range.start.0, ConcealBias::Left);
+            let end = self.forward(run.range.end.0, ConcealBias::Right);
+            let first = self.segments.partition_point(|s| s.shown.end <= start);
+            let mut at = start;
+            for (index, segment) in self.segments.iter().enumerate().skip(first) {
+                if segment.shown.start >= end {
+                    break;
+                }
+                if at < segment.shown.start {
+                    run.range = ProjectedByte(at)..ProjectedByte(segment.shown.start);
+                    out.push(run.clone());
+                }
+                if covering[index].is_none() {
+                    covering[index] = Some(run.clone());
+                }
+                at = segment.shown.end;
+            }
+            if at < end {
+                run.range = ProjectedByte(at)..ProjectedByte(end);
+                out.push(run);
+            }
+        }
+        for (segment, base) in self.segments.iter().zip(covering) {
+            let base = base.unwrap_or(ProjectionStyle {
+                range: ProjectedByte(0)..ProjectedByte(0),
+                font_family: None,
+                color: None,
+                bold: false,
+                italic: false,
+                strikethrough: false,
+            });
+            let plain = base.font_family.is_none()
+                && base.color.is_none()
+                && !base.bold
+                && !base.italic
+                && !base.strikethrough;
+            let offset = segment.shown.start;
+            let mut at = offset;
+            let piece = |range: Range<usize>, italic: bool, bold: bool, out: &mut Vec<_>| {
+                if range.is_empty() || (plain && !italic && !bold) {
+                    return;
+                }
+                out.push(ProjectionStyle {
+                    range: ProjectedByte(range.start)..ProjectedByte(range.end),
+                    italic: base.italic || italic,
+                    bold: base.bold || bold,
+                    ..base.clone()
+                });
+            };
+            for run in &segment.runs {
+                piece(at..offset + run.range.start, false, false, &mut out);
+                piece(
+                    offset + run.range.start..offset + run.range.end,
+                    run.italic,
+                    run.bold,
+                    &mut out,
+                );
+                at = offset + run.range.end;
+            }
+            piece(at..segment.shown.end, false, false, &mut out);
+        }
+        out
     }
 }
 
@@ -629,6 +876,7 @@ struct MappedProjection {
     styles: Vec<ProjectionStyle>,
     line_scales: Vec<LineScale>,
     blocks: Vec<ProjectionBlock>,
+    math: Option<MathOverlay>,
 }
 impl SourceProjection for MappedProjection {
     fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
@@ -666,19 +914,30 @@ impl SourceProjection for MappedProjection {
         &self.source
     }
     fn text(&self) -> &str {
-        self.reveal.projection().display()
+        match &self.math {
+            Some(math) => &math.text,
+            None => self.reveal.projection().display(),
+        }
     }
     fn styles(&self) -> &[ProjectionStyle] {
         &self.styles
     }
-    fn to_projected(&self, source: SourceByte, _bias: ConcealBias) -> Option<ProjectedByte> {
-        self.reveal
+    fn to_projected(&self, source: SourceByte, bias: ConcealBias) -> Option<ProjectedByte> {
+        let core = self
+            .reveal
             .projection()
             .source_to_display(self.reveal.projection().snapshot(), source.0)
-            .ok()
-            .map(ProjectedByte)
+            .ok()?;
+        Some(ProjectedByte(match &self.math {
+            Some(math) => math.forward(core, bias),
+            None => core,
+        }))
     }
     fn to_source(&self, projected: ProjectedByte, bias: ConcealBias) -> Option<SourceByte> {
+        let projected = match &self.math {
+            Some(math) => ProjectedByte(math.back(projected.0, bias)),
+            None => projected,
+        };
         let bias = match bias {
             ConcealBias::Left => Bias::Left,
             ConcealBias::Right => Bias::Right,
@@ -708,6 +967,8 @@ fn projected_styles(
             Style::Code | Style::CodeBlock => 3,
             Style::Link | Style::WikiLink => 5,
             Style::Definition => 6,
+            // Drawn by the math overlay, which replaces this range.
+            Style::Math => continue,
         };
         let start = projection.map_source(style.range.start)?;
         let end = projection.map_source(style.range.end)?;
@@ -1790,6 +2051,99 @@ This paragraph remains ordinary Markdown.
                 assert_eq!(&*projection.source().text, &*note.text);
             }
         }
+    }
+
+    /// #1645: inline formulas are drawn in place of their TeX with exact
+    /// source mapping; the caret on one shows its source and finds it.
+    #[test]
+    fn inline_math_is_drawn_in_place_and_reveals_its_source_under_the_caret() {
+        let note =
+            source("# **Area** $\\alpha_1$\n\nwith $x^2$ and $\\foo$, pay $5 and $2$ *now* ok");
+        let provider = CachedProvider::classify(note.clone());
+        let projection = provider.compose(&note, &inactive(&note)).unwrap();
+        let text = projection.text();
+        assert_eq!(
+            text,
+            "Area α₁\n\nwith x² and $\\foo$, pay $5 and $2$ now ok"
+        );
+        // Heading scale and line structure are the core display's.
+        assert_eq!(projection.line_scales()[0].line, 0);
+        // The drawn formula is atomic: its inside maps to its source edges.
+        let x = note.text.find("$x^2$").unwrap();
+        let drawn = text.find("x²").unwrap();
+        for (offset, bias, expected) in [
+            (drawn, ConcealBias::Left, x),
+            (drawn + 1, ConcealBias::Left, x),
+            (drawn + 1, ConcealBias::Right, x + 5),
+            (drawn + "x²".len(), ConcealBias::Right, x + 5),
+        ] {
+            let source = projection.to_source(ProjectedByte(offset), bias).unwrap().0;
+            assert!(
+                source == expected || source == expected + 1 || source + 1 == expected,
+                "{offset} {bias:?} -> {source}, expected near {expected}"
+            );
+        }
+        let after = note.text.find(" and $\\foo").unwrap();
+        let shown_after = projection
+            .to_projected(SourceByte(after), ConcealBias::Right)
+            .unwrap()
+            .0;
+        assert_eq!(&text[shown_after..shown_after + 4], " and");
+        assert_eq!(
+            projection.to_source(ProjectedByte(shown_after), ConcealBias::Right),
+            Some(SourceByte(after))
+        );
+        // Letters are italic; the heading keeps its bold around α.
+        let italic = |at: usize| {
+            projection
+                .styles()
+                .iter()
+                .find(|s| s.range.start.0 <= at && at < s.range.end.0)
+                .map(|s| (s.italic, s.bold))
+        };
+        assert_eq!(italic(drawn), Some((true, false)));
+        assert_eq!(italic(text.find('α').unwrap()), Some((true, true)));
+        assert_eq!(italic(text.find('₁').unwrap()), Some((false, true)));
+        let now = text.find("now").unwrap();
+        assert_eq!(
+            italic(now),
+            Some((true, false)),
+            "emphasis after money renders"
+        );
+        assert!(provider.formula_at(note.stamp, 0).is_none());
+
+        // The caret on the formula shows its source and only its source.
+        let caret = x + 2;
+        let active = ActiveSource {
+            anchor: SourceByte(caret),
+            head: SourceByte(caret),
+            ..Default::default()
+        };
+        let editing = provider.compose(&note, &active).unwrap();
+        assert_eq!(
+            editing.text(),
+            "Area α₁\n\nwith $x^2$ and $\\foo$, pay $5 and $2$ now ok"
+        );
+        assert_eq!(
+            provider.formula_at(note.stamp, caret),
+            Some(FormulaAt {
+                range: x..x + 5,
+                tex: "x^2".into()
+            })
+        );
+        assert_eq!(
+            provider.formula_at(note.stamp, x + 5).map(|f| f.range),
+            Some(x..x + 5),
+            "the closing edge still holds the formula"
+        );
+        let money = note.text.find("$2$").unwrap() + 1;
+        assert!(provider.formula_at(note.stamp, money).is_none());
+        // A different revision is not answered from a stale classification.
+        let stale = SourceStamp {
+            generation: note.stamp.generation + 1,
+            ..note.stamp
+        };
+        assert!(provider.formula_at(stale, caret).is_none());
     }
 
     #[test]
