@@ -63,6 +63,14 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
 <key>CFBundleName</key><string>Okilum</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>NSServices</key>
+<array><dict>
+  <key>NSMenuItem</key><dict><key>default</key><string>Open in Okilum as Vault</string></dict>
+  <key>NSMessage</key><string>openFolderAsVault</string>
+  <key>NSPortName</key><string>Okilum</string>
+  <key>NSSendTypes</key><array><string>NSFilenamesPboardType</string><string>public.file-url</string></array>
+  <key>NSSendFileTypes</key><array><string>public.folder</string></array>
+</dict></array>
 <key>CFBundleDocumentTypes</key>
 <array><dict>
   <key>CFBundleTypeName</key><string>Vault folder</string>

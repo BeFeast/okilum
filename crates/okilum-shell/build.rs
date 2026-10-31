@@ -132,6 +132,22 @@ fn main() {
             "-o",
         ])
         .arg(&manager_focus));
+    println!("cargo:rerun-if-changed=src/folder_service/bridge.m");
+    let folder_service = out.join("folder_service.o");
+    run(Command::new("xcrun")
+        .args([
+            "clang",
+            "-fobjc-arc",
+            "-Wall",
+            "-Werror",
+            "-arch",
+            architecture,
+            "-mmacosx-version-min=11.0",
+            "-c",
+            "src/folder_service/bridge.m",
+            "-o",
+        ])
+        .arg(&folder_service));
     let object = out.join("updater.o");
     run(Command::new("xcrun")
         .args([
@@ -152,7 +168,8 @@ fn main() {
         .arg(object)
         .arg(thumbnail)
         .arg(quicklook)
-        .arg(manager_focus));
+        .arg(manager_focus)
+        .arg(folder_service));
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=okilum_updater");
     println!("cargo:rustc-link-search=framework={}", framework.display());
