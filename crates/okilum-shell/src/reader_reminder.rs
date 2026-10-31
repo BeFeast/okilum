@@ -77,6 +77,8 @@ enum Command {
     SelectAll,
     CopyLinkToLine,
     Remind,
+    OpenBlockExternally,
+    StopBlockExternally,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +98,7 @@ fn editor_entries(
     capabilities: &gpui_base::input::InputContextMenuCapabilities,
     clipboard: bool,
     date: Option<time::Date>,
+    code_block: Option<(bool, &str)>,
 ) -> Vec<Entry> {
     let item = |label: &str, disabled, command| Entry::Item {
         label: label.into(),
@@ -142,6 +145,22 @@ fn editor_entries(
     entries.push(item("Select All", false, Command::SelectAll));
     entries.push(Entry::Separator);
     entries.push(item("Copy link to line", false, Command::CopyLinkToLine));
+    // #1993: the caret's fenced code block, in a real editor.
+    if let Some((open, editor)) = code_block {
+        entries.push(Entry::Separator);
+        entries.push(item(
+            &format!("Open block in {editor}"),
+            !editable,
+            Command::OpenBlockExternally,
+        ));
+        if open {
+            entries.push(item(
+                "Stop external editing",
+                false,
+                Command::StopBlockExternally,
+            ));
+        }
+    }
     if let Some(date) = date {
         entries.push(Entry::Separator);
         entries.push(item(
@@ -171,6 +190,9 @@ const MAX_DATE_BYTES: usize = 96;
 struct Facts {
     capabilities: gpui_base::input::InputContextMenuCapabilities,
     date: Option<time::Date>,
+    /// The caret is in a fenced code block's body; whether it is open in an
+    /// external editor (#1993).
+    code_block: Option<bool>,
 }
 
 /// What the source editor's menu needs to know about the editor, kept current
@@ -182,12 +204,24 @@ struct Facts {
 pub(super) struct MenuFacts(
     std::rc::Rc<std::cell::Cell<Facts>>,
     reader_image_actions::SourceFacts,
+    /// The note's text at a source stamp, so a caret move does not copy it.
+    std::rc::Rc<
+        std::cell::RefCell<(
+            Option<gpui_component::input::projection::SourceStamp>,
+            String,
+        )>,
+    >,
 );
 
 impl MenuFacts {
     #[cfg(test)]
     pub(super) fn date(&self) -> Option<time::Date> {
         self.0.get().date
+    }
+
+    #[cfg(test)]
+    pub(super) fn code_block(&self) -> Option<bool> {
+        self.0.get().code_block
     }
 
     pub(super) fn watch(
@@ -217,9 +251,23 @@ impl MenuFacts {
         };
         #[cfg(not(any(unix, windows)))]
         let date = None;
+        let code_block = markdown
+            .then(|| {
+                let mut source = self.2.borrow_mut();
+                let stamp = state.source_stamp();
+                if source.0 != Some(stamp) {
+                    *source = (Some(stamp), state.text().to_string());
+                }
+                let cursor = state.cursor();
+                (source.1.len() <= okilum_core::source_classifier::MAX_BYTES)
+                    .then(|| reader.external_block_fact(&source.1, cursor))
+                    .flatten()
+            })
+            .flatten();
         self.0.set(Facts {
             capabilities: state.context_menu_capabilities(),
             date,
+            code_block,
         });
     }
 }
@@ -228,13 +276,19 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
     use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
     #[cfg(test)]
     MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
-    let Facts { capabilities, date } = facts.0.get();
+    let Facts {
+        capabilities,
+        date,
+        code_block,
+    } = facts.0.get();
+    let editor = code_block.map(|_| crate::reader_editor::external_editor_label());
     // Rich-text-only and image clipboards paste too (#1602).
     let clipboard = cx.read_from_clipboard().is_some()
         || cx
             .try_global::<crate::note_paste::ManagedNoteClipboard>()
             .is_some_and(|clipboard| clipboard.0.has_content());
-    let menu = editor_entries(&capabilities, clipboard, date)
+    let code_block = code_block.zip(editor.as_deref());
+    let menu = editor_entries(&capabilities, clipboard, date, code_block)
         .into_iter()
         .fold(menu, |menu, entry| match entry {
             Entry::Separator => menu.separator(),
@@ -254,6 +308,12 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                     Command::SelectAll => Box::new(SelectAll),
                     Command::CopyLinkToLine => Box::new(CopyLinkToLine),
                     Command::Remind => Box::new(RemindOnSelection),
+                    Command::OpenBlockExternally => {
+                        Box::new(crate::reader_editor::OpenBlockExternally)
+                    }
+                    Command::StopBlockExternally => {
+                        Box::new(crate::reader_editor::StopBlockExternally)
+                    }
                 };
                 menu.menu_with_disabled(label, disabled, action)
             }
@@ -850,7 +910,7 @@ mod menu_tests {
     fn builtin_items_follow_the_editor_capabilities() {
         // A note editor is a code editor without a language server (#1010).
         let editor = Capabilities::new().code_editor(true).selection(true);
-        let plain = labels(&editor_entries(&editor, true, None));
+        let plain = labels(&editor_entries(&editor, true, None, None));
         let names: Vec<_> = plain.iter().map(|(label, _)| label.as_str()).collect();
         assert_eq!(
             names,
@@ -865,13 +925,13 @@ mod menu_tests {
             ]
         );
         assert_ne!(
-            editor_entries(&editor, true, None).first(),
+            editor_entries(&editor, true, None, None).first(),
             Some(&Entry::Separator),
             "no leading separator without server items"
         );
         // Positive control: a server's capabilities bring the items back.
         let served = editor.go_to_definition(true).code_actions(true);
-        let served = labels(&editor_entries(&served, true, None));
+        let served = labels(&editor_entries(&served, true, None, None));
         let names: Vec<_> = served.iter().map(|(label, _)| label.as_str()).collect();
         assert_eq!(
             names,
@@ -898,12 +958,13 @@ mod menu_tests {
             &Capabilities::new().code_editor(true),
             false,
             None,
+            None,
         ));
         for name in ["Cut", "Copy", "Paste"] {
             assert!(idle.contains(&(name.into(), true)), "{name} disabled");
         }
         let readonly = Capabilities::new().selection(true).readonly(true);
-        let readonly = labels(&editor_entries(&readonly, true, None));
+        let readonly = labels(&editor_entries(&readonly, true, None, None));
         assert!(readonly.contains(&("Cut".into(), true)));
         assert!(readonly.contains(&("Paste".into(), true)));
         assert!(readonly.contains(&("Copy".into(), false)));
@@ -915,8 +976,13 @@ mod menu_tests {
     #[test]
     fn a_date_adds_exactly_one_reminder_entry_at_the_end() {
         let editor = Capabilities::new().code_editor(true).selection(true);
-        let without = editor_entries(&editor, true, None);
-        let with = editor_entries(&editor, true, Some(time::macros::date!(2026 - 11 - 01)));
+        let without = editor_entries(&editor, true, None, None);
+        let with = editor_entries(
+            &editor,
+            true,
+            Some(time::macros::date!(2026 - 11 - 01)),
+            None,
+        );
         assert_eq!(with[..without.len()], without[..]);
         assert_eq!(with.len(), without.len() + 2);
         assert_eq!(with[with.len() - 2], Entry::Separator);
@@ -928,5 +994,31 @@ mod menu_tests {
                 command: Command::Remind,
             })
         );
+    }
+
+    /// #1993: a caret in a code block adds «Open block in …», and «Stop
+    /// external editing» while the block is open; nothing outside a block.
+    #[test]
+    fn a_code_block_adds_the_external_editor_entries() {
+        let editor = Capabilities::new().code_editor(true).selection(true);
+        let without = editor_entries(&editor, true, None, None);
+        let closed = editor_entries(&editor, true, None, Some((false, "Zed")));
+        assert_eq!(closed[..without.len()], without[..], "positive control");
+        assert_eq!(
+            closed[without.len()..],
+            [
+                Entry::Separator,
+                Entry::Item {
+                    label: "Open block in Zed".into(),
+                    disabled: false,
+                    command: Command::OpenBlockExternally,
+                }
+            ]
+        );
+        let open = labels(&editor_entries(&editor, true, None, Some((true, "Zed"))));
+        assert!(open.contains(&("Stop external editing".into(), false)));
+        let readonly = Capabilities::new().readonly(true);
+        let readonly = labels(&editor_entries(&readonly, true, None, Some((false, "Zed"))));
+        assert!(readonly.contains(&("Open block in Zed".into(), true)));
     }
 }

@@ -124,6 +124,19 @@ impl Editor {
     }
 }
 
+impl Editor {
+    /// The program and arguments that open `path`, without a line.
+    pub(crate) fn command(&self, path: &Path) -> (PathBuf, Vec<OsString>) {
+        (self.program.clone(), self.args(path, None))
+    }
+}
+
+/// The detected editor «Open in» would list first: the last one used this
+/// session, else the first known one installed (Zed before the others).
+pub(crate) fn preferred() -> Option<&'static Editor> {
+    ordered().into_iter().next()
+}
+
 fn with_line(path: &Path, line: usize) -> OsString {
     let mut arg = path.as_os_str().to_owned();
     arg.push(format!(":{line}"));
