@@ -103,13 +103,15 @@ pub fn resolve(
             a == b
         }
     };
-    // `.md` may be omitted when only the Markdown file exists.
+    // `.md` may be omitted when the exact name is absent, also after a dot
+    // (`v1.2`), but is never appended to a name already ending in `.md`.
     let pick = |root: &Path, rel: &str| -> Option<String> {
         if exists(&root.join(rel)) {
             return Some(rel.to_owned());
         }
+        let has_md = rel.to_ascii_lowercase().ends_with(".md");
         let md = format!("{rel}.md");
-        (Path::new(rel).extension().is_none() && exists(&root.join(&md))).then_some(md)
+        (!has_md && exists(&root.join(&md))).then_some(md)
     };
     match &link.address {
         Address::Vault { vault, path } => {
@@ -200,7 +202,7 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
         return Err(Refused::NotOkilum);
     };
     let (rest, fragment) = match rest.split_once('#') {
-        Some((rest, fragment)) => (rest, Some(decode(fragment))),
+        Some((rest, fragment)) => (rest, Some(fragment)),
         None => (rest, None),
     };
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -211,7 +213,7 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
     let address = match kind {
         "v" => {
             let (vault, path) = target.split_once('/').ok_or(Refused::Malformed)?;
-            let vault = decode(vault);
+            let vault = decode_clean(vault)?;
             let path = segments(path)?;
             if vault.is_empty() || vault.contains('/') {
                 return Err(Refused::Malformed);
@@ -219,9 +221,14 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
             Address::Vault { vault, path }
         }
         "file" => {
-            let path = decode(target);
-            let windows =
-                path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+            let path = decode_clean(target)?;
+            // `C:/…` or `C:\…`; drive-relative `C:x` and a bare `C:` are not
+            // absolute and are refused on every platform.
+            let bytes = path.as_bytes();
+            let windows = bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'/' | b'\\');
             if !(path.starts_with('/') || windows) {
                 return Err(Refused::Malformed);
             }
@@ -231,7 +238,7 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
             Address::File(path)
         }
         "note" | "task" | "project" => {
-            let id = decode(target);
+            let id = decode_clean(target)?;
             if id.is_empty() || id.contains('/') {
                 return Err(Refused::Malformed);
             }
@@ -259,6 +266,7 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
     if position.line.is_none() {
         position.column = None;
     }
+    let fragment = fragment.map(decode_clean).transpose()?;
     match fragment.filter(|f| !f.is_empty()) {
         Some(block) if block.starts_with('^') => position.block = Some(block[1..].to_owned()),
         Some(heading) => position.heading = Some(heading),
@@ -337,13 +345,26 @@ fn decode(value: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
+/// [`decode`], refusing control characters (NUL, line breaks, ESC, DEL, C1)
+/// that only appear after decoding: raw ones are refused up front.
+fn decode_clean(value: &str) -> Result<String, Refused> {
+    let value = decode(value);
+    if value.chars().any(char::is_control) {
+        return Err(Refused::Malformed);
+    }
+    Ok(value)
+}
+
 fn hex(b: u8) -> Option<u8> {
     (b as char).to_digit(16).map(|d| d as u8)
 }
 
 /// A vault-relative path: decoded per segment, never empty, never escaping.
 fn segments(path: &str) -> Result<String, Refused> {
-    let parts: Vec<String> = path.split('/').map(decode).collect();
+    let parts = path
+        .split('/')
+        .map(decode_clean)
+        .collect::<Result<Vec<_>, _>>()?;
     if parts.iter().any(|p| p.is_empty()) {
         return Err(if path.is_empty() {
             Refused::Malformed
@@ -671,5 +692,147 @@ mod tests {
         assert_eq!(parse(&long), Err(Refused::TooLong));
         // Positive control: the same shape inside the limit parses.
         assert!(parse("okilum://v/N/a.md").is_ok());
+    }
+
+    #[test]
+    fn md_is_appended_to_dotted_names_but_never_twice() {
+        use std::path::{Path, PathBuf};
+        let files = [
+            "/home/me/Notes/v1.2.md",
+            "/home/me/Notes/Daily/2026.10.29 Meeting.md",
+            "/home/me/Notes/Both.v2",
+            "/home/me/Notes/Both.v2.md",
+            "/home/me/Notes/Plan.MD.md",
+            "/home/me/Notes/Inbox.md.md",
+            "/work/Notes/v1.2.md",
+        ];
+        let exists = |p: &Path| files.iter().any(|f| Path::new(f) == p);
+        let home: Vec<PathBuf> = vec!["/home/me/Notes".into()];
+        let r = |link: &str, known: &[PathBuf]| resolve(&parse(link).unwrap(), known, &exists);
+        let opened = |res: Resolution| match res {
+            Resolution::Open { rel, .. } => rel,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(opened(r("okilum://v/Notes/v1.2", &home)), "v1.2.md");
+        assert_eq!(
+            opened(r("okilum://v/Notes/Daily/2026.10.29%20Meeting", &home)),
+            "Daily/2026.10.29 Meeting.md"
+        );
+        // The exact name wins over the `.md` sibling.
+        assert_eq!(opened(r("okilum://v/Notes/Both.v2", &home)), "Both.v2");
+        // A name that already ends with `.md` (any case) never gets a second one.
+        assert!(matches!(
+            r("okilum://v/Notes/Plan.MD", &home),
+            Resolution::Unavailable(m) if m.contains("Plan.MD")
+        ));
+        assert!(matches!(
+            r("okilum://v/Notes/Inbox.md", &home),
+            Resolution::Unavailable(m) if m.contains("Inbox.md")
+        ));
+        // Positive control: the doubled files are reachable by their exact names.
+        assert_eq!(
+            opened(r("okilum://v/Notes/Plan.MD.md", &home)),
+            "Plan.MD.md"
+        );
+        // Two vaults named Notes stay a choice, each with its own answer.
+        let two: Vec<PathBuf> = vec!["/home/me/Notes".into(), "/work/Notes".into()];
+        match r("okilum://v/Notes/v1.2", &two) {
+            Resolution::Choose { roots, .. } => assert_eq!(
+                roots,
+                vec![
+                    ("/home/me/Notes".into(), Some("v1.2.md".into())),
+                    ("/work/Notes".into(), Some("v1.2.md".into())),
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
+        match r("okilum://v/Notes/Daily/2026.10.29%20Meeting", &two) {
+            Resolution::Choose { roots, .. } => assert_eq!(
+                roots,
+                vec![
+                    (
+                        "/home/me/Notes".into(),
+                        Some("Daily/2026.10.29 Meeting.md".into())
+                    ),
+                    ("/work/Notes".into(), None),
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn decoded_control_characters_are_malformed() {
+        for control in ["%00", "%0A", "%0D", "%1B", "%7F", "%C2%80", "%C2%9F"] {
+            for link in [
+                format!("okilum://v/N{control}/a.md"),
+                format!("okilum://v/N/a{control}.md"),
+                format!("okilum://v/N/dir{control}/a.md"),
+                format!("okilum://file//home/me/a{control}.md"),
+                format!("okilum://file/C:/Users/a{control}.md"),
+                format!("okilum://note/n{control}1"),
+                format!("okilum://task/t{control}1"),
+                format!("okilum://project/p{control}1"),
+                format!("okilum://v/N/a.md#Next{control}steps"),
+                format!("okilum://v/N/a.md#^abc{control}"),
+            ] {
+                assert_eq!(parse(&link), Err(Refused::Malformed), "{link}");
+            }
+        }
+        // Positive control: spaces, Unicode and literal malformed escapes still
+        // parse in every position checked above.
+        let (v, p, pos) = vault(
+            "okilum://v/My%20Brain/%D7%A9%D7%9C%D7%95%D7%9D%20a+b%zz.md#Next%20%D0%A8%D0%B0%D0%B3",
+        );
+        assert_eq!(
+            (v.as_str(), p.as_str(), pos.heading.as_deref()),
+            ("My Brain", "שלום a+b%zz.md", Some("Next Шаг"))
+        );
+        assert_eq!(
+            vault("okilum://v/N/a.md#^abc%20d").2.block.as_deref(),
+            Some("abc d")
+        );
+        assert_eq!(
+            parse("okilum://file//home/me/a%20%zz.md").unwrap().address,
+            Address::File("/home/me/a %zz.md".into())
+        );
+        assert_eq!(
+            parse("okilum://note/n%201").unwrap().address,
+            Address::Note("n 1".into())
+        );
+    }
+
+    #[test]
+    fn drive_relative_file_forms_are_malformed() {
+        for link in [
+            "okilum://file/C:relative/note.md",
+            "okilum://file/C:",
+            "okilum://file/c:note.md",
+            "okilum://file/C%3Arelative%2Fnote.md",
+        ] {
+            assert_eq!(parse(link), Err(Refused::Malformed), "{link}");
+        }
+        // Positive control: absolute drive forms, with `/` or an encoded `\`.
+        for (link, path) in [
+            ("okilum://file/C:/Users/me/a.md", "C:/Users/me/a.md"),
+            ("okilum://file/C:/", "C:/"),
+            (
+                "okilum://file/d:%5CUsers%5Cme%5Ca.md",
+                "d:\\Users\\me\\a.md",
+            ),
+        ] {
+            assert_eq!(
+                parse(link).unwrap().address,
+                Address::File(path.into()),
+                "{link}"
+            );
+        }
+        // Drive forms never resolve against Linux vault roots.
+        let known = vec![std::path::PathBuf::from("/home/me/Notes")];
+        let any = |_: &std::path::Path| true;
+        assert!(matches!(
+            resolve(&parse("okilum://file/C:/home/me/Notes/a.md").unwrap(), &known, &any),
+            Resolution::Unavailable(m) if m.contains("not in a vault")
+        ));
     }
 }
