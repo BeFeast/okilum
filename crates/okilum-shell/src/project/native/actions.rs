@@ -62,6 +62,9 @@ impl Render for RequestCard {
         } else {
             if self.item["type"] == "approval_request" {
                 for field in ["prompt", "reason", "decision"] {
+                    if field == "reason" && self.item["reason"] == self.item["prompt"] {
+                        continue;
+                    }
                     if let Some(text) = self.item[field].as_str() {
                         row = row.child(div().whitespace_normal().child(text.to_owned()));
                     }
