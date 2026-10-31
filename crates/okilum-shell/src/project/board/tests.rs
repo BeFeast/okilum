@@ -855,6 +855,8 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         build: "100".into(),
         source: source.into(),
         artifact: "https://updates.example/exact-build.zip".into(),
+        published_at: None,
+        release_url: None,
     };
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
