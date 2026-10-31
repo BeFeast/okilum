@@ -149,6 +149,8 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleHiddenFiles>("Show hidden files", View),
         entry::<ToggleSoftWrap>("Soft wrap in code files", View),
         entry::<ToggleNoteWidth>("Full / normal note width", View),
+        entry::<ToggleFocusMode>("Focus mode", View),
+        entry::<ToggleTypewriterMode>("Typewriter mode", View),
         entry::<ToggleShortcutSheet>("Keyboard shortcuts", View),
         entry::<reader_open::NewWindow>("New window", View),
         entry::<reader_settings::OpenSettings>("Settings", View),
