@@ -8,7 +8,9 @@ acceptance. P0/P1 releases may run outside that cycle.
 
 `fast / check (pull_request)` is the sole required main protection context.
 It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner (capacity four):
-desktop/supervisor build plus deterministic okilum-paste library unit tests.
+desktop/supervisor build, `cargo check --locked --workspace --tests` (compilation
+only), plus deterministic okilum-paste library unit tests. Test fixture/API drift
+therefore blocks merge without executing the full overnight suites.
 The five-minute job budget includes setup and build. The LAN compiler cache and
 Cargo downloads are reused; four separately locked persistent targets
 allow four simultaneous builds. Each job has three compiler workers (twelve total).
