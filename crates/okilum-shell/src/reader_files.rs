@@ -146,12 +146,10 @@ pub(crate) fn menu(
     for (label, action) in actions {
         let root = root.clone();
         let rel = rel.clone();
-        // The bound Reader action only shows its key; the click acts on this row.
+        // Row clicks use this captured path. CopyVaultPath is a Reader shortcut
+        // for the open note, so advertising it here would promise the wrong target.
         let item = match action {
             FileAction::Reveal => PopupMenuItem::new(label).action(Box::new(super::RevealFile)),
-            FileAction::Relative => {
-                PopupMenuItem::new(label).action(Box::new(super::CopyVaultPath))
-            }
             _ => PopupMenuItem::new(label),
         };
         menu = menu.item(item.on_click(move |_, window, cx| run(action, &root, &rel, window, cx)));
