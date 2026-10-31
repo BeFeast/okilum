@@ -21,7 +21,17 @@ pub(super) struct Composer {
 }
 impl Composer {
     pub(super) fn new(input: Entity<TextareaState>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify());
+        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { shift: false, .. })
+                && this.enabled
+                && !this.busy
+                && !this.input.read(cx).ime_settling(cx)
+                && !this.input.read(cx).value().trim().is_empty()
+            {
+                cx.emit(SendRequested);
+            }
+            cx.notify();
+        });
         Self {
             input,
             enabled: false,
@@ -77,24 +87,37 @@ impl Render for Composer {
             Vec::new()
         };
         let modes = h_flex().gap_1().children(modes);
-        v_flex().w_full().gap_1().child(modes).child(
-            h_flex()
-                .items_end()
-                .gap_2()
-                .child(Textarea::new(&self.input).flex_1())
-                .child(
-                    Button::new("project-send")
-                        .debug_selector(|| "project-send".into())
-                        .ghost()
-                        .icon(IconName::ArrowUp)
-                        .tooltip("Send to manager")
-                        .disabled(
-                            self.busy
-                                || !self.enabled
-                                || self.input.read(cx).value().trim().is_empty(),
-                        )
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
-                ),
-        )
+        v_flex()
+            .w_full()
+            .gap_1()
+            // Textarea propagates submit-on-enter. Consume that action here so
+            // the platform input fallback cannot insert a newline before send.
+            .on_action(|_: &gpui_component::input::Enter, _, _| {})
+            .child(modes)
+            .child(
+                h_flex()
+                    .items_end()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .debug_selector(|| "project-composer-input".into())
+                            .child(Textarea::new(&self.input).w_full().aria_label("Message")),
+                    )
+                    .child(
+                        Button::new("project-send")
+                            .debug_selector(|| "project-send".into())
+                            .ghost()
+                            .icon(IconName::ArrowUp)
+                            .tooltip("Send to manager")
+                            .disabled(
+                                self.busy
+                                    || !self.enabled
+                                    || self.input.read(cx).value().trim().is_empty(),
+                            )
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
+                    ),
+            )
     }
 }

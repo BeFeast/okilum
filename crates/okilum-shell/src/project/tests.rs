@@ -2,6 +2,103 @@ use super::*;
 use ::core::prelude::v1::test;
 
 #[gpui::test]
+fn composer_grows_and_shift_enter_keeps_a_newline_while_enter_sends_once(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake::default());
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture::view(temp.path().to_owned(), gateway.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(760.), px(900.)));
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    let initial = visual.debug_bounds("project-composer-input").unwrap();
+    assert!(
+        initial.size.height >= px(48.),
+        "the empty composer must visibly have several lines: {initial:?}"
+    );
+    view.update_in(visual, |view, window, cx| {
+        view.compose.update(cx, |input, cx| input.focus(window, cx))
+    });
+    visual.simulate_input("First line");
+    visual.simulate_keystrokes("shift-enter");
+    visual.simulate_input("Second line");
+    view.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.compose.read(cx).value().as_str(),
+            "First line\nSecond line"
+        )
+    });
+    assert!(
+        gateway.sends.lock().unwrap().is_empty(),
+        "Shift+Enter must not send"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        gateway.sends.lock().unwrap().len(),
+        1,
+        "plain Enter sends exactly once"
+    );
+    assert_eq!(
+        gateway.sends.lock().unwrap()[0].text,
+        "First line\nSecond line"
+    );
+    view.read_with(visual, |view, cx| {
+        assert!(view.compose.read(cx).value().is_empty())
+    });
+    visual.simulate_keystrokes("enter");
+    assert_eq!(
+        gateway.sends.lock().unwrap().len(),
+        1,
+        "empty Enter never sends"
+    );
+    visual.simulate_input(&"Another line\n".repeat(12));
+    visual.run_until_parked();
+    let grown = visual.debug_bounds("project-composer-input").unwrap();
+    assert!(
+        grown.size.height > initial.size.height + px(40.),
+        "multiline paste grows the composer: {initial:?} -> {grown:?}"
+    );
+    assert!(
+        grown.size.height <= px(320.),
+        "long drafts keep the history viewport usable"
+    );
+    view.update_in(visual, |view, window, cx| {
+        view.compose
+            .update(cx, |input, cx| input.set_value("", window, cx))
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("project-composer-input")
+            .unwrap()
+            .size
+            .height,
+        initial.size.height
+    );
+    view.update_in(visual, |view, window, cx| {
+        view.compose.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(Some(0..0), "入力", None, window, cx);
+            assert!(
+                input.ime_composing(),
+                "positive control: a real IME composition is active"
+            );
+        })
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        gateway.sends.lock().unwrap().len(),
+        1,
+        "confirming an IME candidate must not send a message"
+    );
+}
+
+#[gpui::test]
 fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();

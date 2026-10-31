@@ -58,6 +58,49 @@ fn counters(view: &Entity<ProjectView>, visual: &VisualTestContext) -> (usize, u
 }
 
 #[gpui::test]
+fn actual_wheel_scrolling_keeps_older_messages_when_new_replies_arrive(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 100);
+    let history = visual.debug_bounds("project-history").unwrap();
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: history.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(1600.))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    feed.read_with(visual, |feed, cx| {
+        assert!(
+            !feed.scroller.read(cx).is_following_tail(),
+            "real wheel input must leave the live edge"
+        )
+    });
+    assert!(
+        visual.debug_bounds("project-message-99").is_none(),
+        "positive control: the wheel really moved away from the newest message"
+    );
+    view.update(visual, |view, cx| {
+        view.feed.update(cx, |feed, cx| {
+            feed.apply(std::iter::once(&message(100)), None, cx)
+        })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-message-100").is_none(),
+        "a new reply must not pull a reader away from older history"
+    );
+    feed.read_with(visual, |feed, cx| {
+        assert_eq!(feed.messages.len(), 101, "offscreen history is retained");
+        assert!(!feed.scroller.read(cx).is_following_tail());
+    });
+    feed.update(visual, |feed, cx| {
+        feed.scroller
+            .update(cx, |state, cx| state.scroll_to_end(cx))
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-message-100").is_some());
+}
+
+#[gpui::test]
 fn long_thread_scroll_and_streaming_stay_within_the_row_render_budget(cx: &mut TestAppContext) {
     let (view, visual, _temp) = fixture(cx, 5_000);
     let (initial_rows, _) = counters(&view, visual);

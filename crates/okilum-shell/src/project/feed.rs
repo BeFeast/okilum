@@ -425,7 +425,30 @@ impl Render for Feed {
         let scroller = MessageScroller::new(
             "project-messages",
             self.scroller.clone(),
-            move |index, _, cx| entity.update(cx, |feed, cx| feed.row(index, cx)),
+            move |index, _, cx| {
+                let row = entity.update(cx, |feed, cx| feed.row(index, cx));
+                if index != 0 {
+                    return row;
+                }
+                let parent = entity.read(cx).parent.clone();
+                div()
+                    .w_full()
+                    .child(row)
+                    .on_children_prepainted(move |bounds, window, cx| {
+                        // A virtual list also renders offscreen rows to measure
+                        // them. Fetch only when the oldest row is actually visible.
+                        let viewport = window.content_mask().bounds;
+                        if bounds.iter().any(|row| row.intersects(&viewport)) {
+                            let parent = parent.clone();
+                            window.defer(cx, move |window, cx| {
+                                let _ = parent.update(cx, |view, cx| {
+                                    view.prefetch_native_history(window, cx)
+                                });
+                            });
+                        }
+                    })
+                    .into_any_element()
+            },
         )
         .with_jump_button_renderer(|button| button.debug_selector(|| "project-jump-latest".into()))
         .size_full()

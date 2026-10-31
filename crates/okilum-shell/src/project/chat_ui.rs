@@ -16,13 +16,8 @@ impl ProjectView {
             .debug_selector(|| "project-chat-header".into());
         #[cfg(target_os = "linux")]
         {
-            row = row.child(div().flex_1().min_w_0().child(div().truncate().child(
-                if self.native.title().is_empty() {
-                    "Manager".to_owned()
-                } else {
-                    self.native.title().to_owned()
-                },
-            )));
+            // The searchable thread picker is the transcript's sole title.
+            row = row.child(div().flex_1().min_w_0());
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -79,6 +74,10 @@ impl ProjectView {
                         })),
                 ),
             );
+        #[cfg(target_os = "linux")]
+        if !self.native.title().is_empty() {
+            panel = panel.child(format!("Title: {}", self.native.title()));
+        }
         if let Some(target) = &self.model_target {
             panel = panel.child(format!("Thread: {}", target.thread_id));
         }
