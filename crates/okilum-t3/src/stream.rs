@@ -96,6 +96,11 @@ pub struct NativeClient {
 }
 
 impl NativeClient {
+    /// Immutable server origin bound to this native credential/client.
+    pub fn origin(&self) -> String {
+        self.environment.origin()
+    }
+
     pub fn history(
         &self,
         thread_id: &str,

@@ -512,6 +512,25 @@ impl ProjectView {
                         let mut changes = r.model.take_changes();
                         let controls_changed = changes.actions.is_some();
                         if let Some(state) = changes.actions.take() {
+                            let unsettled = r
+                                .model
+                                .timeline_runs()
+                                .filter(|run| {
+                                    !matches!(
+                                        run["status"].as_str(),
+                                        Some(
+                                            "completed"
+                                                | "interrupted"
+                                                | "failed"
+                                                | "cancelled"
+                                                | "rolled_back"
+                                        )
+                                    )
+                                })
+                                .filter_map(|run| run["id"].as_str().map(str::to_owned))
+                                .collect::<Vec<_>>();
+                            this.feed
+                                .update(cx, |feed, cx| feed.set_copy_active_runs(unsettled, cx));
                             this.native
                                 .actions
                                 .update(cx, |a, cx| a.set_state(state, window, cx));
