@@ -116,6 +116,6 @@ existing AGENTS/manager-state/entry notes are named. Existing bindings keep thei
 original behavior. Retained launch intents and created receipts are never deleted
 or retried after an uncertain thread launch; their recovery boundary is unchanged.
 
-Each slice gets meaningful regressions and Sprint before its PR. Data writes
-retain one bounded check under the 31 October gate policy. Sprint retains the
-Mac delivery window; no publication between 02:20 and 09:00 Israel.
+The three slices retain their regression evidence. Under the 31 October process
+v2, required CI gates the PR; review follows merge asynchronously. Each merge
+reaches beta on all three operating systems. Sprint publication is retired.
