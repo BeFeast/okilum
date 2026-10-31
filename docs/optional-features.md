@@ -46,7 +46,7 @@ permission and scope restoration across executor threads.
 
 With Agents off, an opened folder with a Git checkout (including worktree `.git`
 files), a root project manifest, a code/build manifest or top-level source files
-receives one inline “Enable Board and Manager?” offer. A running local T3 Code
+receives one inline “Board + Manager?” offer with Enable and Not now. A running local T3 Code
 executable is also a relevance signal. Detection reads local filesystem/process
 metadata on a worker; it does not start processes, inspect command lines or
 credentials, probe ports, resolve hosts or contact T3. A plain notes folder with

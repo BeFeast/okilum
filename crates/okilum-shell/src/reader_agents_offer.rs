@@ -75,7 +75,7 @@ impl Reader {
                     .min_w_0()
                     .text_size(px(11.))
                     .truncate()
-                    .child("Enable Board and Manager?")
+                    .child("Board + Manager?")
                     .tooltip(|window, cx| {
                         gpui_component::tooltip::Tooltip::new(
                             "This looks like a project. Enable Board and Manager?",
