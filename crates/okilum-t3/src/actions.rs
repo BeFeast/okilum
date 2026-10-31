@@ -25,6 +25,8 @@ pub enum Intent {
     #[serde(rename = "message.dispatch")]
     Message {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<crate::stream::ChatAttachment>,
         #[serde(rename = "messageId")]
         message_id: String,
         #[serde(rename = "dispatchMode")]
@@ -54,7 +56,20 @@ impl Intent {
     pub fn message(text: String, mode: DispatchMode) -> Self {
         Self::Message {
             text,
+            attachments: Vec::new(),
             mode,
+            message_id: format!("okilum-{}", uuid::Uuid::new_v4()),
+        }
+    }
+    pub fn message_with_attachments(
+        text: String,
+        mode: DispatchMode,
+        attachments: Vec<crate::stream::ChatAttachment>,
+    ) -> Self {
+        Self::Message {
+            text,
+            mode,
+            attachments,
             message_id: format!("okilum-{}", uuid::Uuid::new_v4()),
         }
     }
@@ -81,10 +96,12 @@ impl Intent {
         match self {
             Self::Message {
                 text,
+                attachments,
                 message_id,
                 mode,
             } => {
-                !text.trim().is_empty()
+                (!text.trim().is_empty() || !attachments.is_empty())
+                    && crate::stream::validate_attachments(attachments).is_ok()
                     && !message_id.is_empty()
                     && match mode {
                         DispatchMode::SteerActive { target_run_id } => !target_run_id.is_empty(),
@@ -142,9 +159,10 @@ impl Command {
             ));
         }
         let mut wire = serde_json::to_value(self).expect("command serializes");
-        match self.intent {
-            Intent::Message { .. } => {
-                wire["attachments"] = json!([]);
+        match &self.intent {
+            Intent::Message { attachments, .. } => {
+                wire["attachments"] =
+                    serde_json::to_value(attachments).expect("attachments serialize");
                 wire["createdBy"] = json!("user");
                 wire["creationSource"] = json!("web");
             }
