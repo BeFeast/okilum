@@ -490,6 +490,62 @@ impl Tree {
         self.flatten();
     }
 
+    /// Settings «Show the open note in the file tree» (#1762): like
+    /// [`Tree::reveal`], but a collapsed folder with more than
+    /// `max_children` entries stays closed and is selected instead, so a
+    /// note deep in an archive does not flood the tree. Folders the user
+    /// already opened stay as they are; nothing is collapsed.
+    pub fn auto_reveal(&mut self, path: &str, max_children: usize) -> Option<usize> {
+        if !self.kinds.contains_key(path) {
+            return self.reveal(path);
+        }
+        let mut ancestors = Vec::new();
+        let mut ancestor = parent(path);
+        while let Some(p) = ancestor {
+            if self.kinds.get(p) == Some(&EntryKind::Directory) {
+                ancestors.push(p);
+            }
+            ancestor = parent(p);
+        }
+        let inside_scope = |p: &str| {
+            self.scope.is_empty()
+                || p.strip_prefix(&self.scope)
+                    .is_some_and(|tail| tail.starts_with('/'))
+        };
+        // Outermost first: the first oversized closed folder is where it stops.
+        let stop = ancestors.iter().rev().copied().find(|p| {
+            inside_scope(p)
+                && !self.expanded.contains(*p)
+                && self.children.get(*p).map_or(0, Vec::len) > max_children
+        });
+        let Some(stop) = stop.map(str::to_owned) else {
+            return self.reveal(path);
+        };
+        for p in ancestors {
+            if p.len() < stop.len() {
+                self.expanded.insert(p.to_owned());
+            }
+        }
+        self.revealed_hidden =
+            (hidden(&stop) && !self.show_hidden && !self.shown_index(&stop)).then(|| stop.clone());
+        self.cursor = Some(stop);
+        self.flatten();
+        self.cursor_index()
+    }
+
+    /// Opening a note with auto-reveal off (#1762): select its row only if
+    /// it is already listed. No folder opens and no hidden branch appears;
+    /// a note that is not listed leaves nothing selected rather than a
+    /// neighbour (#395).
+    pub fn select_if_listed(&mut self, path: &str) -> Option<usize> {
+        self.cursor = self
+            .rows
+            .iter()
+            .any(|row| row.path == path)
+            .then(|| path.to_owned());
+        self.cursor_index()
+    }
+
     /// «Focus current» (#410): only the path to `path` stays open.
     pub fn focus(&mut self, path: &str) -> Option<usize> {
         self.expanded.clear();

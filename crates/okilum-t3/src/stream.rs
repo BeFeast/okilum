@@ -16,6 +16,7 @@ pub use assets::{
     MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
 };
 pub mod thread_create;
+pub mod turn_item;
 pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
 

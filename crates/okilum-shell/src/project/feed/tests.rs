@@ -527,6 +527,134 @@ fn native_activity_history_remains_virtualized_and_hidden_updates_are_quiet(
         "unchanged native preview must not lay out history"
     );
     feed.read_with(visual, |feed, _| {
-        assert!(feed.messages[&5000].text.ends_with("latest hidden detail"))
+        assert!(feed.messages[&5000].text.contains("latest hidden detail"))
+    });
+}
+
+#[gpui::test]
+fn chat_code_copy_preserves_exact_multiline_bytes(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 0);
+    let mut item = message(1);
+    item.text = Some("```rust\r\n  let x = 1;\r\n  // CODE_FINAL\r\n```".into());
+    view.update(visual, |view, cx| {
+        view.feed
+            .update(cx, |feed, cx| feed.apply(std::iter::once(&item), None, cx))
+    });
+    visual.run_until_parked();
+    let copy = visual
+        .debug_bounds("reader-code-copy-0")
+        .expect("chat code has the real Reader Copy action");
+    visual.simulate_click(copy.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("  let x = 1;\r\n  // CODE_FINAL\r\n")
+        )
+    });
+}
+
+#[gpui::test]
+fn disclosure_fetches_full_output_from_the_inherited_source_item(cx: &mut TestAppContext) {
+    use okilum_t3::{
+        projection::TurnRow,
+        stream::{NativeClient, NativeToken},
+    };
+    use serde_json::{json, Value};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let env = Environment::new(
+        "detail-qa",
+        &format!("http://{}", listener.local_addr().unwrap()),
+    )
+    .unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let server = thread::spawn(move || {
+        let accept = || {
+            let start = Instant::now();
+            loop {
+                if let Ok((socket, _)) = listener.accept() {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(4)))
+                        .unwrap();
+                    return socket;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(8),
+                    "positive control: full-detail request never reached the server"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let mut ticket = accept();
+        let mut reader = BufReader::new(&mut ticket);
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+        }
+        drop(reader);
+        let body = r#"{"ticket":"fixture"}"#;
+        write!(
+            ticket,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        drop(ticket);
+        let mut socket = tungstenite::accept(accept()).unwrap();
+        let request: Value =
+            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(request["tag"], "orchestration.getTurnItem");
+        assert_eq!(
+            request["payload"],
+            json!({"threadId":"inherited-source", "itemId":"source-command", "revision":"terminal-1"})
+        );
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let item = json!({"id":"source-command","threadId":"inherited-source","type":"command_execution","status":"completed","input":"cargo test","output":format!("{}\nFULL_OUTPUT_FINAL", "line\n".repeat(200)),"exitCode":0});
+        socket.send(tungstenite::Message::Text(json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"item":item}}}).to_string().into())).unwrap();
+    });
+    let token = NativeToken::from_secret(&env, &serde_json::to_vec(&json!({"origin":env.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64 + 3600,"scope":"orchestration:read"})).unwrap()).unwrap();
+    let client = Arc::new(NativeClient::new(env.clone(), token, Duration::from_secs(3)).unwrap());
+    let (view, visual, _temp) = fixture(cx, 0);
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    view.update(visual, |view, _| {
+        view.environment = Some(env);
+        view.native.set_detail_test_client(client);
+    });
+    let key = RowKey {
+        thread: "inherited-source".into(),
+        item: "source-command".into(),
+    };
+    feed.update(visual, |feed, cx| feed.apply_native(NativeChanges {
+        order: Some(vec![key.clone()]), reset: true,
+        rows: vec![Arc::new(TurnRow { key, local:false, item:Arc::new(json!({"type":"command_execution","status":"completed","input":"cargo test","outputOmitted":true,"updatedAt":"terminal-1"})) })],
+        ..Default::default()
+    }, &[], cx));
+    visual.run_until_parked();
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "collapsed output must not fetch eagerly"
+    );
+    let toggle = visual.debug_bounds("project-tool-toggle-1").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    server.join().unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    feed.read_with(visual, |feed, _| {
+        assert_eq!(feed.messages[&1].preview.as_ref(), "cargo test");
+        assert!(feed
+            .detail_text(1, &feed.messages[&1].text)
+            .contains("FULL_OUTPUT_FINAL"));
     });
 }

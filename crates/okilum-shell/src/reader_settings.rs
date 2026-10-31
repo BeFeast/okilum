@@ -1209,6 +1209,21 @@ impl Settings {
                         cx,
                     ))
                     .child(setting_row(
+                        "Show the open note in the file tree",
+                        "Opening a note expands its folders and selects it in the sidebar. When off, Reveal in sidebar does this on request.",
+                        div()
+                            .debug_selector(|| "settings-tree-auto-reveal-control".into())
+                            .child(
+                                Switch::new("settings-tree-auto-reveal")
+                                    .accessibility_label("Show the open note in the file tree")
+                                    .checked(reader_ui_state::tree_auto_reveal(cx))
+                                    .on_click(|value, _, cx| {
+                                        reader_ui_state::set_tree_auto_reveal(*value, cx)
+                                    }),
+                            ),
+                        cx,
+                    ))
+                    .child(setting_row(
                         "Show labels on toolbar buttons",
                         "Show names beside icons when there is room.",
                         div()

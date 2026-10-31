@@ -131,8 +131,18 @@ struct Saved {
     toolbar_labels: bool,
     /// File tree only: false shows Markdown stems, true shows note titles (#1834).
     tree_note_titles: bool,
+    /// Opening a note expands its folders and selects it in the file tree
+    /// (#1762); off by default, Reveal beside the breadcrumb does it on
+    /// request.
+    tree_auto_reveal: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// Focus mode in the note editor (#1643): every block but the caret's
+    /// is dimmed. One app-wide toggle, off by default.
+    focus_mode: bool,
+    /// Typewriter mode in the note editor (#1643): the caret line stays at
+    /// the middle of the view. One app-wide toggle, off by default.
+    typewriter_mode: bool,
     vault_open: String,
     settings_section: String,
     /// Brackets and quotes close themselves as they are typed in a note
@@ -200,7 +210,10 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             tree_note_titles: false,
+            tree_auto_reveal: false,
             code_soft_wrap: false,
+            focus_mode: false,
+            typewriter_mode: false,
             vault_open: String::new(),
             settings_section: String::new(),
             auto_pair_brackets: true,
@@ -243,7 +256,9 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     tree_note_titles_changed: bool,
+    tree_auto_reveal_changed: bool,
     code_soft_wrap_changed: bool,
+    writing_modes_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
     auto_pair_changed: bool,
@@ -345,7 +360,9 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         tree_note_titles_changed: false,
+        tree_auto_reveal_changed: false,
         code_soft_wrap_changed: false,
+        writing_modes_changed: false,
         vault_open_changed: false,
         settings_section_changed: false,
         auto_pair_changed: false,
@@ -579,7 +596,9 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     tree_note_titles_changed: bool,
+    tree_auto_reveal_changed: bool,
     code_soft_wrap_changed: bool,
+    writing_modes_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
     auto_pair_changed: bool,
@@ -677,6 +696,9 @@ impl WriteJob {
         if self.tree_note_titles_changed {
             latest.tree_note_titles = self.saved.tree_note_titles;
         }
+        if self.tree_auto_reveal_changed {
+            latest.tree_auto_reveal = self.saved.tree_auto_reveal;
+        }
         if self.vault_open_changed {
             latest.vault_open = self.saved.vault_open.clone();
         }
@@ -685,6 +707,10 @@ impl WriteJob {
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.writing_modes_changed {
+            latest.focus_mode = self.saved.focus_mode;
+            latest.typewriter_mode = self.saved.typewriter_mode;
         }
         if self.auto_pair_changed {
             latest.auto_pair_brackets = self.saved.auto_pair_brackets;
@@ -818,9 +844,11 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
             && !state.tree_note_titles_changed
+            && !state.tree_auto_reveal_changed
             && !state.vault_open_changed
             && !state.settings_section_changed
             && !state.code_soft_wrap_changed
+            && !state.writing_modes_changed
             && !state.auto_pair_changed
             && !state.image_import_changed
             && !state.close_code_fences_changed
@@ -858,7 +886,9 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         tree_note_titles_changed: state.tree_note_titles_changed,
+        tree_auto_reveal_changed: state.tree_auto_reveal_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        writing_modes_changed: state.writing_modes_changed,
         vault_open_changed: state.vault_open_changed,
         settings_section_changed: state.settings_section_changed,
         auto_pair_changed: state.auto_pair_changed,
@@ -1406,6 +1436,22 @@ pub(crate) fn set_tree_note_titles(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub(crate) fn tree_auto_reveal(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.tree_auto_reveal)
+}
+
+pub(crate) fn set_tree_auto_reveal(value: bool, cx: &mut App) {
+    if !installed(cx) || tree_auto_reveal(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.tree_auto_reveal = value;
+    state.tree_auto_reveal_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn code_soft_wrap(cx: &App) -> bool {
     cx.try_global::<Store>()
         .is_some_and(|state| state.saved.code_soft_wrap)
@@ -1418,6 +1464,40 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     let state = cx.global_mut::<Store>();
     state.saved.code_soft_wrap = value;
     state.code_soft_wrap_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Focus mode in the note editor (#1643).
+pub(crate) fn focus_mode(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.focus_mode)
+}
+
+/// Typewriter mode in the note editor (#1643).
+pub(crate) fn typewriter_mode(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.typewriter_mode)
+}
+
+pub(crate) fn set_focus_mode(value: bool, cx: &mut App) {
+    if !installed(cx) || focus_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.focus_mode = value;
+    state.writing_modes_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_typewriter_mode(value: bool, cx: &mut App) {
+    if !installed(cx) || typewriter_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.typewriter_mode = value;
+    state.writing_modes_changed = true;
     schedule(cx);
     cx.refresh_windows();
 }
@@ -1945,7 +2025,9 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.tree_note_titles_changed = false;
+        state.tree_auto_reveal_changed = false;
         state.code_soft_wrap_changed = false;
+        state.writing_modes_changed = false;
         state.vault_open_changed = false;
         state.settings_section_changed = false;
         state.auto_pair_changed = false;
@@ -2145,6 +2227,36 @@ mod tests {
             flush(cx);
             install(&state, cx);
             assert!(!tree_note_titles(cx), "switching back is remembered too");
+        });
+    }
+
+    #[gpui::test]
+    fn tree_auto_reveal_defaults_off_survives_relaunch_and_merges(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        // Settings saved before #1762 have no key: auto-reveal stays off.
+        std::fs::write(
+            state.join("reader-ui.json"),
+            format!("{{\"version\":{VERSION}}}"),
+        )
+        .unwrap();
+        let path = state.join("reader-ui.json");
+        cx.update(|cx| {
+            install(&state, cx);
+            assert!(!tree_auto_reveal(cx), "AUTOREVEAL1762: off by default");
+            set_tree_auto_reveal(true, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(tree_auto_reveal(cx), "AUTOREVEAL1762: on is remembered");
+            // Another window's unrelated write keeps the preference.
+            set_tree_note_titles(true, cx);
+            flush(cx);
+            assert!(read(&path).unwrap().tree_auto_reveal);
+            set_tree_auto_reveal(false, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(!tree_auto_reveal(cx), "switching back is remembered too");
         });
     }
 
@@ -2622,7 +2734,9 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 tree_note_titles_changed: false,
+                tree_auto_reveal_changed: false,
                 code_soft_wrap_changed: false,
+                writing_modes_changed: false,
                 vault_open_changed: false,
                 settings_section_changed: false,
                 auto_pair_changed: false,
