@@ -86,6 +86,7 @@ pub(crate) struct ProjectView {
     executors: Option<okilum_t3::executors::Snapshot>,
     executors_error: Option<String>,
     model_target: Option<okilum_t3::models::Target>,
+    model_ui: models::PickerUi,
     models: Option<okilum_t3::models::Snapshot>,
     model_candidate: Option<okilum_t3::ModelSelection>,
     model_error: Option<String>,
@@ -347,6 +348,7 @@ impl ProjectView {
             executors: None,
             executors_error: None,
             model_target: None,
+            model_ui: Default::default(),
             models: None,
             model_candidate: None,
             model_error: None,
@@ -480,6 +482,7 @@ impl ProjectView {
                 #[cfg(target_os = "linux")]
                 self.draft_prepare_identity(window, cx);
                 self.model_target = None;
+                self.model_ui = Default::default();
                 self.model_open = false;
                 self.model_busy = false;
                 self.models = None;
@@ -510,6 +513,7 @@ impl ProjectView {
         self.opening_t3 = false;
         self.last_poll_status = None;
         self.model_target = None;
+        self.model_ui = Default::default();
         self.model_open = false;
         self.model_busy = false;
         self.models = None;

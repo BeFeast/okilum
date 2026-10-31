@@ -5,6 +5,13 @@ use okilum_t3::{models::Target, ModelSelection};
 #[cfg(test)]
 mod tests;
 
+#[derive(Default)]
+pub(super) struct PickerUi {
+    search: Option<Entity<InputState>>,
+    changes: Option<Subscription>,
+    provider: Option<String>,
+}
+
 impl ProjectView {
     pub(super) fn manager_model_target(&self) -> Option<Target> {
         let binding = self.binding.as_ref()?;
@@ -34,6 +41,24 @@ impl ProjectView {
             self.models = None;
         }
         self.model_target = Some(target);
+        self.model_ui.provider = self
+            .models
+            .as_ref()
+            .map(|snapshot| snapshot.configuration.model_selection.instance_id.clone());
+        if self.model_ui.search.is_none() {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search models…"));
+            self.model_ui.changes =
+                Some(cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify()));
+            self.model_ui.search = Some(input);
+        }
+        self.model_ui
+            .search
+            .as_ref()
+            .unwrap()
+            .update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                input.focus(window, cx);
+            });
         self.model_open = true;
         self.model_candidate = None;
         self.model_request(None, window, cx);
@@ -65,30 +90,48 @@ impl ProjectView {
                 .spawn(async move {
                     #[cfg(target_os = "linux")]
                     if let Some(client) = native {
-                        return match selection {
+                        let result = match selection {
                             Some(selection) => client.configure_manager_model(&target,&selection),
                             None => client.manager_models(&target),
                         }.map_err(anyhow::Error::from);
+                        let observed = if applying && result.is_err() { client.manager_models(&target).ok() } else { None };
+                        return (result, observed);
                     }
-                    let gateway = gateway.ok_or_else(||anyhow::anyhow!("Not connected"))?;
-                    match selection {
+                    let Some(gateway) = gateway else { return (Err(anyhow::anyhow!("Not connected")), None); };
+                    let result = match selection {
                         Some(selection) => target.configure(gateway.as_ref(), &selection),
                         None => target.load(gateway.as_ref()),
-                    }
+                    };
+                    let observed = if applying && result.is_err() { target.load(gateway.as_ref()).ok() } else { None };
+                    (result, observed)
                 })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let (result, observed) = result;
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.generation == generation
                     && this.model_target.as_ref() == Some(&requested_target)
                 {
                     this.model_busy = false;
                     match result {
                         Ok(snapshot) => {
+                            if this.model_ui.provider.is_none() {
+                                this.model_ui.provider = Some(snapshot.configuration.model_selection.instance_id.clone());
+                            }
                             this.models = Some(snapshot);
                             this.model_candidate = None;
                             this.model_error = None;
                         }
                         Err(error) => {
+                            if let Some(observed) = observed {
+                                this.model_ui.provider = Some(observed.configuration.model_selection.instance_id.clone());
+                                this.models = Some(observed);
+                            }
+                            if applying {
+                                this.model_open = true;
+                                if let Some(input) = &this.model_ui.search {
+                                    input.update(cx, |input, cx| input.focus(window, cx));
+                                }
+                            }
                             let action = if applying {
                                 "Model change not confirmed"
                             } else {
@@ -166,7 +209,9 @@ impl ProjectView {
             .on_open_change(move |open, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     if *open {
-                        this.open_models(target.clone(), window, cx);
+                        if !this.model_open {
+                            this.open_models(target.clone(), window, cx);
+                        }
                     } else {
                         this.model_open = false;
                         cx.notify();
@@ -181,135 +226,20 @@ impl ProjectView {
             .into_any_element()
     }
 
-    pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = !self.model_busy && !self.busy && self.can_send();
-        let mut panel = v_flex()
-            .debug_selector(|| "project-model-panel".into())
-            .w(px(272.))
-            .max_h(px(320.))
-            .gap_2()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child("Model")
-                    .child(
-                        Button::new("project-model-refresh")
-                            .debug_selector(|| "project-model-refresh".into())
-                            .ghost()
-                            .small()
-                            .icon(IconName::RotateCw)
-                            .tooltip("Refresh models")
-                            .disabled(!enabled)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.model_request(None, window, cx)
-                            })),
-                    ),
-            );
-        if self.model_busy {
-            panel = panel.child("Loading…");
+    fn choose_model(
+        &mut self,
+        selection: ModelSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model_busy || !self.can_send() {
+            return;
         }
-        if let Some(error) = &self.model_error {
-            panel = panel.child(
-                div()
-                    .debug_selector(|| "project-model-error".into())
-                    .text_color(cx.theme().danger)
-                    .child(if self.connection_details {
-                        error.clone()
-                    } else {
-                        "Could not load or confirm the model. Refresh to try again.".into()
-                    }),
-            );
-        }
-        if let Some(snapshot) = &self.models {
-            let current = &snapshot.configuration.model_selection;
-            let mut choices = v_flex()
-                .id("project-model-choices")
-                .min_h_0()
-                .max_h(px(200.))
-                .overflow_y_scroll()
-                .gap_1();
-            let mut index = 0usize;
-            for provider in &snapshot.catalog.providers {
-                for model in &provider.models {
-                    let candidate = snapshot.selection(&provider.provider_instance_id, &model.id);
-                    let valid = snapshot.validate(&candidate).is_ok();
-                    let selected = self.model_candidate.as_ref().unwrap_or(current) == &candidate;
-                    let id = index;
-                    index += 1;
-                    choices = choices.child(
-                        Button::new(("project-model-choice", id))
-                            .debug_selector(move || format!("project-model-choice-{id}"))
-                            .ghost()
-                            .w_full()
-                            .justify_start()
-                            .overflow_hidden()
-                            .accessibility_label(
-                                model.label.as_deref().unwrap_or(&model.id).to_owned(),
-                            )
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .min_w_0()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        Icon::new(if selected {
-                                            IconName::Check
-                                        } else {
-                                            IconName::Bot
-                                        })
-                                        .small(),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_ellipsis()
-                                            .debug_selector(move || {
-                                                format!("project-model-label-{id}")
-                                            })
-                                            .child(
-                                                model
-                                                    .label
-                                                    .as_deref()
-                                                    .unwrap_or(&model.id)
-                                                    .to_owned(),
-                                            ),
-                                    ),
-                            )
-                            .selected(selected)
-                            .disabled(!enabled || !valid)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.model_candidate = Some(candidate.clone());
-                                cx.notify();
-                            })),
-                    );
-                }
-            }
-            if index == 0 {
-                choices = choices.child("No models available.");
-            }
-            panel = panel.child(choices).child(
-                Button::new("project-model-apply")
-                    .debug_selector(|| "project-model-apply".into())
-                    .w_full()
-                    .label("Apply")
-                    .disabled(!enabled || self.model_candidate.is_none())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(selection) = this.model_candidate.clone() {
-                            this.model_request(Some(selection), window, cx);
-                        }
-                    })),
-            );
-        }
-        if self.connection_details {
-            panel = panel.child(
-                div()
-                    .debug_selector(|| "project-model-scheduler-limit".into())
-                    .child(okilum_t3::models::SCHEDULED_TASK_LIMIT),
-            );
-        }
-        panel.into_any_element()
+        self.model_candidate = Some(selection.clone());
+        self.model_open = false;
+        self.compose.update(cx, |input, cx| input.focus(window, cx));
+        self.model_request(Some(selection), window, cx);
     }
 }
+
+mod picker;
