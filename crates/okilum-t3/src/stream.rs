@@ -10,7 +10,7 @@
 mod auth;
 mod manager;
 mod protocol;
-pub use manager::ManagerThread;
+pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
 
 #[cfg(test)]

@@ -342,7 +342,8 @@ mod tests {
         let open = visual.debug_bounds("project-connection-menu").unwrap();
         visual.simulate_click(open.center(), Modifiers::default());
         visual.run_until_parked();
-        visual.simulate_keystrokes("down down down enter");
+        // Diagnostics, Open terminal, Executors, Request executor.
+        visual.simulate_keystrokes("down down down down enter");
         visual.run_until_parked();
         view.read_with(visual, |view, _| assert!(view.launch.open));
         visual.update(|window, cx| view.update(cx, |v, cx| v.submit_launch(window, cx)));

@@ -1050,8 +1050,8 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
     let menu = visual.debug_bounds("project-connection-menu").unwrap();
     visual.simulate_click(menu.center(), Modifiers::default());
     visual.run_until_parked();
-    // The secondary Executors view is the second item in the options menu.
-    visual.simulate_keystrokes("down down enter");
+    // Diagnostics and Open terminal precede the secondary Executors view.
+    visual.simulate_keystrokes("down down down enter");
     visual.executor().advance_clock(Duration::from_secs(20));
     visual.run_until_parked();
     view.read_with(visual, |v, _| {
