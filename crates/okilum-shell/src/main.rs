@@ -549,6 +549,12 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(LIVE_PREVIEW_KEY, OpenLivePreview, Some("Reader > Input")),
         // Obsidian's «Toggle checkbox status» key (#1051).
         KeyBinding::new("secondary-l", ToggleTask, Some("Reader > Input")),
+        // #1993: the caret's code block in an external editor.
+        KeyBinding::new(
+            "secondary-alt-e",
+            reader_editor::OpenBlockExternally,
+            Some("ReaderSource > Input"),
+        ),
         // #1611: Paste as Plain Text / as Titled Link, in the note editor.
         // Plain Text is macOS's own "Paste and Match Style" key, Option+Shift+Cmd+V:
         // Cmd+Shift+V is commonly a global clipboard-history hotkey (Raycast).
