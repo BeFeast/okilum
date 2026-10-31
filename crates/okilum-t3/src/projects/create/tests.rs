@@ -45,7 +45,7 @@ fn t3(id: &str, root: &str) -> crate::Project {
 }
 
 #[test]
-fn the_dialog_starts_with_the_folder_name_and_t3_follows_the_kind() {
+fn the_dialog_starts_locally_and_t3_requires_an_explicit_choice() {
     let draft = Draft::for_folder(Path::new("/vault/HomeLab"));
     assert_eq!(draft.name, "HomeLab");
     assert_eq!(draft.kind, Kind::Knowledge);
@@ -54,7 +54,7 @@ fn the_dialog_starts_with_the_folder_name_and_t3_follows_the_kind() {
 
     let mut draft = draft;
     draft.set_kind(Kind::Code);
-    assert!(draft.create_in_t3(), "on for code");
+    assert!(!draft.create_in_t3(), "code projects also start locally");
     draft.set_kind(Kind::Hybrid);
     assert!(!draft.create_in_t3(), "off for hybrid");
 
@@ -75,6 +75,8 @@ fn create_says_what_is_missing() {
     assert_eq!(draft.problem().as_deref(), Some("Enter a name."));
     draft.name = "App".into();
     draft.set_kind(Kind::Code);
+    assert_eq!(draft.problem(), None, "local code needs no T3 checkout");
+    draft.set_create_in_t3(true);
     assert!(draft
         .problem()
         .is_some_and(|p| p.contains("checkout path on the T3 host")));
@@ -247,10 +249,34 @@ fn a_failed_index_write_leaves_the_folder_as_it_was() {
 }
 
 #[test]
-fn the_vault_root_and_missing_folders_are_refused() {
+fn the_vault_root_becomes_a_local_project_but_missing_and_internal_folders_are_refused() {
     let vault = Vault::new();
     let draft = Draft::for_folder(&vault.0);
-    assert!(create(&vault.0, &vault.0, &draft).is_err());
+    let original = "# Existing root context\nDo not replace this note.\n";
+    std::fs::write(vault.0.join(INDEX), original).unwrap();
+    let created = create(&vault.0, &vault.0, &draft).unwrap();
+    assert_eq!(created.project.folder, vault.0);
+    assert_eq!(created.project.manager, super::super::Manager::NotStarted);
+    assert!(!created.wrote_index);
+    let document: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(vault.0.join(MANIFEST)).unwrap()).unwrap();
+    assert_eq!(
+        document["index"], INDEX,
+        "root index is relative, not /_index.md"
+    );
+    assert!(document.get("t3").is_none());
+    assert_eq!(
+        std::fs::read_to_string(vault.0.join(INDEX)).unwrap(),
+        original
+    );
+    assert!(super::super::discover(&vault.0)
+        .projects
+        .iter()
+        .any(|p| p.folder == vault.0));
+    assert!(
+        create(&vault.0, &vault.0, &draft).is_err(),
+        "a second create never overwrites the manifest"
+    );
     let missing = vault.0.join("Nope");
     assert!(create(&vault.0, &missing, &Draft::for_folder(&missing)).is_err());
     assert!(!missing.exists());
@@ -534,4 +560,19 @@ fn the_connection_most_projects_use_is_picked() {
         pick_environment(std::iter::empty::<&str>(), &projects),
         None
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_symlink_cannot_turn_local_creation_into_an_outside_vault_write() {
+    let vault = Vault::new();
+    let outside = Vault::new();
+    let child = outside.folder("child");
+    let link = vault.0.join("linked");
+    std::os::unix::fs::symlink(&outside.0, &link).unwrap();
+    let folder = link.join("child");
+    let error = create(&vault.0, &folder, &Draft::for_folder(&folder)).unwrap_err();
+    assert!(error.to_string().contains("escapes the vault"));
+    assert!(!child.join("ops").exists());
+    assert!(!child.join(INDEX).exists());
 }

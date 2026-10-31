@@ -226,11 +226,6 @@ impl Session {
             "title",
             "Give the Board a title",
         );
-        errors.require(
-            !details.goal.trim().is_empty(),
-            "goal",
-            "Describe the expected project outcome",
-        );
         let note = &details.stage_note;
         let valid = note.is_empty()
             || (relative_note(note)
@@ -246,23 +241,36 @@ impl Session {
             "Stage note is optional; choose existing Markdown inside this project or leave None",
         );
         let repository = details.repository.trim();
-        match repository_url(repository)
-            .and_then(|url| check_project_repository(&self.project.value, &url))
-        {
+        match if repository.is_empty() {
+            Ok(())
+        } else {
+            repository_url(repository)
+                .and_then(|url| check_project_repository(&self.project.value, &url))
+        } {
             Ok(()) => {}
             Err(error) => {
                 errors.0.insert("repository".into(), error.to_string());
             }
         }
-        errors.require(self.document.is_none() || self.value["repository"].as_str()==Some(repository),"repository","This Board's Repository is fixed after creation; existing issue numbers cannot be silently moved to another repository");
+        errors.require(
+            self.document.is_none()
+                || (self.value["repository"].as_str().unwrap_or_default().is_empty() && self.cards().is_empty())
+                || self.value["repository"].as_str() == Some(repository),
+            "repository",
+            "This Board's Repository is fixed after creation; existing issue numbers cannot be silently moved to another repository",
+        );
         errors.finish()
     }
     fn card_value(&self, index: Option<usize>, card: &Card) -> Result<Value> {
         let mut errors = Problems::default();
-        let number = issue_number(
-            &card.issue,
-            self.value["repository"].as_str().unwrap_or_default(),
-        );
+        let repository = self.value["repository"].as_str().unwrap_or_default();
+        let number = if repository.is_empty() {
+            Err(anyhow::anyhow!(
+                "Set Repository in Board details before linking a Forgejo issue"
+            ))
+        } else {
+            issue_number(&card.issue, repository)
+        };
         if let Err(error) = &number {
             errors.0.insert("issue".into(), error.to_string());
         }
@@ -356,7 +364,7 @@ impl Session {
                 let document = self.document.as_ref().unwrap();
                 if changed_root == "details" {
                     let mut doc = document.clone();
-                    for name in ["title", "goal", "stage_note"] {
+                    for name in ["title", "goal", "stage_note", "repository"] {
                         doc.source =
                             doc.set_toml_field(name, Some(&serde_yaml::to_value(&value[name])?))?;
                         doc.value = area_files::parse(&doc.source, Format::Toml)?;
@@ -487,9 +495,8 @@ impl Session {
             Binding::parse_toml(&source)?
         };
         ensure!(
-            self.document.is_none()
-                || parsed.repository == self.value["repository"].as_str().unwrap_or_default(),
-            "Repository changed"
+            parsed.repository == value["repository"].as_str().unwrap_or_default(),
+            "Repository did not round-trip from the validated draft"
         );
         Ok(source)
     }

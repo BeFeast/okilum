@@ -22,7 +22,10 @@ pub struct Document {
 }
 
 pub fn preferred_path(area: &Path, name: &str) -> Result<Option<PathBuf>> {
-    ensure!(matches!(name, "project" | "board"), "Unknown Area manifest");
+    ensure!(
+        matches!(name, "project" | "board" | "board-local"),
+        "Unknown Area manifest"
+    );
     match std::fs::symlink_metadata(area.join("ops")) {
         Ok(meta) => ensure!(meta.is_dir(), "Area ops must be a directory, not a symlink"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

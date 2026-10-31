@@ -21,6 +21,8 @@ mod count_label;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
+#[cfg(target_os = "macos")]
+mod folder_service;
 mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
@@ -7601,6 +7603,8 @@ fn main() {
     drop(platform_phase);
     // Register before launch: macOS can deliver files before the launch callback.
     let (open_tx, open_rx) = async_channel::unbounded();
+    #[cfg(target_os = "macos")]
+    folder_service::install(open_tx.clone());
     app.on_open_urls(move |urls| {
         let _ = open_tx.try_send(urls);
     });

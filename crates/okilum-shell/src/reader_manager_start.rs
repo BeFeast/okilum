@@ -47,6 +47,12 @@ pub(super) fn start(
             "Manager is still available; refresh Projects instead of starting another"
         );
     }
+    okilum_t3::projects::local_manager::verify_launch(
+        area,
+        connected_environment,
+        gateway,
+        project_id,
+    )?;
     start_inner(
         area,
         context,
@@ -61,6 +67,18 @@ pub(super) fn start(
 }
 
 fn manager_brief(project: &Project, context: &str) -> Result<(String, String)> {
+    if let Some(workspace) = okilum_t3::projects::local_manager::workspace(&project.folder)? {
+        let path =
+            |p: &Path| serde_json::to_string(&p.to_string_lossy()).expect("string serialization");
+        let mut message = format!("You are this project's Manager. Work in the local T3 workspace {}. Project notes live in {}. Read the project's ops/project manifest and its existing entry note before proposing work. Do not require a repository, executor, goal or stage to discuss local work.", path(Path::new(&workspace.root)), path(&project.folder));
+        for note in ["AGENTS.md", "ops/manager-state.md", "_index.md"] {
+            let note = project.folder.join(note);
+            if note.is_file() {
+                message.push_str(&format!(" Read {}.", path(&note)));
+            }
+        }
+        return Ok((format!("[{}] Manager", project.name), message));
+    }
     let workflow = match project.kind {
         okilum_t3::projects::Kind::Knowledge => "Knowledge project: work in the vault root using the knowledge workflow. No repo, executor, CI or release is required.",
         okilum_t3::projects::Kind::Code => "Code project: use the area's linked repository and existing code workflow.",
@@ -224,6 +242,8 @@ mod tests {
         launches: std::sync::atomic::AtomicUsize,
         fail_launch: bool,
         old_settled: bool,
+        local_root: Option<PathBuf>,
+        brief: std::sync::Mutex<Option<String>>,
     }
     impl ManagerGateway for FakeGateway {
         fn status(&self) -> okilum_t3::GatewayStatus {
@@ -232,7 +252,14 @@ mod tests {
         fn server_identity(
             &self,
         ) -> std::result::Result<okilum_t3::ServerIdentity, okilum_t3::GatewayError> {
-            panic!("unused identity")
+            assert!(
+                self.local_root.is_some(),
+                "legacy binding does not probe local identity"
+            );
+            Ok(okilum_t3::ServerIdentity {
+                environment_id: "local-env".into(),
+                label: "Local".into(),
+            })
         }
         fn list_projects(
             &self,
@@ -242,10 +269,23 @@ mod tests {
             Ok(vec![okilum_t3::Project {
                 id: "brain".into(),
                 title: "Brain".into(),
-                workspace_root: "/vault".into(),
+                workspace_root: self
+                    .local_root
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "/vault".into()),
                 default_model_selection: None,
                 ..Default::default()
             }])
+        }
+        fn read_project(
+            &self,
+            id: &str,
+        ) -> std::result::Result<okilum_t3::Project, okilum_t3::GatewayError> {
+            self.list_projects()?
+                .into_iter()
+                .find(|p| p.id == id)
+                .ok_or_else(|| okilum_t3::GatewayError::Protocol("missing project".into()))
         }
         fn list_threads(
             &self,
@@ -264,8 +304,9 @@ mod tests {
             &self,
             _: &str,
             _: &str,
-            _: &str,
+            message: &str,
         ) -> std::result::Result<String, okilum_t3::GatewayError> {
+            *self.brief.lock().unwrap() = Some(message.into());
             self.requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.launches
@@ -544,5 +585,59 @@ mod tests {
             .any(|entry| std::fs::read_to_string(entry.unwrap().path())
                 .unwrap()
                 .contains("mcp:created")));
+    }
+
+    #[test]
+    fn checked_local_manager_uses_absolute_existing_notes_and_retains_uncertain_launches() {
+        let (temp, area, state, _) = fixture();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let path = area.join("ops/project.yaml");
+        let mut doc: serde_yaml::Value =
+            serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        doc["kind"] = "code".into();
+        doc["execution"] =
+            serde_yaml::to_value(serde_json::json!({"source_checkout":checkout})).unwrap();
+        doc["t3"]["environment"] = "local-manager".into();
+        doc["t3"]["origin"] = "http://localhost:3778".into();
+        doc["t3"]["local_workspace"] =
+            serde_yaml::to_value(serde_json::json!({"root":checkout,"environment_id":"local-env"}))
+                .unwrap();
+        std::fs::write(&path, serde_yaml::to_string(&doc).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let env = save_environment(&state, "local-manager", "http://localhost:3778");
+        let gateway = FakeGateway {
+            local_root: Some(checkout.clone()),
+            fail_launch: true,
+            ..Default::default()
+        };
+        assert!(start(&area, "Music/Areas/Studio", &state, &gateway, &env, "brain").is_err());
+        assert_eq!(
+            gateway.launches.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let brief = gateway.brief.lock().unwrap().clone().unwrap();
+        assert!(brief.contains(&serde_json::to_string(&area.to_string_lossy()).unwrap()));
+        assert!(brief.contains(checkout.to_str().unwrap()));
+        assert!(!brief.contains("ops/manager-state.md"));
+        assert!(
+            !brief.contains("AGENTS.md"),
+            "missing internal notes are not prerequisites"
+        );
+        let again =
+            start(&area, "Music/Areas/Studio", &state, &gateway, &env, "brain").unwrap_err();
+        assert!(format!("{again:#}").contains("retained manager launch"));
+        assert_eq!(
+            gateway.launches.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        doc["t3"]["local_workspace"]["root"] = serde_yaml::to_value(&area).unwrap();
+        std::fs::write(&path, serde_yaml::to_string(&doc).unwrap()).unwrap();
+        assert!(start(&area, "Music/Areas/Studio", &state, &gateway, &env, "brain").is_err());
+        assert_eq!(
+            gateway.launches.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 }

@@ -191,6 +191,12 @@ impl Reader {
             || self.trash_pending
             || self.note_move_pending
         {
+            self.file_operation_blocked(
+                "undo_create",
+                "",
+                "Finish the current file operation first.",
+                cx,
+            );
             return;
         }
         let error = if self.vault_root != item.root {
@@ -282,12 +288,21 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         if self.trash_pending || self.note_move_pending {
+            self.file_operation_blocked(
+                "create",
+                folder.unwrap_or(""),
+                "Finish the current file operation first.",
+                cx,
+            );
             return;
         }
         if self.loading.as_ref().is_some_and(|l| l.active) || self.session_directory.is_none() {
-            self.link_notice =
-                Some("Wait for the vault and draft recovery storage before creating files.".into());
-            cx.notify();
+            self.file_operation_blocked(
+                "create",
+                folder.unwrap_or(""),
+                "Wait for the vault and draft recovery storage before creating files.",
+                cx,
+            );
             return;
         }
         self.renaming = None;
@@ -438,6 +453,7 @@ impl Reader {
         let folder = existing_creation_folder(&root, &create.folder);
         let templates = create.templates.clone();
         let selected_template = create.selected_template.clone();
+        self.trace_file_operation("create", "start", &name, None, cx);
         let result = (|| -> anyhow::Result<(String, Option<String>)> {
             anyhow::ensure!(
                 root == self.vault_root,
@@ -478,6 +494,7 @@ impl Reader {
         })();
         match result {
             Ok((rel, Some(source))) => {
+                self.trace_file_operation("create", "finished", &rel, None, cx);
                 let created = rel.clone();
                 self.creation = None;
                 self.close_creation_folder_picker(cx);
@@ -539,6 +556,7 @@ impl Reader {
                 );
             }
             Ok((rel, None)) => {
+                self.trace_file_operation("create", "finished", &rel, None, cx);
                 self.creation = None;
                 self.close_creation_folder_picker(cx);
                 // The quick viewer may scan the new empty folder immediately.
@@ -557,6 +575,13 @@ impl Reader {
                 );
             }
             Err(error) => {
+                self.trace_file_operation(
+                    "create",
+                    "failed",
+                    &name,
+                    Some(&format!("{error:#}")),
+                    cx,
+                );
                 reader_toast::error(format!("{error:#}"), window, cx);
                 if let Some(create) = self.creation.as_mut() {
                     create.error = Some(format!("{error:#}"));

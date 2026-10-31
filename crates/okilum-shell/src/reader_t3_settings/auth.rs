@@ -32,6 +32,15 @@ pub(super) fn entry(origin: &str, cx: &App) -> Entry {
         .cloned()
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+pub(super) fn fixture_connection(
+    env: &Environment,
+    gateway: Arc<dyn ManagerGateway>,
+    cx: &mut App,
+) {
+    edit(&env.origin(), cx, |entry| entry.gateway = Some(gateway));
+}
 pub(super) fn selected_origin(cx: &App) -> Option<String> {
     cx.try_global::<Sessions>().and_then(|s| s.selected.clone())
 }
