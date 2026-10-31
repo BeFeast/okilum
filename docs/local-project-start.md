@@ -41,11 +41,52 @@ legacy files takes place. Older builds can reject a newly unbound/goal-free Boar
 until this reader reaches their channel. Existing bound Boards retain their data
 and behavior.
 
-## Remaining authorized slices
+## Slice 2: local cards
 
-- Local cards with durable local identity, no mandatory Forgejo issue / executor
-  or internal stage knowledge. Preserve explicit issue cards without guessing an
-  issue identity from local text. Slice 1 does not yet provide these cards.
+An unbound or repository-bound Board offers **Add card** in Queue and **Local
+cards** in Manage board. A local card needs only a title. Details are ordinary
+multiline text; no issue, expected-result field, executor, T3 connection or stage
+note is required. Todo is the default. Optional manual Todo/Doing/Done states
+appear in Queue/In progress/Ready respectively, marked **Local**. They never
+establish executor activity, PR/CI success, installed builds or human acceptance;
+local Done never enters Verified. Local cards have no agent binding and appear
+under All agents rather than an executor-specific filter.
+
+Canonical local work lives in an optional separate `ops/board-local.toml`:
+
+```toml
+version = 1
+[[cards]]
+id = "9864df9f-87ad-4b47-bd86-85b591f7a428"
+title = "Read the project design"
+details = "Optional context, not an issue reference"
+state = "todo" # todo | doing | done; omitted means todo
+```
+
+The UUID is allocated once for the add draft and retained through saves, edits
+and Undo. Titles and details never become inferred issue references. A missing
+sidecar is quiet and no reader creates it. Existing Board/project files remain
+byte-for-byte unchanged when writing local cards, so older readers continue
+reading existing bound Boards without knowing this sidecar. No file conversion
+or cleanup takes place.
+
+Read failures keep the last successful local projection with a visible source
+error and its age. Invalid individual cards stay visible as diagnostics beside
+healthy cards; duplicate UUIDs are ambiguous and neither matching card is
+selected. The normal 512 KiB manifest read/write bound applies; no truncation
+or partial write is allowed. Symlinked sidecars/ops are refused.
+
+Add/edit/remove use the existing owner-file checks, same-directory atomic
+publication/replacement and exact source revision. The active project and Board
+must still match the versions the form opened. A stale write keeps the draft
+and reports reload rather than overwriting external edits. Remove exposes one
+revision-checked **Undo remove**, restoring the previous source exactly. Other
+local cards and TOML comments retain their text. Discuss emits the existing
+Manager draft-only action with project/card/source references; it never sends or
+launches anything. Manager host/workspace verification still belongs to slice 3.
+
+## Remaining authorized slice
+
 - Manager for code on the corporate Mac uses local T3 next to its checkout.
   Verify host/workspace before launch and fill the manager binding (#1801).
   Retained launch recovery and registry compatibility must retain their positive

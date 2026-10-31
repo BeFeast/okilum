@@ -362,11 +362,24 @@ impl Board {
                     h_flex()
                         .gap_2()
                         .child(
+                            Button::new("board-local-manage")
+                                .debug_selector(|| "board-local-manage".into())
+                                .primary()
+                                .label("Local cards")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_local_management(super::local::Mode::List, window, cx)
+                                })),
+                        )
+                        .child(
                             Button::new("board-add")
                                 .debug_selector(|| "board-add".into())
-                                .primary()
-                                .label("Add card")
-                                .disabled(busy)
+                                .ghost()
+                                .label("Link issue")
+                                .tooltip(
+                                    "Link an existing issue; add Repository in Board details first",
+                                )
+                                .disabled(busy || editor.session.details().repository.is_empty())
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.management_screen(Screen::Add, window, cx)
                                 })),
@@ -398,11 +411,9 @@ impl Board {
                     );
                 }
                 if editor.session.cards().is_empty() {
-                    content = content.child(
-                        div()
-                            .text_color(colors.text_muted)
-                            .child("Add an issue to start planning this project."),
-                    );
+                    content = content.child(div().text_color(colors.text_muted).child(
+                        "Add a local card, or link an issue from this project's repository.",
+                    ));
                 }
                 for (index, card) in editor.session.cards().iter().enumerate() {
                     let number = card["number"]

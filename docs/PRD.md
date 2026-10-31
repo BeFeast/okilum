@@ -97,9 +97,10 @@ Product pillars, in the order they will be defended when they conflict:
 **Local project onboarding (#2033, path A, Oleg 2026-10-30):**
 [Local project start](local-project-start.md) lets any ordinary vault folder,
 including its root, become a local project and create an empty Board without
-mandatory goal/repository/executor/stage. Local cards and verified local T3
-Manager binding (#1801) follow in separate slices; this contract does not claim
-those later slices are implemented.
+mandatory goal/repository/executor/stage. Local cards use a separate portable
+TOML sidecar and explicit manual task state, independent of issue/build evidence.
+Verified local T3 Manager binding (#1801) follows in slice 3 and is not claimed
+by these local-start slices.
 
 ## 2. Canonical data
 

@@ -316,5 +316,6 @@ Goal and Repository are now optional when creating a Board. An unbound Board
 shows a quiet Local Board state with inactive PR/CI links; add Repository in
 Manage board → Board details later. Explicitly supplied URLs retain validation
 and known-project matching. A bound repository cannot be retargeted. No executor
-or stage is required to create the empty Board. Local cards and verified local
-Manager launch follow separately; see [local project start](local-project-start.md).
+or stage is required to create the empty Board. Local cards use an independent
+sidecar and draft-only discussion; verified local Manager launch follows
+separately. See [local project start](local-project-start.md).
