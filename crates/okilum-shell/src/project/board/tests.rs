@@ -171,6 +171,9 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
 fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     cx: &mut TestAppContext,
 ) {
+    fn coordinates(position: ListOffset) -> (usize, Pixels) {
+        (position.item_ix, position.offset_in_item)
+    }
     cx.update(|cx| {
         cx.set_reduce_motion(true);
         crate::test_init(cx);
@@ -180,7 +183,10 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     let vault = temp.path().join("vault");
     let folder = vault.join("project");
     std::fs::create_dir_all(folder.join("ops")).unwrap();
-    std::fs::write(vault.join("start.md"), "# Start\n").unwrap();
+    let paragraphs = (0..60)
+        .map(|i| format!("Paragraph {i}\n\n"))
+        .collect::<String>();
+    std::fs::write(vault.join("start.md"), format!("# Start\n\n{paragraphs}")).unwrap();
     std::fs::write(folder.join("note.md"), "# Related note\nActual body\n").unwrap();
     std::fs::write(folder.join("stage.md"), "# Stage metadata\n").unwrap();
     std::fs::write(
@@ -233,7 +239,23 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         Root::new(view, window, cx)
     });
     let reader = entity.unwrap();
+    visual.simulate_resize(size(px(1400.), px(800.)));
     visual.run_until_parked();
+    reader.update_in(visual, |reader, _, cx| {
+        reader.content.read(cx).list_state().scroll_to(ListOffset {
+            item_ix: 10,
+            offset_in_item: px(3.),
+        });
+        reader.cancel_pending_landing();
+    });
+    visual.run_until_parked();
+    let reading_place = reader.read_with(visual, |reader, cx| {
+        reader.content.read(cx).list_state().logical_scroll_top()
+    });
+    assert!(
+        reading_place.item_ix > 0,
+        "positive control: visible document was scrolled"
+    );
     reader.update_in(visual, |reader, window, cx| {
         reader.ensure_project_board_using(
             folder.clone(),
@@ -274,10 +296,24 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     // A source publication for the retained note must update that document
     // without silently replacing the explicit project surface (#2099).
     reader.update_in(visual, |reader, window, cx| {
+        // Model the reset list behind Board after a derived replacement.
+        reader
+            .content
+            .read(cx)
+            .list_state()
+            .scroll_to(ListOffset::default());
+        assert_eq!(
+            coordinates(reader.content.read(cx).list_state().logical_scroll_top()),
+            coordinates(ListOffset::default())
+        );
+        assert_eq!(
+            coordinates(reader.navigation.places[&(vault.clone(), "start.md".into())]),
+            coordinates(reading_place)
+        );
         reader.reconcile_inventory_document(
             &[(
                 "start.md".to_owned(),
-                "# Background refresh\nChanged bytes\n".to_owned(),
+                format!("# Background refresh\nChanged bytes\n\n{paragraphs}"),
             )]
             .into_iter()
             .collect(),
@@ -302,6 +338,29 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         );
     });
     assert!(visual.debug_bounds("project-board").is_some());
+    reader.read_with(visual, |reader, _| {
+        assert_eq!(
+            coordinates(reader.navigation.places[&(vault.clone(), "start.md".into())]),
+            coordinates(reading_place),
+            "background replacement must retain the saved reading place"
+        );
+    });
+    reader.update_in(visual, |reader, window, cx| {
+        reader
+            .content
+            .read(cx)
+            .list_state()
+            .scroll_to(ListOffset::default());
+        reader.enter_vault_project(project.clone(), window, cx);
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, _| {
+        assert_eq!(
+            coordinates(reader.navigation.places[&(vault.clone(), "start.md".into())]),
+            coordinates(reading_place),
+            "selecting Board again must not overwrite its retained document's place"
+        );
+    });
     reader.update_in(visual, |reader, window, cx| {
         assert!(reader.project_navigation.board_visible);
         let manager = reader.project.clone().expect("actual native Manager");

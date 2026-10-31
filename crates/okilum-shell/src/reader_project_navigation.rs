@@ -1068,10 +1068,7 @@ impl Reader {
         // The retained document will not lay out behind Board. A previous
         // landing must not keep polling its now-hidden TextView.
         if !self.current_rel.is_empty() {
-            let position = self
-                .navigation
-                .pending_landing
-                .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top());
+            let position = self.retained_document_position(cx);
             self.navigation.places.insert(
                 (self.vault_root.clone(), self.current_rel.clone()),
                 position,
