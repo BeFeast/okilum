@@ -87,3 +87,9 @@ Carry it in the #1814 vendor update (Okilum #1901).
 | Patch | Upstream wave | Reason | Body |
 |---|---|---|---|
 | 0100 | [#1814](https://git.oklabs.uk/BeFeast/okilum/issues/1814), candidate | Additive `SyntaxHighlighter::semantic_spans` getter lets projected text reuse the existing matcher and current Reader theme; prior methods stay unchanged. Carry through the bump until upstream provides it. Repro/test pending. | [0100.md](0100.md) |
+
+## Pending 0103 — projected hanging indent
+
+| Patch | Upstream wave | Reason | Body |
+|---|---|---|---|
+| 0103 | [#1814](https://git.oklabs.uk/BeFeast/okilum/issues/1814), candidate | Additive `SourceProjection::line_indents` lets projected list, task and quote lines wrap under their text, as Source does with leading whitespace; quote bars repeat on wrapped rows. GPUI core unchanged. | [0103.md](0103.md) |

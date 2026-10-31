@@ -1,0 +1,478 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1650,16 +1650,7 @@ impl<M: InputModeKind> TextElement<M> {
+             }
+ 
+             // Use the first visual line's indentation width for continuation lines.
+-            let wrap_indent = if line_item.indent > 0 && wrapped_lines.len() > 1 {
+-                let indent_byte_len = line_text
+-                    .char_indices()
+-                    .nth(line_item.indent as usize)
+-                    .map(|(ix, _)| ix)
+-                    .unwrap_or(line_text.len());
+-                wrapped_lines[0].x_for_index(indent_byte_len)
+-            } else {
+-                px(0.)
+-            };
++            let wrap_indent = line_item.wrap_indent(&line_text, wrapped_lines.first());
+ 
+             // A revealed heading marker hangs in the margin; the text after it
+             // keeps the position it has while the marker is concealed.
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -160,16 +160,16 @@ pub(super) fn prepare(
+         if end.0.checked_sub(start.0) != Some(marker.range.end.0 - marker.range.start.0) {
+             return vec![];
+         }
+-        let Some(scope_end) = pin
++        if pin
+             .projection
+             .to_projected(marker.scope.end, ConcealBias::Right)
+-        else {
++            .is_none()
++        {
+             return vec![];
+-        };
++        }
+         markers.push((
+             start.0..end.0,
+             marker.kind.clone(),
+-            scope_end.0,
+             marker.range.start.0..marker.range.end.0,
+         ));
+     }
+@@ -179,7 +179,7 @@ pub(super) fn prepare(
+         .enumerate()
+         .map(|(li, line)| {
+             let mut offset = layout.visible_line_byte_offsets[li];
+-            let mut quote_gutters: Vec<(Pixels, Pixels, MarkerKind, usize)> = Vec::new();
++            let mut quote_gutters: Vec<(Pixels, Pixels, MarkerKind)> = Vec::new();
+             line.wrapped_lines
+                 .iter()
+                 .enumerate()
+@@ -196,7 +196,7 @@ pub(super) fn prepare(
+                     let mut ranges = Vec::new();
+                     let mut spans = Vec::new();
+                     let mut shapes = Vec::new();
+-                    for (range, kind, scope_end, source) in &markers {
++                    for (range, kind, source) in &markers {
+                         if range.end <= start || range.start >= offset {
+                             continue;
+                         }
+@@ -222,13 +222,16 @@ pub(super) fn prepare(
+                             source: source.clone(),
+                         });
+                         if row_index == 0 && matches!(kind, MarkerKind::Quote { .. }) {
+-                            quote_gutters.push((x, width, kind.clone(), *scope_end));
++                            quote_gutters.push((x, width, kind.clone()));
+                         }
+                     }
+                     if row_index > 0 {
+-                        for (x, width, kind, scope_end) in &quote_gutters {
+-                            // Reuse only existing continuation indentation; never cover body glyphs.
+-                            if start < *scope_end && line.wrap_indent >= *x + *width {
++                        for (x, width, kind) in &quote_gutters {
++                            // A source line that starts in a quote stays in it to
++                            // its end, so every continuation row carries the bar
++                            // (#1641). Only inside the hanging indent: a bar never
++                            // covers body glyphs.
++                            if line.wrap_indent >= *x + *width {
+                                 shapes.push(Shape {
+                                     x: *x - line.wrap_indent,
+                                     width: *width,
+@@ -447,6 +450,18 @@ impl RowPaint {
+     }
+ }
+ 
++#[cfg(test)]
++impl RowPaint {
++    /// The x of each quote bar this continuation row draws in its gutter.
++    pub(super) fn quote_gutters(&self) -> Vec<Pixels> {
++        self.shapes
++            .iter()
++            .filter(|shape| shape.source.is_empty() && matches!(shape.kind, MarkerKind::Quote { .. }))
++            .map(|shape| shape.x)
++            .collect()
++    }
++}
++
+ /// The visual span of `range` on a right-to-left row, if it is one contiguous
+ /// run of whole cells that no other cell overlaps; otherwise the marker stays raw.
+ fn rtl_span(geometry: &Geometry, range: &Range<usize>) -> Option<Range<Pixels>> {
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -400,12 +400,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+             _ => gpui::px(0.),
+         };
+         let hang = if hang <= hang_room { hang } else { gpui::px(0.) };
++        // Continuation rows of a list, task or quote line hang under its text,
++        // as painted (#1641).
++        let wrap_indent = item.wrap_indent(&text, shaped.first());
+         let align_right = (last.text_align == gpui::TextAlign::Left && rtl_at(row))
+             .then(|| super::element::right_edge(last));
+         let line = super::display_map::LineLayout::new()
+             .first_row(map.buffer_line_to_display_row(row))
+             .align_right(align_right)
+-            .lines(shaped);
++            .lines(shaped)
++            .wrap_indent(wrap_indent);
+         // Bidi rows place a marker by their own geometry; they never hang.
+         let line = if line.has_bidi() { line } else { line.hang(hang) };
+         Some((start, line))
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -5438,6 +5438,176 @@ mod tests {
+         });
+     }
+ 
++    /// Identity projection: line 0 a list item, line 1 a quote. With
++    /// `indent`, both hang their wrapped rows under the text after `- ` / `> `.
++    struct IndentProvider {
++        indent: bool,
++    }
++    struct IndentProjection {
++        source: super::super::projection::SourceSnapshot,
++        indents: Vec<super::super::projection::LineIndent>,
++        markers: Vec<super::super::projection::ProjectionMarker>,
++    }
++    impl ProjectionProvider for IndentProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            use super::super::projection::{LineIndent, MarkerKind, ProjectionMarker};
++            let quote = source.text.find("\n> ")? + 1;
++            let indents = if self.indent {
++                vec![LineIndent { line: 0, prefix: 2 }, LineIndent { line: 1, prefix: 2 }]
++            } else {
++                vec![]
++            };
++            let markers = vec![ProjectionMarker {
++                range: SourceByte(quote)..SourceByte(quote + 1),
++                scope: SourceByte(quote)..SourceByte(quote + 2),
++                kind: MarkerKind::Quote { depth: 1 },
++            }];
++            Some(Arc::new(IndentProjection { source: source.clone(), indents, markers }))
++        }
++    }
++    impl super::super::projection::SourceProjection for IndentProjection {
++        fn line_indents(&self) -> &[super::super::projection::LineIndent] {
++            &self.indents
++        }
++        fn markers(&self) -> &[super::super::projection::ProjectionMarker] {
++            &self.markers
++        }
++        fn marker_scope_is_raw(&self, _: &std::ops::Range<SourceByte>) -> bool {
++            false
++        }
++        fn source(&self) -> &super::super::projection::SourceSnapshot {
++            &self.source
++        }
++        fn text(&self) -> &str {
++            &self.source.text
++        }
++        fn styles(&self) -> &[super::super::projection::ProjectionStyle] {
++            &[]
++        }
++        fn to_projected(
++            &self,
++            source: SourceByte,
++            _: ConcealBias,
++        ) -> Option<super::super::projection::ProjectedByte> {
++            (source.0 <= self.source.text.len()).then_some(super::super::projection::ProjectedByte(source.0))
++        }
++        fn to_source(
++            &self,
++            display: super::super::projection::ProjectedByte,
++            _: ConcealBias,
++        ) -> Option<SourceByte> {
++            (display.0 <= self.source.text.len()).then_some(SourceByte(display.0))
++        }
++    }
++
++    /// #1641: wrapped rows of a list item or quote start under the item's
++    /// text, caret movement and clicks follow them, and every wrapped quote
++    /// row carries its bar in the gutter. Without indents (the control) rows
++    /// start at the line start and carry no bar.
++    #[gpui::test]
++    fn hanging_indent_aligns_wrapped_item_rows_under_their_text(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let words = "wrapped words in a long item line ".repeat(12);
++        let text = format!("- {words}\n> {words}\nend");
++        for indent in [true, false] {
++            let view = InputView::build_editor(cx, |state| {
++                state
++                    .folding(false)
++                    .searchable(false)
++                    .wrapping_indent(super::super::WrappingIndent::None)
++                    .line_number(false)
++            });
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            let value = text.clone();
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.set_value(value, window, cx);
++                    state.set_projection_provider(Some(Arc::new(IndentProvider { indent })), cx);
++                    window.activate_window();
++                    state.focus(window, cx);
++                })
++            });
++            v.run_until_parked();
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    let layout = state.last_layout.as_ref().unwrap();
++                    assert!(layout.projection.is_some());
++                    let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() < 0.5;
++                    let width = layout.wrap_width.expect("soft wrap");
++                    for line in &layout.lines[..2] {
++                        // Positive control: the item really wraps.
++                        assert!(line.wrapped_lines.len() > 2, "{}", line.wrapped_lines.len());
++                        let text_x = line.wrapped_lines[0].x_for_index(2);
++                        assert!(text_x > px(1.));
++                        let row_start = line.wrapped_lines[0].len();
++                        let first = line.position_for_index(2, layout, false).unwrap();
++                        let second = line.position_for_index(row_start, layout, false).unwrap();
++                        if indent {
++                            assert!(near(line.wrap_indent, text_x), "{:?} {text_x:?}", line.wrap_indent);
++                            assert!(near(second.x, first.x), "{second:?} {first:?}");
++                            for row in &line.wrapped_lines[1..] {
++                                assert!(row.width + line.wrap_indent <= width + px(0.5), "{:?}", row.width);
++                            }
++                            // A click at the text column of a wrapped row hits its start.
++                            let lh = layout.rows.row_height(0);
++                            let (hit, _) = line
++                                .closest_index_for_position(point(text_x + px(0.5), lh * 1.5), layout)
++                                .unwrap();
++                            assert_eq!(hit, row_start);
++                        } else {
++                            assert_eq!(line.wrap_indent, px(0.));
++                            assert!(near(second.x, px(0.)), "{second:?}");
++                        }
++                    }
++                    // Vertical movement from the start of the item's text keeps
++                    // its column: the start of the wrapped row below.
++                    let row_start = layout.lines[0].wrapped_lines[0].len();
++                    state.move_to(2, None, cx);
++                    state.move_vertical(1, window, cx);
++                    if indent {
++                        assert_eq!(state.cursor(), row_start);
++                    } else {
++                        // Control: the wrapped row starts under the marker, so
++                        // the text column lands inside that row.
++                        assert!(state.cursor() > row_start, "{} {row_start}", state.cursor());
++                    }
++                    // The quote bar repeats on every wrapped row of the quote line.
++                    let layout = state.last_layout.as_ref().unwrap();
++                    let cache = std::cell::RefCell::new(None);
++                    let source = crate::input::marker_paint::source_for_markers(
++                        layout.projection.as_ref(),
++                        super::super::projection::LayoutStamp {
++                            source: layout.source_stamp,
++                            presentation: layout.presentation_epoch,
++                        },
++                        state.source_stamp(),
++                        true,
++                        &cache,
++                        |text| state.text == text,
++                    )
++                    .expect("markers");
++                    let active = ActiveSource::default();
++                    let rows = crate::input::marker_paint::prepare(layout, &source, &active);
++                    let quote_rows = &rows[1];
++                    assert!(quote_rows[0].is_some(), "positive control: the first row draws its bar");
++                    for row in &quote_rows[1..] {
++                        let gutters = row.as_ref().map(|row| row.quote_gutters()).unwrap_or_default();
++                        if indent {
++                            assert_eq!(gutters.len(), 1);
++                            assert!(gutters[0] < px(0.), "the bar sits left of the row's text");
++                        } else {
++                            assert!(gutters.is_empty());
++                        }
++                    }
++                })
++            });
++        }
++    }
++
+     /// Identity projection whose lines 1..4 are one rendered block.
+     struct BlockProvider;
+     struct BlockProjection(super::super::projection::SourceSnapshot, [super::super::projection::ProjectionBlock; 1]);
+diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crates/base/src/input/editor/display_map/projected_cache.rs
+--- a/crates/base/src/input/editor/display_map/projected_cache.rs
++++ b/crates/base/src/input/editor/display_map/projected_cache.rs
+@@ -20,6 +20,8 @@ pub(super) struct LineKey {
+     scale_factor: u32,
+     hang: usize,
+     hang_room: u32,
++    /// Continuation indent prefix in bytes (#1641); 0 for none.
++    indent: usize,
+ }
+ 
+ impl LineKey {
+@@ -45,9 +47,16 @@ impl LineKey {
+             scale_factor: scale_factor.to_bits(),
+             hang,
+             hang_room: f32::from(hang_room).to_bits(),
++            indent: 0,
+         }
+     }
+ 
++    /// The same line wrapped with its continuation rows under `prefix` bytes.
++    pub(super) fn with_indent(mut self, prefix: usize) -> Self {
++        self.indent = prefix;
++        self
++    }
++
+     fn bytes(&self, line: &LineItem) -> usize {
+         self.text.len()
+             + self
+@@ -138,6 +147,7 @@ mod tests {
+             key("abcdefgh", 41., 16., 0),
+             key("abcdefgh", 40., 17., 0),
+             key("abcdefgh", 40., 16., 2),
++            key("abcdefgh", 40., 16., 0).with_indent(2),
+         ] {
+             assert!(cache.get(&different).is_none());
+         }
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -49,6 +49,22 @@ impl LineItem {
+         Self { len, indent: 0, wrapped_lines }
+     }
+ 
++    /// The x at which continuation rows start: the width of the first row's
++    /// reserved indentation. `text` is the line and `first` its shaped first row.
++    pub(crate) fn wrap_indent(&self, text: &str, first: Option<&ShapedLine>) -> Pixels {
++        match first {
++            Some(first) if self.indent > 0 && self.wrapped_lines.len() > 1 => {
++                let indent_byte_len = text
++                    .char_indices()
++                    .nth(self.indent as usize)
++                    .map(|(ix, _)| ix)
++                    .unwrap_or(text.len());
++                first.x_for_index(indent_byte_len)
++            }
++            _ => px(0.),
++        }
++    }
++
+     /// Get the bytes length of this line.
+     #[inline]
+     pub(crate) fn len(&self) -> usize {
+@@ -438,6 +454,7 @@ impl TextWrapper {
+         trace.counts([text.len() as u64, text.lines_len() as u64, projection.styles().len() as u64, 0]);
+         let mut items = Vec::new();
+         let scales = projection.line_scales();
++        let indents = projection.line_indents();
+         let mut styles = crate::input::projection_layout::StyleCursor::new(projection.styles());
+         for row in 0..text.lines_len() {
+             let line = text.slice_line(row).to_string();
+@@ -450,7 +467,8 @@ impl TextWrapper {
+             } else { full_runs };
+             let key = super::projected_cache::LineKey::new(
+                 &line, &full_runs, font_size, self.wrap_width, window.scale_factor(),
+-                crate::input::projection::line_hang(scales, row), hang_room);
++                crate::input::projection::line_hang(scales, row), hang_room)
++                .with_indent(crate::input::projection::line_indent(indents, row));
+             if let Some(item) = cache.get(&key) {
+                 cache.retain(key, item.clone());
+                 items.push(item);
+@@ -505,7 +523,51 @@ impl TextWrapper {
+                     }),
+                 ),
+             };
+-            let item = LineItem { len: line.len(), indent: 0, wrapped_lines: ranges };
++            // A list, task or quote line wraps its continuation rows under its
++            // text, as Source does with leading whitespace (#1641). Only the
++            // rest of a line that already wraps is shaped again, narrower.
++            let prefix = crate::input::projection::line_indent(indents, row);
++            let (ranges, indent) = match (shaped.first(), self.wrap_width) {
++                (Some(first), Some(width))
++                    if hang == 0
++                        && ranges.len() > 1
++                        && prefix > 0
++                        && prefix < ranges[0].end
++                        && line.is_char_boundary(prefix)
++                        && !has_rtl(&line) =>
++                {
++                    let indent = first.unwrapped_layout.x_for_index(prefix);
++                    // A gutter wider than half the text would leave too little
++                    // room for the rows under it: such lines wrap as before.
++                    if indent > px(0.) && indent * 2. <= width {
++                        let first_end = ranges[0].end;
++                        let rest = &line[first_end..];
++                        let runs = styles.runs(start + first_end..start + line.len(), &self.font, gpui::black());
++                        let runs = crate::font_presentation::font_runs(rest, &runs).into_owned();
++                        let shape_start = attribution::now();
++                        let shaped = window
++                            .text_system()
++                            .shape_text(rest.to_string().into(), font_size, &runs, Some(width - indent), None)
++                            .expect("valid projected text");
++                        trace.shape_finished(shape_start);
++                        let rest_ranges = crate::input::projection_layout::projected_wrap_ranges(
++                            rest,
++                            shaped.iter().flat_map(|shaped| {
++                                shaped.wrap_boundaries.iter().map(move |boundary| {
++                                    shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
++                                })
++                            }),
++                        );
++                        let mut hung: SmallVec<[Range<usize>; 1]> = smallvec::smallvec![ranges[0].clone()];
++                        hung.extend(rest_ranges.into_iter().map(|range| first_end + range.start..first_end + range.end));
++                        (hung, line[..prefix].chars().count() as u32)
++                    } else {
++                        (ranges, 0)
++                    }
++                }
++                _ => (ranges, 0),
++            };
++            let item = LineItem { len: line.len(), indent, wrapped_lines: ranges };
+             cache.retain(key, item.clone());
+             items.push(item);
+         }
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -184,6 +184,24 @@ pub fn line_hang(scales: &[LineScale], line: usize) -> usize {
+     scales.binary_search_by_key(&line, |s| s.line).map_or(0, |ix| scales[ix].hang)
+ }
+ 
++/// A projected line whose soft-wrapped continuation rows start under the
++/// first byte after `prefix`: a list, task or quote prefix forms a gutter,
++/// and wrapped rows of the item align with its text (#1641). The prefix must
++/// not be concealed by a reveal, so entering or leaving the line keeps the
++/// rows where they are.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct LineIndent {
++    /// Line index in the projected text.
++    pub line: usize,
++    /// Projected bytes at the start of the line before its text.
++    pub prefix: usize,
++}
++
++/// The continuation indent prefix of projected `line`, in bytes; 0 for none.
++pub fn line_indent(indents: &[LineIndent], line: usize) -> usize {
++    indents.binary_search_by_key(&line, |i| i.line).map_or(0, |ix| indents[ix].prefix)
++}
++
+ pub trait SourceProjection: Send + Sync {
+     fn markers(&self) -> &[ProjectionMarker] { &[] }
+     /// Lines drawn larger than the editor font, sorted by line without
+@@ -191,6 +209,11 @@ pub trait SourceProjection: Send + Sync {
+     fn line_scales(&self) -> &[LineScale] {
+         &[]
+     }
++    /// Lines whose wrapped rows hang under their text, sorted by line without
++    /// duplicates. Wrapping, paint and hit-testing all honour them.
++    fn line_indents(&self) -> &[LineIndent] {
++        &[]
++    }
+     /// Blocks rendered as elements, sorted by line, not overlapping.
+     fn blocks(&self) -> &[ProjectionBlock] {
+         &[]
