@@ -161,6 +161,40 @@ impl NativeClient {
     /// One bounded attempt on a dedicated RPC socket. The live subscription is
     /// never interrupted by command traffic. No implicit retry or MCP fallback.
     pub fn dispatch(&self, command: &crate::actions::Command) -> StreamResult<u64> {
+        self.dispatch_payload(&command.thread_id, command.wire()?)
+    }
+
+    /// Rename an explicitly selected empty thread without invoking a provider.
+    /// The server's expectedEmpty guard refuses a thread that acquired a message
+    /// or run after the caller inspected it. No automatic retry is performed.
+    pub fn rename_thread(
+        &self,
+        thread_id: &str,
+        command_id: &str,
+        title: &str,
+    ) -> StreamResult<u64> {
+        if thread_id.trim().is_empty()
+            || thread_id.trim() != thread_id
+            || thread_id.len() > 512
+            || thread_id.chars().any(char::is_control)
+            || uuid::Uuid::parse_str(command_id).is_err()
+            || title.trim().is_empty()
+            || title.trim() != title
+            || title.encode_utf16().count() > 512
+            || title.chars().any(char::is_control)
+        {
+            return Err(StreamError::Protocol("invalid empty-thread rename"));
+        }
+        self.dispatch_payload(
+            thread_id,
+            json!({
+                "type":"thread.metadata.update", "threadId":thread_id,
+                "commandId":command_id, "title":title, "expectedEmpty":true,
+            }),
+        )
+    }
+
+    fn dispatch_payload(&self, thread_id: &str, payload: Value) -> StreamResult<u64> {
         if !self.access.allowed() {
             return Err(StreamError::Closed);
         }
@@ -170,13 +204,12 @@ impl NativeClient {
                 "native session needs orchestration:operate permission",
             ));
         }
-        let payload = command.wire()?;
         let (socket, cancel) = self.open_socket()?;
         let mut rpc = ThreadSubscription {
             socket,
             cancel,
             origin: self.environment.origin(),
-            thread_id: command.thread_id.clone(),
+            thread_id: thread_id.to_owned(),
             cursor: None,
             closed: false,
             access: self.access.clone(),

@@ -1,0 +1,18 @@
+{
+  "baseline_sha256": "e6b7b7a5917cda3ca452b357d51b7e657e7e43b48aa7822961e76a37c9033f3f",
+  "candidate_schema_sha256": "5b28bbb903c441cacec9366c90f734f5318c737c3cc55262cb53a449770dbac0",
+  "client_binary_sha256": "47580d9fcd107eaba6e32bd9c9016917ccac95831140b890b6d500e3887c66e8",
+  "dispatch_command": true,
+  "pair": true,
+  "protocol": 2,
+  "resume_thread": true,
+  "schema": "PASS",
+  "schema_breaking_count": 0,
+  "schema_error_count": 0,
+  "schema_informational_count": 16,
+  "serverVersion": "0.1.7-nightly.20261031.3991",
+  "server_binary_sha256": "30ba1eeb90867c7b959a3353fd05dbaa429aa52f27b348d7a6ad2feeb79fac6e",
+  "status": "PASS",
+  "subscribe_shell": true,
+  "subscribe_thread": true
+}
