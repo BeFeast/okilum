@@ -34,7 +34,7 @@ class ProcessV2(unittest.TestCase):
         self.assertNotIn('github-pr.py', text)
         self.assertIn('release-cache.sh', text)
         self.assertIn('CARGO_TARGET_DIR', text)
-        self.assertIn('flock -w 10', text)
+        self.assertIn('flock -w 240', text)
         self.assertFalse((ROOT / '.github/workflows/forgejo-fast.yml').exists())
         script = (ROOT / 'scripts/ci/fast.sh').read_text()
         self.assertIn('cargo build --locked -p okilum-shell -p okilum-sync-supervisor', script)
