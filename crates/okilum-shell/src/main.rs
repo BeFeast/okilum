@@ -7340,8 +7340,15 @@ fn main() {
         libc::mallopt(libc::M_ARENA_MAX, 2);
     }
     #[cfg(windows)]
+    let startup_reservation = reader_instance::reserve_windows_launch();
+    #[cfg(windows)]
     velopack::VelopackApp::build()
-        .set_auto_apply_on_startup(updater::apply_pending_at_start())
+        .set_auto_apply_on_startup(
+            startup_reservation
+                .as_ref()
+                .is_some_and(|reservation| reservation.allows_auto_apply())
+                && updater::apply_pending_at_start(),
+        )
         .on_after_install_fast_callback(|_| {
             markdown_handler::install();
             okilum_core::folder_registration::install_current();
@@ -7436,7 +7443,11 @@ fn main() {
     let (instance_lock, instance_requests) = if opts.brain_endpoint.is_none()
         && !opts.managed_workspace
     {
-        match reader_instance::connect(&opts) {
+        #[cfg(windows)]
+        let connection = reader_instance::connect_reserved(&opts, startup_reservation);
+        #[cfg(not(windows))]
+        let connection = reader_instance::connect(&opts);
+        match connection {
             Ok(reader_instance::Instance::Forwarded) => return,
             Ok(reader_instance::Instance::Primary(lock, requests)) => (Some(lock), Some(requests)),
             Err(error) => {
