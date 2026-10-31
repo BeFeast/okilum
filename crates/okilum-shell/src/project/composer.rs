@@ -372,10 +372,8 @@ mod tests {
             .is_some());
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        visual.simulate_click(
-            visual.debug_bounds("project-send").unwrap().center(),
-            Modifiers::default(),
-        );
+        let send = visual.debug_bounds("project-send").unwrap().center();
+        visual.simulate_click(send, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(sends.get(), 0);
         composer.read_with(visual, |composer, cx| {
