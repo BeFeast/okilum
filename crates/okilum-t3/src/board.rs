@@ -7,8 +7,8 @@ use std::{
     path::{Component, Path},
     time::Duration,
 };
-pub mod local;
 pub mod delivery;
+pub mod local;
 pub mod manage;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
