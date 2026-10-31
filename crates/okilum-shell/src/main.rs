@@ -174,6 +174,7 @@ mod reader_trash_fs;
 #[path = "reader_trash_fs_windows.rs"]
 mod reader_trash_fs;
 mod reader_tree;
+mod reader_tree_follow;
 mod reader_tree_preview;
 mod reader_typed_view;
 mod reader_ui_state;
@@ -1732,6 +1733,15 @@ struct Reader {
     tree: reader_tree::Tree,
     tree_source: Option<Arc<Vault>>,
     tree_revealed: String,
+    /// Settings «Show the open note in the file tree» (#1762), read from
+    /// the app preference on every render.
+    tree_auto_reveal: bool,
+    /// The last wheel scroll over the tree (#1762, executor clock): while
+    /// the user scrolls it, auto-reveal waits instead of moving the tree.
+    tree_wheel_at: Option<std::time::Instant>,
+    /// Auto-reveal is waiting for the tree to go quiet; set by `sync_tree`.
+    tree_reveal_waiting: bool,
+    tree_reveal_retry: Option<Task<()>>,
     /// A folder's index note opened from its own tree row (#1512): the file
     /// row, not the folder, then stands for it in the tree.
     tree_index_entry: Option<String>,
@@ -2030,6 +2040,10 @@ impl Reader {
             tree: reader_tree::Tree::default(),
             tree_source: None,
             tree_revealed: String::new(),
+            tree_auto_reveal: false,
+            tree_wheel_at: None,
+            tree_reveal_waiting: false,
+            tree_reveal_retry: None,
             tree_index_entry: None,
             hover_preview: Default::default(),
             file_preview: None,
@@ -3363,14 +3377,12 @@ impl Reader {
             let note = selected == self.selected_file();
             #[cfg(any(unix, windows))]
             let note = note && self.renaming.is_none();
+            if note {
+                self.follow_open_note_in_tree(&selected);
+                return;
+            }
             self.tree_revealed = selected.clone();
-            let ix = self.tree.reveal(&selected);
-            let ix = if note {
-                self.select_index_folder(&selected, ix)
-            } else {
-                ix
-            };
-            if let Some(ix) = ix {
+            if let Some(ix) = self.tree.reveal(&selected) {
                 self.scroll_tree_to(ix);
             }
         }
@@ -5128,6 +5140,32 @@ impl Reader {
                     .min_h_0()
                     .overflow_hidden()
                     .child(list.track_scroll(&self.tree_scroll).size_full())
+                    .child({
+                        // Auto-reveal waits while the tree is wheel-scrolled
+                        // (#1762). Capture phase: the list still scrolls.
+                        let wheel_observer = cx.entity().downgrade();
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, _| {
+                                let wheel_observer = wheel_observer.clone();
+                                window.on_mouse_event(
+                                    move |event: &ScrollWheelEvent, phase, _, cx| {
+                                        if phase == DispatchPhase::Capture
+                                            && bounds.contains(&event.position)
+                                        {
+                                            let _ = wheel_observer.update(cx, |this, cx| {
+                                                this.tree_wheel_scrolled(cx)
+                                            });
+                                        }
+                                    },
+                                );
+                            },
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                    })
                     .child(
                         v_flex()
                             .absolute()
@@ -6909,7 +6947,9 @@ impl Render for Reader {
             self.tree_sticky.clear();
             self.tree_revealed.clear();
         }
+        self.prepare_tree_follow(cx);
         self.sync_tree();
+        self.schedule_tree_follow(cx);
         self.sync_sidebar(cx);
         self.restore_ui_tree();
         self.restore_ui_source(window, cx);
@@ -10774,9 +10814,13 @@ mod document_link_landing_tests {
     fn reader_folder_tree_reveals_current_and_panels_survive_selection(
         cx: &mut gpui::TestAppContext,
     ) {
+        let state = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
+            // The tree follows the open note only with auto-reveal on (#1762).
+            reader_ui_state::install(state.path(), cx);
+            reader_ui_state::set_tree_auto_reveal(true, cx);
         });
         let root =
             std::env::temp_dir().join(format!("okilum-reader348-tree-{}", uuid::Uuid::new_v4()));
