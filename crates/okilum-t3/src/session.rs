@@ -385,7 +385,21 @@ impl ManagerGateway for SessionGateway {
     }
 
     fn list_threads(&self, project_id: &str) -> GatewayResult<Vec<ThreadSummary>> {
-        let value = self.send(|_| self.http.get(self.env.endpoint("/api/orchestration/shell")))?;
+        // Required by T3's orchestration route schema, independently of the
+        // browser-session cookie. Projects uses a different header contract.
+        let value = self
+            .send(|_| {
+                self.http
+                    .get(self.env.endpoint("/api/orchestration/shell"))
+                    .header("x-t3-orchestration-protocol", "2")
+            })
+            .map_err(|error| match error {
+                GatewayError::Tool { code, message } => GatewayError::Tool {
+                    code,
+                    message: format!("GET /api/orchestration/shell (protocol 2): {message}"),
+                },
+                other => other,
+            })?;
         threads::read(value, project_id)
     }
 

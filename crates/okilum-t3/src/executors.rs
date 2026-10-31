@@ -50,13 +50,16 @@ impl Registry {
         let mut source = String::new();
         file.take((MAX_REGISTRY_BYTES + 1) as u64)
             .read_to_string(&mut source)?;
-        Self::parse(&source).map(Some)
+        Self::parse_at(&source, &path.display().to_string()).map(Some)
     }
 
     /// Supported existing registry: one Current threads / Текущие threads
     /// section, Role (or Роль) + Thread table, one Manager and one inline T3 ID
     /// per row. Historical sections are never candidates for a current binding.
     pub fn parse(source: &str) -> Result<Self> {
+        Self::parse_at(source, "ops/thread-ids.md")
+    }
+    fn parse_at(source: &str, file: &str) -> Result<Self> {
         ensure!(
             source.len() <= MAX_REGISTRY_BYTES,
             "Executor registry exceeds 256 KiB; no partial registry was loaded"
@@ -99,7 +102,7 @@ impl Registry {
         let mut manager = None;
         let mut executors = Vec::new();
         let mut ids = BTreeSet::new();
-        for line in section.iter().skip(tables[0] + 1) {
+        for (offset, line) in section.iter().enumerate().skip(tables[0] + 1) {
             if !line.trim().starts_with('|') {
                 break;
             }
@@ -149,7 +152,8 @@ impl Registry {
                 let current_task = task_column
                     .and_then(|column| row.get(column))
                     .map(|value| {
-                        let value = value.trim().trim_matches('`');
+                        let raw=value.trim();
+                        let value=raw.trim_matches('`');
                         if value.is_empty() || value == "—" || value == "-" {
                             return Ok(None);
                         }
@@ -157,8 +161,8 @@ impl Registry {
                             .strip_prefix('#')
                             .unwrap_or(value)
                             .parse::<u64>()
-                            .context("Current task must be one positive issue number or blank")?;
-                        ensure!(number > 0, "Current task must be positive");
+                            .with_context(||format!("{file}:{}: role {:?}, Current task {raw:?}: expected one positive issue number (#2020 or 2020) or blank; put PR, queue and history text in another column",sections[0]+2+offset,row[0]))?;
+                        ensure!(number>0,"{file}:{}: role {:?}, Current task {raw:?}: issue number must be positive",sections[0]+2+offset,row[0]);
                         Ok(Some(number))
                     })
                     .transpose()?

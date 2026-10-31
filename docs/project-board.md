@@ -25,8 +25,10 @@ The event is refused after switching away from the originating project.
 ## Explicit binding
 
 `ops/board.toml` is an optional companion to `ops/project.toml`. The latter's T3
-and project fields are preserved. The Board's HTTPS repository must match the
-manifest's `repo.host` and `repo.full_name`. Missing/invalid configuration is
+and project fields are preserved. When the project manifest names `repo.host` and `repo.full_name`, the Board's
+HTTPS repository must match them. Otherwise Create board takes an explicit
+Repository URL directly in its form; it does not guess a repository or silently
+rewrite the project manifest (#2027). Missing/invalid configuration is
 visible; there is no directory-name inference or repository-wide issue query.
 
 [The initial selection](examples/okilum-board.toml) is a schema/test example of
@@ -37,7 +39,9 @@ HTTPS links without credentials. Local notes cannot escape through `..`, absolut
 paths or symlinks.
 
 The version-1 binding contains `title`, `goal`, `repository`, `stage_note`,
-`refresh_seconds` (default 30, configurable), and ordered `issues`. Each issue has
+`refresh_seconds` (default 30, configurable), and ordered `issues`. `stage_note`
+is optional (missing/empty means none); when supplied it is an existing project
+Markdown note and need not live under Planning (#2027). Each issue has
 `number`, `expected`, `executor`, optional `notes`, `pull_requests` and `builds`
 (label + HTTPS URL). An optional legacy `execution` names both `thread_id` and `run_id` for cached
 progress context. Working classification uses the automatic evidence below;
@@ -243,16 +247,16 @@ unchanged until the manager completes the rollout on every channel and OS.
 A project without a Board shows a quiet empty state and a primary **Create
 board** action. The inline form starts with the Area's project title and goal
 (`goal`, then `product.outcome`, then `description`); a missing goal is filled by
-the person creating the Board. The repository comes from the selected project
-manifest, never from a folder name. The stage note is selected from Planning;
-exactly one candidate may prefill the selector, while multiple candidates
-require an explicit choice. Creation writes an empty `ops/board.toml` only when
+the person creating the Board. Repository is an explicit form input, prefilled
+from the project manifest when configured and never from a folder name. A known
+project repository must still match. Stage note is optional: exactly one Planning
+candidate may prefill it; with none or multiple candidates, None remains valid. Creation writes an empty `ops/board.toml` only when
 no Board file exists. An empty created Board is valid and prompts its first card.
 
 The Board's **Manage board** icon opens the same inline surface. Add a card with
 an issue number, `#number`, or exact issue URL in this Board's repository; edit
 its expected result, executor and stage; remove it; or change the title, goal and
-stage note under Board details. Automatic stage follows source evidence; Ready
+optional stage note under Board details. Automatic stage follows source evidence; Ready
 and Verified are explicit human overrides. A reference adds only an explicit
 card; it does not create, close or edit an issue, send a Manager message, or
 assign an executor. Removal is immediate and has one revision-checked Undo
@@ -275,3 +279,33 @@ stale write; close/reopen management to reload. A new file is published atomical
 without replacing a concurrent creator, and existing files use synced
 same-directory atomic replacement. Local-note, repository and per-field
 validation remain enforced. All file work runs off the UI thread.
+
+## Create board and source diagnostics (#2027)
+
+Create board includes a Repository input with a full credential-free HTTPS
+Forgejo `owner/repository` example. Project manifest repository bindings retain
+precedence: an explicit mismatch or partial binding is a field error. A project
+without that binding uses the repository the user entered for this Board only.
+Repository is fixed after creation so numeric issue references are never silently
+retargeted. Revision checks still protect both the selected Board file and the
+unchanged project manifest; saving never edits the latter.
+
+Stage note is optional, with an explicit None choice. Existing Planning notes
+are suggestions, not a creation prerequisite. Existing chosen notes and unrelated
+manifest fields are preserved. An explicitly chosen note still cannot escape the
+project, including through symlinks. Older reader builds may reject a new Board
+with no stage note until this fix reaches their channel; this does not rewrite
+existing Board bindings or create placeholder notes.
+
+Registry Current task remains one issue number (`2020`, `#2020`, inline code) or
+blank/dash. A compound queue/PR/history value is not guessed into a current task.
+Its diagnostic names the actual registry file, physical line, role and exact cell,
+and explains where to move the additional prose. Registry diagnostics do not
+become a missing-project or repository error.
+
+The browser-session Board route sends `x-t3-orchestration-protocol: 2`, required
+by the T3 orchestration API header schema. Projects/auth use their existing
+separate contract; a valid cookie alone does not satisfy the orchestration schema.
+A TCP regression rejects the previous header-less request with 400 and accepts
+the real client with the required header and same cookie. An authenticated native
+server reproduction is separate; no cookie/token is copied for this diagnosis.
