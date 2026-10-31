@@ -382,10 +382,14 @@ impl ProjectView {
         &self.threads.draft.attachments
     }
 
-    // Slice 4 replaces this attachment guard when message preparation carries
-    // real asset references. Never send text and silently discard its files.
+    // Restore must finish before native asset preparation or text-only MCP send.
+    pub(super) fn draft_ready(&self) -> bool {
+        !self.threads.draft.loading
+    }
+
+    // MCP cannot carry native asset references; keep its text-only guard.
     pub(super) fn draft_is_sendable(&self) -> bool {
-        !self.threads.draft.loading && self.draft_attachments().is_empty()
+        self.draft_ready() && self.draft_attachments().is_empty()
     }
 
     pub(super) fn draft_set_attachments(

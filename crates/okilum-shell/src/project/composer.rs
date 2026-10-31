@@ -9,6 +9,12 @@ pub(super) enum Mode {
 }
 pub(super) struct SendRequested;
 impl EventEmitter<SendRequested> for Composer {}
+pub(super) enum AttachmentRequested {
+    Choose,
+    Paths(Vec<PathBuf>),
+    Paste,
+}
+impl EventEmitter<AttachmentRequested> for Composer {}
 
 pub(super) struct Composer {
     input: Entity<TextareaState>,
@@ -17,6 +23,8 @@ pub(super) struct Composer {
     native: bool,
     steer: bool,
     busy: bool,
+    has_attachments: bool,
+    can_attach: bool,
     _input: Subscription,
 }
 impl Composer {
@@ -31,7 +39,7 @@ impl Composer {
                 && this.enabled
                 && !this.busy
                 && !this.input.read(cx).ime_settling(cx)
-                && !this.input.read(cx).value().trim().is_empty()
+                && (this.has_attachments || !this.input.read(cx).value().trim().is_empty())
             {
                 cx.emit(SendRequested);
             }
@@ -44,6 +52,8 @@ impl Composer {
             native: false,
             steer: false,
             busy: false,
+            has_attachments: false,
+            can_attach: false,
             _input: subscription,
         }
     }
@@ -61,6 +71,18 @@ impl Composer {
         if (self.enabled, self.busy) != (enabled, busy) {
             self.enabled = enabled;
             self.busy = busy;
+            cx.notify();
+        }
+    }
+    pub(super) fn set_attachments(
+        &mut self,
+        has_attachments: bool,
+        can_attach: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if (self.has_attachments, self.can_attach) != (has_attachments, can_attach) {
+            self.has_attachments = has_attachments;
+            self.can_attach = can_attach;
             cx.notify();
         }
     }
@@ -98,11 +120,37 @@ impl Render for Composer {
             // Textarea propagates submit-on-enter. Consume that action here so
             // the platform input fallback cannot insert a newline before send.
             .on_action(|_: &gpui_component::input::Enter, _, _| {})
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Paste, window, cx| {
+                    if this.native
+                        && this.input.read(cx).focus_handle(cx).is_focused(window)
+                        && !this.input.read(cx).presentation().is_disabled()
+                    {
+                        cx.emit(AttachmentRequested::Paste);
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .on_drop(cx.listener(|_, paths: &ExternalPaths, _, cx| {
+                cx.emit(AttachmentRequested::Paths(paths.0.to_vec()))
+            }))
             .child(modes)
             .child(
                 h_flex()
                     .items_end()
                     .gap_2()
+                    .child(
+                        Button::new("project-attach")
+                            .debug_selector(|| "project-attach".into())
+                            .ghost()
+                            .label("Attach")
+                            .tooltip("Attach images or files")
+                            .disabled(!self.can_attach)
+                            .on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(AttachmentRequested::Choose)),
+                            ),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -119,7 +167,8 @@ impl Render for Composer {
                             .disabled(
                                 self.busy
                                     || !self.enabled
-                                    || self.input.read(cx).value().trim().is_empty(),
+                                    || (!self.has_attachments
+                                        && self.input.read(cx).value().trim().is_empty()),
                             )
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
                     ),
