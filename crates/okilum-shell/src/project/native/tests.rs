@@ -192,6 +192,7 @@ fn deleted_live_thread_disables_send_with_a_visible_reason(cx: &mut TestAppConte
                 label: "Fixture".into(),
             });
             view.native.client = Some(client);
+            view.native.stream_ready = true; // Fixture represents an accepted live snapshot.
             assert!(
                 view.can_send(),
                 "positive control: valid manager send was already disabled"

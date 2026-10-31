@@ -696,5 +696,104 @@ fn disabled_native_client_cannot_fetch_history_or_request_a_socket_ticket() {
         native.subscribe("thread", None),
         Err(StreamError::Closed)
     ));
+    assert!(matches!(native.subscribe_shell(), Err(StreamError::Closed)));
+    assert!(matches!(
+        native.project_threads("bound"),
+        Err(StreamError::Closed)
+    ));
+    assert!(matches!(
+        native.manager_models(&crate::models::Target {
+            thread_id: "thread".into(),
+            project_id: "bound".into()
+        }),
+        Err(StreamError::Closed)
+    ));
     assert_eq!(server.requests().len(), before);
+}
+
+#[test]
+fn shell_directory_uses_real_ws_rpc_and_acknowledges_only_applied_chunks() {
+    let fixture = Fixture::start(|listener| {
+        ticket(&listener);
+        let mut socket = socket(&listener);
+        let request = read(&mut socket);
+        assert_eq!(request["tag"], "orchestration.subscribeShell");
+        assert_eq!(request["payload"], json!({"requestCompletionMarker":true}));
+        assert_eq!(read(&mut socket), json!({"_tag":"Ping"}));
+        send(&mut socket, json!({"_tag":"Pong"}));
+        chunk(
+            &mut socket,
+            vec![
+                json!({"kind":"snapshot","snapshot":{"snapshotSequence":3,"threads":[{"id":"manager","projectId":"bound","title":"Manager","status":"idle"}]}}),
+            ],
+        );
+        ack(&mut socket);
+        assert_eq!(read(&mut socket), json!({"_tag":"Ping"}));
+        send(&mut socket, json!({"_tag":"Pong"}));
+        chunk(
+            &mut socket,
+            vec![
+                json!({"kind":"thread.updated","location":"active","sequence":4,"thread":{"id":"manager","projectId":"bound","title":"Manager","status":"running","activeRunId":"run-a"}}),
+            ],
+        );
+        assert!(
+            socket.read().is_err(),
+            "rejected chunk is closed without ACK"
+        );
+    });
+    let mut stream = client(&fixture.env).subscribe_shell().unwrap();
+    let mut directory = shell::Directory::new(["bound".into()]);
+    stream
+        .receive(|updates| {
+            assert!(directory.apply(updates));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(directory.threads["manager"].status, "idle");
+    assert!(stream.receive(|_| Err(StreamError::Rejected)).is_err());
+    assert_eq!(directory.threads["manager"].status, "idle");
+    fixture.finish();
+}
+
+#[test]
+fn shell_directory_accepts_a_bounded_snapshot_larger_than_the_default_frame_limit() {
+    let fixture = Fixture::start(|listener| {
+        ticket(&listener);
+        let mut socket = socket(&listener);
+        assert_eq!(read(&mut socket)["tag"], "orchestration.subscribeShell");
+        assert_eq!(read(&mut socket), json!({"_tag":"Ping"}));
+        send(&mut socket, json!({"_tag":"Pong"}));
+        // Unrelated project metadata dominates the real directory. It must be
+        // admitted by transport, then excluded by the scoped retained model.
+        chunk(
+            &mut socket,
+            vec![json!({"kind":"snapshot","snapshot":{
+                "snapshotSequence":3,"projects":[{"description":"x".repeat(17 * 1024 * 1024)}],
+                "threads":[{"id":"manager","projectId":"bound","title":"Manager","status":"idle"},
+                    {"id":"foreign","projectId":"other","title":"Foreign","status":"idle"}]
+            }})],
+        );
+        ack(&mut socket);
+    });
+    // Generating/serializing this intentionally large fixture in an unoptimized
+    // test build can exceed the small fixtures' two-second heartbeat interval.
+    let mut stream = NativeClient::new(
+        fixture.env.clone(),
+        token(&fixture.env),
+        Duration::from_secs(10),
+    )
+    .unwrap()
+    .subscribe_shell()
+    .unwrap();
+    let mut directory = shell::Directory::new(["bound".into()]);
+    stream
+        .receive(|updates| {
+            directory.apply(updates);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(directory.threads.len(), 1);
+    assert!(directory.threads.contains_key("manager"));
+    drop(stream);
+    fixture.finish();
 }

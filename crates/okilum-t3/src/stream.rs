@@ -8,7 +8,10 @@
 //! the existing MCP gateway and macOS webview keep their own credentials.
 
 mod auth;
+mod manager;
 mod protocol;
+pub use manager::ManagerThread;
+pub mod shell;
 
 #[cfg(test)]
 mod tests;
@@ -129,6 +132,11 @@ impl NativeClient {
         self
     }
 
+    /// Whether the app's module lease still permits this client to connect.
+    pub fn access_allowed(&self) -> bool {
+        self.access.allowed()
+    }
+
     pub fn can_operate(&self) -> bool {
         self.access.allowed()
             && self.token.can_operate()
@@ -238,23 +246,30 @@ impl NativeClient {
         if !self.access.allowed() {
             return Err(StreamError::Closed);
         }
-        let (socket, _) = tungstenite::client_tls_with_config(url.as_str(), stream, None, None)
-            .map_err(|error| match error {
-                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
-                    if response.status().as_u16() == 426 =>
-                {
-                    StreamError::IncompatibleProtocol
-                }
-                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
-                    if response.status().as_u16() == 401 =>
-                {
-                    StreamError::PairingRequired
-                }
-                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)) => {
-                    StreamError::Http(response.status().as_u16())
-                }
-                _ => StreamError::Unreachable,
-            })?;
+        // subscribeShell includes the server directory before client-side project
+        // filtering. Real servers can exceed tungstenite's 16 MiB frame default;
+        // retain its 64 MiB message budget while admitting one unfragmented frame.
+        let config = tungstenite::protocol::WebSocketConfig::default()
+            .max_frame_size(Some(64 * 1024 * 1024));
+        let (socket, _) =
+            tungstenite::client_tls_with_config(url.as_str(), stream, Some(config), None).map_err(
+                |error| match error {
+                    tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+                        if response.status().as_u16() == 426 =>
+                    {
+                        StreamError::IncompatibleProtocol
+                    }
+                    tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+                        if response.status().as_u16() == 401 =>
+                    {
+                        StreamError::PairingRequired
+                    }
+                    tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)) => {
+                        StreamError::Http(response.status().as_u16())
+                    }
+                    _ => StreamError::Unreachable,
+                },
+            )?;
         Ok((socket, cancel))
     }
 
@@ -356,6 +371,22 @@ impl ThreadSubscription {
         &mut self,
         apply: impl FnOnce(&[ThreadUpdate]) -> StreamResult<()>,
     ) -> StreamResult<()> {
+        let value = self.read_chunk()?;
+        let (updates, sequence) = protocol::decode_chunk(
+            &value,
+            &self.thread_id,
+            self.cursor.as_ref().map(|cursor| cursor.sequence),
+        )?;
+        apply(&updates)?;
+        self.cursor = sequence.map(|sequence| ResumeCursor {
+            origin: self.origin.clone(),
+            thread_id: self.thread_id.clone(),
+            sequence,
+        });
+        self.send(json!({"_tag":"Ack","requestId":"1"}))
+    }
+
+    fn read_chunk(&mut self) -> StreamResult<Value> {
         // Effect RPC clients initiate keepalives (server replies with Pong).
         self.send(json!({"_tag":"Ping"}))?;
         let mut awaiting_pong = true;
@@ -402,18 +433,7 @@ impl ThreadSubscription {
                     })
                 }
                 Some("Chunk") if value["requestId"] == "1" => {
-                    let (updates, sequence) = protocol::decode_chunk(
-                        &value,
-                        &self.thread_id,
-                        self.cursor.as_ref().map(|cursor| cursor.sequence),
-                    )?;
-                    apply(&updates)?;
-                    self.cursor = sequence.map(|sequence| ResumeCursor {
-                        origin: self.origin.clone(),
-                        thread_id: self.thread_id.clone(),
-                        sequence,
-                    });
-                    return self.send(json!({"_tag":"Ack","requestId":"1"}));
+                    return Ok(value);
                 }
                 _ => return Err(StreamError::Protocol("unexpected RPC response")),
             }

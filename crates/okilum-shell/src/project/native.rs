@@ -24,6 +24,7 @@ pub(super) struct Native {
     busy: bool,
     error: Option<String>,
     stream_error: Option<String>,
+    stream_ready: bool,
     expires_at: Option<u64>,
     client: Option<Arc<NativeClient>>,
     retained: Option<Arc<Mutex<Retained>>>,
@@ -47,6 +48,7 @@ impl Native {
             busy: false,
             error: None,
             stream_error: None,
+            stream_ready: false,
             expires_at: None,
             client: None,
             retained: None,
@@ -57,16 +59,46 @@ impl Native {
         }
     }
     pub(super) fn stream_error_is_clear(&self) -> bool {
-        self.stream_error.is_none()
+        self.stream_ready && self.stream_error.is_none()
     }
     pub(super) fn client_can_operate(&self) -> bool {
-        self.client.as_ref().is_some_and(|c| c.can_operate())
+        self.stream_ready && self.client.as_ref().is_some_and(|c| c.can_operate())
     }
     pub(super) fn deleted(&self) -> bool {
         self.metadata.deleted
     }
     pub(super) fn active(&self) -> bool {
         self.client.is_some()
+    }
+    pub(super) fn connection(&self) -> Option<(Arc<NativeClient>, u64)> {
+        self.client.clone().zip(self.expires_at)
+    }
+    pub(super) fn model_client(&self) -> Option<Arc<NativeClient>> {
+        self.client.clone()
+    }
+    pub(super) fn current_model(&self, _: &str) -> Option<&str> {
+        (!self.metadata.model.is_empty()).then_some(self.metadata.model.as_str())
+    }
+    pub(super) fn title(&self) -> &str {
+        &self.metadata.title
+    }
+    pub(super) fn status_label(&self, cx: &App) -> &'static str {
+        if self.busy {
+            return "Connecting";
+        }
+        if self.client.is_none() || self.error.is_some() || self.stream_error.is_some() {
+            return "Offline";
+        }
+        let state = &self.actions.read(cx).state;
+        if !self.stream_ready {
+            "Connecting"
+        } else if !state.requests.is_empty() {
+            "Waiting"
+        } else if state.active_run.is_some() {
+            "Working"
+        } else {
+            "Connected"
+        }
     }
     pub(super) fn renew_due(&self) -> bool {
         self.expires_at.is_some_and(|expiry| {
@@ -75,6 +107,7 @@ impl Native {
         })
     }
     pub(super) fn pause(&mut self) {
+        self.stream_ready = false;
         if let Some(retained) = &self.retained {
             retained.lock().unwrap().epoch += 1;
         }
@@ -102,6 +135,22 @@ impl Drop for Native {
     }
 }
 impl ProjectView {
+    pub(super) fn native_pairing_busy(&self) -> bool {
+        self.native.busy
+    }
+    pub(super) fn pair_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.environment.is_none() {
+            match self.connection_environment(cx) {
+                Ok(environment) => self.environment = Some(environment),
+                Err(_) => {
+                    reader_settings::show_t3(cx);
+                    return;
+                }
+            }
+        }
+        self.native_restore(true, window, cx);
+    }
+
     pub(super) fn native_restore(
         &mut self,
         ask: bool,
@@ -156,14 +205,14 @@ impl ProjectView {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {
                         if ask {
-                            this.native.open = true;
+                            this.pair_enrolled_device(window, cx);
                         }
                         cx.notify();
                     }
                     Err(error) => {
                         this.native.error = Some(error.to_string());
                         if ask {
-                            this.native.open = true;
+                            this.pair_enrolled_device(window, cx);
                         }
                         cx.notify();
                     }
@@ -176,6 +225,52 @@ impl ProjectView {
         }
     }
     fn native_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let credential = self.native.input.read(cx).value().to_string();
+        self.pair_native_credential(credential, window, cx);
+    }
+    fn pair_enrolled_device(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(environment) = self.environment.clone() else {
+            return;
+        };
+        self.native.busy = true;
+        let generation = self.generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let task = match this.update_in(cx, |_, _, cx| {
+                cx.read_credentials(&NativeToken::pairing_key(&environment))
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
+            };
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.native.busy = false;
+                match result {
+                    Ok(Some((_, bytes))) => match String::from_utf8(bytes) {
+                        Ok(credential) => this.pair_native_credential(credential, window, cx),
+                        Err(_) => {
+                            this.native.error =
+                                Some("The saved device enrollment could not be read".into())
+                        }
+                    },
+                    _ => this.native.error = Some(
+                        "This device has not been enrolled with T3. Open Diagnostics to connect."
+                            .into(),
+                    ),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    fn pair_native_credential(
+        &mut self,
+        credential: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
@@ -186,7 +281,6 @@ impl ProjectView {
         let Some(environment) = self.environment.clone() else {
             return;
         };
-        let credential = self.native.input.read(cx).value().to_string();
         if credential.trim().is_empty() {
             self.native.error = Some("Enter a one-time T3 pairing token".into());
             cx.notify();
@@ -227,6 +321,11 @@ impl ProjectView {
                     };
                     match task.await {
                         Ok(()) => {
+                            if let Ok(cleanup) = this.update_in(cx, |_, _, cx| {
+                                cx.delete_credentials(&NativeToken::pairing_key(&environment))
+                            }) {
+                                let _ = cleanup.await;
+                            }
                             cx.background_executor()
                                 .spawn(async move {
                                     NativeClient::new(environment, token, Duration::from_secs(10))
@@ -260,7 +359,7 @@ impl ProjectView {
         .detach();
         cx.notify();
     }
-    fn install_native(
+    pub(super) fn install_native(
         &mut self,
         client: Arc<NativeClient>,
         expiry: u64,
@@ -270,14 +369,14 @@ impl ProjectView {
         let Some(binding) = &self.binding else {
             return;
         };
-        let Some((thread, project)) = binding
+        let target = binding
             .manager
             .thread_id
-            .as_ref()
-            .zip(binding.manager.project_id.as_ref())
-        else {
-            return;
-        };
+            .clone()
+            .zip(binding.manager.project_id.clone());
+        if self.threads.enabled {
+            self.set_threads_active(false, window, cx);
+        }
         self.native.pause();
         self.native.client = Some(client);
         self.native.error = None;
@@ -285,24 +384,31 @@ impl ProjectView {
         self.native.expires_at = Some(expiry);
         self.native.open = false;
         if self.native.retained.is_none() {
-            self.native.retained = Some(Arc::new(Mutex::new(Retained {
-                model: Projection::new(thread, project),
-                cursor: None,
-                valid: true,
-                epoch: 0,
-            })));
+            if let Some((thread, project)) = target {
+                self.native.retained = Some(Arc::new(Mutex::new(Retained {
+                    model: Projection::new(&thread, &project),
+                    cursor: None,
+                    valid: true,
+                    epoch: 0,
+                })));
+            }
         }
         self.native_load_actions(window, cx);
+        self.start_thread_directory(window, cx);
+        self.rebind_selected_native_thread(window, cx);
         self.native_start(window, cx);
         cx.notify();
     }
     pub(super) fn native_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active || self.native.worker.is_some() {
+        if !self.active || self.native.worker.is_some() || self.threads.selected.is_some() {
             return;
         }
         let Some(client) = self.native.client.clone() else {
             return;
         };
+        if !client.access_allowed() {
+            return;
+        }
         let Some(retained) = self.native.retained.clone() else {
             return;
         };
@@ -409,7 +515,11 @@ impl ProjectView {
                                 feed.apply_native(changes, &this.records, cx)
                             });
                         }
-                        let mut notify = controls_changed || this.native.stream_error != message;
+                        let ready = result.is_ok();
+                        let mut notify = controls_changed
+                            || this.native.stream_error != message
+                            || this.native.stream_ready != ready;
+                        this.native.stream_ready = ready;
                         this.native.stream_error = message;
                         if let Some(metadata) = metadata {
                             notify |= this.native.metadata != metadata;
@@ -486,10 +596,7 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn render_native(&self, cx: &mut Context<Self>) -> AnyElement {
-        let compact = self
-            .gateway
-            .as_ref()
-            .is_some_and(|gateway| self.connection_is_compact(&gateway.status()));
+        let compact = !self.connection_details;
         let enabled = self.native.client_can_operate() && self.native.stream_error.is_none();
         self.native
             .actions
@@ -550,8 +657,7 @@ impl ProjectView {
             }
         }
         if let Some(expiry) = self.native.expires_at.filter(|_| !compact) {
-            let renew = expiry.saturating_sub(chrono::Utc::now().timestamp().max(0) as u64)
-                <= okilum_t3::EXPIRES_SOON_SECS;
+            let renew = self.native.renew_due();
             view = view.child(
                 div()
                     .w_full()
@@ -598,7 +704,11 @@ impl ProjectView {
                     .whitespace_normal()
                     .debug_selector(|| "project-live-error".into())
                     .text_color(cx.theme().danger)
-                    .child(error),
+                    .child(if compact {
+                        "Connection interrupted. Open Diagnostics to reconnect.".to_owned()
+                    } else {
+                        error
+                    }),
             );
         }
         view.child(self.native.actions.clone()).into_any_element()

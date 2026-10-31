@@ -36,6 +36,13 @@ Run `NativeClient::subscribe` and `ThreadSubscription::receive` on a background
 executor. A subscription obtains a fresh, short-lived ticket through authenticated
 HTTP, then upgrades `/ws?orchestrationProtocol=2&wsTicket=…`. HTTP 426 is an
 explicit protocol incompatibility. The bearer never goes into the socket URL.
+Native Manager directory reads also use WS v2 `orchestration.subscribeShell`.
+The full directory is received before client-side project filtering. Both the
+message budget and the maximum individual frame are bounded to 64 MiB, so an
+unfragmented directory above the library's default 16 MiB frame limit can load.
+Shell snapshots marked `resolvedRepositoryIdentityRoots` enrich project metadata
+only: their empty thread arrays do not replace the scoped directory or advance
+its structural sequence. An authoritative empty snapshot still clears threads.
 
 The transport holds one live Effect RPC `orchestration.subscribeThread` request.
 It handles protocol and WebSocket keepalives and acknowledges every accepted

@@ -32,6 +32,7 @@ pub struct TurnRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Metadata {
     pub title: String,
+    pub model: String,
     pub deleted: bool,
     pub history_cursor: Option<String>,
     pub has_more_history: bool,
@@ -226,6 +227,10 @@ impl Projection {
                     next.check_thread(&projection["thread"])?;
                     next.metadata = Metadata {
                         title: projection["thread"]["title"].as_str().unwrap_or("").into(),
+                        model: projection["thread"]["modelSelection"]["model"]
+                            .as_str()
+                            .unwrap_or("")
+                            .into(),
                         history_cursor: history_cursor.clone(),
                         has_more_history: *has_more_history,
                         payload_budget_exceeded: *payload_budget_exceeded,
@@ -401,10 +406,17 @@ impl Projection {
                 }
             }
             kind if kind.starts_with("thread.") => {
-                let title = payload["title"].as_str().unwrap_or("");
-                if self.metadata.title != title {
-                    self.metadata.title = title.into();
-                    self.metadata_dirty = true;
+                if let Some(title) = payload["title"].as_str() {
+                    if self.metadata.title != title {
+                        self.metadata.title = title.into();
+                        self.metadata_dirty = true;
+                    }
+                }
+                if let Some(model) = payload["modelSelection"]["model"].as_str() {
+                    if self.metadata.model != model {
+                        self.metadata.model = model.into();
+                        self.metadata_dirty = true;
+                    }
                 }
             }
             "turn-item.updated" => {

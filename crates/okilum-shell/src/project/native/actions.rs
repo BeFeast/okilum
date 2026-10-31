@@ -380,10 +380,12 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy
+        if !self.active
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+            || self.busy
             || !self.native.active()
             || self.native.deleted()
-            || self.native.stream_error.is_some()
+            || !self.native.stream_error_is_clear()
             || !self.native.actions.read(cx).state.ready
         {
             return;
@@ -556,6 +558,9 @@ mod tests {
                 view.active = false;
                 view.environment = Some(environment.clone());
                 view.native.client = Some(client);
+                view.native.stream_ready = true; // This fixture supplies a synchronized action state.
+                view.threads.enabled = true; // Do not start legacy MCP history behind WS actions.
+                view.active = true;
                 view.native.actions.update(cx, |a, cx| {
                     a.set_state(
                         State {
