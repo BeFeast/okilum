@@ -40,6 +40,10 @@ gpui::actions!(
 /// paste command: text (rich text already converted), an image, or nothing.
 pub trait NoteClipboard: Send + Sync {
     fn read_offer(&self) -> Result<PasteOffer, OfferError>;
+    /// Chat reads typed clipboard data without probing filesystem paths.
+    fn read_chat_offer(&self) -> Result<PasteOffer, OfferError> {
+        self.read_offer()
+    }
     /// Whether anything at all is on the clipboard (enables the Paste item).
     fn has_content(&self) -> bool;
     /// The clipboard's type names, for the paste log (never contents).

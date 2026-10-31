@@ -11,6 +11,8 @@ use okilum_t3::{
 };
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+mod attachments;
 pub(crate) mod board;
 mod chat_ui;
 #[cfg(target_os = "linux")]
@@ -102,6 +104,10 @@ pub(crate) struct ProjectView {
     generation: u64,
     _input: Subscription,
     _connection: Subscription,
+    #[cfg(target_os = "linux")]
+    _attachment_input: Subscription,
+    #[cfg(target_os = "linux")]
+    attachments: attachments::Runtime,
     last_poll_status: Option<GatewayStatus>,
     #[cfg(target_os = "linux")]
     feed: Entity<feed::Feed>,
@@ -279,6 +285,14 @@ impl ProjectView {
                 this.send(None, window, cx);
             },
         );
+        #[cfg(target_os = "linux")]
+        let attachment_input = cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, request: &composer::AttachmentRequested, window, cx| {
+                this.attachment_request(request, window, cx)
+            },
+        );
         let weak = cx.weak_entity();
         let connection =
             window.observe_global::<reader_t3_settings::Connection>(cx, move |window, cx| {
@@ -351,6 +365,10 @@ impl ProjectView {
             generation: 0,
             _input: input,
             _connection: connection,
+            #[cfg(target_os = "linux")]
+            _attachment_input: attachment_input,
+            #[cfg(target_os = "linux")]
+            attachments: attachments::Runtime::default(),
             last_poll_status: None,
             #[cfg(target_os = "linux")]
             feed,
@@ -437,6 +455,8 @@ impl ProjectView {
         match result {
             Ok((env, gateway)) => {
                 #[cfg(target_os = "linux")]
+                self.attachments.clear();
+                #[cfg(target_os = "linux")]
                 self.draft_flush(cx);
                 #[cfg(target_os = "linux")]
                 {
@@ -477,6 +497,8 @@ impl ProjectView {
     }
 
     fn clear_connection(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        self.attachments.clear();
         #[cfg(target_os = "linux")]
         self.draft_flush(cx);
         self.generation = self.generation.wrapping_add(1);
@@ -788,12 +810,15 @@ impl ProjectView {
 
     fn can_send(&self) -> bool {
         #[cfg(target_os = "linux")]
-        if !self.draft_is_sendable() {
-            return false;
+        if self.native.active() {
+            return self.draft_ready()
+                && !self.native.deleted()
+                && self.native.client_can_operate()
+                && self.prepared_attachments().is_ok();
         }
         #[cfg(target_os = "linux")]
-        if self.native.active() {
-            return !self.native.deleted() && self.native.client_can_operate();
+        if !self.draft_is_sendable() {
+            return false;
         }
 
         self.identity.is_some()
@@ -1101,7 +1126,9 @@ fn status_note(status: &GatewayStatus) -> Option<&'static str> {
 }
 
 impl ProjectView {
-    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(target_os = "linux")]
+        self.attachment_restore_connection(_window, cx);
         if self.local_setup.is_some() {
             return self.render_local_setup(cx).into_any_element();
         }
@@ -1163,8 +1190,11 @@ impl ProjectView {
                 || (self.native.actions.read(cx).state.ready
                     && self.native.stream_error_is_clear());
             let can_steer = self.native.actions.read(cx).state.can_steer;
+            let has_attachments = !self.draft_attachments().is_empty();
+            let can_attach = self.attachment_can_add();
             self.composer.update(cx, |composer, cx| {
                 composer.set_native(self.native.active(), can_steer, cx);
+                composer.set_attachments(has_attachments, can_attach, cx);
                 composer.set_controls(enabled && native_ready, self.busy, cx)
             });
             div()
@@ -1404,14 +1434,14 @@ impl ProjectView {
                                 ),
                         ).into_any_element();
                 #[cfg(target_os = "linux")]
-                let view = view.child(self.render_draft_attachments(cx));
+                let view = view.child(if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)});
                 view.child(div().debug_selector(|| "project-chat-composer".into()).child(composer))
             }).into_any_element()
     }
 }
 
 impl Render for ProjectView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(target_os = "linux")]
         if self.threads.enabled {
             let selected = self.threads.selected.clone();
@@ -1429,7 +1459,7 @@ impl Render for ProjectView {
                     div().p_3().child("This thread is no longer available in the bound project. Choose another thread.").into_any_element()
                 }
             } else {
-                self.render_body(cx)
+                self.render_body(window, cx)
             };
             return v_flex()
                 .size_full()
@@ -1438,7 +1468,7 @@ impl Render for ProjectView {
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element();
         }
-        self.render_body(cx)
+        self.render_body(window, cx)
     }
 }
 

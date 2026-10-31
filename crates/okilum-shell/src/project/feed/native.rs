@@ -11,6 +11,7 @@ impl Feed {
             self.messages.clear();
             self.ids.clear();
             self.projected.clear();
+            self.attachments = Default::default();
             self.native_order = Some(Vec::new());
         }
         let mut topology =
@@ -32,6 +33,7 @@ impl Feed {
         }
         let mut items = Vec::new();
         let mut previews = HashMap::new();
+        let mut attachment_changes = Vec::new();
         for row in changes.rows {
             let position = if let Some(position) = self.native_positions.get(&row.key) {
                 *position
@@ -41,6 +43,9 @@ impl Feed {
                 self.native_positions.insert(row.key.clone(), next);
                 next
             };
+            if self.attachments.retain(position, &row.item) {
+                attachment_changes.push(position);
+            }
             self.retain_detail_source(position, &row, cx);
             if matches!(
                 row.item["type"].as_str(),
@@ -115,6 +120,16 @@ impl Feed {
             topology = true;
         }
         self.apply_rows(items.iter(), Some(records), topology, Some(&previews), cx);
+        let attachments_changed = !attachment_changes.is_empty();
+        for position in attachment_changes {
+            if let Some(index) = self.indices.get(&position).copied() {
+                self.scroller
+                    .update(cx, |state, cx| state.remeasure_items(index..index + 1, cx));
+            }
+        }
+        if attachments_changed {
+            cx.notify();
+        }
     }
     fn remove_native(&mut self, key: &RowKey) {
         if let Some(position) = self.native_positions.remove(key) {
@@ -122,6 +137,7 @@ impl Feed {
             self.messages.remove(&position);
             self.expanded.remove(&position);
             self.details.remove(&position);
+            self.attachments.rows.remove(&position);
             if let Some(id) = self.ids.remove(&position) {
                 if let Some(count) = self.projected.get_mut(&id) {
                     *count -= 1;

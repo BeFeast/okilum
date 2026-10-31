@@ -156,10 +156,29 @@ fn offer_error(error: Error) -> OfferError {
         _ => OfferError::Io,
     }
 }
+fn chat_offer(board: &Board) -> Result<PasteOffer, OfferError> {
+    // File-manager copies carry an explicit file flavor. Never turn an
+    // ordinary pasted path into an upload, or stat a remote mount on the UI.
+    if board.types().iter().any(|kind| kind == offer::FILE_URL) {
+        let paths: Vec<_> = board
+            .file_urls()
+            .iter()
+            .filter_map(|raw| url::Url::parse(raw).ok()?.to_file_path().ok())
+            .collect();
+        if !paths.is_empty() {
+            return Ok(PasteOffer::Files(paths));
+        }
+    }
+    offer::read_offer_with(board, false)
+}
 impl NoteClipboard for LinuxNoteClipboard {
     fn read_offer(&self) -> Result<PasteOffer, OfferError> {
         let board = settle(self.read(), Board::default).map_err(offer_error)?;
         offer::read_offer(&board)
+    }
+    fn read_chat_offer(&self) -> Result<PasteOffer, OfferError> {
+        let board = settle(self.read(), Board::default).map_err(offer_error)?;
+        chat_offer(&board)
     }
     fn has_content(&self) -> bool {
         true
@@ -183,6 +202,27 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use exact_wayland_clipboard::receive_selection;
+
+    #[test]
+    fn chat_file_flavor_needs_no_stat_and_plain_paths_remain_text() {
+        let uri = "file:///definitely-not-present-okilum-2122/report.txt";
+        let files = Board(vec![(
+            "text/uri-list".into(),
+            format!("{uri}\r\n").into_bytes(),
+        )]);
+        assert_eq!(
+            chat_offer(&files).unwrap(),
+            PasteOffer::Files(vec![PathBuf::from(
+                "/definitely-not-present-okilum-2122/report.txt"
+            )])
+        );
+        let plain = Board(vec![("text/plain".into(), uri.as_bytes().to_vec())]);
+        assert_eq!(
+            chat_offer(&plain).unwrap(),
+            PasteOffer::Text(uri.into()),
+            "a text URL must never upload the referenced file"
+        );
+    }
 
     fn png() -> Vec<u8> {
         let mut out = std::io::Cursor::new(Vec::new());

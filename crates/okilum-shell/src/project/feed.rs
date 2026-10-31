@@ -7,6 +7,7 @@ use okilum_t3::projection::{
 };
 use okilum_t3::TimelineItem;
 use std::collections::{BTreeMap, HashMap, HashSet};
+mod attachments;
 pub(super) mod content;
 mod details;
 
@@ -57,6 +58,7 @@ pub(super) struct Feed {
     native_positions: HashMap<RowKey, u64>,
     expanded: HashSet<u64>,
     details: HashMap<u64, details::Detail>,
+    attachments: attachments::History,
     next_native_position: u64,
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
@@ -87,6 +89,7 @@ impl Feed {
             native_positions: HashMap::new(),
             expanded: HashSet::new(),
             details: HashMap::new(),
+            attachments: Default::default(),
             next_native_position: 1,
             scroller,
             enabled: false,
@@ -112,6 +115,7 @@ impl Feed {
         self.native_positions.clear();
         self.expanded.clear();
         self.details.clear();
+        self.attachments = Default::default();
         self.next_native_position = 1;
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         cx.notify();
@@ -384,6 +388,7 @@ impl Feed {
                         message.text.clone(),
                         cx,
                     ))
+                    .child(self.render_attachments(position, cx))
                     .into_any_element()
             }
             Some(Row::Retained(index)) => {

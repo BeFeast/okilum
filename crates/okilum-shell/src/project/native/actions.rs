@@ -532,6 +532,14 @@ impl ProjectView {
             return;
         }
         let draft = self.compose.read(cx).value().to_string();
+        let attachments = match self.prepared_attachments() {
+            Ok(attachments) => attachments,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let state = &self.native.actions.read(cx).state;
         let mode = match self.composer.read(cx).mode {
             super::super::composer::Mode::Steer => match &state.active_run {
@@ -547,7 +555,11 @@ impl ProjectView {
             _ => DispatchMode::StartImmediately,
         };
         self.native_command(
-            Some(Intent::message(draft.clone(), mode)),
+            Some(Intent::message_with_attachments(
+                draft.clone(),
+                mode,
+                attachments,
+            )),
             None,
             Some(draft),
             window,
