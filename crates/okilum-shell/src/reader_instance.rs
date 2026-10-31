@@ -326,6 +326,37 @@ mod tests {
     }
 
     #[test]
+    fn windows_rejected_profile_releases_reservation_and_owner_exit_allows_handoff() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let reserved = StartupReservation::reserve(directory.clone()).unwrap();
+        let wrong = Opts {
+            session_directory: Some(fixture.path().join("other")),
+            ..Default::default()
+        };
+        assert!(connect_reserved(&wrong, Some(reserved)).is_err());
+        let owner = StartupReservation::reserve(directory.clone()).unwrap();
+        assert!(
+            owner.allows_auto_apply(),
+            "profile refusal closes the old lock handle"
+        );
+        let waiting = StartupReservation::reserve(directory.clone()).unwrap();
+        assert!(!waiting.allows_auto_apply());
+        drop(owner);
+        let opts = Opts {
+            session_directory: Some(directory),
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                connect_reserved(&opts, Some(waiting)).unwrap(),
+                Instance::Primary(_, _)
+            ),
+            "owner exit lets the non-updating contender become primary"
+        );
+    }
+
+    #[test]
     fn second_launch_delivers_vault_and_note_to_the_lock_owner() {
         let fixture = tempfile::tempdir().unwrap();
         let opts = Opts {
