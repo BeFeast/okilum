@@ -77,6 +77,135 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_staged_verified_second_launch_keeps_primary_and_unsaved_draft() {
+        use crate::reader_instance::{connect_reserved, Instance, StartupReservation};
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let current = root.join("current");
+        let packages = root.join("packages");
+        let state = root.join("state");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&packages).unwrap();
+        let manifest = |version: &str| {
+            format!("<package><metadata><id>OkilumStartupFixture</id><version>{version}</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>")
+        };
+        let manifest_path = current.join("sq.version");
+        std::fs::write(&manifest_path, manifest("1.0.0")).unwrap();
+        let staged = packages.join("OkilumStartupFixture-2.0.0-full.nupkg");
+        let mut package = zip::ZipWriter::new(std::fs::File::create(&staged).unwrap());
+        package
+            .start_file(
+                "OkilumStartupFixture.nuspec",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        package.write_all(manifest("2.0.0").as_bytes()).unwrap();
+        package.finish().unwrap();
+        std::fs::write(
+            root.join("must-not-run.exe"),
+            b"Fixture updater must never execute",
+        )
+        .unwrap();
+        let locator = velopack::locator::VelopackLocatorConfig {
+            RootAppDir: root.to_path_buf(),
+            UpdateExePath: root.join("must-not-run.exe"),
+            PackagesDir: packages,
+            ManifestPath: manifest_path.clone(),
+            CurrentBinaryDir: current,
+            IsPortable: false,
+        };
+        let manager = velopack::UpdateManager::new(
+            velopack::sources::NoneSource {},
+            None,
+            Some(locator.clone()),
+        )
+        .unwrap();
+        let pending = manager
+            .get_update_pending_restart()
+            .expect("SDK must detect the actual newer nupkg");
+        assert_eq!(pending.Version.to_string(), "2.0.0");
+        let hash = format!("{:x}", Sha256::digest(std::fs::read(&staged).unwrap()));
+        let verified = verified_record(false, &hash);
+        assert!(
+            may_apply_at_start(Some(&hash), Some(&verified), false),
+            "positive control: staged package is channel-verified"
+        );
+        let first = StartupReservation::reserve(state.clone()).unwrap();
+        assert!(first.allows_auto_apply());
+        std::fs::write(state.join("windows-update-verified"), &verified).unwrap();
+        let opts = crate::Opts {
+            session_directory: Some(state.clone()),
+            ..Default::default()
+        };
+        let Instance::Primary(_primary_lock, requests) =
+            connect_reserved(&opts, Some(first)).unwrap()
+        else {
+            panic!("primary required")
+        };
+        let endpoint: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("reader-instance.json")).unwrap())
+                .unwrap();
+        let note = root.join("draft.md");
+        std::fs::write(&note, "Canonical text\n").unwrap();
+        let mut editor =
+            okilum_core::file_editor::FileEditor::open(&note, &root.join("drafts")).unwrap();
+        editor
+            .set_text("Unsaved primary draft — every line\nsecond line\n".into())
+            .unwrap();
+        for launch in [
+            crate::Opts {
+                vault: Some(root.to_path_buf()),
+                ..opts.clone()
+            },
+            crate::Opts {
+                open_path: Some(note.clone()),
+                ..opts.clone()
+            },
+            opts.clone(),
+        ] {
+            let reservation = StartupReservation::reserve(state.clone()).unwrap();
+            let auto_apply = reservation.allows_auto_apply()
+                && may_apply_at_start(Some(&hash), Some(&verified), false);
+            assert!(
+                !auto_apply,
+                "verified pending update cannot bypass a live primary"
+            );
+            velopack::VelopackApp::build()
+                .set_locator(locator.clone())
+                .set_auto_apply_on_startup(auto_apply)
+                .run();
+            assert!(matches!(
+                connect_reserved(&launch, Some(reservation)).unwrap(),
+                Instance::Forwarded
+            ));
+            let request = requests
+                .try_recv()
+                .expect("primary must acknowledge the second launch");
+            let _ = request;
+            let live: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(state.join("reader-instance.json")).unwrap())
+                    .unwrap();
+            assert_eq!(live, endpoint);
+            assert_eq!(
+                editor.text(),
+                "Unsaved primary draft — every line\nsecond line\n"
+            );
+            assert_eq!(std::fs::read_to_string(&note).unwrap(), "Canonical text\n");
+            assert_eq!(
+                std::fs::read_to_string(&manifest_path).unwrap(),
+                manifest("1.0.0")
+            );
+            assert!(
+                manager.get_update_pending_restart().is_some(),
+                "update stays staged for explicit Restart now"
+            );
+        }
+    }
+
     #[test]
     fn an_install_follows_stable_unless_beta_was_chosen() {
         assert!(!follows_beta(None), "no saved choice: stable (#1307)");

@@ -28,6 +28,18 @@ KEEP_DAYS = 30
 FAILED_TEST = re.compile(r'^---- (\S+) stdout ----$', re.M)
 PREFIX = re.compile(r'^\S+Z ', re.M)
 GITHUB_RUN = re.compile(r'https://github\.com/BeFeast/okilum/actions/runs/\d+')
+# A Python unittest failure: "FAIL: test_x (module.Class.test_x)", then "FAILED (failures=1)".
+PYTHON_TEST = re.compile(r'^(?:FAIL|ERROR): (\w+) \(([\w.]+)\)$', re.M)
+PYTHON_FAILED = re.compile(r'^FAILED \(.*\)$', re.M)
+# The same infrastructure markers and runner lines as main-health.py classify() (#1962):
+# a marker counts only on the runner's own lines, never in test or script output. A passing
+# test_github_pr.py prints 'Hosted CI unavailable' in nearly every linux-local run.
+DEADLINE = 'context deadline exceeded'
+INFRA_MARKERS = ('Cannot connect to the Docker daemon', 'failed to create container',
+                 'Error response from daemon', 'No space left on device', 'Could not resolve host',
+                 'Connection reset by peer', DEADLINE)
+RUNNER_LINE = re.compile(r'^⚙️ \[runner\]: .*$|^Error occurred running finally: .*$', re.M)
+SLOW_TEST = re.compile(r'^test (\S+) has been running for over 60 seconds$', re.M)
 
 
 def fetch(path, raw=False):
@@ -64,6 +76,16 @@ def jobs(rid):
 AGGREGATES = {('ci.yml', 'linux'), ('ci.yml', 'macos'), ('ci.yml', 'check')}
 
 
+def unfinished_tests(text):
+    """Tests that cargo reported as slow and that never printed a result."""
+    names = []
+    for slow in SLOW_TEST.finditer(text):
+        name = slow.group(1)
+        if name not in names and not re.compile(rf'^test {re.escape(name)} \.\.\. ', re.M).search(text, slow.end()):
+            names.append(name)
+    return names
+
+
 def summary(log, workflow='', job=''):
     if (workflow, job) in AGGREGATES:
         return 'aggregate: a job it needs failed (see that job)'
@@ -79,10 +101,16 @@ def summary(log, workflow='', job=''):
     error = re.search(r'^(error(\[E\d+\])?: .*)$', text, re.M)
     if error:
         return error.group(1)[:200]
-    # After tests and compiler errors: the CI-script tests print this marker as output.
-    if 'Hosted CI unavailable' in text:
-        reason = re.search(r'Hosted CI unavailable[^\n]*', text).group(0)
-        return f'infrastructure: {reason[:160]}'
+    if PYTHON_FAILED.search(text):
+        names = [name if name.endswith('.' + method) else f'{name}.{method}'
+                 for method, name in PYTHON_TEST.findall(text)]
+        return 'tests: ' + (' '.join(names) if names else PYTHON_FAILED.search(text).group(0))
+    for line in RUNNER_LINE.findall(text):
+        for marker in INFRA_MARKERS:
+            if marker in line:
+                # Out of time with a test still running: the test hung, which is code.
+                hung = unfinished_tests(text) if marker == DEADLINE else []
+                return 'tests (hung): ' + ' '.join(hung) if hung else f'infrastructure: {marker}'
     if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
         return 'no build or test output (infrastructure?)'
     return '-'

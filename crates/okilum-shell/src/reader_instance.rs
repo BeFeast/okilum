@@ -44,13 +44,62 @@ fn absolute(path: &Option<PathBuf>, cwd: &Path) -> Option<PathBuf> {
     })
 }
 
-pub(crate) fn connect(opts: &Opts) -> anyhow::Result<Instance> {
-    let directory = opts
-        .session_directory
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(reader_history::state_directory)?;
-    std::fs::create_dir_all(&directory)?;
+/// Held across Velopack startup and transferred into the normal instance lock.
+/// A probe followed by unlock would allow another launch to become primary
+/// between the updater decision and IPC setup.
+pub(crate) struct StartupReservation {
+    directory: PathBuf,
+    lock: Option<std::fs::File>,
+}
+
+impl StartupReservation {
+    #[cfg(any(windows, test))]
+    pub(crate) fn reserve(directory: PathBuf) -> anyhow::Result<Self> {
+        let lock = open_lock(&directory)?;
+        let lock = match lock.try_lock() {
+            Ok(()) => Some(lock),
+            Err(std::fs::TryLockError::WouldBlock) => None,
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        };
+        Ok(Self { directory, lock })
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn allows_auto_apply(&self) -> bool {
+        self.lock.is_some()
+    }
+}
+
+/// Parse only to choose the same IPC profile as the later normal launch. Fast
+/// Velopack hooks and non-Reader commands still reach the SDK, without auto-apply.
+#[cfg(windows)]
+pub(crate) fn reserve_windows_launch() -> Option<StartupReservation> {
+    let Ok(reader_open::Command::Launch(opts)) =
+        reader_open::parse_args(std::env::args_os().skip(1), Opts::default())
+    else {
+        return None;
+    };
+    if opts.brain_endpoint.is_some() || opts.managed_workspace {
+        return None;
+    }
+    let result = (|| {
+        let directory = opts
+            .session_directory
+            .map(Ok)
+            .unwrap_or_else(reader_history::state_directory)?;
+        StartupReservation::reserve(directory)
+    })();
+    match result {
+        Ok(reservation) => Some(reservation),
+        Err(error) => {
+            eprintln!("Cannot reserve Reader startup; auto-apply disabled: {error:#}");
+            None
+        }
+    }
+}
+
+fn open_lock(directory: &Path) -> anyhow::Result<std::fs::File> {
+    std::fs::create_dir_all(directory)?;
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -58,8 +107,43 @@ pub(crate) fn connect(opts: &Opts) -> anyhow::Result<Instance> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let lock = options.open(directory.join("reader-instance.lock"))?;
-    match lock.try_lock() {
+    Ok(options.open(directory.join("reader-instance.lock"))?)
+}
+
+#[cfg(any(not(windows), test))]
+pub(crate) fn connect(opts: &Opts) -> anyhow::Result<Instance> {
+    connect_reserved(opts, None)
+}
+
+pub(crate) fn connect_reserved(
+    opts: &Opts,
+    reservation: Option<StartupReservation>,
+) -> anyhow::Result<Instance> {
+    let directory = opts
+        .session_directory
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(reader_history::state_directory)?;
+    let reserved = match reservation {
+        Some(reservation) => {
+            anyhow::ensure!(
+                reservation.directory == directory,
+                "Reader startup profile changed"
+            );
+            reservation.lock
+        }
+        None => None,
+    };
+    let (lock, already_held) = match reserved {
+        Some(lock) => (lock, true),
+        None => (open_lock(&directory)?, false),
+    };
+    let ownership = if already_held {
+        Ok(())
+    } else {
+        lock.try_lock()
+    };
+    match ownership {
         Ok(()) => {
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
             let endpoint = Endpoint {
@@ -200,6 +284,77 @@ pub(crate) fn receive(receiver: async_channel::Receiver<Request>, cx: &mut App) 
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn windows_startup_reservation_remains_owned_until_primary_handoff() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let first = StartupReservation::reserve(directory.clone()).unwrap();
+        assert!(
+            first.allows_auto_apply(),
+            "cold primary may consider a verified update"
+        );
+        let competing = StartupReservation::reserve(directory.clone()).unwrap();
+        assert!(
+            !competing.allows_auto_apply(),
+            "startup itself owns the lock before IPC exists"
+        );
+        assert!(!directory.join("reader-instance.json").exists());
+        let opts = Opts {
+            session_directory: Some(directory.clone()),
+            ..Default::default()
+        };
+        let Instance::Primary(lock, requests) = connect_reserved(&opts, Some(first)).unwrap()
+        else {
+            panic!("reservation must transfer without reacquiring its own Windows lock");
+        };
+        assert!(!StartupReservation::reserve(directory.clone())
+            .unwrap()
+            .allows_auto_apply());
+        assert!(matches!(
+            connect_reserved(&opts, Some(competing)).unwrap(),
+            Instance::Forwarded
+        ));
+        requests.try_recv().unwrap();
+        drop(lock);
+        assert!(
+            StartupReservation::reserve(directory)
+                .unwrap()
+                .allows_auto_apply(),
+            "owner exit releases reservation"
+        );
+    }
+
+    #[test]
+    fn windows_rejected_profile_releases_reservation_and_owner_exit_allows_handoff() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let reserved = StartupReservation::reserve(directory.clone()).unwrap();
+        let wrong = Opts {
+            session_directory: Some(fixture.path().join("other")),
+            ..Default::default()
+        };
+        assert!(connect_reserved(&wrong, Some(reserved)).is_err());
+        let owner = StartupReservation::reserve(directory.clone()).unwrap();
+        assert!(
+            owner.allows_auto_apply(),
+            "profile refusal closes the old lock handle"
+        );
+        let waiting = StartupReservation::reserve(directory.clone()).unwrap();
+        assert!(!waiting.allows_auto_apply());
+        drop(owner);
+        let opts = Opts {
+            session_directory: Some(directory),
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                connect_reserved(&opts, Some(waiting)).unwrap(),
+                Instance::Primary(_, _)
+            ),
+            "owner exit lets the non-updating contender become primary"
+        );
+    }
 
     #[test]
     fn second_launch_delivers_vault_and_note_to_the_lock_owner() {
