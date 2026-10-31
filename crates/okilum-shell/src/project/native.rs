@@ -550,8 +550,7 @@ impl ProjectView {
             }
         }
         if let Some(expiry) = self.native.expires_at.filter(|_| !compact) {
-            let renew = expiry.saturating_sub(chrono::Utc::now().timestamp().max(0) as u64)
-                <= okilum_t3::EXPIRES_SOON_SECS;
+            let renew = self.native.renew_due();
             view = view.child(
                 div()
                     .w_full()
