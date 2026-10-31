@@ -855,8 +855,8 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         build: "100".into(),
         source: source.into(),
         artifact: "https://updates.example/exact-build.zip".into(),
-        published_at: None,
-        release_url: None,
+        published_at: Some("2026-10-31T12:00:00Z".into()),
+        release_url: Some("https://updates.example/releases/100".into()),
     };
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -923,11 +923,22 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     visual.simulate_resize(size(px(1000.), px(1000.)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-delivery").is_some());
-    assert!(visual.debug_bounds("board-delivery-Mac-Beta").is_some());
-    assert!(visual
-        .debug_bounds("board-delivery-Windows-Stable")
-        .is_some());
-    assert!(visual.debug_bounds("board-delivery-Linux-Sprint").is_some());
+    for platform in ["Mac", "Windows", "Linux"] {
+        for channel in ["Stable", "Beta"] {
+            assert!(
+                visual
+                    .debug_bounds(&format!("board-delivery-{platform}-{channel}"))
+                    .is_some(),
+                "visible {platform}/{channel}"
+            );
+        }
+        assert!(
+            visual
+                .debug_bounds(&format!("board-delivery-{platform}-Sprint"))
+                .is_none(),
+            "Sprint was removed"
+        );
+    }
     assert!(visual.debug_bounds("board-refresh").is_none());
     assert!(visual.debug_bounds("board-plan").is_none());
     board.update(visual, |board, cx| {
@@ -966,8 +977,8 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     visual.run_until_parked();
     assert_eq!(
         visual.opened_url().as_deref(),
-        Some(build.artifact.as_str()),
-        "only explicit Artifact open, no install/dispatch"
+        build.release_url.as_deref(),
+        "only explicit release open, no install/dispatch"
     );
     board.read_with(visual, |board, _| {
         assert!(board.delivery.ci[&42].value.state == "success");
