@@ -291,6 +291,7 @@ impl Reader {
     pub(super) fn sync_notice_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         crate::updater::ready_notice(window, cx);
         self.sync_recovery_toast(window, cx);
+        self.sync_deleted_notice(window, cx);
         let notice = self.link_notice.clone();
         let choices = self.link_choices.clone();
         if notice == self.displayed_notice && choices == self.displayed_choices {

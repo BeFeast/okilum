@@ -345,6 +345,21 @@ impl Reader {
             .unwrap_or(&self.current_rel)
     }
     pub(crate) fn preview_file(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A deleted note asks before its contents are left behind (#1986).
+        if self.leaving_deleted_note(Some(rel)) {
+            let retry = rel.to_owned();
+            let history = self.navigation.history_nav;
+            self.ask_leaving_deleted_note(
+                Box::new(move |this, window, cx| {
+                    let outer = std::mem::replace(&mut this.navigation.history_nav, history);
+                    this.preview_file(&retry, window, cx);
+                    this.navigation.history_nav = outer;
+                }),
+                window,
+                cx,
+            );
+            return;
+        }
         if !self.save_source(cx) {
             return;
         }
