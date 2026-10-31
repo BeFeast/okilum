@@ -2209,6 +2209,9 @@ impl Reader {
         self.incremental_state = None;
         self.tasks_index = None;
         self.projects = Arc::default();
+        self.workbench = Arc::default();
+        self.workbench_ready = None;
+        self.workbench_pending = self.workbench_pending.wrapping_add(1);
         self.incremental_initializing = false;
         self.incremental_active = false;
         #[cfg(any(unix, windows))]
@@ -2578,18 +2581,20 @@ impl Reader {
                                 let index_task = cx.background_executor().spawn(async move {
                                     let tasks = reader_tasks::from_snapshot(&move_snapshot);
                                     let projects = Arc::new(okilum_core::projects::Index::from_snapshot(&move_snapshot));
+                                    let workbench = reader_workbench::from_snapshot(&move_snapshot, &state_vault.root);
                                     let state = okilum_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(any(unix, windows))]
                                     let candidates = state.candidates.clone();
-                                    (state, tasks, projects, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
+                                    (state, tasks, projects, workbench, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
                                 });
                                 cx.spawn(async move |this, cx| {
-                                    let (state, tasks, projects, candidates) = index_task.await;
+                                    let (state, tasks, projects, workbench, candidates) = index_task.await;
                                     let _ = this.update(cx, |this, cx| {
                                         if this.vault_root == index_root && this.incremental_epoch == epoch
                                             && this.loading.as_ref().map(|load| load.generation) == generation {
                                             this.tasks_index = Some(tasks);
                                             this.projects = projects;
+                                            this.publish_workbench(workbench, cx);
                                             this.incremental_state = Some(state);
                                             this.incremental_initializing = false;
                                             #[cfg(any(unix, windows))]
