@@ -85,13 +85,37 @@ local cards and TOML comments retain their text. Discuss emits the existing
 Manager draft-only action with project/card/source references; it never sends or
 launches anything. Manager host/workspace verification still belongs to slice 3.
 
-## Remaining authorized slice
+## Slice 3: local T3 Manager (#1801)
 
-- Manager for code on the corporate Mac uses local T3 next to its checkout.
-  Verify host/workspace before launch and fill the manager binding (#1801).
-  Retained launch recovery and registry compatibility must retain their positive
-  controls; an uncertain launch never becomes a duplicate by timeout or deletion.
+An unbound project's Manager panel offers **Set up local Manager**. The form
+asks for the local T3 address and workspace folder on this device. The saved
+remote app connection is never its default. The existing source checkout is
+suggested when present; otherwise the project folder is suggested. Setup does
+not install or start T3, clone a repository, create internal notes or launch a
+Manager. **Sign in to local T3** uses the existing origin-bound Settings sign-in.
 
-Each slice gets meaningful regressions, bounded CT141 checks through the CI
-queue, and Sprint before its PR. Sprint retains the Mac delivery window; no
-publication between 02:20 and 09:00 Israel.
+**Check and connect** accepts only localhost or a loopback IP and an existing
+absolute local directory. It reads T3's environment identity and complete project
+listing, reuses one exact canonical workspace or creates a project through T3's
+unique-workspace API, then reads the project back. Ambiguous roots, mismatching
+receipts, changed environments and changed source revisions are visible errors.
+A lost project-create reply can be reconciled through the next listing without
+creating another project. No thread is selected or started by setup.
+
+The selected manifest keeps its format and unrelated fields; the manager project
+binding, explicit origin and `t3.local_workspace = {environment_id, root}` are
+saved together. Code/hybrid projects also retain that folder as their source
+checkout. Setup cannot replace an existing Manager or full executor binding.
+Concurrent edits keep the form and draft; reopening setup refreshes its revision.
+
+**Start manager** remains a separate explicit action. Before creating its retained
+launch intent it rechecks the local origin, pinned environment identity and exact
+T3 workspace against the local checkout. Its brief names the absolute notes
+folder, so it works when code and notes live in different directories; only
+existing AGENTS/manager-state/entry notes are named. Existing bindings keep their
+original behavior. Retained launch intents and created receipts are never deleted
+or retried after an uncertain thread launch; their recovery boundary is unchanged.
+
+Each slice gets meaningful regressions and Sprint before its PR. Data writes
+retain one bounded check under the 31 October gate policy. Sprint retains the
+Mac delivery window; no publication between 02:20 and 09:00 Israel.

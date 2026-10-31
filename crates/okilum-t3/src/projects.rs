@@ -2,6 +2,7 @@
 //! discovery never creates a thread or writes to the vault.
 pub mod create;
 pub mod icon;
+pub mod local_manager;
 pub mod picker;
 
 use anyhow::{ensure, Context, Result};

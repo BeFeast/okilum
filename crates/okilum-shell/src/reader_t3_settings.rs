@@ -40,6 +40,25 @@ pub(super) fn gateway(
     })
 }
 
+/// Explicit project setup reuses the existing origin-bound sign-in UI.
+pub(super) fn sign_in_to(
+    environment: okilum_t3::Environment,
+    state: Option<PathBuf>,
+    cx: &mut App,
+) {
+    auth::connect(environment, state, true, cx);
+    reader_settings::show_t3(cx);
+}
+
+#[cfg(test)]
+pub(super) fn fixture_connection(
+    env: &okilum_t3::Environment,
+    gateway: Arc<dyn okilum_t3::ManagerGateway>,
+    cx: &mut App,
+) {
+    auth::fixture_connection(env, gateway, cx);
+}
+
 pub(super) struct T3Settings {
     origin: Entity<InputState>,
     callback: Entity<InputState>,
