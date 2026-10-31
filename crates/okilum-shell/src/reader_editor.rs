@@ -1,4 +1,5 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
+mod code_comforts;
 pub(crate) mod format;
 mod ime_guard;
 mod lists;
@@ -532,6 +533,8 @@ impl Reader {
                 block_context.clone(),
             )
         });
+        // Cmd/Ctrl+/ comments code-block lines; elsewhere it falls through.
+        code_comforts::ensure_keys(cx);
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
@@ -551,8 +554,9 @@ impl Reader {
             // The key that confirmed an IME candidate runs no automation (#1637).
             input.set_ime_settle(ime_guard::IME_SETTLE);
             // Typed autoformat in notes: wrap a selection, close a pair (#1636).
+            // Inside a fenced code block: snippet pairing instead (#1992).
             if !plain_file {
-                input.set_typed_text_hook(Some(format::typed_hook()));
+                input.set_typed_text_hook(Some(code_comforts::typed_hook(format::typed_hook())));
             }
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
@@ -1507,8 +1511,10 @@ impl Reader {
         let editing = self.editing.as_ref().unwrap();
         let palette = brand::palette(cx);
         let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
-        // #1635: Enter, Tab and Backspace in lists, before the input;
-        // #1636: the formatting keys.
+        // #1992: Enter, Tab and the comment key in a code block's body, before
+        // the list keys; #1635: Enter, Tab and Backspace in lists, before the
+        // input; #1636: the formatting keys.
+        let column = self.code_comfort_actions(column, cx);
         let column = self.format_actions(column, cx);
         self.list_actions(column, cx)
             // #1611: the paste commands beside Cmd+V, and files dropped onto
