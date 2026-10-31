@@ -5,7 +5,10 @@ use ::core::prelude::v1::test;
 fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
-    let gateway = Arc::new(fixture::Fake::default());
+    let gateway = Arc::new(fixture::Fake {
+        many_models: true,
+        ..Default::default()
+    });
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let view = fixture::view(state.path().to_owned(), gateway.clone(), window, cx);

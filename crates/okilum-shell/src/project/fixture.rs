@@ -11,6 +11,7 @@ type Result<T> = std::result::Result<T, GatewayError>;
 #[derive(Default)]
 pub(super) struct Fake {
     pub revoked: bool,
+    pub many_models: bool,
     pub connection_status: Option<GatewayStatus>,
     pub wrong_project: bool,
     pub fail_first: bool,
@@ -142,9 +143,16 @@ impl ManagerGateway for Fake {
         Ok(vec!["question-1".into()])
     }
     fn capabilities(&self) -> Result<Capabilities> {
+        let mut models = vec![
+            serde_json::json!({"id":"gpt-6.1-sol"}),
+            serde_json::json!({"id":"gpt-6-astra"}),
+        ];
+        if self.many_models {
+            models.extend((0..40).map(|index| serde_json::json!({"id":format!("model-{index}"), "label":format!("Catalog model {index}")})));
+        }
         serde_json::from_value(serde_json::json!({"runtimeMode":"full-access","providers":[
-            {"providerInstanceId":"codex","driverKind":"codex","models":[{"id":"gpt-6.1-sol"},{"id":"gpt-6-astra"}]}]}))
-            .map_err(|error| GatewayError::Protocol(error.to_string()))
+            {"providerInstanceId":"codex","driverKind":"codex","models":models}]}))
+        .map_err(|error| GatewayError::Protocol(error.to_string()))
     }
     fn thread_configuration(&self, thread: &str) -> Result<ThreadConfiguration> {
         if let Some(error) = self.model_read_failure.lock().unwrap().clone() {
@@ -215,6 +223,7 @@ pub(super) fn open(cx: &mut App) -> bool {
     let state = reader_history::state_directory().expect("isolated fixture state");
     let gateway = Arc::new(Fake {
         revoked: mode.starts_with("revoked"),
+        many_models: true,
         grown: Mutex::new(true),
         ..Default::default()
     });

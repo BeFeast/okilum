@@ -81,23 +81,23 @@ Runtime/live OAuth acceptance and ordinary human UI QA remain pending.
 
 The Manager header and registered, matched executor rows offer **Model**. Opening
 it reads the live T3 catalog and the exact thread configuration. Selecting a model
-is local; **Apply thread model** rechecks the thread's bound project and current
+is local; **Apply** rechecks the thread's bound project and current
 catalog before calling T3, then shows the configuration read back from T3. A queued
 or successful mutation acknowledgement alone is not confirmation. A mismatched
 readback, permission error, revoked token or failed request is visible without
-changing the manager draft or automatically retrying the mutation. **Refresh
-models** explicitly reads the current configuration after an uncertain result.
+changing the manager draft or automatically retrying the mutation. **Refresh** explicitly reads the current configuration after an uncertain result.
 Unregistered or missing executor rows do not offer mutation controls.
 
 Reselecting the current provider/model preserves its option overrides. Selecting
 a different model clears those overrides and requests T3 defaults. The UI does
 not edit model options in this slice; strict readback differences remain explicit.
-The last successful read is labelled **Last confirmed readback**, rather than
-asserting that another client cannot change the thread afterwards.
+The header displays the model from the last successful read, which does not
+assert that another client cannot change the thread afterwards.
 
-**Scheduled tasks do not follow this model change.** This restriction is displayed
-beside the controls and remains visible after success or failure. Manager migration
-and scheduler acceptance remain blocked under decision24. Launch requests through
+**Scheduled tasks do not follow this model change.** Manager migration and
+scheduler acceptance remain blocked under decision24. These implementation
+limitations are available in explicit connection diagnostics, rather than in the
+ordinary chat layout (#2104). Launch requests through
 the manager are the next part of #1420; this slice does not create T3 resources.
 Real OAuth/model mutation and human UI acceptance remain unverified by these tests.
 
@@ -215,3 +215,16 @@ History stays virtualized. Changes only to hidden reasoning or tool detail do no
 notify/remeasure the feed when the visible preview and status are unchanged. A
 changed preview, status, expanded body or row order still updates normally.
 Pairing, sending, approvals and other Tier 1 action authority are unchanged.
+
+
+## Compact native chat (#2104)
+
+The normal Manager view reserves its space for history and the message composer.
+Connection status is one word, Connected or Offline. Connection settings expose
+the server and diagnostic details on explicit request. The header model control
+opens a bounded, scrollable popover anchored to its button; it never inserts a
+form into the chat layout. Model names are left aligned and the current selection
+is marked. Esc or clicking outside dismisses the popover without discarding the
+draft or confirmed model. Thread IDs, runtime credential modes and scheduler
+migration diagnostics do not appear in the ordinary model picker. Applying still
+requires explicit confirmation and the same project verification and T3 readback.
