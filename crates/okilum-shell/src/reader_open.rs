@@ -4329,6 +4329,17 @@ mod entry_tests {
             assert_eq!(reader.vault_root, root);
             first.clone()
         });
+        // Finder Service / Linux directory open: delivering the folder again
+        // to a warm app reuses the same vault Reader, without a picker.
+        sender
+            .try_send(vec![url::Url::from_file_path(&root).unwrap().into()])
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(cx.global::<Readers>().0.len(), 1);
+            assert_eq!(cx.global::<Readers>().0[0].0.upgrade().unwrap(), first);
+            assert!(!first.read(cx).single_file);
+        });
         sender
             .try_send(vec![url::Url::from_file_path(root.join("sub/Ю.md"))
                 .unwrap()
