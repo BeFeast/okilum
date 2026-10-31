@@ -760,3 +760,70 @@ mod tests {
         assert_eq!(cloud_status(2).as_deref(), Some("2 files still in iCloud"));
     }
 }
+
+/// File-operation diagnostics share the same root and writer as startup reports.
+impl Reader {
+    pub(super) fn trace_file_operation(
+        &self,
+        operation: &'static str,
+        outcome: &'static str,
+        path: &str,
+        reason: Option<&str>,
+        cx: &App,
+    ) {
+        if let Some(trace) = self
+            .loading
+            .as_ref()
+            .and_then(|l| l.opts.diagnostics.clone())
+            .or_else(|| trace(cx))
+        {
+            trace.event(
+                "file_operation",
+                serde_json::json!({
+                    "operation": operation, "outcome": outcome, "path": path, "reason": reason,
+                }),
+            );
+        }
+    }
+
+    pub(super) fn file_operation_blocked(
+        &mut self,
+        operation: &'static str,
+        path: &str,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.trace_file_operation(operation, "blocked", path, Some(reason), cx);
+        self.link_notice = Some(reason.to_owned());
+        cx.notify();
+    }
+}
+
+pub(super) fn cloud_file_operation_notice(error: &str) -> Option<&'static str> {
+    (error.contains("iCloud placeholder") || error.contains("cloud placeholder is not downloaded"))
+        .then_some("Download this note from iCloud first.")
+}
+
+#[cfg(test)]
+mod file_operation_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn cloud_notice_requires_a_placeholder_failure() {
+        assert_eq!(
+            cloud_file_operation_notice(
+                "The moved note is an iCloud placeholder; download it first"
+            ),
+            Some("Download this note from iCloud first.")
+        );
+        assert_eq!(
+            cloud_file_operation_notice("read note: iCloud placeholder is not downloaded"),
+            Some("Download this note from iCloud first.")
+        );
+        assert_eq!(cloud_file_operation_notice("Permission denied"), None);
+        assert_eq!(
+            cloud_file_operation_notice("Destination already exists"),
+            None
+        );
+    }
+}

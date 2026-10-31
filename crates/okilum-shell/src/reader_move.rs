@@ -103,38 +103,50 @@ impl Reader {
     }
 
     fn rename_error(&mut self, message: String, cx: &mut Context<Self>) {
-        eprintln!("Rename/move failed: {message}");
-        let message = if message.contains("exist") || message.contains("already occupied") {
-            "This name is already in use.".to_owned()
-        } else if message.contains("Restore and save") {
-            "Restore and save the draft first.".to_owned()
-        } else if message.contains("stale") || message.contains("changed") {
-            if self.renaming.is_some() {
-                "Files changed. Try renaming again."
-            } else {
-                "Files changed. Try moving again."
-            }
-            .to_owned()
-        } else if message.contains("unsaved") {
-            "Save or discard unsaved edits first.".to_owned()
-        } else if message.contains("inside")
-            || message.contains("relative")
-            || message.contains("component")
-        {
-            if self.renaming.is_some() {
-                "Choose a name inside this vault."
-            } else {
-                "Choose a destination inside this vault."
-            }
-            .to_owned()
+        let operation = if self.renaming.is_some() {
+            "rename"
         } else {
-            if self.renaming.is_some() {
-                "Could not rename. Check recovery."
-            } else {
-                "Could not move. Check recovery."
-            }
-            .to_owned()
+            "move"
         };
+        let path = self
+            .renaming
+            .as_ref()
+            .map_or(self.current_rel.as_str(), |r| r.path.as_str());
+        self.trace_file_operation(operation, "failed", path, Some(&message), cx);
+        let message =
+            if let Some(notice) = reader_diagnostics::cloud_file_operation_notice(&message) {
+                notice.to_owned()
+            } else if message.contains("exist") || message.contains("already occupied") {
+                "This name is already in use.".to_owned()
+            } else if message.contains("Restore and save") {
+                "Restore and save the draft first.".to_owned()
+            } else if message.contains("stale") || message.contains("changed") {
+                if self.renaming.is_some() {
+                    "Files changed. Try renaming again."
+                } else {
+                    "Files changed. Try moving again."
+                }
+                .to_owned()
+            } else if message.contains("unsaved") {
+                "Save or discard unsaved edits first.".to_owned()
+            } else if message.contains("inside")
+                || message.contains("relative")
+                || message.contains("component")
+            {
+                if self.renaming.is_some() {
+                    "Choose a name inside this vault."
+                } else {
+                    "Choose a destination inside this vault."
+                }
+                .to_owned()
+            } else {
+                if self.renaming.is_some() {
+                    "Could not rename. Check recovery."
+                } else {
+                    "Could not move. Check recovery."
+                }
+                .to_owned()
+            };
         self.enable_rename(cx);
         if let Some(rename) = self.renaming.as_mut() {
             rename.error_input = Some(rename.input.read(cx).value().to_string());
@@ -220,6 +232,12 @@ impl Reader {
 
     pub(super) fn rename_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_preview.is_some() {
+            self.file_operation_blocked(
+                "rename",
+                &self.current_rel.clone(),
+                "Select a note or folder to rename.",
+                cx,
+            );
             return;
         }
         self.rename_note_title(window, cx);
@@ -228,6 +246,8 @@ impl Reader {
     pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = self.tree.cursor.clone() {
             self.begin_rename(path, window, cx);
+        } else {
+            self.file_operation_blocked("rename", "", "Select a note or folder to rename.", cx);
         }
     }
 
@@ -252,8 +272,15 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         if self.note_move_pending || self.trash_pending {
+            self.file_operation_blocked(
+                "rename",
+                &path,
+                "Finish the current file operation first.",
+                cx,
+            );
             return;
         }
+        self.trace_file_operation("rename", "start", &path, None, cx);
         let directory =
             std::fs::symlink_metadata(self.vault_root.join(&path)).is_ok_and(|m| m.is_dir());
         if (!directory
@@ -262,9 +289,12 @@ impl Reader {
                 .is_some_and(|e| e.eq_ignore_ascii_case("md")))
             || self.loading.as_ref().is_some_and(|l| l.active)
         {
-            self.link_notice =
-                Some("Select a note or folder and wait for loading to finish.".into());
-            cx.notify();
+            self.file_operation_blocked(
+                "rename",
+                &path,
+                "Select a note or folder and wait for loading to finish.",
+                cx,
+            );
             return;
         }
 
@@ -332,6 +362,12 @@ impl Reader {
 
     pub(super) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.note_move_pending {
+            self.file_operation_blocked(
+                "rename",
+                &self.current_rel.clone(),
+                "Finish the current file operation first.",
+                cx,
+            );
             return;
         }
         let in_header = self.renaming.as_ref().is_some_and(|r| r.in_header);
@@ -349,6 +385,12 @@ impl Reader {
 
     fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.note_move_pending {
+            self.file_operation_blocked(
+                "rename",
+                &self.current_rel.clone(),
+                "Finish the current file operation first.",
+                cx,
+            );
             return;
         }
         let Some(rename) = self.renaming.as_ref() else {
@@ -473,6 +515,7 @@ impl Reader {
         let index = self.move_index.clone();
         let state = self.session_directory.clone();
         let cancel = reader_loading::Cancellation::default();
+        self.trace_file_operation("move", "start", &from, None, cx);
         self.note_move_pending = true;
         self.move_notice_generation = self.move_notice_generation.wrapping_add(1);
         let button_cancel = cancel.clone();
@@ -794,6 +837,7 @@ impl Reader {
                 self.rename_error(format!("{error:#}"), cx);
             }
             Ok(moved) => {
+                self.trace_file_operation("move", "finished", &pending.to, None, cx);
                 self.renaming = None;
                 let journal = moved.journal.clone();
                 let mut changes = okilum_core::Changes {
