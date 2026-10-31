@@ -130,6 +130,96 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    #[gpui::test]
+    fn chat_file_links_open_the_confirmed_project_note_in_the_real_reader(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        let area = vault.join("Project");
+        std::fs::create_dir_all(&area).unwrap();
+        std::fs::write(vault.join("start.md"), "# Outside the project").unwrap();
+        std::fs::write(
+            area.join("Target.md"),
+            "# Target\n\n## Destination\nFrom chat.",
+        )
+        .unwrap();
+        let project = okilum_t3::projects::Project {
+            folder: area.clone(),
+            name: "Project".into(),
+            kind: okilum_t3::projects::Kind::Code,
+            environment: None,
+            manager_project: None,
+            manager: okilum_t3::projects::Manager::NotStarted,
+            appearance: Default::default(),
+        };
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        open_path: Some(vault.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        visual.run_until_parked();
+        let reader = entity.unwrap();
+        let manager = reader.update_in(visual, |reader, window, cx| {
+            let manager = cx.new(|cx| {
+                let mut view = ProjectView::empty(Some(temp.path().join("state")), window, cx);
+                view.area = Some(area.clone());
+                view.active = true;
+                view
+            });
+            reader.project_navigation.active = Some(project);
+            reader.project = Some(manager.clone());
+            reader.connect_manager_links(&manager, window, cx);
+            manager
+        });
+        manager.update_in(visual, |manager, window, cx| {
+            manager.open_chat_link(
+                super::super::feed::content::resolve_link("Target.md#Destination", Some(&area)),
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(
+                reader.current_rel, "Project/Target.md",
+                "file action must use the confirmed area, not start.md's directory"
+            );
+            assert!(reader.note_source.contains("From chat."));
+        });
+        manager.update_in(visual, |manager, window, cx| {
+            manager.open_chat_link(
+                super::super::feed::content::resolve_link("Missing.md", Some(&area)),
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        manager.read_with(visual, |manager, _| {
+            assert!(manager
+                .threads
+                .link_notice
+                .as_deref()
+                .unwrap()
+                .contains("missing"))
+        });
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(reader.current_rel, "Project/Target.md")
+        });
+    }
+
     #[test]
     fn file_validation_requires_a_real_file_under_the_confirmed_project() {
         let root = tempfile::tempdir().unwrap();
