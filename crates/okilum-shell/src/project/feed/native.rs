@@ -161,7 +161,7 @@ impl Feed {
                 .pl_3()
                 .border_l_1()
                 .border_color(brand::palette(cx).border_subtle)
-                .child(card.clone().cached(StyleRefinement::default().w_full()))
+                .child(card.clone())
                 .into_any_element();
         }
         let reasoning = message.kind == MessageKind::Reasoning;

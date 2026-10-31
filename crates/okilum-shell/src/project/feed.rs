@@ -65,6 +65,8 @@ pub(super) struct Feed {
     #[cfg(test)]
     pub(super) row_calls: std::cell::Cell<usize>,
     #[cfg(test)]
+    pub(super) rendered_positions: std::cell::RefCell<Vec<u64>>,
+    #[cfg(test)]
     pub(super) render_calls: std::cell::Cell<usize>,
 }
 impl Feed {
@@ -92,6 +94,8 @@ impl Feed {
             _scroll: scroll,
             #[cfg(test)]
             row_calls: std::cell::Cell::new(0),
+            #[cfg(test)]
+            rendered_positions: std::cell::RefCell::new(Vec::new()),
             #[cfg(test)]
             render_calls: std::cell::Cell::new(0),
         }
@@ -346,6 +350,8 @@ impl Feed {
         self.row_calls.set(self.row_calls.get() + 1);
         match self.rows.get(index) {
             Some(Row::Message(position)) => {
+                #[cfg(test)]
+                self.rendered_positions.borrow_mut().push(*position);
                 let message = &self.messages[position];
                 let position = *position;
                 if message.kind != MessageKind::Chat {

@@ -102,8 +102,9 @@ Lost responses retain the same command/message/target identities. Only explicit
 Retry same action resends them; acknowledged commands return their saved sequence
 without another dispatch. Acceptance is not completion. Reconnect loads retained
 commands but never sends one automatically. Disk preparation failures keep the
-composer draft. Action drafts and composer keystrokes notify their own entities,
-without re-rendering the cached message history.
+composer draft. Action drafts and composer keystrokes notify their own entities without
+rebuilding the retained history model. Inline request inputs may make GPUI
+repaint the virtual list's visible rows; offscreen history stays unrendered.
 
 
 ### Interaction recovery (slice 7)

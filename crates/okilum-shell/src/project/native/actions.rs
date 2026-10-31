@@ -860,7 +860,9 @@ mod tests {
         }));
     }
     #[gpui::test]
-    fn question_keystrokes_leave_cached_history_and_parent_silent(cx: &mut TestAppContext) {
+    fn inline_question_keystrokes_keep_history_work_bounded_and_parent_silent(
+        cx: &mut TestAppContext,
+    ) {
         use std::{cell::Cell, rc::Rc};
         cx.update(|cx| {
             crate::test_init(cx);
@@ -872,11 +874,17 @@ mod tests {
                 let mut view=super::super::super::fixture::view(temp.path().to_owned(),Arc::new(super::super::super::fixture::Fake::default()),window,cx);
                 view.active=false;
                 inert_native(&mut view);
-                let message:okilum_t3::TimelineItem=serde_json::from_value(json!({"position":1,"itemId":"a","messageId":"m","type":"assistant_message","status":"completed","text":"Selectable retained history","updatedAt":"now"})).unwrap();
-                view.feed.update(cx,|feed,cx|feed.apply(std::iter::once(&message),Some(&[]),cx));
                 let question = Arc::new(json!({"id":"request-row","threadId":"thread","ordinal":2,"status":"pending","type":"user_input_request","requestId":"r","questions":[{"id":"q","question":"Your choice","options":[]}]}));
                 view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request{id:"r".into(),item:question.as_ref().clone(),answerable:true,dismissible:true,response_mode:Some("message".into()),reason:None}],..Default::default()},window,cx));
-                view.feed.update(cx,|feed,cx|feed.apply_native(okilum_t3::projection::Changes { rows:vec![Arc::new(okilum_t3::projection::TurnRow {key:okilum_t3::projection::RowKey {thread:"thread".into(),item:"request-row".into()},local:true,item:question})],order:Some(vec![okilum_t3::projection::RowKey{thread:"thread".into(),item:"request-row".into()}]),..Default::default()}, &[],cx));
+                // Native history must contain real unrelated messages: the
+                // first native projection deliberately replaces any MCP rows.
+                let mut rows:Vec<_>=(0..1000).map(|n| Arc::new(okilum_t3::projection::TurnRow {
+                    key:okilum_t3::projection::RowKey{thread:"thread".into(),item:format!("history-{n}")},local:true,
+                    item:Arc::new(json!({"id":format!("history-{n}"),"threadId":"thread","ordinal":n,"status":"completed","type":"assistant_message","text":format!("Retained message {n}: **history stays available**.")}))
+                })).collect();
+                rows.push(Arc::new(okilum_t3::projection::TurnRow{key:okilum_t3::projection::RowKey{thread:"thread".into(),item:"request-row".into()},local:true,item:question}));
+                let order=rows.iter().map(|r|r.key.clone()).collect();
+                view.feed.update(cx,|feed,cx|feed.apply_native(okilum_t3::projection::Changes { rows,order:Some(order),..Default::default()}, &[],cx));
                 view
             });Root::new(view,window,cx)
         });
@@ -894,8 +902,15 @@ mod tests {
         visual.run_until_parked();
         visual.simulate_keystrokes("left");
         visual.run_until_parked();
-        let before = feed.read_with(visual, |f, _| (f.row_calls.get(), f.render_calls.get()));
-        assert!(before.0 > 0);
+        assert!(
+            visual.debug_bounds("project-request-r").is_some(),
+            "positive control: inline request is visible"
+        );
+        assert!(
+            visual.debug_bounds("project-message-1000").is_some(),
+            "positive control: real unrelated native history is visible"
+        );
+        feed.read_with(visual, |f, _| f.rendered_positions.borrow_mut().clear());
         let counts = Rc::new([Cell::new(0), Cell::new(0), Cell::new(0)]);
         let _observer: Entity<()> = visual.update(|_, cx| {
             cx.new(|cx| {
@@ -916,10 +931,26 @@ mod tests {
             input.read_with(visual, |i, _| i.value().to_string()),
             "answer"
         );
-        assert_eq!(
-            feed.read_with(visual, |f, _| (f.row_calls.get(), f.render_calls.get())),
-            before
-        );
+        // GPUI marks rendered ancestors dirty when an inline Input changes.
+        // Its list may repaint visible rows; it must not traverse all history
+        // or emit model notifications/remeasure requests for each character.
+        feed.read_with(visual, |f, _| {
+            let positions = f.rendered_positions.borrow();
+            let unique: std::collections::HashSet<_> = positions.iter().copied().collect();
+            assert!(
+                !unique.is_empty(),
+                "positive control: interactive list repainted"
+            );
+            assert!(
+                unique.len() <= 32,
+                "typing visited {} distinct rows",
+                unique.len()
+            );
+            assert!(
+                unique.iter().all(|position| *position > 900),
+                "typing rendered offscreen history: {unique:?}"
+            );
+        });
         assert_eq!(counts[0].get(), 0);
         assert_eq!(counts[1].get(), 0);
         assert!(
