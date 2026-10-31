@@ -76,15 +76,19 @@ def accepted(run, jobs, source):
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise ValueError('Malformed AppImage steps')
     smoke = [step for step in steps if step.get('name') == artifact.SMOKE]
+    if not smoke:
+        # Old immutable main artifacts executed the full two-distro smoke. Never
+        # use this fallback when a new package-check step exists but is pending/failed.
+        smoke = [step for step in steps if step.get('name') == 'Verify unchanged AppImage on clean Ubuntu and Fedora']
     if len(smoke) > 1:
         raise ValueError('Ambiguous AppImage smoke')
     if smoke:
         execution_state(smoke[0], 'AppImage smoke', {'queued', 'in_progress', 'pending'})
         if job['status'] == 'completed' and smoke[0]['status'] != 'completed':
             raise ValueError('Completed AppImage job has unfinished smoke')
-    if run['status'] != 'completed':
-        raise ReuseUnavailable('producer-not-completed')
     if job['status'] != 'completed':
+        if run['status'] != 'completed':
+            raise ReuseUnavailable('producer-not-completed')
         raise ValueError('Completed producer has unfinished AppImage job')
     if (job.get('status') != 'completed' or job.get('conclusion') != 'success'
             or not smoke or smoke[0].get('conclusion') != 'success'):
@@ -140,8 +144,11 @@ def stage(api, source, directory, fetch):
     data = fetch(item['id'])
     if 'sha256:' + hashlib.sha256(data).hexdigest() != item['digest']:
         raise ValueError('Original GitHub artifact digest mismatch')
-    if api.request(f"actions/runs/{run['id']}") != run:
-        raise ValueError('Producer changed during transfer')
+    current = api.request(f"actions/runs/{run['id']}")
+    accepted(current, jobs['jobs'], source)
+    for field in ('id', 'head_sha', 'path', 'head_branch', 'event', 'run_attempt', 'run_number'):
+        if current.get(field) != run.get(field):
+            raise ValueError('Producer identity changed during transfer')
     directory.mkdir(parents=True, exist_ok=False)
     (directory / 'artifact.zip').write_bytes(data)
     (directory / 'acceptance.json').write_text(json.dumps({'run': run, 'jobs': jobs['jobs'], 'artifact': item}, sort_keys=True))

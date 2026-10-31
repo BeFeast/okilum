@@ -26,6 +26,23 @@ class IndependentAcceptance(unittest.TestCase):
         with self.assertRaises(ValueError):
             handoff.accepted(receipt['run'], jobs, SOURCE)
 
+    def test_complete_appimage_does_not_wait_for_an_aggregate_runner(self):
+        receipt, _, _, _ = evidence()
+        receipt['run'].update(status='in_progress', conclusion=None)
+        handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+        receipt['jobs'][0].update(status='in_progress', conclusion=None)
+        with self.assertRaises(handoff.ReuseUnavailable):
+            handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+
+    def test_legacy_full_native_smoke_survives_tooling_upgrade_without_hiding_new_failure(self):
+        receipt, _, _, _ = evidence()
+        old = {**receipt['jobs'][0]['steps'][0], 'name':'Verify unchanged AppImage on clean Ubuntu and Fedora'}
+        receipt['jobs'][0]['steps'] = [old]
+        handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+        receipt['jobs'][0]['steps'].append({**old, 'name':handoff.artifact.SMOKE, 'conclusion':'failure'})
+        with self.assertRaises(handoff.ReuseUnavailable):
+            handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+
     def test_trusted_origin_and_unique_artifact_before_key_import(self):
         run = {'id': 7, 'workflow_id': 'linux-release.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'workflow_dispatch',
@@ -79,7 +96,6 @@ class ReuseOutcomes(unittest.TestCase):
 
     def test_expected_absence_has_no_handoff(self):
         changes = [lambda r, x: x['runs'].update(workflow_runs=[]),
-                   lambda r, x: r['run'].update(status='in_progress', conclusion=None),
                    lambda r, x: r['jobs'][0].update(conclusion='failure'),
                    lambda r, x: x['artifacts'].update(artifacts=[]),
                    lambda r, x: r['artifact'].update(expired=True)]
