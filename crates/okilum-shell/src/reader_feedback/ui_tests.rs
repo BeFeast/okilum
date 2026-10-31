@@ -4,7 +4,7 @@ use gpui_component::WindowExt;
 
 fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContext)) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         version_info::install(cx);
         bind_keys(cx);
         cx.set_reduce_motion(true);

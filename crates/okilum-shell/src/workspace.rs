@@ -284,9 +284,23 @@ impl Workspace {
             showing_export: false,
         };
         this.focus_initial_entry(window, cx);
-        if this.profile.is_some() && this.reader.is_none() && !opts.defer_saved_connection {
-            cx.spawn_in(window, async move |this, cx| {
-                let _ = this.update_in(cx, |this, window, cx| this.connect(false, window, cx));
+        if crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx)
+            && this.profile.is_some()
+            && this.reader.is_none()
+            && !opts.defer_saved_connection
+        {
+            cx.spawn_in(window, {
+                let module_access = crate::reader_features::access(
+                    crate::reader_features::Feature::SecondBrain,
+                    cx,
+                );
+                async move |this, cx| {
+                    okilum_t3::scope_network(module_access, async move {
+                        let _ =
+                            this.update_in(cx, |this, window, cx| this.connect(false, window, cx));
+                    })
+                    .await
+                }
             })
             .detach();
         }
@@ -588,6 +602,9 @@ impl Workspace {
     }
 
     fn install_brain(&mut self, profile: &Profile, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return;
+        }
         let view = cx.new(|cx| {
             let mut view = brain::BrainView::new_guarded(
                 profile.endpoint,
@@ -622,13 +639,13 @@ impl Workspace {
             identity: event.workspace,
         };
         self.busy = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 validate_identity(&profile.identity)?;
                 let capabilities = brain::rpc(profile.endpoint, json!({"op":"capabilities"}))?;
                 profile.verify(&capabilities)?;
                 Ok::<_, String>(profile)
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 if this.brain.as_ref().is_some_and(|b| b.read(cx).dirty(cx)) {
@@ -648,10 +665,13 @@ impl Workspace {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
         cx.notify();
     }
     fn connect(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -689,18 +709,25 @@ impl Workspace {
         self.settings = true;
         self.error = None;
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let capabilities = brain::rpc(endpoint, json!({"op":"capabilities"}))?;
-                    let profile = attempt.accept(&capabilities)?;
-                    Ok::<_, String>(profile)
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let capabilities = brain::rpc(endpoint, json!({"op":"capabilities"}))?;
+                            let profile = attempt.accept(&capabilities)?;
+                            Ok::<_, String>(profile)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.finish_connection(result, &settings_path(), window, cx);
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_connection(result, &settings_path(), window, cx);
-            });
+                .await
+            }
         })
         .detach();
     }
@@ -711,6 +738,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return;
+        }
         self.busy = false;
         match result {
             Ok(profile) => {
@@ -743,6 +773,9 @@ impl Workspace {
         cx.notify();
     }
     fn export_brain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return;
+        }
         if self.busy || self.brain.is_none() {
             return;
         }
@@ -758,7 +791,7 @@ impl Workspace {
             Some("Choose where to save the brain archive on this computer…".into());
         self.exported_path = None;
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             let selected = match receiver.await {
                 Ok(Ok(path)) => Ok(path),
                 Ok(Err(e)) => Err(format!("Cannot open the save dialog: {e}")),
@@ -770,11 +803,11 @@ impl Workspace {
                         this.export_status = Some("Exporting saved Markdown and attachments…".into());
                         cx.notify();
                     });
-                    cx.background_executor().spawn(async move {
+                    cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                         let ready = super::export::download(profile.endpoint, &profile.identity, &path)?;
                         let count = |key: &str| ready["manifest"][key].as_array().map_or(0, Vec::len);
                         Ok::<_, String>(Some((path, count("files"), count("exclusions"), count("dependencies"))))
-                    }).await
+                    })).await
                 }
                 Ok(None) => Ok(None),
                 Err(error) => Err(error),
@@ -791,7 +824,7 @@ impl Workspace {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
 
     fn show_surface(&mut self, brain: bool, cx: &mut Context<Self>) {
@@ -864,6 +897,19 @@ impl Workspace {
 }
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return div()
+                .size_full()
+                .children(self.reader.clone())
+                .when(self.reader.is_none(), |view| {
+                    view.child("Second brain is off.").child(
+                        gpui_component::button::Button::new("workspace-features")
+                            .label("Settings → Features")
+                            .on_click(|_, _, cx| crate::reader_settings::show_features(cx)),
+                    )
+                })
+                .into_any_element();
+        }
         use super::brain::Collection;
         use super::brand::{control, palette};
         let colors = palette(cx);
@@ -1270,6 +1316,7 @@ impl Render for Workspace {
             .when(!entry_only && !local_only, |shell| shell.child(nav))
             .child(detail)
             .when_some(initial_focus, |shell, hook| shell.child(hook))
+            .into_any_element()
     }
 }
 
@@ -1323,7 +1370,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::reader_open::install(cx);
         });
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1417,7 +1464,7 @@ mod tests {
     #[gpui::test]
     fn local_entry_native_pickers_open_exact_results_and_cancel_neutrally(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::reader_open::install(cx);
         });
         let root =
@@ -1482,7 +1529,7 @@ mod tests {
     }
     #[gpui::test]
     fn pending_connection_cannot_hide_settings_or_replace_retained_reader(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(fixture_workspace);
         view.update(cx, |view, cx| {
             view.show_surface(false, cx);
@@ -1543,7 +1590,7 @@ mod tests {
 
     #[gpui::test]
     fn secondary_forms_restore_feedback_focus_and_respect_busy(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(fixture_workspace);
         view.update_in(cx, |view, window, cx| {
             assert_eq!(view.entry_page, EntryPage::Overview);
@@ -1578,7 +1625,7 @@ mod tests {
 
     #[gpui::test]
     fn cold_entry_actions_work_before_any_pointer_input(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for saved in [false, true] {
             let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let capture = slot.clone();
@@ -1639,7 +1686,7 @@ mod tests {
     fn mouse_choice_escape_returns_to_choice_instead_of_previous_appearance_focus(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(fixture_workspace);
         cx.run_until_parked();
         // Appearance is the first tab stop. Pointer activation must not capture it
@@ -1686,7 +1733,7 @@ mod tests {
     fn failed_connection_retains_entities_and_profile_then_same_identity_opens(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(fixture_workspace);
         let directory =
             std::env::temp_dir().join(format!("workspace-recovery-{}", uuid::Uuid::new_v4()));

@@ -1509,7 +1509,7 @@ mod tests {
     #[gpui::test]
     fn aliases_open_the_canonical_note_from_quick_open_and_body_links(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -1653,7 +1653,7 @@ mod tests {
     #[gpui::test]
     fn content_palette_keeps_hebrew_and_human_property_and_target_context(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1981,7 +1981,7 @@ mod tests {
             std::fs::write(root.join(name), format!("# {name}\n")).unwrap();
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -2100,7 +2100,7 @@ mod tests {
         }
         std::fs::write(root.join("Rare.md"), "# Rare\n\nmeridian only here\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -2219,7 +2219,7 @@ mod tests {
     #[gpui::test]
     fn incremental_palette_5000_notes_and_superseded_results(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -2367,7 +2367,7 @@ mod tests {
     #[gpui::test]
     fn hidden_notes_and_new_directory_arrivals_reach_both_palettes(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp =
@@ -2518,7 +2518,7 @@ canaryhidden [[Target]]",
     #[gpui::test]
     fn names_list_non_markdown_files_with_extension_and_folder(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp =
@@ -2613,7 +2613,7 @@ canaryhidden [[Target]]",
     #[gpui::test]
     fn mouse_and_keyboard_open_results_and_mark_content_match(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-quick-open-{}", uuid::Uuid::new_v4()));
@@ -2873,7 +2873,7 @@ canaryhidden [[Target]]",
             std::fs::write(vault.join(path), body).unwrap();
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;

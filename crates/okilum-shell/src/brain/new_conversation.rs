@@ -116,7 +116,7 @@ mod tests {
     use gpui::{TestAppContext, VisualTestContext};
 
     fn setup(cx: &mut TestAppContext) -> (Entity<BrainView>, &mut VisualTestContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;

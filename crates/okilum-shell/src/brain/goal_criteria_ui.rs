@@ -47,57 +47,68 @@ impl BrainView {
         let workspace = self.expected_workspace.clone();
         let endpoint = self.endpoint;
         self.busy = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let owner = workspace.clone();
-            let id = goal.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    rpc_guarded(
-                        endpoint,
-                        json!({"op":"goal_criteria_get","goal_id":id}),
-                        owner.as_ref(),
-                    )
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                if this.expected_workspace != workspace || this.goal_id() != goal || this.dirty(cx)
-                {
-                    this.error =
-                        Some("Goal changed while loading criteria. Open the review again.".into());
-                    cx.notify();
-                    return;
-                }
-                match result.and_then(|data| {
-                    if data["goal_id"] != goal {
-                        return Err("Criteria reply belongs to another goal".into());
-                    }
-                    if data["editable"] != true {
-                        return Err(text(&data["reason"]));
-                    }
-                    let base = serde_json::from_value(data["source"].clone())
-                        .map_err(|_| "Invalid criteria source")?;
-                    let rows = goal_criteria::inspect(&base, &goal)?;
-                    Ok((data["source"].clone(), rows))
-                }) {
-                    Ok((base, rows)) => {
-                        this.goal_criteria = GoalCriteriaUi {
-                            active: true,
-                            goal,
-                            workspace,
-                            base,
-                            ..Default::default()
-                        };
-                        for row in rows {
-                            this.criteria_add_row(row, true, window, cx);
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let owner = workspace.clone();
+                    let id = goal.clone();
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            rpc_guarded(
+                                endpoint,
+                                json!({"op":"goal_criteria_get","goal_id":id}),
+                                owner.as_ref(),
+                            )
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.busy = false;
+                        if this.expected_workspace != workspace
+                            || this.goal_id() != goal
+                            || this.dirty(cx)
+                        {
+                            this.error = Some(
+                                "Goal changed while loading criteria. Open the review again."
+                                    .into(),
+                            );
+                            cx.notify();
+                            return;
                         }
-                        this.error = None;
-                    }
-                    Err(error) => this.error = Some(error),
-                }
-                cx.notify();
-            });
+                        match result.and_then(|data| {
+                            if data["goal_id"] != goal {
+                                return Err("Criteria reply belongs to another goal".into());
+                            }
+                            if data["editable"] != true {
+                                return Err(text(&data["reason"]));
+                            }
+                            let base = serde_json::from_value(data["source"].clone())
+                                .map_err(|_| "Invalid criteria source")?;
+                            let rows = goal_criteria::inspect(&base, &goal)?;
+                            Ok((data["source"].clone(), rows))
+                        }) {
+                            Ok((base, rows)) => {
+                                this.goal_criteria = GoalCriteriaUi {
+                                    active: true,
+                                    goal,
+                                    workspace,
+                                    base,
+                                    ..Default::default()
+                                };
+                                for row in rows {
+                                    this.criteria_add_row(row, true, window, cx);
+                                }
+                                this.error = None;
+                            }
+                            Err(error) => this.error = Some(error),
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -244,12 +255,12 @@ impl BrainView {
         self.busy = true;
         self.source_loading = true;
         self.sync_source_policy(cx);
-        cx.spawn_in(window, async move |this,cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let path = request["request"]["path"].clone();
             let expected = request.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 rpc_guarded(endpoint,json!({"op":"source_read","path":path}),owner.as_ref())
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this,window,cx| {
                 this.busy = false;
                 this.source_loading = false;
@@ -287,7 +298,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     pub(super) fn goal_criteria_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let frozen = self.goal_criteria.frozen;
@@ -426,7 +437,7 @@ mod tests {
 
     #[gpui::test]
     fn criteria_conflict_stays_in_viewport_and_scroll_reaches_recovery(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let bytes = "Retained original, current and proposed source detail.\n".repeat(150);
         let source = json!({"schema":SCHEMA,"brain_id":"fixture","path":"records/goal-fixture.md",
             "revision":"sha256:fixture","content_base64":STANDARD.encode(bytes.as_bytes())});

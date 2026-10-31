@@ -339,7 +339,7 @@ mod tests {
     #[gpui::test]
     fn heading_navigation_keeps_tasks_keyboard_focus(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -436,7 +436,7 @@ mod tests {
     #[gpui::test]
     fn native_dashboard_keeps_source_escape_and_markdown_fallback(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();

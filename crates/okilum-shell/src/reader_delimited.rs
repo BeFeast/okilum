@@ -620,7 +620,7 @@ mod tests {
             })
             .collect();
         std::fs::write(&path, &source).unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
@@ -925,7 +925,7 @@ mod tests {
         let source = format!("value\n\"{value}\"\n");
         std::fs::write(&path, &source).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -1033,7 +1033,7 @@ mod tests {
         }
         std::fs::write(&path, &source).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -1120,7 +1120,7 @@ mod tests {
         );
         std::fs::write(&path, &source).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&fixture.path().join("state"), cx);
         });
         let mut preview = None;
@@ -1204,7 +1204,7 @@ mod tests {
         let path = fixture.path().join("wide.csv");
         let source = format!("a,b\n{}\n", ",".repeat(10_000));
         std::fs::write(&path, &source).unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
@@ -1244,7 +1244,7 @@ mod tests {
         let source = "name,value\r\n\"שלום, world\",\"line\r\nnext\"\r\nother,42\r\n";
         std::fs::write(&path, source).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {

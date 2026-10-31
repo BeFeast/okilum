@@ -657,7 +657,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("One.md"), "# One\n\nBody\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_global(reader_history::TestSessionDirectory(fixture.join("state")));
         });

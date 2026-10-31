@@ -358,7 +358,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("note.md"), "# Note\n\nKeep reading.\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });
@@ -515,7 +515,7 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("plain.md"), "# Plain\n\n[[properties]]\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;

@@ -68,6 +68,7 @@ impl SessionSource for NoSessionSource {
 pub struct SessionGateway {
     env: Environment,
     http: Client,
+    access: crate::NetworkAccess,
     source: Arc<dyn SessionSource>,
     /// The cookie T3 accepted last; `None` until the first call connects.
     active: Mutex<Option<SessionCookie>>,
@@ -93,10 +94,16 @@ impl SessionGateway {
         Ok(Self {
             env,
             http,
+            access: crate::NetworkAccess::current(),
             source,
             active: Mutex::new(None),
             observed: Mutex::new(None),
         })
+    }
+
+    pub fn with_access(mut self, access: crate::NetworkAccess) -> Self {
+        self.access = access;
+        self
     }
 
     pub fn environment(&self) -> &Environment {
@@ -106,6 +113,9 @@ impl SessionGateway {
     /// Whether Okilum holds a paired session for this server, connecting
     /// now if it has not yet. Errors as [`ManagerGateway`] calls report them.
     pub fn connect(&self) -> GatewayResult<()> {
+        if !self.access.allowed() {
+            return Err(GatewayError::NotConnected);
+        }
         self.session().map(drop)
     }
 
@@ -130,6 +140,9 @@ impl SessionGateway {
 
     /// The accepted cookie, reading the store and asking T3 when none is.
     fn session(&self) -> GatewayResult<SessionCookie> {
+        if !self.access.allowed() {
+            return Err(GatewayError::NotConnected);
+        }
         if let Some(cookie) = self.active.lock().unwrap().clone() {
             return Ok(cookie);
         }
@@ -173,6 +186,9 @@ impl SessionGateway {
 
     /// T3's own word on a cookie: `GET /api/auth/session`.
     fn authenticated(&self, cookie: &SessionCookie) -> GatewayResult<bool> {
+        if !self.access.allowed() {
+            return Err(GatewayError::NotConnected);
+        }
         #[derive(Deserialize)]
         struct State {
             authenticated: bool,
@@ -207,6 +223,9 @@ impl SessionGateway {
         let result = (|| {
             for _ in 0..2 {
                 let cookie = self.session()?;
+                if !self.access.allowed() {
+                    return Err(GatewayError::NotConnected);
+                }
                 let response = request(&cookie)
                     .header(ACCEPT, "application/json")
                     .header(COOKIE, cookie_header(&cookie))

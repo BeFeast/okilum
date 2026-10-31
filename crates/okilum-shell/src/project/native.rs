@@ -108,6 +108,10 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        let access = reader_features::access(reader_features::Feature::Agents, cx);
         if self.native.busy {
             return;
         }
@@ -136,7 +140,7 @@ impl ProjectView {
                         .spawn(async move {
                             let expiry = token.expires_at();
                             NativeClient::new(environment, token, Duration::from_secs(10))
-                                .map(|client| Some((Arc::new(client), expiry)))
+                                .map(|client| Some((Arc::new(client.with_access(access)), expiry)))
                         })
                         .await
                 }
@@ -172,6 +176,10 @@ impl ProjectView {
         }
     }
     fn native_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        let access = reader_features::access(reader_features::Feature::Agents, cx);
         if self.native.busy {
             return;
         }
@@ -192,9 +200,13 @@ impl ProjectView {
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
             let env = environment.clone();
+            let pair_access = access.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { NativeToken::pair(&env, &credential, Duration::from_secs(10)) })
+                .spawn(async move {
+                    let _access = pair_access.enter();
+                    NativeToken::pair(&env, &credential, Duration::from_secs(10))
+                })
                 .await;
             let result = match result {
                 Ok(token) => {
@@ -218,7 +230,9 @@ impl ProjectView {
                             cx.background_executor()
                                 .spawn(async move {
                                     NativeClient::new(environment, token, Duration::from_secs(10))
-                                        .map(|client| (Arc::new(client), expiry))
+                                        .map(|client| {
+                                            (Arc::new(client.with_access(access)), expiry)
+                                        })
                                 })
                                 .await
                         }

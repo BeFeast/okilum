@@ -113,7 +113,7 @@ mod tests {
         let original = "# Original\r\n";
         let base = json!({"schema":SCHEMA,"brain_id":workspace["brain_id"],"path":"source.md","revision":format!("sha256:{:x}",Sha256::digest(original.as_bytes())),"content_base64":STANDARD.encode(original),"media_type":"text/markdown"});
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install_requested(false, cx);
         });
         let (view, cx) = cx.add_window_view(|window, cx| {

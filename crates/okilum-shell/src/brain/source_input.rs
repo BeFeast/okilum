@@ -192,7 +192,7 @@ mod tests {
                 gpui::Task::ready(Ok(Some("Привет 🧠\r\nlast\n".into())))
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.update(|cx| cx.set_global(crate::platform::ManagedClipboard(Arc::new(Exact))));
         let (view, cx) = cx.add_window_view(|window, cx| {
             let source = SourceInput::new(true, window, cx);
@@ -229,7 +229,7 @@ mod tests {
     fn missing_raw_clipboard_never_inserts_normalized_sentinel_and_modes_keep_history(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let source = SourceInput::new(true, window, cx);
             source.reset("original\r\n", window, cx);
@@ -304,7 +304,7 @@ mod tests {
     fn note_link_replaces_backward_unicode_selection_atomically_and_refuses_ime(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let original = "---\r\ntype: Note\r\n---\r\nBefore 😀План after\r\n";
         let (view, cx) = cx.add_window_view(|window, cx| {
             let source = SourceInput::new(true, window, cx);

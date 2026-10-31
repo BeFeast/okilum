@@ -432,7 +432,7 @@ mod tests {
                 "headless startup cannot confirm an update"
             );
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|_| Empty);
@@ -455,7 +455,7 @@ mod tests {
     fn update_ready_notice_stays_until_the_user_closes_it(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|_| Empty);

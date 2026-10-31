@@ -635,3 +635,33 @@ fn board_shell_requires_protocol_two_in_addition_to_the_working_manager_cookie()
         "real paired-session authentication ran"
     );
 }
+
+#[test]
+fn disabled_module_refuses_session_http_before_cookie_discovery() {
+    let access = crate::NetworkAccess::new(true);
+    let server = fake_t3(Arc::new(Mutex::new(Value::Null)));
+    let source = Store::holding(&[("t3_session_abc", "live")]);
+    let client = {
+        let _scope = access.enter();
+        gateway(&server, source.clone())
+    };
+    client.connect().unwrap();
+    assert!(
+        !server.requests().is_empty(),
+        "positive control: a valid browser session reaches T3"
+    );
+    let before = server.requests().len();
+    let cookie_reads = source.reads.load(Ordering::SeqCst);
+    access.revoke();
+    assert!(matches!(client.connect(), Err(GatewayError::NotConnected)));
+    assert!(matches!(
+        client.list_projects(),
+        Err(GatewayError::NotConnected)
+    ));
+    assert_eq!(server.requests().len(), before);
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        cookie_reads,
+        "disabled access cannot even ask the webview to reconnect"
+    );
+}

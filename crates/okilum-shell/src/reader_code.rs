@@ -144,7 +144,7 @@ mod tests {
 
     #[gpui::test]
     fn copy_content_preserves_endings_indentation_and_nested_blocks(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let cases = [
             ("```rs\r\n  café\r\n\r\n```\r\n", "  café\r\n\r\n"),
             ("```\nx\n", "x\n"),
@@ -188,7 +188,7 @@ mod tests {
 
     #[gpui::test]
     fn copy_glyph_is_painted_without_hover_in_both_themes(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for mode in [
             gpui_component::ThemeMode::Light,
             gpui_component::ThemeMode::Dark,
@@ -261,7 +261,7 @@ mod tests {
 
     #[gpui::test]
     fn sibling_blocks_keep_independent_copy_feedback(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, visual) = cx.add_window_view(|window, cx| {
             let text = cx.new(|cx| TextViewState::markdown("```\none\n```\n\n```\ntwo\n```", cx));
             let view = cx.new(|_| Fixture {
@@ -306,7 +306,7 @@ mod tests {
 
     #[gpui::test]
     fn copy_click_keyboard_feedback_and_document_replacement(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut text = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let state = cx.new(|cx| TextViewState::markdown("```\r\n  one\r\n```", cx));

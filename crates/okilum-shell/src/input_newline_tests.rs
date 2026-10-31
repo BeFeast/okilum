@@ -39,7 +39,7 @@ fn check_crlf_input(cx: &mut TestAppContext, exact: bool) {
     }
     cx.update(|cx| {
         cx.set_reduce_motion(true);
-        gpui_component::init(cx);
+        crate::test_init(cx);
     });
     let original = "alpha\r\nשלום\r\n";
     let mut editor = None;

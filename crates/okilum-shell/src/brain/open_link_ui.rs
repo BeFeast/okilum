@@ -382,7 +382,7 @@ mod tests {
         &mut VisualTestContext,
         std::path::PathBuf,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/open-link285","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("open-link285-{}", uuid()));
         let store = editor_recovery::EditorRecovery::at(directory.clone(), &workspace).unwrap();

@@ -141,15 +141,15 @@ impl BrainView {
         let picker = self.note_link.picker.as_mut().unwrap();
         picker.pending = true;
         picker.error = None;
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             let probe_owner = owner.clone(); let probe_target = target.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let reply = rpc_guarded(probe_owner.endpoint,
                     json!({"op":"source_preview","path":probe_owner.path,"content_base64":STANDARD.encode(note_link::probe(&probe_target))}), Some(&probe_owner.workspace))?;
                 note_link::verify(&reply, &probe_owner.path, &probe_owner.revision, &probe_target)
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this, window, cx| this.finish_note_link(generation, &owner, &selection, &insertion, result, window, cx));
-        }).detach();
+         }).await } }).detach();
         cx.notify();
     }
     #[allow(clippy::too_many_arguments)]
@@ -282,7 +282,7 @@ mod tests {
     fn note_link_late_response_cannot_edit_changed_owner_selection_or_cancelled_chooser(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let directory = std::env::temp_dir().join(format!("note-link271-{}", uuid()));
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/note-link","records_dir":"records","managed":true});
         let store = editor_recovery::EditorRecovery::at(directory.clone(), &workspace).unwrap();

@@ -2868,7 +2868,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         std::fs::write(root.join("Valid.md"), "# Valid\n\nLiteral \u{fffd}\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut entity = None;
@@ -3007,7 +3007,7 @@ mod tests {
         let source = "name\tvalue\r\nשלום\t42\r\n";
         std::fs::write(&path, source).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -3075,7 +3075,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -3193,7 +3193,7 @@ mod tests {
     #[gpui::test]
     fn cache_is_bound_to_new_vault_before_background_ready(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -3335,7 +3335,7 @@ mod tests {
 
     fn warm_switch_fixture(cx: &mut TestAppContext, count: usize) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -3438,7 +3438,7 @@ mod tests {
     fn folder_picker_open_binds_worker_and_ui_diagnostics_to_resolved_root(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let temp = TestDirectory::new();
         let root = temp.path().join("source");
         let state = temp.path().join("state");
@@ -4105,7 +4105,7 @@ mod tests {
     #[gpui::test]
     fn panel_preferences_rebind_without_writing_new_root(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4189,7 +4189,7 @@ mod tests {
     #[gpui::test]
     fn panel_preferences_held_io_keeps_document_input_and_live_widths(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4294,7 +4294,7 @@ mod tests {
     #[gpui::test]
     fn panel_preferences_failed_root_exact_retry_rebinds(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4342,7 +4342,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4601,7 +4601,7 @@ mod tests {
 
     #[gpui::test]
     fn parser_configuration_revision_is_part_of_preparation_readiness(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let text = "# Title\n\nLong prepared paragraph.\n\n".repeat(300);
         let content = cx.new(|cx| TextViewState::markdown(&text, cx));
         cx.run_until_parked();
@@ -4711,7 +4711,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4849,7 +4849,7 @@ mod tests {
     #[gpui::test]
     fn unchanged_note_resolves_pending_block_embeds_without_reopening(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4906,7 +4906,7 @@ mod tests {
     #[gpui::test]
     fn block_embeds_resolve_on_first_open_despite_a_non_utf8_note(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -4972,7 +4972,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -5054,7 +5054,7 @@ mod tests {
     #[gpui::test]
     fn network_stall_keeps_document_coalesces_retry_and_recovers(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -5204,7 +5204,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = std::env::temp_dir().join(format!("okilum-warm-ui-{}", uuid::Uuid::new_v4()));
@@ -5423,7 +5423,7 @@ mod tests {
     #[ignore = "manual before/after warm first-tree frame measurement"]
     fn warm_first_tree_frame_profile(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture =
@@ -5789,7 +5789,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = TestDirectory::new();
@@ -5907,7 +5907,7 @@ mod tests {
     #[gpui::test]
     fn first_document_and_input_work_before_inventory_release(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -6001,7 +6001,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-open-race-{}", uuid::Uuid::new_v4()));
@@ -6899,7 +6899,7 @@ mod tests {
     #[gpui::test]
     fn inventory_completion_does_not_reopen_initial_document(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture =
@@ -6990,7 +6990,7 @@ mod tests {
     ) {
         use crate::reader_history::ReadingHistory;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture =
@@ -7531,7 +7531,7 @@ mod quick_view_tests {
     #[gpui::test]
     fn quick_folder_external_create_delete_updates_browsed_inventory(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -7636,7 +7636,7 @@ mod quick_view_tests {
 
     fn check_quick_upgrade(cx: &mut TestAppContext, edit_during_scan: bool) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -7748,7 +7748,7 @@ mod quick_view_tests {
     #[gpui::test]
     fn quick_reader_navigation_refresh_and_upgrade(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =

@@ -8,6 +8,7 @@ description = "Okilum's remote control for an area manager in T3 Code: ManagerGa
 # Every dependency is already in Cargo.lock: the same reqwest feature set
 # okilum-sync-controller builds, and the hash/encoding crates okilum-core uses.
 [dependencies]
+okilum-network-access = { path = "../okilum-network-access" }
 anyhow = "1"
 serde.workspace = true
 serde_json.workspace = true

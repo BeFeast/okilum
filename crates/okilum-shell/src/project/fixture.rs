@@ -186,6 +186,8 @@ pub(super) fn view(
     window: &mut Window,
     cx: &mut Context<ProjectView>,
 ) -> ProjectView {
+    #[cfg(test)]
+    reader_features::enable_test_modules(cx);
     let mut view = ProjectView::empty(Some(state), window, cx);
     view.binding=AreaBinding::parse("t3:\n  schema_version: 1\n  environment: example\n  manager: {project_id: fixture-managers, thread_id: 'mcp:fixture-manager', workspace_mode: local}\n  executor: {project_id: fixture-executors}\n  default_models:\n    manager: {instanceId: codex, model: gpt-6.1-sol}\n    executor: {instanceId: codex, model: gpt-6.1-sol}\n").unwrap();
     view.environment = Some(Environment::new("example", "https://t3.example.test").unwrap());

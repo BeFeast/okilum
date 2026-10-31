@@ -371,7 +371,7 @@ mod tests {
             // The order of the application: gpui-component's own response handler
             // is registered after ours, which is what lost the click (#961).
             install(cx);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -755,7 +755,7 @@ mod tests {
         at(datetime!(2026-10-01 12:00));
         cx.update(|cx| {
             install(cx);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let (first, mut first_visual) = open(cx, &root, &state);

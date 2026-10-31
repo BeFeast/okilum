@@ -17,7 +17,7 @@ fn fixture(
     &mut VisualTestContext,
     tempfile::TempDir,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let entity = cx.new(|cx| {
@@ -194,7 +194,7 @@ fn composer_keystrokes_do_not_render_or_lay_out_history(cx: &mut TestAppContext)
 fn unchanged_poll_notifies_neither_panel_nor_feed_and_changed_reply_is_a_positive_control(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     let gateway = Arc::new(super::super::fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {

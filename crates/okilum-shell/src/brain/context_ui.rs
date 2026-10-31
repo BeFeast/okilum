@@ -921,9 +921,9 @@ impl BrainView {
         self.busy = true;
         self.source_loading = true;
         self.sync_source_policy(cx);
-        cx.spawn_in(window,async move |this,cx| {
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let owner=workspace.clone();let expected=source.clone();let requested_goal=goal.clone();
-            let result=cx.background_executor().spawn(async move {
+            let result=cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let current=rpc_guarded(endpoint,json!({"op":"source_read","path":expected["path"]}),Some(&owner))?;
                 if current!=expected { return Err("Source changed on disk. Reload and inspect it, then choose Use in Context again.".to_string()); }
                 let packet=if hydrate {
@@ -931,7 +931,7 @@ impl BrainView {
                     reply.get("packet").filter(|p| p.is_null() || p.is_object()).cloned().ok_or("Saved Context response is incomplete. Open Context to inspect it before adding this note.")?
                 }else{Value::Null};
                 Ok((current,packet))
-            }).await;
+            })).await;
             let _=this.update_in(cx,|this,window,cx| {
                 this.busy=false;this.source_loading=false;this.sync_source_policy(cx);
                 if this.endpoint!=endpoint || this.expected_workspace.as_ref()!=Some(&workspace)
@@ -956,7 +956,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     fn apply_source_context(
         &mut self,
@@ -1160,50 +1160,58 @@ impl BrainView {
         self.sync_source_policy(cx);
         self.notice = "Choose where to save the AI context package…".into();
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let selected = match receiver.await {
-                Ok(Ok(path)) => Ok(path),
-                Ok(Err(_)) => Err("The save dialog could not be opened.".to_string()),
-                Err(_) => Err("The save dialog closed unexpectedly.".to_string()),
-            };
-            let result = match selected {
-                Ok(Some(path)) => {
-                    let goal = goal.clone();
-                    let saved = path.display().to_string();
-                    cx.background_executor()
-                        .spawn(async move {
-                            super::super::export::download_context(
-                                endpoint,
-                                workspace.as_ref(),
-                                &path,
-                                &goal,
-                                &job,
-                            )
-                            .map(|_| Some(saved))
-                        })
-                        .await
-                }
-                Ok(None) => Ok(None),
-                Err(error) => Err(error),
-            };
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.busy = false;
-                this.sync_source_policy(cx);
-                match result {
-                    Ok(Some(path)) => {
-                        if let Some(state) = this.context_ui.goals.get_mut(&goal) {
-                            state.saved_path = Some(path);
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let selected = match receiver.await {
+                        Ok(Ok(path)) => Ok(path),
+                        Ok(Err(_)) => Err("The save dialog could not be opened.".to_string()),
+                        Err(_) => Err("The save dialog closed unexpectedly.".to_string()),
+                    };
+                    let result = match selected {
+                        Ok(Some(path)) => {
+                            let goal = goal.clone();
+                            let saved = path.display().to_string();
+                            cx.background_executor()
+                                .spawn(okilum_t3::scope_current_network(async move {
+                                    super::super::export::download_context(
+                                        endpoint,
+                                        workspace.as_ref(),
+                                        &path,
+                                        &goal,
+                                        &job,
+                                    )
+                                    .map(|_| Some(saved))
+                                }))
+                                .await
                         }
-                        this.notice = "AI context package saved".into();
-                    }
-                    Ok(None) => {
-                        this.notice =
-                            "Save cancelled; the generated package is still available".into()
-                    }
-                    Err(error) => this.error = Some(error),
-                }
-                cx.notify();
-            });
+                        Ok(None) => Ok(None),
+                        Err(error) => Err(error),
+                    };
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        this.busy = false;
+                        this.sync_source_policy(cx);
+                        match result {
+                            Ok(Some(path)) => {
+                                if let Some(state) = this.context_ui.goals.get_mut(&goal) {
+                                    state.saved_path = Some(path);
+                                }
+                                this.notice = "AI context package saved".into();
+                            }
+                            Ok(None) => {
+                                this.notice =
+                                    "Save cancelled; the generated package is still available"
+                                        .into()
+                            }
+                            Err(error) => this.error = Some(error),
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -1877,7 +1885,7 @@ mod tests {
     fn proposal_context_preserves_full_empty_packet_draft_through_choice_and_cancel(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -1967,7 +1975,7 @@ mod tests {
     fn proposal_context_owner_loading_and_receipt_restore_do_not_touch_other_goal(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"other"}});
@@ -2026,7 +2034,7 @@ mod tests {
     fn proposal_context_restores_retired_form_without_refreshing_submitted_identity(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2051,7 +2059,7 @@ mod tests {
     fn proposal_context_retired_fields_remain_editable_when_saved_base_is_stale(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);
             view.snapshot=json!({"goal":{"id":"goal"}});view.ensure_context(window,cx);
@@ -2101,7 +2109,7 @@ mod tests {
     fn saved_brief_is_explicit_and_preserves_reviewed_text_and_manual_pins(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2132,7 +2140,7 @@ mod tests {
     }
     #[gpui::test]
     fn saved_brief_rejects_old_goal_and_retained_unavailable_selection(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2157,7 +2165,7 @@ mod tests {
     }
     #[gpui::test]
     fn late_search_and_export_are_bound_to_the_requested_goal(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx|{
             let mut view=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);
             view.snapshot=json!({"goal":{"id":"first"}});view.selected_goal_id=Some("first".into());view.ensure_context(window,cx);
@@ -2175,7 +2183,7 @@ mod tests {
     fn searching_preserves_pins_and_exclusions_without_automatic_selection(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx|{
             let mut view=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);view.snapshot=json!({"goal":{"id":"goal"}});view.ensure_context(window,cx);
             view.change_citation(citation("one"),true,cx);view.change_citation(citation("two"),false,cx);view.change_citation(citation("two"),false,cx);
@@ -2185,7 +2193,7 @@ mod tests {
     }
     #[gpui::test]
     fn review_is_required_and_late_save_preserves_newer_guidance(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2243,7 +2251,7 @@ mod tests {
     fn restored_export_job_resumes_observation_and_never_replaces_guidance(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx|{
             let mut view=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);view.snapshot=json!({"goal":{"id":"goal"}});view.ensure_context(window,cx);
             view.context_reply("context_get",json!({"packet":packet("goal",true),"export_job":{"job_id":"job","status":"running"}}),window,cx);assert!(view.context_ui.running("goal"));
@@ -2257,7 +2265,7 @@ mod tests {
     fn new_backend_requires_restored_review_but_guidance_only_can_prepare_t3(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2293,7 +2301,7 @@ mod tests {
     }
     #[gpui::test]
     fn stale_or_narrowed_scope_cannot_approve_the_previous_packet(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2324,7 +2332,7 @@ mod tests {
     }
     #[gpui::test]
     fn rejected_export_refreshes_packet_and_preserves_error(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2360,7 +2368,7 @@ mod tests {
     fn reopening_context_refreshes_staleness_without_losing_local_guidance(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2485,7 +2493,7 @@ mod tests {
     fn source_context_hydrates_then_merges_exact_source_and_duplicate_is_noop(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let goal = uuid();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-context","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("source-context265-{}", uuid()));
@@ -2561,7 +2569,7 @@ mod tests {
     }
     #[gpui::test]
     fn source_context_historical_observation_hydrates_exactly_once(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let goal = uuid();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-context","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("source-context265-{}", uuid()));
@@ -2637,7 +2645,7 @@ mod tests {
     }
     #[gpui::test]
     fn source_context_retained_adoption_owns_only_its_goal(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let goal = uuid();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-context","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("source-context265-{}", uuid()));
@@ -2710,7 +2718,7 @@ mod tests {
     fn source_context_late_owner_or_dirty_source_never_changes_either_draft(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for change in ["goal", "workspace", "source", "context", "disk"] {
             let goal = uuid();
             let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-context","records_dir":"records","managed":true});
@@ -2774,7 +2782,7 @@ mod tests {
     }
     #[gpui::test]
     fn source_context_late_observation_history_preserves_both_drafts(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for change in [
             "goal",
             "workspace",
@@ -2854,7 +2862,7 @@ mod tests {
     fn reuse_refresh_updates_manual_summary_without_replacing_dirty_guidance_or_pins(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2878,7 +2886,7 @@ mod tests {
     }
     #[gpui::test]
     fn export_is_polled_on_a_goal_without_chat_or_stage_results(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2892,7 +2900,7 @@ mod tests {
     }
     #[gpui::test]
     fn late_build_preserves_guidance_edited_during_request(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal"}});
@@ -2923,7 +2931,7 @@ mod tests {
     }
     #[gpui::test]
     fn taskless_planning_dispatches_only_with_reviewed_context(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"goal","criteria":[]},"task":null});
@@ -2957,7 +2965,7 @@ mod tests {
     #[gpui::test]
     fn source_back_actual_rpc_keeps_existing_context_draft_and_pins(cx: &mut TestAppContext) {
         use std::sync::atomic::Ordering;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/back283-rpc","records_dir":"records","managed":true});
         let goal = uuid();
         let directory = std::env::temp_dir().join(format!("back283-rpc-{}", uuid()));
@@ -3018,7 +3026,7 @@ mod tests {
     #[gpui::test]
     fn open_link_actual_button_rpc_and_back_preserve_lp_context(cx: &mut TestAppContext) {
         use std::sync::atomic::Ordering;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/open285-rpc","records_dir":"records","managed":true});
         let goal = uuid();
         let directory = std::env::temp_dir().join(format!("open285-rpc-{}", uuid()));
@@ -3116,7 +3124,7 @@ mod tests {
     }
     fn source_return_open_case_kind(cx: &mut TestAppContext, heading: bool, markdown: bool) {
         use std::sync::atomic::Ordering;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-return289-rpc","records_dir":"records","managed":true});
         let goal = uuid();
         let directory = std::env::temp_dir().join(format!("source-return289-rpc-{}", uuid()));

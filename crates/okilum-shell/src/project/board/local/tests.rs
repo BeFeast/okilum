@@ -18,7 +18,7 @@ fn fixture() -> tempfile::TempDir {
 }
 fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut VisualTestContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         cx.set_reduce_motion(true);
     });
     let (root, visual) = cx.add_window_view(|window, cx| {

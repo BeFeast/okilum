@@ -42,6 +42,9 @@ impl NativeToken {
         credential: &str,
         timeout: Duration,
     ) -> StreamResult<Self> {
+        if !crate::NetworkAccess::current().allowed() {
+            return Err(StreamError::Closed);
+        }
         if credential.trim().is_empty() {
             return Err(StreamError::PairingRequired);
         }

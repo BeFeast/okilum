@@ -43,7 +43,7 @@ fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::Test
     )
     .unwrap();
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
         // Production captures wheel events to persist Reader state on the next
         // frame. Omitting the store can hide repaint-dependent layout defects.

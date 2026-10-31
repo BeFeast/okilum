@@ -146,7 +146,7 @@ fn scrolled_editor<'a>(
     text: &str,
     provider: Arc<dyn ProjectionProvider>,
 ) -> (Entity<EditorState>, &'a mut VisualTestContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let mut input = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let state = cx.new(|cx| {

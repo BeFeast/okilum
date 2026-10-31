@@ -70,7 +70,7 @@ fn reuse_lost_ack_retains_guarded_request_and_terminal_conflict_allows_fresh_rev
 #[gpui::test]
 fn reuse_explicit_action_cancels_old_navigation_and_close(cx: &mut TestAppContext) {
     let (dir, workspace, _, store, _) = fixture();
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, cx) = cx
         .add_window_view(|window, cx| BrainView::new_managed_test(&workspace, &store, window, cx));
     cx.run_until_parked();

@@ -83,29 +83,36 @@ impl Board {
         self.local_loading = true;
         let generation = self.local_generation;
         let area = self.area.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    model::read(&area).map_err(|e| {
-                        format!("{}: {e:#}", area.join("ops/board-local.toml").display())
-                    })
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            model::read(&area).map_err(|e| {
+                                format!("{}: {e:#}", area.join("ops/board-local.toml").display())
+                            })
+                        }))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if !this.active || this.local_generation != generation {
+                            return;
+                        }
+                        let previous = this.local_cards.error.clone();
+                        this.local_cards.accept(result, now());
+                        this.local_loading = false;
+                        if this.local_cards.error != previous {
+                            if let Some(error) = &this.local_cards.error {
+                                eprintln!("Board local cards: {error}");
+                            }
+                        }
+                        cx.notify();
+                    });
                 })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if !this.active || this.local_generation != generation {
-                    return;
-                }
-                let previous = this.local_cards.error.clone();
-                this.local_cards.accept(result, now());
-                this.local_loading = false;
-                if this.local_cards.error != previous {
-                    if let Some(error) = &this.local_cards.error {
-                        eprintln!("Board local cards: {error}");
-                    }
-                }
-                cx.notify();
-            });
+                .await
+            }
         })
         .detach();
     }
@@ -120,21 +127,32 @@ impl Board {
         }
         self.editor_loading = true;
         let area = self.area.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { model::Session::load(&area) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.editor_loading = false;
-                match result {
-                    Ok(session) => this.local_editor = Some(Editor::new(session, mode, window, cx)),
-                    Err(error) => {
-                        this.notice = Some(format!("Cannot manage local cards: {error:#}"));
-                    }
-                }
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            model::Session::load(&area)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.editor_loading = false;
+                        match result {
+                            Ok(session) => {
+                                this.local_editor = Some(Editor::new(session, mode, window, cx))
+                            }
+                            Err(error) => {
+                                this.notice = Some(format!("Cannot manage local cards: {error:#}"));
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -176,40 +194,47 @@ impl Board {
         editor.busy = true;
         editor.error = None;
         let session = editor.session.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let removed = matches!(change, Some(model::Change::Remove(_)));
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    if let Some(source) = undo_source {
-                        session.undo(&source)
-                    } else {
-                        session.save(change.as_ref().expect("validated local change"))
-                    }
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let removed = matches!(change, Some(model::Change::Remove(_)));
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            if let Some(source) = undo_source {
+                                session.undo(&source)
+                            } else {
+                                session.save(change.as_ref().expect("validated local change"))
+                            }
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if let Some(editor) = &mut this.local_editor {
+                            editor.busy = false;
+                            match result {
+                                Ok(session) => {
+                                    this.local_generation = this.local_generation.wrapping_add(1);
+                                    this.local_loading = false;
+                                    this.local_cards
+                                        .accept(Ok(session.projection.clone()), now());
+                                    editor.session = session;
+                                    editor.mode = Mode::List;
+                                    editor.undo = if removed { previous } else { None };
+                                }
+                                Err(error) => {
+                                    let detail = format!("{error:#}");
+                                    eprintln!("Board local card write refused: {detail}");
+                                    editor.error = Some(detail);
+                                }
+                            }
+                        }
+                        cx.notify();
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                if let Some(editor) = &mut this.local_editor {
-                    editor.busy = false;
-                    match result {
-                        Ok(session) => {
-                            this.local_generation = this.local_generation.wrapping_add(1);
-                            this.local_loading = false;
-                            this.local_cards
-                                .accept(Ok(session.projection.clone()), now());
-                            editor.session = session;
-                            editor.mode = Mode::List;
-                            editor.undo = if removed { previous } else { None };
-                        }
-                        Err(error) => {
-                            let detail = format!("{error:#}");
-                            eprintln!("Board local card write refused: {detail}");
-                            editor.error = Some(detail);
-                        }
-                    }
-                }
-                cx.notify();
-            });
+                .await
+            }
         })
         .detach();
         cx.notify();

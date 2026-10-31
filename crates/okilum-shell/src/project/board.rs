@@ -135,66 +135,75 @@ impl Board {
         }
         self.binding_loading = true;
         let area = self.area.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { Binding::read(&area) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.binding_loading = false;
-                match result {
-                    Ok(binding) => {
-                        let same_source = this
-                            .binding
-                            .as_ref()
-                            .zip(binding.as_ref())
-                            .is_some_and(|(old, new)| old.same_issue_source(new));
-                        if this.binding != binding && !same_source {
-                            this.snapshot.invalidate();
-                            this.snapshot.forgejo = Source::default();
-                            this.selected = None;
-                        }
-                        if let Some(next) = &binding {
-                            if next.registry_error.as_ref()
-                                != this
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            Binding::read(&area)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.binding_loading = false;
+                        match result {
+                            Ok(binding) => {
+                                let same_source = this
                                     .binding
                                     .as_ref()
-                                    .and_then(|old| old.registry_error.as_ref())
-                            {
-                                if let Some(detail) = &next.registry_error {
-                                    eprintln!("Board executor registry error: {detail}");
+                                    .zip(binding.as_ref())
+                                    .is_some_and(|(old, new)| old.same_issue_source(new));
+                                if this.binding != binding && !same_source {
+                                    this.snapshot.invalidate();
+                                    this.snapshot.forgejo = Source::default();
+                                    this.selected = None;
+                                }
+                                if let Some(next) = &binding {
+                                    if next.registry_error.as_ref()
+                                        != this
+                                            .binding
+                                            .as_ref()
+                                            .and_then(|old| old.registry_error.as_ref())
+                                    {
+                                        if let Some(detail) = &next.registry_error {
+                                            eprintln!("Board executor registry error: {detail}");
+                                        }
+                                    }
+                                    if this
+                                        .binding
+                                        .as_ref()
+                                        .is_none_or(|old| old.card_problems != next.card_problems)
+                                    {
+                                        for problem in &next.card_problems {
+                                            eprintln!(
+                                                "Board card problem: {}: {}",
+                                                problem.field, problem.detail
+                                            );
+                                        }
+                                    }
+                                }
+                                this.binding = binding;
+                                this.binding_read = Some(now());
+                                this.binding_error = None;
+                                if this.active {
+                                    this.refresh(window, cx);
                                 }
                             }
-                            if this
-                                .binding
-                                .as_ref()
-                                .is_none_or(|old| old.card_problems != next.card_problems)
-                            {
-                                for problem in &next.card_problems {
-                                    eprintln!(
-                                        "Board card problem: {}: {}",
-                                        problem.field, problem.detail
-                                    );
+                            Err(error) => {
+                                let detail = format!("{error:#}");
+                                if this.binding_error.as_deref() != Some(detail.as_str()) {
+                                    eprintln!("Board binding error: {detail}");
                                 }
+                                this.binding_error = Some(detail);
                             }
                         }
-                        this.binding = binding;
-                        this.binding_read = Some(now());
-                        this.binding_error = None;
-                        if this.active {
-                            this.refresh(window, cx);
-                        }
-                    }
-                    Err(error) => {
-                        let detail = format!("{error:#}");
-                        if this.binding_error.as_deref() != Some(detail.as_str()) {
-                            eprintln!("Board binding error: {detail}");
-                        }
-                        this.binding_error = Some(detail);
-                    }
-                }
-                cx.notify();
-            });
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -271,15 +280,24 @@ impl Board {
             .issues
             .iter()
             .any(|scope| live::thread_id(scope).is_some());
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { read_issues(&binding) })
-                .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.snapshot.issues(&forgejo_ticket, result, now());
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            read_issues(&binding)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        this.snapshot.issues(&forgejo_ticket, result, now());
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
         // A project without registered agents needs only Forgejo/notes. Do not
@@ -319,25 +337,32 @@ impl Board {
                         project,
                     ))
                 });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    connection.and_then(|(gateway, project)| {
-                        gateway.list_threads(&project).map_err(|e| e.to_string())
-                    })
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            connection.and_then(|(gateway, project)| {
+                                gateway.list_threads(&project).map_err(|e| e.to_string())
+                            })
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        let previous = this.snapshot.t3.error.clone();
+                        this.snapshot.threads(&ticket, result, now());
+                        if this.snapshot.t3.error != previous {
+                            if let Some(detail) = &this.snapshot.t3.error {
+                                eprintln!("Board T3 error: {detail}");
+                            }
+                        }
+                        cx.notify();
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                let previous = this.snapshot.t3.error.clone();
-                this.snapshot.threads(&ticket, result, now());
-                if this.snapshot.t3.error != previous {
-                    if let Some(detail) = &this.snapshot.t3.error {
-                        eprintln!("Board T3 error: {detail}");
-                    }
-                }
-                cx.notify();
-            });
+                .await
+            }
         })
         .detach();
         cx.notify();

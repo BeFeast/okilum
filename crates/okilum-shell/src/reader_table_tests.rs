@@ -30,7 +30,7 @@ fn table_rows_fit_wrapped_content_and_keep_shared_columns(cx: &mut gpui::TestApp
         ["table-cell-3-0", "table-cell-3-1", "table-cell-3-2"],
         ["table-cell-4-0", "table-cell-4-1", "table-cell-4-2"],
     ];
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, visual) = cx.add_window_view(|_, _| TableFixture { width: 660. });
     let mut heights = Vec::new();
     for width in [660., 420., 660.] {

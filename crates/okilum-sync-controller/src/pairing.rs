@@ -103,6 +103,7 @@ pub struct Status {
 pub struct Service {
     origin: String,
     client: Client,
+    access: okilum_sync::NetworkAccess,
 }
 impl Service {
     pub fn origin(&self) -> &str {
@@ -143,9 +144,11 @@ impl Service {
         Ok(Self {
             origin: u.origin().ascii_serialization(),
             client: builder.build()?,
+            access: okilum_sync::NetworkAccess::current(),
         })
     }
     fn post(&self, route: &str, body: Value, grant: Option<&str>) -> Result<Value> {
+        ensure!(self.access.allowed(), "Sync is disabled");
         let mut request = self
             .client
             .post(format!("{}/api/v1/sync/desktop/{route}", self.origin))

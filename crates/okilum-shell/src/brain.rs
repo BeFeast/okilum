@@ -76,6 +76,9 @@ pub(crate) fn rpc_guarded(
     mut body: Value,
     workspace: Option<&Value>,
 ) -> Result<Value, String> {
+    if !okilum_t3::NetworkAccess::current().allowed() {
+        return Err("Second brain is disabled".into());
+    }
     if let Some(workspace) = workspace {
         body["expected_workspace"] = workspace.clone();
     }
@@ -801,19 +804,26 @@ impl BrainView {
             .collect(),
         };
         view.ensure_discussion_send();
-        cx.spawn_in(window, async move |this, cx| {
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.editor_list(window, cx);
-                this.batch(
-                    vec![
-                        json!({"op":"capabilities"}),
-                        json!({"op":"snapshot","goal_id":this.initial_discussion_goal()}),
-                        json!({"op":"source_list"}),
-                    ],
-                    window,
-                    cx,
-                )
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.editor_list(window, cx);
+                        this.batch(
+                            vec![
+                                json!({"op":"capabilities"}),
+                                json!({"op":"snapshot","goal_id":this.initial_discussion_goal()}),
+                                json!({"op":"source_list"}),
+                            ],
+                            window,
+                            cx,
+                        )
+                    });
+                })
+                .await
+            }
         })
         .detach();
         view
@@ -868,6 +878,9 @@ impl BrainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return;
+        }
         if self.busy || (background && self.poll_in_flight) {
             return;
         }
@@ -934,58 +947,65 @@ impl BrainView {
             .collect::<Vec<_>>();
         let endpoint = self.endpoint;
         let expected_workspace = self.expected_workspace.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let replies = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut replies = Vec::new();
-                    for request in requests {
-                        let operation = text(&request["op"]);
-                        let origin_goal = request["goal_id"]
-                            .as_str()
-                            .or(request["scope"]["goal_id"].as_str())
-                            .map(str::to_owned);
-                        let client_request = request.clone();
-                        let mut wire_request = request;
-                        if operation == "brain_search" {
-                            wire_request
-                                .as_object_mut()
-                                .unwrap()
-                                .remove("_context_search_id");
-                        }
-                        if operation.starts_with("inbox_") {
-                            if let Some(object) = wire_request.as_object_mut() {
-                                object.remove("_inbox_workspace");
-                                object.remove("_inbox_sequence");
-                                object.remove("_inbox_plan_origin");
-                                object.remove("_inbox_plan_goal_at_submit");
-                            }
-                        }
-                        if operation.starts_with("attention_") {
-                            if let Some(object) = wire_request.as_object_mut() {
-                                object.remove("_attention_workspace");
-                                object.remove("_attention_sequence");
-                            }
-                        }
-                        if operation.starts_with("proposal_") {
-                            if let Some(object) = wire_request.as_object_mut() {
-                                object.remove("_proposal_workspace");
-                                object.remove("_proposal_sequence");
-                                object.remove("_proposal_pending");
-                            }
-                        }
-                        if operation.starts_with("maestro_") {
-                            if let Some(object) = wire_request.as_object_mut() {
-                                object.remove("source");
-                                object.remove("_maestro_workspace");
-                                object.remove("_maestro_sequence");
-                                object.remove("_maestro_goal");
-                                object.remove("_maestro_original");
-                            }
-                        }
-                        let result =
-                            rpc_guarded(endpoint, wire_request, expected_workspace.as_ref()).map(
-                                |mut data| {
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let replies = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let mut replies = Vec::new();
+                            for request in requests {
+                                let operation = text(&request["op"]);
+                                let origin_goal = request["goal_id"]
+                                    .as_str()
+                                    .or(request["scope"]["goal_id"].as_str())
+                                    .map(str::to_owned);
+                                let client_request = request.clone();
+                                let mut wire_request = request;
+                                if operation == "brain_search" {
+                                    wire_request
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .remove("_context_search_id");
+                                }
+                                if operation.starts_with("inbox_") {
+                                    if let Some(object) = wire_request.as_object_mut() {
+                                        object.remove("_inbox_workspace");
+                                        object.remove("_inbox_sequence");
+                                        object.remove("_inbox_plan_origin");
+                                        object.remove("_inbox_plan_goal_at_submit");
+                                    }
+                                }
+                                if operation.starts_with("attention_") {
+                                    if let Some(object) = wire_request.as_object_mut() {
+                                        object.remove("_attention_workspace");
+                                        object.remove("_attention_sequence");
+                                    }
+                                }
+                                if operation.starts_with("proposal_") {
+                                    if let Some(object) = wire_request.as_object_mut() {
+                                        object.remove("_proposal_workspace");
+                                        object.remove("_proposal_sequence");
+                                        object.remove("_proposal_pending");
+                                    }
+                                }
+                                if operation.starts_with("maestro_") {
+                                    if let Some(object) = wire_request.as_object_mut() {
+                                        object.remove("source");
+                                        object.remove("_maestro_workspace");
+                                        object.remove("_maestro_sequence");
+                                        object.remove("_maestro_goal");
+                                        object.remove("_maestro_original");
+                                    }
+                                }
+                                let result = rpc_guarded(
+                                    endpoint,
+                                    wire_request,
+                                    expected_workspace.as_ref(),
+                                )
+                                .map(|mut data| {
                                     if (operation.starts_with("context_")
                                         || operation == "brain_search"
                                         || operation == "goal_context_brief")
@@ -1009,22 +1029,24 @@ impl BrainView {
                                         data["_client_maestro_request"] = client_request;
                                     }
                                     data
-                                },
-                            );
-                        let failed = result.is_err();
-                        replies.push((operation, result));
-                        if failed {
-                            break;
+                                });
+                                let failed = result.is_err();
+                                replies.push((operation, result));
+                                if failed {
+                                    break;
+                                }
+                            }
+                            replies
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.finish_batch(replies, background, generation, window, cx) {
+                            cx.notify();
                         }
-                    }
-                    replies
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.finish_batch(replies, background, generation, window, cx) {
-                    cx.notify();
-                }
-            });
+                .await
+            }
         })
         .detach();
     }
@@ -1630,21 +1652,31 @@ impl BrainView {
         self.running() || self.attention_polling() || self.maestro_polling()
     }
     fn schedule_poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return;
+        }
         if self.poll_scheduled || !self.needs_polling() {
             return;
         }
         self.poll_scheduled = true;
         let interval = if self.running() { 1 } else { 5 };
-        cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(interval))
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.poll_scheduled = false;
-                if !this.busy && this.needs_polling() {
-                    this.batch_inner(vec![json!({"op":"snapshot"})], true, window, cx);
-                }
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(interval))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.poll_scheduled = false;
+                        if !this.busy && this.needs_polling() {
+                            this.batch_inner(vec![json!({"op":"snapshot"})], true, window, cx);
+                        }
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -1932,18 +1964,18 @@ impl BrainView {
         self.preview_loading = true;
         self.preview_error = None;
         self.link_candidates.clear();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             cx.background_executor().timer(Duration::from_millis(200)).await;
             let current = this.update_in(cx, |this, _, _| this.preview_generation == generation).unwrap_or(false);
             if !current { return; }
-            let reply = cx.background_executor().spawn(async move {
+            let reply = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let data = rpc_guarded(endpoint, json!({"op":"source_preview","path":path,"content_base64":STANDARD.encode(content.as_bytes())}), expected_workspace.as_ref())?;
                 if data["path"] != path || !data["markdown"].is_string() {
                     return Err("Preview reply does not match the open source.".to_string());
                 }
                 let images = preview_images(&data)?;
                 Ok((data, images))
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.preview_generation != generation { return; }
                 this.preview_loading = false;
@@ -1953,7 +1985,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
         cx.notify();
     }
     fn preview_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -4157,6 +4189,18 @@ impl BrainView {
 }
 impl Render for BrainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !crate::reader_features::enabled(crate::reader_features::Feature::SecondBrain, cx) {
+            return div()
+                .size_full()
+                .child("Second brain is off.")
+                .child(
+                    gpui_component::button::Button::new("brain-features")
+                        .label("Settings → Features")
+                        .on_click(|_, _, cx| crate::reader_settings::show_features(cx)),
+                )
+                .into_any_element();
+        }
+
         self.sync_source_navigation(cx);
         self.sync_open_link(window, cx);
         self.sync_source_find(window, cx);
@@ -4362,6 +4406,7 @@ impl Render for BrainView {
                     .child(self.sidebar(window, cx))
                     .child(content),
             )
+            .into_any_element()
     }
 }
 
@@ -4374,6 +4419,43 @@ mod tests {
         sync::{Arc, Mutex},
         thread,
     };
+
+    #[test]
+    fn second_brain_rpc_stops_before_connect_after_permission_is_revoked() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let serve = listener.try_clone().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = serve.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(socket.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let reply = json!({"schema": request["schema"], "id": request["id"], "ok":true, "data":{"positive_control":true}});
+            writeln!(socket, "{reply}").unwrap();
+        });
+        let access = okilum_t3::NetworkAccess::new(true);
+        let _scope = access.enter();
+        assert_eq!(
+            rpc(endpoint, json!({"op":"snapshot"})).unwrap()["positive_control"],
+            true
+        );
+        server.join().unwrap();
+        access.revoke();
+        assert_eq!(
+            rpc(endpoint, json!({"op":"snapshot"})).unwrap_err(),
+            "Second brain is disabled"
+        );
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     fn source_snapshot(bytes: &[u8]) -> Value {
         json!({"schema":SCHEMA,"brain_id":"01000000-0000-4000-8000-000000000001","path":"notes/source.md",
@@ -4389,7 +4471,7 @@ mod tests {
 
     #[gpui::test]
     fn workspace_attention_renders_other_goals_and_retains_stale_overview(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.busy = true;
@@ -4466,7 +4548,7 @@ mod tests {
 
     #[gpui::test]
     fn maestro_only_goal_polls_through_disconnect_until_unlinked(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.collection = Collection::Goals;
@@ -4509,7 +4591,7 @@ mod tests {
     fn attention_navigation_preserves_dirty_and_prepared_ownership_and_resolved_context(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"one"}});
@@ -4570,7 +4652,7 @@ mod tests {
 
     #[gpui::test]
     fn acknowledged_capture_clears_only_the_submitted_fields(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             for (id, newer) in [("one", false), ("two", true)] {
@@ -4626,7 +4708,7 @@ mod tests {
 
     #[gpui::test]
     fn prepared_revision_retains_exact_retry_and_later_draft(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = prepared_fixture("one", "first");
@@ -4705,7 +4787,7 @@ mod tests {
 
     #[gpui::test]
     fn prepared_edits_are_goal_owned_and_stale_drafts_do_not_mutate(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.prepared_journal = Some(PreparedJournal {
@@ -4753,7 +4835,7 @@ mod tests {
     fn retained_composer_stays_below_independent_transcript_as_messages_grow(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view,cx)=cx.add_window_view(|window,cx| {
             let mut view=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);
             view.snapshot=json!({"goal":{"id":"one","title":"Fixture goal","status":"active"},"goals":[{"id":"one","title":"Fixture goal","status":"active"}]});
@@ -4792,7 +4874,7 @@ mod tests {
     #[gpui::test]
     fn reader_file_delivery_preserves_managed_dirty_recovery(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::reader_open::install(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-managed-open327-{}", Uuid::new_v4()));
@@ -4834,7 +4916,7 @@ mod tests {
     fn dirty_navigation_keeps_destination_and_late_draft_until_acknowledged(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({"goal":{"id":"one","title":"One","status":"active"}});
@@ -4913,7 +4995,7 @@ mod tests {
     fn goal_switch_restores_own_selection_and_blocks_dirty_source_navigation(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx| {
             let mut view=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);
             let first=json!({"goal":{"id":"first","title":"First thought"},"goals":[{"id":"first"},{"id":"second"}],
@@ -4954,7 +5036,7 @@ mod tests {
     fn failed_selection_and_delayed_drafts_never_change_visible_goal_ownership(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             let first = json!({"goal":{"id":"first"},"selected_source_paths":[]});
@@ -5028,7 +5110,7 @@ mod tests {
     fn delayed_source_read_preserves_new_edit_but_explicit_discard_can_reload(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             let first = source_snapshot(b"Saved first source");
@@ -5069,7 +5151,7 @@ mod tests {
 
     #[gpui::test]
     fn completed_goal_replaces_confirmation_but_keeps_saved_result_access(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.snapshot = json!({
@@ -5111,7 +5193,7 @@ mod tests {
 
     #[gpui::test]
     fn busy_preview_navigation_preserves_source_and_loading_state(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             // A foreground action is in flight. Neither a preview link nor a chosen
@@ -5134,7 +5216,7 @@ mod tests {
 
     #[gpui::test]
     fn polling_keeps_controls_and_preview_stable_but_reveals_new_thread(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.notice = "Connected".into();
@@ -5164,7 +5246,7 @@ mod tests {
 
     #[gpui::test]
     fn foreground_action_supersedes_in_flight_poll(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.batch_inner(vec![], true, window, cx);
@@ -5262,7 +5344,7 @@ mod tests {
     }
     #[gpui::test]
     fn shared_native_plugins_render_remote_image_inside_callout(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let image_requests = Arc::new(Mutex::new(Vec::new()));
         let links = Arc::new(Mutex::new(Vec::new()));
         let images = preview_images(&json!({"assets":[{
@@ -5334,7 +5416,7 @@ mod tests {
     fn native_conflict_keeps_draft_and_inspects_newer_versions_without_discard(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let base = source_snapshot(b"Choice: blue\r\n[[note|alias]]");
         let mut current = source_snapshot(b"Choice: red\r\n[[note|alias]]");
         current["revision"] = json!("sha256:current");
@@ -5469,7 +5551,7 @@ mod tests {
         let mut input = None;
         let window = cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                gpui_component::init(cx);
+                crate::test_init(cx);
                 input = Some(cx.new(|cx| TextareaState::new(window, cx).rows(8).soft_wrap(false)));
                 cx.new(|_| SourceInput(input.clone().unwrap()))
             })
@@ -5511,7 +5593,7 @@ mod tests {
         let mut input = None;
         let window = cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                gpui_component::init(cx);
+                crate::test_init(cx);
                 input = Some(cx.new(|cx| TextareaState::new(window, cx).rows(8).soft_wrap(false)));
                 cx.new(|_| SourceInput(input.clone().unwrap()))
             })

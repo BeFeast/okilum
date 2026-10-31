@@ -6468,6 +6468,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-network-access"
+version = "0.1.0"
+
+[[package]]
 name = "okilum-paste"
 version = "0.1.0"
 dependencies = [
@@ -6559,6 +6563,7 @@ name = "okilum-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "okilum-network-access",
  "reqwest",
  "serde_json",
  "tempfile",
@@ -6608,6 +6613,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "getrandom 0.3.4",
+ "okilum-network-access",
  "reqwest",
  "serde",
  "serde_json",

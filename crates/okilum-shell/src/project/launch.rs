@@ -298,7 +298,7 @@ mod tests {
     fn launch_validation_and_lost_receipt_preserve_form_and_retry_one_retained_intent(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let files = tempfile::tempdir().unwrap();
         let area = files.path().join("area");
         std::fs::create_dir_all(area.join("ops")).unwrap();

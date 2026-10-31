@@ -176,37 +176,46 @@ impl BrainView {
             error: None,
         }));
         self.error = None;
-        cx.spawn_in(window, async move |this, cx| {
-            let captured = owner.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move { prepare(&captured) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.context_ui.selection_preview.generation != generation {
-                    return;
-                }
-                if !this.selection_context_matches(&owner, window, cx) {
-                    this.cancel_source_selection_context(cx);
-                    return;
-                }
-                let excerpt = result.as_ref().ok().map(|p| {
-                    cx.new(|cx| {
-                        let mut state = TextareaState::new(window, cx).rows(6);
-                        state.set_value(text(&p.citation["excerpt"]), window, cx);
-                        state
-                    })
-                });
-                if let Some(preview) = this.context_ui.selection_preview.preview.as_mut() {
-                    preview.pending = false;
-                    preview.excerpt = excerpt;
-                    match result {
-                        Ok(p) => preview.prepared = Some(p),
-                        Err(e) => preview.error = Some(e),
-                    }
-                }
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let captured = owner.clone();
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            prepare(&captured)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.context_ui.selection_preview.generation != generation {
+                            return;
+                        }
+                        if !this.selection_context_matches(&owner, window, cx) {
+                            this.cancel_source_selection_context(cx);
+                            return;
+                        }
+                        let excerpt = result.as_ref().ok().map(|p| {
+                            cx.new(|cx| {
+                                let mut state = TextareaState::new(window, cx).rows(6);
+                                state.set_value(text(&p.citation["excerpt"]), window, cx);
+                                state
+                            })
+                        });
+                        if let Some(preview) = this.context_ui.selection_preview.preview.as_mut() {
+                            preview.pending = false;
+                            preview.excerpt = excerpt;
+                            match result {
+                                Ok(p) => preview.prepared = Some(p),
+                                Err(e) => preview.error = Some(e),
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -230,15 +239,15 @@ impl BrainView {
         let preview = self.context_ui.selection_preview.preview.as_mut().unwrap();
         preview.pending = true;
         preview.error = None;
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             let captured = owner.clone();
             let prior_packet = prepared.packet.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 if read_saved(&captured)? != prior_packet {
                     return Err("Saved Context changed. Cancel and inspect a fresh selection preview.".to_owned());
                 }
                 Ok(())
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.context_ui.selection_preview.generation != generation { return; }
                 if !this.selection_context_matches(&owner, window, cx) {
@@ -265,7 +274,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
         cx.notify();
     }
     pub(crate) fn sync_source_selection_context(
@@ -390,7 +399,7 @@ mod tests {
         preview_cancel_add(cx);
     }
     fn preview_cancel_add(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let goal = uuid();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-selection","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("source-selection281-{}", uuid()));
@@ -525,7 +534,7 @@ mod tests {
     fn source_selection_context_canceled_late_and_changed_owners_never_stage(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let goal = uuid();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-selection","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("source-selection281-{}", uuid()));
@@ -589,7 +598,7 @@ mod tests {
         changed_saved_inputs(cx);
     }
     fn changed_saved_inputs(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let goal = uuid();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/source-selection","records_dir":"records","managed":true});
         let directory = std::env::temp_dir().join(format!("source-selection281-{}", uuid()));

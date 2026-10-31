@@ -10,7 +10,7 @@ fn settle(visual: &mut gpui::VisualTestContext) {
 
 fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let fixture = tempfile::tempdir().unwrap();

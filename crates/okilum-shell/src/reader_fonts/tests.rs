@@ -31,7 +31,7 @@ fn catalog_uses_available_names_and_embedded_fallbacks() {
 fn document_fonts_persist_and_missing_fonts_fall_back_without_rewriting(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         brand::apply_theme(cx);
         brand::load_fonts(cx).unwrap();
         install(cx);
@@ -83,7 +83,7 @@ fn document_fonts_persist_and_missing_fonts_fall_back_without_rewriting(cx: &mut
 fn font_picker_selects_via_keyboard_and_defaults_apply_without_restart(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         brand::apply_theme(cx);
         brand::load_fonts(cx).unwrap();
         install(cx);

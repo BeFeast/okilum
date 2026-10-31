@@ -617,7 +617,7 @@ mod tests {
         let state = dir.path().join("state");
         std::fs::create_dir_all(&root).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&state, cx);
         });
         let mut panel = None;
@@ -735,7 +735,7 @@ mod tests {
             )
         };
         let initial = Arc::new(EventWindow::new(vec![event("a"), event("b")], &source).unwrap());
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut view = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| reader_log::LogView::remote(initial.clone(), window, cx));

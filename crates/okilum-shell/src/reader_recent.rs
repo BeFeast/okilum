@@ -266,7 +266,7 @@ mod tests {
     #[gpui::test]
     fn native_release_and_escape_route_from_reader_and_editor(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();

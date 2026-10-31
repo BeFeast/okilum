@@ -238,7 +238,7 @@ impl Render for Surface {
 #[gpui::test]
 fn expanding_clicking_and_scrolling_use_the_real_editor_lines(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         // Scrollbar fade/width animations use wall time and independently ask
         // for frames. This viewport/idle regression uses the real reduced-motion
         // setting so those decorative animations cannot decide its result.
@@ -353,7 +353,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
         reader_ui_state::set_json_raw(false, cx);
     });
@@ -459,7 +459,7 @@ fn current_child_maps_to_the_visible_ancestor() {
 fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut TestAppContext) {
     let _cache = reader_side_panel::tests::CachedPanels::on();
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let root = tempfile::tempdir().unwrap();

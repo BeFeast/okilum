@@ -300,7 +300,7 @@ mod tests {
         String,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/passage299","records_dir":"records","managed":true});

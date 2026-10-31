@@ -51,6 +51,12 @@ application settings; unavailable fonts quietly use the embedded Noto Sans /
 Cascadia Code defaults. Reset restores both defaults. UI chrome and the independent
 color emoji fallback keep their existing typography.
 
+**Core-first optional modules (#2091/#2092, 2026-10-31):**
+[Settings → Features](optional-features.md) makes Agents, Second brain and Sync
+opt-in, off by default, with immediate UI/lifecycle changes and no disabled-module
+requests. The existing managed Workspace is the Second brain surface; Now remains
+separate work in #1927.
+
 ## 1. What Okilum is
 
 **Image import (#1743, 2026-10-29):** [WebP image paste and import](image-import.md)

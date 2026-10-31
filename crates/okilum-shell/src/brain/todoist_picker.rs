@@ -322,20 +322,27 @@ impl BrainView {
         let target = self.picker_target();
         let request = json!({"op":"snapshot", "goal_id":target.goal});
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let captured = target.clone();
-            let response = cx
-                .background_executor()
-                .spawn(async move {
-                    rpc_guarded(captured.endpoint, request, captured.workspace.as_ref())
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let captured = target.clone();
+                    let response = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            rpc_guarded(captured.endpoint, request, captured.workspace.as_ref())
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.finish_picker_recovery(&target, response) {
+                            this.begin_todoist_page(false, window, cx);
+                        }
+                        cx.notify();
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.finish_picker_recovery(&target, response) {
-                    this.begin_todoist_page(false, window, cx);
-                }
-                cx.notify();
-            });
+                .await
+            }
         })
         .detach();
     }
@@ -377,19 +384,26 @@ impl BrainView {
         let target = self.picker_target();
         let request = json!({"op":"todoist_inbox_list","goal_id":target.goal,"session_id":previous.as_ref().map(|page| &page["session_id"])});
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let captured = target.clone();
-            let response = cx
-                .background_executor()
-                .spawn(async move {
-                    rpc_guarded(captured.endpoint, request, captured.workspace.as_ref())
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let captured = target.clone();
+                    let response = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            rpc_guarded(captured.endpoint, request, captured.workspace.as_ref())
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if this.finish_picker_page(&target, previous.as_ref(), response) {
+                            cx.notify();
+                        }
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                if this.finish_picker_page(&target, previous.as_ref(), response) {
-                    cx.notify();
-                }
-            });
+                .await
+            }
         })
         .detach();
     }
@@ -470,19 +484,26 @@ impl BrainView {
         self.request_generation = self.request_generation.wrapping_add(1);
         let request = json!({"op":"task_link","goal_id":target.goal,"task_id":task,"picker_session_id":session});
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let captured = target.clone();
-            let response = cx
-                .background_executor()
-                .spawn(async move {
-                    rpc_guarded(captured.endpoint, request, captured.workspace.as_ref())
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let captured = target.clone();
+                    let response = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            rpc_guarded(captured.endpoint, request, captured.workspace.as_ref())
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if this.finish_picker_link(&target, &session, &task, response) {
+                            cx.notify();
+                        }
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                if this.finish_picker_link(&target, &session, &task, response) {
-                    cx.notify();
-                }
-            });
+                .await
+            }
         })
         .detach();
     }
@@ -753,7 +774,7 @@ mod tests {
 
     #[gpui::test]
     fn late_pages_cannot_cross_goal_workspace_session_or_task_selection(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = setup(window, cx);
             let target = view.picker_target();
@@ -777,7 +798,7 @@ mod tests {
 
     #[gpui::test]
     fn page_and_link_failures_retain_rows_current_task_and_drafts(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx| {
             let mut view=setup(window,cx); let target=view.picker_target(); let task=view.snapshot["task"].clone(); let first=page();
             assert!(view.finish_picker_page(&target,Some(&first),Err("Provider unavailable".into())));
@@ -797,7 +818,7 @@ mod tests {
 
     #[gpui::test]
     fn exact_selected_task_is_installed_only_for_accepted_current_reply(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx| {
             let mut view=setup(window,cx); let target=view.picker_target();
             let response=json!({"status":"accepted","task":{"task_id":"task-two","goal_id":"goal-a","instance_id":"connector-a","content":"Follow up","status":"open"}});
@@ -814,7 +835,7 @@ mod tests {
     }
     #[gpui::test]
     fn lost_link_acknowledgement_recovers_binding_before_new_selection(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = setup(window, cx);
             let target = view.picker_target();

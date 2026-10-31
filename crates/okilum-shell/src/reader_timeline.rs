@@ -742,7 +742,7 @@ mod tests {
     #[gpui::test]
     fn timeline_preview_keyboard_restore_and_stale_guard(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
         });

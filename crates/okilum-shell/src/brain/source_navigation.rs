@@ -337,44 +337,52 @@ impl BrainView {
         .into();
         // This read owns no global busy/loading state: Find and the current input
         // stay intact on failure. Any intervening user action invalidates the owner.
-        cx.spawn_in(window, async move |this, cx| {
-            let reply = cx
-                .background_executor()
-                .spawn(async move {
-                    let data = rpc_guarded(
-                        owner.endpoint,
-                        json!({"op":"source_read","path":path}),
-                        Some(&owner.workspace),
-                    )?;
-                    let raw = validated_source(&data, &path, &owner.workspace)?;
-                    let landing = if let Some(passage) = passage.as_ref() {
-                        Some(passage_offset(&raw, &data, passage)?)
-                    } else {
-                        heading
-                            .as_ref()
-                            .map(|heading| {
-                                let snapshot = okilum_core::source_projection::Snapshot::new(
-                                    path.as_str(),
-                                    0,
-                                    raw.as_str(),
-                                );
-                                okilum_core::source_classifier::classify(&snapshot)
-                                    .heading_offset(heading)
-                                    .map_err(str::to_owned)
-                            })
-                            .transpose()?
-                    };
-                    Ok::<_, String>((data, landing))
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let reply = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let data = rpc_guarded(
+                                owner.endpoint,
+                                json!({"op":"source_read","path":path}),
+                                Some(&owner.workspace),
+                            )?;
+                            let raw = validated_source(&data, &path, &owner.workspace)?;
+                            let landing = if let Some(passage) = passage.as_ref() {
+                                Some(passage_offset(&raw, &data, passage)?)
+                            } else {
+                                heading
+                                    .as_ref()
+                                    .map(|heading| {
+                                        let snapshot =
+                                            okilum_core::source_projection::Snapshot::new(
+                                                path.as_str(),
+                                                0,
+                                                raw.as_str(),
+                                            );
+                                        okilum_core::source_classifier::classify(&snapshot)
+                                            .heading_offset(heading)
+                                            .map_err(str::to_owned)
+                                    })
+                                    .transpose()?
+                            };
+                            Ok::<_, String>((data, landing))
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        let mut flight = flight;
+                        let reply = reply.map(|(data, landing)| {
+                            flight.landing = landing;
+                            data
+                        });
+                        this.finish_source_navigation(flight, reply, window, cx)
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                let mut flight = flight;
-                let reply = reply.map(|(data, landing)| {
-                    flight.landing = landing;
-                    data
-                });
-                this.finish_source_navigation(flight, reply, window, cx)
-            });
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -689,7 +697,7 @@ mod tests {
         Value,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory = std::env::temp_dir().join(format!("back283-{}", uuid()));

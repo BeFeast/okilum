@@ -505,7 +505,7 @@ mod tests {
     }
     #[gpui::test]
     fn saved_thought_keeps_plan_action_visible_and_panel_within_viewport(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -598,7 +598,7 @@ mod tests {
     fn inbox_reads_reject_late_identity_and_do_not_touch_goal_or_editor_drafts(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx|{
             let mut v=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);v.busy=true;
             v.expected_workspace=Some(workspace());v.snapshot=json!({"goal":{"id":"active","title":"Keep me"}});v.selected_goal_id=Some("active".into());
@@ -633,7 +633,7 @@ mod tests {
     fn committed_capture_keeps_later_draft_and_goal_while_recovering_exact_request(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -673,7 +673,7 @@ mod tests {
     fn failed_local_publication_retries_same_identity_and_requires_durability_before_tcp(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -720,7 +720,7 @@ mod tests {
     fn native_capture_without_providers_retains_one_request_before_network(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window,cx| {
@@ -741,7 +741,7 @@ mod tests {
     }
     #[gpui::test]
     fn provider_absence_does_not_disable_capture_but_older_backend_does(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view,cx)=cx.add_window_view(|window,cx|{
             let mut v=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);v.busy=true;
             v.collection=Collection::Inbox;v.capabilities=json!({"inbox_read":true,"inbox_capture":true,"chat":false,"t3":false,"todoist":false});

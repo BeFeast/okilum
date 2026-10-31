@@ -233,7 +233,7 @@ mod tests {
                     )
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let image = ImageSource::Image(std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg,
             br##"<svg xmlns="http://www.w3.org/2000/svg" width="2600" height="862"><rect width="2600" height="862" fill="#336699"/></svg>"##.to_vec())));
         let (view, visual) = cx.add_window_view(|_, _| ImageView {

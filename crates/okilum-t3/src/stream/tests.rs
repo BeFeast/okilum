@@ -674,3 +674,27 @@ fn lost_command_response_retains_the_same_wire_and_reopened_journal_never_resend
     fixture.finish();
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn disabled_native_client_cannot_fetch_history_or_request_a_socket_ticket() {
+    let server = FakeServer::start(|_| Response::empty(503));
+    let env = Environment::new("fixture", &server.origin).unwrap();
+    let access = crate::NetworkAccess::new(true);
+    let native = client(&env).with_access(access.clone());
+    assert!(native.history("thread", "cursor").is_err());
+    assert!(
+        !server.requests().is_empty(),
+        "positive control: the enabled history request reached the server"
+    );
+    let before = server.requests().len();
+    access.revoke();
+    assert!(matches!(
+        native.history("thread", "cursor"),
+        Err(StreamError::Closed)
+    ));
+    assert!(matches!(
+        native.subscribe("thread", None),
+        Err(StreamError::Closed)
+    ));
+    assert_eq!(server.requests().len(), before);
+}

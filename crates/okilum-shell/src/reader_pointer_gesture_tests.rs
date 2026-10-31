@@ -9,7 +9,7 @@ fn with_reader(
     check: impl FnOnce(Entity<Reader>, &mut VisualTestContext),
 ) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let temp = tempfile::tempdir().unwrap();
@@ -256,7 +256,7 @@ impl Render for EditorSurface {
 
 #[gpui::test]
 fn lost_mouse_up_and_lifecycle_cancel_the_editor_gesture(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     for signal in 0..4 {
         let mut input = None;
         let (_, visual) = cx.add_window_view(|window, cx| {

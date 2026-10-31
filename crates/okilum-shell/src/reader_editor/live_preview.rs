@@ -821,7 +821,7 @@ mod tests {
         std::fs::create_dir(&vault).unwrap();
         std::fs::write(vault.join("Note.md"), "# Note\n\nBody\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
             cx.set_global(reader_history::TestSessionDirectory(
@@ -951,7 +951,7 @@ mod tests {
         std::fs::create_dir(&vault).unwrap();
         std::fs::write(vault.join("Note.md"), "# Note\n\nBody text\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&fixture.path().join("state"), cx);
             cx.set_global(reader_history::TestSessionDirectory(
@@ -1142,7 +1142,7 @@ mod tests {
         text: &str,
     ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();

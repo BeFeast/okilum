@@ -832,7 +832,7 @@ mod attachment_refresh_tests {
     #[gpui::test]
     fn webp_paste_and_import_links_survive_undo_redo_without_losing_files(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -971,7 +971,7 @@ mod attachment_refresh_tests {
     }
     fn check_drop(cx: &mut TestAppContext, quick: bool) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

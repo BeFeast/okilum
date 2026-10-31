@@ -179,9 +179,9 @@ impl BrainView {
         // version. Retire only the exact acknowledged local generation.
         let store = self.editor_store();
         self.editor.flight = true;
-        cx.spawn_in(window,async move |this,cx| {
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let expected=acknowledged.clone();
-            let result=cx.background_executor().spawn(async move {store?.discard(&expected)}).await;
+            let result=cx.background_executor().spawn(okilum_t3::scope_current_network(async move {store?.discard(&expected)})).await;
             let _=this.update_in(cx,|this,window,cx| {
                 this.editor.flight=false;
                 match result {
@@ -195,7 +195,7 @@ impl BrainView {
                 if this.navigation_after_source && !this.dirty(cx) {this.continue_navigation(window,cx);}
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
 }
 
@@ -433,7 +433,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use gpui::EntityInputHandler;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for mutate in [true, false] {
             let f = Fixture::new();
             let saved = f.ack();
@@ -487,7 +487,7 @@ mod tests {
     fn clean_receipt_adopts_merged_bytes_before_retirement(cx: &mut TestAppContext) {
         let f = Fixture::new();
         let saved = f.ack();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&f.workspace, &f.store, window, cx)
         });
@@ -508,7 +508,7 @@ mod tests {
     fn late_visible_text_keeps_true_base_and_blocks_next_ordinary_save(cx: &mut TestAppContext) {
         let f = Fixture::new();
         let saved = f.ack();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&f.workspace, &f.store, window, cx)
         });
@@ -547,7 +547,7 @@ mod tests {
     fn typing_after_adoption_uses_merged_base(cx: &mut TestAppContext) {
         let f = Fixture::new();
         let saved = f.ack();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&f.workspace, &f.store, window, cx)
         });
@@ -567,7 +567,7 @@ mod tests {
     }
     #[gpui::test]
     fn changed_epoch_or_durable_generation_refuses_late_adoption(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for durable in [false, true] {
             let f = Fixture::new();
             let saved = f.ack();
@@ -614,7 +614,7 @@ mod tests {
     fn close_during_auto_save_waits_for_merged_adoption_and_retirement(cx: &mut TestAppContext) {
         let f = Fixture::new();
         let saved = f.ack();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&f.workspace, &f.store, window, cx)
         });
@@ -654,7 +654,7 @@ mod tests {
         assert!(lost.result.is_err());
         let pending = lost.inventory.unwrap().drafts.pop().unwrap();
         let child = pending.pending_save.clone().unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&f.workspace, &f.store, window, cx)
         });
@@ -699,7 +699,7 @@ mod tests {
             });
         let conflict = result.result.unwrap().draft.unwrap();
         assert!(conflict.pending_save.is_none());
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&f.workspace, &f.store, window, cx)
         });

@@ -443,7 +443,7 @@ mod tests {
                     .children(gpui_component::Root::render_dialog_layer(window, cx))
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("Gate2");
         std::fs::create_dir_all(&root).unwrap();

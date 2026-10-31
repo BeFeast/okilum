@@ -224,7 +224,7 @@ mod tests {
             .filter(|byte| *byte == b'\n')
             .count() as u32;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
         });

@@ -24,7 +24,7 @@ fn retry_backoff_is_bounded_and_classifies_auth_or_protocol_failures_as_terminal
 fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let temp = tempfile::tempdir().unwrap();
@@ -142,7 +142,7 @@ fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
 
 #[gpui::test]
 fn pairing_token_keeps_the_full_row_width_in_a_narrow_panel(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -173,7 +173,7 @@ fn pairing_token_keeps_the_full_row_width_in_a_narrow_panel(cx: &mut TestAppCont
 
 #[gpui::test]
 fn deleted_live_thread_disables_send_with_a_visible_reason(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     let env = Environment::new("fixture", "https://native.invalid").unwrap();
     let token=NativeToken::from_secret(&env,&serde_json::to_vec(&json!({"origin":env.origin(),"access_token":"fixture-only","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read orchestration:operate"})).unwrap()).unwrap();

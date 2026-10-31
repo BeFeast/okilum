@@ -130,10 +130,17 @@ impl ConnectorsView {
             suggestions: Suggestions::default(),
             target_routes: t3_routes::TargetRoutes::default(),
         };
-        cx.spawn_in(window, async move |this, cx| {
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.request("connectors_get", window, cx)
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.request("connectors_get", window, cx)
+                    });
+                })
+                .await
+            }
         })
         .detach();
         this
@@ -211,8 +218,8 @@ impl ConnectorsView {
         self.busy = true;
         self.message = "Connecting…".into();
         cx.notify();
-        cx.spawn_in(window,async move |this,cx|{
-            let reply=cx.background_executor().spawn(async move{rpc_guarded(endpoint,request,Some(&identity))}).await;
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx|{ okilum_t3::scope_network(module_access, async move {
+            let reply=cx.background_executor().spawn(okilum_t3::scope_current_network(async move{rpc_guarded(endpoint,request,Some(&identity))})).await;
             let _=this.update_in(cx,|this,window,cx|{
                 this.busy=false;
                 match reply {
@@ -232,7 +239,7 @@ impl ConnectorsView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     fn set(&self, key: &str, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(input) = self.fields.get(key) {
@@ -451,7 +458,7 @@ mod maestro_tests {
     fn loading_existing_maestro_settings_preserves_them_and_optional_nulls(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window,cx|{
             let mut view=ConnectorsView::new("127.0.0.1:1".parse().unwrap(),json!({}),window,cx);view.busy=true;
             let config=json!({"actor":"operator","chat":null,"todoist":null,"t3":null,"maestro":{"base_url":"http://127.0.0.1:8786","instance_id":"aa000000-0000-4000-8000-000000000152","token_env":null,"ui_origin":"https://maestro.example.test"}});

@@ -244,7 +244,7 @@ mod tests {
 
     #[gpui::test]
     fn corpus_note_renders_obsidian_blocks(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let source = rendered_fixture();
         let offset = |needle: &str| source.find(needle).expect(needle);
         let math = offset("~~~~math");
@@ -269,7 +269,7 @@ mod tests {
 
     #[gpui::test]
     fn footnote_back_link_routes_through_the_link_handler(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         // Short enough that the footnote is inside the test window.
         let source = okilum_core::obsidian::after_links("Claim.[^1]\n\n[^1]: Source.\n");
         let footnote = source.find("~~~~footnote").unwrap();
@@ -311,7 +311,7 @@ mod tests {
 
     #[gpui::test]
     fn foldable_callouts_start_as_written_and_toggle(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let source = "> [!faq]- Closed question\n> Hidden answer body.\n\n> [!tip]+ Open tip\n> Visible tip body.\n\n> [!note] Plain\n> Always shown.\n".to_string();
         let (_, visual) = cx.add_window_view(|_, _| Fixture {
             source: source.clone(),
@@ -367,7 +367,7 @@ mod tests {
     #[gpui::test]
     fn reader_lands_block_references_and_footnotes(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-651-{}", uuid::Uuid::new_v4()));

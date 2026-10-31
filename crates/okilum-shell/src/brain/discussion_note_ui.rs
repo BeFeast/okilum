@@ -225,12 +225,12 @@ impl BrainView {
         state.flight = true;
         state.error = None;
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             let captured = selection.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let snapshot = rpc_guarded(endpoint, json!({"op":"source_read","path":captured.path}), Some(&captured.workspace))?;
                 note::prepare(&captured, &snapshot)
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.discussion_note.sequence != sequence || this.discussion_note.target.as_ref() != Some(&Target::Discussion(selection.clone())) { return; }
                 this.discussion_note.flight = false;
@@ -250,7 +250,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     pub(super) fn save_discussion_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.discussion_note.flight || self.busy {
@@ -296,9 +296,9 @@ impl BrainView {
         self.discussion_note.flight = true;
         self.discussion_note.error = None;
         cx.notify();
-        cx.spawn_in(window, async move |this,cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let frozen = pending.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let receipt = if let Some(receipt) = receipt { receipt } else {
                     match rpc_guarded(endpoint, frozen.request.clone(), Some(&frozen.workspace)) {
                         Ok(receipt) => receipt,
@@ -309,7 +309,7 @@ impl BrainView {
                 let readback = rpc_guarded(endpoint,json!({"op":"source_read","path":frozen.path}),Some(&frozen.workspace))
                     .and_then(|snapshot| note::validate_readback(&frozen,&snapshot).map(|state| (snapshot,state)));
                 (Some(receipt),readback)
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this,window,cx| {
                 if this.discussion_note.sequence != sequence || this.discussion_note.pending.as_ref() != Some(&pending) { return; }
                 this.discussion_note.flight = false;
@@ -352,7 +352,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     pub(super) fn note_change_filename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.discussion_note.filename_conflict || self.discussion_note.flight {
@@ -691,7 +691,7 @@ mod tests {
     fn new_note_requires_writable_goal_and_preserves_source_and_other_drafts(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.busy = true;
@@ -747,7 +747,7 @@ mod tests {
     fn new_note_target_ignores_conversation_but_retains_goal_workspace_and_endpoint(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.busy = true;
@@ -795,7 +795,7 @@ mod tests {
 
     #[gpui::test]
     fn discussion_note_guards_navigation_close_quit_and_retains_review(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -838,7 +838,7 @@ mod tests {
     fn discussion_note_origin_waits_for_existing_source_and_cancel_keeps_other_drafts(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -876,7 +876,7 @@ mod tests {
     fn discussion_note_invalid_input_and_changed_target_preserve_all_review_bytes(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -912,7 +912,7 @@ mod tests {
     fn discussion_note_uncertain_departure_is_explicit_and_inflight_cannot_leave(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -937,7 +937,7 @@ mod tests {
     fn discussion_note_retries_identical_wire_and_acknowledged_readback_never_rewrites(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -1021,7 +1021,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
             Arc,
         };
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for (user_authored, destination) in [
             (false, "navigation"),
             (false, "close"),

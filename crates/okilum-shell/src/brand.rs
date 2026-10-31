@@ -1112,7 +1112,7 @@ mod tests {
 
     #[gpui::test]
     fn selected_theme_drives_palette_and_native_tokens(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.update(|cx| {
             for theme in [ThemeId::Nord, ThemeId::HighContrast, ThemeId::Okilum] {
                 for mode in [ThemeMode::Light, ThemeMode::Dark] {
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[gpui::test]
     fn appearance_changes_keep_native_control_tokens_and_typography(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.update(|cx| {
             for mode in [ThemeMode::Light, ThemeMode::Dark, ThemeMode::Light] {
                 Theme::change(mode, None, cx);

@@ -23,7 +23,7 @@ impl Render for UpdateControls {
 fn settings_download_progress_becomes_an_adjacent_explicit_restart(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_reduce_motion(true);
-        gpui_component::init(cx);
+        crate::test_init(cx);
     });
     let restarted = Rc::new(Cell::new(false));
     let mut entity = None;
@@ -109,7 +109,7 @@ impl Render for WrappedStatus {
 
 #[gpui::test]
 fn long_update_error_wraps_within_settings_content(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|_| WrappedStatus {

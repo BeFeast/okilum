@@ -22,7 +22,7 @@ fn open<'a>(
     gateway: Arc<super::super::fixture::Fake>,
 ) -> (Entity<ProjectView>, &'a mut VisualTestContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         cx.set_reduce_motion(true);
         cx.set_global(reader_t3_settings::Connection {
             origin: Some("https://remote.example".into()),

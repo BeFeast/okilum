@@ -239,7 +239,7 @@ mod rendered_tests {
 
     #[gpui::test]
     fn prepared_languages_reach_the_first_highlight_pass(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
         let resolver: Arc<CodeBlockLanguageFn> = Arc::new(move |block| {
@@ -290,7 +290,7 @@ mod rendered_tests {
     fn inference_is_visible_cached_shared_with_highlighter_and_replaced(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut fixture = None;

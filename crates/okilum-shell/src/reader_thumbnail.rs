@@ -231,7 +231,7 @@ mod tests {
                     )
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (host, visual) = cx.add_window_view(|_, cx| Host {
             preview: Some(
                 cx.new(|cx| Thumbnail::new(PathBuf::from("/missing"), "file.pdf".into(), cx)),

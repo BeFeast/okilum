@@ -341,7 +341,7 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         std::fs::write(fixture.path().join("local.md"), "# Local").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;

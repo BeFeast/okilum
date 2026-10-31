@@ -156,7 +156,7 @@ fn criteria_pretransport_failure_preserves_guard_and_blocks_generic_source_save(
     cx: &mut TestAppContext,
 ) {
     let (dir, workspace, base, store, request) = fixture();
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, cx) = cx
         .add_window_view(|window, cx| BrainView::new_managed_test(&workspace, &store, window, cx));
     cx.run_until_parked();
@@ -211,7 +211,7 @@ fn criteria_pretransport_failure_preserves_guard_and_blocks_generic_source_save(
 #[gpui::test]
 fn criteria_late_save_failure_does_not_attach_to_another_visible_owner(cx: &mut TestAppContext) {
     let (dir, workspace, base, store, request) = fixture();
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, cx) = cx
         .add_window_view(|window, cx| BrainView::new_managed_test(&workspace, &store, window, cx));
     cx.run_until_parked();
@@ -254,7 +254,7 @@ fn criteria_late_save_failure_does_not_attach_to_another_visible_owner(cx: &mut 
 #[gpui::test]
 fn criteria_guarded_shortcut_and_navigation_do_not_start_generic_loading(cx: &mut TestAppContext) {
     let (dir, workspace, base, store, request) = fixture();
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, cx) = cx
         .add_window_view(|window, cx| BrainView::new_managed_test(&workspace, &store, window, cx));
     cx.run_until_parked();

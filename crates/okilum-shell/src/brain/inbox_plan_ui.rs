@@ -672,7 +672,7 @@ mod tests {
     }
     #[gpui::test]
     fn proposal_inbox_uses_frozen_source_and_cancel_restores_manual_form(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(uuid());
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{
@@ -734,7 +734,7 @@ mod tests {
     }
     #[gpui::test]
     fn planning_form_stays_within_viewport_and_long_original_can_scroll(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -772,7 +772,7 @@ mod tests {
     fn oversized_planning_drafts_remain_editable_without_retaining_an_identity(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(uuid());
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -886,7 +886,7 @@ mod tests {
     }
     #[gpui::test]
     fn planning_late_receipt_preserves_navigation_and_unrelated_drafts(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(uuid());
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -942,7 +942,7 @@ mod tests {
     fn matching_planning_receipt_opens_new_goal_and_keeps_old_context_drafts(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(uuid());
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -984,7 +984,7 @@ mod tests {
     fn only_exact_source_changed_allows_archive_and_new_attempt_requires_review(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(uuid());
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{
@@ -1007,7 +1007,7 @@ mod tests {
     fn disabled_planning_blocks_new_identity_but_recovery_reuses_exact_retained_request(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(uuid());
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{

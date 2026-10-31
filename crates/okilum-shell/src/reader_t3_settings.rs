@@ -10,6 +10,10 @@ pub(super) struct Connection {
 }
 impl Global for Connection {}
 
+pub(super) fn suspend(cx: &mut App) {
+    auth::suspend(cx);
+}
+
 pub(super) fn signed_out(origin: &str, cx: &App) -> bool {
     auth::entry(origin, cx).signed_out
 }
@@ -31,6 +35,9 @@ pub(super) fn gateway(
     env: &okilum_t3::Environment,
     cx: &App,
 ) -> Option<Arc<dyn okilum_t3::ManagerGateway>> {
+    if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        return None;
+    }
     auth::entry(&env.origin(), cx).gateway.filter(|gateway| {
         matches!(
             gateway.status(),
@@ -309,7 +316,7 @@ mod tests {
     use ::core::prelude::v1::test;
     #[gpui::test]
     fn enter_validates_settings_input_and_editing_recovers(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (root, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| T3Settings::new(None, window, cx));
             Root::new(settings, window, cx)

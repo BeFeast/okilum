@@ -246,75 +246,89 @@ impl BrainView {
             input,
             request,
         } = job;
-        self.source_projection.foreground = Some(cx.spawn_in(window, async move |this, cx| {
-            // Only immutable owned input/request cross to the worker. The Rc
-            // marker, guard, native entity and UI context stay foreground.
-            let produced = cx
-                .background_executor()
-                .spawn(async move {
+        self.source_projection.foreground = Some(cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    // Only immutable owned input/request cross to the worker. The Rc
+                    // marker, guard, native entity and UI context stay foreground.
+                    let produced = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            #[cfg(test)]
+                            {
+                                okilum_core::open_diagnostics::capture(|| {
+                                    CachedProvider::classify_navigation(request, input)
+                                })
+                            }
+                            #[cfg(not(test))]
+                            {
+                                CachedProvider::classify_navigation(request, input)
+                            }
+                        }))
+                        .await;
                     #[cfg(test)]
-                    {
-                        okilum_core::open_diagnostics::capture(|| {
-                            CachedProvider::classify_navigation(request, input)
-                        })
-                    }
-                    #[cfg(not(test))]
-                    {
-                        CachedProvider::classify_navigation(request, input)
-                    }
-                })
-                .await;
-            #[cfg(test)]
-            let (produced, report) = produced;
-            guard.finish();
-            let _ = this.update_in(cx, |this, window, cx| {
-                if !this.source_projection.owns(&flight) {
-                    return;
-                }
-                if let Some(task) = this.source_projection.foreground.take() {
-                    task.detach();
-                }
-                this.source_projection.running = None;
-                #[cfg(test)]
-                this.source_projection.worker_reports.push(report);
-                let live = this.navigation_snapshot(cx);
-                let pending = this
-                    .source_projection
-                    .navigation
-                    .as_ref()
-                    .is_some_and(|nav| {
-                        nav.pending(&flight.key, live.as_ref().map(|(_, input)| input))
-                    });
-                // Do NOT call destructive adopt on a stale job: the newer queued
-                // request must remain pending and retain its own admission chance.
-                if pending {
-                    match (produced, live) {
-                        (Ok((provider, completion)), Some((current, input)))
-                            if current == binding =>
-                        {
-                            let admitted =
-                                this.source_projection.navigation.as_mut().and_then(|nav| {
-                                    nav.session.get_mut().adopt(completion, Some(&input)).ok()
+                    let (produced, report) = produced;
+                    guard.finish();
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if !this.source_projection.owns(&flight) {
+                            return;
+                        }
+                        if let Some(task) = this.source_projection.foreground.take() {
+                            task.detach();
+                        }
+                        this.source_projection.running = None;
+                        #[cfg(test)]
+                        this.source_projection.worker_reports.push(report);
+                        let live = this.navigation_snapshot(cx);
+                        let pending =
+                            this.source_projection
+                                .navigation
+                                .as_ref()
+                                .is_some_and(|nav| {
+                                    nav.pending(&flight.key, live.as_ref().map(|(_, input)| input))
                                 });
-                            if admitted.is_some() {
-                                let provider = Arc::new(provider);
-                                this.source_projection.accepted = Some((current, provider.clone()));
-                                if this.source_projection.live && !this.source_find.active() {
-                                    editor.update(cx, |state, cx| {
-                                        state.set_projection_provider(Some(provider), cx)
-                                    });
+                        // Do NOT call destructive adopt on a stale job: the newer queued
+                        // request must remain pending and retain its own admission chance.
+                        if pending {
+                            match (produced, live) {
+                                (Ok((provider, completion)), Some((current, input)))
+                                    if current == binding =>
+                                {
+                                    let admitted =
+                                        this.source_projection.navigation.as_mut().and_then(
+                                            |nav| {
+                                                nav.session
+                                                    .get_mut()
+                                                    .adopt(completion, Some(&input))
+                                                    .ok()
+                                            },
+                                        );
+                                    if admitted.is_some() {
+                                        let provider = Arc::new(provider);
+                                        this.source_projection.accepted =
+                                            Some((current, provider.clone()));
+                                        if this.source_projection.live && !this.source_find.active()
+                                        {
+                                            editor.update(cx, |state, cx| {
+                                                state.set_projection_provider(Some(provider), cx)
+                                            });
+                                        }
+                                    }
                                 }
+                                _ => this.invalidate_source_navigation_inventory(),
                             }
                         }
-                        _ => this.invalidate_source_navigation_inventory(),
-                    }
-                }
-                this.start_source_projection(window, cx);
-                if this.source_projection_ready() {
-                    this.restore_source_navigation(window, cx);
-                }
-                cx.notify();
-            });
+                        this.start_source_projection(window, cx);
+                        if this.source_projection_ready() {
+                            this.restore_source_navigation(window, cx);
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         }));
     }
     pub(super) fn current_source_links(
@@ -383,7 +397,7 @@ mod tests {
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/projection-ui","records_dir":"records","managed":true});
         let store = editor_recovery::EditorRecovery::at(dir.clone(), &workspace).unwrap();
         let snapshot = |value: &str| json!({"schema":SCHEMA,"brain_id":workspace["brain_id"],"path":"notes/source.md","revision":format!("sha256:{:x}",Sha256::digest(value.as_bytes())),"content_base64":STANDARD.encode(value),"media_type":"text/markdown"});
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&workspace, &store, window, cx)
         });
@@ -462,7 +476,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/projection-consumer","records_dir":"records","managed":true});
         let store = editor_recovery::EditorRecovery::at(dir.path().to_owned(), &workspace).unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, visual) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&workspace, &store, window, cx)
         });

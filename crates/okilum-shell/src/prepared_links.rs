@@ -686,7 +686,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -877,7 +877,7 @@ mod tests {
                 )
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let readable = format!(
             "https://ru.wikipedia.org/wiki/{}",
             "ОченьДлинноеНазваниеМетрополитена".repeat(12)
@@ -1032,7 +1032,7 @@ mod tests {
                 )
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut text = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -1126,7 +1126,7 @@ mod tests {
     fn actual_shared_plugin_keeps_nested_missing_links_inert_with_positive_control(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let presentations = Arc::new(Mutex::new(Vec::new()));
         let (_, cx) = cx.add_window_view(|_, _| LinkFixture {
@@ -1180,7 +1180,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -1337,7 +1337,7 @@ mod tests {
         // #1234: double-click a word, Escape, double-click another word, Escape, then one click on
         // a link: the note stayed and only a second click opened the target.
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!(
@@ -1449,7 +1449,7 @@ mod tests {
         // selection check alone keeps a drag that ends on a link from navigating. Both with a
         // frame between the events and without one.
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -1547,7 +1547,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -1674,7 +1674,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -1737,7 +1737,7 @@ mod tests {
     #[gpui::test]
     fn adjacent_embed_setext_preparation_agrees_with_navigation_and_self(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -1795,7 +1795,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =

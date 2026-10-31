@@ -501,7 +501,7 @@ mod visual_tests {
         state: &Path,
     ) -> (Entity<Reader>, &'a mut VisualTestContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
