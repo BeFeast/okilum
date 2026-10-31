@@ -216,6 +216,106 @@ mod tests {
     }
 
     #[test]
+    fn native_html_and_pixels_keep_the_common_rich_text_and_image_precedence() {
+        let fixture = tempfile::tempdir().unwrap();
+        let image = png();
+        for (html, expected) in [
+            (
+                "<p><strong>Keep formatting</strong></p>",
+                router::Route::RichText,
+            ),
+            (
+                "<p><img src=\"https://example.invalid/image.png\"></p>",
+                router::Route::Image,
+            ),
+        ] {
+            let vault = fixture.path().join(format!("{expected:?}"));
+            std::fs::create_dir(&vault).unwrap();
+            let mimes = [
+                "text/html".into(),
+                "image/png".into(),
+                "text/plain;charset=utf-8".into(),
+                "text/plain".into(),
+            ];
+            let mut received = Vec::new();
+            let selection = receive_selection(&mimes, None, true, |mime, _| {
+                received.push(mime.to_owned());
+                Ok(match mime {
+                    "text/html" => html.as_bytes().to_vec(),
+                    "image/png" => image.clone(),
+                    "text/plain;charset=utf-8" => b"https://example.invalid/image.png".to_vec(),
+                    _ => panic!("only the preferred plain representation should be read"),
+                })
+            })
+            .unwrap();
+            assert_eq!(
+                received,
+                ["text/html", "image/png", "text/plain;charset=utf-8"]
+            );
+            let board = settle(Ok(selection), || {
+                panic!("a complete native offer must not fall back")
+            })
+            .unwrap();
+            assert!(board.types().iter().any(|kind| kind == "public.html"));
+            assert!(board.types().iter().any(|kind| kind == "public.png"));
+            let routed = router::route(&board, &context(&vault)).unwrap();
+            assert_eq!(routed.route, expected);
+            assert!(
+                routed.follow_up.is_none(),
+                "remote HTML source is not fetched when pixels win"
+            );
+            if expected == router::Route::RichText {
+                assert_eq!(routed.insert.as_deref(), Some("**Keep formatting**"));
+                assert!(routed.saved_files.is_empty());
+                assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 0);
+            } else {
+                assert_eq!(routed.saved_files.len(), 1);
+                let saved = &routed.saved_files[0];
+                assert_eq!(std::fs::read(saved).unwrap(), image);
+                assert_eq!(
+                    routed.insert.as_deref(),
+                    Some(format!("![[{}]]", saved.file_name().unwrap().to_str().unwrap()).as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_html_keeps_code_blocks_and_plain_files_literal_without_attachments() {
+        let vault = tempfile::tempdir().unwrap();
+        let plain = "<strong>literal markup</strong>\r\n<img src=\"file:///not-read.png\">";
+        let board = html_board(
+            b"<p><strong>Rich formatting</strong></p>",
+            Some(plain.as_bytes()),
+        );
+        let source = "```html\n\n```\n";
+        let mut code = context(vault.path());
+        code.source = source;
+        code.selection = 8..8;
+        let routed = router::route(&board, &code).unwrap();
+        assert_eq!(routed.route, router::Route::CodeBlockText);
+        assert_eq!(
+            routed.insert.as_deref(),
+            Some(plain.replace("\r\n", "\n").as_str())
+        );
+        assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
+        let mut file = context(vault.path());
+        file.note_rel = None;
+        let routed = router::route(&board, &file).unwrap();
+        assert_eq!(routed.route, router::Route::FileText);
+        assert_eq!(
+            routed.insert.as_deref(),
+            Some(plain.replace("\r\n", "\n").as_str())
+        );
+        assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
+        // Same actual offer becomes rich Markdown in an ordinary note.
+        let routed = router::route(&board, &context(vault.path())).unwrap();
+        assert_eq!(routed.route, router::Route::RichText);
+        assert_eq!(routed.insert.as_deref(), Some("**Rich formatting**"));
+        assert_eq!(std::fs::read_dir(vault.path()).unwrap().count(), 0);
+    }
+
+    #[test]
     fn native_html_local_image_publishes_an_embed_and_preserves_existing_files() {
         let fixture = tempfile::tempdir().unwrap();
         let source = fixture.path().join("source-noext");
