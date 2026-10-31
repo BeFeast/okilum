@@ -26,6 +26,13 @@ history and read anchor. A failed page offers an explicit retry instead of
 retrying during every repaint. New messages follow the bottom only while the
 reader remains there; **Jump to latest** resumes following after reading above.
 
+Model loading reads a bounded snapshot of the selected thread and the server's
+provider catalog. It verifies the project/thread binding before offering any
+change; unrelated threads are not loaded to discover one model selection.
+Disconnect clears the loading state, and replies from a replaced connection
+cannot overwrite the newer request. Existing provider-specific model options
+are retained when reselecting the current model.
+
 **Pair** first restores the origin-bound native session from OS credential
 storage. A device enrollment already registered there can be exchanged once
 and removed after the resulting session is saved. This does not convert MCP
