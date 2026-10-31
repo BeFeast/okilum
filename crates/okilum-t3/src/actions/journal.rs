@@ -142,6 +142,8 @@ impl Journal {
     }
     /// Explicit retry only. The original complete command is read back from disk
     /// before every call. Acknowledged operations never hit the network again.
+    /// Validate the whole journal: an unreadable entry could conceal another
+    /// operation for this target, so even an unrelated-looking file blocks send.
     pub fn send(
         &self,
         record: &Record,
@@ -464,6 +466,47 @@ mod tests {
             .collect();
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
         assert_eq!(journal(&dir).records().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn damaged_other_record_blocks_pending_approval_without_overwriting_either() {
+        let dir = Directory::new();
+        let journal = journal(&dir);
+        let stopped = journal
+            .prepare(Intent::Interrupt {
+                run_id: "finished-run".into(),
+            })
+            .unwrap();
+        journal.send(&stopped, |_| Ok(7)).unwrap();
+        let approval = journal.prepare(response("accept")).unwrap();
+        let stop_path = journal.path(&stopped.command).unwrap();
+        let approval_path = journal.path(&approval.command).unwrap();
+        let stop_bytes = std::fs::read(&stop_path).unwrap();
+        let approval_bytes = std::fs::read(&approval_path).unwrap();
+        let damaged = b"unreadable old receipt";
+        std::fs::write(&stop_path, damaged).unwrap();
+        assert!(journal
+            .send(&approval, |_| panic!(
+                "unknown journal identity must block dispatch"
+            ))
+            .is_err());
+        assert!(journal
+            .prepare(Intent::Dismiss {
+                request_id: "different-request".into()
+            })
+            .is_err());
+        assert_eq!(std::fs::read(&stop_path).unwrap(), damaged);
+        assert_eq!(std::fs::read(&approval_path).unwrap(), approval_bytes);
+        // Positive control: restoring the same validated receipt permits the
+        // original pending command, with no replacement identity.
+        std::fs::write(stop_path, stop_bytes).unwrap();
+        let acknowledged = journal
+            .send(&approval, |command| {
+                assert_eq!(command, &approval.command);
+                Ok(8)
+            })
+            .unwrap();
+        assert_eq!(acknowledged.sequence, Some(8));
     }
 
     #[test]
