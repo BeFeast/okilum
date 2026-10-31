@@ -47,4 +47,4 @@ jobs:
           printf 'nofile before: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
           ulimit -n "$(ulimit -Hn)"
           printf 'nofile for tests: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
-          tini -s -- bash scripts/ci/check-shared.sh
+          python3 scripts/ci/gate-step.py --name 'Run every shared suite' -- tini -s -- bash scripts/ci/check-shared.sh

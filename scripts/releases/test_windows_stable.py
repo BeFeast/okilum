@@ -37,11 +37,15 @@ def prepared():
 
 
 class ExactWindowsTests(unittest.TestCase):
+    def setUp(self):
+        for target, kwargs in [('windows_stable.Forgejo', {}), ('windows_stable.release_notes.merged_items', {'return_value': []})]:
+            stub = patch(target, **kwargs); stub.start(); self.addCleanup(stub.stop)
+
     def test_signed_exact_windows_ignores_mac_source_and_preserves_other_feeds(self):
         store = prepared(); before = dict(store.data)
         with patch.dict(os.environ, {'OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED': '1'}):
             w.execute(store, SOURCE, BUILD)
-        allowed = {f'{w.PREFIX}/stable/Setup.exe', f'{w.PREFIX}/stable/releases.stable.json',
+        allowed = {w.release_notes.key(SOURCE, 'windows', 'stable'), f'{w.PREFIX}/stable/Setup.exe', f'{w.PREFIX}/stable/releases.stable.json',
                    f'{w.PREFIX}/stable/BeFeast.Okilum-0.1.{BUILD}-beta-full.nupkg',
                    f'{w.PREFIX}/promotions/{BUILD}-{SOURCE}.json'}
         self.assertEqual(set(store.writes), allowed)
@@ -100,7 +104,7 @@ class ExactWindowsTests(unittest.TestCase):
 
     def test_workflow_routes_build_source_without_legacy_mac_lookup(self):
         text = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/releases.yml').read_text()
-        script = '\n'.join(line[10:] for line in text.split('        run: |\n', 1)[1].splitlines())
+        script = '\n'.join(line[10:] for line in text.split('        run: |\n', 1)[1].split('      - name:', 1)[0].splitlines())
         with tempfile.TemporaryDirectory() as directory:
             stub = Path(directory) / 'python'; stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n'); stub.chmod(0o755)
             env = {**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],

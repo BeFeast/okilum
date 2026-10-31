@@ -295,9 +295,9 @@ class Workflow(unittest.TestCase):
     def test_linux_dispatch_exits_before_any_legacy_build_or_cross_platform_path(self):
         workflow = Path(__file__).resolve().parents[2] / '.forgejo/workflows/releases.yml'
         text = workflow.read_text()
-        self.assertIn("inputs.build != '' && 'okilum-macos-release'", text)
+        self.assertIn("(inputs.build != '' || inputs.sync_stable) && 'okilum-macos-release'", text)
         self.assertIn('cancel-in-progress: false', text)
-        script = text.split('        run: |\n', 1)[1]
+        script = text.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
         script = '\n'.join(line[10:] for line in script.splitlines())
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
