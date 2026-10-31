@@ -10,7 +10,13 @@ static OkilumFolderOpen folderOpen;
 @implementation OkilumFolderService
 - (void)openFolderAsVault:(NSPasteboard *)board userData:(NSString *)data error:(NSString **)error {
     // Finder's legacy filename list and modern file URLs are both supported.
-    NSArray<NSURL *> *urls = nil;
+    NSArray<NSURL *> *urls = [board readObjectsForClasses:@[NSURL.class] options:@{}];
+    // A legacy filename representation may omit remote items from a mixed
+    // modern selection; count the complete URL selection before consulting it.
+    if (urls.count > 1) {
+        if (error) *error = @"Select exactly one local folder.";
+        return;
+    }
     id paths = [board propertyListForType:@"NSFilenamesPboardType"];
     if (paths != nil) {
         if ([paths isKindOfClass:NSArray.class]) {

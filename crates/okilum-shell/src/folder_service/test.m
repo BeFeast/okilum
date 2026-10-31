@@ -38,6 +38,7 @@ int main(void) {
             NSString *error = nil;
             received = nil;
             [provider openFolderAsVault:board userData:nil error:&error];
+            if (!error || received) fprintf(stderr, "Unexpected accepted selection: %s\n", selection.description.UTF8String);
             assert(error && !received);
         }
         assert([[NSString stringWithContentsOfFile:note encoding:NSUTF8StringEncoding error:NULL] isEqual:@"original"]);
