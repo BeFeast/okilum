@@ -18,6 +18,7 @@ struct Published {
     version: u64,
     warnings: Vec<okilum_core::vault::UnreadableEntry>,
     network: bool,
+    limited_external_refresh: bool,
 }
 
 pub(crate) struct Session {
@@ -75,6 +76,10 @@ impl Reader {
         let session = Arc::new(Mutex::new(Session {
             published: Published {
                 network: self.loading.as_ref().is_some_and(|load| load.network),
+                limited_external_refresh: self
+                    .loading
+                    .as_ref()
+                    .is_some_and(|load| load.limited_external_refresh),
                 vault: self.vault.clone(),
                 searcher,
                 tasks: self.tasks_index.clone().unwrap_or_default(),
@@ -172,12 +177,14 @@ impl Reader {
                 },
                 warnings: Vec::new(),
                 network: false,
+                limited_external_refresh: false,
                 network_waiting: false,
                 progress_revision: 0,
             });
         }
         if let Some(load) = self.loading.as_mut().filter(|load| !load.active) {
             load.network = published.network;
+            load.limited_external_refresh = published.limited_external_refresh;
             load.warnings = published.warnings;
         }
         self.shared_version = published.version;
@@ -224,6 +231,10 @@ impl Reader {
         shared.watcher = self.watcher.take();
         shared.published = Published {
             network: self.loading.as_ref().is_some_and(|load| load.network),
+            limited_external_refresh: self
+                .loading
+                .as_ref()
+                .is_some_and(|load| load.limited_external_refresh),
             vault: self.vault.clone(),
             searcher,
             tasks: self.tasks_index.clone().unwrap_or_default(),
@@ -461,4 +472,9 @@ fn persist(
         state.set_search_generation(Some(generation));
     }
     state.persist_delta(index)
+}
+
+#[cfg(test)]
+pub(crate) fn has_native_watcher(session: &Shared) -> bool {
+    session.lock().unwrap().watcher.is_some()
 }
