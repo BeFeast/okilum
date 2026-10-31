@@ -1,0 +1,74 @@
+[
+  {
+    "fixture": "empty",
+    "profile": "stock",
+    "status": "error",
+    "error": "source limit rejected before read/decode",
+    "exit_code": 1,
+    "wall_seconds": 0.0075,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-64",
+    "profile": "stock",
+    "status": "error",
+    "error": "parse: Invalid input: No 'meta' box: Cannot read full meta box",
+    "exit_code": 1,
+    "wall_seconds": 0.008,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-8",
+    "profile": "stock",
+    "status": "error",
+    "error": "parse: Invalid input: Unspecified: File size too small.",
+    "exit_code": 1,
+    "wall_seconds": 0.0073,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "not-heif",
+    "profile": "stock",
+    "status": "error",
+    "error": "parse: Invalid input: Unspecified: File size too small.",
+    "exit_code": 1,
+    "wall_seconds": 0.0079,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "source-over-50MiB",
+    "profile": "stock",
+    "status": "error",
+    "error": "source limit rejected before read/decode",
+    "exit_code": 1,
+    "wall_seconds": 0.0077,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "truncated-half",
+    "profile": "stock",
+    "status": "error",
+    "error": "decode: Invalid input: Unexpected end of file: Extent in iloc box references data outside of file bounds (points to file position 343)\n",
+    "exit_code": 1,
+    "wall_seconds": 0.0084,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "ispe-over64M",
+    "profile": "stock",
+    "status": "error",
+    "error": "pixel limit rejected before decode/output allocation",
+    "exit_code": 1,
+    "wall_seconds": 0.008,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "ispe-tiny-config-SPS-large",
+    "profile": "stock",
+    "status": "error",
+    "error": "decode: Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 16384\n",
+    "exit_code": 1,
+    "wall_seconds": 0.0081,
+    "gate": "PASS"
+  }
+]

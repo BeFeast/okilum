@@ -1,0 +1,13 @@
+--- a/libheif/plugins/decoder_libde265.cc
++++ b/libheif/plugins/decoder_libde265.cc
+@@ -380,6 +380,10 @@
+   do {
+     more = 0;
+     decode_err = de265_decode(decoder->ctx, &more);
++    if (decode_err == DE265_ERROR_CODED_PARAMETER_OUT_OF_RANGE) {
++      return {heif_error_Decoder_plugin_error, heif_suberror_Unspecified,
++              de265_get_error_text(decode_err)};
++    }
+     if (decode_err != DE265_OK) {
+       // printf("Error decoding: %s (%d)\n", de265_get_error_text(decode_err), decode_err);
+       break;

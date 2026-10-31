@@ -1,0 +1,210 @@
+{
+  "scope": "QA only; no adoption",
+  "preregistered_before_measurement": true,
+  "build_host": "baldr",
+  "jobs": 4,
+  "codec_revisions": {
+    "libde265": "7ba65889d3d6d8a0d99b5360b028243ba843be3a",
+    "libheif": "763bc8bb87788d64d39ece623ceed988de12dc5b"
+  },
+  "link": "existing CSP-profile static libheif.a + separate instrumented bounded libde265.a",
+  "results": {
+    "csp-bounded": {
+      "quality": {
+        "PASS": 9,
+        "UNKNOWN": 3
+      },
+      "finite_malformed": [
+        {
+          "fixture": "empty",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "source limit rejected before read/decode",
+          "exit_code": 1,
+          "wall_seconds": 0.0066,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "header-64",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "parse: Invalid input: No 'meta' box: Cannot read full meta box",
+          "exit_code": 1,
+          "wall_seconds": 0.0068,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "header-8",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "parse: Invalid input: Unspecified: File size too small.",
+          "exit_code": 1,
+          "wall_seconds": 0.007,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "not-heif",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "parse: Invalid input: Unspecified: File size too small.",
+          "exit_code": 1,
+          "wall_seconds": 0.0069,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "source-over-50MiB",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "source limit rejected before read/decode",
+          "exit_code": 1,
+          "wall_seconds": 0.0066,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "truncated-half",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "decode: Invalid input: Unexpected end of file: Extent in iloc box references data outside of file bounds (points to file position 343)\n",
+          "exit_code": 1,
+          "wall_seconds": 0.007,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "ispe-over64M",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "pixel limit rejected before decode/output allocation",
+          "exit_code": 1,
+          "wall_seconds": 0.0066,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "ispe-tiny-config-SPS-large",
+          "profile": "csp-bounded",
+          "status": "error",
+          "error": "decode: Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 16384\n",
+          "exit_code": 1,
+          "wall_seconds": 0.0069,
+          "gate": "PASS"
+        }
+      ],
+      "inband_oversize_error_gate": "FAIL",
+      "adoption": "NOT ACCEPTED"
+    },
+    "csp-bounded-strict": {
+      "quality": {
+        "PASS": 9,
+        "UNKNOWN": 3
+      },
+      "finite_malformed": [
+        {
+          "fixture": "empty",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "source limit rejected before read/decode",
+          "exit_code": 1,
+          "wall_seconds": 0.0063,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "header-64",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "parse: Invalid input: No 'meta' box: Cannot read full meta box",
+          "exit_code": 1,
+          "wall_seconds": 0.0066,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "header-8",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "parse: Invalid input: Unspecified: File size too small.",
+          "exit_code": 1,
+          "wall_seconds": 0.0065,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "not-heif",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "parse: Invalid input: Unspecified: File size too small.",
+          "exit_code": 1,
+          "wall_seconds": 0.0065,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "source-over-50MiB",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "source limit rejected before read/decode",
+          "exit_code": 1,
+          "wall_seconds": 0.0061,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "truncated-half",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "decode: Invalid input: Unexpected end of file: Extent in iloc box references data outside of file bounds (points to file position 343)\n",
+          "exit_code": 1,
+          "wall_seconds": 0.0066,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "ispe-over64M",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "pixel limit rejected before decode/output allocation",
+          "exit_code": 1,
+          "wall_seconds": 0.0063,
+          "gate": "PASS"
+        },
+        {
+          "fixture": "ispe-tiny-config-SPS-large",
+          "profile": "csp-bounded-strict",
+          "status": "error",
+          "error": "decode: Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 16384\n",
+          "exit_code": 1,
+          "wall_seconds": 0.0064,
+          "gate": "PASS"
+        }
+      ],
+      "inband_oversize_error_gate": "FAIL",
+      "adoption": "NOT ACCEPTED"
+    }
+  },
+  "files": {
+    "BOUNDED-EXPERIMENT.md": "10260d27981e52c99e6160c01634ce8cced81bc28a8a6355b555c9022fcb4892",
+    "BOUNDED-STRICT-EXPERIMENT.md": "6c07acecaa363866bac9664b1ec95d308d0ab776e585ce06238821635c9bafb2",
+    "BOUNDED-REPORT.md": "6504c378793a40770f00c2322b1419a26a16e689fd9b97e0d1086740a4b5b3bf",
+    "csp-bounded.patch": "9d9e2b0c5a13f67f31568d74d35e42daaa60d3fb7715b0608db81c41ae55bb95",
+    "csp-bounded-instrumented.patch": "5e3d31a18be84b3594ec65556a77e4b9564b3e0be5bd94aba4e25ad9c3edd8ea",
+    "bounded-parser.cc": "692171c5957c04c7227f7f03bc42a97b34057bf76489d69fe4949c91e835a49b",
+    "bounded-api.cc": "57e623f0af46beaf75bff0df505494807c43adc90675b37b656fd20c27c5cfec",
+    "make-bounded-controls.py": "9e04a3002efb5a8079164230146cfa4b2c48e1555045faf823d8a31e23df0986",
+    "decode-csp-bounded-strict.cc": "f1a9cdf1b562badf6658825f54d685773465dd0f95b0d98587f477af1881e1de",
+    "bounded-controls/boundary.annexb": "c40bc7be8754176f728a5682f1a55eb0b4043597f5b73fb8b65e955ddb73ed17",
+    "bounded-controls/boundary.nal": "4ea512b1395231cb1dfd6202d1a25c4000d5883da8c8f4664ea10bb743270483",
+    "bounded-controls/boundary.rbsp": "08abba20ffa9606e9fadaf3c66ba52e9e25dc0ac39d867a751eba06b978ca69f",
+    "bounded-controls/config-32.nal": "22bf29539359fda2e7cf6b1ac6ea7cd32fdd541aee62ef14aaa7cfb563a5adcf",
+    "bounded-controls/config-33.nal": "d401bb9065ed95f846dd79691eb9290fecda56de6846d0a5bf990cb663e30c25",
+    "bounded-controls/config-34.nal": "bbf43624c74096be0051b4f2f13122f8a04b7a66bf4fa7dc4581d29760003b9d",
+    "bounded-controls/inband-original.heic": "0d25ce82951c877d785bace50feb4e30ae8901e920d0e12c8b680faf67ad7f24",
+    "bounded-controls/inband-oversize.heic": "af9aba189f8dfe36456b73eef31844abfff90bfd58bf9c625a3d0417b34cf1bb",
+    "bounded-controls/manifest.json": "311690b6381288b833b5fb6e620e3fe7a5b87d06bf1e325cca8cb5001bed59a6",
+    "bounded-controls/original.annexb": "84bf81b72a2c3fafd3f05ef8422bae036604259af497a64b9fcce2e884a7bd31",
+    "bounded-controls/original.nal": "d401bb9065ed95f846dd79691eb9290fecda56de6846d0a5bf990cb663e30c25",
+    "bounded-controls/original.rbsp": "b9d317ca066e500ea2e817c9e0cfaa8c15065fe49de9efd401f7d83348c0ee2c",
+    "bounded-controls/oversize.annexb": "cc1391bda1aa8582adcacb6d0334e95cb4c7bd8d2765a6a3e0dea47fd6103463",
+    "bounded-controls/oversize.nal": "375d3cd720f960755addeab7ec22eb20c1f2104acb04b71688df2a44bc1d6e29",
+    "bounded-controls/oversize.rbsp": "ef94dcdd81b9d4b47ce50885a987c0e547c29b6baa0a2864d6558982d7fae799",
+    "bounded-controls/wide-boundary.annexb": "e2ed984260622d748fddae3f886153abf3389bfad8167bfff39b05a9a6f80244",
+    "bounded-controls/wide-boundary.nal": "0b7d44d003a06fa116df696c0e9739e42e048006877dd226f34e81445a51a01f",
+    "bounded-controls/wide-boundary.rbsp": "2d034f7f61008d90b314370c4a9212c25e1f053eed90726884a02dce21785174",
+    "bounded-results/corrupt-resource-csp-bounded-strict.json": "49a9ff30f929797855cd8cbd46f005ed9b9100e6cccf6557591b72f61e13a2cd",
+    "bounded-results/corrupt-resource-csp-bounded.json": "be278121c1b7b81094c9e92c7c93d853268df6e0b060c004837c9bc0be9a7b2f",
+    "bounded-results/valid-csp-bounded-strict.json": "ed1bc56478bbe31ef041770182629e01138ffeb44f6930248bff86eafd408a23",
+    "bounded-results/valid-csp-bounded.json": "4fbf028de9196ed8ecdb45e0d6126b669abbdcc423562a81ce9372a7818aac2a"
+  }
+}

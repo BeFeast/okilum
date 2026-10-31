@@ -1,0 +1,74 @@
+[
+  {
+    "fixture": "empty",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "source limit rejected before read/decode",
+    "exit_code": 1,
+    "wall_seconds": 0.0061,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-64",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "parse: Invalid input: No 'meta' box: Cannot read full meta box",
+    "exit_code": 1,
+    "wall_seconds": 0.006,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "header-8",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "parse: Invalid input: Unspecified: File size too small.",
+    "exit_code": 1,
+    "wall_seconds": 0.0061,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "not-heif",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "parse: Invalid input: Unspecified: File size too small.",
+    "exit_code": 1,
+    "wall_seconds": 0.0061,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "source-over-50MiB",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "source limit rejected before read/decode",
+    "exit_code": 1,
+    "wall_seconds": 0.0062,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "truncated-half",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "decode: Invalid input: Unexpected end of file: Extent in iloc box references data outside of file bounds (points to file position 343)\n",
+    "exit_code": 1,
+    "wall_seconds": 0.0064,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "ispe-over64M",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "pixel limit rejected before decode/output allocation",
+    "exit_code": 1,
+    "wall_seconds": 0.0064,
+    "gate": "PASS"
+  },
+  {
+    "fixture": "ispe-tiny-config-SPS-large",
+    "profile": "csp-bounded-failclosed",
+    "status": "error",
+    "error": "decode: Memory allocation error: Security limit exceeded: Image size 1280x720 exceeds the maximum image size 16384\n",
+    "exit_code": 1,
+    "wall_seconds": 0.0065,
+    "gate": "PASS"
+  }
+]

@@ -1,0 +1,166 @@
+[
+  {
+    "name": "heic-rs",
+    "version": "0.1.4",
+    "url": "https://crates.io/api/v1/crates/heic-rs/0.1.4/download",
+    "sha256": "8883c3bfa6b4ff19a40e52a6dc051c5612cbe21bf408fc6d4875e8dfd777cb66",
+    "matches_registry_checksum": true
+  },
+  {
+    "name": "heic-decoder",
+    "version": "0.1.1",
+    "url": "https://crates.io/api/v1/crates/heic-decoder/0.1.1/download",
+    "sha256": "61c012c388f9a8e5f2e611d67cfca513d4735fd298b648a9c5a61859e34d9bcf",
+    "matches_registry_checksum": true
+  },
+  {
+    "name": "heic-to",
+    "version": "1.5.2",
+    "url": "https://registry.npmjs.org/heic-to/-/heic-to-1.5.2.tgz",
+    "sha256": "a301b46a2e5a2a050c44d7c1655d63b4c17415312ebcfa82920e950baffc5a7f",
+    "npm_integrity": "sha512-8Fns+lZHAWmz5U5IUxDeXKwIf3foBoKNPLxxFY4B0MkLjNuomEIHCoDbDE+x/llFK3NCEO1cu4+n3iUKY+Svmw==",
+    "verified": true,
+    "libheif": "1.22.2",
+    "libde265": "1.0.16",
+    "reference": "src/lib/libheif-without-unsafe-eval.js",
+    "reference_sha256": "356068bb64947a76f1490ee139b2cab52f62e5e60d1945413aed9ab94c09e754",
+    "highlevel_selection": "dist/csp/heic-to.js decoder result[0], verified built source"
+  },
+  {
+    "name": "Rust dependencies",
+    "lockfile": "rust/Cargo.lock",
+    "sha256": "3393f411b922b6bcc86b776a46a4e11689951f23e8ffd9547336569110e1a0c4",
+    "packages": [
+      {
+        "name": "crossbeam-deque",
+        "version": "0.8.8",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+      },
+      {
+        "name": "crossbeam-epoch",
+        "version": "0.9.21",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
+      },
+      {
+        "name": "crossbeam-utils",
+        "version": "0.8.23",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
+      },
+      {
+        "name": "either",
+        "version": "1.19.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+      },
+      {
+        "name": "heic-decoder",
+        "version": "0.1.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "61c012c388f9a8e5f2e611d67cfca513d4735fd298b648a9c5a61859e34d9bcf"
+      },
+      {
+        "name": "heic-rs",
+        "version": "0.1.4",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "8883c3bfa6b4ff19a40e52a6dc051c5612cbe21bf408fc6d4875e8dfd777cb66"
+      },
+      {
+        "name": "itoa",
+        "version": "1.0.18",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+      },
+      {
+        "name": "memchr",
+        "version": "2.8.3",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+      },
+      {
+        "name": "okilum-heic-quality-spike",
+        "version": "0.1.0"
+      },
+      {
+        "name": "proc-macro2",
+        "version": "1.0.107",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
+      },
+      {
+        "name": "quote",
+        "version": "1.0.47",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
+      },
+      {
+        "name": "rayon",
+        "version": "1.12.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
+      },
+      {
+        "name": "rayon-core",
+        "version": "1.13.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+      },
+      {
+        "name": "serde",
+        "version": "1.0.229",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
+      },
+      {
+        "name": "serde_core",
+        "version": "1.0.229",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
+      },
+      {
+        "name": "serde_derive",
+        "version": "1.0.229",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+      },
+      {
+        "name": "serde_json",
+        "version": "1.0.154",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
+      },
+      {
+        "name": "syn",
+        "version": "3.0.9",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
+      },
+      {
+        "name": "thiserror",
+        "version": "2.0.21",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+      },
+      {
+        "name": "thiserror-impl",
+        "version": "2.0.21",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
+      },
+      {
+        "name": "unicode-ident",
+        "version": "1.0.27",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+      },
+      {
+        "name": "zmij",
+        "version": "1.0.23",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+      }
+    ]
+  }
+]

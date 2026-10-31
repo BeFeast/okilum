@@ -1,0 +1,24 @@
+[
+  {
+    "label": "original",
+    "exit_code": 0,
+    "stdout": "{\"status\":\"decoded\",\"width\":1280,\"height\":720,\"first_item_id\":1002,\"first_is_primary\":true,\"top_level_images\":1,\"pixel_limit\":64000000,\"libheif\":\"1.22.2\",\"libde265\":\"1.0.16\"}\n",
+    "stderr": "QA_DERIVED_GEOMETRY 1280 720\nQA_DERIVED_GEOMETRY 1280 720\nQA_FRAME_ALLOCATION 1280 720\n",
+    "rgba_exists": true,
+    "rgba_sha256": "fdde142de119c50bdc43fefa88e0fc6d111772d6e18fd902dae88933ad76af68",
+    "geometry_markers": 2,
+    "frame_markers": 1,
+    "oversized_marker_present": false
+  },
+  {
+    "label": "oversize",
+    "exit_code": 1,
+    "stdout": "{\"status\":\"error\",\"error\":\"decode: Decoder plugin generated an error: Unspecified: coded parameter out of range\"}\n",
+    "stderr": "QA_DERIVED_GEOMETRY 1280 720\n",
+    "rgba_exists": false,
+    "rgba_sha256": null,
+    "geometry_markers": 1,
+    "frame_markers": 0,
+    "oversized_marker_present": false
+  }
+]

@@ -1,0 +1,864 @@
+[
+  {
+    "fixture": "nokia-C002.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 1280,
+      "height": 720,
+      "images": [
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.6286
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 58,
+        "height": 720,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 720,
+          "probe_width": 1280,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 1280,
+        "exit_code": 0,
+        "wall_seconds": 0.0603,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 1.7337532552083332,
+          "rgb_max_absolute_delta": 31,
+          "rgb_changed_channels": 2287235,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 921600
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 55,
+        "height": 720,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 720,
+          "probe_width": 1280,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 1280,
+        "exit_code": 0,
+        "wall_seconds": 0.0588,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 1.7388606770833333,
+          "rgb_max_absolute_delta": 32,
+          "rgb_changed_channels": 2291743,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 921600
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-C006.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 1280,
+      "height": 720,
+      "images": [
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": true,
+          "alpha": true
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.6819
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 65,
+        "height": 720,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "has_alpha": true,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 720,
+          "probe_width": 1280,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 1280,
+        "exit_code": 0,
+        "wall_seconds": 0.0679,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 1.7337532552083332,
+          "rgb_max_absolute_delta": 31,
+          "rgb_changed_channels": 2287235,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 921600
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 64,
+        "height": 720,
+        "metadata": {
+          "alpha_bit_depth": 8,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 720,
+          "probe_width": 1280,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 1280,
+        "exit_code": 0,
+        "wall_seconds": 0.0666,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 1.7388606770833333,
+          "rgb_max_absolute_delta": 32,
+          "rgb_changed_channels": 2291743,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 921600
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-C007.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 1280,
+      "height": 720,
+      "images": [
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.6373
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 221,
+        "height": 1440,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 1440,
+          "coded_width": 2560,
+          "has_alpha": false,
+          "is_grid": true,
+          "mirror": "None",
+          "probe_height": 1440,
+          "probe_width": 2560,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 2560,
+        "exit_code": 0,
+        "wall_seconds": 0.2239,
+        "quality": {
+          "verdict": "FAIL",
+          "reason": "dimensions/transforms differ"
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 113,
+        "height": 1440,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 1440,
+          "coded_width": 2560,
+          "probe_height": 1440,
+          "probe_width": 2560,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 2560,
+        "exit_code": 0,
+        "wall_seconds": 0.119,
+        "quality": {
+          "verdict": "FAIL",
+          "reason": "dimensions/transforms differ"
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-C008.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 1280,
+      "height": 720,
+      "images": [
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.6738
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "error": "probe: required box `hvcC` is missing",
+        "status": "error",
+        "exit_code": 1,
+        "wall_seconds": 0.0022,
+        "quality": {
+          "verdict": "FAIL",
+          "reason": "candidate did not decode"
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 56,
+        "height": 1280,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 1280,
+          "probe_width": 720,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 720,
+        "exit_code": 0,
+        "wall_seconds": 0.0586,
+        "quality": {
+          "verdict": "FAIL",
+          "reason": "dimensions/transforms differ"
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-C013.heic",
+    "reference": {
+      "status": "error",
+      "error": "Error: HEIF processing error",
+      "exit_code": 1,
+      "wall_seconds": 0.2369
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 57,
+        "height": 300,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 300,
+          "probe_width": 300,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 300,
+        "exit_code": 0,
+        "wall_seconds": 0.0602,
+        "quality": {
+          "verdict": "UNKNOWN",
+          "reason": "reference did not decode"
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 52,
+        "height": 300,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 300,
+          "probe_width": 300,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 300,
+        "exit_code": 0,
+        "wall_seconds": 0.0546,
+        "quality": {
+          "verdict": "UNKNOWN",
+          "reason": "reference did not decode"
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-C014.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 1280,
+      "height": 720,
+      "images": [
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": false,
+          "alpha": false
+        },
+        {
+          "width": 300,
+          "height": 300,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.7078
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "error": "probe: required box `hvcC` is missing",
+        "status": "error",
+        "exit_code": 1,
+        "wall_seconds": 0.003,
+        "quality": {
+          "verdict": "FAIL",
+          "reason": "candidate did not decode"
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 54,
+        "height": 300,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 300,
+          "probe_width": 300,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 300,
+        "exit_code": 0,
+        "wall_seconds": 0.0581,
+        "quality": {
+          "verdict": "FAIL",
+          "reason": "dimensions/transforms differ"
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-C042.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 1280,
+      "height": 720,
+      "images": [
+        {
+          "width": 1280,
+          "height": 720,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.6897
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 65,
+        "height": 720,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "Some(LeftRight)",
+          "probe_height": 720,
+          "probe_width": 1280,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 1280,
+        "exit_code": 0,
+        "wall_seconds": 0.0679,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 99.955283203125,
+          "rgb_max_absolute_delta": 255,
+          "rgb_changed_channels": 2740303,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 921600
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 59,
+        "height": 720,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 720,
+          "probe_width": 1280,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 1280,
+        "exit_code": 0,
+        "wall_seconds": 0.0627,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 1.7388606770833333,
+          "rgb_max_absolute_delta": 32,
+          "rgb_changed_channels": 2291743,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 921600
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-MIAF002.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 2048,
+      "height": 2048,
+      "images": [
+        {
+          "width": 2048,
+          "height": 2048,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 1.1073
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 93,
+        "height": 2048,
+        "metadata": {
+          "bit_depth": 10,
+          "coded_height": 2048,
+          "coded_width": 2048,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 2048,
+          "probe_width": 2048,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 2048,
+        "exit_code": 0,
+        "wall_seconds": 0.0958,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 6.79286805788676,
+          "rgb_max_absolute_delta": 26,
+          "rgb_changed_channels": 11902425,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 4194304
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 126,
+        "height": 2048,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 10,
+          "chroma_format": 1,
+          "coded_height": 2048,
+          "coded_width": 2048,
+          "probe_height": 2048,
+          "probe_width": 2048,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 2048,
+        "exit_code": 0,
+        "wall_seconds": 0.1371,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 6.791923522949219,
+          "rgb_max_absolute_delta": 26,
+          "rgb_changed_channels": 11902022,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 4194304
+        }
+      }
+    }
+  },
+  {
+    "fixture": "nokia-MIAF007.heic",
+    "reference": {
+      "status": "error",
+      "error": "Error: HEIF processing error",
+      "exit_code": 1,
+      "wall_seconds": 0.2732
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 65,
+        "height": 640,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "Some(LeftRight)",
+          "probe_height": 640,
+          "probe_width": 360,
+          "rotation": "Ccw90"
+        },
+        "status": "decoded",
+        "width": 360,
+        "exit_code": 0,
+        "wall_seconds": 0.0682,
+        "quality": {
+          "verdict": "UNKNOWN",
+          "reason": "reference did not decode"
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 64,
+        "height": 640,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 720,
+          "coded_width": 1280,
+          "probe_height": 640,
+          "probe_width": 360,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 360,
+        "exit_code": 0,
+        "wall_seconds": 0.0678,
+        "quality": {
+          "verdict": "UNKNOWN",
+          "reason": "reference did not decode"
+        }
+      }
+    }
+  },
+  {
+    "fixture": "rainbow-451x461.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 451,
+      "height": 461,
+      "images": [
+        {
+          "width": 451,
+          "height": 461,
+          "primary": true,
+          "alpha": false
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.4289
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 7,
+        "height": 461,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 462,
+          "coded_width": 452,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 461,
+          "probe_width": 451,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 451,
+        "exit_code": 0,
+        "wall_seconds": 0.01,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 8.180477864727376,
+          "rgb_max_absolute_delta": 28,
+          "rgb_changed_channels": 445537,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 207911
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 7,
+        "height": 461,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 462,
+          "coded_width": 452,
+          "probe_height": 461,
+          "probe_width": 451,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 451,
+        "exit_code": 0,
+        "wall_seconds": 0.0105,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 0.281434524067189,
+          "rgb_max_absolute_delta": 5,
+          "rgb_changed_channels": 159561,
+          "alpha_mismatched_pixels": 0,
+          "pixels": 207911
+        }
+      }
+    }
+  },
+  {
+    "fixture": "with-alpha-512x512.heic",
+    "reference": {
+      "status": "decoded",
+      "width": 512,
+      "height": 512,
+      "images": [
+        {
+          "width": 512,
+          "height": 512,
+          "primary": true,
+          "alpha": true
+        }
+      ],
+      "libheif": "1.22.2",
+      "exit_code": 0,
+      "wall_seconds": 0.4269
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 10,
+        "height": 512,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 512,
+          "coded_width": 512,
+          "has_alpha": true,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 512,
+          "probe_width": 512,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 512,
+        "exit_code": 0,
+        "wall_seconds": 0.0132,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 1.4364560445149739,
+          "rgb_max_absolute_delta": 67,
+          "rgb_changed_channels": 105919,
+          "alpha_mismatched_pixels": 4076,
+          "pixels": 262144
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 17,
+        "height": 512,
+        "metadata": {
+          "alpha_bit_depth": 8,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 512,
+          "coded_width": 512,
+          "probe_height": 512,
+          "probe_width": 512,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 512,
+        "exit_code": 0,
+        "wall_seconds": 0.0211,
+        "quality": {
+          "verdict": "FAIL",
+          "rgb_mean_absolute_delta": 0.20055643717447916,
+          "rgb_max_absolute_delta": 59,
+          "rgb_changed_channels": 35570,
+          "alpha_mismatched_pixels": 4076,
+          "pixels": 262144
+        }
+      }
+    }
+  },
+  {
+    "fixture": "clap_cropped.heic",
+    "reference": {
+      "status": "error",
+      "error": "Error: HEIF processing error",
+      "exit_code": 1,
+      "wall_seconds": 0.3368
+    },
+    "candidates": {
+      "heic-rs": {
+        "candidate": "heic-rs",
+        "elapsed_ms": 2,
+        "height": 64,
+        "metadata": {
+          "bit_depth": 8,
+          "coded_height": 256,
+          "coded_width": 256,
+          "has_alpha": false,
+          "is_grid": false,
+          "mirror": "None",
+          "probe_height": 64,
+          "probe_width": 64,
+          "rotation": "None"
+        },
+        "status": "decoded",
+        "width": 64,
+        "exit_code": 0,
+        "wall_seconds": 0.0056,
+        "quality": {
+          "verdict": "UNKNOWN",
+          "reason": "reference did not decode"
+        }
+      },
+      "heic-decoder": {
+        "candidate": "heic-decoder",
+        "elapsed_ms": 2,
+        "height": 64,
+        "metadata": {
+          "alpha_bit_depth": null,
+          "bit_depth": 8,
+          "chroma_format": 1,
+          "coded_height": 256,
+          "coded_width": 256,
+          "probe_height": 64,
+          "probe_width": 64,
+          "safety_note": "public decode has fixed 268M ceiling; primary probe wrapper is not proof of a 64M limit for all tiles/auxiliary images"
+        },
+        "status": "decoded",
+        "width": 64,
+        "exit_code": 0,
+        "wall_seconds": 0.0059,
+        "quality": {
+          "verdict": "UNKNOWN",
+          "reason": "reference did not decode"
+        }
+      }
+    }
+  }
+]
