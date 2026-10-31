@@ -73,6 +73,18 @@ pub fn save_remote_image_with(
     stamp: &str,
     options: super::image_import::Options,
 ) -> Result<super::image_import::Imported, DownloadError> {
+    let (bytes, extension) = fetch_image(url)?;
+    let name = file_name(url, extension, stamp);
+    super::image_import::save(folder, &name, &bytes, options).map_err(DownloadError::Save)
+}
+
+/// Explicit Copy image shares the paste downloader's network and size policy
+/// without creating an attachment or changing a note.
+pub(crate) fn fetch_remote_image(url: &str) -> Result<Vec<u8>, DownloadError> {
+    fetch_image(url).map(|(bytes, _)| bytes)
+}
+
+fn fetch_image(url: &str) -> Result<(Vec<u8>, &'static str), DownloadError> {
     let response = client()
         .ok_or(DownloadError::Request)?
         .get(url)
@@ -100,8 +112,7 @@ pub fn save_remote_image_with(
         return Err(DownloadError::TooLarge);
     }
     let extension = image_extension(content_type.as_deref(), &bytes)?;
-    let name = file_name(url, extension, stamp);
-    super::image_import::save(folder, &name, &bytes, options).map_err(DownloadError::Save)
+    Ok((bytes, extension))
 }
 
 /// The file extension for a response: from its `image/*` content type, or

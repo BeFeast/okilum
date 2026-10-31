@@ -665,11 +665,18 @@ impl Reader {
                         .is_none_or(|editing| editing.input.entity_id() != input.entity_id())
                     || input.read(cx).source_stamp() != click.stamp
                     || click.event.button != MouseButton::Left
-                    || !click.event.modifiers.platform
+                    || !(if cfg!(target_os = "macos") {
+                        click.event.modifiers.platform
+                    } else {
+                        click.event.modifiers.control || click.event.modifiers.platform
+                    })
                 {
                     return;
                 }
                 let source = input.read(cx).value().to_string();
+                if this.open_source_image_at(&source, click.offset.0, window, cx) {
+                    return;
+                }
                 let Some(link) = okilum_core::document_links::parse_in_vault(
                     &source,
                     &this.vault,
@@ -806,7 +813,8 @@ impl Reader {
                 }
             },
         );
-        let (menu_facts, menu_watch) = reader_reminder::MenuFacts::watch(&input, cx);
+        let (menu_facts, menu_watch) =
+            reader_reminder::MenuFacts::watch(self, &input, !plain_file, cx);
         let live_preview =
             live_preview::LivePreview::new(self, cx.entity_id(), &store, &input, !plain_file);
         self.editing = Some(Editing {

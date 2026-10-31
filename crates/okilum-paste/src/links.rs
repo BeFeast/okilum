@@ -14,20 +14,24 @@ pub fn single_url(text: &str) -> Option<&str> {
     if t.is_empty() || t.len() > 8192 || t.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
-    let lower = t.get(..t.len().min(12))?.to_ascii_lowercase();
-    let ok = if let Some(rest) = ["http://", "https://"]
-        .iter()
-        .find_map(|p| lower.strip_prefix(p).map(|_| &t[p.len()..]))
-    {
+    // Schemes are ASCII: comparing bytes never splits a codepoint, and an
+    // ASCII match ends on a char boundary.
+    let scheme = |p: &str| {
+        t.as_bytes()
+            .get(..p.len())
+            .is_some_and(|b| b.eq_ignore_ascii_case(p.as_bytes()))
+    };
+    let ok = if let Some(p) = ["http://", "https://"].into_iter().find(|p| scheme(p)) {
         // A host is required.
-        rest.chars()
+        t[p.len()..]
+            .chars()
             .next()
             .is_some_and(|c| c.is_alphanumeric() || c == '[')
-    } else if lower.starts_with("mailto:") {
+    } else if scheme("mailto:") {
         t[7..].contains('@')
-    } else if lower.starts_with("obsidian://") {
+    } else if scheme("obsidian://") {
         t.len() > 11
-    } else if lower.starts_with("file://") {
+    } else if scheme("file://") {
         t.len() > 7
     } else {
         false
@@ -209,6 +213,38 @@ mod tests {
         assert_eq!(single_url("example.com"), None);
         assert_eq!(single_url("https://"), None);
         assert_eq!(single_url("ftp://x.org"), None);
+    }
+
+    /// Byte 12 of each URL falls inside a multi-byte codepoint.
+    #[test]
+    fn unicode_urls() {
+        for url in [
+            "https://café.fr/menu",
+            "http://пример.рф",
+            "https://日本語.jp",
+            "mailto:andrü@x.de",
+        ] {
+            assert_eq!(single_url(url), Some(url), "{url}");
+        }
+        assert_eq!(
+            single_url("HTTPS://Example.com"),
+            Some("HTTPS://Example.com")
+        );
+        assert_eq!(single_url("MailTo:a@b.org"), Some("MailTo:a@b.org"));
+        // Rejections stay: invalid scheme, empty host, whitespace or
+        // control characters, overlong input.
+        assert_eq!(single_url("ftp://café.fr"), None);
+        assert_eq!(single_url("httpé://x.org"), None);
+        assert_eq!(single_url("пример.рф"), None);
+        assert_eq!(single_url("http://"), None);
+        assert_eq!(single_url("https:///пример"), None);
+        assert_eq!(single_url("mailto:andrü"), None);
+        assert_eq!(single_url("http://пример.рф/a b"), None);
+        assert_eq!(single_url("http://пример.рф/\u{7}x"), None);
+        assert_eq!(single_url("http://пример.рф/\u{85}x"), None);
+        let long = format!("https://café.fr/{}", "é".repeat(4096));
+        assert!(long.len() > 8192);
+        assert_eq!(single_url(&long), None);
     }
 
     #[test]
