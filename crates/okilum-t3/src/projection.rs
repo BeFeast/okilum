@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub mod presentation;
 #[cfg(test)]
 mod tests;
+pub mod timeline;
 mod visibility;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

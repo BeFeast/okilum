@@ -689,6 +689,9 @@ mod tests {
     fn history_recall_is_durable_and_same_text_thread_switch_ends_browsing(
         cx: &mut gpui::TestAppContext,
     ) {
+        // The real serialized disk worker completes draft barriers on its OS
+        // thread; use GPUI's documented mixed real-I/O test mode.
+        cx.executor().allow_parking();
         cx.update(crate::test_init);
         let state = tempfile::tempdir().unwrap();
         let mut project = None;

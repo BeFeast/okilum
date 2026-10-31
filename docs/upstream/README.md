@@ -93,3 +93,15 @@ Carry it in the #1814 vendor update (Okilum #1901).
 | Patch | Upstream wave | Reason | Body |
 |---|---|---|---|
 | 0103 | [#1814](https://git.oklabs.uk/BeFeast/okilum/issues/1814), candidate | Additive `SourceProjection::line_indents` lets projected list, task and quote lines wrap under their text, as Source does with leading whitespace; quote bars repeat on wrapped rows. GPUI core unchanged. | [0103.md](0103.md) |
+
+## Pending 0106–0108 — input geometry and message anchors
+
+| Patch | Reason | Body |
+|---|---|---|
+| 0106 | Read first/last visual-row caret geometry without taking native multiline movement away from the input. | [0106.md](0106.md) |
+| 0107 | Expose retained message-row anchors and suspend tail following during bounded group disclosures. | [0107.md](0107.md) |
+| 0108 | Use the rope index for native UTF-16 ranges and line-local projected grapheme boundaries. | [0108.md](0108.md) |
+
+0108 changes methods untouched by 0103–0107 and commutes with those patches.
+Its numbering resolves the native-range/projected-indent 0103 collision while
+preserving the cumulative vendor tree and the existing order of later patches.

@@ -49,22 +49,21 @@ impl Feed {
     pub(super) fn refresh_copy_terminals(&mut self) -> Vec<u64> {
         let mut next = HashSet::new();
         let mut runs = HashSet::new();
-        let mut unkeyed_seen = false;
+        let mut unkeyed_seen = HashSet::new();
         let mut response_runs = HashSet::new();
-        let mut after_latest_user = true;
+        let mut seen_users = HashSet::new();
         // Native history pages acquire new local positions, so numeric position
         // order is not timeline order. Follow the retained virtual-list order.
-        for (position, message) in self.rows.iter().rev().filter_map(|row| match row {
-            Row::Message(position) => self
-                .messages
+        for (position, message) in self.canonical_rows.iter().rev().filter_map(|position| {
+            self.messages
                 .get(position)
-                .map(|message| (*position, message)),
-            Row::Retained(_) => None,
+                .map(|message| (*position, message))
         }) {
+            let source = self.groups.source_thread(position).unwrap_or("");
             if message.kind == MessageKind::Chat && message.user {
-                after_latest_user = false;
+                seen_users.insert(source);
             }
-            if after_latest_user {
+            if !seen_users.contains(source) {
                 if let Some(run) = &message.run_id {
                     response_runs.insert(run.clone());
                 }
@@ -73,13 +72,12 @@ impl Feed {
                 continue;
             }
             if message.user {
-                unkeyed_seen = false;
+                unkeyed_seen.remove(source);
             } else if let Some(run) = &message.run_id {
-                if runs.insert(run.as_str()) {
+                if runs.insert((source, run.as_str())) {
                     next.insert(position);
                 }
-            } else if !unkeyed_seen {
-                unkeyed_seen = true;
+            } else if unkeyed_seen.insert(source) {
                 next.insert(position);
             }
         }
@@ -121,11 +119,21 @@ impl Feed {
         } else {
             self.copy_terminals.contains(&position)
                 && message.nonblank_text
+                && !self.groups.streaming_message(position)
                 && matches!(
                     message.status.as_ref(),
                     "completed" | "interrupted" | "cancelled" | "failed"
                 )
                 && !message.run_id.as_ref().is_some_and(|run| {
+                    if self
+                        .groups
+                        .bound_thread
+                        .as_deref()
+                        .zip(self.groups.source_thread(position))
+                        .is_some_and(|(bound, source)| bound != source)
+                    {
+                        return false;
+                    }
                     self.copy_active_runs.contains(run)
                         || (!self.copy_active_runs.is_empty()
                             && self.copy_response_runs.contains(run))
@@ -602,6 +610,63 @@ mod tests {
                     .as_deref(),
                 Some("Final answer")
             )
+        });
+    }
+
+    #[gpui::test]
+    fn inherited_same_named_runs_keep_source_qualified_copy_authority(cx: &mut TestAppContext) {
+        use okilum_t3::projection::{Changes, TurnRow};
+        let (feed, visual) = fixture(cx, Vec::new());
+        let make = |thread: &str| {
+            Arc::new(TurnRow {
+                key: RowKey {
+                    thread: thread.into(),
+                    item: "answer".into(),
+                },
+                local: thread == "thread",
+                item: Arc::new(
+                    serde_json::json!({"id":"answer","threadId":thread,"type":"assistant_message","ordinal":1,
+                "runId":"same-run","status":"completed","text":format!("Answer from {thread}")}),
+                ),
+            })
+        };
+        let own = make("thread");
+        let inherited = make("ancestor");
+        feed.update(visual, |feed, cx| {
+            feed.set_timeline_runs("thread", &[], None, cx);
+            feed.apply_native(
+                Changes {
+                    rows: vec![inherited.clone(), own.clone()],
+                    order: Some(vec![inherited.key.clone(), own.key.clone()]),
+                    ..Default::default()
+                },
+                &[],
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        feed.read_with(visual, |feed, _| {
+            assert_eq!(
+                feed.copy_text(feed.native_positions[&own.key]).as_deref(),
+                Some("Answer from thread")
+            );
+            assert_eq!(
+                feed.copy_text(feed.native_positions[&inherited.key])
+                    .as_deref(),
+                Some("Answer from ancestor")
+            );
+        });
+        feed.update(visual, |feed, cx| {
+            feed.set_copy_active_runs(["same-run".into()], cx)
+        });
+        visual.run_until_parked();
+        feed.read_with(visual, |feed, _| {
+            assert!(feed.copy_text(feed.native_positions[&own.key]).is_none());
+            assert_eq!(
+                feed.copy_text(feed.native_positions[&inherited.key])
+                    .as_deref(),
+                Some("Answer from ancestor")
+            );
         });
     }
 }

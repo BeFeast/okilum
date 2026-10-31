@@ -1,0 +1,31 @@
+--- a/crates/component/src/message_scroller.rs
++++ b/crates/component/src/message_scroller.rs
+@@ -154,6 +154,28 @@
+         self.list_state.set_follow_mode(FollowMode::Tail);
+         self.list_state.scroll_to_end();
+         cx.notify();
++    }
++
++    /// Current item and pixel offset, suitable for a source-keyed anchor.
++    pub fn logical_scroll_top(&self) -> ListOffset {
++        self.list_state.logical_scroll_top()
++    }
++
++    /// Suspend tail following without changing the user's current position.
++    pub fn pause_follow(&mut self, cx: &mut Context<Self>) {
++        self.list_state.set_follow_mode(FollowMode::Normal);
++        cx.notify();
++    }
++
++    /// Restore an explicit logical anchor without rearming tail following.
++    pub fn scroll_to_offset(&mut self, offset: ListOffset, cx: &mut Context<Self>) -> bool {
++        if offset.item_ix >= self.list_state.item_count() {
++            return false;
++        }
++        self.list_state.set_follow_mode(FollowMode::Normal);
++        self.list_state.scroll_to(offset);
++        cx.notify();
++        true
+     }
+
+     fn valid_range(&self, range: &Range<usize>) -> bool {
