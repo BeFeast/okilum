@@ -80,6 +80,9 @@ fn external_edit_duplicate_id_and_changed_owner_refuse_stale_writes_without_losi
     assert!(current
         .save(&Change::Edit(id.clone(), draft("Stale")))
         .is_err());
+    assert!(current
+        .save(&Change::Edit(id.clone(), draft("Original")))
+        .is_err());
     assert!(current.undo(&old).is_err());
     assert_eq!(std::fs::read(area.path()).unwrap(), external);
     let current = Session::load(&area.0).unwrap();

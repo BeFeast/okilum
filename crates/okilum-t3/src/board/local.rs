@@ -160,7 +160,7 @@ impl Session {
             projection,
         })
     }
-    fn check_owners(&self) -> Result<()> {
+    fn check_sources(&self) -> Result<()> {
         for (name, expected) in [("project", &self.project), ("board", &self.board)] {
             let actual = area_files::read(&self.area, name)?
                 .context("Project or Board disappeared; reload before saving")?;
@@ -169,6 +169,19 @@ impl Session {
                 "{name} changed; reload before saving"
             );
         }
+        // Document::replace may return early for unchanged output. A stale
+        // no-op Save or Undo must still report the external edit to the user.
+        let actual = document(&self.area)?;
+        ensure!(
+            match (&actual, &self.document) {
+                (None, None) => true,
+                (Some(actual), Some(expected)) => {
+                    actual.path == expected.path && actual.source == expected.source
+                }
+                _ => false,
+            },
+            "Local Board changed; reload before saving"
+        );
         Ok(())
     }
     pub fn preview(&self, change: &Change) -> Result<String> {
@@ -290,7 +303,7 @@ impl Session {
     }
     pub fn save(&self, change: &Change) -> Result<Self> {
         let updated = self.preview(change)?;
-        self.check_owners()?;
+        self.check_sources()?;
         if let Some(doc) = &self.document {
             doc.replace(&updated)?;
         } else {
@@ -308,7 +321,7 @@ impl Session {
                 file.write_all(updated.as_bytes())?;
                 file.sync_all()?;
                 drop(file);
-                self.check_owners()?;
+                self.check_sources()?;
                 ensure!(
                     document(&self.area)?.is_none(),
                     "Local Board appeared; reload before saving"
@@ -324,7 +337,7 @@ impl Session {
         Self::load(&self.area)
     }
     pub fn undo(&self, previous: &str) -> Result<Self> {
-        self.check_owners()?;
+        self.check_sources()?;
         parse(previous)?;
         self.document
             .as_ref()
