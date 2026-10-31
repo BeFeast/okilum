@@ -418,6 +418,16 @@ fn standalone_fenced_source(source: &str) -> String {
 }
 
 impl CachedProvider {
+    /// The ranges drawn as rendered blocks in `source` when the caret and
+    /// selection do not touch them: tables, images, callouts and code (#1642).
+    #[allow(dead_code)] // The bidi and marker examples include this file without the editor.
+    pub(crate) fn rendered_blocks(&self, source: &SourceSnapshot) -> Vec<Range<usize>> {
+        if source.text.len() > source_classifier::MAX_BYTES {
+            return Vec::new();
+        }
+        self.current_tables(&core_snapshot(source), &source.text)
+    }
+
     /// Rendered block ranges (tables, images) in `text`, the current revision. The classified revision
     /// gives them exactly; a newer one, not yet classified, finds each table
     /// by its exact bytes nearest its old place, so tables stay rendered while

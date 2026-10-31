@@ -526,6 +526,13 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("f2", RenameNote, Some("Reader && !ReaderTree && !Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameNote, Some("ReaderSource > Input")),
+        // #1642: F2 next to a rendered Live Preview block opens its source;
+        // elsewhere it falls through to Rename above. Bound later, tried first.
+        KeyBinding::new(
+            "f2",
+            reader_editor::OpenRenderedBlock,
+            Some("ReaderSource > Input"),
+        ),
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(any(unix, windows))]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
@@ -2787,6 +2794,10 @@ impl Reader {
         // New note / New folder goes to the root (#1512).
         if self.tree_focus.is_focused(window) && self.tree.cursor.is_some() {
             self.clear_tree_selection(cx);
+            return;
+        }
+        // #1642: an open Live Preview block is drawn rendered again first.
+        if self.close_rendered_block(cx) {
             return;
         }
         #[cfg(any(unix, windows))]
