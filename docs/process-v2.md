@@ -10,7 +10,8 @@ acceptance. P0/P1 releases may run outside that cycle.
 It uses an exact-head hosted matrix: Linux, Windows and macOS desktop/supervisor
 builds plus the deterministic okilum-paste library unit tests. The aggregate
 fails if any platform fails, skips or times out. The bridge is bounded to ten
-minutes including queue time; the platform job has a nine-minute bound. Cold
+minutes including queue time; the platform job has a seven-minute bound (two minutes for hosted queue,
+one minute for checkout/transport). Cold
 caches or unavailable hosted capacity are real failures, never fallback success.
 The first production timing must be measured rather than inferred from timeout.
 
