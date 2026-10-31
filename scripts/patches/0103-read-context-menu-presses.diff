@@ -1,0 +1,307 @@
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 8e2d800b..8d84de85 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -806,6 +806,24 @@ impl Element for Inline {
+             });
+         }
+ 
++        if let Some(handler) = GlobalState::global(cx).text_view_state()
++            .and_then(|view| view.read(cx).link_secondary_press.clone())
++        {
++            let links = self.links.clone();
++            let layout = text_layout.clone();
++            let hitbox = hitbox.clone();
++            let text = self.text.clone();
++            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
++                if !phase.bubble() || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
++                    return;
++                }
++                let Some(offset) = layout.index_for_position(event.position).ok() else { return; };
++                if let Some(press) = link_press_at(&text, &links, offset) {
++                    handler(&press, event, window, cx);
++                }
++            });
++        }
++
+         // link cursor pointer
+         let mouse_position = window.mouse_position();
+         if let Some(link) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
+@@ -1016,6 +1034,34 @@ impl Element for Inline {
+     }
+ }
+ 
++/// The link at `offset` and the text of every adjacent run carrying the same
++/// link: inline markup splits one link into several runs.
++fn link_press_at(
++    text: &str,
++    links: &[(Range<usize>, LinkMark)],
++    offset: usize,
++) -> Option<super::text_view::LinkSecondaryPress> {
++    let hit = links.iter().position(|(range, _)| range.contains(&offset))?;
++    let url = &links[hit].1.url;
++    let same = |ix: usize, next: usize| {
++        links[next].1.url == *url && links[ix].0.end == links[next].0.start
++    };
++    let mut first = hit;
++    while first > 0 && same(first - 1, first) {
++        first -= 1;
++    }
++    let mut last = hit;
++    while last + 1 < links.len() && same(last, last + 1) {
++        last += 1;
++    }
++    let span = links[first].0.start..links[last].0.end;
++    let label = text.get(span)?;
++    Some(super::text_view::LinkSecondaryPress::new(
++        url.clone(),
++        label.to_string().into(),
++    ))
++}
++
+ fn selection_for_multi_click(
+     text: &str,
+     text_layout: &AlignedLayout,
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 81ecfd0a..8c8259c6 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1470,6 +1470,12 @@ impl CodeBlock {
+                 div()
+                     .id(("codeblock", options.ix))
+                     .group("code-block")
++                    .when_some(node_cx.code_block_secondary_press.clone(), |this, f| {
++                        let block = display.clone();
++                        this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
++                            f(&block, event, window, cx)
++                        })
++                    })
+                     .w_full()
+                     .min_w_0()
+                     .p_3()
+@@ -1677,6 +1683,8 @@ pub(crate) struct NodeContext {
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
+     pub(crate) table_cell_press: Option<Arc<super::text_view::TableCellPressFn>>,
+     pub(crate) table_secondary_press: Option<Arc<super::text_view::TableSecondaryPressFn>>,
++    pub(crate) code_block_secondary_press:
++        Option<Arc<super::text_view::CodeBlockSecondaryPressFn>>,
+     pub(crate) link_presentation: Option<Arc<super::text_view::LinkPresentationFn>>,
+     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     pub(crate) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index ab26a58e..212af050 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -126,6 +126,10 @@ pub struct TextViewState {
+     pub(super) table_cell_press: Option<std::sync::Arc<super::text_view::TableCellPressFn>>,
+     pub(super) table_secondary_press:
+         Option<std::sync::Arc<super::text_view::TableSecondaryPressFn>>,
++    pub(super) link_secondary_press:
++        Option<std::sync::Arc<super::text_view::LinkSecondaryPressFn>>,
++    pub(super) code_block_secondary_press:
++        Option<std::sync::Arc<super::text_view::CodeBlockSecondaryPressFn>>,
+     pub(super) link_presentation: Option<std::sync::Arc<super::text_view::LinkPresentationFn>>,
+     pub(super) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+@@ -308,6 +312,8 @@ impl TextViewState {
+             table_actions: None,
+             table_cell_press: None,
+             table_secondary_press: None,
++            link_secondary_press: None,
++            code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -716,6 +722,21 @@ impl TextViewState {
+         self.selected_text_in(None)
+     }
+ 
++    /// The selected text in `format`, whatever the view's own
++    /// [`SelectionFormat`] is. A view that cannot produce source (HTML) still
++    /// answers in [`SelectionFormat::Plain`]; see [`Self::can_copy_source`].
++    pub fn selected_text_as(&mut self, format: SelectionFormat) -> String {
++        let own = std::mem::replace(&mut self.selection_format, format);
++        let text = self.selected_text();
++        self.selection_format = own;
++        text
++    }
++
++    /// Whether [`SelectionFormat::Source`] copies source rather than plain text.
++    pub fn can_copy_source(&self) -> bool {
++        self.format == TextViewFormat::Markdown
++    }
++
+     /// The owning view's exact Source selection, before shared-copy trimming.
+     pub(super) fn exact_source_selection(&self) -> Option<SharedString> {
+         (self.parsed_error.is_none()
+@@ -1103,6 +1124,7 @@ impl Render for TextViewState {
+         node_cx.table_actions = self.table_actions.clone();
+         node_cx.table_cell_press = self.table_cell_press.clone();
+         node_cx.table_secondary_press = self.table_secondary_press.clone();
++        node_cx.code_block_secondary_press = self.code_block_secondary_press.clone();
+         node_cx.link_click_handler = self.link_click_handler.clone();
+         node_cx.link_hover_handler = self.link_hover_handler.clone();
+         node_cx.link_presentation = self.link_presentation.clone();
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index 8a548bdc..d5bb94f7 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -126,6 +126,36 @@ impl TableSecondaryPress {
+ pub(crate) type TableSecondaryPressFn =
+     dyn Fn(&TableSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
+ 
++/// A secondary (right) press on a rendered link: its URL as the view holds it
++/// and the visible text of the whole link (every run that carries it).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct LinkSecondaryPress {
++    url: SharedString,
++    text: SharedString,
++}
++
++impl LinkSecondaryPress {
++    pub(crate) fn new(url: SharedString, text: SharedString) -> Self {
++        Self { url, text }
++    }
++
++    /// The link's URL, as the parsed document holds it.
++    pub fn url(&self) -> &SharedString {
++        &self.url
++    }
++
++    /// The link's visible text.
++    pub fn text(&self) -> &SharedString {
++        &self.text
++    }
++}
++
++pub(crate) type LinkSecondaryPressFn =
++    dyn Fn(&LinkSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
++
++pub(crate) type CodeBlockSecondaryPressFn =
++    dyn Fn(&CodeBlock, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
++
+ pub(crate) type LinkHoverHandlerFn =
+     dyn Fn(&SharedString, bool, gpui::Point<Pixels>, &mut Window, &mut App) + Send + Sync;
+ 
+@@ -186,6 +216,8 @@ pub struct TextView {
+     table_actions: Option<Arc<TableActionsFn>>,
+     table_cell_press: Option<Arc<TableCellPressFn>>,
+     table_secondary_press: Option<Arc<TableSecondaryPressFn>>,
++    link_secondary_press: Option<Arc<LinkSecondaryPressFn>>,
++    code_block_secondary_press: Option<Arc<CodeBlockSecondaryPressFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     link_hover_handler: Option<Arc<LinkHoverHandlerFn>>,
+     link_presentation: Option<Arc<LinkPresentationFn>>,
+@@ -235,6 +267,8 @@ impl TextView {
+             table_actions: None,
+             table_cell_press: None,
+             table_secondary_press: None,
++            link_secondary_press: None,
++            code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -261,6 +295,8 @@ impl TextView {
+             table_actions: None,
+             table_cell_press: None,
+             table_secondary_press: None,
++            link_secondary_press: None,
++            code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -287,6 +323,8 @@ impl TextView {
+             table_actions: None,
+             table_cell_press: None,
+             table_secondary_press: None,
++            link_secondary_press: None,
++            code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -428,6 +466,33 @@ impl TextView {
+         self
+     }
+ 
++    /// Observe secondary (right) presses on a rendered link, for a link
++    /// context menu. The press still propagates; layout is unchanged.
++    pub fn on_link_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&LinkSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.link_secondary_press = Some(Arc::new(f));
++        self
++    }
++
++    /// Observe secondary (right) presses anywhere on a rendered code block,
++    /// for a code block context menu. The press still propagates; layout is
++    /// unchanged.
++    pub fn on_code_block_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&CodeBlock, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.code_block_secondary_press = Some(Arc::new(f));
++        self
++    }
++
+     /// Style and explain links without replacing their text or selection runs.
+     pub fn link_presentation<F>(mut self, presentation: F) -> Self
+     where
+@@ -688,6 +753,8 @@ impl Element for TextView {
+             state.table_actions = self.table_actions.clone();
+             state.table_cell_press = self.table_cell_press.clone();
+             state.table_secondary_press = self.table_secondary_press.clone();
++            state.link_secondary_press = self.link_secondary_press.clone();
++            state.code_block_secondary_press = self.code_block_secondary_press.clone();
+             state.link_click_handler = self.link_click_handler.clone();
+             state.link_hover_handler = self.link_hover_handler.clone();
+             state.link_presentation = self.link_presentation.clone();
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index 2e5484ed..388fd394 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -129,6 +129,25 @@ impl TextView {
+         self.inner = self.inner.on_table_secondary_press(f);
+         self
+     }
++    /// Observes secondary (right) presses on a rendered link.
++    pub fn on_link_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&gpui_base::text::LinkSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.inner = self.inner.on_link_secondary_press(f);
++        self
++    }
++    /// Observes secondary (right) presses anywhere on a rendered code block.
++    pub fn on_code_block_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&CodeBlock, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync + 'static,
++    {
++        self.inner = self.inner.on_code_block_secondary_press(f);
++        self
++    }
+     /// Handles link clicks instead of opening the URL.
+     pub fn link_presentation<F>(mut self, f: F) -> Self
+     where
+diff --git a/crates/component/src/text/mod.rs b/crates/component/src/text/mod.rs
+index 1affbfdb..be965048 100644
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -7,7 +7,7 @@ pub use compat::{
+     Text, TextView, TextViewLayoutState, TextViewPlugin, TextViewPrepaintState, html, markdown,
+ };
+ pub use gpui_base::text::{
+-    LinkPresentation, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
++    LinkPresentation, LinkSecondaryPress, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
+     MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData,
+     TableSecondaryPress, TextViewState, markdown_ast,
+ };
