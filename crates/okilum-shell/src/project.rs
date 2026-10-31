@@ -1016,6 +1016,7 @@ impl Render for ProjectView {
         let history = {
             let mut history = v_flex()
                 .id("project-messages")
+                .debug_selector(|| "project-chat-history".into())
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
