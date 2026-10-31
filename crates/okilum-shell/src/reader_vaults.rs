@@ -171,7 +171,7 @@ fn populate(
                 let tooltip = tooltip.clone();
                 h_flex()
                     .id(("known-vault", index))
-                    .debug_selector(move || format!("known-vault-{index}").into())
+                    .debug_selector(move || format!("known-vault-{index}"))
                     .flex_1()
                     .gap_3()
                     .min_w_0()
@@ -181,7 +181,7 @@ fn populate(
                     .child(
                         div()
                             .debug_selector(move || {
-                                format!("known-vault-status-{index}-{availability:?}").into()
+                                format!("known-vault-status-{index}-{availability:?}")
                             })
                             .flex_1()
                             .min_w_0()
@@ -191,7 +191,7 @@ fn populate(
                     )
                     .child(
                         Button::new(("remove-known-vault", index))
-                            .debug_selector(move || format!("remove-known-vault-{index}").into())
+                            .debug_selector(move || format!("remove-known-vault-{index}"))
                             .small()
                             .ghost()
                             .label(if removing {
@@ -329,7 +329,7 @@ mod tests {
         let root = fixture.path().join("unmounted-vault");
         reader_history::ReadingHistory::record_usable_document(&state, &root, "note.md").unwrap();
         let roots = reader_history::ReadingHistory::known_vault_roots(&state).unwrap();
-        assert_eq!(roots, [root.clone()]);
+        assert_eq!(roots, std::slice::from_ref(&root));
         assert_eq!(Availability::probe(&root), Availability::Unavailable);
         assert_eq!(Availability::Unavailable.suffix(), " — Unavailable");
         assert!(!root.exists());

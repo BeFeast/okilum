@@ -189,24 +189,24 @@ impl Render for Vaults {
                 let status = match row.available { Some(true) => None, Some(false) => Some("Unavailable"), None => Some("Checking…") };
                 let directory = self.directory.clone();
                 v_flex().gap_2().p_3().border_1().border_color(palette.border_subtle).rounded(px(6.))
-                    .debug_selector(move || format!("settings-vault-row-{index}").into())
+                    .debug_selector(move || format!("settings-vault-row-{index}"))
                     .child(h_flex().gap_2()
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(vault_name::shown(&root, cx)))
                         .when(is_current, |view| view.child("Current"))
                         .when(row.vault.is_default, |view| view.child("Default"))
-                        .children(status.map(|status| div().debug_selector(move || format!("settings-vault-status-{index}").into()).text_color(palette.text_muted).child(status))))
+                        .children(status.map(|status| div().debug_selector(move || format!("settings-vault-status-{index}")).text_color(palette.text_muted).child(status))))
                     .child(div().text_sm().text_color(palette.text_muted).child(vault_name::path_tooltip(&root)))
                     .child(div().text_sm().text_color(palette.text_muted).child(format!("Last opened: {}", opened_label(row.vault.last_opened))))
                     .child(h_flex().flex_wrap().gap_2()
-                        .child(Button::new(("vaults-new-window", index)).debug_selector(move || format!("vaults-new-window-{index}").into()).label("Open in new window").disabled(self.pending || row.available != Some(true))
+                        .child(Button::new(("vaults-new-window", index)).debug_selector(move || format!("vaults-new-window-{index}")).label("Open in new window").disabled(self.pending || row.available != Some(true))
                             .on_click(move |_, _, cx| {
                                 if let Some(directory) = &directory {
                                     reader_open::open_vault_in_new_window(open_root.clone(), directory.clone(), cx);
                                 }
                             }))
-                        .child(Button::new(("vaults-default", index)).debug_selector(move || format!("vaults-default-{index}").into()).label(if row.vault.is_default { "Clear default" } else { "Make default" }).disabled(self.pending)
+                        .child(Button::new(("vaults-default", index)).debug_selector(move || format!("vaults-default-{index}")).label(if row.vault.is_default { "Clear default" } else { "Make default" }).disabled(self.pending)
                             .on_click(cx.listener(move |this, _, _, cx| this.change(Change::Default(default_root.clone()), cx))))
-                        .child(Button::new(("vaults-remove", index)).debug_selector(move || format!("vaults-remove-{index}").into()).label("Remove from list").disabled(self.pending)
+                        .child(Button::new(("vaults-remove", index)).debug_selector(move || format!("vaults-remove-{index}")).label("Remove from list").disabled(self.pending)
                             .on_click(cx.listener(move |this, _, _, cx| this.change(Change::Remove(remove_root.clone()), cx)))))
             }))
     }
@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
         assert_eq!(
             ReadingHistory::known_vault_roots(&state).unwrap(),
-            [absent.clone()]
+            std::slice::from_ref(&absent)
         );
         view.read_with(visual, |view, _| {
             assert_eq!(view.rows.len(), 1);
@@ -317,7 +317,7 @@ mod tests {
         assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
         assert_eq!(
             ReadingHistory::known_vault_roots(&state).unwrap(),
-            [absent.clone()]
+            std::slice::from_ref(&absent)
         );
         assert_eq!(
             std::fs::read(absent.join("offline.md")).unwrap(),

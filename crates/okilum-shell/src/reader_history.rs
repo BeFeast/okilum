@@ -532,7 +532,7 @@ mod tests {
         ReadingHistory::remove_from_list(&state, &vault).unwrap();
         assert_eq!(
             ReadingHistory::known_vault_roots(&state).unwrap(),
-            [other.clone()]
+            std::slice::from_ref(&other)
         );
         assert_eq!(
             ReadingHistory::startup_roots(&state).unwrap(),
