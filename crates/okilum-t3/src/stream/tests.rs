@@ -740,6 +740,136 @@ fn native_desktop_identity_comes_from_server_config_and_never_from_the_alias() {
     }
 }
 
+fn model_thread(listener: &TcpListener, thread: Value) {
+    ticket(listener);
+    let mut socket = socket(listener);
+    let request = read(&mut socket);
+    assert_eq!(
+        request["tag"], "orchestration.subscribeThread",
+        "model reads must never request the global shell directory"
+    );
+    assert_eq!(
+        request["payload"],
+        json!({"threadId":"thread-a","requestCompletionMarker":true,"acceptBoundedSnapshot":true})
+    );
+    send(&mut socket, json!({"_tag":"Ping"}));
+    assert_eq!(read(&mut socket), json!({"_tag":"Pong"}));
+    chunk(
+        &mut socket,
+        vec![json!({"kind":"snapshot","snapshotSequence":8,"projection":{"thread":thread}})],
+    );
+    ack(&mut socket);
+}
+
+fn model_catalog(listener: &TcpListener) {
+    ticket(listener);
+    let mut socket = socket(listener);
+    assert_eq!(read(&mut socket)["tag"], "server.getConfig");
+    send(
+        &mut socket,
+        json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"providers":[
+            {"instanceId":"claudeAgent","driver":"claudeAgent","displayName":"Claude","enabled":true,"models":(0..42).map(|n|json!({"slug":format!("model-{n}"),"name":format!("Model {n}")})).collect::<Vec<_>>()},
+            {"instanceId":"disabled","driver":"codex","enabled":false,"models":[{"slug":"unavailable","name":"Disabled"}]}
+        ]}}}),
+    );
+}
+
+fn model_thread_value(project: &str, selection: Value) -> Value {
+    // The production thread projection has no synthetic shell `status` field.
+    json!({"id":"thread-a","projectId":project,"title":"Target thread","modelSelection":selection,"runtimeMode":"full-access","interactionMode":"default","deletedAt":null})
+}
+
+#[test]
+fn manager_models_read_only_the_bounded_target_and_preserve_real_options() {
+    let selection = json!({"instanceId":"claudeAgent","model":"model-17","options":[{"id":"effort","value":"ultracode"},{"id":"fastMode","value":false}]});
+    for project in ["bound", "foreign"] {
+        let thread = model_thread_value(project, selection.clone());
+        let fixture = Fixture::start(move |listener| {
+            model_thread(&listener, thread);
+            if project == "bound" {
+                model_catalog(&listener);
+            }
+        });
+        let result = client(&fixture.env).manager_models(&crate::models::Target {
+            thread_id: "thread-a".into(),
+            project_id: "bound".into(),
+        });
+        if project == "bound" {
+            let snapshot = result.unwrap();
+            assert_eq!(snapshot.catalog.providers.len(), 1);
+            assert_eq!(snapshot.catalog.providers[0].models.len(), 42);
+            assert_eq!(
+                serde_json::to_value(&snapshot.configuration.model_selection).unwrap(),
+                selection
+            );
+            assert_eq!(
+                snapshot.selection("claudeAgent", "model-17"),
+                snapshot.configuration.model_selection
+            );
+        } else {
+            assert!(matches!(result, Err(StreamError::Protocol(_))));
+        }
+        fixture.finish();
+    }
+}
+
+#[test]
+fn manager_model_change_requires_a_fresh_target_readback() {
+    let selection = json!({"instanceId":"claudeAgent","model":"model-17","options":[{"id":"effort","value":"high"}]});
+    for confirmed in [true, false] {
+        let requested = selection.clone();
+        let fixture = Fixture::start(move |listener| {
+            let before = json!({"instanceId":"claudeAgent","model":"model-0","options":[]});
+            model_thread(&listener, model_thread_value("bound", before.clone()));
+            model_catalog(&listener);
+            ticket(&listener);
+            let mut command = socket(&listener);
+            let request = read(&mut command);
+            assert_eq!(request["tag"], "orchestration.dispatchCommand");
+            assert_eq!(request["payload"]["type"], "thread.model-selection.set");
+            assert_eq!(request["payload"]["threadId"], "thread-a");
+            assert_eq!(request["payload"]["modelSelection"], requested);
+            send(
+                &mut command,
+                json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{}}}),
+            );
+            drop(command);
+            model_thread(
+                &listener,
+                model_thread_value("bound", if confirmed { requested } else { before }),
+            );
+            model_catalog(&listener);
+        });
+        let mut secret = serde_json::from_slice::<Value>(&token(&fixture.env).to_secret()).unwrap();
+        secret["scope"] = json!("orchestration:read orchestration:operate");
+        let native = NativeClient::new(
+            fixture.env.clone(),
+            NativeToken::from_secret(&fixture.env, &serde_json::to_vec(&secret).unwrap()).unwrap(),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let result = native.configure_manager_model(
+            &crate::models::Target {
+                thread_id: "thread-a".into(),
+                project_id: "bound".into(),
+            },
+            &serde_json::from_value(selection.clone()).unwrap(),
+        );
+        if confirmed {
+            assert_eq!(
+                serde_json::to_value(result.unwrap().configuration.model_selection).unwrap(),
+                selection
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(StreamError::Protocol("model change not confirmed"))
+            ));
+        }
+        fixture.finish();
+    }
+}
+
 #[test]
 fn shell_directory_uses_real_ws_rpc_and_acknowledges_only_applied_chunks() {
     let fixture = Fixture::start(|listener| {

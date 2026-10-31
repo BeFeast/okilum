@@ -14,6 +14,19 @@ pub struct ManagerThread {
     pub interaction_mode: String,
 }
 
+/// Targeted metadata has no shell-synthesized status; run state belongs to the
+/// live timeline. This read can also confirm an explicitly created thread.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerThreadDetails {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub model_selection: crate::ModelSelection,
+    pub runtime_mode: String,
+    pub interaction_mode: String,
+}
+
 impl NativeClient {
     /// The native environment identity comes from this server, never its local alias.
     pub fn server_identity(&self) -> StreamResult<crate::ServerIdentity> {
@@ -63,10 +76,15 @@ impl NativeClient {
                     let items = value["values"]
                         .as_array()
                         .ok_or(StreamError::Protocol("invalid Manager list"))?;
+                    let snapshot_field = if method == "orchestration.subscribeThread" {
+                        "projection"
+                    } else {
+                        "snapshot"
+                    };
                     let found = items
                         .iter()
                         .find(|item| item["kind"] == "snapshot")
-                        .map(|item| item["snapshot"].clone());
+                        .map(|item| item[snapshot_field].clone());
                     rpc.send(json!({"_tag":"Ack","requestId":"1"}))?;
                     if let Some(found) = found {
                         rpc.close();
@@ -107,17 +125,42 @@ impl NativeClient {
         Ok(result)
     }
 
+    pub fn manager_thread(
+        &self,
+        target: &crate::models::Target,
+    ) -> StreamResult<ManagerThreadDetails> {
+        // Reading one thread must not serialize the entire server directory.
+        // A real vault can contain thousands of unrelated threads, exceeding
+        // the interactive timeout before the model catalog is even requested.
+        let projection = self.manager_rpc(
+            "orchestration.subscribeThread",
+            json!({"threadId":target.thread_id,"requestCompletionMarker":true,"acceptBoundedSnapshot":true}),
+            true,
+        )?;
+        let thread = &projection["thread"];
+        if thread["id"] != target.thread_id
+            || thread["projectId"] != target.project_id
+            || !thread["deletedAt"].is_null()
+        {
+            return Err(StreamError::Protocol(
+                "thread no longer belongs to this project",
+            ));
+        }
+        serde_json::from_value(thread.clone())
+            .map_err(|_| StreamError::Protocol("invalid Manager thread metadata"))
+    }
+
     pub fn manager_models(
         &self,
         target: &crate::models::Target,
     ) -> StreamResult<crate::models::Snapshot> {
-        let thread = self
-            .project_threads(&target.project_id)?
-            .into_iter()
-            .find(|t| t.id == target.thread_id)
-            .ok_or(StreamError::Protocol(
-                "thread no longer belongs to this project",
-            ))?;
+        let thread = self.manager_thread(target)?;
+        let configuration = crate::ThreadConfiguration {
+            thread_id: thread.id,
+            model_selection: thread.model_selection,
+            runtime_mode: thread.runtime_mode,
+            interaction_mode: thread.interaction_mode,
+        };
         let config = self.manager_rpc("server.getConfig", json!({}), false)?;
         let providers = config["providers"]
             .as_array()
@@ -127,18 +170,13 @@ impl NativeClient {
             "models":p["models"].as_array().into_iter().flatten().map(|m|json!({"id":m["slug"],"label":m["name"]})).collect::<Vec<_>>()
         })).collect::<Vec<_>>();
         let catalog = serde_json::from_value(
-            json!({"runtimeMode":thread.runtime_mode,"providers":providers}),
+            json!({"runtimeMode":configuration.runtime_mode,"providers":providers}),
         )
         .map_err(|_| StreamError::Protocol("invalid model catalog"))?;
         Ok(crate::models::Snapshot {
             target: target.clone(),
             catalog,
-            configuration: crate::ThreadConfiguration {
-                thread_id: thread.id,
-                model_selection: thread.model_selection,
-                runtime_mode: thread.runtime_mode,
-                interaction_mode: thread.interaction_mode,
-            },
+            configuration,
         })
     }
 
@@ -171,6 +209,45 @@ mod tests {
         presentation::{self, Body},
         Projection,
     };
+
+    #[test]
+    #[ignore = "explicit authorized read-only real-T3 model verification"]
+    fn live_manager_model_read_only() {
+        let credential =
+            std::env::var("OKILUM_T3_QA_CREDENTIAL_FILE").expect("private native credential file");
+        let origin = std::env::var("OKILUM_T3_QA_ORIGIN").expect("authorized server origin");
+        let project = std::env::var("OKILUM_T3_QA_PROJECT").expect("authorized project");
+        let thread = std::env::var("OKILUM_T3_QA_THREAD").expect("authorized read-only thread");
+        let environment = Environment::new("model-read-only", &origin).unwrap();
+        let token =
+            NativeToken::from_secret(&environment, &std::fs::read(credential).unwrap()).unwrap();
+        let client = NativeClient::new(environment, token, Duration::from_secs(10)).unwrap();
+        let started = Instant::now();
+        let result = client
+            .manager_models(&crate::models::Target {
+                thread_id: thread.clone(),
+                project_id: project,
+            })
+            .unwrap();
+        assert_eq!(result.configuration.thread_id, thread);
+        let models: usize = result
+            .catalog
+            .providers
+            .iter()
+            .map(|provider| provider.models.len())
+            .sum();
+        assert!(
+            models > 0,
+            "positive control: the authenticated catalog must contain models"
+        );
+        assert!(
+            result
+                .validate(&result.configuration.model_selection)
+                .is_ok(),
+            "the actual current model must be offered by this catalog"
+        );
+        println!("MODEL2122 bounded-target=PASS catalog-models={models} current-model=PASS options-retained={} elapsed-ms={} commands=0", result.configuration.model_selection.options.len(), started.elapsed().as_millis());
+    }
 
     #[test]
     #[ignore = "explicit isolated real-T3 Linux QA only"]

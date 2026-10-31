@@ -21,16 +21,8 @@ def source_identity(source, workflow):
 
 
 def route(env):
-    lane = env.get('MACOS_LANE') or 'local'
-    if env.get('GITHUB_EVENT_NAME') == 'push':
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        # Daytime beta cannot occupy the corporate M4. The existing 03:05
-        # lane switch owns nighttime local admission.
-        if datetime.now(ZoneInfo('Asia/Jerusalem')).hour >= 9:
-            lane = 'hosted'
-    if lane not in ['local', 'hosted']:
-        raise ValueError('Unsupported Mac delivery lane; no fallback')
+    # Corporate M4 CI is prohibited; stale lane variables cannot re-enable it.
+    lane = 'hosted'
     source = source_identity(env.get('PRODUCT_SOURCE'), env.get('GITHUB_SHA'))
     if source != env['GITHUB_SHA'] and (lane != 'hosted' or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
         raise ValueError('Explicit older source requires manual hosted artifact route')

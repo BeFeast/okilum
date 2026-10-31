@@ -11,7 +11,7 @@ mod auth;
 mod manager;
 mod protocol;
 pub mod thread_create;
-pub use manager::ManagerThread;
+pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
 
 #[cfg(test)]

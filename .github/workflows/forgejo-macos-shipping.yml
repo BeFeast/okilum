@@ -40,7 +40,7 @@ jobs:
           PRODUCT_SOURCE: ${{ inputs.source }}
           OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
           OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
-          OKILUM_MAC_CERT_SHA256: ${{ vars.OKILUM_MAC_CERT_SHA256 }}
+          OKILUM_MAC_CERT_SHA256: ${{ secrets.OKILUM_MAC_CERT_SHA256 }}
           OKILUM_MAC_DEVELOPER_ID_P12: ${{ secrets.OKILUM_MAC_DEVELOPER_ID_P12 }}
           OKILUM_MAC_DEVELOPER_ID_PASSWORD: ${{ secrets.OKILUM_MAC_DEVELOPER_ID_PASSWORD }}
           OKILUM_MAC_NOTARY_APPLE_ID: ${{ secrets.OKILUM_MAC_NOTARY_APPLE_ID }}

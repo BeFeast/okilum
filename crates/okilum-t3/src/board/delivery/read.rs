@@ -77,6 +77,8 @@ pub(super) fn parse(
                 );
             }
             Build {
+                published_at: None,
+                release_url: None,
                 platform: feed.platform,
                 channel: feed.channel,
                 build: format!("run-{}", number(&run, "index_in_repo")?),
@@ -107,6 +109,8 @@ pub(super) fn parse(
             );
             let artifact = format!("{}/{}", base.origin().ascii_serialization(), key);
             Build {
+                published_at: None,
+                release_url: None,
                 platform: feed.platform,
                 channel: feed.channel,
                 build: number(&value, "build")?.to_string(),
@@ -151,6 +155,8 @@ pub(super) fn parse(
                 "Conflicting appcast build identity"
             );
             Build {
+                published_at: None,
+                release_url: None,
                 platform: feed.platform,
                 channel: feed.channel,
                 build: version.to_string(),
@@ -218,6 +224,8 @@ pub(super) fn parse(
             );
             let artifact = url::Url::parse(&feed.url)?.join(filename)?.to_string();
             Build {
+                published_at: None,
+                release_url: None,
                 platform: feed.platform,
                 channel: feed.channel,
                 build: build.to_string(),
@@ -228,6 +236,42 @@ pub(super) fn parse(
     };
     valid(build, feed)
 }
+pub(super) fn publication(build: &mut Build, releases: &Value) {
+    let platform = match build.platform {
+        Platform::Macos => "macos",
+        Platform::Windows => "windows",
+        Platform::Linux => "linux",
+    };
+    let tag = format!(
+        "{platform}-{}-{}",
+        build.channel.label().to_lowercase(),
+        build.build
+    );
+    let Some(rows) = releases.as_array() else {
+        return;
+    };
+    let matching: Vec<_> = rows
+        .iter()
+        .filter(|r| {
+            r.get("tag_name").and_then(Value::as_str) == Some(tag.as_str())
+                && r.get("draft").and_then(Value::as_bool) != Some(true)
+        })
+        .collect();
+    if matching.len() != 1 {
+        return;
+    }
+    let row = matching[0];
+    if let (Some(url), Some(at)) = (
+        row.get("html_url").and_then(Value::as_str),
+        row.get("published_at").and_then(Value::as_str),
+    ) {
+        if https_link(url) && !at.is_empty() {
+            build.release_url = Some(url.into());
+            build.published_at = Some(at.into());
+        }
+    }
+}
+
 fn repository(binding: &Binding) -> Result<String> {
     let url = url::Url::parse(&binding.repository)?;
     ensure!(
@@ -367,6 +411,7 @@ pub fn refresh(area: &Path, binding: &Binding) -> Update {
         }
     };
     let deadline = Instant::now() + Duration::from_secs(30);
+    let modified = std::cell::RefCell::new(std::collections::BTreeMap::<String, String>::new());
     let mut fetch = |url: &str| -> Result<Vec<u8>> {
         ensure!(
             crate::NetworkAccess::current().allowed(),
@@ -388,11 +433,51 @@ pub fn refresh(area: &Path, binding: &Binding) -> Update {
             response.status() == reqwest::StatusCode::OK,
             "Delivery source did not return metadata"
         );
+        if let Some(at) = response
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+        {
+            modified.borrow_mut().insert(url.to_owned(), at.to_owned());
+        }
         bounded(response)
     };
+    let releases = repository(binding)
+        .and_then(|base| fetch(&format!("{base}/releases?limit=50")))
+        .and_then(|bytes| json(&bytes))
+        .ok();
     let mut builds = Vec::new();
     for feed in &config.feeds {
-        let result = fetch(&feed.url).and_then(|bytes| parse(feed, &bytes, &mut fetch));
+        if feed.channel == Channel::Sprint {
+            continue;
+        }
+        let result = fetch(&feed.url)
+            .and_then(|bytes| parse(feed, &bytes, &mut fetch))
+            .map(|mut build| {
+                if let Some(releases) = &releases {
+                    publication(&mut build, releases);
+                }
+                if build.published_at.is_none() {
+                    build.published_at = modified.borrow().get(&feed.url).cloned();
+                }
+                if build.release_url.is_none() {
+                    if let Ok(repo) = url::Url::parse(&binding.repository) {
+                        if repo.host_str() == Some("git.oklabs.uk")
+                            && repo.path() == "/BeFeast/okilum"
+                        {
+                            build.release_url = Some(format!(
+                                "https://github.com/BeFeast/okilum/releases/{}",
+                                if feed.channel == Channel::Beta {
+                                    "tag/beta"
+                                } else {
+                                    "latest"
+                                }
+                            ));
+                        }
+                    }
+                }
+                build
+            });
         if let Ok(build) = &result {
             builds.push(build.clone());
         }

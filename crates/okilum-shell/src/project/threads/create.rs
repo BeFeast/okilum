@@ -58,14 +58,16 @@ impl ProjectView {
                 let confirmed = client.manager_models(&target)?;
                 let intent = journal.prepare(&confirmed, "New thread", &chrono::Utc::now().to_rfc3339())?;
                 let sequence = client.create_thread(&intent)?;
+                // Keep the same pending identity until source readback succeeds,
+                // even when dispatch was accepted but that read is interrupted.
+                let thread = client.manager_thread(&Target {
+                    thread_id: intent.thread_id().into(), project_id: intent.project_id().into(),
+                })?;
                 journal.acknowledge(&intent, sequence)?;
-                // A successful ack is not a substitute for source readback.
-                let thread = client.project_threads(intent.project_id())?
-                    .into_iter().find(|thread| thread.id == intent.thread_id())
-                    .context("T3 accepted the new conversation; its directory entry is not available yet")?;
                 Ok::<_, anyhow::Error>(shell::Thread {
                     id: thread.id, project_id: thread.project_id, title: thread.title,
-                    status: thread.status, active_run_id: None, latest_run_id: None,
+                    // Creation is confirmed; live shell supplies runtime status.
+                    status: "created".into(), active_run_id: None, latest_run_id: None,
                     archived_at: None, deleted_at: None,
                 })
             }).await;
@@ -81,7 +83,8 @@ impl ProjectView {
                     Ok(row) => {
                         let id = row.id.clone();
                         if let Some(model) = &this.threads.model {
-                            model.lock().unwrap().apply(&[shell::Update::Thread(row, true)]);
+                            let mut model = model.lock().unwrap();
+                            if !model.threads.contains_key(&id) { model.apply(&[shell::Update::Thread(row, true)]); }
                         }
                         this.select_native_thread(id, window, cx);
                     }

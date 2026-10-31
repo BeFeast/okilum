@@ -455,6 +455,7 @@ impl ProjectView {
                 self.draft_prepare_identity(window, cx);
                 self.model_target = None;
                 self.model_open = false;
+                self.model_busy = false;
                 self.models = None;
                 self.model_candidate = None;
                 self.model_error = None;
@@ -482,6 +483,10 @@ impl ProjectView {
         self.last_poll_status = None;
         self.model_target = None;
         self.model_open = false;
+        self.model_busy = false;
+        self.models = None;
+        self.model_candidate = None;
+        self.model_error = None;
         self.error = None;
         #[cfg(target_os = "linux")]
         {
