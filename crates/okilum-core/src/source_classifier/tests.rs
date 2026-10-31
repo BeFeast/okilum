@@ -124,7 +124,6 @@ fn unsupported_and_malformed_blocks_have_positive_neighbor() {
         "**bold** [[a\\|b]]",
         "**bold** *unfinished",
         "**bold** ==highlight==",
-        "**bold** $math$",
     ] {
         // Place valid neighbor first so a thematic break cannot become frontmatter.
         let source = format!("# neighbor\n\n{unsupported}");
@@ -141,6 +140,69 @@ fn unsupported_and_malformed_blocks_have_positive_neighbor() {
     );
     let unclosed = "---\na: **raw**\n\n# neighbor";
     assert_eq!(display(unclosed), unclosed);
+}
+
+/// #1645: an inline formula conceals its `$` and styles its TeX as Math;
+/// money and bare numbers stay exact text while their neighbours render.
+#[test]
+fn inline_math_is_conservative_and_money_stays_text() {
+    let math = |source: &str| -> Vec<String> {
+        let snapshot = Snapshot::new("doc", 1, source);
+        let classified = classify(&snapshot);
+        classified
+            .styles_for(&snapshot)
+            .unwrap()
+            .iter()
+            .filter(|s| s.style == Style::Math)
+            .map(|s| source[s.range.clone()].to_owned())
+            .collect()
+    };
+    for (source, shown, formulas) in [
+        ("**bold** $math$", "bold math", vec!["math"]),
+        ("Area $x^2$ here", "Area x^2 here", vec!["x^2"]),
+        // TeX subscripts are not emphasis.
+        ("$a_i$ and $b_j$", "a_i and b_j", vec!["a_i", "b_j"]),
+        ("$a*b*c$", "a*b*c", vec!["a*b*c"]),
+        // The issue's financial cases: text, with the rest still rendered.
+        (
+            "About $1.5k/mo and $2$ **net**",
+            "About $1.5k/mo and $2$ net",
+            vec![],
+        ),
+        // A lone `~` keeps its block exact source, as before; still no formula.
+        ("~$1.5k/mo and $2$", "~$1.5k/mo and $2$", vec![]),
+        ("$5 and $10 *each*", "$5 and $10 each", vec![]),
+        ("costs $5,$10", "costs $5,$10", vec![]),
+        ("pay $5 and $2$ *now*", "pay $5 and $2$ now", vec![]),
+        (
+            "between $-3.50$ and $12%$",
+            "between $-3.50$ and $12%$",
+            vec![],
+        ),
+        ("$x$5 stays", "$x$5 stays", vec![]),
+        // Display math written inline and escapes stay exact.
+        ("a $$x$$ b", "a $$x$$ b", vec![]),
+        (r"\$x\$ *y*", r"\$x\$ y", vec![]),
+        ("`$x$` *y*", "$x$ y", vec![]),
+    ] {
+        assert_eq!(display(source), shown, "{source:?}");
+        assert_eq!(math(source), formulas, "{source:?}");
+    }
+    // A multi-line display block keeps its exact source.
+    let block = "$$\na*b*c\n$$";
+    assert_eq!(display(block), block);
+    // A caret on the formula reveals both delimiters, nothing else.
+    let source = "*x* and $y^2$";
+    let snapshot = Snapshot::new("doc", 1, source);
+    let retained = RetainedPresentation::new(&classify(&snapshot));
+    let caret = source.find('y').unwrap();
+    let revealed = retained
+        .project(&Active {
+            selection: Some(caret..caret),
+            composition: None,
+        })
+        .unwrap();
+    assert_eq!(revealed.display(), "x and $y^2$");
 }
 
 #[test]

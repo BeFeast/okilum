@@ -6,7 +6,9 @@ mod ime_guard;
 mod link_complete;
 mod lists;
 mod live_preview;
+mod math_preview;
 mod paste_jobs;
+mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
 pub(crate) use external_edit::{OpenBlockExternally, StopBlockExternally};
@@ -16,6 +18,7 @@ use gpui_component::input::projection::{
     SourceProjection, SourceSnapshot,
 };
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
+pub(crate) use writing_modes::{toggle_focus_mode, toggle_typewriter_mode};
 
 /// The editor «Open block in …» names (#1993).
 pub(crate) fn external_editor_label() -> String {
@@ -68,6 +71,8 @@ const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 pub(super) struct Editing {
     store: FileEditor,
     live_preview: live_preview::LivePreview,
+    /// The card under an inline formula holding the caret (#1645).
+    math_preview: Entity<math_preview::MathPreview>,
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
@@ -248,6 +253,7 @@ impl Editing {
         let Self {
             store,
             live_preview,
+            math_preview,
             input,
             conflict,
             conflict_detected,
@@ -272,6 +278,7 @@ impl Editing {
         (store, move |store| Self {
             store,
             live_preview,
+            math_preview,
             input,
             conflict,
             conflict_detected,
@@ -851,9 +858,12 @@ impl Reader {
             reader_reminder::MenuFacts::watch(self, &input, !plain_file, cx);
         let live_preview =
             live_preview::LivePreview::new(self, cx.entity_id(), &store, &input, !plain_file);
+        let reader = cx.entity();
+        let math_preview = cx.new(|cx| math_preview::MathPreview::new(reader, input.clone(), cx));
         self.editing = Some(Editing {
             store,
             live_preview,
+            math_preview,
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -1654,16 +1664,8 @@ impl Reader {
 
     pub(super) fn render_source(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.refresh_live_preview_colors(cx);
-        if let Some(editing) = &self.editing {
-            // Use measured leading rather than accumulating an estimated row-height error.
-            let line_height = editing.input.read(cx).line_height().unwrap_or(px(20.));
-            let rows = (f32::from(reader_toast::bottom_space(window, cx))
-                / f32::from(line_height).max(1.))
-            .ceil() as usize;
-            editing.input.update(cx, |input, cx| {
-                input.set_scroll_beyond_last_line(Some(rows), window, cx);
-            });
-        }
+        // Room below the last line for toasts, focus and typewriter (#1643).
+        self.apply_writing_modes(window, cx);
         let editing = self.editing.as_ref().unwrap();
         let palette = brand::palette(cx);
         let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
@@ -1821,6 +1823,9 @@ impl Reader {
                     .size_full(),
             )
             .children(self.render_link_complete(window, cx))
+            .when(editing.live_preview.enabled, |column| {
+                column.child(editing.math_preview.clone())
+            })
             .into_any_element()
     }
 }
@@ -4167,6 +4172,110 @@ mod tests {
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             format!("новый 🧠 {original}")
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// #1645: an inline formula is drawn in place until the caret enters
+    /// it; then its source shows in the line and a card below it draws the
+    /// formula, or its error. Money keeps its dollars and gets no card.
+    #[gpui::test]
+    fn inline_math_draws_in_place_and_previews_under_the_caret(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let directory =
+            std::env::temp_dir().join(format!("okilum-inline-math-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let original =
+            "Budget about $1.5k/mo and $2$ tips.\n\nArea $x^2$ here and $\\foo$ there.\n";
+        std::fs::write(root.join("start.md"), original).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(directory.join("index")),
+                        session_directory: Some(directory.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_live_preview(window, cx)
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |reader, _| {
+            reader.editing.as_ref().unwrap().input.clone()
+        });
+        let shown = reader.read_with(visual, |reader, _| {
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .concealed_text()
+                .expect("classified")
+        });
+        assert_eq!(
+            shown, "Budget about $1.5k/mo and $2$ tips.\n\nArea x² here and $\\foo$ there.\n",
+            "the formula is drawn, money and an unknown command stay as written"
+        );
+        let click = |offset: usize, visual: &mut gpui::VisualTestContext| {
+            let position = input.read_with(visual, |input, _| {
+                input.range_to_bounds(&(offset..offset)).unwrap().center()
+            });
+            visual.simulate_click(position, gpui::Modifiers::default());
+            visual.run_until_parked();
+        };
+        let formula = original.find("$x^2$").unwrap();
+        click(formula + 1, visual);
+        let cursor = input.read_with(visual, |input, _| input.cursor());
+        assert!(
+            (formula..=formula + "$x^2$".len()).contains(&cursor),
+            "a click on the drawn formula lands on it: {cursor}"
+        );
+        let card = visual
+            .debug_bounds("math-preview-card")
+            .expect("the caret in a formula shows its card");
+        assert!(visual.debug_bounds("math-preview-formula").is_some());
+        assert!(visual.debug_bounds("math-preview-error").is_none());
+        let line = input.read_with(visual, |input, _| {
+            input.range_to_bounds(&(formula..formula + 5)).unwrap()
+        });
+        assert!(
+            card.top() >= line.bottom(),
+            "the card sits under the line: {card:?} {line:?}"
+        );
+        // An unknown command: the card reports it instead of an empty box.
+        let broken = original.find("$\\foo$").unwrap();
+        click(broken + 2, visual);
+        assert!(visual.debug_bounds("math-preview-card").is_some());
+        assert!(visual.debug_bounds("math-preview-error").is_some());
+        assert!(visual.debug_bounds("math-preview-formula").is_none());
+        // Money: no formula, no card.
+        click(original.find("1.5k").unwrap(), visual);
+        assert!(visual.debug_bounds("math-preview-card").is_none());
+        click(original.find("$2$").unwrap() + 1, visual);
+        assert!(visual.debug_bounds("math-preview-card").is_none());
+        // Back on the formula, then away from it: the card follows the caret.
+        click(formula + 1, visual);
+        assert!(visual.debug_bounds("math-preview-card").is_some());
+        click(original.find("there").unwrap(), visual);
+        assert!(visual.debug_bounds("math-preview-card").is_none());
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.value().as_ref(), original, "previewing never edits")
+        });
         std::fs::remove_dir_all(directory).unwrap();
     }
 

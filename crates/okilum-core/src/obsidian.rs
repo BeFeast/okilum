@@ -148,6 +148,8 @@ fn fence_for(body: &str) -> String {
 /// code spans. Obsidian's (Pandoc's) inline rule: the opening `$` is not
 /// followed by whitespace, the closing one is not preceded by whitespace nor
 /// followed by a digit, and both are on one line — so `$5 and $10` is money.
+/// Conservatively, the closing `$` is the next one, and a bare number such
+/// as `$2$` stays text (#1645, shared with Live Preview).
 pub fn rewrite_math(text: &str) -> String {
     if !text.contains('$') {
         return text.to_string();
@@ -254,17 +256,18 @@ fn inline_math(seg: &str) -> String {
             .next()
             .is_some_and(|c| !c.is_whitespace())
         {
+            // The next unescaped `$` closes the formula or nothing does
+            // (#1645): `$1.5k/mo and $2$` is money, not `1.5k/mo and $2`.
             (i + 2..line_end)
+                .find(|&j| b[j] == b'$' && !escaped(seg, j))
                 .filter(|&j| {
-                    b[j] == b'$'
-                        && !escaped(seg, j)
-                        && !b[j - 1].is_ascii_whitespace()
+                    !b[j - 1].is_ascii_whitespace()
                         && !b
                             .get(j + 1)
                             .is_some_and(|c| c.is_ascii_digit() || *c == b'$')
+                        && crate::tex::is_inline_formula(&seg[i + 1..j])
                 })
                 .map(|j| (i + 1, j, j + 1))
-                .next()
         } else {
             None
         };
@@ -757,6 +760,10 @@ mod tests {
         assert_eq!(rewrite_math("`$x$`"), "`$x$`");
         assert_eq!(rewrite_math("a $$x+y$$ b"), "a `x+y` b");
         assert_eq!(rewrite_math("$a`b$"), "``a`b``");
+        // #1645: financial notes keep their dollars.
+        assert_eq!(rewrite_math("~$1.5k/mo and $2$"), "~$1.5k/mo and $2$");
+        assert_eq!(rewrite_math("pay $2$ now"), "pay $2$ now");
+        assert_eq!(rewrite_math("$x$ costs $2$"), "`x` costs $2$");
     }
 
     #[test]

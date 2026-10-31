@@ -204,6 +204,7 @@ impl ProjectView {
                 match result {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {
+                        this.draft_restore(window, cx);
                         if ask {
                             this.pair_enrolled_device(window, cx);
                         }
@@ -211,6 +212,7 @@ impl ProjectView {
                     }
                     Err(error) => {
                         this.native.error = Some(error.to_string());
+                        this.draft_restore(window, cx);
                         if ask {
                             this.pair_enrolled_device(window, cx);
                         }
@@ -393,6 +395,7 @@ impl ProjectView {
                 })));
             }
         }
+        self.draft_restore(window, cx);
         self.native_load_actions(window, cx);
         self.start_thread_directory(window, cx);
         self.rebind_selected_native_thread(window, cx);
