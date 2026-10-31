@@ -159,8 +159,11 @@ impl ProjectView {
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft_key() != self.threads.draft.key {
             self.threads.draft.loading = true;
+            let first_identity = self.threads.draft.key.is_none();
             self.compose.update(cx, |input, cx| {
-                input.set_value("", window, cx);
+                if !first_identity {
+                    input.set_value("", window, cx);
+                }
                 input.set_disabled(true, cx);
             });
         }
@@ -205,6 +208,14 @@ impl ProjectView {
         if self.threads.draft.key.as_ref() == Some(&key) {
             return;
         }
+        // Text may have been entered while the first connection was loading.
+        // Preserve it, but never transfer an established key's text elsewhere.
+        let initial = self
+            .threads
+            .draft
+            .key
+            .is_none()
+            .then(|| self.draft_sent(cx).draft);
         self.draft_capture(cx);
         let draft = &mut self.threads.draft;
         draft.epoch = draft.epoch.wrapping_add(1);
@@ -223,8 +234,14 @@ impl ProjectView {
             self.threads.draft.error = Some(
                 "Draft storage is unavailable. Text is kept only while this window is open.".into(),
             );
-            self.compose
-                .update(cx, |input, cx| input.set_disabled(false, cx));
+            self.compose.update(cx, |input, cx| {
+                input.set_value(
+                    initial.as_ref().map_or("", |draft| draft.text.as_str()),
+                    window,
+                    cx,
+                );
+                input.set_disabled(false, cx);
+            });
             return;
         };
         let environment = self.environment.clone().unwrap();
@@ -232,6 +249,7 @@ impl ProjectView {
         let identity_client = self.native.model_client().filter(|c| c.access_allowed());
         let store = Store::<Attachment>::new(&state, &environment, &key.1, &key.2);
         cx.spawn_in(window, async move |this, cx| {
+            let initial_copy = initial.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -256,7 +274,7 @@ impl ProjectView {
                     saved
                         .draft
                         .restore_for(environment_id.as_deref().unwrap_or(""));
-                    let restored = saved.draft.clone();
+                    let restored = merge_initial(initial_copy, saved.draft.clone())?;
                     // Start from the actual disk version, then retain restored status.
                     saved.draft = original;
                     let writer = Writer::new(store, saved)
@@ -279,6 +297,11 @@ impl ProjectView {
                             .update(cx, |input, cx| input.set_value(restored.text, window, cx));
                     }
                     Err(error) => {
+                        if let Some(initial) = initial {
+                            this.threads.draft.attachments = initial.attachments;
+                            this.compose
+                                .update(cx, |input, cx| input.set_value(initial.text, window, cx));
+                        }
                         this.threads.draft.error =
                             Some(format!("{error}. The saved draft was preserved."))
                     }
@@ -427,10 +450,36 @@ impl ProjectView {
     }
 }
 
+fn merge_initial(initial: Option<ChatDraft>, saved: ChatDraft) -> Result<ChatDraft, String> {
+    match initial.filter(|initial| *initial != ChatDraft::default()) {
+        None => Ok(saved),
+        Some(initial) if saved == ChatDraft::default() || saved == initial => Ok(initial),
+        Some(_) => Err("Current text differs from the saved draft; neither was overwritten. Keep this window open and copy your text before closing".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn first_connection_preserves_early_input_without_overwriting_a_different_saved_draft() {
+        let local = ChatDraft {
+            text: "Typed before connection".into(),
+            attachments: vec![],
+        };
+        let saved = ChatDraft {
+            text: "Retained on disk".into(),
+            attachments: vec![],
+        };
+        assert_eq!(
+            merge_initial(Some(local.clone()), ChatDraft::default()).unwrap(),
+            local
+        );
+        assert_eq!(merge_initial(None, saved.clone()).unwrap(), saved);
+        assert!(merge_initial(Some(local), saved).is_err());
+    }
 
     #[test]
     fn released_conversation_writers_drain_and_release_their_retained_state() {
