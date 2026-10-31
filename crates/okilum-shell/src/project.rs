@@ -1172,8 +1172,10 @@ impl Render for ProjectView {
                     .when_some(open, |row, url| {
                         row.child(
                             Button::new("project-open-t3")
+                                .debug_selector(|| "project-open-t3".into())
                                 .ghost()
                                 .icon(IconName::ExternalLink)
+                                .when(cfg!(target_os = "linux"), |button| button.label("Open in T3"))
                                 .tooltip("Open in T3")
                                 .on_click(move |_, _, cx| cx.open_url(&url)),
                         )

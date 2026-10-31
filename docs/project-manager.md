@@ -200,3 +200,18 @@ Vendor patch 0095 preserves selection registrations through GPUI cached paint
 using an element-state lease that expires on unmount. It also makes clearing an
 already-empty selection silent. This prevents selection cleanup from repeatedly
 invalidating the cached feed while preserving selectable Markdown and Copy.
+
+## Linux native list appearance and rendering (#1783)
+
+Oleg's 30 October decision retains the native Linux Manager list and **Open in
+T3**; embedded-webview R&D is out of scope. User and Manager messages use distinct
+neutral surfaces and spacing from the Reader palette. Tool events use a short
+plain-text preview and an explicit disclosure instead of eagerly laying out their
+Markdown detail. Native WS summaries retain their existing transport/presentation
+bounds; this does not claim to expose full remote tool logs. MCP fallback retains
+its received detail for expansion. Questions, errors and notices remain visible.
+
+History stays virtualized. Changes only to hidden reasoning or tool detail do not
+notify/remeasure the feed when the visible preview and status are unchanged. A
+changed preview, status, expanded body or row order still updates normally.
+Pairing, sending, approvals and other Tier 1 action authority are unchanged.
