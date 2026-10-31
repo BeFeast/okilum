@@ -14,6 +14,14 @@ for (const method of ['subscribeShell', 'subscribeThread', 'dispatchCommand']) {
     schemas[`${method}.${direction}`] = orchestration.OrchestrationV2RpcSchemas[method][direction];
   }
 }
+// ID-table codecs deliberately expose ParsedJson/Unknown on the encoded side.
+// Export their real decoded contracts explicitly; these are consumer-shape
+// expectations, not evidence of wire compatibility (the native probe proves it).
+const decodedRoots = ['OrchestrationV2ThreadStreamItem', 'OrchestrationV2ThreadBoundedSnapshot'];
+for (const name of decodedRoots) {
+  if (!orchestration[name]?.ast) throw new Error(`Missing upstream schema: ${name}`);
+  schemas[`${name}.decoded`] = Schema.toType(orchestration[name]);
+}
 schemas.ExecutionEnvironmentCapabilities = environment.ExecutionEnvironmentCapabilities;
 schemas.ServerAuthDescriptor = auth.ServerAuthDescriptor;
 schemas.AuthTokenExchangeRequest = auth.AuthTokenExchangeRequest;
@@ -28,5 +36,8 @@ const output = {};
 for (const [name, schema] of Object.entries(schemas)) {
   if (!schema?.ast) throw new Error(`Missing upstream schema: ${name}`);
   output[name] = Schema.toJsonSchemaDocument(schema);
+  if (name.endsWith('.decoded') && (
+    !output[name]?.schema || Object.keys(output[name].schema).length === 0
+  )) throw new Error(`Opaque decoded consumer schema: ${name}`);
 }
 await writeFile(process.argv[3], JSON.stringify(sorted(output), null, 2) + '\n');

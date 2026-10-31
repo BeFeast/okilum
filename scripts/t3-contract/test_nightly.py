@@ -60,14 +60,13 @@ class ContractHarness(unittest.TestCase):
                             json.dumps({'serverVersion': version}).encode(),
                             b'{"authenticated":true}']) as request, \
                         patch.object(nightly, 'native_roundtrip', return_value={
-                            'paired': True, 'snapshot': True, 'resume': True,
-                            'resume_without_snapshot': True}) as command, \
+                            **{key: True for key in nightly.RUNTIME_PROOFS}}) as command, \
                         patch.object(nightly.urllib.request, 'urlopen', return_value=session), \
                         patch.object(nightly.os, 'killpg') as kill:
                     if success:
                         result = nightly.bootstrap(Path('/not-executed'), 'vtest-version', root, Path('/probe'))
-                        self.assertTrue(result['native_client']['paired'])
-                        self.assertIn('dispatchCommand', result['deferred_operations'])
+                        self.assertTrue(result['native_client']['pair'])
+                        self.assertEqual(result['deferred_operations'], [])
                         self.assertNotIn('ephemeral', json.dumps(result))
                         self.assertEqual(command.call_count, 1)
                     else:
@@ -100,8 +99,8 @@ class ContractHarness(unittest.TestCase):
                 self.assertEqual(process.wait.call_count, 2)
 
     def test_native_probe_gets_secret_only_on_stdin_and_requires_all_receipts(self):
-        valid = {'paired': True, 'snapshot': True, 'resume': True, 'resume_without_snapshot': True}
-        with patch.object(nightly, 'fixture_thread', return_value='idle-thread'), \
+        valid = {key: True for key in nightly.RUNTIME_PROOFS}
+        with patch.object(nightly, 'fixture_thread', return_value='idle-thread') as fixture, \
                 patch.object(nightly, 'command', return_value='{"credential":"one-time-secret"}'), \
                 patch.object(nightly.subprocess, 'run', return_value=Mock(
                     returncode=0, stdout=json.dumps(valid))) as launch:
@@ -110,7 +109,10 @@ class ContractHarness(unittest.TestCase):
             self.assertEqual(actual, valid)
             self.assertEqual(launch.call_args.args[0], ['/probe'])
             self.assertEqual(json.loads(launch.call_args.kwargs['input']), {
-                'origin': 'http://127.0.0.1:1', 'credential': 'one-time-secret', 'thread_id': 'idle-thread'})
+                'origin': 'http://127.0.0.1:1', 'credential': 'one-time-secret', 'thread_id': 'idle-thread',
+                'expected_title': fixture.call_args.kwargs['expected_title']})
+            self.assertTrue(fixture.call_args.kwargs['expected_title'].startswith('Okilum contract scratch '))
+            self.assertEqual(launch.call_args.kwargs['timeout'], 150)
             self.assertNotIn('one-time-secret', json.dumps(launch.call_args.kwargs['env']))
             launch.return_value.stdout = '{"paired":true}'
             with self.assertRaisesRegex(ValueError, 'Incomplete'):
@@ -139,7 +141,7 @@ class ContractHarness(unittest.TestCase):
                             'threadId': 'idle-thread', 'runId': run_id}}})]) as http:
                 if run_id is None:
                     self.assertEqual(nightly.fixture_thread(Path('/server'), Path('/base'), {},
-                                     'http://127.0.0.1:1'), 'idle-thread')
+                                     'http://127.0.0.1:1', expected_title='unique scratch title'), 'idle-thread')
                 else:
                     with self.assertRaisesRegex(ValueError, 'idle thread'):
                         nightly.fixture_thread(Path('/server'), Path('/base'), {}, 'http://127.0.0.1:1')
@@ -147,6 +149,8 @@ class ContractHarness(unittest.TestCase):
                 self.assertEqual(payload['params']['name'], 't3_thread_launch')
                 args = payload['params']['arguments']
                 self.assertTrue(args['scratch'])
+                if run_id is None:
+                    self.assertEqual(args['title'], 'unique scratch title')
                 self.assertNotIn('message', args)
                 self.assertNotIn('attachments', args)
 
@@ -172,6 +176,69 @@ class ContractHarness(unittest.TestCase):
             self.assertEqual((output / 'schema.diff').read_text(), '-old\n+new\n')
             self.assertEqual(json.loads((output / 'result.json').read_text()), result)
             bootstrap.assert_not_called()
+
+
+    def test_additive_schema_delta_passes_but_all_five_runtime_proofs_are_required(self):
+        receipt = {'schema_drift': True, 'schema_compatibility': {'status': 'PASS'},
+                   'bootstrap': {'native_client': {key: True for key in nightly.RUNTIME_PROOFS}}}
+        self.assertEqual(nightly.contract_status(receipt), 'PASS')
+        for key in nightly.RUNTIME_PROOFS:
+            for bad in (None, False, 'true'):
+                with self.subTest(key=key, bad=bad):
+                    broken = json.loads(json.dumps(receipt))
+                    broken['bootstrap']['native_client'][key] = bad
+                    self.assertEqual(nightly.contract_status(broken), 'FAIL')
+        for failure in ({'schema_error': 'generation failed'},
+                        {'bootstrap_error': 'native proof failed'},
+                        {'schema_compatibility': {'status': 'FAIL'}}):
+            self.assertEqual(nightly.contract_status({**receipt, **failure}), 'FAIL')
+        old_deferred = {'schema_compatibility': {'status': 'PASS'}, 'bootstrap': {
+            'native_client': {'paired': True, 'snapshot': True, 'resume': True,
+                              'resume_without_snapshot': True},
+            'deferred_operations': ['subscribeShell', 'dispatchCommand']}}
+        self.assertEqual(nightly.contract_status(old_deferred), 'FAIL')
+        self.assertEqual(nightly.contract_status({'bootstrap': receipt['bootstrap']}), 'FAIL')
+
+    def test_observe_schema_retains_raw_diff_and_compares_semantics(self):
+        candidate = nightly.load_baseline()
+        candidate['newRpc.output'] = {'dialect': 'draft-2020-12', 'definitions': {},
+                                      'schema': {'type': 'boolean'}}
+        def unpack(data, destination):
+            (destination / 'upstream').mkdir(parents=True, exist_ok=True)
+        def generated(upstream, output):
+            output.write_text(json.dumps(candidate))
+            return '4.0.5'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); output = root / 'output'; output.mkdir()
+            with patch.object(nightly, 'request', return_value=b'source archive'), \
+                    patch.object(nightly, 'extract', side_effect=unpack), \
+                    patch.object(nightly, 'snapshot', side_effect=generated):
+                receipt = {}
+                nightly.observe_schema({'tag_name': 'test-nightly'}, root, output, receipt)
+                self.assertTrue(receipt['schema_drift'])
+                self.assertFalse(receipt['schema_breaking'])
+                self.assertEqual(receipt['schema_compatibility']['status'], 'PASS')
+                self.assertTrue(receipt['schema_compatibility']['informational'])
+                self.assertIn('newRpc.output', (output / 'schema.diff').read_text())
+                candidate['OrchestrationV2ThreadStreamItem.decoded']['schema'] = {}
+                nightly.observe_schema({'tag_name': 'test-nightly'}, root, output, receipt)
+                self.assertTrue(receipt['schema_breaking'])
+                self.assertTrue(receipt['schema_compatibility']['errors'])
+
+    def test_native_probe_rejects_each_missing_proof_and_legacy_only_receipt(self):
+        valid = {key: True for key in nightly.RUNTIME_PROOFS}
+        with patch.object(nightly, 'fixture_thread', return_value='idle-thread'), \
+                patch.object(nightly, 'command', return_value='{"credential":"secret"}'), \
+                patch.object(nightly.subprocess, 'run') as launch:
+            cases = [{key: True for key in valid if key != absent} for absent in valid]
+            cases += [{'paired': True, 'snapshot': True, 'resume': True,
+                       'resume_without_snapshot': True}, []]
+            for receipt in cases:
+                with self.subTest(receipt=receipt):
+                    launch.return_value = Mock(returncode=0, stdout=json.dumps(receipt))
+                    with self.assertRaisesRegex(ValueError, 'Incomplete'):
+                        nightly.native_roundtrip(Path('/server'), Path('/base'), {},
+                                                 'http://127.0.0.1:1', Path('/probe'))
 
     def test_schema_snapshot_covers_all_deferred_wire_directions_and_auth(self):
         value = json.loads((Path(__file__).parent / 'snapshot.json').read_text())

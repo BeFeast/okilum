@@ -1,0 +1,15 @@
+{
+  "decoded_json_sha256": "d87fcc835420cb341ac4713e5af72f5998dc2b037637c1f276af3740d8d96212",
+  "effect": "4.0.5",
+  "export": "Schema.toJsonSchemaDocument(Schema.toType(schema))",
+  "purpose": "Current decoded consumer baseline; historical snapshot3814 is unchanged. Native runtime proves wire encoding separately.",
+  "roots": [
+    "OrchestrationV2ThreadBoundedSnapshot.decoded",
+    "OrchestrationV2ThreadStreamItem.decoded"
+  ],
+  "sha256": "31526c42d861c81b6245f1b951941e84596fd592294e45ad15c22810bf3ce5a5",
+  "snapshot": "consumer-snapshot.json.gz",
+  "source_commit": "15fe2832727893cbdd2214383f9f971474849695",
+  "tag": "v0.1.7-nightly.20261031.3991",
+  "upstream": "https://github.com/pingdotgg/t3code"
+}

@@ -52,7 +52,7 @@ fn scrolling_to_the_oldest_row_loads_a_real_history_page_without_losing_the_anch
         Arc::new(NativeClient::new(environment.clone(), token, Duration::from_secs(2)).unwrap());
     let items: Vec<_> = (50..100).map(message).collect();
     let mut model = Projection::new(thread_id, "fixture-managers");
-    model.apply(&[ThreadUpdate::Snapshot {sequence:10,projection:json!({"thread":{"id":thread_id,"projectId":"fixture-managers","title":"History"},"runs":[],"attempts":[],"turnItems":items,"visibleTurnItems":items.iter().cloned().map(row).collect::<Vec<_>>()}),history_cursor:Some("older-page".into()),has_more_history:true,payload_budget_exceeded:false,latest_local_turn_ordinal:Some(99)}]).unwrap();
+    model.apply(&[ThreadUpdate::Snapshot {sequence:10,projection:json!({"thread":{"id":thread_id,"projectId":"fixture-managers","title":"History"},"runs":[],"attempts":[],"turnItems":items,"visibleTurnItems":items.iter().cloned().map(row).collect::<Vec<_>>()}),history_cursor:Some("older-page".into()),has_more_history:true,latest_local_turn_ordinal:Some(99)}]).unwrap();
     let changes = model.take_changes();
     // Native positions are allocated from the unordered changed-row batch,
     // independently of chronological order. Track the actual oldest message.
@@ -97,6 +97,10 @@ fn scrolling_to_the_oldest_row_loads_a_real_history_page_without_losing_the_anch
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<ProjectView>().unwrap()
     });
+    assert!(
+        visual.debug_bounds("project-live-history").is_some(),
+        "modern bounded history still exposes Load earlier without a budget flag"
+    );
     let history = visual.debug_bounds("project-history").unwrap();
     for _ in 0..16 {
         if requests.load(Ordering::SeqCst) > 0 {
@@ -133,6 +137,10 @@ fn scrolling_to_the_oldest_row_loads_a_real_history_page_without_losing_the_anch
             100
         );
     });
+    assert!(
+        visual.debug_bounds("project-live-history").is_none(),
+        "Load earlier disappears only after the actual final page"
+    );
     server.join().unwrap();
 }
 

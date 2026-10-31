@@ -9,7 +9,6 @@ fn snapshot(items: Vec<Value>) -> ThreadUpdate {
         projection: json!({"thread":{"id":"thread","projectId":"project","title":"Manager"},"runs":[{"id":"run","status":"completed"}],"attempts":[],"turnItems":items,"visibleTurnItems":items.iter().enumerate().map(|(n,item)|json!({"position":n,"visibility":"local","sourceThreadId":"thread","sourceItemId":item["id"],"item":item})).collect::<Vec<_>>()}),
         history_cursor: None,
         has_more_history: false,
-        payload_budget_exceeded: false,
         latest_local_turn_ordinal: None,
     }
 }
@@ -181,6 +180,11 @@ fn bounded_window_ignores_old_unloaded_rows_but_keeps_unfinished_queued_runs() {
     let mut p = Projection::new("thread", "project");
     p.apply(&[s]).unwrap();
     p.take_changes();
+    assert!(p.metadata.has_more_history);
+    assert_eq!(p.metadata.history_cursor.as_deref(), Some("opaque-cursor"));
+    let request = p
+        .history_request()
+        .expect("bounded history remains pageable");
     p.apply(&[update(
         "turn-item.updated",
         message("old", 5, "assistant_message"),
@@ -196,6 +200,23 @@ fn bounded_window_ignores_old_unloaded_rows_but_keeps_unfinished_queued_runs() {
     queued["runId"] = json!("queued-run");
     p.apply(&[update("turn-item.updated", queued)]).unwrap();
     assert!(p.row(&row_key("queued")).is_some());
+    assert!(
+        p.metadata.has_more_history,
+        "live events do not complete history"
+    );
+    assert_eq!(p.metadata.history_cursor.as_deref(), Some("opaque-cursor"));
+    // Only a real history page can hydrate an unloaded older row and exhaust
+    // this window. No removed budget flag is needed to preserve that guard.
+    let old = message("old", 5, "assistant_message");
+    p.apply_history(&request, HistoryPage {
+        items: vec![json!({"visibility":"local","sourceThreadId":"thread","sourceItemId":"old","item":old})],
+        next_cursor: None,
+        has_more_history: false,
+    }).unwrap();
+    assert!(p.row(&row_key("old")).is_some());
+    assert!(!p.metadata.has_more_history);
+    assert!(p.metadata.history_cursor.is_none());
+    assert!(p.history_request().is_none());
 }
 #[test]
 fn history_merge_preserves_live_text_deduplicates_and_rejects_a_stale_cursor() {
