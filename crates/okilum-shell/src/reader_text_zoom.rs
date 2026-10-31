@@ -12,12 +12,12 @@ gpui::actions!(note_text_zoom, [ZoomIn, ZoomOut, Reset]);
 /// The overlay stays this long after the last change, hover or exact entry.
 const HUD_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Fenced code has its own themed font size; scale it with the document.
-/// Inline code inherits the surrounding text size, including its zoom.
+/// Fenced code has its own themed font size; scale it with the document text
+/// (Settings text size times zoom), the same ratio Live Preview and code files
+/// use. Inline code inherits the surrounding text size.
 pub(super) fn document_style(cx: &App) -> TextViewStyle {
     let mut style = reader_fonts::text_style(cx);
-    style.code_block.text.font_size =
-        Some((cx.theme().mono_font_size * reader_ui_state::text_zoom(cx)).into());
+    style.code_block.text.font_size = Some(code_block_font_size(cx).into());
     #[cfg(test)]
     CODE_STYLES.with(|styles| {
         if let Some(styles) = styles.borrow_mut().as_mut() {
@@ -25,6 +25,12 @@ pub(super) fn document_style(cx: &App) -> TextViewStyle {
         }
     });
     style
+}
+
+/// Themed code size at the default text size, scaled like body text
+/// (GitHub #7: Settings text size used to leave Read code blocks unchanged).
+fn code_block_font_size(cx: &App) -> Pixels {
+    cx.theme().mono_font_size * (reader_ui_state::font_size(cx) / BODY_FONT_SIZE)
 }
 
 #[cfg(test)]
@@ -940,6 +946,109 @@ mod tests {
             std::fs::read_to_string(vault.join("start.md")).unwrap(),
             source
         );
+    }
+
+    /// Width of the first four rendered characters of every visible segment.
+    fn segment_widths(reader: &Reader, cx: &App) -> std::collections::BTreeMap<usize, Pixels> {
+        let state = reader.content.read(cx);
+        let bounds = state.bounds();
+        let mut widths = std::collections::BTreeMap::new();
+        for y in (0..f32::from(bounds.size.height) as usize).step_by(2) {
+            let probe = point(bounds.left() + px(20.), bounds.top() + px(y as f32));
+            let Some((segment, _, _)) = state.rendered_source_at(Some(probe)) else {
+                continue;
+            };
+            let at = |index| state.rendered_position_for_source(segment, index);
+            if let (Some(start), Some(end)) = (at(0), at(4)) {
+                if end.y == start.y && end.x > start.x {
+                    widths.insert(segment, end.x - start.x);
+                }
+            }
+        }
+        widths
+    }
+
+    /// #7 (GitHub): Settings > Text size changed body text while every Read
+    /// code block stayed at the themed 13 px, scaled by zoom alone.
+    #[gpui::test]
+    fn read_code_blocks_follow_text_size_and_zoom_like_body_text(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let source = "MMMM body\n\n```rust\nWWWW_rust();\n```\n\n~~~\nWWWW tilde\n~~~\n\n    WWWW indented\n\n- item\n\n  ```text\n  WWWW listed\n  ```\n\n> ```js\n> WWWW_quoted();\n> ```\n\n```python\nWWWW = 1\n```\n\nNote[^n] ![[other#^code]]\n\n[^n]: `WWWW` foot\n";
+        std::fs::write(vault.join("start.md"), source).unwrap();
+        std::fs::write(
+            vault.join("other.md"),
+            "```text\nWWWW embedded\n```\n^code\n",
+        )
+        .unwrap();
+        cx.update(|cx| {
+            reader_ui_state::install(&temp.path().join("state"), cx);
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(2400.)));
+        frame(visual);
+        let base = reader.read_with(visual, segment_widths);
+        let mono = base
+            .values()
+            .filter(|width| **width < base.values().copied().fold(px(0.), Pixels::max))
+            .count();
+        // Positive control: body text plus at least the six fenced, indented,
+        // listed and quoted code blocks are measured.
+        assert!(
+            base.len() >= 9 && mono >= 6,
+            "every block must be measured at the default size: {base:?}"
+        );
+        let default = visual.update(|_, cx| reader_ui_state::base_font_size(cx));
+        for (text_size, zoom) in [
+            (23.25, 1.),
+            (12., 1.),
+            (23.25, 2.),
+            (12., 0.5),
+            (default, 1.),
+        ] {
+            visual.update(|_, cx| {
+                let width = reader_ui_state::reading_width(cx);
+                reader_ui_state::set_reading(text_size, width, cx);
+            });
+            reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
+            frame(visual);
+            let actual = reader.read_with(visual, segment_widths);
+            assert_eq!(
+                actual.keys().collect::<Vec<_>>(),
+                base.keys().collect::<Vec<_>>(),
+                "the same blocks are measured at text size {text_size}, zoom {zoom}"
+            );
+            let scale = text_size / default * zoom;
+            for (segment, width) in &actual {
+                let expected = base[segment] * scale;
+                assert!(
+                    (*width - expected).abs() < px(1.),
+                    "segment {segment} must scale with text size {text_size} and zoom {zoom}: {width:?}, expected {expected:?} (base {:?})",
+                    base[segment]
+                );
+            }
+        }
     }
 
     fn zoom_is(visual: &mut gpui::VisualTestContext, expected: f32) {
