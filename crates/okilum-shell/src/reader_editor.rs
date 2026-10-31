@@ -7,6 +7,7 @@ mod link_complete;
 mod lists;
 mod live_preview;
 mod paste_jobs;
+mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
 pub(crate) use external_edit::{OpenBlockExternally, StopBlockExternally};
@@ -16,6 +17,7 @@ use gpui_component::input::projection::{
     SourceProjection, SourceSnapshot,
 };
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
+pub(crate) use writing_modes::{toggle_focus_mode, toggle_typewriter_mode};
 
 /// The editor «Open block in …» names (#1993).
 pub(crate) fn external_editor_label() -> String {
@@ -1654,16 +1656,8 @@ impl Reader {
 
     pub(super) fn render_source(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.refresh_live_preview_colors(cx);
-        if let Some(editing) = &self.editing {
-            // Use measured leading rather than accumulating an estimated row-height error.
-            let line_height = editing.input.read(cx).line_height().unwrap_or(px(20.));
-            let rows = (f32::from(reader_toast::bottom_space(window, cx))
-                / f32::from(line_height).max(1.))
-            .ceil() as usize;
-            editing.input.update(cx, |input, cx| {
-                input.set_scroll_beyond_last_line(Some(rows), window, cx);
-            });
-        }
+        // Room below the last line for toasts, focus and typewriter (#1643).
+        self.apply_writing_modes(window, cx);
         let editing = self.editing.as_ref().unwrap();
         let palette = brand::palette(cx);
         let column = v_flex().key_context("ReaderSource").size_full().min_w_0();

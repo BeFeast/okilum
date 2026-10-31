@@ -133,6 +133,12 @@ struct Saved {
     tree_note_titles: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// Focus mode in the note editor (#1643): every block but the caret's
+    /// is dimmed. One app-wide toggle, off by default.
+    focus_mode: bool,
+    /// Typewriter mode in the note editor (#1643): the caret line stays at
+    /// the middle of the view. One app-wide toggle, off by default.
+    typewriter_mode: bool,
     vault_open: String,
     settings_section: String,
     /// Brackets and quotes close themselves as they are typed in a note
@@ -201,6 +207,8 @@ impl Default for Saved {
             toolbar_labels: false,
             tree_note_titles: false,
             code_soft_wrap: false,
+            focus_mode: false,
+            typewriter_mode: false,
             vault_open: String::new(),
             settings_section: String::new(),
             auto_pair_brackets: true,
@@ -244,6 +252,7 @@ struct Store {
     toolbar_labels_changed: bool,
     tree_note_titles_changed: bool,
     code_soft_wrap_changed: bool,
+    writing_modes_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
     auto_pair_changed: bool,
@@ -346,6 +355,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         toolbar_labels_changed: false,
         tree_note_titles_changed: false,
         code_soft_wrap_changed: false,
+        writing_modes_changed: false,
         vault_open_changed: false,
         settings_section_changed: false,
         auto_pair_changed: false,
@@ -580,6 +590,7 @@ struct WriteJob {
     toolbar_labels_changed: bool,
     tree_note_titles_changed: bool,
     code_soft_wrap_changed: bool,
+    writing_modes_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
     auto_pair_changed: bool,
@@ -685,6 +696,10 @@ impl WriteJob {
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.writing_modes_changed {
+            latest.focus_mode = self.saved.focus_mode;
+            latest.typewriter_mode = self.saved.typewriter_mode;
         }
         if self.auto_pair_changed {
             latest.auto_pair_brackets = self.saved.auto_pair_brackets;
@@ -821,6 +836,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.vault_open_changed
             && !state.settings_section_changed
             && !state.code_soft_wrap_changed
+            && !state.writing_modes_changed
             && !state.auto_pair_changed
             && !state.image_import_changed
             && !state.close_code_fences_changed
@@ -859,6 +875,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         toolbar_labels_changed: state.toolbar_labels_changed,
         tree_note_titles_changed: state.tree_note_titles_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        writing_modes_changed: state.writing_modes_changed,
         vault_open_changed: state.vault_open_changed,
         settings_section_changed: state.settings_section_changed,
         auto_pair_changed: state.auto_pair_changed,
@@ -1422,6 +1439,40 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Focus mode in the note editor (#1643).
+pub(crate) fn focus_mode(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.focus_mode)
+}
+
+/// Typewriter mode in the note editor (#1643).
+pub(crate) fn typewriter_mode(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.typewriter_mode)
+}
+
+pub(crate) fn set_focus_mode(value: bool, cx: &mut App) {
+    if !installed(cx) || focus_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.focus_mode = value;
+    state.writing_modes_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_typewriter_mode(value: bool, cx: &mut App) {
+    if !installed(cx) || typewriter_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.typewriter_mode = value;
+    state.writing_modes_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Enabled independently of inline Markdown pairing; legacy settings default on.
 pub(crate) fn close_code_fences(cx: &App) -> bool {
     cx.try_global::<Store>()
@@ -1946,6 +1997,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.toolbar_labels_changed = false;
         state.tree_note_titles_changed = false;
         state.code_soft_wrap_changed = false;
+        state.writing_modes_changed = false;
         state.vault_open_changed = false;
         state.settings_section_changed = false;
         state.auto_pair_changed = false;
@@ -2623,6 +2675,7 @@ mod tests {
                 toolbar_labels_changed: false,
                 tree_note_titles_changed: false,
                 code_soft_wrap_changed: false,
+                writing_modes_changed: false,
                 vault_open_changed: false,
                 settings_section_changed: false,
                 auto_pair_changed: false,
