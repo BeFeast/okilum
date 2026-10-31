@@ -1283,12 +1283,60 @@ impl Reader {
     pub(super) fn remember_source_mode(&mut self) {
         // Document preparation can call leave_source again after the editor
         // has already closed. That no-op must retain the last presentation.
-        if let Some(editing) = &self.editing {
+        // A text, CSV or code editor has no Live Preview; leaving it must not
+        // turn the next note's Live Preview into Source (GitHub #6).
+        if let Some(editing) = self.editing.as_ref().filter(|editing| editing.markdown) {
             let live = self.source_live_preview();
             self.ui_state.live_preview = match editing.kept_preference {
                 Some(preferred) if live => preferred,
                 _ => live,
             };
+        }
+    }
+
+    /// The window's chosen editing mode carries to an editable text, CSV or
+    /// code file, as it already does between notes (GitHub #6). Explicit Read
+    /// clears the choice before showing its file; a file that cannot be edited
+    /// stays a read-only preview and the choice is kept for the next one.
+    pub(super) fn reopen_chosen_source(
+        &mut self,
+        tree_had_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preview) = &self.file_preview else {
+            return;
+        };
+        if !self.ui_state.source_mode
+            || self.editing.is_some()
+            || !reader_delimited::editable(&preview.rel)
+        {
+            return;
+        }
+        if let Some(code) = preview.code.clone().filter(|code| code.read(cx).loading()) {
+            // A code file is known to be editable only once it has loaded.
+            let pending = Rc::new(std::cell::Cell::new(true));
+            cx.observe_in(&code, window, move |this, code, window, cx| {
+                if !pending.get() || code.read(cx).loading() {
+                    return;
+                }
+                pending.set(false);
+                let current = this
+                    .file_preview
+                    .as_ref()
+                    .and_then(|preview| preview.code.as_ref())
+                    == Some(&code);
+                if current {
+                    this.reopen_chosen_source(tree_had_focus, window, cx);
+                }
+            })
+            .detach();
+            return;
+        }
+        self.toggle_source(window, cx);
+        // Tree navigation and rename keys stay in the navigator that chose it.
+        if tree_had_focus && self.editing.is_some() {
+            self.tree_focus.focus(window, cx);
         }
     }
 
@@ -5187,13 +5235,14 @@ mod mode_navigation_tests {
             ("first.md", "# First\r\n\r\n**one** e\u{301} 🧠\r\n"),
             ("second.md", "# Second\n\n[[first|one]]\n"),
             ("third.md", "# Third\n\n| a | b |\n| - | - |\n| c | d |\n"),
-            (
-                "plain.txt",
-                "Plain text remains a read-only preview on selection.\n",
-            ),
+            ("plain.txt", "Plain text follows the chosen editing mode.\n"),
+            ("table.csv", "a,b\n1,2\n"),
+            ("tool.py", "print('code follows the chosen editing mode')\n"),
         ] {
             std::fs::write(root.join(path), text).unwrap();
         }
+        // Neither text nor code: always a read-only preview.
+        std::fs::write(root.join("asset.bin"), [0u8, 159, 146, 150]).unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -5370,11 +5419,11 @@ mod mode_navigation_tests {
         reader.update_in(visual, |r, window, cx| {
             r.open_live_preview(window, cx);
             assert_mode(r, "first.md", Some(true), cx);
-            r.open_note("plain.txt", None, window, cx);
+            r.open_note("asset.bin", None, window, cx);
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert_mode(r, "plain.txt", None, cx);
+            assert_mode(r, "asset.bin", None, cx);
             assert!(
                 r.file_preview.is_some(),
                 "actual unsupported-Markdown preview fallback"
@@ -5404,5 +5453,139 @@ mod mode_navigation_tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| assert_mode(r, "third.md", Some(false), cx));
         assert!(!temp.path().join("vault/missing.md").exists());
+    }
+    /// GitHub #6: a file chosen from the list kept Read for text, CSV and
+    /// code files, so the chosen editing mode was lost on the way.
+    #[gpui::test]
+    fn chosen_editing_mode_carries_to_editable_files_and_back(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = fixture(cx);
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(true, window, cx);
+            assert_mode(r, "first.md", Some(true), cx);
+            r.open_note("plain.txt", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert!(r.file_preview.is_some(), "positive control: a file view");
+            assert_mode(r, "plain.txt", Some(false), cx);
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("table.csv", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "table.csv", Some(false), cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("tool.py", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert!(
+                r.file_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.code.is_some()),
+                "positive control: the code view, which loads asynchronously"
+            );
+            assert_mode(r, "tool.py", Some(false), cx);
+        });
+        // Back to a note: Live Preview, not the code editor's plain Source.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("second.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "second.md", Some(true), cx));
+        reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(false, window, cx);
+            r.open_note("plain.txt", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "plain.txt", Some(false), cx);
+            r.open_note("third.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "third.md", Some(false), cx));
+        // Explicit Read on a file is kept for the next files and notes.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("table.csv", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "table.csv", Some(false), cx);
+            r.toggle_source(window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "table.csv", None, cx);
+            r.open_note("plain.txt", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "plain.txt", None, cx);
+            r.open_note("tool.py", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "tool.py", None, cx);
+            r.open_note("first.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "first.md", None, cx));
+    }
+
+    /// Leaving a text file's editor must not replace the notes' Live Preview
+    /// choice with that editor's plain Source.
+    #[gpui::test]
+    fn text_file_editor_keeps_note_live_preview_choice(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = fixture(cx);
+        reader.update_in(visual, |r, window, cx| {
+            r.open_live_preview(window, cx);
+            assert_mode(r, "first.md", Some(true), cx);
+            r.toggle_source(window, cx); // Explicit Read.
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "first.md", None, cx);
+            r.open_note("plain.txt", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "plain.txt", None, cx);
+            r.toggle_source(window, cx); // Explicit Edit of the text file.
+            assert_mode(r, "plain.txt", Some(false), cx);
+            r.open_note("second.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| assert_mode(r, "second.md", Some(true), cx));
+    }
+
+    #[gpui::test]
+    fn tree_choice_of_text_file_keeps_mode_and_tree_focus(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        visual.simulate_resize(size(px(1400.), px(860.)));
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(false, window, cx);
+            r.reveal_in_tree("plain.txt", window, cx);
+        });
+        visual.run_until_parked();
+        let row = visual.debug_bounds("tree-row-plain.txt").unwrap();
+        visual.simulate_click(
+            point(row.left() + px(70.), row.center().y),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_mode(r, "plain.txt", Some(false), cx);
+            assert!(
+                r.tree_focus.is_focused(window),
+                "the reopened editor must not take tree keys"
+            );
+            assert!(!r.source_is_dirty(cx));
+        });
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("vault/plain.txt")).unwrap(),
+            "Plain text follows the chosen editing mode.\n"
+        );
     }
 }
