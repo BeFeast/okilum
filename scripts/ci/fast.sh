@@ -22,6 +22,9 @@ if [ "${RUNNER_OS:-}" = macOS ]; then
     python3 scripts/updater/sparkle.py prepare --archive "$RUNNER_TEMP/Sparkle.tar.xz" --destination vendor/sparkle
 fi
 "$@"
+# Compile every workspace test target; fixture/API drift must block merge even
+# when its suite runs only during full overnight acceptance. Do not execute it.
+cargo check --locked --workspace --tests
 # Pure HTML/Markdown parsing tests, no UI, process trees, network or timers.
 cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"

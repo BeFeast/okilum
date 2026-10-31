@@ -15,12 +15,15 @@
 //! URL with the system browser and writes the text to the pasteboard.
 
 /// Message prefix: open the URL that follows in the system browser.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const OPEN_PREFIX: &str = "open-external:";
 /// Message prefix: put the text that follows on the pasteboard.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const COPY_PREFIX: &str = "clipboard:";
 
 /// Injected after the focus script. Capture listeners on `window` run before
 /// T3's own handlers on the menu buttons.
+#[cfg(any(target_os = "macos", test))]
 const PAGE_SCRIPT: &str = r#"
 (() => {
     if (location.origin !== __OKILUM_T3_ORIGIN__) return;
@@ -70,6 +73,7 @@ const PAGE_SCRIPT: &str = r#"
 "#;
 
 /// Preserve the browser APIs on authentication and other navigated pages.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn page_script(t3: &url::Url) -> String {
     PAGE_SCRIPT.replace(
         "__OKILUM_T3_ORIGIN__",
@@ -79,6 +83,7 @@ pub(crate) fn page_script(t3: &url::Url) -> String {
 }
 
 /// What the T3 page asked Okilum to do.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PageRequest {
     OpenExternal(url::Url),
@@ -95,6 +100,7 @@ pub(crate) fn external_url(raw: &str) -> Option<url::Url> {
 /// Parses an IPC message. Only the T3 page itself may ask: a page reached by
 /// navigating inside the panel gets no pasteboard or IPC app launching.
 /// Native new-window requests separately allow HTTP(S) browser navigation.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn page_request(body: &str, page: &str, t3: &url::Url) -> Option<PageRequest> {
     let page = url::Url::parse(page).ok()?;
     if page.origin() != t3.origin() {

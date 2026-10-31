@@ -535,6 +535,14 @@ impl Reader {
                         .input()
                         .update(cx, |input, cx| input.set_selected_range(body..body, cx));
                 }
+                // Created from the tree: its row is shown and selected
+                // whether or not auto-reveal is on (#1762), so the next
+                // New note goes beside it.
+                let ix = self.tree.reveal(&created);
+                if let Some(ix) = self.select_index_folder(&created, ix) {
+                    self.scroll_tree_to(ix);
+                }
+                self.tree_revealed = created.clone();
                 self.announce_creation(&created, Some(source), window, cx);
                 if let Some(folder) = templates
                     .as_ref()

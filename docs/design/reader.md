@@ -346,7 +346,16 @@ mode or query state. Beneath the header is the tree of real folders and notes
 (#335 rules: real directories only, root-relative identity, no inferred
 grouping). Top-level folders are labelled in weight 600 without a folder icon;
 deeper folders have `Folder`/`FolderOpen`; notes have `FileText`. The current note
-is highlighted with `selected` and weight 500, and its ancestors are expanded.
+is highlighted with `selected` and weight 500 wherever its row is listed. Opening
+a note does not move the tree by default: its row is selected only if it is
+already listed, and nothing expands or scrolls; Reveal in sidebar does that on
+request. Settings → Appearance → «Show the open note in the file tree» (#1762,
+off by default) makes the tree follow, as Auto-reveal does in other editors:
+opening a note expands its folders, selects it and scrolls only when the row is
+off screen. It never takes keyboard focus or opens a closed sidebar, waits while
+the tree is being wheel-scrolled (until it has been still for 1.2 s), and does
+not open a closed folder with more than 200 entries — that folder is selected
+instead. Folders the user already opened stay as they are.
 Markdown tree rows use the file stem by default (#1834). Settings → Appearance →
 File tree labels can select Title (first H1 → frontmatter title → file stem);
 the row label and its sort key change together, live in every Reader window.
@@ -928,6 +937,23 @@ The document title receives space before optional header controls. At narrow wid
 ### Edit pencil (#871, Oleg 2026-10-09)
 
 The note-header pencil toggles Edit/Read and is a primary action: optional controls overflow first; the pencil stays visible alongside Read. Its label and accessible name are Edit. Edit restores the last Live Preview/Source choice. Escape dismisses local transient UI first, then returns to Reader through the existing safe save/conflict path. Rename remains title click, F2 and the document menu.
+
+### Entering a rendered Live Preview block (#1642)
+
+A rendered table, image, callout or code block shows its source while the caret
+or selection touches it. Besides arrows and a click:
+
+- A click lands on the source of what was clicked: a table cell's text, an
+  image's embed. A callout's body still lands on the source line under the
+  pointer.
+- A double-click opens the source with the whole block selected.
+- F2 opens the rendered block next to the caret (nothing but blank space between
+  them) with the whole block selected. With no such block F2 renames the note.
+- Escape with the selection inside a block's source draws it rendered again
+  before it leaves Edit. The caret returns to where F2 or Enter found it, else to
+  the line after the block, and the block keeps a focus ring while the caret
+  stays there. Enter or F2 then opens it again. Once the caret moves or the text
+  changes the ring is gone and Enter is a new line again.
 
 ### Image file actions (#1897)
 

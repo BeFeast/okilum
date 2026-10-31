@@ -25,11 +25,11 @@ class ProcessV2(unittest.TestCase):
         self.assertEqual(workflow('.forgejo/workflows/sprint.yml')['on'], {})
         self.assertIn('test-nofile.sh', (ROOT / 'scripts/ci/check-linux.sh').read_text())
 
-    def test_fast_lane_is_local_linux_with_five_minute_budget(self):
+    def test_fast_lane_is_local_linux_with_six_minute_budget(self):
         local = workflow('.forgejo/workflows/fast.yml')
         job = local['jobs']['check']
         self.assertEqual(job['runs-on'], 'fast-linux')
-        self.assertEqual(job['timeout-minutes'], '5')
+        self.assertEqual(job['timeout-minutes'], '6')
         text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertNotIn('github-pr.py', text)
         self.assertIn('fast-local.sh', text)

@@ -1,0 +1,267 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 6342dc2b..d56e1b85 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -399,6 +399,10 @@ pub struct InputBaseState<M: InputModeKind> {
+         std::cell::RefCell<Option<(SourceStamp, Vec<(std::ops::Range<usize>, Bounds<Pixels>)>)>>,
+     /// Where the block element under the current press asks it to land.
+     block_press: crate::input::projection::BlockPressSlot,
++    /// The source range of the rendered block the last press revealed, for
++    /// the revision it revealed: the next press of a double-click selects the
++    /// whole block's source (#1642).
++    revealed_block: Option<(SourceStamp, std::ops::Range<usize>)>,
+     /// Last measured height of each block, by block key. One entry per block:
+     /// while the width changes (resize), rows keep the last height and the
+     /// next measurement corrects it, so nothing flashes or drifts.
+@@ -826,6 +830,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             block_renderer: None,
+             painted_blocks: Default::default(),
+             block_press: Default::default(),
++            revealed_block: None,
+             block_heights: Default::default(),
+             pending_block_scroll: px(0.),
+             exact_clipboard: ClipboardSession::default(),
+@@ -2643,7 +2648,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+         // the block says the press landed (else on the raw row under the
+         // pointer, inside the block). No hold and no drag: the rendered
+         // geometry under the pointer is not the source's (#1067).
+-        if let Some(target) = self.block_press_target(event, offset) {
++        let revealed = self.revealed_block.take();
++        if let Some((target, block)) = self.block_press_target(event, offset) {
+             self.selecting = false;
+             self.projection_mouse_hold = false;
+             cx.emit(crate::input::projection::SourceClick {
+@@ -2651,12 +2657,35 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 offset: crate::input::projection::SourceByte(target),
+                 event: event.clone(),
+             });
+-            self.move_to(target, None, cx);
++            if event.click_count >= 2 {
++                // Both presses of the double-click landed before a repaint.
++                self.select_block_source(block, cx);
++            } else {
++                self.revealed_block = Some((self.source_stamp(), block));
++                self.move_to(target, None, cx);
++            }
+             self.projection.presentation_changed();
+             self.refresh_projection();
+             cx.notify();
+             return;
+         }
++        // The second press of a double-click on a rendered block selects the
++        // source the first press revealed, not a word of it (#1642).
++        if let Some((_, block)) = revealed.filter(|(stamp, block)| {
++            *stamp == self.source_stamp()
++                && self.projection.enabled
++                && event.button == MouseButton::Left
++                && event.click_count == 2
++                && !event.modifiers.shift
++                && block.start <= offset
++                && offset <= block.end
++        }) {
++            self.selecting = false;
++            self.projection_mouse_hold = false;
++            self.select_block_source(block, cx);
++            cx.notify();
++            return;
++        }
+         self.drag_anchors = if event.click_count == 1 && !event.modifiers.shift {
+             self.mouse_edge_carets(event.position)
+         } else {
+@@ -2745,9 +2774,27 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+     }
+ 
++    /// Select a rendered block's whole source, caret at its start so the view
++    /// stays where the block begins.
++    fn select_block_source(&mut self, block: std::ops::Range<usize>, cx: &mut Context<Self>) {
++        self.selected_range = (block.start..block.end).into();
++        self.selection_reversed = true;
++        self.selected_word_range = None;
++        self.cursor_line_end_affinity = false;
++        self.cursor_bidi_affinity = Affinity::Before;
++        self.preferred_column = None;
++        self.sync_projection_active();
++        self.refresh_projection();
++        cx.notify();
++    }
++
+     /// The source offset a plain left press inside a painted block lands on,
+-    /// or None when the press is not on a block.
+-    fn block_press_target(&self, event: &MouseDownEvent, offset: usize) -> Option<usize> {
++    /// with the block's source range, or None when the press is not on a block.
++    fn block_press_target(
++        &self,
++        event: &MouseDownEvent,
++        offset: usize,
++    ) -> Option<(usize, std::ops::Range<usize>)> {
+         let pressed = self.block_press.lock().ok().and_then(|mut slot| slot.take());
+         if !self.projection.enabled
+             || event.button != MouseButton::Left
+@@ -2760,14 +2807,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+         let (_, blocks) = painted.as_ref().filter(|(stamp, _)| *stamp == current)?;
+         let (source, _) = blocks.iter().find(|(_, bounds)| bounds.contains(&event.position))?;
+         let inside = |at: usize| source.start <= at && at <= source.end;
+-        Some(
+-            pressed
+-                .filter(|press| press.position == event.position)
+-                .map(|press| press.offset.0)
+-                .filter(|&at| inside(at))
+-                .or(Some(offset).filter(|&at| inside(at)))
+-                .unwrap_or(source.start),
+-        )
++        let target = pressed
++            .filter(|press| press.position == event.position)
++            .map(|press| press.offset.0)
++            .filter(|&at| inside(at))
++            .or(Some(offset).filter(|&at| inside(at)))
++            .unwrap_or(source.start);
++        Some((target, source.clone()))
+     }
+ 
+     pub(super) fn on_mouse_up(
+@@ -5527,6 +5573,144 @@ mod tests {
+         });
+     }
+ 
++    /// [`BlockProvider`], with the block left out (shown as source) while
++    /// the caret or selection touches it, as Live Preview does.
++    struct RevealingBlockProvider;
++    impl ProjectionProvider for RevealingBlockProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            active: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            let start = source.text.find('|')?;
++            let end = source.text.rfind('|')? + 1;
++            let (from, to) = (active.anchor.0.min(active.head.0), active.anchor.0.max(active.head.0));
++            let blocks = if from <= end && start <= to {
++                Vec::new()
++            } else {
++                vec![super::super::projection::ProjectionBlock {
++                    lines: 1..4,
++                    source: SourceByte(start)..SourceByte(end),
++                    key: 7,
++                }]
++            };
++            Some(Arc::new(RevealingBlockProjection(source.clone(), blocks)))
++        }
++    }
++    struct RevealingBlockProjection(
++        super::super::projection::SourceSnapshot,
++        Vec<super::super::projection::ProjectionBlock>,
++    );
++    impl super::super::projection::SourceProjection for RevealingBlockProjection {
++        fn blocks(&self) -> &[super::super::projection::ProjectionBlock] {
++            &self.1
++        }
++        fn source(&self) -> &super::super::projection::SourceSnapshot {
++            &self.0
++        }
++        fn text(&self) -> &str {
++            &self.0.text
++        }
++        fn styles(&self) -> &[super::super::projection::ProjectionStyle] {
++            &[]
++        }
++        fn to_projected(
++            &self,
++            source: SourceByte,
++            _: ConcealBias,
++        ) -> Option<super::super::projection::ProjectedByte> {
++            (source.0 <= self.0.text.len()).then_some(super::super::projection::ProjectedByte(source.0))
++        }
++        fn to_source(
++            &self,
++            display: super::super::projection::ProjectedByte,
++            _: ConcealBias,
++        ) -> Option<SourceByte> {
++            (display.0 <= self.0.text.len()).then_some(SourceByte(display.0))
++        }
++    }
++
++    /// #1642: a double-click on a rendered block opens its source with the
++    /// whole block selected, whether or not the first press's reveal was
++    /// painted before the second press. A plain double-click on text still
++    /// selects a word.
++    #[gpui::test]
++    fn double_click_on_a_rendered_block_selects_its_whole_source(cx: &mut TestAppContext) {
++        const TEXT: &str = "top word\n| a |\n|---|\n| b |\nbottom";
++        let block = TEXT.find('|').unwrap()..TEXT.rfind('|').unwrap() + 1;
++        for repaint_between in [true, false] {
++            cx.update(crate::init);
++            let view = InputView::build_editor(cx, |state| {
++                state
++                    .folding(false)
++                    .searchable(false)
++                    .line_number(false)
++                    .wrapping_indent(super::super::WrappingIndent::None)
++            });
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.set_value(TEXT, window, cx);
++                    state.set_block_renderer(Some(std::rc::Rc::new(|_, _, _, _, _| {
++                        div().h(px(100.)).w_full().into_any_element()
++                    })));
++                    state.set_projection_provider(Some(Arc::new(RevealingBlockProvider)), cx);
++                    window.activate_window();
++                    state.focus(window, cx);
++                    state.set_selected_range(0..0, cx);
++                })
++            });
++            v.run_until_parked();
++            let (inside, word) = v.update(|_, cx| {
++                let state = view.input.read(cx);
++                let painted = state.painted_blocks.borrow();
++                let (_, blocks) = painted.as_ref().expect("a painted frame");
++                // Positive control: the block is rendered, not source.
++                assert_eq!(blocks.len(), 1, "the block is rendered");
++                let layout = state.last_layout.as_ref().unwrap();
++                let origin = state.input_bounds.origin;
++                let word = point(origin.x + px(2.), origin.y + layout.line_height / 2.);
++                (blocks[0].1.center(), word)
++            });
++            let press = |v: &mut VisualTestContext, at, count| {
++                v.simulate_event(gpui::MouseDownEvent {
++                    position: at,
++                    button: MouseButton::Left,
++                    click_count: count,
++                    ..Default::default()
++                });
++                v.simulate_event(gpui::MouseUpEvent {
++                    position: at,
++                    button: MouseButton::Left,
++                    click_count: count,
++                    ..Default::default()
++                });
++            };
++            press(&mut v, inside, 1);
++            if repaint_between {
++                v.run_until_parked();
++                v.update(|_, cx| {
++                    let state = view.input.read(cx);
++                    assert!(block.contains(&state.cursor()), "one press reveals the block");
++                    let painted = state.painted_blocks.borrow();
++                    assert!(painted.as_ref().unwrap().1.is_empty(), "the block shows its source");
++                });
++            }
++            press(&mut v, inside, 2);
++            v.run_until_parked();
++            v.update(|_, cx| {
++                let state = view.input.read(cx);
++                assert_eq!(state.selected_range(), block, "repaint between presses: {repaint_between}");
++                assert_eq!(state.cursor(), block.start, "the caret stays at the block start");
++            });
++            // Positive control: a double-click on plain text selects a word.
++            press(&mut v, word, 1);
++            press(&mut v, word, 2);
++            v.run_until_parked();
++            v.update(|_, cx| assert_eq!(view.input.read(cx).selected_range(), 0..3));
++        }
++    }
++
+     #[gpui::test]
+     fn presentation_anchor_survives_unpainted_edits_without_stale_hit_layout(cx: &mut TestAppContext) {
+         cx.update(crate::init);
