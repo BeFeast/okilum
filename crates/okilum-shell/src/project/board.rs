@@ -8,6 +8,7 @@ mod delivery;
 mod live;
 mod local;
 mod manage;
+mod notes;
 
 type IssueReader = fn(&Binding) -> Vec<(u64, Result<okilum_t3::board::Issue, String>)>;
 
@@ -37,6 +38,10 @@ pub(crate) struct Board {
     local_editor: Option<local::Editor>,
     delivery: okilum_t3::board::delivery::Snapshot,
     delivery_loading: bool,
+    project_notes: okilum_t3::board::context::Snapshot,
+    notes_loading: bool,
+    notes_expanded: bool,
+    next_stage_open: bool,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -132,6 +137,10 @@ impl Board {
             local_editor: None,
             delivery: Default::default(),
             delivery_loading: false,
+            project_notes: Default::default(),
+            notes_loading: false,
+            notes_expanded: false,
+            next_stage_open: false,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -160,6 +169,10 @@ impl Board {
                             this.selected = None;
                             this.delivery = Default::default();
                             this.delivery_loading = false;
+                            this.project_notes = Default::default();
+                            this.notes_loading = false;
+                            this.notes_expanded = false;
+                            this.next_stage_open = false;
                         }
                         if let Some(next) = &binding {
                             if next.registry_error.as_ref()
@@ -216,6 +229,8 @@ impl Board {
         }
         self.snapshot.invalidate();
         self.snapshot.t3 = Source::default();
+        self.delivery_loading = false;
+        self.notes_loading = false;
         self.manager = Some(manager);
         if self.active {
             self.refresh(window, cx);
@@ -234,6 +249,7 @@ impl Board {
         self.local_loading = false;
         self.local_generation = self.local_generation.wrapping_add(1);
         self.delivery_loading = false;
+        self.notes_loading = false;
         self.ticker = None; // Dropping the task cancels the visible-only timer.
         self.snapshot.invalidate();
         if visible {
@@ -274,6 +290,7 @@ impl Board {
             return;
         }; // Coalesce overlapping refreshes.
         self.refresh_delivery(ticket.clone(), window, cx);
+        self.refresh_project_notes(ticket.clone(), window, cx);
         let forgejo_ticket = ticket.clone();
         let read_issues = self.read_issues;
         let needs_threads = binding
@@ -960,6 +977,9 @@ impl Render for Board {
         }
         if self.delivery.enabled() {
             root = root.child(self.delivery_summary(binding, cx));
+        }
+        if let Some(notes) = self.render_project_notes(binding, cx) {
+            root = root.child(notes);
         }
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());

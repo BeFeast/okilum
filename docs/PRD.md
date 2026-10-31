@@ -75,6 +75,9 @@ projection in the center, related-note navigation and draft-only Manager context
 [Board delivery](board-delivery.md) adds an optional read-only platform/channel
 summary with exact build/source, independent source health, linked scenarios and
 explicit human evidence. Publication, installation and acceptance remain separate.
+[Project-note context](board-context.md) adds attention, decisions and exact-build
+try notes with draft-only discussion and collapsed next-stage context; current
+stage outcome/scope remains in linked notes (Oleg, 2026-10-30).
 [TOML manifests](area-manifests.md) prefer TOML with absence-only legacy YAML
 fallback. Invalid cards retain precise visible diagnostics beside healthy cards.
 Delivery/human acceptance and execution mutations remain separate.

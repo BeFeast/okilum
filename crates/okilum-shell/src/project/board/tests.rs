@@ -206,6 +206,13 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         serde_json::to_vec(&binding).unwrap(),
     )
     .unwrap();
+    std::fs::write(
+        folder.join("ops/board-context.toml"),
+        "version=1\nnotes=['decision.md']\nnext_stage='next.md'\n",
+    )
+    .unwrap();
+    std::fs::write(folder.join("decision.md"), "---\nboard_context:\n  kind: decision\n  title: Choose a safe alternative\n  reason: Waiting for owner input\n  consequence: The next action waits\n  issue: 1767\n---\n# Alternatives\nThe original **Markdown** context.\n").unwrap();
+    std::fs::write(folder.join("next.md"), "---\nboard_context:\n  kind: next_stage\n  title: A later stage\n  reason: Its own goal\n  consequence: Its own scope\n---\nFuture context only.\n").unwrap();
     let project = okilum_t3::projects::Project::read(&folder).unwrap();
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -380,6 +387,95 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_click(back.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-attention-0").is_some());
+    assert!(visual.debug_bounds("board-note-open-0").is_some());
+    assert!(visual.debug_bounds("board-next-stage").is_some());
+    assert!(visual.debug_bounds("board-note-card-next").is_none());
+    let draft_before = reader.read_with(visual, |reader, cx| {
+        reader
+            .project
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .compose
+            .read(cx)
+            .value()
+            .to_string()
+    });
+    let discuss = visual.debug_bounds("board-note-discuss-0").unwrap();
+    visual.simulate_click(discuss.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, cx| {
+        let draft = reader
+            .project
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .compose
+            .read(cx)
+            .value();
+        assert!(draft.starts_with(&draft_before));
+        assert!(draft.contains("Choose a safe alternative"));
+        assert!(draft.contains("decision.md"));
+        assert!(draft.contains("issues/1767"));
+        assert!(draft.contains("Note revision:"));
+    });
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, cx| {
+        assert_eq!(
+            reader
+                .project
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .compose
+                .read(cx)
+                .value()
+                .as_str(),
+            draft_before
+        );
+    });
+    let note = visual.debug_bounds("board-note-open-0").unwrap();
+    visual.simulate_click(note.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, _| {
+        assert_eq!(reader.current_rel, "project/decision.md");
+        assert!(!reader.project_navigation.board_visible);
+    });
+    let back = visual.debug_bounds("project-return-board").unwrap();
+    visual.simulate_click(back.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, cx| {
+        let board = reader.project_navigation.boards[&folder].read(cx);
+        assert_eq!(board.filter.as_deref(), Some("Editing"));
+        assert_eq!(board.selected, Some(1767));
+        assert_eq!(
+            reader
+                .project
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .compose
+                .read(cx)
+                .value()
+                .as_str(),
+            draft_before
+        );
+    });
+    let next = visual.debug_bounds("board-next-stage").unwrap();
+    visual.simulate_click(next.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-note-card-next").is_some(),
+        "positive control: explicit expansion reveals future context"
+    );
+    for selector in ["board-plan", "board-current-scope"] {
+        assert!(visual.debug_bounds(selector).is_none());
+    }
 }
 
 #[test]
@@ -750,5 +846,57 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
             board.delivery.evidence["scenario.md"].value[0].accepted_by, None,
             "opening never accepts"
         );
+    });
+}
+
+#[gpui::test]
+fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_stage_ui(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let area = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(area.path().join("ops")).unwrap();
+    std::fs::write(
+        area.path().join("ops/board-context.toml"),
+        "version=1\nnotes=['try.md']\n",
+    )
+    .unwrap();
+    std::fs::write(area.path().join("try.md"), "---\nboard_context:\n  kind: try\n  title: Try an unselected result\n  reason: Await exact build evidence\n  consequence: No readiness is implied\n  issue: 99999\n  platform: linux\n  channel: sprint\n---\nAn explicit scenario, without publication evidence.\n").unwrap();
+    let binding = Binding::parse(include_str!(
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+    ))
+    .unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| {
+            let mut board = Board::with_reader(area.path().into(), |_| Vec::new(), window, cx);
+            board
+                .project_notes
+                .accept(okilum_t3::board::context::refresh(area.path()), now());
+            board.binding = Some(binding);
+            board
+        });
+        Root::new(board, window, cx)
+    });
+    let board = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Board>().unwrap()
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-note-card-0").is_some());
+    assert!(visual.debug_bounds("board-note-try-state-0").is_some());
+    assert!(visual.debug_bounds("board-note-open-0").is_some());
+    assert!(
+        visual.debug_bounds("board-expand-1733").is_some(),
+        "positive control: real selected issues still render"
+    );
+    assert!(visual.debug_bounds("board-expand-99999").is_none());
+    assert!(visual.debug_bounds("board-next-stage").is_none());
+    board.read_with(visual, |board, _| {
+        assert!(!board
+            .binding
+            .as_ref()
+            .unwrap()
+            .issues
+            .iter()
+            .any(|s| s.number == 99999));
     });
 }
