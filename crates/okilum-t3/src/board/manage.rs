@@ -364,7 +364,7 @@ impl Session {
                 let document = self.document.as_ref().unwrap();
                 if changed_root == "details" {
                     let mut doc = document.clone();
-                    for name in ["title", "goal", "stage_note"] {
+                    for name in ["title", "goal", "stage_note", "repository"] {
                         doc.source =
                             doc.set_toml_field(name, Some(&serde_yaml::to_value(&value[name])?))?;
                         doc.value = area_files::parse(&doc.source, Format::Toml)?;
@@ -495,9 +495,8 @@ impl Session {
             Binding::parse_toml(&source)?
         };
         ensure!(
-            self.document.is_none()
-                || parsed.repository == self.value["repository"].as_str().unwrap_or_default(),
-            "Repository changed"
+            parsed.repository == value["repository"].as_str().unwrap_or_default(),
+            "Repository did not round-trip from the validated draft"
         );
         Ok(source)
     }
