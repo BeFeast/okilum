@@ -8,21 +8,53 @@ concurrency:
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: bridge
-    timeout-minutes: 10
+    # baldr's local Docker executor; never a GitHub hosted runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
-      - name: Three platform builds and fast unit tests
+      - name: Prepare local Linux toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold zstd \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+          curl --fail --silent --show-error https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Restore Cargo downloads
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: fast-local-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: fast-local-cargo-
+      - name: Build Linux desktop and run fast unit tests
         env:
-          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
-          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
-          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
-          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          CI_LANE: fast
-        run: python3 scripts/ci/github-pr.py
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/release-cache.sh
+          bash scripts/ci/fast.sh
+      - name: Compiler cache receipt
+        if: always()
+        run: |
+          if command -v sccache >/dev/null; then sccache --show-stats; fi

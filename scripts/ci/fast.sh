@@ -2,7 +2,9 @@
 # Process v2: real desktop build + deterministic parsing unit tests, no native suites.
 set -euo pipefail
 source "$(dirname "$0")/test-nofile.sh"
-export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+export CARGO_INCREMENTAL=0
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
 scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
 export OKILUM_SOURCE_COMMIT="${GITHUB_SHA:?}"

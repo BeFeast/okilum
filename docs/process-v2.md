@@ -7,18 +7,15 @@ acceptance. P0/P1 releases may run outside that cycle.
 ## Merge admission
 
 `fast / check (pull_request)` is the sole required main protection context.
-It uses an exact-head hosted matrix: Linux, Windows and macOS desktop/supervisor
-builds plus the deterministic okilum-paste library unit tests. The aggregate
-fails if any platform fails, skips or times out. The bridge is bounded to ten
-minutes including queue time; the build step has a six-minute bound with time retained for cache persistence.
-The bridge checks all three exact platform receipts directly, requiring source,
-run/attempt, runner label and successful executed build/test step. It does not
-need a fourth hosted aggregate runner. The API run summary may lag the actual
-jobs; explicit cancelled/failed records and missing/skipped steps never pass. Cold
-caches or unavailable hosted capacity are real failures, never fallback success.
-PR-local fast refs persist until PR-close cleanup so compiler caches survive
-corrective pushes; updates are normal fast-forwards, never force pushes.
-The first production timing must be measured rather than inferred from timeout.
+It runs the exact PR head on baldr's local Forgejo Linux Docker runner:
+desktop/supervisor build plus deterministic okilum-paste library unit tests.
+The five-minute job budget includes setup and build; the shared LAN compiler
+cache and Cargo downloads cache are reused. A timeout or failed build/test fails
+closed. No GitHub hosted job or bridge participates in PR admission.
+Windows and macOS compilation moves to each post-merge beta producer; an OS beta
+failure belongs to the last merge author, who repairs it immediately. This is
+post-merge OS validation, not an OS waiver. The first production timing must be
+measured rather than inferred from timeout.
 
 No approval requirement blocks merge. Review happens asynchronously after merge;
 findings get a follow-up fix. Full shell/native, Brain/transport, perf, apt timing

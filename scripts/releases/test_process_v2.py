@@ -25,14 +25,15 @@ class ProcessV2(unittest.TestCase):
         self.assertEqual(workflow('.forgejo/workflows/sprint.yml')['on'], {})
         self.assertIn('test-nofile.sh', (ROOT / 'scripts/ci/check-linux.sh').read_text())
 
-    def test_fast_lane_builds_all_platforms_and_keeps_tests_bounded(self):
-        data = workflow('.github/workflows/forgejo-fast.yml')
-        platforms = data['jobs']['build']['strategy']['matrix']['include']
-        self.assertEqual({p['platform'] for p in platforms}, {'linux', 'windows', 'macos'})
-        self.assertEqual(set(data['jobs']), {'build'})
-        self.assertIn('timeout-minutes: 6', (ROOT / '.github/workflows/forgejo-fast.yml').read_text())
+    def test_fast_lane_is_local_linux_with_five_minute_budget(self):
         local = workflow('.forgejo/workflows/fast.yml')
-        self.assertEqual(local['jobs']['check']['timeout-minutes'], '10')
+        job = local['jobs']['check']
+        self.assertEqual(job['runs-on'], 'ubuntu-latest')
+        self.assertEqual(job['timeout-minutes'], '5')
+        text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
+        self.assertNotIn('github-pr.py', text)
+        self.assertIn('release-cache.sh', text)
+        self.assertFalse((ROOT / '.github/workflows/forgejo-fast.yml').exists())
         script = (ROOT / 'scripts/ci/fast.sh').read_text()
         self.assertIn('cargo build --locked -p okilum-shell -p okilum-sync-supervisor', script)
         self.assertIn('cargo test --locked -p okilum-paste --lib', script)
