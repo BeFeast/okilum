@@ -179,6 +179,16 @@ pub struct Session {
     interrupted_open: HashSet<RunKey>,
 }
 impl Session {
+    /// An observed Stop expands a response once; it must not override a later
+    /// explicit user disclosure. Treat both sources as one toggle, as T3 does.
+    pub fn toggle_fold(&mut self, run: &RunKey, expansion: &mut Expansion) {
+        let preserved = self.interrupted_open.remove(run);
+        let explicit = expansion.runs.remove(run);
+        if !preserved && !explicit {
+            expansion.runs.insert(run.clone());
+        }
+    }
+
     pub fn observe_latest(&mut self, latest: Option<&RunFact>) {
         let next = latest.map(|run| (run.key.clone(), run.state));
         if let Some((previous_key, previous_state)) = &self.previous_latest {
@@ -1149,6 +1159,42 @@ mod tests {
             ))
             .expanded
         );
+    }
+
+    #[test]
+    fn a_user_can_collapse_and_reopen_the_response_preserved_by_stop() {
+        let stopped = run("run", RunState::Interrupted);
+        let mut session = Session::default();
+        session.observe_latest(Some(&run("run", RunState::Running)));
+        session.observe_latest(Some(&stopped));
+        let mut expansion = Expansion::default();
+        let activity = Activity {
+            latest: Some(stopped.key.clone()),
+            ..Activity::default()
+        };
+        session.toggle_fold(&stopped.key, &mut expansion);
+        let closed = plan(
+            &basic_turn(),
+            &[stopped.clone()],
+            &expansion,
+            &session,
+            &activity,
+        );
+        assert!(!fold(&closed).expanded && !source_visible(&closed, "comment"));
+        session.observe_latest(Some(&stopped));
+        assert!(
+            !fold(&plan(
+                &basic_turn(),
+                &[stopped.clone()],
+                &expansion,
+                &session,
+                &activity
+            ))
+            .expanded
+        );
+        session.toggle_fold(&stopped.key, &mut expansion);
+        let reopened = plan(&basic_turn(), &[stopped], &expansion, &session, &activity);
+        assert!(fold(&reopened).expanded && source_visible(&reopened, "comment"));
     }
 
     #[test]
