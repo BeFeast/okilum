@@ -170,8 +170,9 @@ struct Saved {
     log_regex: BTreeMap<String, okilum_core::log::regex_text::Definition>,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
-    /// Per-vault accent preset key (#774), keyed like `vaults` by the
-    /// canonical root. Unknown keys from a newer build are kept, not shown.
+    /// Per-vault accent (#774), keyed like `vaults` by the canonical root:
+    /// a preset key, or a custom colour as lowercase `#rrggbb` (#1399).
+    /// Unknown keys from a newer build are kept, not shown.
     vault_colors: BTreeMap<PathBuf, String>,
     /// Vaults whose colour does not tint the title bar (#1050); tinting is
     /// on by default whenever a colour is set.
@@ -517,7 +518,9 @@ pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx:
     let Some(state) = cx.try_global::<Store>() else {
         return;
     };
-    if state.saved.vault_colors.get(root).map(String::as_str) == color.map(brand::VaultColor::key) {
+    if state.saved.vault_colors.get(root).map(String::as_str)
+        == color.map(brand::VaultColor::key).as_deref()
+    {
         return;
     }
     let state = cx.global_mut::<Store>();
@@ -526,7 +529,7 @@ pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx:
             state
                 .saved
                 .vault_colors
-                .insert(root.to_owned(), color.key().into());
+                .insert(root.to_owned(), color.key().into_owned());
         }
         None => {
             state.saved.vault_colors.remove(root);
@@ -2344,6 +2347,121 @@ mod tests {
             set_vault_color(&root, Some(brand::VaultColor::Red), cx);
             flush(cx);
             assert!(!inside.join("reader-ui.json").exists());
+        });
+    }
+
+    /// #1399: a custom colour is stored as canonical `#rrggbb` beside the
+    /// presets, round-trips through a restart, and merges per root like a
+    /// preset: another process's roots, colours (even non-canonical ones)
+    /// and unrelated preferences are kept byte for byte.
+    #[gpui::test]
+    fn custom_vault_colors_round_trip_and_merge_without_touching_other_records(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let first = fixture.path().join("first");
+        let second = fixture.path().join("second");
+        let external_root = fixture.path().join("external");
+        for dir in [&first, &second, &external_root] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let directory = fixture.path().join("state");
+        let path = directory.join("reader-ui.json");
+        let typed = brand::VaultColor::from_hex("#3A7BD5").unwrap();
+        cx.update(|cx| {
+            install(&directory, cx);
+            set_vault_color(&first, Some(brand::VaultColor::Teal), cx);
+            set_vault_color(&second, Some(typed), cx);
+            trust_for_links(&second, cx);
+            flush(cx);
+            let stored = read(&path).unwrap();
+            assert_eq!(
+                stored.vault_colors.get(&first).map(String::as_str),
+                Some("teal"),
+                "presets keep their key"
+            );
+            assert_eq!(
+                stored.vault_colors.get(&second).map(String::as_str),
+                Some("#3a7bd5"),
+                "custom is canonical lowercase"
+            );
+            // Another process: a different theme, a colour of its own written
+            // in upper case, and a preset this build does not know.
+            let mut external = read(&path).unwrap();
+            external.theme = brand::ThemeId::Nord.key().into();
+            external
+                .vault_colors
+                .insert(external_root.clone(), "#ABCDEF".into());
+            external
+                .vault_colors
+                .insert(fixture.path().join("future"), "future-colour".into());
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            // Preset -> custom on the first vault only.
+            set_vault_color(&first, brand::VaultColor::from_hex("#000000"), cx);
+            flush(cx);
+            let merged = read(&path).unwrap();
+            assert_eq!(
+                merged.vault_colors.get(&first).map(String::as_str),
+                Some("#000000")
+            );
+            assert_eq!(
+                merged.vault_colors.get(&second).map(String::as_str),
+                Some("#3a7bd5")
+            );
+            assert_eq!(
+                merged.vault_colors.get(&external_root).map(String::as_str),
+                Some("#ABCDEF"),
+                "another process's colour is not rewritten"
+            );
+            assert_eq!(
+                merged
+                    .vault_colors
+                    .get(&fixture.path().join("future"))
+                    .map(String::as_str),
+                Some("future-colour")
+            );
+            assert_eq!(merged.theme, "nord", "unrelated preference kept");
+            assert!(merged.link_trusted_vaults.contains(&second));
+            // Restart: every colour reads back, case-insensitively.
+            install(&directory, cx);
+            assert_eq!(
+                vault_color(&first, cx),
+                Some(brand::VaultColor::Custom([0, 0, 0]))
+            );
+            assert_eq!(vault_color(&second, cx), Some(typed));
+            assert_eq!(
+                vault_color(&external_root, cx),
+                Some(brand::VaultColor::Custom([0xab, 0xcd, 0xef]))
+            );
+            // Title tint follows a custom colour and its opt-out survives.
+            assert_eq!(title_tint(&second, cx), Some(typed));
+            set_title_tint(&second, false, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert_eq!(title_tint(&second, cx), None);
+            assert_eq!(vault_color(&second, cx), Some(typed), "colour kept");
+            // Custom -> None clears the colour and the opt-out, like a preset.
+            set_vault_color(&second, None, cx);
+            flush(cx);
+            let cleared = read(&path).unwrap();
+            assert!(!cleared.vault_colors.contains_key(&second));
+            assert!(!cleared.untinted_vaults.contains(&second));
+            assert_eq!(
+                cleared.vault_colors.get(&first).map(String::as_str),
+                Some("#000000"),
+                "the other vault keeps its colour"
+            );
+            // Custom -> preset on the same root.
+            set_vault_color(&first, Some(brand::VaultColor::Pink), cx);
+            flush(cx);
+            assert_eq!(
+                read(&path)
+                    .unwrap()
+                    .vault_colors
+                    .get(&first)
+                    .map(String::as_str),
+                Some("pink")
+            );
         });
     }
 

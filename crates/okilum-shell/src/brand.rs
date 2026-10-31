@@ -495,7 +495,9 @@ pub fn palette(cx: &App) -> Palette {
 /// Per-vault accent (#774), like Chrome profile colours: a dot at the vault
 /// name and a 2 px line along the window top. The theme stays app-wide.
 /// Each preset has a light and a dark value, both at least 3:1 against
-/// every theme's surfaces (WCAG 1.4.11, checked in tests).
+/// every theme's surfaces (WCAG 1.4.11, checked in tests). A custom colour
+/// (#1399) keeps the RGB the user typed as the preference and is shown
+/// through `display`, which adapts it per theme and mode to the same 3:1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VaultColor {
     Red,
@@ -506,9 +508,12 @@ pub enum VaultColor {
     Blue,
     Purple,
     Pink,
+    /// The authored `#rrggbb`, as red, green and blue bytes.
+    Custom([u8; 3]),
 }
 
 impl VaultColor {
+    /// The presets, in swatch order. A custom colour is not a preset.
     pub const ALL: [Self; 8] = [
         Self::Red,
         Self::Orange,
@@ -520,9 +525,10 @@ impl VaultColor {
         Self::Pink,
     ];
 
-    /// Stable key for app preferences.
-    pub fn key(self) -> &'static str {
-        match self {
+    /// Stable key for app preferences: the preset name, or a custom colour
+    /// as canonical lowercase `#rrggbb`. Preset keys never start with `#`.
+    pub fn key(self) -> Cow<'static, str> {
+        Cow::Borrowed(match self {
             Self::Red => "red",
             Self::Orange => "orange",
             Self::Amber => "amber",
@@ -531,11 +537,28 @@ impl VaultColor {
             Self::Blue => "blue",
             Self::Purple => "purple",
             Self::Pink => "pink",
-        }
+            Self::Custom([r, g, b]) => return Cow::Owned(format!("#{r:02x}{g:02x}{b:02x}")),
+        })
     }
 
+    /// A stored key: a preset name, or a custom `#rrggbb` in either case.
+    /// Anything else (a preset from a newer build) is `None`.
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|color| color.key() == key)
+        Self::ALL
+            .into_iter()
+            .find(|color| color.key() == key)
+            .or_else(|| Self::from_hex(key))
+    }
+
+    /// Exactly `#` and six hex digits, case-insensitive. Shorthand, alpha,
+    /// a missing `#`, signs or any other text is not a colour.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        let digits = text.strip_prefix('#')?;
+        if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let byte = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok();
+        Some(Self::Custom([byte(0)?, byte(2)?, byte(4)?]))
     }
 
     pub fn label(self) -> &'static str {
@@ -548,9 +571,11 @@ impl VaultColor {
             Self::Blue => "Blue",
             Self::Purple => "Purple",
             Self::Pink => "Pink",
+            Self::Custom(_) => "Custom",
         }
     }
 
+    /// The colour as chosen: a preset's mode value, or the authored RGB.
     fn value(self, dark: bool) -> Hsla {
         let (light, dark_value) = match self {
             Self::Red => (0xdc2626, 0xf87171),
@@ -561,22 +586,84 @@ impl VaultColor {
             Self::Blue => (0x2563eb, 0x60a5fa),
             Self::Purple => (0x9333ea, 0xc084fc),
             Self::Pink => (0xdb2777, 0xf472b6),
+            Self::Custom([r, g, b]) => {
+                let value = u32::from_be_bytes([0, r, g, b]);
+                (value, value)
+            }
         };
         rgb(if dark { dark_value } else { light }).into()
     }
 
+    /// The colour drawn in `theme`: presets as they are; a custom colour
+    /// with its lightness moved (hue and saturation kept) only as far as
+    /// needed to reach 3:1 on the canvas, surface and sidebar — darker on a
+    /// light theme, lighter on a dark one. The stored preference is not
+    /// changed, so it shows as typed wherever it is already visible.
+    pub fn display(self, theme: ThemeId, dark: bool) -> Hsla {
+        let authored = self.value(dark);
+        if !matches!(self, Self::Custom(_)) {
+            return authored;
+        }
+        let p = tokens(theme, dark).0;
+        let visible = |color: Hsla| {
+            [p.canvas, p.surface, p.sidebar]
+                .into_iter()
+                .all(|bg| contrast_ratio(color, bg) >= MARK_MIN_CONTRAST)
+        };
+        // White on a dark theme and black on a light one always pass (tested),
+        // so the walk ends at the first visible lightness or at that end.
+        let end = if dark { 1. } else { 0. };
+        let mut shown = authored;
+        while shown.l != end && !visible(shown) {
+            shown.l = if dark {
+                (shown.l + LIGHTNESS_STEP).min(1.)
+            } else {
+                (shown.l - LIGHTNESS_STEP).max(0.)
+            };
+        }
+        shown
+    }
+
     pub fn color(self, cx: &App) -> Hsla {
-        self.value(Theme::global(cx).is_dark())
+        self.display(theme_id(cx), Theme::global(cx).is_dark())
     }
 
     /// The title bar tinted with this colour (#1050): the vault colour laid
     /// over `bar` at a low strength, halved in an inactive window so the
     /// focused one stands out. Strength is tested for AA text contrast.
     pub fn title_tint(self, bar: Hsla, dark: bool, active: bool) -> Hsla {
+        self.title_tint_in(applied_theme(), bar, dark, active)
+    }
+
+    /// `title_tint` for an explicit theme, so tests need no global state.
+    fn title_tint_in(self, theme: ThemeId, bar: Hsla, dark: bool, active: bool) -> Hsla {
         let (light, dark_strength) = TITLE_TINT_STRENGTH;
         let strength = if dark { dark_strength } else { light } * if active { 1. } else { 0.5 };
-        bar.blend(self.value(dark).opacity(strength))
+        bar.blend(self.display(theme, dark).opacity(strength))
     }
+}
+
+/// WCAG 1.4.11 non-text contrast for vault marks.
+const MARK_MIN_CONTRAST: f32 = 3.0;
+/// How far one adaptation step moves a custom colour's HSL lightness.
+const LIGHTNESS_STEP: f32 = 0.005;
+
+/// WCAG 2.x relative luminance of an opaque color.
+fn relative_luminance(color: Hsla) -> f32 {
+    let c = gpui::Rgba::from(color);
+    let channel = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+}
+
+fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
+    let (a, b) = (relative_luminance(a), relative_luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// Light / dark tint strength, chosen by Oleg from Linux frames (#1050).
@@ -929,18 +1016,49 @@ mod tests {
         assert!((contrast(grey, white) - 4.54).abs() < 0.01);
     }
 
+    /// Custom colours that stress the theme adaptation (#1399): the
+    /// extremes, near-extremes on both sides, a mid grey and the primaries.
+    const CUSTOM_EXTREMES: [&str; 14] = [
+        "#000000", "#ffffff", "#010101", "#fefefe", "#0a0a0a", "#f5f5f5", "#1a1a2e", "#fff8dc",
+        "#808080", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#00ffff",
+    ];
+
+    fn custom(hex: &str) -> VaultColor {
+        VaultColor::from_hex(hex).unwrap_or_else(|| panic!("{hex} is a colour"))
+    }
+
+    /// The extremes plus every colour on a 16-level-per-channel grid.
+    fn custom_samples() -> Vec<VaultColor> {
+        let levels = (0..16u8).map(|level| level * 17);
+        let mut samples: Vec<_> = CUSTOM_EXTREMES.iter().map(|hex| custom(hex)).collect();
+        for r in levels.clone() {
+            for g in levels.clone() {
+                for b in levels.clone() {
+                    samples.push(VaultColor::Custom([r, g, b]));
+                }
+            }
+        }
+        samples
+    }
+
     /// #1050: a tinted title bar keeps its text and icons readable.
     #[test]
     fn tinted_title_bars_keep_text_readable() {
-        // At the default strength, every preset in every theme keeps title
-        // text at AA and muted icons at 3:1, active and inactive.
+        // At the default strength, every preset and every custom sample
+        // (#1399) in every theme keeps title text at AA and muted icons at
+        // 3:1, active and inactive.
         let mut failures = Vec::new();
+        let colors: Vec<_> = VaultColor::ALL
+            .into_iter()
+            .chain(custom_samples())
+            .collect();
+        assert!(colors.len() > 4096, "positive control: the grid is checked");
         for theme in ThemeId::ALL {
             for dark in [false, true] {
                 let (p, _) = tokens(theme, dark);
-                for color in VaultColor::ALL {
+                for &color in &colors {
                     for active in [true, false] {
-                        let bar = color.title_tint(p.surface, dark, active);
+                        let bar = color.title_tint_in(theme, p.surface, dark, active);
                         for (what, fg, min) in [("text", p.text, 4.5), ("muted", p.text_muted, 3.0)]
                         {
                             let ratio = contrast(fg, bar);
@@ -958,12 +1076,24 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+        // Presets ignore the theme argument: the public form is the same.
+        let (p, _) = tokens(ThemeId::Nord, true);
+        assert_eq!(
+            VaultColor::Teal.title_tint(p.surface, true, true),
+            VaultColor::Teal.title_tint_in(ThemeId::Nord, p.surface, true, true)
+        );
         // Positive control: the tint changes the bar, and less when inactive.
         let (p, _) = tokens(ThemeId::default(), false);
         let active = VaultColor::Green.title_tint(p.surface, false, true);
         let inactive = VaultColor::Green.title_tint(p.surface, false, false);
         assert!(contrast(active, p.surface) > contrast(inactive, p.surface));
         assert!(contrast(inactive, p.surface) > 1.0);
+        let custom_tint =
+            custom("#000000").title_tint_in(ThemeId::default(), p.surface, false, true);
+        assert!(
+            contrast(custom_tint, p.surface) > 1.0,
+            "a custom colour tints too"
+        );
     }
 
     /// #774: every vault colour stays a visible UI mark (3:1) on every
@@ -975,6 +1105,8 @@ mod tests {
             for dark in [false, true] {
                 let (p, _) = tokens(theme, dark);
                 for color in VaultColor::ALL {
+                    // Presets are drawn exactly as authored in every theme.
+                    assert_eq!(color.display(theme, dark), color.value(dark));
                     for (name, bg) in [
                         ("canvas", p.canvas),
                         ("surface", p.surface),
@@ -996,9 +1128,154 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
         // Keys round-trip; unknown keys from a newer build show nothing.
         for color in VaultColor::ALL {
-            assert_eq!(VaultColor::from_key(color.key()), Some(color));
+            assert_eq!(VaultColor::from_key(&color.key()), Some(color));
+            assert!(!color.key().starts_with('#'), "presets never look custom");
         }
         assert_eq!(VaultColor::from_key("future-colour"), None);
+        // Stored preset keys keep their exact, case-sensitive meaning.
+        assert_eq!(VaultColor::from_key("teal"), Some(VaultColor::Teal));
+        assert_eq!(VaultColor::from_key("Teal"), None);
+    }
+
+    /// #1399: a custom colour is `#RRGGBB` in either case, stored as
+    /// canonical lowercase; nothing partial or ambiguous is a colour.
+    #[test]
+    fn custom_vault_colors_parse_strictly_and_round_trip_canonically() {
+        for typed in ["#3A7BD5", "#3a7bd5", "#3A7bD5"] {
+            let color = VaultColor::from_hex(typed).expect(typed);
+            assert_eq!(color, VaultColor::Custom([0x3a, 0x7b, 0xd5]));
+            assert_eq!(color.key(), "#3a7bd5");
+            assert_eq!(VaultColor::from_key(&color.key()), Some(color));
+            assert_eq!(VaultColor::from_key(typed), Some(color));
+            assert_eq!(color.label(), "Custom");
+        }
+        for (hex, rgb) in [("#000000", [0, 0, 0]), ("#FFFFFF", [255, 255, 255])] {
+            let color = custom(hex);
+            assert_eq!(color, VaultColor::Custom(rgb));
+            assert_eq!(color.key(), hex.to_ascii_lowercase());
+        }
+        // Every grid colour survives key -> from_key unchanged.
+        for color in custom_samples() {
+            assert_eq!(VaultColor::from_key(&color.key()), Some(color));
+            assert_eq!(color.key().len(), 7);
+        }
+        for rejected in [
+            "",
+            "#",
+            "#3",
+            "#3a7",
+            "#3a7b",
+            "#3a7bd",
+            "#3a7bd55",
+            "#3a7bd5ff",
+            "3a7bd5",
+            "##3a7bd5",
+            "#3a7bdg",
+            "#+3a7bd",
+            "#-3a7bd",
+            " #3a7bd5",
+            "#3a7bd5 ",
+            "#3a 7bd",
+            "＃3a7bd5",
+            "#３a7bd5",
+            "red",
+            "rgb(1,2,3)",
+        ] {
+            assert_eq!(VaultColor::from_hex(rejected), None, "{rejected:?}");
+        }
+        // Positive control: the same checker accepts its own canonical form.
+        assert!(VaultColor::from_hex("#0f766e").is_some());
+    }
+
+    /// #1399: whatever RGB is typed, the mark drawn in every theme and mode
+    /// is at least 3:1 on the canvas, surface and sidebar. Where the typed
+    /// colour already is, it is drawn exactly as typed; otherwise only its
+    /// lightness moves (darker on light themes, lighter on dark ones), and
+    /// only as far as the first visible step.
+    #[test]
+    fn custom_vault_colors_are_adapted_to_stay_visible_in_every_theme() {
+        let mut failures = Vec::new();
+        let mut adapted = 0;
+        let mut kept = 0;
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let (p, _) = tokens(theme, dark);
+                let backgrounds = [p.canvas, p.surface, p.sidebar];
+                let visible =
+                    |color: Hsla| backgrounds.iter().all(|bg| contrast(color, *bg) >= 3.0);
+                for color in custom_samples() {
+                    let authored = color.value(dark);
+                    let shown = color.display(theme, dark);
+                    let mode = if dark { "dark" } else { "light" };
+                    if !visible(shown) {
+                        failures.push(format!(
+                            "{} {mode} {} not visible",
+                            theme.key(),
+                            color.key()
+                        ));
+                    }
+                    if visible(authored) {
+                        assert_eq!(shown, authored, "{} {mode} {}", theme.key(), color.key());
+                        kept += 1;
+                        continue;
+                    }
+                    adapted += 1;
+                    assert_eq!(
+                        (shown.h, shown.s, shown.a),
+                        (authored.h, authored.s, authored.a)
+                    );
+                    if dark {
+                        assert!(shown.l > authored.l, "lighter on a dark theme");
+                    } else {
+                        assert!(shown.l < authored.l, "darker on a light theme");
+                    }
+                    // Minimal: one step back toward the typed colour fails.
+                    let back = Hsla {
+                        l: shown.l
+                            + if dark {
+                                -LIGHTNESS_STEP
+                            } else {
+                                LIGHTNESS_STEP
+                            },
+                        ..shown
+                    };
+                    assert!(
+                        !visible(back),
+                        "{} {mode} {} moved too far",
+                        theme.key(),
+                        color.key()
+                    );
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        // Positive controls: both paths are exercised, and an unadapted
+        // white mark really fails on a light surface (so would be caught).
+        assert!(
+            adapted > 1000 && kept > 1000,
+            "adapted {adapted}, kept {kept}"
+        );
+        let light = tokens(ThemeId::Okilum, false).0;
+        assert!(contrast(custom("#ffffff").value(false), light.surface) < 3.0);
+        assert!(
+            contrast(
+                custom("#ffffff").display(ThemeId::Okilum, false),
+                light.surface
+            ) >= 3.0
+        );
+        // Black is kept on light themes and lifted on dark ones; white the reverse.
+        for theme in ThemeId::ALL {
+            assert_eq!(
+                custom("#000000").display(theme, false),
+                rgb(0x000000).into()
+            );
+            assert_eq!(custom("#ffffff").display(theme, true), rgb(0xffffff).into());
+            assert_ne!(custom("#000000").display(theme, true), rgb(0x000000).into());
+            assert_ne!(
+                custom("#ffffff").display(theme, false),
+                rgb(0xffffff).into()
+            );
+        }
     }
 
     /// #349: every theme, in both variants, keeps reading text at WCAG AA
