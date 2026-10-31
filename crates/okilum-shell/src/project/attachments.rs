@@ -1,6 +1,7 @@
 //! Native chat attachment drafts. Local sources stay runtime-only; only
 //! confirmed server references enter the durable message journal.
 use super::*;
+use gpui_component::WindowExt as _;
 use okilum_t3::{
     chat_drafts::{Attachment, AttachmentKind as DraftKind, AttachmentState},
     stream::{
@@ -10,7 +11,7 @@ use okilum_t3::{
 };
 use std::{collections::HashMap, io::Read};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Scope {
     origin: String,
     project: String,
@@ -27,18 +28,37 @@ enum Source {
 #[derive(Clone)]
 struct Local {
     scope: Scope,
+    revision: uuid::Uuid,
     source: Source,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparationLease {
+    scope: Scope,
+    id: String,
+    revision: uuid::Uuid,
+    job: uuid::Uuid,
+}
+
+struct CachedPreparation {
+    scope: Scope,
+    revision: uuid::Uuid,
+    prepared: Arc<Prepared>,
 }
 
 #[derive(Default)]
 pub(super) struct Runtime {
     sources: HashMap<String, Local>,
     inflight: Option<(Scope, String)>,
+    upload_job: Option<uuid::Uuid>,
+    preparing: Option<PreparationLease>,
+    prepared: HashMap<String, CachedPreparation>,
     identity: Option<(std::sync::Weak<NativeClient>, ServerIdentity)>,
     identity_pending: bool,
     identity_failed: bool,
     notice: Option<String>,
     previews: HashMap<String, Arc<gpui::Image>>,
+    expanded_previews: HashMap<String, Arc<gpui::Image>>,
 }
 
 impl Runtime {
@@ -47,6 +67,9 @@ impl Runtime {
     }
     pub(super) fn connection_changed(&mut self) {
         self.inflight = None;
+        self.upload_job = None;
+        // Local preparation is source-scoped, not credential/client-scoped.
+        // It keeps running while upload access is renewed or disconnected.
         self.identity = None;
         self.identity_pending = false;
         self.identity_failed = false;
@@ -129,13 +152,62 @@ pub(super) fn thumbnail(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
     limits.max_image_height = Some(16384);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode().ok()?.thumbnail(640, 480);
+    use image::ImageDecoder as _;
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok()?;
+    let mut decoded = image::DynamicImage::from_decoder(decoder).ok()?;
+    decoded.apply_orientation(orientation);
+    let image = decoded.thumbnail(640, 480);
     let mut png = std::io::Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).ok()?;
     Some(Arc::new(gpui::Image::from_bytes(
         gpui::ImageFormat::Png,
         png.into_inner(),
     )))
+}
+
+struct Prepared {
+    metadata: AttachmentMetadata,
+    bytes: Vec<u8>,
+    previews: Option<(Arc<gpui::Image>, Arc<gpui::Image>)>,
+}
+
+/// Validate with the bounded decoder before retaining the original encoded
+/// image for the viewer. GIF stays GIF so its animation is not flattened.
+fn image_previews(bytes: &[u8]) -> Option<(Arc<gpui::Image>, Arc<gpui::Image>)> {
+    let thumb = thumbnail(bytes)?;
+    let format = match image::guess_format(bytes).ok()? {
+        image::ImageFormat::Png => gpui::ImageFormat::Png,
+        image::ImageFormat::Jpeg => gpui::ImageFormat::Jpeg,
+        image::ImageFormat::Gif => gpui::ImageFormat::Gif,
+        image::ImageFormat::WebP => gpui::ImageFormat::Webp,
+        _ => return None,
+    };
+    Some((
+        thumb,
+        Arc::new(gpui::Image::from_bytes(format, bytes.to_vec())),
+    ))
+}
+
+fn prepare_with_preview(
+    source: &Source,
+    name: &str,
+    other_image_bytes: u64,
+) -> anyhow::Result<Arc<Prepared>> {
+    let (metadata, bytes) = prepare(source, name, other_image_bytes)?;
+    let previews = if metadata.kind == AttachmentKind::Image {
+        Some(
+            image_previews(&bytes)
+                .context("This image could not be read for preview; select it again")?,
+        )
+    } else {
+        None
+    };
+    Ok(Arc::new(Prepared {
+        metadata,
+        bytes,
+        previews,
+    }))
 }
 
 fn prepare(
@@ -392,6 +464,9 @@ impl ProjectView {
                 state: AttachmentState::Pending,
             };
             if let Some(old) = rows.iter_mut().find(|row| row.id == id) {
+                self.attachments.previews.remove(&id);
+                self.attachments.expanded_previews.remove(&id);
+                self.attachments.prepared.remove(&id);
                 *old = row;
             } else {
                 rows.push(row);
@@ -400,6 +475,7 @@ impl ProjectView {
                 id,
                 Local {
                     scope: scope.clone(),
+                    revision: uuid::Uuid::new_v4(),
                     source: Source::File(path.clone()),
                 },
             );
@@ -437,6 +513,7 @@ impl ProjectView {
             id,
             Local {
                 scope,
+                revision: uuid::Uuid::new_v4(),
                 source: Source::Image(Arc::new(bytes)),
             },
         );
@@ -475,6 +552,8 @@ impl ProjectView {
         }
         self.attachments.sources.remove(id);
         self.attachments.previews.remove(id);
+        self.attachments.expanded_previews.remove(id);
+        self.attachments.prepared.remove(id);
         let rows = self
             .draft_attachments()
             .iter()
@@ -566,12 +645,32 @@ impl ProjectView {
             .gap_1()
             .debug_selector(|| "project-attachment-tray".into());
         for row in self.draft_attachments() {
-            if let Some(preview) = self.attachments.previews.get(&row.id) {
+            if let Some(preview) = self
+                .attachments
+                .previews
+                .get(&row.id)
+                .filter(|_| self.has_attachment_source(&row.id))
+            {
+                let preview_id = row.id.clone();
+                let selector = format!("attachment-preview-{}", row.id);
+                let label = format!("Preview {}", row.name);
                 tray = tray.child(
-                    gpui::img(preview.clone())
+                    Button::new(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector.clone())
+                        .accessibility_label(label.clone())
+                        .tooltip(label)
+                        .ghost()
                         .w(px(128.))
                         .h(px(96.))
-                        .object_fit(ObjectFit::Contain),
+                        .p_0()
+                        .child(
+                            gpui::img(preview.clone())
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.preview_attachment(&preview_id, window, cx);
+                        })),
                 );
             }
             let id = row.id.clone();
@@ -669,38 +768,142 @@ impl ProjectView {
         tray.into_any_element()
     }
 
-    pub(super) fn attachment_start_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let retained: std::collections::HashSet<_> = self
-            .draft_attachments()
-            .iter()
-            .map(|row| row.id.clone())
-            .collect();
+    fn preview_attachment(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(scope) = self.attachment_scope() else {
+            return;
+        };
+        if !self.has_attachment_source(id) {
+            return;
+        }
+        let Some(row) = self.draft_attachments().iter().find(|row| row.id == id) else {
+            return;
+        };
+        let Some(image) = self.attachments.expanded_previews.get(id).cloned() else {
+            return;
+        };
+        let name = row.name.clone();
+        let selector = format!("attachment-expanded-{id}");
+        let parent = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, _| {
+            let width = (window.viewport_size().width - px(48.))
+                .min(px(960.))
+                .max(px(120.));
+            let height = (window.viewport_size().height - px(200.)).max(px(120.));
+            let parent = parent.clone();
+            let scope = scope.clone();
+            let selector = selector.clone();
+            dialog
+                .title(format!("Preview {name}"))
+                .width(width)
+                .on_ok(|_, _, _| false)
+                .on_close(move |_, window, cx| {
+                    let _ = parent.update(cx, |view, cx| {
+                        if view.attachment_scope().as_ref() == Some(&scope) {
+                            view.compose.update(cx, |input, cx| input.focus(window, cx));
+                        }
+                    });
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .h(height)
+                        .debug_selector(|| "attachment-expanded-image".into())
+                        .child(
+                            div()
+                                .size_full()
+                                .debug_selector(move || selector.clone())
+                                .child(
+                                    gpui::img(image.clone())
+                                        .size_full()
+                                        .object_fit(ObjectFit::Contain),
+                                ),
+                        ),
+                )
+        });
+    }
+
+    fn attachment_source_is_current(&self, lease: &PreparationLease) -> bool {
+        self.attachment_scope().as_ref() == Some(&lease.scope)
+            && self
+                .attachments
+                .sources
+                .get(&lease.id)
+                .is_some_and(|source| {
+                    source.scope == lease.scope && source.revision == lease.revision
+                })
+            && self
+                .draft_attachments()
+                .iter()
+                .any(|row| row.id == lease.id)
+    }
+
+    fn cached_preparation(&self, id: &str, source: &Local) -> Option<Arc<Prepared>> {
         self.attachments
-            .sources
-            .retain(|id, _| retained.contains(id));
-        self.attachments
-            .previews
-            .retain(|id, _| retained.contains(id));
-        if self.attachments.inflight.is_some()
-            || !reader_features::enabled(reader_features::Feature::Agents, cx)
-        {
+            .prepared
+            .get(id)
+            .filter(|cache| cache.scope == source.scope && cache.revision == source.revision)
+            .map(|cache| cache.prepared.clone())
+    }
+
+    fn attachment_adopt_prepared(
+        &mut self,
+        lease: &PreparationLease,
+        prepared: Arc<Prepared>,
+        rows: &mut [Attachment],
+    ) {
+        let row = rows
+            .iter_mut()
+            .find(|row| row.id == lease.id)
+            .expect("current source has a row");
+        row.kind = draft_kind(prepared.metadata.kind);
+        row.name = prepared.metadata.name.clone();
+        row.mime_type = prepared.metadata.mime_type.clone();
+        row.size_bytes = prepared.metadata.size_bytes;
+        if prepared.metadata.kind == AttachmentKind::Image {
+            if let Some((thumb, original)) = &prepared.previews {
+                self.attachments
+                    .previews
+                    .insert(lease.id.clone(), thumb.clone());
+                self.attachments
+                    .expanded_previews
+                    .insert(lease.id.clone(), original.clone());
+            }
+            // Only image bytes are retained. Generic 50 MiB files are prepared
+            // lazily by the one upload worker and never accumulate in this map.
+            self.attachments.prepared.insert(
+                lease.id.clone(),
+                CachedPreparation {
+                    scope: lease.scope.clone(),
+                    revision: lease.revision,
+                    prepared,
+                },
+            );
+        }
+    }
+
+    /// One local image decoder at a time, independent of serial upload access.
+    /// Staging already reserved the count slots; this worker needs no server
+    /// identity, operate scope or HTTP acknowledgement to show local previews.
+    fn attachment_prepare_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachments.preparing.is_some() {
             return;
         }
         let Some(scope) = self.attachment_scope() else {
             return;
         };
-        let Some(client) = self.native.model_client().filter(|c| c.can_operate()) else {
-            return;
-        };
         let next = self.draft_attachments().iter().find_map(|row| {
-            if !matches!(row.state, AttachmentState::Pending) {
+            if row.kind != DraftKind::Image || !matches!(row.state, AttachmentState::Pending) {
                 return None;
             }
-            self.attachments
+            let source = self
+                .attachments
                 .sources
                 .get(&row.id)
-                .filter(|local| local.scope == scope)
-                .map(|local| (row.id.clone(), row.name.clone(), local.source.clone()))
+                .filter(|source| source.scope == scope)?;
+            if self.cached_preparation(&row.id, source).is_some() {
+                return None;
+            }
+            Some((row.id.clone(), row.name.clone(), source.clone()))
         });
         let Some((id, name, source)) = next else {
             return;
@@ -709,50 +912,245 @@ impl ProjectView {
             .draft_attachments()
             .iter()
             .filter(|row| row.id != id && row.kind == DraftKind::Image)
-            .fold(0_u64, |n, row| n.saturating_add(row.size_bytes));
-        let known = self.attachment_identity().cloned();
-        self.attachments.inflight = Some((scope.clone(), id.clone()));
+            .fold(0_u64, |bytes, row| bytes.saturating_add(row.size_bytes));
+        let lease = PreparationLease {
+            scope,
+            id,
+            revision: source.revision,
+            job: uuid::Uuid::new_v4(),
+        };
+        self.attachments.preparing = Some(lease.clone());
         cx.spawn_in(window, async move |this, cx| {
+            let prepared = cx
+                .background_executor()
+                .spawn(async move { prepare_with_preview(&source.source, &name, other_images) })
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.attachment_finish_local_preparation(&lease, prepared, window, cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn attachment_finish_local_preparation(
+        &mut self,
+        lease: &PreparationLease,
+        prepared: Result<Arc<Prepared>, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // A late completion never releases another source/client/job's lease.
+        if self.attachments.preparing.as_ref() != Some(lease) {
+            return false;
+        }
+        self.attachments.preparing = None;
+        if !self.attachment_source_is_current(lease) {
+            self.attachment_start_next(window, cx);
+            return false;
+        }
+        let mut rows = self.draft_attachments().to_vec();
+        match prepared {
+            Ok(prepared) => self.attachment_adopt_prepared(lease, prepared, &mut rows),
+            Err(message) => {
+                rows.iter_mut()
+                    .find(|row| row.id == lease.id)
+                    .unwrap()
+                    .state = AttachmentState::Error { message }
+            }
+        }
+        self.draft_set_attachments(rows, window, cx);
+        self.attachment_start_next(window, cx);
+        true
+    }
+
+    fn attachment_owns_upload(&self, lease: &PreparationLease) -> bool {
+        self.attachments.upload_job == Some(lease.job)
+            && self.attachments.inflight.as_ref() == Some(&(lease.scope.clone(), lease.id.clone()))
+    }
+
+    fn attachment_release_upload(&mut self, lease: &PreparationLease) -> bool {
+        if !self.attachment_owns_upload(lease) {
+            return false;
+        }
+        self.attachments.inflight = None;
+        self.attachments.upload_job = None;
+        true
+    }
+
+    fn attachment_upload_is_current(
+        &self,
+        lease: &PreparationLease,
+        client: &Arc<NativeClient>,
+    ) -> bool {
+        self.attachment_owns_upload(lease)
+            && self.attachment_source_is_current(lease)
+            && self
+                .native
+                .model_client()
+                .is_some_and(|current| Arc::ptr_eq(&current, client))
+    }
+
+    pub(super) fn attachment_start_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let retained: std::collections::HashSet<_> = self
+            .draft_attachments()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        let scope = self.attachment_scope();
+        self.attachments
+            .sources
+            .retain(|id, source| retained.contains(id) && Some(&source.scope) == scope.as_ref());
+        let current: std::collections::HashSet<_> =
+            self.attachments.sources.keys().cloned().collect();
+        self.attachments
+            .previews
+            .retain(|id, _| current.contains(id));
+        self.attachments
+            .expanded_previews
+            .retain(|id, _| current.contains(id));
+        let sources = &self.attachments.sources;
+        self.attachments.prepared.retain(|id, cached| {
+            sources.get(id).is_some_and(|source| {
+                source.revision == cached.revision && source.scope == cached.scope
+            })
+        });
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        // This must precede the upload lease/capability checks. Another image
+        // still receives its local preview while the first upload is held.
+        self.attachment_prepare_next(window, cx);
+        if self.attachments.inflight.is_some() {
+            return;
+        }
+        let Some(scope) = self.attachment_scope() else {
+            return;
+        };
+        let Some(client) = self
+            .native
+            .model_client()
+            .filter(|client| client.can_operate())
+        else {
+            return;
+        };
+        let mut next = None;
+        for row in self.draft_attachments() {
+            if !matches!(row.state, AttachmentState::Pending) {
+                continue;
+            }
+            let Some(source) = self
+                .attachments
+                .sources
+                .get(&row.id)
+                .filter(|source| source.scope == scope)
+            else {
+                continue;
+            };
+            let cached = self.cached_preparation(&row.id, source);
+            if row.kind == DraftKind::Image && cached.is_none() {
+                break;
+            }
+            next = Some((row.id.clone(), row.name.clone(), source.clone(), cached));
+            break;
+        }
+        let Some((id, name, source, cached)) = next else {
+            return;
+        };
+        let other_images = self
+            .draft_attachments()
+            .iter()
+            .filter(|row| row.id != id && row.kind == DraftKind::Image)
+            .fold(0_u64, |bytes, row| bytes.saturating_add(row.size_bytes));
+        let known = self.attachment_identity().cloned();
+        let lease = PreparationLease {
+            scope: scope.clone(),
+            id: id.clone(),
+            revision: source.revision,
+            job: uuid::Uuid::new_v4(),
+        };
+        self.attachments.inflight = Some((scope, id));
+        self.attachments.upload_job = Some(lease.job);
+        cx.spawn_in(window, async move |this, cx| {
+            let prepared = match cached {
+                Some(prepared) => Ok(prepared),
+                None => cx
+                    .background_executor()
+                    .spawn(async move { prepare_with_preview(&source.source, &name, other_images) })
+                    .await
+                    .map_err(|error| format!("{error:#}")),
+            };
+            let published = this
+                .update_in(cx, |this, window, cx| {
+                    if !this.attachment_upload_is_current(&lease, &client) {
+                        if this.attachment_release_upload(&lease) {
+                            this.attachment_start_next(window, cx);
+                        }
+                        return false;
+                    }
+                    let mut rows = this.draft_attachments().to_vec();
+                    match &prepared {
+                        Ok(prepared) => {
+                            this.attachment_adopt_prepared(&lease, prepared.clone(), &mut rows)
+                        }
+                        Err(message) => {
+                            rows.iter_mut()
+                                .find(|row| row.id == lease.id)
+                                .unwrap()
+                                .state = AttachmentState::Error {
+                                message: message.clone(),
+                            };
+                            this.attachment_release_upload(&lease);
+                            this.draft_set_attachments(rows, window, cx);
+                            this.attachment_start_next(window, cx);
+                            return false;
+                        }
+                    }
+                    this.draft_set_attachments(rows, window, cx);
+                    true
+                })
+                .unwrap_or(false);
+            if !published {
+                return;
+            }
+            let Ok(prepared) = prepared else {
+                return;
+            };
             let worker = client.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let (meta, bytes) = prepare(&source, &name, other_images)?;
                     let identity = match known {
                         Some(identity) => identity,
                         None => worker.server_identity()?,
                     };
-                    let preview = (meta.kind == AttachmentKind::Image)
-                        .then(|| thumbnail(&bytes))
-                        .flatten();
-                    let attachment = worker.upload_attachment(&meta, bytes)?;
-                    Ok::<_, anyhow::Error>((identity, attachment, preview))
+                    // Image uploads use exactly the immutable bytes that produced
+                    // their preview, including retries after the external file edits.
+                    let (metadata, bytes) = match Arc::try_unwrap(prepared) {
+                        // A generic file has no cache owner: move its one buffer.
+                        Ok(prepared) => (prepared.metadata, prepared.bytes),
+                        Err(prepared) => (prepared.metadata.clone(), prepared.bytes.clone()),
+                    };
+                    let attachment = worker.upload_attachment(&metadata, bytes)?;
+                    Ok::<_, anyhow::Error>((identity, attachment))
                 })
                 .await
                 .map_err(|error| format!("{error:#}"));
-            let cleanup = result.as_ref().ok().map(|(_, asset, _)| asset.id.clone());
+            let cleanup = result.as_ref().ok().map(|(_, asset)| asset.id.clone());
             let applied = this
                 .update_in(cx, |this, window, cx| {
-                    if !this
-                        .native
-                        .model_client()
-                        .is_some_and(|current| Arc::ptr_eq(&current, &client))
-                        || this.attachment_scope().as_ref() != Some(&scope)
-                        || this.attachments.inflight.as_ref() != Some(&(scope.clone(), id.clone()))
-                    {
+                    if !this.attachment_upload_is_current(&lease, &client) {
+                        if this.attachment_release_upload(&lease) {
+                            this.attachment_start_next(window, cx);
+                        }
                         return false;
                     }
-                    this.attachments.inflight = None;
+                    this.attachment_release_upload(&lease);
                     let mut rows = this.draft_attachments().to_vec();
-                    let Some(row) = rows.iter_mut().find(|row| row.id == id) else {
-                        this.attachment_start_next(window, cx);
-                        return false;
-                    };
+                    let row = rows.iter_mut().find(|row| row.id == lease.id).unwrap();
                     match result {
-                        Ok((identity, asset, preview)) => {
-                            if let Some(preview) = preview {
-                                this.attachments.previews.insert(id.clone(), preview);
-                            }
+                        Ok((identity, asset)) => {
                             row.kind = draft_kind(asset.metadata.kind);
                             row.name = asset.metadata.name;
                             row.mime_type = asset.metadata.mime_type;
@@ -977,5 +1375,379 @@ mod tests {
                 "restore must finish before attaching files"
             );
         });
+    }
+    #[test]
+    fn preview_keeps_original_supported_encoded_bytes_and_uses_a_bounded_thumbnail() {
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::Gif,
+            image::ImageFormat::WebP,
+        ] {
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(1600, 1200)
+                .write_to(&mut encoded, format)
+                .unwrap();
+            let encoded = encoded.into_inner();
+            let (thumb, original) =
+                image_previews(&encoded).expect("supported image has a preview");
+            assert_eq!(
+                original.bytes, encoded,
+                "expanded image must retain its original codec payload"
+            );
+            assert_eq!(
+                original.format.mime_type(),
+                metadata(format!("image.{}", format.extensions_str()[0])).mime_type
+            );
+            let thumbnail = image::load_from_memory(&thumb.bytes).unwrap();
+            assert_eq!((thumbnail.width(), thumbnail.height()), (640, 480));
+            assert!(!Arc::ptr_eq(&thumb, &original));
+        }
+        assert!(image_previews(b"not an image").is_none());
+        use image::AnimationDecoder as _;
+        let mut animated = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut animated);
+            encoder
+                .encode_frames([
+                    image::Frame::new(image::RgbaImage::from_pixel(
+                        4,
+                        4,
+                        image::Rgba([255, 0, 0, 255]),
+                    )),
+                    image::Frame::new(image::RgbaImage::from_pixel(
+                        4,
+                        4,
+                        image::Rgba([0, 255, 0, 255]),
+                    )),
+                ])
+                .unwrap();
+        }
+        let (_, original) = image_previews(&animated).unwrap();
+        assert_eq!(original.format, gpui::ImageFormat::Gif);
+        assert_eq!(original.bytes, animated);
+        let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&original.bytes))
+            .unwrap()
+            .into_frames()
+            .collect_frames()
+            .unwrap();
+        assert_eq!(frames.len(), 2, "expanded GIF keeps both animation frames");
+    }
+
+    struct PreviewHost(Entity<ProjectView>);
+    impl Render for PreviewHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.0.clone())
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    #[gpui::test]
+    fn prepared_pending_and_failed_images_open_a_real_viewer_without_sending(
+        cx: &mut TestAppContext,
+    ) {
+        use okilum_t3::stream::NativeToken;
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let gateway = Arc::new(super::super::fixture::Fake::default());
+        let env = Environment::new("preview", "http://127.0.0.1:1").unwrap();
+        let token = NativeToken::from_secret(&env, &serde_json::to_vec(&serde_json::json!({"origin":env.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read"})).unwrap()).unwrap();
+        let client =
+            Arc::new(NativeClient::new(env.clone(), token, Duration::from_millis(10)).unwrap());
+        assert!(
+            !client.can_operate(),
+            "positive control: this fixture cannot upload HTTP"
+        );
+        let image = |color| {
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                1600,
+                1200,
+                image::Rgba(color),
+            ))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+            encoded.into_inner()
+        };
+        let red = image([255, 0, 0, 255]);
+        let blue = image([0, 0, 255, 255]);
+        let paths = [temp.path().join("red.png"), temp.path().join("blue.png")];
+        std::fs::write(&paths[0], &red).unwrap();
+        std::fs::write(&paths[1], &blue).unwrap();
+        let mut view = None;
+        let mut ids = Vec::new();
+        let mut held = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let project = cx.new(|cx| {
+                let mut view = super::super::fixture::view(
+                    temp.path().to_owned(),
+                    gateway.clone(),
+                    window,
+                    cx,
+                );
+                view.active = false;
+                view.environment = Some(env);
+                view.native.set_detail_test_client(client.clone());
+                view.compose.update(cx, |input, cx| {
+                    input.set_value("Keep this draft", window, cx)
+                });
+                // Exercise the actual asynchronous local queue, not its publish
+                // helper. The serial upload is represented by a held lease;
+                // no real HTTP request is claimed by this read-only fixture.
+                view.attach_paths(&paths, None, window, cx);
+                ids = view
+                    .draft_attachments()
+                    .iter()
+                    .map(|row| row.id.clone())
+                    .collect();
+                assert_eq!(ids.len(), 2);
+                held = Some((view.attachment_scope().unwrap(), ids[0].clone()));
+                view.attachments.inflight = held.clone();
+                assert!(
+                    view.attachments.preparing.is_some(),
+                    "positive control: first local preparation really started"
+                );
+                view
+            });
+            view = Some(project.clone());
+            let host = cx.new(|_| PreviewHost(project));
+            Root::new(host, window, cx)
+        });
+        let view = view.unwrap();
+        visual.simulate_resize(size(px(1000.), px(900.)));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.attachments.inflight, held,
+                "local preparation must not consume/release the held upload lease"
+            );
+            assert!(view.attachments.preparing.is_none());
+            assert_eq!(
+                view.attachments.prepared.len(),
+                2,
+                "both image sources prepared behind the first held upload"
+            );
+            for (index, expected) in [&red, &blue].into_iter().enumerate() {
+                assert_eq!(
+                    &view.attachments.expanded_previews[&ids[index]].bytes,
+                    expected
+                );
+                assert_eq!(
+                    &view.attachments.prepared[&ids[index]].prepared.bytes,
+                    expected
+                );
+                assert!(matches!(
+                    view.draft_attachments()[index].state,
+                    AttachmentState::Pending
+                ));
+                assert!(view.attachments.previews.contains_key(&ids[index]));
+            }
+            assert!(
+                view.attachments.identity.is_none(),
+                "previews do not wait for server identity"
+            );
+        });
+        for failure in [false, true] {
+            if failure {
+                view.update_in(visual, |view, window, cx| {
+                    let mut rows = view.draft_attachments().to_vec();
+                    rows[0].state = AttachmentState::Error {
+                        message: "Upload unavailable".into(),
+                    };
+                    view.draft_set_attachments(rows, window, cx);
+                });
+                visual.run_until_parked();
+            }
+            for id in &ids {
+                let before = view.read_with(visual, |view, cx| {
+                    (
+                        view.compose.read(cx).value().to_string(),
+                        view.draft_attachments().to_vec(),
+                    )
+                });
+                let selector: &'static str =
+                    Box::leak(format!("attachment-preview-{id}").into_boxed_str());
+                let expanded_selector: &'static str =
+                    Box::leak(format!("attachment-expanded-{id}").into_boxed_str());
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                let mut thumb = visual
+                    .debug_bounds(selector)
+                    .expect("both pending/failed images have actual clickable thumbnails");
+                let tray = visual.debug_bounds("project-attachment-tray").unwrap();
+                if thumb.center().y < tray.top() || thumb.center().y > tray.bottom() {
+                    visual.simulate_event(gpui::ScrollWheelEvent {
+                        position: tray.center(),
+                        delta: gpui::ScrollDelta::Pixels(point(
+                            px(0.),
+                            if thumb.center().y > tray.bottom() {
+                                px(-1600.)
+                            } else {
+                                px(1600.)
+                            },
+                        )),
+                        ..Default::default()
+                    });
+                    visual.run_until_parked();
+                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                    thumb = visual.debug_bounds(selector).expect("scrolled thumbnail");
+                }
+                assert!(
+                    thumb.center().y >= tray.top() && thumb.center().y <= tray.bottom(),
+                    "click must reach a visible thumbnail"
+                );
+                visual.simulate_click(thumb.center(), Modifiers::default());
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                let expanded = visual
+                    .debug_bounds(expanded_selector)
+                    .expect("viewer identifies the clicked image, not its neighbour");
+                assert!(
+                    expanded.size.width > thumb.size.width
+                        && expanded.size.height > thumb.size.height,
+                    "positive control: actual viewer expands beyond thumbnail"
+                );
+                visual.simulate_keystrokes("enter");
+                visual.run_until_parked();
+                assert!(
+                    visual.debug_bounds(expanded_selector).is_some(),
+                    "Enter is inert"
+                );
+                visual.simulate_keystrokes("escape");
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                assert!(visual.debug_bounds("attachment-expanded-image").is_none());
+                view.read_with(visual, |view, cx| {
+                    assert_eq!(view.compose.read(cx).value().as_str(), before.0);
+                    assert_eq!(view.draft_attachments(), before.1);
+                    assert_eq!(view.attachments.inflight, held);
+                });
+                visual.update(|window, cx| {
+                    assert!(view
+                        .read(cx)
+                        .compose
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window))
+                });
+                assert!(gateway.sends.lock().unwrap().is_empty());
+            }
+        }
+        // File edits do not change an already displayed/upload-ready source.
+        std::fs::write(&paths[0], &blue).unwrap();
+        let old = view.read_with(visual, |view, _| {
+            view.attachments.prepared[&ids[0]].prepared.clone()
+        });
+        view.update_in(visual, |view, window, cx| {
+            view.retry_attachment(&ids[0], window, cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            let source = &view.attachments.sources[&ids[0]];
+            let cached = view.cached_preparation(&ids[0], source).unwrap();
+            assert!(Arc::ptr_eq(&cached, &old));
+            assert_eq!(
+                cached.bytes, red,
+                "Retry uploads the image that was previewed, even after its external file changes"
+            );
+        });
+        let old_revision =
+            view.read_with(visual, |view, _| view.attachments.sources[&ids[0]].revision);
+        let stale = PreparationLease {
+            scope: held.as_ref().unwrap().0.clone(),
+            id: ids[0].clone(),
+            revision: old_revision,
+            job: uuid::Uuid::new_v4(),
+        };
+        view.update_in(visual, |view, window, cx| {
+            view.attach_paths(&[paths[0].clone()], Some(ids[0].clone()), window, cx);
+            assert_ne!(view.attachments.sources[&ids[0]].revision, old_revision);
+            assert!(!view.attachments.previews.contains_key(&ids[0]));
+            assert!(!view.attachments.expanded_previews.contains_key(&ids[0]));
+            assert!(!view.attachments.prepared.contains_key(&ids[0]));
+            let current = view
+                .attachments
+                .preparing
+                .clone()
+                .expect("replacement starts a new local preparation");
+            assert!(!view.attachment_finish_local_preparation(&stale, Ok(old.clone()), window, cx));
+            assert_eq!(
+                view.attachments.preparing.as_ref(),
+                Some(&current),
+                "late old preparation must not release replacement's lease"
+            );
+            view.attachments.upload_job = Some(stale.job);
+            assert!(
+                !view.attachment_upload_is_current(&stale, &client),
+                "source revision rejects an old upload even when it still owns its job"
+            );
+            let newer_job = uuid::Uuid::new_v4();
+            view.attachments.upload_job = Some(newer_job);
+            assert!(!view.attachment_release_upload(&stale));
+            assert_eq!(
+                view.attachments.upload_job,
+                Some(newer_job),
+                "old upload completion cannot release a newer job"
+            );
+            view.attachments.upload_job = None;
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.attachments.expanded_previews[&ids[0]].bytes, blue,
+                "new revision owns the replacement image"
+            );
+            assert_eq!(view.attachments.prepared[&ids[0]].prepared.bytes, blue);
+            assert_eq!(view.attachments.inflight, held);
+        });
+        // Generic files do not collect in the local image byte cache.
+        let generic = temp.path().join("report.pdf");
+        std::fs::write(&generic, b"generic file bytes").unwrap();
+        view.update_in(visual, |view, window, cx| {
+            view.attach_paths(&[generic], None, window, cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.attachments.prepared.len(), 2)
+        });
+        let (removed, next) = view.update_in(visual, |view, window, cx| {
+            for row in view.draft_attachments().to_vec() {
+                view.remove_attachment(&row.id, window, cx);
+            }
+            assert!(view.attachments.previews.is_empty());
+            assert!(view.attachments.expanded_previews.is_empty());
+            assert!(view.attachments.prepared.is_empty());
+            view.attachments.inflight = None;
+            // Remove the currently preparing source before its UI completion;
+            // the queued next source must still be prepared afterwards.
+            view.attach_paths(&[paths[0].clone()], None, window, cx);
+            let removed = view.draft_attachments()[0].id.clone();
+            let lease = view.attachments.preparing.clone().unwrap();
+            view.remove_attachment(&removed, window, cx);
+            view.attach_paths(&[paths[1].clone()], None, window, cx);
+            let next = view.draft_attachments()[0].id.clone();
+            assert_eq!(view.attachments.preparing.as_ref(), Some(&lease));
+            (removed, next)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(!view.attachments.prepared.contains_key(&removed));
+            assert!(!view.attachments.previews.contains_key(&removed));
+            assert!(view.attachments.previews.contains_key(&next), "positive control: removal released its own preparation and advanced the real local queue");
+            assert!(view.attachments.preparing.is_none());
+        });
+        view.update_in(visual, |view, window, cx| {
+            view.generation = view.generation.wrapping_add(1);
+            view.attachment_start_next(window, cx);
+            assert!(view.attachments.sources.is_empty());
+            assert!(view.attachments.prepared.is_empty());
+            assert!(view.attachments.previews.is_empty());
+            assert!(
+                view.attachments.expanded_previews.is_empty(),
+                "scope change drops local image material"
+            );
+        });
+        assert!(gateway.sends.lock().unwrap().is_empty());
     }
 }

@@ -1,0 +1,105 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -707,6 +707,38 @@
+         Some((layout.cursor_bounds?, layout.line_height))
+     }
+ 
++    /// Whether the collapsed caret is on the first (`end == false`) or last
++    /// visual row. Uses the painted wrap map and soft-wrap affinity, not LF
++    /// counting. An empty input is on both edges (matching a DOM composer).
++    /// Otherwise an unpainted/stale layout or active selection/IME is unknown
++    /// and returns false, so callers preserve normal caret movement.
++    pub fn is_caret_on_visual_edge(&self, end: bool) -> bool {
++        if !self.selected_range.is_empty() || self.ime_marked_range.is_some()
++            || self.projection_pending_vertical.is_some()
++        {
++            return false;
++        }
++        if self.text.len() == 0 { return true; }
++        let Some(layout) = &self.last_layout else { return false; };
++        let Some(bounds) = self.last_bounds else { return false; };
++        if layout.source_stamp != self.source_stamp()
++            || layout.presentation_epoch != self.presentation_epoch()
++            // input_bounds includes the textarea's padding; last_bounds is
++            // the text box that produced this layout and its wrap width.
++            || layout.content_width != bounds.size.width
++        {
++            return false;
++        }
++        let point = self.display_map.offset_to_wrap_display_point_with_affinity(
++            self.cursor(), self.cursor_line_end_affinity,
++        );
++        let Some(row) = self.display_map.wrap_row_to_display_row(point.row) else {
++            return false;
++        };
++        let last = self.display_map.display_row_count().saturating_sub(1);
++        row == if end { last } else { 0 }
++    }
++
+     /// The cursor offset the last layout drew its caret for. It differs from
+     /// `cursor()` between a cursor move and the next paint (#859).
+     pub fn painted_cursor(&self) -> Option<usize> {
+@@ -4993,6 +5025,63 @@
+         }
+     }
+ 
++    #[gpui::test]
++    fn textarea_visual_edges_follow_wrap_resize_affinity_and_selection(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_textarea(cx, |state| state);
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|_, cx| view.input.update(cx, |state, _| {
++            assert!(state.value().is_empty());
++            assert!(state.is_caret_on_visual_edge(false));
++            assert!(state.is_caret_on_visual_edge(true), "empty input is on both edges even before paint");
++        }));
++        v.simulate_resize(gpui::size(px(220.), px(500.)));
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value("one two three four five six seven eight nine ten ".repeat(3), window, cx);
++            state.set_selected_range(0..0, cx);
++            assert!(!state.is_caret_on_visual_edge(false), "an unpainted edit has no trustworthy geometry");
++        }));
++        v.run_until_parked();
++        let boundary = v.update(|_, cx| view.input.update(cx, |state, _| {
++            assert!(state.display_map.display_row_count() > 1, "positive control: source really soft-wraps");
++            assert!(state.is_caret_on_visual_edge(false));
++            assert!(!state.is_caret_on_visual_edge(true));
++            state.display_map.line(0).unwrap().wrapped_lines[0].end
++        }));
++        v.update(|_, cx| view.input.update(cx, |state, cx| state.set_selected_range(boundary..boundary, cx)));
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, cx| {
++            state.cursor_line_end_affinity = true;
++            assert!(state.is_caret_on_visual_edge(false), "wrap-end caret is still on the first row");
++            state.cursor_line_end_affinity = false;
++            assert!(!state.is_caret_on_visual_edge(false), "same byte at wrap-start is on the next row");
++            state.set_selected_range(0..boundary, cx);
++            assert!(!state.is_caret_on_visual_edge(false), "selection must keep native Arrow handling");
++            state.set_selected_range(boundary..boundary, cx);
++        }));
++        v.simulate_resize(gpui::size(px(4000.), px(500.)));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            assert_eq!(state.display_map.display_row_count(), 1, "positive control: resize removed the wrap");
++            assert!(state.is_caret_on_visual_edge(false));
++            assert!(state.is_caret_on_visual_edge(true));
++            state.ime_marked_range = Some((0..1).into());
++            assert!(!state.is_caret_on_visual_edge(false));
++            state.ime_marked_range = None;
++            state.set_value("first\nsecond", window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, cx| {
++            let end = state.value().len();
++            state.set_selected_range(end..end, cx);
++        }));
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, _| {
++            assert!(!state.is_caret_on_visual_edge(false));
++            assert!(state.is_caret_on_visual_edge(true), "last hard line is the bottom edge");
++        }));
++    }
++
+     struct DelayedClipboardProvider {
+         receiver: std::sync::Mutex<
+             Option<futures::channel::oneshot::Receiver<Result<Option<String>, ClipboardReadError>>>,

@@ -158,6 +158,8 @@ impl ProjectView {
     /// credential is being restored. The old writer already owns its snapshot.
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft_key() != self.threads.draft.key {
+            self.composer
+                .update(cx, |composer, cx| composer.reset_history(cx));
             self.threads.draft.loading = true;
             let first_identity = self.threads.draft.key.is_none();
             self.compose.update(cx, |input, cx| {
@@ -208,6 +210,8 @@ impl ProjectView {
         if self.threads.draft.key.as_ref() == Some(&key) {
             return;
         }
+        self.composer
+            .update(cx, |composer, cx| composer.reset_history(cx));
         // Text may have been entered while the first connection was loading.
         // Preserve it, but never transfer an established key's text elsewhere.
         let initial = self
@@ -680,5 +684,129 @@ mod tests {
             .is_err());
         assert_eq!(store.load().unwrap().draft.text, "other window");
         assert_eq!(writer.desired.lock().unwrap().text, "local window");
+    }
+    #[gpui::test]
+    fn history_recall_is_durable_and_same_text_thread_switch_ends_browsing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let state = tempfile::tempdir().unwrap();
+        let mut project = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = super::super::fixture::view(
+                    state.path().to_owned(),
+                    Arc::new(super::super::fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                view.active = false;
+                view.draft_restore(window, cx);
+                view
+            });
+            let composer = view.read(cx).composer.clone();
+            project = Some(view);
+            Root::new(composer, window, cx)
+        });
+        let project = project.unwrap();
+        visual.simulate_resize(size(px(600.), px(600.)));
+        visual.run_until_parked();
+        let row = |position: u64, text: &str| {
+            serde_json::from_value::<okilum_t3::TimelineItem>(serde_json::json!({
+            "position":position,"itemId":format!("history-{position}"),"type":"user_message","status":"completed","text":text,"updatedAt":"now"
+        })).unwrap()
+        };
+        project.update_in(visual, |view, window, cx| {
+            assert!(view.draft_ready());
+            view.feed.update(cx, |feed, cx| {
+                feed.reset(cx);
+                feed.apply(
+                    [row(1, "old thread older"), row(2, "shared")].iter(),
+                    Some(&[]),
+                    cx,
+                );
+            });
+            view.compose.update(cx, |input, cx| input.focus(window, cx));
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        let (environment, old_thread) = project.update(visual, |view, cx| {
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "shared",
+                "positive control: actual capture handler recalled history"
+            );
+            futures::executor::block_on(view.threads.draft.writer.as_ref().unwrap().barrier())
+                .unwrap()
+                .unwrap();
+            (
+                view.environment.clone().unwrap(),
+                view.chat.as_ref().unwrap().thread_id.clone(),
+            )
+        });
+        assert_eq!(
+            Store::<Attachment>::new(state.path(), &environment, "fixture-managers", &old_thread)
+                .load()
+                .unwrap()
+                .draft
+                .text,
+            "shared",
+            "recall must use the ordinary durable draft writer"
+        );
+        let next_store = Store::<Attachment>::new(
+            state.path(),
+            &environment,
+            "fixture-managers",
+            "other-manager",
+        );
+        next_store
+            .save(
+                0,
+                ChatDraft {
+                    text: "shared".into(),
+                    attachments: vec![],
+                },
+            )
+            .unwrap();
+        project.update_in(visual, |view, window, cx| {
+            view.binding = Some(binding("fixture-managers", "other-manager"));
+            view.chat = Some(Conversation::new("other-manager"));
+            view.feed.update(cx, |feed, cx| {
+                feed.reset(cx);
+                feed.apply(
+                    [row(3, "new thread older"), row(4, "shared")].iter(),
+                    Some(&[]),
+                    cx,
+                );
+            });
+            view.draft_prepare_identity(window, cx);
+            view.draft_restore(window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        project.update_in(visual, |view, window, cx| {
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "shared",
+                "matching restored text must not inherit the old thread's recall position"
+            );
+            view.compose
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            view.draft_changed(window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        project.read_with(visual, |view, cx| {
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "new thread older",
+                "the new scope owns its own history"
+            )
+        });
     }
 }
