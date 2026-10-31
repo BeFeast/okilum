@@ -1,0 +1,505 @@
+{
+  "schema": 1,
+  "coverage": "Existing published Mac Stable appcast entries since 2026-10-18; Windows signed Stable 17312, 19179 and 21583 corroborated by promotion receipts; AppImage Stable 7198. Historical missing Stable sidecars are not reconstructed from guessed commit ranges. Windows entries retain exact existing per-build notes, not a claimed cumulative Stable range.",
+  "baseline": {
+    "url": "https://github.com/BeFeast/okilum/releases/tag/v0.1.13890",
+    "body": "Same-source builds — macos: 13890, windows: 13678, linux: 13846.\n\n- fix(open-in): Cursor opens the note in a new editor window (#1398) ([#1403](https://git.oklabs.uk/BeFeast/okilum/pulls/1403))\n- fix(open-in): Cursor opens the note in an editor window (#1398) ([#1401](https://git.oklabs.uk/BeFeast/okilum/pulls/1401))\n- docs: bug report form and CONTRIBUTING.md with log locations (#1396) ([#1397](https://git.oklabs.uk/BeFeast/okilum/pulls/1397))\n- feat(reader): create a new vault from the start screen (#1357) ([#1395](https://git.oklabs.uk/BeFeast/okilum/pulls/1395))\n- fix(windows): copy and show plain paths, not \\\\?\\C:\\ (#1391) ([#1392](https://git.oklabs.uk/BeFeast/okilum/pulls/1392))\n- fix(test): two reader_loading timing flakes; ci-logs checks tests first ([#1229](https://git.oklabs.uk/BeFeast/okilum/pulls/1229))\n- fix(reader): sidebar empty sections read as one set of hints (#1350) ([#1393](https://git.oklabs.uk/BeFeast/okilum/pulls/1393))\n- fix(reader): each window of a vault comes back on its own note (#1375) ([#1383](https://git.oklabs.uk/BeFeast/okilum/pulls/1383))\n- fix(editor): a refresh during an autosave is not a conflict (#1376) ([#1380](https://git.oklabs.uk/BeFeast/okilum/pulls/1380))\n- fix(reader): the start screen names a missing vault in plain words (#1368) ([#1377](https://git.oklabs.uk/BeFeast/okilum/pulls/1377))\n- fix(create): a new note is just its title and opens in Live Preview (#1352) ([#1381](https://git.oklabs.uk/BeFeast/okilum/pulls/1381))\n- ci(releases): promote Mac and Linux before the Windows signature ([#1379](https://git.oklabs.uk/BeFeast/okilum/pulls/1379))",
+    "published_at": "2026-10-18T03:06:14Z"
+  },
+  "releases": [
+    {
+      "notes": {
+        "build": 21583,
+        "channel": "stable",
+        "items": [],
+        "platform": "windows",
+        "previous_build": null,
+        "previous_source": null,
+        "source": "9cf78ec2467c69a874de385cd2380688837dcac2"
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/releases/9cf78ec2467c69a874de385cd2380688837dcac2/windows/beta/notes.json",
+        "sha256": "46b1b383bcdc550531236b8b8d95e7d0e796125ecd10e982173d5ee4abe9187a"
+      },
+      "stable_identity": {
+        "url": "https://updates.befeast.com/okilum/windows/builds/21583/release.json",
+        "signed": true,
+        "promotion_run": 16589
+      }
+    },
+    {
+      "notes": {
+        "build": 18977,
+        "source": "1d6b3d868de8c66f5b400ab3389389ebd7c768b6",
+        "platform": "macos",
+        "channel": "stable",
+        "previous_build": 18312,
+        "previous_source": "e8ef13bca9553c5673d8a21819f4ff3be7680d51",
+        "items": [
+          {
+            "pr": 1805,
+            "text": "add WS v2 thread transport for the Linux Manager"
+          },
+          {
+            "pr": 1797,
+            "text": "virtualize the Manager feed"
+          },
+          {
+            "pr": 1745,
+            "text": "allow safe case-only note and folder renames"
+          },
+          {
+            "pr": 1780,
+            "text": "reveal notes beside their document breadcrumb"
+          },
+          {
+            "pr": 1776,
+            "text": "reconnect Manager with its saved T3 token and show renewal guidance"
+          },
+          {
+            "pr": 1775,
+            "text": "use AppImage build numbers for What’s new notes"
+          },
+          {
+            "pr": 1761,
+            "text": "isolate the explicit Sprint distribution"
+          },
+          {
+            "pr": 1766,
+            "text": "support current T3 tools without blocking Manager on optional features"
+          },
+          {
+            "pr": 1757,
+            "text": "accept bare T3 addresses in the Manager connection field"
+          },
+          {
+            "pr": 1710,
+            "text": "signed AppImage Stable and explicit final pacman freeze"
+          },
+          {
+            "pr": 1712,
+            "text": "retain downloaded admission on an authenticated collection"
+          },
+          {
+            "pr": 1748,
+            "text": "sweep visible projection styles once per prepaint"
+          },
+          {
+            "pr": 1747,
+            "text": "download evicted iCloud notes on explicit open"
+          }
+        ]
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/appcast.xml",
+        "sha256": "6a9dc9368c33e9a5cc637c02a100ee1cbda8e1fa50681cae54bc039f2205a0eb"
+      }
+    },
+    {
+      "notes": {
+        "build": 18312,
+        "source": "e8ef13bca9553c5673d8a21819f4ff3be7680d51",
+        "platform": "macos",
+        "channel": "stable",
+        "previous_build": 18013,
+        "previous_source": "931107b646e363e6b38301f92ec56ed0b0200ef6",
+        "items": [
+          {
+            "pr": 1744,
+            "text": "paste clipboard images and refresh completed file drops"
+          },
+          {
+            "pr": 1741,
+            "text": "scale rendered code blocks with document zoom"
+          },
+          {
+            "pr": 1740,
+            "text": "update plain-folder sidebar after external file changes"
+          },
+          {
+            "pr": 1736,
+            "text": "preserve Read preference and sidebar focus when reopening notes"
+          },
+          {
+            "pr": 1735,
+            "text": "keep Trash available during a published warm vault refresh"
+          }
+        ]
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/appcast.xml",
+        "sha256": "6a9dc9368c33e9a5cc637c02a100ee1cbda8e1fa50681cae54bc039f2205a0eb"
+      }
+    },
+    {
+      "notes": {
+        "build": 18013,
+        "source": "931107b646e363e6b38301f92ec56ed0b0200ef6",
+        "platform": "macos",
+        "channel": "stable",
+        "previous_build": 17502,
+        "previous_source": "35f375ffa6a3bef5a037aa0fe77e24f14938cdf6",
+        "items": [
+          {
+            "pr": 1736,
+            "text": "preserve Read preference and sidebar focus when reopening notes"
+          },
+          {
+            "pr": 1735,
+            "text": "keep Trash available during a published warm vault refresh"
+          }
+        ]
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/appcast.xml",
+        "sha256": "6a9dc9368c33e9a5cc637c02a100ee1cbda8e1fa50681cae54bc039f2205a0eb"
+      }
+    },
+    {
+      "notes": {
+        "build": 17502,
+        "source": "35f375ffa6a3bef5a037aa0fe77e24f14938cdf6",
+        "platform": "macos",
+        "channel": "stable",
+        "previous_build": 16684,
+        "previous_source": "be5988037faa44699c196292518921ac79681c1b",
+        "items": [
+          {
+            "pr": 1705,
+            "text": "remove filesystem link probes from note preparation"
+          }
+        ]
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/appcast.xml",
+        "sha256": "6a9dc9368c33e9a5cc637c02a100ee1cbda8e1fa50681cae54bc039f2205a0eb"
+      }
+    },
+    {
+      "notes": {
+        "build": 16684,
+        "source": "be5988037faa44699c196292518921ac79681c1b",
+        "platform": "macos",
+        "channel": "stable",
+        "previous_build": 13890,
+        "previous_source": "9474934ae1cce9ab88f81ae924d35a9c46b53bca",
+        "items": [
+          {
+            "pr": 1539,
+            "text": "restore webview editing shortcuts and retain its visible frame"
+          }
+        ]
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/appcast.xml",
+        "sha256": "6a9dc9368c33e9a5cc637c02a100ee1cbda8e1fa50681cae54bc039f2205a0eb"
+      }
+    },
+    {
+      "notes": {
+        "build": 13890,
+        "source": "9474934ae1cce9ab88f81ae924d35a9c46b53bca",
+        "platform": "macos",
+        "channel": "stable",
+        "previous_build": null,
+        "previous_source": null,
+        "items": []
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/appcast.xml",
+        "sha256": "6a9dc9368c33e9a5cc637c02a100ee1cbda8e1fa50681cae54bc039f2205a0eb"
+      }
+    },
+    {
+      "notes": {
+        "build": 19179,
+        "channel": "stable",
+        "items": [],
+        "platform": "windows",
+        "previous_build": null,
+        "previous_source": null,
+        "source": "e8ef13bca9553c5673d8a21819f4ff3be7680d51"
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/releases/e8ef13bca9553c5673d8a21819f4ff3be7680d51/windows/beta/notes.json",
+        "sha256": "bfb19cabf075d76a0ece0448935bae0d9a1394afe02edfb3146fc40f7205d4e0"
+      }
+    },
+    {
+      "notes": {
+        "build": 17312,
+        "channel": "stable",
+        "items": [],
+        "platform": "windows",
+        "previous_build": null,
+        "previous_source": null,
+        "source": "ef1930ca6dea87bd4d677c9a67a5579ac9477eb0"
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/releases/ef1930ca6dea87bd4d677c9a67a5579ac9477eb0/windows/beta/notes.json",
+        "sha256": "017d8a70f01dc5daeffadfd0dfce0d3aceb870bc39489d5e37345872df8b7d2a"
+      }
+    },
+    {
+      "notes": {
+        "build": 7198,
+        "channel": "stable",
+        "items": [
+          {
+            "kind": "fix",
+            "pr": 1974,
+            "text": "move Maximize to the note toolbar and remove the redundant panel title"
+          },
+          {
+            "kind": "feature",
+            "pr": 1972,
+            "text": "bind macOS Enable confirmation to one launch generation"
+          },
+          {
+            "kind": "fix",
+            "pr": 1973,
+            "text": "keep Send and Cancel visible in small windows"
+          },
+          {
+            "kind": "fix",
+            "pr": 1954,
+            "text": "restore Ubuntu color emoji in notes and code"
+          },
+          {
+            "kind": "fix",
+            "pr": 1959,
+            "text": "recover interrupted update links and prune old stages"
+          },
+          {
+            "kind": "fix",
+            "pr": 1969,
+            "text": "count infra markers only on the runner's own lines (#1962)"
+          },
+          {
+            "kind": "fix",
+            "pr": 1957,
+            "text": "show About for the current Reader window"
+          },
+          {
+            "kind": "fix",
+            "pr": 1956,
+            "text": "clean failed unpublished saves and preimage links"
+          },
+          {
+            "kind": "fix",
+            "pr": 1965,
+            "text": "use verified appimagetool release 1.9.1"
+          },
+          {
+            "kind": "fix",
+            "pr": 1961,
+            "text": "an unreadable lane log is unknown, not infrastructure (#1937)"
+          },
+          {
+            "kind": "fix",
+            "pr": 1952,
+            "text": "widen only date: values; keep notes indexed when a read fails (#1933)"
+          },
+          {
+            "kind": "fix",
+            "pr": 1911,
+            "text": "scroll opening space without trackpad jumps"
+          },
+          {
+            "kind": "fix",
+            "pr": 1928,
+            "text": "support Insert clipboard shortcuts in feedback and editor"
+          },
+          {
+            "kind": "fix",
+            "pr": 1946,
+            "text": "Show cached project icons before network refresh"
+          },
+          {
+            "kind": "feature",
+            "pr": 1929,
+            "text": "use vault Trash when network volume has no system Trash"
+          },
+          {
+            "kind": "fix",
+            "pr": 1931,
+            "text": "Explain macOS local network connection failures and retry once"
+          },
+          {
+            "kind": "fix",
+            "pr": 1916,
+            "text": "support NFS writes without exclusive rename flags"
+          },
+          {
+            "kind": "fix",
+            "pr": 1919,
+            "text": "Fix connected T3 panel connection controls"
+          },
+          {
+            "kind": "feature",
+            "pr": 1896,
+            "text": "convert pasted and imported images to WebP"
+          },
+          {
+            "kind": "fix",
+            "pr": 1906,
+            "text": "preserve generated vendor bytes across workspace formatting"
+          },
+          {
+            "kind": "feature",
+            "pr": 1895,
+            "text": "choose note and code font families"
+          },
+          {
+            "kind": "feature",
+            "pr": 1889,
+            "text": "compose native macOS registration without nested locks"
+          },
+          {
+            "kind": "fix",
+            "pr": 1698,
+            "text": "use Windows OS trust and system proxy settings"
+          },
+          {
+            "kind": "feature",
+            "pr": 1888,
+            "text": "gate macOS daemon launch on durable one-use intent"
+          },
+          {
+            "kind": "feature",
+            "pr": 1886,
+            "text": "verify prepared macOS payload without starting it"
+          },
+          {
+            "kind": "feature",
+            "pr": 1885,
+            "text": "confirm supervisor exit after authenticated Stop"
+          },
+          {
+            "kind": "feature",
+            "pr": 1884,
+            "text": "create and manage project cards in place"
+          },
+          {
+            "kind": "feature",
+            "pr": 1876,
+            "text": "observe authenticated macOS supervisor exit"
+          },
+          {
+            "kind": "feature",
+            "pr": 1878,
+            "text": "prefer TOML manifests and keep invalid Board cards local"
+          },
+          {
+            "kind": "fix",
+            "pr": 1881,
+            "text": "restore from protected macOS Trash without directory reads"
+          },
+          {
+            "kind": "fix",
+            "pr": 1866,
+            "text": "derive In progress from open PRs and the executor current task"
+          },
+          {
+            "kind": "feature",
+            "pr": 1868,
+            "text": "add verified macOS supervisor connection"
+          },
+          {
+            "kind": "fix",
+            "pr": 1871,
+            "text": "share app sign-in and recover timed-out browser callbacks"
+          },
+          {
+            "kind": "fix",
+            "pr": 1870,
+            "text": "keep cached graph snapshots complete and raise test nofile"
+          },
+          {
+            "kind": "fix",
+            "pr": 1864,
+            "text": "give the vault start page clear actions and aligned recent notes"
+          },
+          {
+            "kind": "feature",
+            "pr": 1863,
+            "text": "verify macOS bundle binding and static code signatures"
+          },
+          {
+            "kind": "fix",
+            "pr": 1850,
+            "text": "Add Maximize Note action with reversible sidebar layout"
+          },
+          {
+            "kind": "fix",
+            "pr": 1855,
+            "text": "accept T3 launch manager IDs without route escapes"
+          },
+          {
+            "kind": "feature",
+            "pr": 1853,
+            "text": "share daemon inspection and folder controllers with macOS"
+          },
+          {
+            "kind": "fix",
+            "pr": 1856,
+            "text": "avoid legacy bridge ref directory collisions"
+          },
+          {
+            "kind": "feature",
+            "pr": 1849,
+            "text": "expose durable enrollment on macOS"
+          },
+          {
+            "kind": "feature",
+            "pr": 1848,
+            "text": "send native T3 commands and answer manager requests"
+          },
+          {
+            "kind": "fix",
+            "pr": 1847,
+            "text": "retain safe GitHub bridge push and cleanup diagnostics"
+          },
+          {
+            "kind": "fix",
+            "pr": 1846,
+            "text": "Add explicit Download all for iCloud placeholders"
+          },
+          {
+            "kind": "fix",
+            "pr": 1843,
+            "text": "keep iCloud placeholders pending (slice 1 of 2)"
+          },
+          {
+            "kind": "fix",
+            "pr": 1840,
+            "text": "prefer color emoji in Reader and Source/Live Preview"
+          },
+          {
+            "kind": "fix",
+            "pr": 1841,
+            "text": "Opening a missing Markdown path creates an empty note and opens it for editing."
+          },
+          {
+            "kind": "fix",
+            "pr": 1838,
+            "text": "The file tree shows file names by default; switch to note titles in Settings without restarting."
+          },
+          {
+            "kind": "fix",
+            "pr": 1830,
+            "text": "create notes and folders in plain-folder mode"
+          }
+        ],
+        "platform": "linux-appimage",
+        "previous_build": 7013,
+        "previous_source": "bf88dfc7578e2e81b3ae375393a1fa06d03316e5",
+        "source": "62d8ed865888baa299f66ff05f1f0b93137328b8"
+      },
+      "evidence": {
+        "url": "https://updates.befeast.com/okilum/releases/62d8ed865888baa299f66ff05f1f0b93137328b8/linux-appimage/stable/notes.json",
+        "sha256": "253875c18384cc1b6de8ee1fb9acf988900cf3af1f4bc7c7d5716f6794f74909"
+      }
+    }
+  ]
+}

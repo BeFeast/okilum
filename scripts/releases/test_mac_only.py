@@ -33,24 +33,28 @@ def prepared():
 
 
 class MacOnlyTests(unittest.TestCase):
-    def test_only_mac_writes_no_tag_notes_or_other_platform_dependency(self):
+    def setUp(self):
+        for target, kwargs in [('publish.Forgejo', {}), ('publish.release_notes.merged_items', {'return_value': []})]:
+            stub = patch(target, **kwargs); stub.start(); self.addCleanup(stub.stop)
+
+    def test_only_mac_feeds_and_canonical_notes_no_other_platform_dependency(self):
         store = prepared()
         before = dict(store.data)
         with patch.object(p, 'mirror_tag') as tag, patch.object(p, 'github_release') as github, \
-             patch.object(p.release_notes, 'record') as notes, patch.object(p.arch, 'execute') as arch, \
+             patch.object(p.arch, 'execute') as arch, \
              patch.object(p.windows, 'promote') as windows:
             p.promote_mac_only(store, 700)
-        for mock in (tag, github, notes, arch, windows):
+        for mock in (tag, github, arch, windows):
             mock.assert_not_called()
         allowed = {'okilum/appcast.xml', 'okilum/macos/latest.zip', 'okilum/macos/stable/Okilum.dmg',
-                   f'{catalog.PREFIX}/macos-promoting.json', f'{catalog.PREFIX}/macos-stable.json'}
+                   p.release_notes.key(SOURCE, 'macos', 'stable'), f'{catalog.PREFIX}/macos-promoting.json', f'{catalog.PREFIX}/macos-stable.json'}
         self.assertEqual(set(store.writes), allowed)
         for key, value in before.items():
             if key not in allowed:
                 self.assertEqual(store.data[key], value, key)
         item = p.ET.fromstring(store.data['okilum/appcast.xml']).find('./channel/item')
         self.assertEqual(item.findtext(p.appcast.s('channel')), 'stable')
-        self.assertEqual(item.findtext('description'), 'Existing release notes')
+        self.assertIn(p.release_notes.MAINTENANCE, item.findtext('description'))
         self.assertEqual(item.find('enclosure').get(p.appcast.s('edSignature')), 'signed-mac')
 
     def test_preflight_validates_the_exact_appcast_snapshot_written(self):
@@ -107,7 +111,7 @@ class MacOnlyTests(unittest.TestCase):
     def test_input_routes_before_legacy_dispatch_and_rejects_ambiguous_modes(self):
         text = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/releases.yml').read_text()
         self.assertIn('MAC_ONLY: ${{ inputs.mac_only }}', text)
-        script = '\n'.join(line[10:] for line in text.split('        run: |\n', 1)[1].splitlines())
+        script = '\n'.join(line[10:] for line in text.split('        run: |\n', 1)[1].split('      - name:', 1)[0].splitlines())
         with tempfile.TemporaryDirectory() as directory:
             stub = Path(directory) / 'python'
             stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n'); stub.chmod(0o755)

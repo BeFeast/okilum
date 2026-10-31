@@ -7,7 +7,8 @@ import re
 import subprocess
 
 import catalog
-from publish import windows
+from publish import windows, Forgejo
+import release_notes
 
 PREFIX = 'okilum/windows'
 
@@ -30,7 +31,7 @@ class Plan:
         self.writes.append((key, data, content_type, cache))
 
 
-def execute(store, source, build):
+def execute(store, source, build, client=None):
     if not re.fullmatch('[0-9a-f]{40}', source) or build < 1:
         raise ValueError('Expected a full lowercase source SHA and positive Windows build')
     plan = Plan(store)
@@ -66,6 +67,8 @@ def execute(store, source, build):
         receipt = json.loads(prior)
         if not isinstance(receipt, dict) or receipt.get('identity') != identity:
             raise ValueError('Windows promotion identity changed during retry')
+    notes = release_notes.prepare_stable(store, client or Forgejo(), 'windows', build, source)
+    release_notes.record(store, notes)
     store.put(receipt_key, catalog.encode({'identity': identity, 'state': 'prepared'}), 'application/json', 'no-cache')
     # Real promoter emits the feed last. All validations happened before this loop.
     for key, data, content_type, cache in plan.writes:

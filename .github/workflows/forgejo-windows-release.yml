@@ -51,7 +51,9 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Build and validate Windows package
         shell: pwsh
-        run: ./scripts/ci/build-windows-native.ps1
+        run: |
+          python scripts/ci/gate-step.py --name 'Build and validate Windows package' -- pwsh -NoProfile -File scripts/ci/build-windows-native.ps1
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         with:
           name: unsigned-windows
