@@ -247,8 +247,14 @@ impl Actions {
         }
     }
     fn dispatch(&self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.parent.update(cx, |view, cx| {
-            view.native_command(Some(intent), None, None, window, cx)
+        let parent = self.parent.clone();
+        // Release the request entity before the parent reads its live authority
+        // and marks the operation busy. A button callback otherwise re-borrows
+        // the Actions entity through native_command.
+        window.defer(cx, move |window, cx| {
+            let _ = parent.update(cx, |view, cx| {
+                view.native_command(Some(intent), None, None, window, cx)
+            });
         });
     }
 }
@@ -663,6 +669,20 @@ mod tests {
         thread,
     };
 
+    fn inert_native(view: &mut ProjectView) {
+        let environment = Environment::new("fixture", "http://127.0.0.1:9").unwrap();
+        let token = NativeToken::from_secret(&environment, &serde_json::to_vec(&json!({
+            "origin":environment.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,
+            "scope":"orchestration:read orchestration:operate"
+        })).unwrap()).unwrap();
+        view.native.client = Some(Arc::new(
+            NativeClient::new(environment.clone(), token, Duration::from_secs(1)).unwrap(),
+        ));
+        view.native.stream_ready = true;
+        view.environment = Some(environment);
+        view.threads.enabled = true;
+    }
+
     #[gpui::test]
     fn composer_uses_native_start_queue_and_pinned_steer_without_mcp_fallback(
         cx: &mut TestAppContext,
@@ -849,6 +869,7 @@ mod tests {
             let view=cx.new(|cx| {
                 let mut view=super::super::super::fixture::view(temp.path().to_owned(),Arc::new(super::super::super::fixture::Fake::default()),window,cx);
                 view.active=false;
+                inert_native(&mut view);
                 let message:okilum_t3::TimelineItem=serde_json::from_value(json!({"position":1,"itemId":"a","messageId":"m","type":"assistant_message","status":"completed","text":"Selectable retained history","updatedAt":"now"})).unwrap();
                 view.feed.update(cx,|feed,cx|feed.apply(std::iter::once(&message),Some(&[]),cx));
                 let question = Arc::new(json!({"id":"request-row","threadId":"thread","ordinal":2,"status":"pending","type":"user_input_request","requestId":"r","questions":[{"id":"q","question":"Your choice","options":[]}]}));
@@ -867,10 +888,6 @@ mod tests {
             let input = a.read(cx).inputs[&("r".into(), "q".into())].clone();
             (v.feed.clone(), a, input)
         });
-        // This isolated UI fixture has no live client; explicitly enable its
-        // request controls before exercising a real rendered input.
-        actions.update(visual, |a, cx| a.set_enabled(true, cx));
-        visual.run_until_parked();
         input.update_in(visual, |i, window, cx| i.focus_handle(cx).focus(window, cx));
         visual.run_until_parked();
         visual.simulate_keystrokes("left");
@@ -980,5 +997,64 @@ mod tests {
             assert!(a.retry_allowed(&uncertain),"message retries query the original command receipt even after run state changes");
             assert_eq!(uncertain.command.wire().unwrap()["dispatchMode"]["targetRunId"],"old-run");
         }));
+    }
+    #[gpui::test]
+    fn request_callback_releases_its_entity_before_parent_authority_checks(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            let mut view = super::super::super::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(super::super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            inert_native(&mut view);
+            view.native.actions.update(cx, |a, cx| {
+                a.set_state(
+                    State {
+                        ready: true,
+                        active_run: Some("exact-run".into()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            view
+        });
+        view.update_in(visual, |v, window, cx| {
+            v.native.actions.update(cx, |a, cx| {
+                a.dispatch(
+                    Intent::Interrupt {
+                        run_id: "exact-run".into(),
+                    },
+                    window,
+                    cx,
+                )
+            });
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, cx| {
+            assert!(!v.busy);
+            let a = v.native.actions.read(cx);
+            assert_eq!(
+                a.records.len(),
+                1,
+                "positive control: button path prepared the exact operation"
+            );
+            assert_eq!(
+                a.records[0].command.intent,
+                Intent::Interrupt {
+                    run_id: "exact-run".into()
+                }
+            );
+            assert!(
+                a.records[0].sequence.is_none(),
+                "refused local transport retains recoverable operation"
+            );
+        });
     }
 }
