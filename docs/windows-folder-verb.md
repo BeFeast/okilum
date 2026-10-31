@@ -17,7 +17,7 @@ Core regressions check the exact owned keys/arguments, real Windows argument
 parsing and registry round-trip/idempotence with a preserved neighboring verb.
 The premerge installed-PR scenario is described in
 [scripts/windows/qa-harness/folder-verb/README.md](../scripts/windows/qa-harness/folder-verb/README.md).
-Its original-artifact, actual Explorer menu cold/warm, uninstall and unchanged
+Its original-artifact, Shell Directory Verbs()/DoIt cold/warm, uninstall and unchanged
 vault proofs must pass on VM150 before this installer change can merge.
 
 This PR is the Windows slice. The existing Mac Service candidate is retained on

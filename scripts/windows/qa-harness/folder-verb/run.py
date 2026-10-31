@@ -6,6 +6,7 @@ import hashlib
 import io
 import importlib.util
 import json
+import os
 import select
 import subprocess
 import sys
@@ -41,7 +42,13 @@ def execute(manifest, directory, grant):
     admission = admit(manifest)
     nonce = uuid.uuid4().hex; owner = 'windows-1914-' + nonce
     remote = 'C:/Users/Public/okilum-qa/folder-verb-' + nonce
-    started = time.time(); cutoff = started + 2700; release = started + 3600
+    started = time.time(); release = started + 3600
+    cap = os.environ.get('OKILUM_QA_RELEASE_EPOCH')
+    if cap is not None:
+        if not cap.isdigit(): raise ValueError('Release cap must be an epoch integer')
+        release = min(release, int(cap))
+    cutoff = min(started + 2700, release - 900)
+    if cutoff - started < 900: raise RuntimeError('Insufficient original work/cleanup window')
     (e / 'attempt.json').write_text(json.dumps(dict(owner=owner, source=admission['source'],
         grant=grant, cutoff=cutoff, release=release, signing=False, promotion=False), indent=2))
     (e / 'head.txt').write_text(subprocess.check_output(['git', '-C', str(H), 'rev-parse', 'HEAD'], text=True))
@@ -86,6 +93,7 @@ def execute(manifest, directory, grant):
         (lock / 'thread').write_text('mcp:launch:177d4ea4cbc93a1b53df9af3593b6356c3fa5c06f6f4ce2aebb7484adab2f26a')
         with zipfile.ZipFile(e / 'helpers.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
             archive.write(Path(__file__).with_name('driver.ps1'), 'folder-verb/driver.ps1')
+            archive.write(Path(__file__).with_name('update-isolation.ps1'), 'folder-verb/update-isolation.ps1')
             archive.write(H / 'autosave-gate/session-quiet.ps1', 'session-quiet.ps1')
             archive.write(H / 'step-envelope.ps1', 'controls/step-envelope.ps1')
             archive.write(H / 'autosave-gate/child-control.ps1', 'controls/child-control.ps1')
@@ -98,6 +106,7 @@ def execute(manifest, directory, grant):
         (e / 'admission.json').write_text(json.dumps(admission, indent=2))
         call('upload-admission', [H / 'vm.sh', 'put', e / 'admission.json', 'C:/Users/Public/okilum-qa/folder-verb/attempt.json'])
         call('upload-setup', [H / 'vm.sh', 'put', admission['setup'], 'C:/Users/Public/okilum-qa/folder-verb/Setup.exe'])
+        ps('update-isolation', '. "C:/Users/Public/okilum-qa/folder-verb/update-isolation.ps1";BlockPrUpdateFeed "C:/Users/Public/okilum-qa/folder-verb";exit 0', 60)
         gate = (H / 'autosave-gate/gate-run.sh').read_text()
         control = gate.split('cat > "$E/first-envelope-control.ps1" <<\'PS\'\n', 1)[1].split('\nPS\n', 1)[0]
         (e / 'control.ps1').write_text(control)
@@ -127,7 +136,7 @@ def execute(manifest, directory, grant):
                     cleanup('policy', lambda: ps('cleanup-policy', '. "C:/Users/Public/okilum-qa/session-quiet.ps1";RestoreQuietMachinePolicy "C:/Users/Public/okilum-qa";exit 0', 90))
                     (e / 'restore.ps1').write_text('. "$Q/session-quiet.ps1";Log (ExitQuietSession $Q)\n')
                     cleanup('session', lambda: desktop('cleanup-session', e / 'restore.ps1', 240))
-                body = f"$ErrorActionPreference='Stop';$paths=@('{remote}','C:/Users/Public/okilum-qa/run','C:/Users/Public/okilum-qa/controls','C:/Users/Public/okilum-qa/folder-verb/attempt.json');$paths+=@(Get-ChildItem 'C:/Users/Public/okilum-qa' -Filter 'session-*.json'|ForEach-Object {{$_.FullName}});$missing=@($paths|Where-Object {{!(Test-Path -LiteralPath $_)}});ConvertTo-Json -InputObject $missing|Set-Content 'C:/Users/Public/okilum-qa/collection-missing.json';$paths=@($paths|Where-Object {{Test-Path -LiteralPath $_}});$paths+='C:/Users/Public/okilum-qa/collection-missing.json';Compress-Archive -LiteralPath $paths -DestinationPath 'C:/Users/Public/okilum-qa/folder-verb-raw.zip';exit 0"
+                body = f"$ErrorActionPreference='Stop';$paths=@('{remote}','C:/Users/Public/okilum-qa/run','C:/Users/Public/okilum-qa/controls','C:/Users/Public/okilum-qa/folder-verb');$paths+=@(Get-ChildItem 'C:/Users/Public/okilum-qa' -Filter 'session-*.json'|ForEach-Object {{$_.FullName}});$missing=@($paths|Where-Object {{!(Test-Path -LiteralPath $_)}});ConvertTo-Json -InputObject $missing|Set-Content 'C:/Users/Public/okilum-qa/collection-missing.json';$paths=@($paths|Where-Object {{Test-Path -LiteralPath $_}});$paths+='C:/Users/Public/okilum-qa/collection-missing.json';Compress-Archive -LiteralPath $paths -DestinationPath 'C:/Users/Public/okilum-qa/folder-verb-raw.zip';exit 0"
                 cleanup('archive', lambda: ps('cleanup-archive', body, 90))
                 cleanup('download', lambda: call('cleanup-download', [H / 'vm.sh', 'get', 'C:/Users/Public/okilum-qa/folder-verb-raw.zip', e / 'raw.zip'], 90))
                 # Unknown process ownership prevents further guest action or rollback.
