@@ -2,6 +2,7 @@
 mod code_comforts;
 pub(crate) mod format;
 mod ime_guard;
+mod link_complete;
 mod lists;
 mod live_preview;
 mod paste_jobs;
@@ -86,6 +87,8 @@ pub(super) struct Editing {
     markdown: bool,
     /// Backspace right after the last list continuation (#1635).
     list_revert: Option<lists::PendingRevert>,
+    /// The note list under a `[[` being typed (#1921).
+    link_complete: link_complete::State,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -247,6 +250,7 @@ impl Editing {
             menu_facts,
             markdown,
             list_revert,
+            link_complete,
             _subscriptions,
         } = self;
         (store, move |store| Self {
@@ -269,6 +273,7 @@ impl Editing {
             menu_facts,
             markdown,
             list_revert,
+            link_complete,
             _subscriptions,
         })
     }
@@ -607,6 +612,14 @@ impl Reader {
                 this.ui_state.source_highlight_pending = false;
                 cx.notify();
             }
+            // #1921: the text or the caret moved; follow a `[[` being typed.
+            if this
+                .editing
+                .as_ref()
+                .is_some_and(|editing| editing.input == input)
+            {
+                this.refresh_link_complete(cx);
+            }
         });
         let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
             // Code blocks and tables keep one alignment as they change (S6c).
@@ -841,6 +854,7 @@ impl Reader {
             menu_facts,
             markdown: !plain_file,
             list_revert: None,
+            link_complete: Default::default(),
             _subscriptions: vec![
                 changed,
                 blur,
@@ -1514,6 +1528,8 @@ impl Reader {
         // #1992: Enter, Tab and the comment key in a code block's body, before
         // the list keys; #1635: Enter, Tab and Backspace in lists, before the
         // input; #1636: the formatting keys.
+        // #1921: the link list takes its keys before everything else.
+        let column = self.link_complete_actions(column, cx);
         let column = self.code_comfort_actions(column, cx);
         let column = self.format_actions(column, cx);
         self.list_actions(column, cx)
@@ -1660,6 +1676,7 @@ impl Reader {
                     }))
                     .size_full(),
             )
+            .children(self.render_link_complete(window, cx))
             .into_any_element()
     }
 }
