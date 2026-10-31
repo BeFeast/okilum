@@ -9,6 +9,29 @@ SCRIPT = Path(__file__).with_name('release-cache.sh').resolve()
 
 
 class CacheFallbackTests(unittest.TestCase):
+    def test_explicit_direct_compiler_mode_never_probes_or_keeps_a_wrapper(self):
+        for status in [0, 23]:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                for command in ['curl', 'sccache']:
+                    path = root / command
+                    path.write_text('#!/bin/sh\necho unexpected-cache-call >> "$CALLS"\nexit 99\n')
+                    path.chmod(0o755)
+                compiler = root / 'rustc'
+                compiler.write_text('#!/bin/sh\necho compiler >> "$CALLS"\nexit "$COMPILER_STATUS"\n')
+                compiler.chmod(0o755)
+                env = dict(os.environ, PATH=str(root)+':'+os.environ['PATH'],
+                           OKILUM_RELEASE_CACHE='off', RUSTC_WRAPPER='/stale/wrapper',
+                           SCCACHE_SERVER_UDS='/stale/socket', AWS_ACCESS_KEY_ID='fixture',
+                           SCCACHE_ENDPOINT='http://cache.invalid', CALLS=str(root/'calls'),
+                           COMPILER_STATUS=str(status))
+                shell = 'source "$1"; test -z "${RUSTC_WRAPPER:-}"; test -z "${SCCACHE_SERVER_UDS:-}"; release_cache_stats; rustc'
+                result = subprocess.run(['bash','-eu','-c',shell,'fixture',str(SCRIPT)],
+                                        env=env,capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode,status,result.stderr)
+                self.assertEqual((root/'calls').read_text(),'compiler\n')
+                self.assertIn('direct rustc',result.stdout)
+
     def test_macos_limit_restart_and_fallback(self):
         scratch = SCRIPT.parents[2] / 'target/cache-limit-tests'
         scratch.mkdir(parents=True, exist_ok=True)

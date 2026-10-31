@@ -129,7 +129,8 @@ jobs:
       - name: Build, sign and notarize
         shell: bash
         env:
-          OKILUM_SCCACHE_ISOLATED: "1"
+          # M4 shipping keeps its warm target; a cache daemon must not gate beta.
+          OKILUM_RELEASE_CACHE: "off"
           OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
           OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
           SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=
