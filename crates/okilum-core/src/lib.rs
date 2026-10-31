@@ -67,6 +67,7 @@ mod source_state;
 pub mod syncthing_ignore;
 pub mod task_edit;
 pub mod tasks;
+pub mod tex;
 pub mod typed_view;
 pub mod vault;
 pub mod watch;
