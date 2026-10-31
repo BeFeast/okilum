@@ -43,6 +43,7 @@ impl Feed {
                 self.native_positions.insert(row.key.clone(), next);
                 next
             };
+            self.groups.retain(position, &row);
             if self.attachments.retain(position, &row.item) {
                 attachment_changes.push(position);
             }
@@ -133,6 +134,7 @@ impl Feed {
     }
     fn remove_native(&mut self, key: &RowKey) {
         if let Some(position) = self.native_positions.remove(key) {
+            self.groups.remove(position);
             self.request_cards.remove(&position);
             self.messages.remove(&position);
             self.expanded.remove(&position);
@@ -167,6 +169,7 @@ impl Feed {
             self.scroller
                 .update(cx, |state, cx| state.remeasure_items(index..index + 1, cx));
         }
+        self.group_member_changed(position, cx);
         cx.notify();
     }
 

@@ -512,6 +512,20 @@ impl ProjectView {
                         let mut changes = r.model.take_changes();
                         let controls_changed = changes.actions.is_some();
                         if let Some(state) = changes.actions.take() {
+                            let timeline_runs =
+                                r.model.timeline_runs().cloned().collect::<Vec<_>>();
+                            if let Some(thread) =
+                                this.chat.as_ref().map(|chat| chat.thread_id.clone())
+                            {
+                                this.feed.update(cx, |feed, cx| {
+                                    feed.set_timeline_runs(
+                                        &thread,
+                                        &timeline_runs,
+                                        state.active_run.clone(),
+                                        cx,
+                                    )
+                                });
+                            }
                             let unsettled = r
                                 .model
                                 .timeline_runs()
@@ -537,7 +551,7 @@ impl ProjectView {
                             this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
                         }
                         let metadata = changes.metadata.clone();
-                        let changed = changes.changed();
+                        let changed = changes.changed() || controls_changed;
                         if changed {
                             this.feed.update(cx, |feed, cx| {
                                 feed.apply_native(changes, &this.records, cx)

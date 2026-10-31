@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 mod attachments;
 pub(super) mod content;
 mod details;
+mod groups;
 mod message_actions;
 
 #[derive(Clone, PartialEq)]
@@ -37,6 +38,9 @@ enum MessageKind {
 enum Row {
     Message(u64),
     Retained(usize),
+    WorkSummary(okilum_t3::projection::timeline::GroupKey),
+    WorkDetails(okilum_t3::projection::timeline::GroupKey),
+    Fold(okilum_t3::projection::timeline::RunKey),
 }
 
 /// A bounded plain-text hint; full retained detail is built only on disclosure.
@@ -58,6 +62,8 @@ pub(super) struct Feed {
     ids: BTreeMap<u64, String>,
     projected: HashMap<String, usize>,
     rows: Vec<Row>,
+    canonical_rows: Vec<u64>,
+    groups: groups::Timeline,
     indices: HashMap<u64, usize>,
     records: Vec<MessageRecord>,
     native_order: Option<Vec<u64>>,
@@ -93,6 +99,8 @@ impl Feed {
             ids: BTreeMap::new(),
             projected: HashMap::new(),
             rows: Vec::new(),
+            canonical_rows: Vec::new(),
+            groups: Default::default(),
             indices: HashMap::new(),
             records: Vec::new(),
             native_order: None,
@@ -123,6 +131,8 @@ impl Feed {
         self.ids.clear();
         self.projected.clear();
         self.rows.clear();
+        self.canonical_rows.clear();
+        self.groups = Default::default();
         self.indices.clear();
         self.records.clear();
         self.native_order = None;
@@ -163,7 +173,7 @@ impl Feed {
         previews: Option<&HashMap<u64, SharedString>>,
         cx: &mut Context<Self>,
     ) {
-        let mut topology = force_topology;
+        let mut topology = force_topology || self.groups.dirty;
         let mut changed = Vec::new();
         let mut copy_groups_changed = topology;
         for item in items {
@@ -301,6 +311,14 @@ impl Feed {
                 .as_ref()
                 .map(|order| order.iter().copied().map(Row::Message).collect())
                 .unwrap_or_else(|| self.messages.keys().copied().map(Row::Message).collect());
+            self.canonical_rows = rows
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Message(position) => Some(*position),
+                    _ => None,
+                })
+                .collect();
+            rows = self.grouped_rows(rows, cx);
             rows.extend(
                 self.records
                     .iter()
@@ -343,7 +361,7 @@ impl Feed {
                     .enumerate()
                     .filter_map(|(index, row)| match row {
                         Row::Message(position) => Some((*position, index)),
-                        Row::Retained(_) => None,
+                        _ => None,
                     })
                     .collect();
             }
@@ -378,6 +396,9 @@ impl Feed {
                     state.remeasure_items(start..end, cx);
                 }
             });
+        }
+        for position in &changed {
+            self.group_member_changed(*position, cx);
         }
         if topology || !changed.is_empty() {
             cx.notify();
@@ -434,6 +455,9 @@ impl Feed {
                     })
                     .into_any_element()
             }
+            Some(Row::WorkSummary(key)) => self.work_summary(key, cx),
+            Some(Row::WorkDetails(key)) => self.work_details(key, cx),
+            Some(Row::Fold(key)) => self.fold_summary(key, cx),
             Some(Row::Retained(index)) => {
                 let record = &self.records[*index];
                 let retry = record.clone();
@@ -520,6 +544,13 @@ impl Render for Feed {
             .debug_selector(|| "project-history".into())
             .size_full()
             .min_h_0()
+            .when(self.groups.error, |view| {
+                view.child(
+                    div()
+                        .text_color(cx.theme().danger)
+                        .child("Activity grouping is unavailable. Showing individual entries."),
+                )
+            })
             .child(scroller)
     }
 }

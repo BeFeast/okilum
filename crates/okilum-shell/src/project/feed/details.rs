@@ -120,6 +120,7 @@ impl Feed {
 
     fn detail_changed(&mut self, position: u64, cx: &mut Context<Self>) {
         if self.expanded.contains(&position) {
+            self.group_member_changed(position, cx);
             if let Some(index) = self.indices.get(&position).copied() {
                 self.scroller
                     .update(cx, |state, cx| state.remeasure_items(index..index + 1, cx));
