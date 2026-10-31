@@ -1,0 +1,4 @@
+push 0
+push 0
+decode 0 more 1
+decode 8 more 0

@@ -1,0 +1,5 @@
+# Preregistered CSP-bounded-failclosed QA profile
+
+Before measurements: retain exact64,000,000 coded-pixel libde265 guard and CSP filter behavior. In a separate libheif source copy, add only a libde265_v1_decode_next_image2 check for DE265_ERROR_CODED_PARAMETER_OUT_OF_RANGE: return heif_error_Decoder_plugin_error/heif_suberror_Unspecified with stable de265_get_error_text. Preserve handling of WAITING_FOR_INPUT_DATA and all other flow/errors, and all valid pixel processing. No driver acceptance workaround. Existing profiles/manifests immutable.
+
+Required controls: unchanged valid corpus exact CSP RGBA (missing reference UNKNOWN); original SPS+PPS in-band small-ispe positive control decodes and frame marker fires; oversized SPS+PPS in-band small-ispe negative produces whole-HEIF explicit error/exit nonzero/no RGBA and no oversized derived/frame markers; existing source/pixel caps and corrupt files error/no panic. Direct parser/API boundary controls retained. Source allocation bypass review required. No adoption unless all gates proved; remaining gaps UNKNOWN. QA only, no product/CI/Forgejo/GUI or global install. Build baldr -j4 isolated prefix.

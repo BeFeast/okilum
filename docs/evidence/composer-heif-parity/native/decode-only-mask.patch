@@ -1,0 +1,11 @@
+--- a/libheif/plugin_registry.cc
++++ b/libheif/plugin_registry.cc
+@@ -232,7 +232,7 @@
+   register_decoder(get_decoder_plugin_uncompressed());
+ #endif
+ 
+-  register_encoder(get_encoder_plugin_mask());
++  // QA decode-only profile: built-in mask encoder is not registered.
+ }
+ 
+ 

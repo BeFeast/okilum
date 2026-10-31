@@ -1,0 +1,86 @@
+[
+  {
+    "name": "nokia-C002.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C002.heic",
+    "bytes": 111897,
+    "sha256": "2b836102e528f7b465b295724b6928c5725a5ac3fe326c6bb54e5e8a18fc180f",
+    "label": "C002"
+  },
+  {
+    "name": "nokia-C006.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C006.heic",
+    "bytes": 112445,
+    "sha256": "41699c9a89dacb7a9536f43ae98f6554b9f272feb7397174cdc38b25387d7934",
+    "label": "C006"
+  },
+  {
+    "name": "nokia-C007.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C007.heic",
+    "bytes": 535814,
+    "sha256": "789ef64b3dfc7d39c38c407da8329642dcccb90473228c04ab6826c390ca4345",
+    "label": "C007"
+  },
+  {
+    "name": "nokia-C008.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C008.heic",
+    "bytes": 224526,
+    "sha256": "1d4b5cce1192b0961e4d8505a62099d39ee4f6f6ba516892e730b567997e5987",
+    "label": "C008"
+  },
+  {
+    "name": "nokia-C013.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C013.heic",
+    "bytes": 224534,
+    "sha256": "433057d6ee4faf13490fd616921889eabd7194e9e1bea9748be7e941d880255e",
+    "label": "C013"
+  },
+  {
+    "name": "nokia-C014.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C014.heic",
+    "bytes": 224629,
+    "sha256": "4acf8abc58bd5a8f9cc4e4f05e01a3712934d2a86824dd2ff65d3c92d8060176",
+    "label": "C014"
+  },
+  {
+    "name": "nokia-C042.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/C042.heic",
+    "bytes": 111907,
+    "sha256": "ac0c075dfe02520fabc3d1b078d8502eabf950e77011a663dbd9015fbb886aeb",
+    "label": "C042"
+  },
+  {
+    "name": "nokia-MIAF002.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/MIAF002.heic",
+    "bytes": 8837,
+    "sha256": "006baff837e3a8736154206f901a6595b0951eb62e282463e7dfc4a33c3da775",
+    "label": "MIAF002"
+  },
+  {
+    "name": "nokia-MIAF007.heic",
+    "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/6ff1e33481d325296d8a787432453ef3fa91f591/conformance_files/MIAF007.heic",
+    "bytes": 113861,
+    "sha256": "370489520fd6f97dab4dbf2e81c1d77f9e19b0bfb28996245a2dc313af8ea81c",
+    "label": "MIAF007"
+  },
+  {
+    "name": "rainbow-451x461.heic",
+    "url": "https://raw.githubusercontent.com/strukturag/libheif/12a259a5882dd99d45ec5fc77e296a3b620d1e2e/tests/data/rainbow-451x461.heic",
+    "bytes": 7080,
+    "sha256": "4b2ce727f093944975f143ba2b39c4c64511b766d94552f8d51a755916e7f983",
+    "label": "rainbow-451x461.heic"
+  },
+  {
+    "name": "with-alpha-512x512.heic",
+    "url": "https://raw.githubusercontent.com/strukturag/libheif/12a259a5882dd99d45ec5fc77e296a3b620d1e2e/tests/data/with-alpha-512x512.heic",
+    "bytes": 8284,
+    "sha256": "dac399d3bf1019baaf5f88eef8b277087d0643e735db947c42355237bb9d0221",
+    "label": "with-alpha-512x512.heic"
+  },
+  {
+    "name": "clap_cropped.heic",
+    "url": "https://raw.githubusercontent.com/strukturag/libheif/12a259a5882dd99d45ec5fc77e296a3b620d1e2e/tests/data/clap_cropped.heic",
+    "bytes": 2060,
+    "sha256": "54c62d0cb9e3ee09537788f9af59fff245791a681a80a16b27da1c23488a8e29",
+    "label": "clap_cropped.heic"
+  }
+]
