@@ -132,6 +132,8 @@ use reader_link_navigation::handle_link;
 #[cfg(test)]
 mod input_anchor_tests;
 #[cfg(test)]
+mod input_frame_cost_tests;
+#[cfg(test)]
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
