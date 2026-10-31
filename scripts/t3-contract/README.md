@@ -133,3 +133,17 @@ review: regenerate both decoded roots from the exact inspected tag, use
 deterministic gzip (mtime zero), and update its source commit, Effect version
 and compressed/decoded SHA256 metadata together. Do not fabricate decoded
 roots for the historical3814 RPC baseline.
+
+## Execution hosts
+
+Never build Rust/Okilum, run Rust tests, or start a T3 candidate/probe server on
+maestro. Build the client artifact and run candidate servers/tests on baldr or CI.
+On baldr use `nice -n 19`, at most four Cargo jobs, and the shared `build.lock`.
+The `--client-probe` argument always names a **prebuilt artifact from CI/baldr**;
+it is not a request to compile locally. This CLI never builds that artifact.
+
+Run the full Python wrapper where the isolated candidate state and matching CLI
+are available (baldr/CI). Maestro may run only the ready-made native probe artifact
+against an existing candidate, using private stdin prepared by the candidate
+owner; it must not start a candidate server or share/copy live server state.
+The hosted nightly bootstrap belongs exclusively to CI.

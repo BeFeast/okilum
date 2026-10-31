@@ -31,3 +31,17 @@ history pagination regression passed. All37 Python semantic/process/receipt
 regressions passed under a1GiB address-space ceiling. Nested-schema fingerprints
 use bounded structural digests; the suite includes actual large consumer roots
 and removed/opaque/deep-field controls. No acceptance was relaxed to obtain PASS.
+
+## Execution hosts
+
+Never build Rust/Okilum, run Rust tests, or start a T3 candidate/probe server on
+maestro. Build the client artifact and run candidate servers/tests on baldr or CI.
+On baldr use `nice -n 19`, at most four Cargo jobs, and the shared `build.lock`.
+The `--client-probe` argument always names a **prebuilt artifact from CI/baldr**;
+it is not a request to compile locally. This CLI never builds that artifact.
+
+Run the full Python wrapper where the isolated candidate state and matching CLI
+are available (baldr/CI). Maestro may run only the ready-made native probe artifact
+against an existing candidate, using private stdin prepared by the candidate
+owner; it must not start a candidate server or share/copy live server state.
+The hosted nightly bootstrap belongs exclusively to CI.
