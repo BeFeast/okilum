@@ -237,8 +237,10 @@ impl Project {
         };
         let manifest_manager = &doc["t3"]["manager"];
         // A present role registry is authoritative, including explicit not-started.
-        let manager = match std::fs::read_to_string(folder.join("ops/thread-ids.md")) {
-            Ok(registry) => manager_role(&registry)?,
+        let registry_path = folder.join("ops/thread-ids.md");
+        let manager = match std::fs::read_to_string(&registry_path) {
+            Ok(registry) => manager_role(&registry)
+                .with_context(|| format!("Check Manager registry {}", registry_path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 match manifest_manager.get("thread_id").and_then(|v| v.as_str()) {
                     Some(id) => Manager::Thread(thread_id(id)?),
@@ -303,17 +305,30 @@ fn manager_cell(source: &str) -> Result<std::ops::Range<usize>> {
 /// Exact role + leading inline-code id; links and historical IDs elsewhere in
 /// the cell cannot select a thread. Duplicate roles are explicit ambiguity.
 pub fn manager_role(registry: &str) -> Result<Manager> {
-    let cell = registry[manager_cell(registry)?].trim();
+    let range = manager_cell(registry)?;
+    let line = registry[..range.start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let cell = registry[range].trim();
     if cell == "— (not started)" {
         return Ok(Manager::NotStarted);
     }
-    let value = cell
-        .strip_prefix('`')
-        .context("Manager cell must start with an inline-code thread id")?;
-    let (id, _) = value
-        .split_once('`')
-        .context("unterminated Manager thread id")?;
-    Ok(Manager::Thread(thread_id(id)?))
+    let parse = || -> Result<Manager> {
+        let value = cell
+            .strip_prefix('`')
+            .context("Manager cell must start with an inline-code thread id")?;
+        let (id, _) = value
+            .split_once('`')
+            .context("unterminated Manager thread id")?;
+        Ok(Manager::Thread(thread_id(id)?))
+    };
+    parse().with_context(|| {
+        format!(
+            "Manager row, line {line}: start the thread cell with the current thread ID in backticks, then any title or link. Expected: | Manager | `mcp:<thread-id>` … |"
+        )
+    })
 }
 
 /// Replace only the current Manager cell, preserving all unrelated source bytes.
@@ -622,6 +637,115 @@ mod tests {
         ] {
             assert!(manager_role(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn malformed_manager_cell_names_the_registry_row_and_expected_form() {
+        let fixture =
+            std::env::temp_dir().join(format!("okilum-registry-hint-{}", uuid::Uuid::new_v4()));
+        let folder = fixture.join("Synthetic project");
+        let ops = folder.join("ops");
+        std::fs::create_dir_all(&ops).unwrap();
+        std::fs::write(
+            ops.join("project.yaml"),
+            "name: Synthetic\nkind: knowledge\n",
+        )
+        .unwrap();
+        let registry = "# Synthetic registry 🧠\r\n\r\n```markdown\r\n| Manager | `mcp:example` |\r\n```\r\n| Role | Thread |\r\n| --- | --- |\r\n| Manager | [Current manager](t3-thread://example) |\r\n";
+        let path = ops.join("thread-ids.md");
+        std::fs::write(&path, registry).unwrap();
+        let error = Project::read(&folder).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains(path.to_str().unwrap()), "{detail}");
+        assert!(detail.contains("Manager row, line 8"), "{detail}");
+        assert!(
+            detail.contains("current thread ID in backticks"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("| Manager | `mcp:<thread-id>` … |"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("must start with an inline-code thread id"),
+            "{detail}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), registry.as_bytes());
+        let corrected = registry.replace(
+            "[Current manager](t3-thread://example)",
+            "`mcp:current` [Current manager](t3-thread://example)",
+        );
+        assert_eq!(
+            manager_role(&corrected).unwrap(),
+            Manager::Thread("mcp:current".into())
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn discovered_registry_errors_keep_actionable_context_and_healthy_projects() {
+        let fixture = std::env::temp_dir().join(format!(
+            "okilum-registry-discovery-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let broken = fixture.join("Проект with spaces");
+        let healthy = fixture.join("Healthy");
+        for folder in [&broken, &healthy] {
+            std::fs::create_dir_all(folder.join("ops")).unwrap();
+            std::fs::write(
+                folder.join("ops/project.yaml"),
+                "name: Synthetic\nkind: knowledge\n",
+            )
+            .unwrap();
+        }
+        let path = broken.join("ops/thread-ids.md");
+        for (cell, cause) in [
+            (
+                "[Manager](t3-thread://example)",
+                "must start with an inline-code thread id",
+            ),
+            ("`mcp:current", "unterminated Manager thread id"),
+            ("`mcp:invalid id`", "invalid Manager thread id"),
+        ] {
+            let registry = format!(
+                "# Registry 🧠\r\n\r\n```markdown\r\n| Manager | `mcp:example` |\r\n```\r\n| Role | Thread |\r\n| --- | --- |\r\n| Manager | {cell} |\r\n"
+            );
+            std::fs::write(&path, &registry).unwrap();
+            let discovered = discover(&fixture);
+            assert_eq!(discovered.projects.len(), 1, "{cell}");
+            assert_eq!(discovered.projects[0].folder, healthy);
+            assert_eq!(discovered.errors.len(), 1, "{cell}");
+            let (folder, detail) = &discovered.errors[0];
+            assert_eq!(folder, &broken);
+            for required in [
+                path.to_str().unwrap(),
+                "Manager row, line 8",
+                "current thread ID in backticks",
+                "| Manager | `mcp:<thread-id>` … |",
+                cause,
+            ] {
+                assert!(detail.contains(required), "{cell}: {detail}");
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), registry.as_bytes());
+        }
+        std::fs::write(
+            &path,
+            "| Role | Thread |\n| --- | --- |\n| Manager | `mcp:current` [Manager](t3-thread://example) |\n",
+        )
+        .unwrap();
+        let discovered = discover(&fixture);
+        assert!(discovered.errors.is_empty(), "{:?}", discovered.errors);
+        assert_eq!(discovered.projects.len(), 2);
+        assert_eq!(
+            discovered
+                .projects
+                .iter()
+                .find(|p| p.folder == broken)
+                .unwrap()
+                .manager,
+            Manager::Thread("mcp:current".into())
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]
