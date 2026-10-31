@@ -688,7 +688,10 @@ impl ProjectView {
 
     pub(super) fn render_native_attachment_drafts(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut tray = v_flex()
+            .id("project-attachment-tray")
             .w_full()
+            .max_h(px(200.))
+            .overflow_y_scroll()
             .gap_1()
             .debug_selector(|| "project-attachment-tray".into());
         for row in self.draft_attachments() {
