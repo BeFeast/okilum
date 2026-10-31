@@ -184,7 +184,7 @@ impl ProjectView {
         let environment = self.environment.clone().unwrap();
         let environment_id = self.identity.as_ref().map(|i| i.environment_id.clone());
         let identity_client = self.native.model_client().filter(|c| c.access_allowed());
-        let store = Store::new(&state, &environment, &key.1, &key.2);
+        let store = Store::<Attachment>::new(&state, &environment, &key.1, &key.2);
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
