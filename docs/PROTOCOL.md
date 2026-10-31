@@ -11,6 +11,10 @@ vault: guessing one is a good way to index the wrong directory.
 `okilum-cored index --vault <path>` rebuilds the persistent tantivy index and
 exits. The index is derived data — deleting it is always safe.
 
+`okilum-cored mcp` serves the same operations over MCP (see below), and
+`okilum-cored brain …` serves the separate `ai-brain/v1` transport (see the end
+of this document).
+
 These are invocation details, not part of the frozen wire contract below. The
 spike named them `OKILUM_CORPUS`/`OKILUM_INDEX` and defaulted to a path inside
 the sandbox.
@@ -99,14 +103,25 @@ Only `initialize`, `ping`, `tools/list`, `tools/call` and the
 `-32601` rather than pretending. The MCP wire is versioned by the MCP spec
 revision, not by this protocol's v0.x; the two evolve independently.
 
-## Planned AI Brain capabilities — not current reader operations
+## Read-only boundary
+
+Every op in the table above and every MCP tool only reads the vault. None of them
+creates, edits, renames or deletes a note, and adding one that does is not a v0.x
+bump: it is out of scope for this protocol. Writing in the desktop app (source
+editing, rename/move, Tasks, Board management) is implemented in the app itself,
+with revision-checked atomic saves, and is governed by the contracts listed in [PRD §2](PRD.md#2-canonical-data), not
+by this wire.
+
+## AI Brain — a separate transport, not reader operations
 
 The approved [AI Brain POC](ai-brain-poc.md) uses a separate
 [ai-brain/v1 contract](ai-brain-contracts.md) for exact source read/write and
-goal/stage orchestration. These interfaces are specified but not implemented by
-this document. They are not commands in the ops table, MCP tools, or a v0.3 wire
-extension. Implementations must explicitly expose/version their new transport
-before clients use it; existing reader requests and responses remain unchanged.
+goal/stage orchestration. It is implemented and served by its own entrypoint,
+`okilum-cored brain`, as `ai-brain/v1` JSON-lines over an explicitly selected
+loopback TCP address; see [the local service](ai-brain-service.md) and the
+[application API](ai-brain-application-api.md). Those requests carry
+`schema: "ai-brain/v1"` and are not commands in the ops table, MCP tools, or a
+v0.3 wire extension; existing reader requests and responses remain unchanged.
 
 In particular, MCP `read_note` strips frontmatter and rewrites wikilinks. Never
 feed it back into a source save or exact export. Rendering and exact source access

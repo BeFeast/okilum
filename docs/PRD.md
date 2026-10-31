@@ -126,12 +126,26 @@ by these local-start slices.
   editable without Okilum.
 - Search indexes, thumbnails, embeddings, graph projections, and caches are **derived**
   and must be rebuildable from the files alone.
-- **v0 does not write to your notes.** Editing is external. This is a hard constraint,
-  not a phase-one simplification, and it is load-bearing for §4.
+- **The v0 reader protocol does not write to your notes.** The JSON-lines ops and
+  MCP tools in [PROTOCOL.md](PROTOCOL.md) only read; MCP `read_note` is rendering
+  input, never a lossless source. This is a hard constraint, not a phase-one
+  simplification, and it is load-bearing for §4.
+- **Writing happens only in explicitly approved phases, on an explicit user action.**
+  Each phase has its own contract with revision checks and atomic, recoverable
+  saves; none of them widens the reader protocol above:
+  [source editing and safe save](reader-source-editing.md) (#354),
+  [rename / move](reader-source-editing.md#rename--move-ordinary-notes-360) (#360)
+  and [link updates on rename / move](reader-source-editing.md#update-links-during-rename--move-440) (#440),
+  [Tasks editing](typed-note-views.md) (#636),
+  [Board management](project-board.md#board-management-1862) (#1862), and the
+  [AI Brain POC](ai-brain-poc.md) (§11). Nothing writes metadata, record IDs or
+  identity into notes that the user did not explicitly edit.
 
 ## 3. v0 scope
 
-Reader and searcher. Editing external, via any editor plus a file watcher.
+Reader and searcher. Notes changed outside Okilum, in any editor, are picked up by a
+file watcher. In-app editing is not part of the v0 reader; it arrived later through
+the approved phases listed in §2.
 
 Deferred with triggers, not dropped: plugins, Canvas, Bases, mobile, web clipping,
 automation, semantic retrieval, accessibility on the GPUI stack, and the Depth-1 web
@@ -172,8 +186,9 @@ disambiguates itself. The measured number is 199.
 Rejected alternatives, and why:
 
 - **Frontmatter UUID as canonical id.** The most robust answer to renames, moves, and
-  sync — and it requires Okilum to write into the user's files, which §2 forbids in
-  v0. Revisit if and when v0's read-only constraint is lifted.
+  sync — and it requires Okilum to write an identity into every one of the user's
+  files, which §2 does not allow: approved phases write only what the user
+  explicitly edits. Revisit only as its own approved phase.
 - **Okilum-owned sidecar identity database.** Survives renames without touching
   files, but introduces authoritative state that can drift from disk and does not
   travel between devices. Rejected as a worse trade than honest path identity.
@@ -206,8 +221,13 @@ reports its unsupported syntax explicitly. Reader lands block references
 attachment actions remain separate capabilities.
 See [the document link contract](document-links.md) for parsing and acceptance.
 
-Consequence accepted: a rename breaks links exactly as it does today. Rename tracking
-is a separate, later problem and must not be smuggled in as a sidecar.
+Consequence accepted: a rename or move made **outside** Okilum breaks links exactly
+as it does in any other editor; Okilum surfaces them as unresolved or ambiguous.
+A rename / move made **in** Okilum (#360) previews incoming and relative links and,
+with #440, offers to update them in the same explicit operation, with a recoverable
+journal ([contract](reader-source-editing.md#update-links-during-rename--move-440)).
+Tracking renames made outside Okilum remains a separate problem (§10) and must not
+be smuggled in as a sidecar.
 
 ## 5. Rendering
 
@@ -317,7 +337,8 @@ pacing was proven pre-existing by an unpatched baseline on the same hardware.
 
 ## 9. Non-goals for v0
 
-A Markdown editor. Plugin API. Canvas. Bases. Mobile. Web clipping. Vector search.
+A Markdown editor as part of the v0 reader (source editing arrived later as the
+approved #354 phase, see §2). Plugin API. Canvas. Bases. Mobile. Web clipping. Vector search.
 Cloud sync service. Any feature whose absence is not currently costing something
 measurable.
 
@@ -328,7 +349,8 @@ measurable.
   with them.
 - Which Obsidian dialect features define the first acceptance corpus.
 - Whether agent features run in-process, via local CLI, or through the sidecar.
-- Rename tracking (see §4).
+- Tracking renames and moves made outside Okilum (see §4). Okilum's own rename /
+  move already updates links (#360, #440).
 
 ## 11. AI Brain POC
 
@@ -339,8 +361,8 @@ native conversation → task connector → T3 stage → Markdown outcome/evidenc
 notification. [The POC specification](ai-brain-poc.md) defines its scope and the
 broader requirements whose sequencing remains open.
 
-The writing prohibition in §2 continues to govern v0, not this explicitly approved
-POC phase. Markdown and adjacent media remain canonical; Todoist remains task
+The reader-protocol write boundary in §2 continues to hold; this POC is one of the
+explicitly approved writing phases listed there. Markdown and adjacent media remain canonical; Todoist remains task
 authority during transition. Operational execution state is separate and durable,
 not a reconstructible search cache. The new record identities do not migrate v0
 path-based notes. Exact source access and revision-aware writes are governed by
