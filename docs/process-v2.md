@@ -7,10 +7,10 @@ acceptance. P0/P1 releases may run outside that cycle.
 ## Merge admission
 
 `fast / check (pull_request)` is the sole required main protection context.
-It runs the exact PR head on baldr's local Forgejo Linux Docker runner:
+It runs the exact PR head on baldr's persistent local Forgejo Linux host runner:
 desktop/supervisor build plus deterministic okilum-paste library unit tests.
 The five-minute job budget includes setup and build; the shared LAN compiler
-cache and Cargo downloads cache are reused. A timeout or failed build/test fails
+cache, Cargo downloads and one locked persistent target are reused. A timeout or failed build/test fails
 closed. No GitHub hosted job or bridge participates in PR admission.
 Windows and macOS compilation moves to each post-merge beta producer; an OS beta
 failure belongs to the last merge author, who repairs it immediately. This is

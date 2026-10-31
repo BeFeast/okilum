@@ -8,8 +8,8 @@ concurrency:
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # baldr's local Docker executor; never a GitHub hosted runner.
-    runs-on: ubuntu-latest
+    # baldr's persistent host executor; no ephemeral four-core Docker build.
+    runs-on: heavy
     timeout-minutes: 5
     env:
       CARGO_INCREMENTAL: "0"
@@ -32,26 +32,26 @@ jobs:
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake pkg-config curl git mold zstd \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
-          curl --fail --silent --show-error https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          test -x "$HOME/.cargo/bin/cargo"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Restore Cargo downloads
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: fast-local-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: fast-local-cargo-
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.cache/okilum-fast/target"
+          mkdir -p "$CARGO_TARGET_DIR"
+          # One persistent local target, independent of checkout cleanup. Never
+          # overwrite another builder's cache or contend on an unbounded lock.
+          exec 9>"$HOME/.cache/okilum-fast/build.lock"
+          flock -w 10 9
           source scripts/ci/release-cache.sh
           bash scripts/ci/fast.sh
       - name: Compiler cache receipt
