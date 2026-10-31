@@ -20,6 +20,17 @@ pub struct Snapshot {
     pub configuration: ThreadConfiguration,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickerChoice {
+    pub selection: ModelSelection,
+    pub label: String,
+    pub provider_label: String,
+    pub current: bool,
+    pub selectable: bool,
+}
+
+mod search;
+
 impl Target {
     fn verify(&self, gateway: &dyn ManagerGateway) -> Result<()> {
         let mut query = ThreadQuery::messages(&self.thread_id);
@@ -68,6 +79,80 @@ impl Target {
 }
 
 impl Snapshot {
+    /// An empty query browses one configured instance; search spans instances.
+    /// Current is the server's instance/model pair, independent of option order.
+    pub fn picker_choices(&self, instance: &str, query: &str) -> Vec<PickerChoice> {
+        let current = &self.configuration.model_selection;
+        let mut choices = Vec::new();
+        for provider in &self.catalog.providers {
+            if query.trim().is_empty() && provider.provider_instance_id != instance {
+                continue;
+            }
+            let provider_label = provider
+                .display_name
+                .as_deref()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or(&provider.provider_instance_id);
+            for model in &provider.models {
+                let label = model.label.as_deref().unwrap_or(&model.id);
+                let Some(score) = search::score(
+                    query,
+                    &[label, &provider.driver_kind, provider_label],
+                    false,
+                ) else {
+                    continue;
+                };
+                let selection = self.selection(&provider.provider_instance_id, &model.id);
+                let selectable = self.validate(&selection).is_ok();
+                choices.push((
+                    score,
+                    PickerChoice {
+                        current: selectable
+                            && current.instance_id == selection.instance_id
+                            && current.model == selection.model,
+                        selection,
+                        label: label.into(),
+                        provider_label: provider_label.into(),
+                        selectable,
+                    },
+                ));
+            }
+        }
+        // A missing current is explicit, never substituted by another account
+        // which happens to advertise the same slug.
+        if self.validate(current).is_err()
+            && (!query.trim().is_empty() || current.instance_id == instance)
+        {
+            if let Some(score) =
+                search::score(query, &[&current.model, &current.instance_id], false)
+            {
+                choices.insert(
+                    0,
+                    (
+                        score,
+                        PickerChoice {
+                            selection: current.clone(),
+                            label: current.model.clone(),
+                            provider_label: current.instance_id.clone(),
+                            current: true,
+                            selectable: false,
+                        },
+                    ),
+                );
+            }
+        }
+        if !query.trim().is_empty() {
+            choices.sort_by(|(left_score, left), (right_score, right)| {
+                left_score
+                    .cmp(right_score)
+                    .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+                    .then_with(|| left.selection.instance_id.cmp(&right.selection.instance_id))
+                    .then_with(|| left.selection.model.cmp(&right.selection.model))
+            });
+        }
+        choices.into_iter().map(|(_, choice)| choice).collect()
+    }
+
     pub fn validate(&self, selection: &ModelSelection) -> Result<()> {
         validate_selection(&self.catalog, selection)
     }
@@ -133,3 +218,6 @@ fn selections_match(a: &ModelSelection, b: &ModelSelection) -> bool {
         && options(a).is_some()
         && options(a) == options(b)
 }
+
+#[cfg(test)]
+mod tests;
