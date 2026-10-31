@@ -314,9 +314,27 @@ mod tests {
         visual.update(|_, cx| cx.read_from_clipboard().unwrap().text().unwrap())
     }
     fn activate_keyboard(visual: &mut VisualTestContext, copied_selector: &'static str) {
+        // Pointer activation intentionally prevents focus in the shared Button.
+        // Give the isolated window an initial dispatch path, as the vendor's
+        // keyboard fixture does, before exercising real Tab and Enter events.
+        visual.update(|window, cx| {
+            window.focus_next(cx);
+            assert!(
+                window.focused(cx).is_some(),
+                "positive control: keyboard focus is established"
+            );
+            window.draw(cx).clear(cx);
+        });
         for _ in 0..8 {
             visual.simulate_keystrokes("tab");
             visual.run_until_parked();
+            visual.update(|window, cx| {
+                assert!(
+                    window.focused(cx).is_some(),
+                    "Tab preserves a keyboard dispatch target"
+                );
+                window.draw(cx).clear(cx);
+            });
             let keystroke = Keystroke::parse("enter").unwrap();
             visual.simulate_event(KeyDownEvent {
                 keystroke: keystroke.clone(),
@@ -366,10 +384,9 @@ mod tests {
             visual.run_until_parked();
             assert!(visual.debug_bounds("project-message-copy-1").is_some());
             activate_keyboard(visual, "project-message-copied-1");
-            assert_eq!(
-                clipboard(visual),
-                full,
-                "Tab and Enter activate whole-message copy"
+            assert!(
+                clipboard(visual) == full,
+                "Tab and Enter activate whole-message copy with exact authored bytes"
             );
         }
     }
