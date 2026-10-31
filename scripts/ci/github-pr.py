@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 import uuid
 import time
+import fast_evidence
 
 spec = importlib.util.spec_from_file_location('transport', Path(__file__).with_name('github-macos.py'))
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 LANES = {
+    'fast': ('fast', 'All fast platform builds passed', 420),
     'shared': ('shared', 'Run every shared suite', 3600),
     'linux': ('linux', 'Run full Linux gate', 5400),
     'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
@@ -39,13 +41,19 @@ def main():
         branch = transport.ref_name(os.environ['PR_NUMBER'], sha, os.environ['GITHUB_RUN_ID'],
                                     os.environ.get('GITHUB_RUN_ATTEMPT') or '1', uuid.uuid4().hex)
         branch = branch.replace('forgejo-pr/', f'forgejo-{lane}-pr/', 1)
+        if lane == 'fast':
+            # A normal fast-forward ref retains PR-local compiler caches. No force push.
+            branch = f"forgejo-fast-pr/{os.environ['PR_NUMBER']}"
         api = transport.GitHub()
         api.log_quota()
         token = api.token
         transport.push_head(branch, sha, token)
         pushed = True
-        result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
-            job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
+        if lane == 'fast':
+            result, message = fast_evidence.wait(api, branch, sha, timeout=max(1, 540 - (time.monotonic() - started)))
+        else:
+            result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
+                job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
         print(message)
     except transport.Unavailable as error:
         print(f'Hosted CI unavailable; no fallback success: {error}')
@@ -54,7 +62,7 @@ def main():
             print(f'Shared hosted bridge queue+run seconds={time.monotonic() - started:.1f}', flush=True)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'result={result}\n')
-        if pushed and branch and api:
+        if pushed and branch and api and os.environ.get('CI_LANE') != 'fast':
             try:
                 token = api.token
                 api.request('git/refs/heads/' + branch, 'DELETE')

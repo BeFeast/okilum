@@ -9,6 +9,14 @@ node scripts/ci/test-manager-page-keys.mjs
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+# #1914: exercise the actual Service provider with isolated AppKit pasteboards.
+folder_test=$(mktemp -d)
+xcrun clang -fobjc-arc -Wall -Werror -framework AppKit \
+    crates/okilum-shell/src/folder_service/test.m -o "$folder_test/service-test"
+"$folder_test/service-test"
+rm "$folder_test/service-test"
+rmdir "$folder_test"
+
 # Same toolchain/profile/cache as main releases; Cargo locks the shared target.
 export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
 export CARGO_INCREMENTAL=0

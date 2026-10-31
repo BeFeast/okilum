@@ -45,14 +45,29 @@ def handoff(root, directory):
     artifact = publisher.artifact
     source = os.environ['GITHUB_SHA']
     api = artifact.transport.GitHub(os.environ['GH_TOKEN'])
-    run = api.request('actions/runs/' + os.environ['GITHUB_RUN_ID'])
-    assert run['id'] == int(os.environ['GITHUB_RUN_ID'])
-    assert run['run_number'] == int(os.environ['GITHUB_RUN_NUMBER'])
+    retained = os.environ.get('APPIMAGE_RETAINED_RECEIPT')
+    if retained:
+        if os.environ.get('GITHUB_EVENT_NAME') != 'schedule':
+            raise ValueError('Retained native acceptance requires the nightly workflow')
+        original = json.loads(Path(retained).read_bytes())
+        run_id = original['run']['id']
+        artifact_id = original['artifact']['id']
+        run = api.request('actions/runs/' + str(run_id))
+        jobs = api.request(f'actions/runs/{run_id}/jobs?per_page=100')['jobs']
+        artifact.accepted(run, jobs, source)
+        if run.get('head_branch') != 'main' or run['event'] != 'push':
+            raise ValueError('Nightly acceptance requires the original main beta producer')
+    else:
+        run = api.request('actions/runs/' + os.environ['GITHUB_RUN_ID'])
+        assert run['id'] == int(os.environ['GITHUB_RUN_ID'])
+        assert run['run_number'] == int(os.environ['GITHUB_RUN_NUMBER'])
     # Platform step outcomes cannot distinguish transport from signing failures.
     # Producer log text is never authority for relaxing this boundary.
     if run.get('run_attempt') != 1 or os.environ['GITHUB_RUN_ATTEMPT'] != '1':
         raise ValueError('CI recovery beyond original attempt is unsupported')
-    item = api.request('actions/artifacts/' + os.environ['APPIMAGE_ARTIFACT_ID'])
+    if not retained:
+        artifact_id = int(os.environ['APPIMAGE_ARTIFACT_ID'])
+    item = api.request('actions/artifacts/' + str(artifact_id))
     artifact.artifact_identity(item, run, source)
     data = artifact.download(os.environ['GH_TOKEN'], item['id'])
     if item['digest'] != 'sha256:' + publisher.digest(data):

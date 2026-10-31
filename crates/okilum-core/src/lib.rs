@@ -70,6 +70,7 @@ pub mod tasks;
 pub mod typed_view;
 pub mod vault;
 pub mod watch;
+pub mod workbench;
 
 pub use facets::Facets;
 pub use ir::{Block, Doc, Inline};

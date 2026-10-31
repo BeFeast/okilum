@@ -17,6 +17,8 @@ SHA = 'a' * 40
 class HostedPRTests(unittest.TestCase):
     def test_every_lane_uses_its_own_workflow_job_and_executed_step(self):
         for lane, (job, step, timeout) in bridge.LANES.items():
+            if lane == 'fast':
+                continue  # Three-platform receipts have their own exact-evidence tests.
             with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
                 env = dict(CI_LANE=lane, MIRROR_TOKEN='test', PR_HEAD_SHA=SHA, PR_NUMBER='12',
                            GITHUB_RUN_ID='345', GITHUB_OUTPUT=str(Path(tmp) / 'output'))
@@ -40,6 +42,8 @@ class HostedPRTests(unittest.TestCase):
 
     def test_each_acceptance_checks_exact_identity_and_execution(self):
         for lane, (job, step, _) in bridge.LANES.items():
+            if lane == 'fast':
+                continue
             branch = f'forgejo-{lane}-pr/12/{SHA}'
             workflow = f'.github/workflows/forgejo-{lane}.yml'
             good = dict(id=1, head_sha=SHA, head_branch=branch, event='push', path=workflow,

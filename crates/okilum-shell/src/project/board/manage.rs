@@ -275,11 +275,14 @@ impl Board {
                 move || format!("board-field-{key}")
             })
             .child(div().text_size(px(13.)).child(label.to_owned()))
-            .child(Input::new(input).disabled(
-                self.editor.as_ref().is_some_and(|e| {
-                    e.busy || (key == "repository" && e.session.document.is_some())
-                }),
-            ));
+            .child(
+                Input::new(input).disabled(self.editor.as_ref().is_some_and(|e| {
+                    e.busy
+                        || (key == "repository"
+                            && e.session.document.is_some()
+                            && !e.session.details().repository.is_empty())
+                })),
+            );
         if let Some(error) = self.editor.as_ref().and_then(|e| e.errors.get(key)) {
             row = row.child(
                 div()
@@ -359,17 +362,31 @@ impl Board {
                     h_flex()
                         .gap_2()
                         .child(
+                            Button::new("board-local-manage")
+                                .debug_selector(|| "board-local-manage".into())
+                                .primary()
+                                .label("Local cards")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_local_management(super::local::Mode::List, window, cx)
+                                })),
+                        )
+                        .child(
                             Button::new("board-add")
                                 .debug_selector(|| "board-add".into())
-                                .primary()
-                                .label("Add card")
-                                .disabled(busy)
+                                .ghost()
+                                .label("Link issue")
+                                .tooltip(
+                                    "Link an existing issue; add Repository in Board details first",
+                                )
+                                .disabled(busy || editor.session.details().repository.is_empty())
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.management_screen(Screen::Add, window, cx)
                                 })),
                         )
                         .child(
                             Button::new("board-details")
+                                .debug_selector(|| "board-details".into())
                                 .ghost()
                                 .small()
                                 .child(appearance::icon("settings-2", colors.text_muted))
@@ -394,11 +411,9 @@ impl Board {
                     );
                 }
                 if editor.session.cards().is_empty() {
-                    content = content.child(
-                        div()
-                            .text_color(colors.text_muted)
-                            .child("Add an issue to start planning this project."),
-                    );
+                    content = content.child(div().text_color(colors.text_muted).child(
+                        "Add a local card, or link an issue from this project's repository.",
+                    ));
                 }
                 for (index, card) in editor.session.cards().iter().enumerate() {
                     let number = card["number"]
@@ -459,9 +474,9 @@ impl Board {
             Screen::Details => {
                 content = content
                     .child(self.management_field("title", "Title", &editor.title, cx))
-                    .child(self.management_field("goal", "Goal", &editor.goal, cx))
-                    .child(self.management_field("repository","Repository",&editor.repository,cx))
-                    .child(div().text_size(px(12.)).text_color(colors.text_muted).child("Enter the project's Forgejo repository URL here, for example https://forgejo.example/owner/repository. The Board stores it explicitly; no repository is guessed."));
+                    .child(self.management_field("goal", "Goal (optional)", &editor.goal, cx))
+                    .child(self.management_field("repository","Repository (optional)",&editor.repository,cx))
+                    .child(div().text_size(px(12.)).text_color(colors.text_muted).child("Leave blank to start locally. PR and CI links need a Forgejo repository, for example https://forgejo.example/owner/repository. You can add it later in Board details."));
                 let selected = editor.stage_note.clone();
                 let mut notes = editor.session.stage_notes.clone();
                 if !selected.is_empty() && !notes.contains(&selected) {
@@ -819,7 +834,7 @@ mod tests {
         });
         let area = tempfile::tempdir().unwrap();
         std::fs::create_dir(area.path().join("ops")).unwrap();
-        let project = "name: Pulse fixture\nproduct: {outcome: Keep work in view}\n";
+        let project = "name: Pulse fixture\nkind: code\n";
         std::fs::write(area.path().join("ops/project.yaml"), project).unwrap();
         let (root, visual) = cx.add_window_view(|window, cx| {
             let board = cx.new(|cx| {
@@ -847,13 +862,32 @@ mod tests {
             "the user can actually supply the missing repository in this form"
         );
         click(visual, "board-save");
-        assert!(visual
-            .debug_bounds("board-field-error-repository")
-            .is_some());
+        assert!(
+            area.path().join("ops/board.toml").exists(),
+            "local Board creation has no mandatory goal/repository/stage/executor"
+        );
+        click(visual, "board-management-close");
+        assert!(visual.debug_bounds("board-local").is_some());
+        click(visual, "board-manage");
+        click(visual, "board-details");
+        board.update_in(visual, |board, window, cx| {
+            board
+                .editor
+                .as_mut()
+                .unwrap()
+                .repository
+                .update(cx, |input, cx| input.set_value("not a URL", window, cx));
+        });
+        click(visual, "board-save");
+        assert!(
+            visual
+                .debug_bounds("board-field-error-repository")
+                .is_some(),
+            "an optional repository still validates a supplied value"
+        );
         assert!(visual
             .debug_bounds("board-field-error-stage_note")
             .is_none());
-        assert!(!area.path().join("ops/board.toml").exists());
         board.update_in(visual, |board, window, cx| {
             let editor = board.editor.as_mut().unwrap();
             assert!(editor.stage_note.is_empty());
@@ -874,5 +908,10 @@ mod tests {
         assert!(visual
             .debug_bounds("board-field-error-repository")
             .is_none());
+        click(visual, "board-management-close");
+        assert!(
+            visual.debug_bounds("board-local").is_none(),
+            "positive control: the explicit repository removes the unbound state"
+        );
     }
 }

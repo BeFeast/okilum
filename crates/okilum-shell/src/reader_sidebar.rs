@@ -1,6 +1,6 @@
 //! Vault sidebar state: the folder tree's collapse and hidden-file settings,
 //! plus the Recent and Pinned stores the title bar reads (#1508). The sidebar
-//! itself shows only the tree. Inbox remains an inventory projection consumed
+//! offers Now and Tree. Inbox remains an inventory projection consumed
 //! by the application section, never a sidebar.
 use anyhow::{Context, Result};
 use okilum_core::Vault;
@@ -40,6 +40,14 @@ pub enum Section {
 /// The only section the left sidebar renders (#1508): the folder tree.
 pub const LEFT_SECTIONS: [Section; 1] = [Section::Folders];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LeftMode {
+    Now,
+    #[default]
+    Tree,
+}
+
 impl Section {
     pub fn label(self) -> &'static str {
         match self {
@@ -55,6 +63,17 @@ impl Section {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub left_mode: LeftMode,
+    /// Second brain is opt-in. Explicit choices are persisted per vault.
+    #[serde(default)]
+    pub now_enabled: Option<bool>,
+    #[serde(default)]
+    pub now_offer_answered: bool,
+    #[serde(default)]
+    pub now_collapsed: BTreeSet<String>,
+    #[serde(default)]
+    pub now_expanded: BTreeSet<String>,
     /// Most recent first: (root-relative note, unix seconds).
     #[serde(default)]
     pub recent: Vec<(String, u64)>,
@@ -113,8 +132,47 @@ impl State {
     pub fn load(path: &Path) -> Self {
         std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| {
+                let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                let legacy_choice =
+                    value.get("left_mode").is_some() && value.get("now_enabled").is_none();
+                let mut state: Self = serde_json::from_value(value).ok()?;
+                // Existing persisted mode choices must survive this upgrade.
+                if legacy_choice {
+                    state.now_enabled = Some(true);
+                }
+                Some(state)
+            })
             .unwrap_or_default()
+    }
+
+    pub fn now_enabled(&self) -> bool {
+        self.now_enabled == Some(true)
+    }
+
+    pub fn initialize_now(&mut self) -> bool {
+        if self.now_enabled.is_some() {
+            return false;
+        }
+        self.now_enabled = Some(false);
+        self.left_mode = LeftMode::Tree;
+        self.now_collapsed
+            .extend(["changes", "pins"].map(str::to_owned));
+        true
+    }
+
+    pub fn choose_now(&mut self, enabled: bool) {
+        self.now_offer_answered = true;
+        self.now_enabled = Some(enabled);
+        self.left_mode = if enabled {
+            LeftMode::Now
+        } else {
+            LeftMode::Tree
+        };
+    }
+
+    pub fn offer_now(&self, relevant: bool) -> bool {
+        relevant && !self.now_enabled() && !self.now_offer_answered
     }
 
     /// Save from a background task. Saves are serialized and a snapshot older
@@ -304,11 +362,100 @@ pub fn age_label(then: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn second_brain_offer_is_contextual_and_answers_persist_per_vault() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = State::path(directory.path(), Path::new("/linked-vault"));
+        let mut state = State::default();
+        state.initialize_now();
+        assert!(!state.offer_now(false));
+        assert!(state.offer_now(true));
+        state.now_offer_answered = true;
+        state.save(&path).unwrap();
+        let mut reopened = State::load(&path);
+        assert!(!reopened.offer_now(true));
+        assert!(!reopened.now_enabled());
+        assert_eq!(reopened.left_mode, LeftMode::Tree);
+        reopened.choose_now(true);
+        reopened.save(&path).unwrap();
+        let enabled = State::load(&path);
+        assert!(enabled.now_enabled());
+        assert_eq!(enabled.left_mode, LeftMode::Now);
+        assert!(!enabled.offer_now(true));
+        assert!(
+            State::load(&State::path(directory.path(), Path::new("/another-vault")))
+                .offer_now(true)
+        );
+    }
+
+    #[test]
+    fn tree_is_the_default_for_every_vault_and_manual_choices_survive_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        for has_projects in [false, true] {
+            let root = directory
+                .path()
+                .join(if has_projects { "projects" } else { "notes" });
+            let path = State::path(directory.path(), &root);
+            let mut state = State::load(&path);
+            assert!(state.initialize_now());
+            assert!(!state.now_enabled());
+            assert_eq!(state.left_mode, LeftMode::Tree);
+            state.save(&path).unwrap();
+            let mut reopened = State::load(&path);
+            assert!(
+                !reopened.initialize_now(),
+                "discovery cannot reset a stored decision"
+            );
+            assert_eq!(reopened, state);
+            reopened.choose_now(true);
+            reopened.left_mode = LeftMode::Tree;
+            reopened.save(&path).unwrap();
+            let mut manual = State::load(&path);
+            assert!(!manual.initialize_now());
+            assert!(
+                manual.now_enabled(),
+                "manual enable wins in a plain note vault"
+            );
+            assert_eq!(
+                manual.left_mode,
+                LeftMode::Tree,
+                "manual Tree selection is retained"
+            );
+            manual.choose_now(false);
+            manual.save(&path).unwrap();
+            let mut disabled = State::load(&path);
+            assert!(!disabled.initialize_now());
+            assert!(
+                !disabled.now_enabled(),
+                "manual disable wins even after discovering projects"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_persisted_mode_selection_is_not_overwritten_by_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.json");
+        for mode in ["tree", "now"] {
+            std::fs::write(&path, format!("{{\"left_mode\":\"{mode}\"}}")).unwrap();
+            let mut state = State::load(&path);
+            assert!(!state.initialize_now());
+            assert!(state.now_enabled());
+            assert_eq!(
+                state.left_mode,
+                if mode == "tree" {
+                    LeftMode::Tree
+                } else {
+                    LeftMode::Now
+                }
+            );
+        }
+    }
 
     const DAY: u64 = 86_400;
 
     #[test]
-    fn sidebar_is_only_the_tree_and_its_toggle_spares_the_right_panel() {
+    fn tree_mode_is_only_the_tree_and_its_toggle_spares_the_right_panel() {
         assert_eq!(LEFT_SECTIONS, [Section::Folders]);
         let mut state = State {
             properties_collapsed: true,

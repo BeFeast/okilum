@@ -23,14 +23,14 @@ class PublicationBoundary(unittest.TestCase):
                              previous_build=None, previous_source=None, items=[]))
         patcher.start(); self.addCleanup(patcher.stop)
 
-    def test_only_successful_current_main_build_is_eligible(self):
+    def test_only_successful_trusted_main_snapshot_is_eligible(self):
         import publication
         run = {'workflow_id': 'windows-diagnostic.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'push',
                'status': 'success', 'commit_sha': 'latest'}
         self.assertTrue(publication.eligible(run, 'windows', 'latest'))
         self.assertTrue(publication.eligible({**run, 'trigger_event': 'schedule'}, 'windows', 'latest'))
-        self.assertFalse(publication.eligible(run, 'windows', 'newer'))
+        self.assertTrue(publication.eligible(run, 'windows', 'newer'))
         for state in ['running', 'cancelled', 'failure']:
             self.assertFalse(publication.eligible({**run, 'status': state}, 'windows', 'latest'))
         for changes in [{'prettyref': 'feature'}, {'trigger_event': 'pull_request'},
@@ -38,10 +38,10 @@ class PublicationBoundary(unittest.TestCase):
             with self.assertRaises(ValueError):
                 publication.eligible({**run, **changes}, 'windows', 'latest')
 
-    def test_cancelled_or_superseded_run_never_downloads_or_publishes(self):
+    def test_cancelled_or_failed_run_never_downloads_or_publishes(self):
         import publication
         from unittest.mock import Mock
-        for state, sha in [('cancelled', 'latest'), ('success', 'old')]:
+        for state, sha in [('cancelled', 'latest'), ('failure', 'old'), ('skipped', 'old')]:
             api = Mock()
             api.call.side_effect = [{'status': state, 'commit_sha': sha, 'trigger_event': 'push'}, {'commit': {'id': 'latest'}}]
             with patch.object(publication.subprocess, 'run') as launch:
@@ -111,7 +111,7 @@ class PublicationBoundary(unittest.TestCase):
             # Manual builds record the commit they built (#1040).
             archive.writestr('release-source.txt', 'f' * 40)
         for platform in ['macos', 'windows']:
-            for event in ['schedule', 'workflow_dispatch']:
+            for event in ['push', 'schedule', 'workflow_dispatch']:
                 run = {'workflow_id': publication.WORKFLOWS[platform], 'prettyref': 'main',
                        'is_fork_pull_request': False, 'trigger_event': event,
                        'status': 'success', 'commit_sha': 'f' * 40, 'index_in_repo': 42}

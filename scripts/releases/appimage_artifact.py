@@ -18,7 +18,7 @@ spec.loader.exec_module(transport)
 REPOSITORY = 'BeFeast/okilum'
 WORKFLOW = '.github/workflows/forgejo-linux.yml'
 IMAGE = 'Okilum-x86_64.AppImage'
-SMOKE = 'Verify unchanged AppImage on clean Ubuntu and Fedora'
+SMOKE = 'Verify AppImage package'
 
 
 def accepted(run, jobs, source):

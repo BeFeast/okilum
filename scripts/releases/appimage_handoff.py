@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
 import zipfile
 
 import appimage_artifact as artifact
@@ -192,13 +193,31 @@ def main():
     parser.add_argument('--source')
     parser.add_argument('--directory', type=Path)
     parser.add_argument('--run', type=int)
+    parser.add_argument('--wait-seconds', type=int, default=0)
     args = parser.parse_args()
     if args.command == 'stage':
         if not args.source or args.directory is None:
             parser.error('stage requires --source and --directory')
         api = artifact.transport.GitHub()
-        accepted_bytes = stage_result(api, args.source, args.directory,
-                                      lambda aid: artifact.download(api.token, aid))
+        if not 0 <= args.wait_seconds <= 5400:
+            raise ValueError('Invalid bounded artifact wait')
+        deadline = time.monotonic() + args.wait_seconds
+        while True:
+            try:
+                stage(api, args.source, args.directory, lambda aid: artifact.download(api.token, aid))
+                accepted_bytes = True
+                break
+            except ReuseUnavailable as error:
+                if time.monotonic() >= deadline:
+                    if args.wait_seconds:
+                        raise ValueError('Beta artifact did not become available within its build budget') from error
+                    accepted_bytes = False
+                    break
+                # Only original producer availability is polled. Identity,
+                # transport, failed smoke and malformed evidence still fail closed.
+                if str(error) not in ('producer-not-completed', 'no-exact-main-producer'):
+                    raise
+                time.sleep(min(20, max(0, deadline - time.monotonic())))
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'accepted={str(accepted_bytes).lower()}\n')
     elif args.command == 'dispatch':

@@ -1,7 +1,7 @@
 name: T3 nightly contract (report only)
 'on':
   schedule:
-    - cron: '23 3 * * *'
+    - cron: '5 22 * * 2,6'
   workflow_dispatch:
 permissions:
   contents: read

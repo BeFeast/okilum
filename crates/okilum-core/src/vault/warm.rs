@@ -624,6 +624,11 @@ fn relative(path: &str) -> bool {
 }
 
 impl Snapshot {
+    /// Count only prepared note-link edges; no source parsing or filesystem IO.
+    pub fn has_note_links(&self, minimum: usize) -> bool {
+        self.links.values().flatten().take(minimum).count() == minimum
+    }
+
     /// Prepared outgoing identities, including ambiguous/property/Markdown
     /// targets. Scheduling this set never reads canonical files.
     pub fn linked_paths_from(&self, source: &str) -> Vec<String> {

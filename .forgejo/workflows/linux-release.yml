@@ -1,17 +1,7 @@
 name: linux-release
 on:
-  # Coalesce main updates; workflow_dispatch is the immediate build-now path.
-  schedule:
-    - cron: "*/30 * * * *"
-  pull_request:
-    paths:
-      - 'scripts/arch/**'
-      - 'packaging/**'
-      - 'scripts/releases/**'
-      - '.forgejo/workflows/linux-release.yml'
-      - '.github/workflows/forgejo-arch.yml'
-      - 'scripts/ci/github-pr.py'
-  # Build any PR branch manually when shared dependencies need release validation.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       appimage_only:
@@ -130,7 +120,7 @@ jobs:
           python -m unittest discover -s scripts/arch -p 'test_*.py'
           xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           name: arch-publication
           path: |
@@ -154,7 +144,7 @@ jobs:
     # Arch coalescing must not suppress later accepted AppImage bytes on the next tick.
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
-    timeout-minutes: 10
+    timeout-minutes: 95
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
@@ -167,7 +157,7 @@ jobs:
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           SOURCE: ${{ needs.select.outputs.source }}
-        run: python3 scripts/releases/appimage_handoff.py stage --source "$SOURCE" --directory dist/appimage-publication
+        run: python3 scripts/releases/appimage_handoff.py stage --source "$SOURCE" --directory dist/appimage-publication --wait-seconds 5400
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
         if: steps.reuse.outputs.accepted == 'true'
         with:
