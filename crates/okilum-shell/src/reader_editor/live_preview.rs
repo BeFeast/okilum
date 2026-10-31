@@ -58,6 +58,10 @@ pub(super) struct LivePreview {
     // An interrupted request requires honest cold work after resume/refusal.
     needs_compute: bool,
     accepted: Option<Arc<CachedProvider>>,
+    /// The rendered block Esc returned to (#1642).
+    pub(super) block_focus: Option<super::block_entry::BlockFocus>,
+    /// The block F2 or Enter opened, and where the caret was (#1642).
+    pub(super) opened_block: Option<super::block_entry::OpenedBlock>,
     colors: Cell<Option<ProjectionColors>>,
     code_font: std::cell::RefCell<SharedString>,
     syntax_theme: std::cell::RefCell<Option<Arc<gpui_component::highlighter::HighlightTheme>>>,
@@ -72,6 +76,16 @@ impl LivePreview {
             .as_ref()?
             .block_markdown(source)
             .map(Into::into)
+    }
+
+    /// The source ranges Live Preview draws as rendered blocks in `source`
+    /// when nothing touches them (#1642). Empty before the first
+    /// classification. Not for the typing path: it scans the block list.
+    pub(super) fn rendered_blocks(&self, source: &SourceSnapshot) -> Vec<std::ops::Range<usize>> {
+        self.accepted
+            .as_ref()
+            .map(|provider| provider.rendered_blocks(source))
+            .unwrap_or_default()
     }
 
     pub(super) fn new(
@@ -102,6 +116,8 @@ impl LivePreview {
             queued: None,
             needs_compute: false,
             accepted: None,
+            block_focus: None,
+            opened_block: None,
             colors: Cell::new(None),
             code_font: Default::default(),
             syntax_theme: Default::default(),
@@ -1626,6 +1642,247 @@ mod tests {
             visual.debug_bounds("reader-callout-body-0").is_some(),
             "the first callout unfolds, rendered"
         );
+    }
+
+    /// Live Preview on, caret at the note's end, blocks drawn and measured.
+    fn live_fixture<'a>(
+        cx: &'a mut TestAppContext,
+        note: &str,
+    ) -> (
+        Entity<Reader>,
+        Entity<EditorState>,
+        &'a mut VisualTestContext,
+        tempfile::TempDir,
+    ) {
+        let (reader, visual, directory) = fixture(cx, note);
+        visual.simulate_resize(size(px(1000.), px(700.)));
+        reader.update_in(visual, |r, window, cx| {
+            if !r.editing.as_ref().unwrap().live_preview.enabled {
+                r.toggle_live_preview(window, cx);
+            }
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let end = note.len();
+        input.update_in(visual, |input, window, cx| {
+            input.focus(window, cx);
+            input.set_selected_range(end..end, cx)
+        });
+        block_draw(visual);
+        (reader, input, visual, directory)
+    }
+
+    fn block_draw(visual: &mut VisualTestContext) {
+        for _ in 0..3 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        visual.run_until_parked();
+    }
+
+    fn press(visual: &mut VisualTestContext, at: Point<Pixels>, count: usize) {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at,
+            button: MouseButton::Left,
+            click_count: count,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_event(gpui::MouseUpEvent {
+            position: at,
+            button: MouseButton::Left,
+            click_count: count,
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    const TABLE_NOTE: &str = "Intro line above the table.\n\n\
+        | Name | Count |\n|---|---|\n| apple | 3 |\n| pear | 12 |\n\nText after the table.\n";
+
+    /// #1642: a click on a rendered table cell puts the caret in that cell's
+    /// source; Esc draws the table rendered again with a focus ring and the
+    /// editor open; Enter opens it again with its whole source selected and
+    /// inserts nothing; Esc returns the caret where Enter found it. Once the
+    /// caret moves, Enter is a new line again.
+    #[gpui::test]
+    fn table_cell_click_esc_and_enter_open_and_close_the_rendered_table(cx: &mut TestAppContext) {
+        let note = TABLE_NOTE;
+        let table = note.find("| Name").unwrap()..note.find("| 12 |").unwrap() + "| 12 |".len();
+        let (reader, input, visual, _directory) = live_fixture(cx, note);
+        // Positive control: the table is rendered, no focus ring yet.
+        let cell = visual
+            .debug_bounds("table-cell-2-1")
+            .expect("a rendered table cell");
+        assert!(visual.debug_bounds("live-block-focus").is_none());
+        press(visual, cell.center(), 1);
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.selected_range(), {
+                let at = note.find("12 |").unwrap();
+                at..at
+            });
+        });
+        assert!(
+            visual.debug_bounds("table-cell-2-1").is_none(),
+            "the table shows its source"
+        );
+
+        visual.simulate_keystrokes("escape");
+        block_draw(visual);
+        let after = table.end + 1;
+        input.read_with(visual, |input, _| {
+            assert_eq!(
+                input.selected_range(),
+                after..after,
+                "the line after the table"
+            );
+            assert_eq!(input.value().as_ref(), note);
+        });
+        assert!(
+            reader.read_with(visual, |r, _| r.editing.is_some()),
+            "Esc kept the editor"
+        );
+        assert!(
+            visual.debug_bounds("table-cell-2-1").is_some(),
+            "rendered again"
+        );
+        assert!(
+            visual.debug_bounds("live-block-focus").is_some(),
+            "with a focus ring"
+        );
+
+        visual.simulate_keystrokes("enter");
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.value().as_ref(), note, "Enter inserted nothing");
+            assert_eq!(
+                input.selected_range(),
+                table.clone(),
+                "the whole table is selected"
+            );
+            assert_eq!(input.cursor(), table.start);
+        });
+        assert!(visual.debug_bounds("table-cell-2-1").is_none());
+
+        visual.simulate_keystrokes("escape");
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(
+                input.selected_range(),
+                after..after,
+                "back where Enter found it"
+            );
+        });
+        assert!(visual.debug_bounds("live-block-focus").is_some());
+
+        // The caret moves: the focus is gone and Enter is the editor's.
+        visual.simulate_keystrokes("right enter");
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.value().len(), note.len() + 1, "a new line");
+        });
+        assert!(visual.debug_bounds("live-block-focus").is_none());
+    }
+
+    /// #1642: F2 next to a rendered image opens its source with the embed
+    /// selected; Esc puts the caret back. Away from any block F2 still
+    /// renames the note.
+    #[gpui::test]
+    fn f2_next_to_a_rendered_image_opens_its_source(cx: &mut TestAppContext) {
+        let note = "Intro\n\n![[missing-picture.png]]\n\nEnd of note\n";
+        let image = note.find("![[").unwrap()..note.find("]]").unwrap() + 2;
+        let (reader, input, visual, _directory) = live_fixture(cx, note);
+        let rendered =
+            |visual: &mut VisualTestContext| {
+                reader.read_with(visual, |r, cx| {
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .live_preview
+                        .concealed_text()
+                        .is_some()
+                        && r.editing.as_ref().unwrap().live_preview.rendered_blocks(
+                            &SourceSnapshot {
+                                stamp: input.read(cx).source_stamp(),
+                                text: note.into(),
+                            },
+                        ) == [image.clone()]
+                })
+            };
+        assert!(
+            rendered(visual),
+            "positive control: the image is a rendered block"
+        );
+        input.update(visual, |input, cx| input.set_selected_range(5..5, cx));
+        visual.simulate_keystrokes("f2");
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.selected_range(), image.clone());
+            assert_eq!(input.value().as_ref(), note);
+        });
+        #[cfg(any(unix, windows))]
+        assert!(
+            reader.read_with(visual, |r, _| r.renaming.is_none()),
+            "no rename"
+        );
+        visual.simulate_keystrokes("escape");
+        block_draw(visual);
+        input.read_with(visual, |input, _| assert_eq!(input.selected_range(), 5..5));
+
+        // Text between the caret and the image: F2 is Rename, as before.
+        let inside = note.find("of note").unwrap();
+        input.update(visual, |input, cx| {
+            input.set_selected_range(inside..inside, cx)
+        });
+        visual.simulate_keystrokes("f2");
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.selected_range(), inside..inside)
+        });
+        #[cfg(any(unix, windows))]
+        assert!(
+            reader.read_with(visual, |r, _| r.renaming.is_some()),
+            "F2 renames"
+        );
+    }
+
+    /// #1642: a double-click on a rendered table opens its source with the
+    /// whole table selected, not a word of it.
+    #[gpui::test]
+    fn double_click_on_a_rendered_table_selects_its_source(cx: &mut TestAppContext) {
+        let note = TABLE_NOTE;
+        let table = note.find("| Name").unwrap()..note.find("| 12 |").unwrap() + "| 12 |".len();
+        let (_reader, input, visual, _directory) = live_fixture(cx, note);
+        let cell = visual
+            .debug_bounds("table-cell-1-0")
+            .expect("a rendered table cell");
+        press(visual, cell.center(), 1);
+        block_draw(visual);
+        press(visual, cell.center(), 2);
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.selected_range(), table.clone());
+            assert_eq!(input.value().as_ref(), note);
+        });
+    }
+
+    /// #1642: a press on a rendered image lands on its embed's source, not on
+    /// the raw text that happens to lie under the pointer.
+    #[gpui::test]
+    fn a_press_on_a_rendered_image_lands_on_its_embed(cx: &mut TestAppContext) {
+        let note = "Intro\n\n![[a-missing-picture-with-a-long-name.png]]\n\nEnd\n";
+        let embed = note.find("![[").unwrap();
+        let (_reader, input, visual, _directory) = live_fixture(cx, note);
+        let image = visual
+            .debug_bounds("live-image-unavailable")
+            .expect("positive control: the image block is rendered");
+        // Right of the start, where the raw source under the pointer is the
+        // middle of the embed.
+        press(visual, point(image.center().x, image.center().y), 1);
+        block_draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(input.selected_range(), embed..embed);
+        });
     }
 
     /// #1621: Enter on the blank lines after a long CSS fence at the end of a
