@@ -294,19 +294,14 @@ mod tests {
         code.selection = 8..8;
         let routed = router::route(&board, &code).unwrap();
         assert_eq!(routed.route, router::Route::CodeBlockText);
-        assert_eq!(
-            routed.insert.as_deref(),
-            Some(plain.replace("\r\n", "\n").as_str())
-        );
+        // Literal routes retain transport bytes; document newlines normalize in the editor.
+        assert_eq!(routed.insert.as_deref(), Some(plain));
         assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
         let mut file = context(vault.path());
         file.note_rel = None;
         let routed = router::route(&board, &file).unwrap();
         assert_eq!(routed.route, router::Route::FileText);
-        assert_eq!(
-            routed.insert.as_deref(),
-            Some(plain.replace("\r\n", "\n").as_str())
-        );
+        assert_eq!(routed.insert.as_deref(), Some(plain));
         assert!(routed.saved_files.is_empty() && routed.follow_up.is_none());
         // Same actual offer becomes rich Markdown in an ordinary note.
         let routed = router::route(&board, &context(vault.path())).unwrap();
