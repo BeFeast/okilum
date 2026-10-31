@@ -665,21 +665,37 @@ fn original_image(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
 fn expand_image(image: Arc<gpui::Image>, name: String, window: &mut Window, cx: &mut App) {
     // Root restores focus on close; no timeline splice, scroll or anchor change.
     window.open_dialog(cx, move |dialog, window, _| {
-        let width = (f32::from(window.viewport_size().width) - 64.).max(160.);
-        let height = (f32::from(window.viewport_size().height) - 160.).max(120.);
+        let width = (f32::from(window.viewport_size().width) - 64.).max(1.);
+        let height = (f32::from(window.viewport_size().height) - 160.).max(1.);
+        // The dialog supplies 16 px content padding on each side. This ratio
+        // describes the finite viewport box, never the original image ratio.
+        let box_ratio = (width - 32.).max(1.) / height;
         dialog
-            .title(name.clone())
+            .title(div().w_full().truncate().pr_4().child(name.clone()))
             .width(px(width))
+            .margin_top(px(32.))
             .overlay_closable(true)
             .child(
                 div()
                     .debug_selector(|| "history-image-expanded".into())
                     .w_full()
                     .h(px(height))
+                    .min_w_0()
+                    .min_h_0()
+                    .flex_shrink_0()
+                    .overflow_hidden()
                     .child(
                         gpui::img(image.clone())
+                            .debug_selector(|| "history-image-expanded-original".into())
                             .w_full()
-                            .h_full()
+                            .h(px(height))
+                            .min_w_0()
+                            .min_h_0()
+                            .flex_shrink_0()
+                            // GPUI 0.3.3 otherwise injects the intrinsic aspect
+                            // ratio, which can grow a percentage-height image
+                            // past its container before Contain is applied.
+                            .aspect_ratio(box_ratio)
                             .object_fit(ObjectFit::Contain),
                     ),
             )
@@ -838,7 +854,9 @@ mod tests {
             let host = cx.new(|_| DialogHost { manager: view });
             Root::new(host, window, cx)
         });
-        visual.simulate_resize(size(px(760.), px(1000.)));
+        // A wide viewport reproduces the native crop: the 4:3 original would
+        // become taller than the dialog box if its intrinsic ratio drove layout.
+        visual.simulate_resize(size(px(1280.), px(720.)));
         visual.run_until_parked();
         let view = root.read_with(visual, |root, cx| {
             root.view()
@@ -933,7 +951,28 @@ mod tests {
             visual.debug_bounds("dialog-layer").is_some(),
             "positive control: the real click opened the host's visible dialog layer"
         );
-        assert!(visual.debug_bounds("history-image-expanded").is_some());
+        let expanded_box = visual.debug_bounds("history-image-expanded").unwrap();
+        let expanded_original = visual
+            .debug_bounds("history-image-expanded-original")
+            .unwrap();
+        let window_size = visual.update(|window, _| window.viewport_size());
+        assert!(
+            expanded_box.size.width / expanded_box.size.height > 4. / 3.,
+            "positive control: intrinsic 4:3 sizing would exceed this wide containment box"
+        );
+        assert_eq!(expanded_original, expanded_box,
+            "the original image's layout box must match its finite container before Contain fits the pixels");
+        assert_eq!(
+            expanded_original.size.height,
+            window_size.height - px(160.),
+            "intrinsic image ratio must not inflate the explicit viewport box height"
+        );
+        assert!(expanded_original.left() >= px(0.) && expanded_original.right() <= window_size.width,
+            "the full original image box stays inside the horizontal viewport: {expanded_original:?}");
+        assert!(
+            expanded_original.top() >= px(0.) && expanded_original.bottom() <= window_size.height,
+            "the full original image box stays inside the vertical viewport: {expanded_original:?}"
+        );
         visual.update(|window, cx| window.close_dialog(cx));
         visual.run_until_parked();
         draw_history(visual);
