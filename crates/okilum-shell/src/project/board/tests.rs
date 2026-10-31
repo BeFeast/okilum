@@ -923,6 +923,26 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     visual.simulate_resize(size(px(1000.), px(1000.)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-delivery").is_some());
+    assert!(visual.debug_bounds("board-delivery-details").is_some());
+    assert!(visual.debug_bounds("board-delivery-line").is_some());
+    assert!(visual.debug_bounds("board-delivery-details-line").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Mac-Stable").is_some());
+    assert!(visual
+        .debug_bounds("board-delivery-details-problem-Mac-Stable")
+        .is_some());
+    for id in [
+        "board-delivery-details-Mac-Stable",
+        "board-delivery-details-Mac-Beta",
+        "board-delivery-details-Windows-Stable",
+        "board-delivery-details-Windows-Beta",
+        "board-delivery-details-Linux-Stable",
+        "board-delivery-details-Linux-Beta",
+    ] {
+        assert!(
+            visual.debug_bounds(id).is_some(),
+            "expanded card control: {id}"
+        );
+    }
     for id in [
         "board-delivery-Mac-Stable",
         "board-delivery-Mac-Beta",
@@ -938,7 +958,10 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         "board-delivery-Windows-Sprint",
         "board-delivery-Linux-Sprint",
     ] {
-        assert!(visual.debug_bounds(id).is_none(), "Sprint was removed: {id}");
+        assert!(
+            visual.debug_bounds(id).is_none(),
+            "Sprint was removed: {id}"
+        );
     }
     assert!(visual.debug_bounds("board-refresh").is_none());
     assert!(visual.debug_bounds("board-plan").is_none());
@@ -1040,4 +1063,105 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
             .iter()
             .any(|s| s.number == 99999));
     });
+}
+
+#[gpui::test]
+fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext) {
+    use okilum_t3::board::delivery as d;
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let binding = Binding::parse(include_str!(
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+    ))
+    .unwrap();
+    let mut feeds = Vec::new();
+    let mut builds = Vec::new();
+    for channel in [d::Channel::Stable, d::Channel::Beta] {
+        for platform in d::Platform::ALL {
+            feeds.push(d::Feed {
+                platform,
+                channel,
+                url: "https://updates.example/feed.json".into(),
+                format: d::Format::Receipt,
+                metadata: None,
+                artifact_name: None,
+                next: String::new(),
+                blocker: None,
+            });
+            builds.push((
+                (platform, channel),
+                Ok(Some(d::Build {
+                    platform,
+                    channel,
+                    build: "22231".into(),
+                    source: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    artifact: "https://updates.example/build.zip".into(),
+                    published_at: Some("2026-10-31T12:00:00Z".into()),
+                    release_url: Some("https://updates.example/releases/22231".into()),
+                })),
+            ));
+        }
+    }
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| {
+            let mut board = Board::with_reader(
+                area.path().into(),
+                okilum_t3::board::read_issues,
+                window,
+                cx,
+            );
+            board.binding = Some(binding);
+            board.delivery.accept(
+                d::Update {
+                    config: Ok(Some(d::Config {
+                        version: 1,
+                        feeds,
+                        evidence: vec![],
+                    })),
+                    feeds: builds,
+                    artifacts: vec![(
+                        "https://updates.example/build.zip".into(),
+                        Ok(d::Artifact { available: true }),
+                    )],
+                    ci: vec![],
+                    evidence: vec![],
+                },
+                now(),
+            );
+            board
+        });
+        Root::new(board, window, cx)
+    });
+    visual.simulate_resize(size(px(800.), px(600.)));
+    visual.run_until_parked();
+    let line = visual
+        .debug_bounds("board-delivery-line")
+        .expect("delivery line");
+    let mut row_y = None;
+    for id in [
+        "board-delivery-Mac-Stable",
+        "board-delivery-Windows-Stable",
+        "board-delivery-Linux-Stable",
+        "board-delivery-Mac-Beta",
+        "board-delivery-Windows-Beta",
+        "board-delivery-Linux-Beta",
+    ] {
+        let button = visual.debug_bounds(id).expect("publication control");
+        assert_eq!(
+            *row_y.get_or_insert(button.origin.y),
+            button.origin.y,
+            "same row: {id}"
+        );
+        assert!(
+            button.right() <= line.right(),
+            "visible without horizontal scrolling at normal Board width: {id}"
+        );
+    }
+    for id in [
+        "board-delivery-Mac-Sprint",
+        "board-delivery-Windows-Sprint",
+        "board-delivery-Linux-Sprint",
+    ] {
+        assert!(visual.debug_bounds(id).is_none(), "Sprint remains absent");
+    }
 }
