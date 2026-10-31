@@ -211,31 +211,6 @@ impl Feed {
                 );
                 row = row.child(
                     div()
-                        .id(SharedString::from(format!(
-                            "history-image-{position}-{index}"
-                        )))
-                        .debug_selector(move || format!("history-image-{position}-{index}"))
-                        .w_full()
-                        .aspect_ratio(4. / 3.)
-                        .min_w_0()
-                        .rounded_md()
-                        .border_1()
-                        .overflow_hidden()
-                        .when(clickable, |tile| tile.cursor_pointer())
-                        .child(tile)
-                        .on_click(move |_, window, cx| {
-                            request(
-                                &parent,
-                                position,
-                                reference.clone(),
-                                expected_origin.clone(),
-                                history_lease.clone(),
-                                Action::Expand,
-                                false,
-                                window,
-                                cx,
-                            )
-                        })
                         .on_children_prepainted(move |bounds, window, cx| {
                             // Measurement alone must never perform a transfer.
                             let viewport = window.content_mask().bounds;
@@ -263,6 +238,31 @@ impl Feed {
                                     cx,
                                 )
                             });
+                        })
+                        .id(SharedString::from(format!(
+                            "history-image-{position}-{index}"
+                        )))
+                        .debug_selector(move || format!("history-image-{position}-{index}"))
+                        .w_full()
+                        .aspect_ratio(4. / 3.)
+                        .min_w_0()
+                        .rounded_md()
+                        .border_1()
+                        .overflow_hidden()
+                        .when(clickable, |tile| tile.cursor_pointer())
+                        .child(tile)
+                        .on_click(move |_, window, cx| {
+                            request(
+                                &parent,
+                                position,
+                                reference.clone(),
+                                expected_origin.clone(),
+                                history_lease.clone(),
+                                Action::Expand,
+                                false,
+                                window,
+                                cx,
+                            )
                         }),
                 );
             } else {
@@ -837,7 +837,7 @@ mod tests {
             .is_none());
         view.update(visual, |view, cx| {
             view.native.set_detail_test_client(client(&environment));
-            view.feed.update(cx, |feed, cx| cx.notify());
+            view.feed.update(cx, |_, cx| cx.notify());
         });
         visual.run_until_parked();
         assert_eq!(

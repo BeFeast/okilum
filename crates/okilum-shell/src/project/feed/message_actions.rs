@@ -109,7 +109,7 @@ impl Feed {
         changed
     }
 
-    fn copy_text(&self, position: u64) -> Option<SharedString> {
+    pub(super) fn copy_text(&self, position: u64) -> Option<SharedString> {
         let message = self.messages.get(&position)?;
         if message.kind != MessageKind::Chat || !message.complete_text {
             return None;
