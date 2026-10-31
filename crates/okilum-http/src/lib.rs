@@ -1,4 +1,4 @@
-//! Public Feedback HTTP policy with Windows OS trust and system proxy support.
+//! Explicit per-endpoint HTTP policy with Windows OS trust and system proxy support.
 //! Windows uses SChannel's OS trust policy, never a verification bypass.
 use anyhow::{Context, Result};
 use reqwest::blocking::{Client, ClientBuilder};
@@ -38,6 +38,18 @@ pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<Clien
 
 /// Async uploads preserve an early HTTP rejection while the body is streaming.
 pub fn async_client(endpoint: &str, version: &str, timeout: Duration) -> Result<reqwest::Client> {
+    async_builder(endpoint, version, timeout)?
+        .build()
+        .context("Build HTTP client")
+}
+
+/// Per-source async policy. Callers may tighten timeouts without changing TLS,
+/// proxy discovery or redirect guards. Rebuild to refresh Windows PAC settings.
+pub fn async_builder(
+    endpoint: &str,
+    version: &str,
+    timeout: Duration,
+) -> Result<reqwest::ClientBuilder> {
     let endpoint = url::Url::parse(endpoint).context("Invalid HTTP endpoint")?;
     anyhow::ensure!(
         matches!(endpoint.scheme(), "https" | "http"),
@@ -57,7 +69,7 @@ pub fn async_client(endpoint: &str, version: &str, timeout: Duration) -> Result<
             windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
         }
     };
-    builder.build().context("Build HTTP client")
+    Ok(builder)
 }
 
 /// Classifies actual client/stream errors, never HTTP/application rejection.

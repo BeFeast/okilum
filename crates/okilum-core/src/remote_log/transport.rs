@@ -91,11 +91,19 @@ impl Kibana {
                 .enable_all()
                 .build()?,
         );
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(10))
-            .build()?;
+        let client = okilum_http::async_builder(
+            endpoint.as_str(),
+            env!("CARGO_PKG_VERSION"),
+            Duration::from_secs(10),
+        )
+        // Proxy/PAC diagnostics can contain URLs: keep source details and
+        // credentials out of the UI error chain.
+        .map_err(|error| anyhow::anyhow!("Kibana network policy: {}", okilum_http::reason(&error)))?
+        .connect_timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| {
+            anyhow::anyhow!("Kibana HTTP client: {}", okilum_http::reason(&error.into()))
+        })?;
         Ok(Self {
             client,
             endpoint,
@@ -172,6 +180,7 @@ impl Kibana {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u16>().ok());
             match status {
+                407 => return Err(anyhow::anyhow!(Rejected(okilum_http::http_reason(407)))),
                 401 | 403 => return Err(anyhow::anyhow!(Rejected(format!("Kibana authentication or permission denied (HTTP {status}); update this source's OS-stored key")))),
                 300..=399 => bail!("Kibana redirected the request; credentials were not forwarded. Import the final HTTPS Discover URL"),
                 400 => return Err(anyhow::anyhow!(Rejected("Kibana rejected the query or internal route (HTTP 400); this Kibana/Elasticsearch capability may be unsupported".into()))),
@@ -653,6 +662,7 @@ mod tests {
                 reader.read_line(&mut first).unwrap();
                 let mut size = 0;
                 let mut auth = false;
+                let mut user_agent = false;
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
@@ -663,6 +673,9 @@ mod tests {
                     if let Some(value) = lower.strip_prefix("content-length:") {
                         size = value.trim().parse().unwrap();
                     }
+                    if lower.starts_with("user-agent: okilum/") {
+                        user_agent = true;
+                    }
                     if lower.starts_with("authorization:") {
                         auth = line.contains("ApiKey test-secret");
                     }
@@ -670,6 +683,10 @@ mod tests {
                 assert!(
                     auth,
                     "positive control: actual HTTP request contains the key header"
+                );
+                assert!(
+                    user_agent,
+                    "production per-endpoint client sends an explicit User-Agent"
                 );
                 let mut body = vec![0; size];
                 reader.read_exact(&mut body).unwrap();
@@ -801,7 +818,7 @@ mod tests {
     }
     #[test]
     fn errors_and_redirects_are_distinct_without_forwarding_credentials() {
-        for status in [302, 400, 401] {
+        for status in [302, 400, 401, 407] {
             let (endpoint, calls, thread) = server(vec![Reply {
                 status,
                 backend: None,
@@ -815,6 +832,9 @@ mod tests {
             assert!(match status {
                 302 => error.contains("not forwarded"),
                 400 => error.contains("unsupported"),
+                407 =>
+                    error.contains("proxy requires authentication")
+                        && error.contains("not supported"),
                 _ => error.contains("authentication"),
             });
             thread.join().unwrap();
