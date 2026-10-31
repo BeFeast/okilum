@@ -20,6 +20,7 @@ pub mod export;
 pub mod facets;
 #[cfg(any(unix, windows))]
 pub mod file_editor;
+pub mod folder_registration;
 #[cfg(all(unix, feature = "brain"))]
 pub mod goal_criteria;
 pub mod ir;
