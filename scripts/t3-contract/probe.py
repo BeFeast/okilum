@@ -75,6 +75,7 @@ def run_private(argv, *, env, timeout, input_data=None):
                                    stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
                                    stdout=out, stderr=err,
                                    start_new_session=True)
+        primary = None
         try:
             try:
                 process.communicate(input=input_data, timeout=timeout)
@@ -88,23 +89,47 @@ def run_private(argv, *, env, timeout, input_data=None):
             if len(data) > MAX_OUTPUT:
                 raise ProbeFailure('subprocess', 'oversized_output')
             return data
+        except BaseException as error:
+            primary = error
+            raise
         finally:
+            cleanup_failed = False
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                pass
-            # Kill group even when its leader has already exited.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=5)
-            if process.stdin is not None:
-                process.stdin.close()
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    cleanup_failed = True
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass  # Escalate to SIGKILL below; not itself a cleanup failure.
+                except Exception:
+                    cleanup_failed = True
+                # Kill group even when its leader has already exited.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    cleanup_failed = True
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    cleanup_failed = True
+            finally:
+                # An uninterruptible leader can outlive the reap deadline. Closing
+                # our credential pipe must not depend on successful reaping.
+                if process.stdin is not None:
+                    try:
+                        process.stdin.close()
+                    except Exception:
+                        cleanup_failed = True
+            # Preserve the original bounded timeout/nonzero/oversize diagnosis.
+            # An otherwise successful child must not hide a failed cleanup either.
+            if cleanup_failed and primary is None:
+                raise ProbeFailure('subprocess', 'cleanup_failed') from None
 
 
 def atomic_receipt(path, receipt):

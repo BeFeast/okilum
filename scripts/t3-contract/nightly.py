@@ -26,6 +26,13 @@ UPSTREAM = 'pingdotgg/t3code'
 MARKER = '<!-- okilum-t3-nightly-contract -->'
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_PROOFS = ('pair', 'subscribe_thread', 'resume_thread', 'subscribe_shell', 'dispatch_command')
+# Only fixed labels emitted by examples/nightly_contract.rs may enter reports.
+NATIVE_STAGES = frozenset({
+    'preflight', 'descriptor', 'native_pair', 'scratch_identity', 'initial_subscribe',
+    'initial_snapshot_decode_and_completion', 'resume_subscribe',
+    'resume_decode_and_completion', 'shell_subscribe_and_completion',
+    'scratch_dispatch', 'dispatch_snapshot_verification',
+})
 
 
 def request(url, *, data=None, token=None, method=None):
@@ -149,12 +156,7 @@ def native_roundtrip(binary, base, env, origin, probe):
         except ValueError:
             failure = {}
         stage = failure.get('stage') if isinstance(failure, dict) else None
-        if stage not in {'hosted_preflight', 'native_pair', 'initial_subscribe',
-                         'initial_snapshot_decode_and_completion', 'resume_subscribe',
-                         'resume_decode_and_completion', 'shell_subscribe',
-                         'shell_decode_and_completion', 'dispatch_command', 'dispatch_receipt',
-                         'descriptor', 'scratch_identity', 'shell_subscribe_and_completion',
-                         'scratch_dispatch', 'dispatch_snapshot_verification'}:
+        if not isinstance(stage, str) or stage not in NATIVE_STAGES:
             stage = 'unclassified_client_exit'
         raise ValueError('Real okilum-t3 pair/snapshot/resume probe failed at '
                          + stage + ' (exit ' + str(completed.returncode) + ')')
