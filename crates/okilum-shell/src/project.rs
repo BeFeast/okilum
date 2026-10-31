@@ -17,6 +17,8 @@ mod chat_ui;
 mod composer;
 mod connections;
 mod desktop;
+#[cfg(target_os = "linux")]
+mod drafts;
 mod executors;
 #[cfg(target_os = "linux")]
 mod feed;
@@ -385,6 +387,10 @@ impl ProjectView {
     }
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        if !active {
+            self.draft_flush(cx);
+        }
         self.active = active;
         if !active {
             self.opening_t3 = false;
@@ -425,6 +431,8 @@ impl ProjectView {
         match result {
             Ok((env, gateway)) => {
                 #[cfg(target_os = "linux")]
+                self.draft_flush(cx);
+                #[cfg(target_os = "linux")]
                 {
                     self.set_threads_active(false, window, cx);
                     self.threads.reset(cx);
@@ -443,6 +451,8 @@ impl ProjectView {
                 self.feed.update(cx, |feed, cx| feed.reset(cx));
                 self.last_poll_status = None;
                 self.identity = None;
+                #[cfg(target_os = "linux")]
+                self.draft_prepare_identity(window, cx);
                 self.model_target = None;
                 self.model_open = false;
                 self.models = None;
@@ -460,6 +470,8 @@ impl ProjectView {
     }
 
     fn clear_connection(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        self.draft_flush(cx);
         self.generation = self.generation.wrapping_add(1);
         self.polling = false;
         self.busy = false;
@@ -764,6 +776,10 @@ impl ProjectView {
     }
 
     fn can_send(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if !self.draft_is_sendable() {
+            return false;
+        }
         #[cfg(target_os = "linux")]
         if self.native.active() {
             return !self.native.deleted() && self.native.client_can_operate();
@@ -1376,6 +1392,8 @@ impl ProjectView {
                                     cx.listener(|this, _, window, cx| this.send(None, window, cx)),
                                 ),
                         ).into_any_element();
+                #[cfg(target_os = "linux")]
+                let view = view.child(self.render_draft_attachments(cx));
                 view.child(div().debug_selector(|| "project-chat-composer".into()).child(composer))
             }).into_any_element()
     }

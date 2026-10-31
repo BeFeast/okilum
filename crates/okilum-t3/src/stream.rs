@@ -10,6 +10,7 @@
 mod auth;
 mod manager;
 mod protocol;
+pub mod thread_create;
 pub use manager::ManagerThread;
 pub mod shell;
 

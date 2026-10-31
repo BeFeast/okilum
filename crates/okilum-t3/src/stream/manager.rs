@@ -26,7 +26,12 @@ impl NativeClient {
         Ok(identity)
     }
 
-    fn manager_rpc(&self, method: &str, payload: Value, snapshot: bool) -> StreamResult<Value> {
+    pub(super) fn manager_rpc(
+        &self,
+        method: &str,
+        payload: Value,
+        snapshot: bool,
+    ) -> StreamResult<Value> {
         self.token.validate(&self.environment, crate::unix_now())?;
         let (socket, cancel) = self.open_socket()?;
         let mut rpc = ThreadSubscription {
