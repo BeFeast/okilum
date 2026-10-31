@@ -59,6 +59,10 @@ class EphemeralSigning(unittest.TestCase):
                 m.setup(env);directory=m.root(env)
                 self.assertEqual(state['search'], ['/original/login.keychain-db'])
                 self.assertFalse((directory/'identity.p12').exists())
+                settings = [a for a in commands if a[:2] == ['security', 'set-keychain-settings']]
+                self.assertEqual(settings, [['security', 'set-keychain-settings', '-lut', '7200', str(directory/'shipping.keychain-db')]])
+                self.assertLess(commands.index(settings[0]), next(i for i,a in enumerate(commands) if a[:2] == ['security','unlock-keychain']))
+
                 self.assertIn('OKILUM_SIGNING_KEYCHAIN='+str(directory/'shipping.keychain-db'), Path(env['GITHUB_ENV']).read_text())
                 for argv in commands:
                     if 'store-credentials' in argv:

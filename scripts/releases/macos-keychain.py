@@ -93,6 +93,10 @@ def setup(env):
     call(['security', 'create-keychain', '-p', password, str(keychain)])
     # create-keychain can add itself to the user list; immediately restore baseline.
     restore(baseline['search'], baseline['default'][0])
+    # A fresh keychain may auto-lock while Cargo builds. Scope a two-hour
+    # timeout to this disposable job keychain (shipping job itself is 90 min),
+    # never the user's login/default keychain. Keep normal lock-on-sleep.
+    call(['security', 'set-keychain-settings', '-lut', '7200', str(keychain)])
     call(['security', 'unlock-keychain', '-p', password, str(keychain)])
     call(['security', 'import', str(p12), '-k', str(keychain), '-P',
           env['OKILUM_MAC_DEVELOPER_ID_PASSWORD'], '-T', '/usr/bin/codesign'])
