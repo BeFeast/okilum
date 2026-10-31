@@ -90,7 +90,13 @@ pub(super) fn drop_target(
     .on_drop(move |drag: &TreeDrag, window, cx| {
         let _ = reader.update(cx, |r, cx| {
             if let Err(error) = r.move_to_folder(&drag.root, &drag.from, &folder, window, cx) {
-                eprintln!("Tree move failed: {error:#}");
+                r.trace_file_operation(
+                    "move",
+                    "failed",
+                    &drag.from,
+                    Some(&format!("{error:#}")),
+                    cx,
+                );
                 reader_toast::error(move_error(&error), window, cx);
             }
         });
@@ -107,7 +113,10 @@ pub(super) fn draggable(
     })
 }
 fn move_error(error: &anyhow::Error) -> &'static str {
-    let text = error.to_string();
+    let text = format!("{error:#}");
+    if let Some(message) = reader_diagnostics::cloud_file_operation_notice(&text) {
+        return message;
+    }
     if text.contains("exist") || text.contains("occupied") {
         "This folder already contains that name."
     } else if text.contains("unsaved") || text.contains("draft") {
@@ -182,13 +191,21 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if window.has_active_dialog(cx)
-            || from.is_empty()
-            || self.note_move_pending
+        let blocked = if from.is_empty() {
+            Some("Select a note or folder first.")
+        } else if window.has_active_dialog(cx) {
+            Some("Finish the open dialog before moving this item.")
+        } else if self.note_move_pending
             || self.trash_pending
             || self.renaming.is_some()
             || self.creation.is_some()
         {
+            Some("Finish the current file operation first.")
+        } else {
+            None
+        };
+        if let Some(reason) = blocked {
+            self.file_operation_blocked("move", &from, reason, cx);
             return;
         }
         let mut folders = vec![String::new()];
@@ -416,7 +433,11 @@ impl FolderPicker {
             }
         };
         let result = self.reader.update(cx, |r, cx| {
-            r.move_to_folder(&self.root, &from, folder, window, cx)
+            let result = r.move_to_folder(&self.root, &from, folder, window, cx);
+            if let Err(error) = &result {
+                r.trace_file_operation("move", "failed", &from, Some(&format!("{error:#}")), cx);
+            }
+            result
         });
         match result {
             Ok(Ok(())) => {
@@ -433,7 +454,6 @@ impl FolderPicker {
                 self.close(true, window, cx);
             }
             Ok(Err(error)) => {
-                eprintln!("Folder move failed: {error:#}");
                 self.error = Some(move_error(&error));
                 cx.notify();
             }
@@ -563,6 +583,42 @@ mod tests {
         let reader = entity.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
+            // Guards must be visible without starting a write. The remainder of
+            // this test positively exercises move, rename and exact Undo.
+            r.choose_move_folder(String::new(), window, cx);
+            assert_eq!(
+                r.link_notice.as_deref(),
+                Some("Select a note or folder first.")
+            );
+            assert!(r.move_picker.active.is_none());
+            r.note_move_pending = true;
+            r.link_notice = None;
+            r.choose_move_folder("Source/Note.md".into(), window, cx);
+            assert_eq!(
+                r.link_notice.as_deref(),
+                Some("Finish the current file operation first.")
+            );
+            assert!(r.move_picker.active.is_none());
+            r.link_notice = None;
+            r.begin_rename("Source/Note.md".into(), window, cx);
+            assert_eq!(
+                r.link_notice.as_deref(),
+                Some("Finish the current file operation first.")
+            );
+            assert!(r.renaming.is_none());
+            r.link_notice = None;
+            r.new_note(None, window, cx);
+            assert_eq!(
+                r.link_notice.as_deref(),
+                Some("Finish the current file operation first.")
+            );
+            assert!(r.creation.is_none());
+            r.note_move_pending = false;
+            r.link_notice = None;
+            assert_eq!(
+                std::fs::read(root.join("Source/Note.md")).unwrap(),
+                b"# Note\r\n"
+            );
             r.choose_move_folder("Source/Note.md".into(), window, cx);
             assert!(
                 !window.has_active_dialog(cx),
