@@ -1,4 +1,6 @@
-//! Native, read-only Tasks blocks. Index ownership stays with Reader snapshots.
+//! Native Tasks blocks. Rows are a projection; checking or rescheduling a task is an
+//! explicit, revision-checked source edit with Undo (#636). Index ownership stays
+//! with Reader snapshots.
 use super::*;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{checkbox::Checkbox, Disableable};

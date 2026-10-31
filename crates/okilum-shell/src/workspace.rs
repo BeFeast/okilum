@@ -1,5 +1,5 @@
 //! Ordinary application workspace selection. Backend roots are identities, never
-//! paths to open on this desktop. Only the separate read-only Reader uses local paths.
+//! paths to open on this desktop. Only the separate Reader uses local paths.
 use super::{brain, Opts, Reader};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;

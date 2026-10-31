@@ -1,8 +1,11 @@
-//! JSON-lines sidecar over stdin/stdout, plus an `index` subcommand.
+//! JSON-lines sidecar over stdin/stdout, plus `index`, `mcp` and `brain`
+//! subcommands.
 //!
 //! This is the reusable half of Okilum: any second client - a web view, an MCP
-//! adapter for agent tooling - reaches the vault through this frozen protocol
-//! rather than through a private API. Protocol: `docs/PROTOCOL.md`.
+//! adapter for agent tooling - reaches the vault through this frozen, read-only
+//! protocol rather than through a private API. Protocol: `docs/PROTOCOL.md`.
+//! `brain` is the separate `ai-brain/v1` service (`docs/ai-brain-service.md`);
+//! it is not part of the reader protocol and is handed its own arguments.
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -17,11 +20,17 @@ okilum-cored - JSON-lines sidecar over a Okilum vault
 
 USAGE:
     okilum-cored [index|mcp] --vault <PATH> [--index-dir <PATH>]
+    okilum-cored brain --brain-id <ID> --vault <PATH> --operational-dir <PATH>
+                       --records-dir <PATH> --listen <ADDR> [--managed-brain]
+                       [--config <PATH>] [--connector-config <PATH>]
 
     With no subcommand, serves the JSON-lines protocol on stdin/stdout.
     `index` builds the search index and exits.
     `mcp`   serves the Model Context Protocol (JSON-RPC over stdio) instead —
             the same operations as tools, for agent clients.
+    `brain` serves the separate ai-brain/v1 JSON-lines service on a loopback
+            TCP address (docs/ai-brain-service.md). It is not part of the
+            read-only reader protocol and takes its own options.
 
     --vault may also be given as OKILUM_VAULT, and --index-dir as
     OKILUM_INDEX_DIR. There is no default vault: guessing one is a good way to
