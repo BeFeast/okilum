@@ -26,7 +26,11 @@ the registry file is absent. A pointer alone is not proof of a running manager.
 Status refresh groups listings by configured T3 environment and project.
 
 Entering a project preserves the original tree, expansion, cursor, scroll and
-panel choices, then scopes the tree and opens the manager on the right. Switching
+panel choices, then scopes the tree and opens Board with the manager on the right. The scoped
+tree starts collapsed and remains available through the existing sidebar toggle.
+Background updates of the retained note do not leave Board; an explicit note
+selection does. Pending note preparation from before project selection cannot
+replace the newly selected project surface. Switching
 A to B keeps that original snapshot. Leaving from the window header restores it.
 Ctrl+Alt+P (Cmd+Alt+P on macOS) opens Projects or leaves the active project.
 Switching vaults invalidates pending discovery/activation work and the snapshot.
@@ -159,3 +163,12 @@ reachable address never displays “Signed in”.
 
 Regression tests use a loopback fake T3 server and isolated app state. They do not
 establish live pairing, WebKit interaction or Oleg's acceptance on a delivered build.
+
+### Project identity in the picker (#2099)
+
+Explicit T3/manifest icons and locally discovered logos remain first. With neither,
+the shared avatar uses Code, Knowledge or Hybrid artwork rather than an automatic
+letter tile; a deliberately configured monogram remains unchanged. Local logo
+discovery includes `.okilum/icon` (with supported image extensions), public favicons
+and a Tauri app icon, with the existing regular-file and size bounds. It makes no
+additional network request.

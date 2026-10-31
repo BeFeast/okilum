@@ -279,7 +279,12 @@ pub fn monogram_color(name: &str) -> IconColor {
 }
 
 /// A logo or app icon in the project's own folder, in this order.
-pub const LOGO_CANDIDATES: [&str; 12] = [
+pub const LOGO_CANDIDATES: [&str; 22] = [
+    ".okilum/icon.svg",
+    ".okilum/icon.png",
+    ".okilum/icon.webp",
+    ".okilum/icon.jpg",
+    ".okilum/icon",
     "icon.svg",
     "icon.png",
     "logo.svg",
@@ -292,6 +297,11 @@ pub const LOGO_CANDIDATES: [&str; 12] = [
     "assets/logo.png",
     "attachments/icon.png",
     "attachments/logo.png",
+    "public/favicon.svg",
+    "public/favicon.png",
+    "public/icon.svg",
+    "public/icon.png",
+    "src-tauri/icons/icon.png",
 ];
 /// Larger files are not icons; they are never decoded for a 16 px slot.
 const LOGO_MAX_BYTES: u64 = 2 * 1024 * 1024;
