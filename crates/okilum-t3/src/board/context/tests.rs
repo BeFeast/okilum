@@ -160,6 +160,8 @@ fn try_requires_the_exact_delivery_record_and_platform_and_never_uses_old_accept
             build: "100".into(),
             source: source.into(),
             artifact: evidence.artifact.clone(),
+            published_at: None,
+            release_url: None,
         }),
         state: "available".into(),
         evidence: Some(evidence),
