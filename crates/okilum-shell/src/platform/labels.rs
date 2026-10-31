@@ -61,6 +61,13 @@ impl Os {
         }
     }
 
+    pub const fn redo_move_to_trash(self) -> &'static str {
+        match self {
+            Os::Windows => "Redo Move to Recycle Bin",
+            _ => "Redo Move to Trash",
+        }
+    }
+
     /// «Reveal vault in Finder» and the like: the file-manager item for a
     /// named thing (#1512), worded as `reveal` words the plain item.
     pub fn reveal_named(self, item: &str) -> String {
@@ -229,6 +236,8 @@ mod tests {
     fn trash_names_the_platform_bin() {
         assert_eq!(Os::Windows.move_to_trash(), "Move to Recycle Bin");
         assert_eq!(Os::Windows.undo_move_to_trash(), "Undo Move to Recycle Bin");
+        assert_eq!(Os::Windows.redo_move_to_trash(), "Redo Move to Recycle Bin");
+        assert_eq!(Os::Mac.redo_move_to_trash(), "Redo Move to Trash");
         // Positive control: macOS and Linux keep Trash.
         assert_eq!(Os::Mac.move_to_trash(), "Move to Trash");
         assert_eq!(Os::Linux.trash(), "Trash");

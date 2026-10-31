@@ -9,6 +9,12 @@ use std::{
 
 #[cfg(test)]
 thread_local! { static FLAG_ERROR: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) }; }
+#[cfg(test)]
+thread_local! {
+    /// Regression injection (#1924): the volume reports "no Trash", exactly as
+    /// macOS does on NFS/SMB, so the whole reader flow can be driven on Linux.
+    pub(super) static INJECT_NO_VOLUME_TRASH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 fn publish(
     a: impl rustix::fd::AsFd,
     b: &std::ffi::OsStr,
@@ -97,6 +103,10 @@ pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
         "Choose a regular file or folder, not a symbolic link"
     );
     move_with_system(&root, relative, &source_parent, &source_name, || {
+        #[cfg(test)]
+        if INJECT_NO_VOLUME_TRASH.with(|v| v.get()) {
+            return Err(TrashUnavailable.into());
+        }
         system_trash(&source, &source_parent, &source_name)
     })
 }
@@ -116,8 +126,13 @@ fn move_with_system(
         }
         Err(error) => return Err(error),
     };
-    let metadata = fs::symlink_metadata(&location)
-        .context("The item reached Trash, but Undo is unavailable. Restore it from system Trash")?;
+    let metadata = fs::symlink_metadata(&location).with_context(|| {
+        if vault_trash.is_some() {
+            "The item reached .trash in the vault, but Undo is unavailable. Restore it from there"
+        } else {
+            "The item reached Trash, but Undo is unavailable. Restore it from system Trash"
+        }
+    })?;
     Ok(Trashed {
         root: root.to_owned(),
         relative: relative.to_owned(),
@@ -147,12 +162,22 @@ impl Trashed {
         self.vault_trash.is_some()
     }
 
+    /// Where the item is kept, as the user reads it in messages.
+    fn kept_in(&self) -> &'static str {
+        if self.vault_trash.is_some() {
+            ".trash in the vault"
+        } else {
+            "system Trash"
+        }
+    }
+
     pub fn restore(&self) -> Result<()> {
-        let metadata =
-            fs::symlink_metadata(&self.location).context("The item is no longer in Trash")?;
+        let kept_in = self.kept_in();
+        let metadata = fs::symlink_metadata(&self.location)
+            .with_context(|| format!("The item is no longer in {kept_in}"))?;
         ensure!(
             (metadata.dev(), metadata.ino()) == self.identity,
-            "The item in Trash changed; restore it through the system file manager"
+            "The item in {kept_in} changed; restore it through the system file manager"
         );
         let (destination, name) = parent(&self.root, &self.relative)?;
         let source_parent = if let Some(saved) = &self.vault_trash {
@@ -193,12 +218,57 @@ impl Trashed {
             "Trash source changed before Undo; retained"
         );
         publish(&source_parent, self.location.file_name().context("Missing Trash name")?, &destination, &name)
-            .context("Cannot Undo: the original path is occupied, unavailable, or on a different filesystem. The item remains in system Trash")?;
+            .with_context(|| format!("Cannot Undo: the original path is occupied, unavailable, or on a different filesystem. The item remains in {kept_in}"))?;
         if let Some(info) = &self.info {
             let _ = fs::remove_file(info);
         }
+        if self.vault_trash.is_some() {
+            // Best effort: the note is already back; leftovers are only empty folders.
+            if let Ok(relative) = self.location.strip_prefix(&self.root) {
+                let _ = prune_vault_trash_entry(&self.root, relative);
+            }
+        }
         Ok(())
     }
+}
+
+/// After Undo, the per-deletion `.trash/<id>/…` folders are empty scaffolding.
+/// Remove only empty directories, deepest first, never past the entry itself.
+/// Every step is a no-follow descriptor walk from the vault root, and
+/// `unlinkat(REMOVEDIR)` refuses anything non-empty, so a folder that gained
+/// content meanwhile (another item, a sync conflict) is always kept.
+fn prune_vault_trash_entry(root: &Path, relative: &Path) -> Result<()> {
+    let Some(folders) = relative.parent() else {
+        return Ok(());
+    };
+    let mut chain = vec![open(root, directory_flags(), Mode::empty())?];
+    let mut names = Vec::new();
+    for part in folders.components() {
+        ensure!(matches!(part, Component::Normal(_)), "Invalid Trash path");
+        let next = openat(
+            chain.last().unwrap(),
+            part.as_os_str(),
+            directory_flags(),
+            Mode::empty(),
+        )?;
+        chain.push(next);
+        names.push(part.as_os_str().to_owned());
+    }
+    // Keep `.trash` itself: it is the vault's Trash folder, as in Obsidian.
+    while names.len() > 1 {
+        let name = names.pop().unwrap();
+        chain.pop();
+        if rustix::fs::unlinkat(
+            chain.last().unwrap(),
+            name.as_os_str(),
+            rustix::fs::AtFlags::REMOVEDIR,
+        )
+        .is_err()
+        {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn directory_flags() -> OFlags {
@@ -464,8 +534,9 @@ fn system_trash(
     if let Err(error) = NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, Some(&mut resulting))
     {
-        // No permanent-delete or vault-local fallback (#1924). Only claim the
-        // note was kept when the original identity/revision remains at source.
+        // Never delete permanently. Only claim the note was kept when the
+        // original identity/revision remains at source; only the no-Trash
+        // signal below authorizes the vault `.trash` fallback (#1924).
         let retained = fs::symlink_metadata(source)?;
         ensure!(
             stamp(source, &retained) == stamp(source, &object),
@@ -741,6 +812,11 @@ mod vault_fallback_tests {
                 "Redo reused old Trash entry"
             );
             second.restore().unwrap();
+            assert_eq!(
+                fs::read_dir(root.join(".trash")).unwrap().count(),
+                0,
+                "Undo left empty per-deletion folders in vault .trash"
+            );
             let note = if folder {
                 source.join("note.md")
             } else {
@@ -749,6 +825,39 @@ mod vault_fallback_tests {
             assert_eq!(fs::read(note).unwrap(), b"original\r\n");
         }
     }
+    #[test]
+    fn undo_prunes_only_empty_entry_folders_and_messages_name_vault_trash() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("A/B")).unwrap();
+        fs::write(root.join("A/B/note.md"), b"note").unwrap();
+        fs::write(root.join("keep.md"), b"keep").unwrap();
+        let first = injected(&root, Path::new("A/B/note.md"), true).unwrap();
+        let other = injected(&root, Path::new("keep.md"), true).unwrap();
+        let entry = first.vault_trash.as_ref().unwrap().entry.clone();
+        // A file that appeared in the entry's folder meanwhile must survive.
+        fs::write(root.join(&entry).join("A/stray.txt"), b"stray").unwrap();
+        first.restore().unwrap();
+        assert_eq!(fs::read(root.join("A/B/note.md")).unwrap(), b"note");
+        assert!(!root.join(&entry).join("A/B").exists(), "empty folder kept");
+        assert_eq!(
+            fs::read(root.join(&entry).join("A/stray.txt")).unwrap(),
+            b"stray"
+        );
+        // The other deletion's entry is untouched by the first Undo.
+        assert_eq!(fs::read(&other.location).unwrap(), b"keep");
+        // Wording: a vault-trash failure never points at system Trash.
+        fs::write(root.join("keep.md"), b"occupied").unwrap();
+        let error = format!("{:#}", other.restore().unwrap_err());
+        assert!(error.contains(".trash in the vault"), "{error}");
+        assert!(!error.contains("system Trash"), "{error}");
+        assert_eq!(fs::read(&other.location).unwrap(), b"keep");
+        fs::remove_file(root.join("keep.md")).unwrap();
+        other.restore().unwrap();
+        assert_eq!(fs::read(root.join("keep.md")).unwrap(), b"keep");
+        assert!(root.join(".trash").is_dir(), "the vault Trash folder stays");
+    }
+
     #[test]
     fn symlinked_trash_and_replaced_root_or_entry_cannot_redirect_moves() {
         let temp = tempfile::tempdir().unwrap();

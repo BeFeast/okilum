@@ -6,6 +6,10 @@ use okilum_core::file_editor::FileEditor;
 #[derive(Default)]
 pub(super) struct UndoHistory {
     items: Vec<reader_trash_fs::Trashed>,
+    /// Items put back by Undo, newest last: (canonical vault root, path).
+    /// Redo moves them to Trash again through the same guarded path, so it
+    /// picks system Trash or the vault `.trash` exactly as the first move did.
+    redo: Vec<(PathBuf, String)>,
     generation: u64,
     visible: std::rc::Rc<std::cell::Cell<bool>>,
 }
@@ -59,19 +63,59 @@ fn trashed_title(relative: &Path) -> String {
         .unwrap_or_else(|| relative.display().to_string())
 }
 
+/// Whether the item went to the vault's own `.trash` because its volume has
+/// no system Trash (#1924). Windows always uses the Recycle Bin.
+fn in_vault_trash(trashed: &reader_trash_fs::Trashed) -> bool {
+    #[cfg(unix)]
+    return trashed.in_vault_trash();
+    #[cfg(not(unix))]
+    {
+        let _ = trashed;
+        false
+    }
+}
+
+/// The Undo toast. The vault fallback says why the item is not in system Trash.
+fn moved_message(vault_trash: bool) -> String {
+    if vault_trash {
+        "This disk has no system Trash. Moved to .trash in the vault.".to_owned()
+    } else {
+        format!("Moved to the {}", platform::labels::Os::CURRENT.trash())
+    }
+}
+
+/// The Redo toast, naming the Trash the item actually came back from.
+fn restored_message(vault_trash: bool) -> String {
+    if vault_trash {
+        "Restored from .trash in the vault".to_owned()
+    } else {
+        format!(
+            "Restored from the {}",
+            platform::labels::Os::CURRENT.trash()
+        )
+    }
+}
+
 /// Undo never restores into a vault other than the open one (#561). The item
-/// stays in system Trash and the user is told how to get it back.
+/// stays in Trash and the user is told how to get it back.
 fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
     let vault = trashed
         .root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| trashed.root.display().to_string());
-    format!(
-        "\u{201c}{}\u{201d} is in system Trash (from vault \u{201c}{vault}\u{201d}). \
-         Open that vault to Undo.",
-        trashed_title(&trashed.relative)
-    )
+    let title = trashed_title(&trashed.relative);
+    if in_vault_trash(trashed) {
+        format!(
+            "\u{201c}{title}\u{201d} is in .trash of vault \u{201c}{vault}\u{201d}. \
+             Open that vault to Undo."
+        )
+    } else {
+        format!(
+            "\u{201c}{title}\u{201d} is in system Trash (from vault \u{201c}{vault}\u{201d}). \
+             Open that vault to Undo."
+        )
+    }
 }
 
 impl Reader {
@@ -108,7 +152,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.delete_path_guarded(relative, None, window, cx);
+        self.delete_path_guarded(relative, None, false, window, cx);
     }
 
     /// Windows undoes a creation through `windows_files::undo_created`
@@ -121,13 +165,16 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.delete_path_guarded(item.relative.clone(), Some(item), window, cx);
+        self.delete_path_guarded(item.relative.clone(), Some(item), false, window, cx);
     }
 
+    /// `redo` re-applies a move the user already made and undid: it keeps the
+    /// rest of the Redo history, while a fresh move starts a new history.
     fn delete_path_guarded(
         &mut self,
         relative: String,
         creation: Option<Arc<reader_create::CreatedUndo>>,
+        redo: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -506,6 +553,9 @@ impl Reader {
                             this.editing = None;
                             this.show_empty_vault(window, cx);
                         }
+                        if !redo {
+                            this.trash_undo.redo.clear();
+                        }
                         this.trash_undo.items.push(trashed);
                         this.show_trash_toast(window, cx);
                     }
@@ -550,22 +600,11 @@ impl Reader {
         self.trash_undo.visible = visible.clone();
         let reader = cx.entity().downgrade();
         let announced = self.trash_undo.items.last().map(|t| t.root.clone());
-        #[cfg(unix)]
-        let vault_fallback = self
-            .trash_undo
-            .items
-            .last()
-            .is_some_and(|item| item.in_vault_trash());
-        #[cfg(not(unix))]
-        let vault_fallback = false;
+        let vault_fallback = self.trash_undo.items.last().is_some_and(in_vault_trash);
         window.push_notification(
             Notification::new()
                 .id::<TrashToast>()
-                .message(if vault_fallback {
-                    "This disk has no system Trash. Moved to .trash in the vault.".to_owned()
-                } else {
-                    format!("Moved to the {}", platform::labels::Os::CURRENT.trash())
-                })
+                .message(moved_message(vault_fallback))
                 .autohide(false)
                 .py_2()
                 .placement(Anchor::BottomRight)
@@ -661,6 +700,7 @@ impl Reader {
         };
         let restored_root = trashed.root.clone();
         let restored_path = trashed.relative.clone();
+        let restored_from_vault = in_vault_trash(&trashed);
         self.dismiss_trash_toast(window, cx);
         self.trash_pending = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -715,14 +755,11 @@ impl Reader {
                     Ok(_) => {
                         // `trash_pending` blocked every history change meanwhile.
                         this.trash_undo.items.remove(index);
-                        reader_toast::transient(
-                            format!(
-                                "Restored from the {}",
-                                platform::labels::Os::CURRENT.trash()
-                            ),
-                            window,
-                            cx,
-                        );
+                        this.trash_undo.redo.push((
+                            restored_root.clone(),
+                            restored_path.to_string_lossy().into_owned(),
+                        ));
+                        this.show_restored_toast(restored_from_vault, window, cx);
                     }
                     Err(error) => {
                         reader_toast::error(format!("Cannot Undo: {error:#}"), window, cx)
@@ -732,6 +769,90 @@ impl Reader {
             });
         })
         .detach();
+    }
+
+    /// «Restored» with a Redo glyph button. It shares the Trash toast slot, so
+    /// Escape, the timer and a new move replace it the same way.
+    fn show_restored_toast(
+        &mut self,
+        from_vault: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.trash_undo.visible.set(false);
+        self.trash_undo.generation = self.trash_undo.generation.wrapping_add(1);
+        let generation = self.trash_undo.generation;
+        let visible = std::rc::Rc::new(std::cell::Cell::new(true));
+        self.trash_undo.visible = visible.clone();
+        let reader = cx.entity().downgrade();
+        window.push_notification(
+            Notification::new()
+                .id::<TrashToast>()
+                .message(restored_message(from_vault))
+                .autohide(false)
+                .py_2()
+                .placement(Anchor::BottomRight)
+                .on_close(move |_, _| visible.set(false))
+                .action(move |_, _, cx| {
+                    let reader = reader.clone();
+                    reader_icon_button(
+                        "redo-trash",
+                        IconName::Redo2,
+                        reader_shortcuts::hint("Redo", &RedoTrash, cx),
+                        cx,
+                    )
+                    .debug_selector(|| "redo-trash".into())
+                    .on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| this.redo_last_trash(window, cx));
+                    })
+                }),
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(TRASH_TOAST_LIFETIME).await;
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
+                if this.trash_undo.generation == generation {
+                    this.dismiss_trash_toast(window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Redo the last undone move to Trash in the open vault. It runs the full
+    /// guarded move again (save, inventory, link confirmation), so the item
+    /// goes to system Trash, or to the vault `.trash` when the volume has none.
+    pub(super) fn redo_last_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.trash_pending || self.note_move_pending {
+            self.trash_blocked(
+                "",
+                "Another file operation is still running. Please wait",
+                window,
+                cx,
+            );
+            return;
+        }
+        let Some(index) = self
+            .trash_undo
+            .redo
+            .iter()
+            .rposition(|(root, _)| same_vault(root, &self.vault_root))
+        else {
+            self.trash_blocked(
+                "",
+                if self.trash_undo.redo.is_empty() {
+                    "There is no move to Trash to redo in this session"
+                } else {
+                    "Redo belongs to another vault. Open that vault to Redo"
+                },
+                window,
+                cx,
+            );
+            return;
+        };
+        let (_, relative) = self.trash_undo.redo.remove(index);
+        self.dismiss_trash_toast(window, cx);
+        self.delete_path_guarded(relative, None, true, window, cx);
     }
 
     fn explain_foreign_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1044,6 +1165,52 @@ mod tests {
     }
 
     #[test]
+    fn vault_trash_wording_names_where_the_item_is() {
+        assert_eq!(
+            moved_message(true),
+            "This disk has no system Trash. Moved to .trash in the vault."
+        );
+        assert_eq!(restored_message(true), "Restored from .trash in the vault");
+        // Positive control: the system path keeps the platform's own Trash name.
+        let trash = platform::labels::Os::CURRENT.trash();
+        assert_eq!(moved_message(false), format!("Moved to the {trash}"));
+        assert_eq!(
+            restored_message(false),
+            format!("Restored from the {trash}")
+        );
+        for text in [moved_message(true), restored_message(true)] {
+            assert!(!text.contains('/') && !text.contains(".md"), "{text}");
+        }
+    }
+
+    #[test]
+    fn foreign_vault_notice_for_vault_trash_names_the_vault_trash() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                reader_trash_fs::INJECT_NO_VOLUME_TRASH.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        reader_trash_fs::INJECT_NO_VOLUME_TRASH.with(|v| v.set(true));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Vault A");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("gone.md"), "x").unwrap();
+        let trashed = reader_trash_fs::move_to_trash(&root, Path::new("gone.md")).unwrap();
+        assert!(
+            trashed.in_vault_trash(),
+            "positive control: injected no-Trash"
+        );
+        assert_eq!(
+            foreign_vault_notice(&trashed),
+            "\u{201c}gone\u{201d} is in .trash of vault \u{201c}Vault A\u{201d}. \
+             Open that vault to Undo."
+        );
+        trashed.restore().unwrap();
+    }
+
+    #[test]
     fn trashed_title_is_the_tree_name_without_md() {
         for (relative, title) in [
             ("Release plan.md", "Release plan"),
@@ -1244,8 +1411,10 @@ mod tests {
                 !r.trash_pending,
                 "Undo must finish before checking restored bytes"
             );
-            assert!(
-                !r.trash_undo.visible.get(),
+            // The Undo toast was replaced by the Restored/Redo toast.
+            assert_eq!(
+                r.trash_undo.redo.len(),
+                1,
                 "The actual Undo button must dispatch its action"
             );
             assert!(
@@ -1346,6 +1515,225 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("Folder/new.md")).unwrap(),
             "new arrival"
+        );
+    }
+
+    fn open_reader<'a>(
+        cx: &'a mut TestAppContext,
+        root: &Path,
+        temp: &Path,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.to_owned()),
+                        note: Some("Home.md".into()),
+                        index_dir: Some(temp.join("cache")),
+                        session_directory: Some(temp.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        (reader, visual)
+    }
+
+    fn click(visual: &mut VisualTestContext, selector: &'static str) {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("visible {selector} action"));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    /// #1924 regression: a volume without system Trash (NFS/SMB on macOS)
+    /// moves the note to the vault `.trash`, keeps it out of the tree and
+    /// search, and Undo/Redo round-trip it through the same vault `.trash`.
+    /// Before the fix there was no Redo and Undo left empty `.trash` folders.
+    #[gpui::test]
+    fn no_volume_trash_uses_vault_trash_with_undo_and_redo(cx: &mut TestAppContext) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                reader_trash_fs::INJECT_NO_VOLUME_TRASH.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        reader_trash_fs::INJECT_NO_VOLUME_TRASH.with(|v| v.set(true));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Projects")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("Home.md"), "# Home").unwrap();
+        let note = root.join("Projects/Plan.md");
+        let bytes = "uniquenfsword\r\n";
+        std::fs::write(&note, bytes).unwrap();
+        let (reader, visual) = open_reader(cx, &root, temp.path());
+        let vault_trash_copies = || -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            let mut pending = vec![root.join(".trash")];
+            while let Some(dir) = pending.pop() {
+                for entry in std::fs::read_dir(&dir).into_iter().flatten() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        pending.push(path);
+                    } else {
+                        found.push(path);
+                    }
+                }
+            }
+            found
+        };
+        let assert_trashed = |reader: &Entity<Reader>, visual: &mut VisualTestContext| {
+            assert!(!note.exists());
+            let copies = vault_trash_copies();
+            assert_eq!(copies.len(), 1, "{copies:?}");
+            assert!(copies[0].ends_with("Projects/Plan.md"), "{copies:?}");
+            assert_eq!(std::fs::read_to_string(&copies[0]).unwrap(), bytes);
+            reader.read_with(visual, |r, _| {
+                assert!(!r.trash_pending);
+                let item = r.trash_undo.items.last().expect("Undo history");
+                assert!(item.in_vault_trash(), "fallback selected");
+                assert!(r
+                    .vault
+                    .entries
+                    .iter()
+                    .all(|e| !e.path.starts_with(".trash")));
+                assert!(!r.vault.notes.iter().any(|n| n.path.ends_with("Plan.md")));
+                assert!(r
+                    .searcher
+                    .as_ref()
+                    .unwrap()
+                    .search("uniquenfsword", 10)
+                    .unwrap()
+                    .is_empty());
+            });
+        };
+        let assert_restored = |reader: &Entity<Reader>, visual: &mut VisualTestContext| {
+            assert_eq!(std::fs::read_to_string(&note).unwrap(), bytes);
+            assert!(vault_trash_copies().is_empty());
+            assert_eq!(
+                std::fs::read_dir(root.join(".trash")).unwrap().count(),
+                0,
+                "Undo left empty folders in vault .trash"
+            );
+            reader.read_with(visual, |r, _| {
+                assert!(!r.trash_pending);
+                assert!(r.trash_undo.items.is_empty());
+                assert_eq!(r.trash_undo.redo.len(), 1);
+                assert!(r.vault.notes.iter().any(|n| n.path == "Projects/Plan.md"));
+                assert_eq!(
+                    r.searcher
+                        .as_ref()
+                        .unwrap()
+                        .search("uniquenfsword", 10)
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            });
+        };
+        reader.update_in(visual, |r, window, cx| {
+            r.delete_path("Projects/Plan.md".into(), window, cx)
+        });
+        visual.run_until_parked();
+        assert_trashed(&reader, visual);
+        // Undo by the toast's own button, Redo by the restored toast's button.
+        click(visual, "undo-trash");
+        assert_restored(&reader, visual);
+        click(visual, "redo-trash");
+        assert_trashed(&reader, visual);
+        reader.read_with(visual, |r, _| assert!(r.trash_undo.redo.is_empty()));
+        // Keyboard Undo and Redo after the toasts are gone.
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("Home.md", window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("secondary-z");
+        visual.run_until_parked();
+        assert_restored(&reader, visual);
+        reader.update_in(visual, |r, window, cx| {
+            r.dismiss_trash_toast(window, cx);
+        });
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-shift-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-y");
+        visual.run_until_parked();
+        assert_trashed(&reader, visual);
+        // A fresh move starts a new history: Redo has nothing left to redo.
+        visual.simulate_keystrokes("secondary-z");
+        visual.run_until_parked();
+        assert_restored(&reader, visual);
+        std::fs::write(root.join("Other.md"), "other").unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.refresh_inventory(okilum_core::Changes::default(), window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.delete_path("Other.md".into(), window, cx)
+        });
+        visual.run_until_parked();
+        assert!(!root.join("Other.md").exists());
+        reader.read_with(visual, |r, _| assert!(r.trash_undo.redo.is_empty()));
+        reader.update_in(visual, |r, window, cx| r.redo_last_trash(window, cx));
+        visual.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), bytes);
+    }
+
+    /// Positive control for the system path: no injection, so the item goes
+    /// to the freedesktop Trash, and Redo sends it there again.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn system_trash_undo_and_redo_never_use_vault_trash(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("Home.md"), "# Home").unwrap();
+        std::fs::write(root.join("Local.md"), "local bytes").unwrap();
+        let (reader, visual) = open_reader(cx, &root, temp.path());
+        reader.update_in(visual, |r, window, cx| {
+            r.delete_path("Local.md".into(), window, cx)
+        });
+        visual.run_until_parked();
+        assert!(!root.join("Local.md").exists());
+        reader.read_with(visual, |r, _| {
+            assert!(!r.trash_undo.items.last().unwrap().in_vault_trash())
+        });
+        click(visual, "undo-trash");
+        assert_eq!(
+            std::fs::read_to_string(root.join("Local.md")).unwrap(),
+            "local bytes"
+        );
+        click(visual, "redo-trash");
+        assert!(!root.join("Local.md").exists());
+        assert!(
+            !root.join(".trash").exists(),
+            "system path used vault .trash"
+        );
+        reader.read_with(visual, |r, _| {
+            assert!(!r.trash_undo.items.last().unwrap().in_vault_trash())
+        });
+        reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join("Local.md")).unwrap(),
+            "local bytes"
         );
     }
 }
