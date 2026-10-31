@@ -1012,6 +1012,19 @@ impl Reader {
                 tree_offset: self.tree_scroll.0.borrow().base_handle.offset(),
             });
         }
+        // The retained document will not lay out behind Board. A previous
+        // landing must not keep polling its now-hidden TextView.
+        if !self.current_rel.is_empty() {
+            let position = self
+                .navigation
+                .pending_landing
+                .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top());
+            self.navigation.places.insert(
+                (self.vault_root.clone(), self.current_rel.clone()),
+                position,
+            );
+        }
+        self.cancel_pending_landing();
         // A note requested before this explicit project selection cannot
         // replace its Board when its asynchronous preparation finishes later.
         self.navigation.preparation_generation =
@@ -1040,6 +1053,7 @@ impl Reader {
         self.project_navigation.section = Section::Reader;
         self.record_recent_project(&project.folder, cx);
         self.release_picker_focus(window, cx);
+        self.focus_handle.focus(window, cx);
         self.refresh_project_icon(project.clone(), window, cx);
         self.ensure_project_board(project.folder.clone(), window, cx);
         self.open_project_area(project.folder, window, cx);

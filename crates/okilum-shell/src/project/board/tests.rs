@@ -292,6 +292,14 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             "positive control: background replacement was applied"
         );
         assert!(reader.project_navigation.board_visible);
+        assert!(
+            reader.navigation.pending_landing.is_none(),
+            "an unmounted document has no pending layout landing"
+        );
+        assert!(
+            reader.link_notice.is_none(),
+            "background reconciliation does not report a navigation failure"
+        );
     });
     assert!(visual.debug_bounds("project-board").is_some());
     reader.update_in(visual, |reader, window, cx| {

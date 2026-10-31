@@ -1833,6 +1833,15 @@ impl Reader {
                 let board_visible = this.project_navigation.board_visible;
                 this.accept_prepared_document(request, result, window, cx);
                 this.project_navigation.board_visible = board_visible;
+                if board_visible {
+                    // Its TextView is unmounted behind Board. Keep the reading
+                    // place for an explicit return without polling an invisible layout.
+                    this.navigation.places.insert(
+                        (this.vault_root.clone(), this.current_rel.clone()),
+                        position,
+                    );
+                    this.cancel_pending_landing();
+                }
             });
         })
         .detach();
