@@ -293,6 +293,11 @@ impl CodePreview {
         matches!(self.state, State::Content(_))
     }
 
+    /// The file is still being read; whether it is editable is not known yet.
+    pub(crate) fn loading(&self) -> bool {
+        matches!(self.state, State::Loading)
+    }
+
     pub(crate) fn input(&self) -> Option<Entity<EditorState>> {
         match &self.state {
             State::Content(input) => Some(input.clone()),
