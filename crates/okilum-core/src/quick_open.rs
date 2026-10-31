@@ -31,6 +31,35 @@ pub fn inventory(notes: impl IntoIterator<Item = Note>, entries: &[VaultEntry]) 
     inventory
 }
 
+/// Conventional agent instruction files (#1589), matched by exact file name.
+const AGENT_FILE_NAMES: [&str; 4] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SKILL.md"];
+
+/// A vault-relative path names an agent instruction file: its last segment is
+/// exactly one of the conventional names, in any folder. A note that merely
+/// mentions agents, or `my-AGENTS.md`, is an ordinary file.
+pub fn is_agent_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    AGENT_FILE_NAMES.contains(&name)
+}
+
+/// Which files the search palettes list. Transient: every explicit open starts
+/// from [`FileFilter::Default`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileFilter {
+    /// Everything but agent files.
+    #[default]
+    Default,
+    /// Agent files only.
+    AgentFiles,
+}
+
+impl FileFilter {
+    /// Whether a file at `path` belongs to this view.
+    pub fn admits(self, path: &str) -> bool {
+        is_agent_file(path) == (self == FileFilter::AgentFiles)
+    }
+}
+
 fn is_markdown(path: &str) -> bool {
     path.len() > 3
         && path.is_char_boundary(path.len() - 3)
@@ -402,6 +431,84 @@ mod tests {
                 "Dev/Apps/plan.md"
             ]
         );
+    }
+    #[test]
+    fn agent_files_are_exact_conventional_names_in_any_folder() {
+        for path in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "GEMINI.md",
+            "SKILL.md",
+            "Dev/Areas/okilum/AGENTS.md",
+            "Dev/Areas/okilum/CLAUDE.md",
+            "_Assets/Skills/review/SKILL.md",
+            "Работа/Проект/GEMINI.md",
+        ] {
+            assert!(is_agent_file(path), "{path}");
+            assert!(FileFilter::AgentFiles.admits(path), "{path}");
+            assert!(!FileFilter::Default.admits(path), "{path}");
+        }
+        for path in [
+            "my-AGENTS.md",
+            "Dev/my-AGENTS.md",
+            "Dev/AGENTS.md.bak",
+            "Dev/AGENTS",
+            "Dev/agents.md",
+            "Dev/Claude.md",
+            "Dev/AGENTS.md/notes.md",
+            "Agents/Agent notes.md",
+            "Dev/agent-handbook.md",
+            "Dev/SKILLS.md",
+            "Dev/AGENTS .md",
+        ] {
+            assert!(!is_agent_file(path), "{path}");
+            assert!(FileFilter::Default.admits(path), "{path}");
+            assert!(!FileFilter::AgentFiles.admits(path), "{path}");
+        }
+        assert_eq!(FileFilter::default(), FileFilter::Default);
+    }
+    #[test]
+    fn filtering_the_inventory_precedes_the_result_limit() {
+        // Excluded exact matches outnumber the limit; the only admitted match
+        // ranks below all of them, so a post-limit filter would lose it.
+        let mut notes: Vec<_> = (0..150)
+            .map(|i| Note {
+                path: format!("Area {i}/AGENTS.md"),
+                title: "AGENTS".into(),
+            })
+            .collect();
+        notes.push(Note {
+            path: "Zone/agents-handbook-review.md".into(),
+            title: "agents-handbook-review".into(),
+        });
+        let empty = HashMap::new();
+        let aliases = std::collections::BTreeMap::new();
+        let ranked = |notes: &[Note]| -> Vec<String> {
+            search_named_first(notes, &empty, &aliases, "agents", &[], "", 100)
+                .into_iter()
+                .map(|n| n.path)
+                .collect()
+        };
+        let unfiltered = ranked(&notes);
+        assert_eq!(unfiltered.len(), 100);
+        assert!(
+            !unfiltered.contains(&"Zone/agents-handbook-review.md".to_string()),
+            "positive control: a post-limit filter would find nothing"
+        );
+        let admitted: Vec<_> = notes
+            .iter()
+            .filter(|n| FileFilter::Default.admits(&n.path))
+            .cloned()
+            .collect();
+        assert_eq!(ranked(&admitted), ["Zone/agents-handbook-review.md"]);
+        let agents: Vec<_> = notes
+            .iter()
+            .filter(|n| FileFilter::AgentFiles.admits(&n.path))
+            .cloned()
+            .collect();
+        let agents = ranked(&agents);
+        assert_eq!(agents.len(), 100);
+        assert!(agents.iter().all(|path| path.ends_with("/AGENTS.md")));
     }
     #[test]
     fn landing_uses_literal_match_not_query_expression() {
