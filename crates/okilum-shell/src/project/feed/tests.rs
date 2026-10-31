@@ -474,7 +474,15 @@ fn composer_tab_order_reaches_work_and_response_disclosures(cx: &mut TestAppCont
     use serde_json::json;
 
     fn press(visual: &mut VisualTestContext, key: &str) {
-        visual.simulate_keystrokes(key);
+        // simulate_keystrokes sends only KeyDown; a native Button activates
+        // on the matching KeyUp, so exercise the complete physical key press.
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        visual.simulate_event(gpui::KeyUpEvent { keystroke });
         visual.run_until_parked();
         visual.update(|window, cx| {
             for _ in 0..2 {
