@@ -1752,6 +1752,25 @@ impl Reader {
         self.reconcile_document_source(None, window, cx);
     }
 
+    /// A hidden document's list may have been reset by a derived replacement.
+    /// Its stored place, or a still-pending landing, remains authoritative.
+    pub(super) fn retained_document_position(&self, cx: &App) -> ListOffset {
+        self.navigation
+            .pending_landing
+            .or_else(|| {
+                self.project_navigation
+                    .board_visible
+                    .then(|| {
+                        self.navigation
+                            .places
+                            .get(&(self.vault_root.clone(), self.current_rel.clone()))
+                            .copied()
+                    })
+                    .flatten()
+            })
+            .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top())
+    }
+
     pub(super) fn reconcile_document_source(
         &mut self,
         raw: Option<String>,
@@ -1823,10 +1842,7 @@ impl Reader {
                 // A consumed session snapshot may still await its first layout
                 // landing. Carry that intent through this same-document derived
                 // replacement instead of substituting the not-yet-landed top.
-                let position = this
-                    .navigation
-                    .pending_landing
-                    .unwrap_or_else(|| this.content.read(cx).list_state().logical_scroll_top());
+                let position = this.retained_document_position(cx);
                 let request = prepared_links::DocumentRequest {
                     rel,
                     jump: None,
