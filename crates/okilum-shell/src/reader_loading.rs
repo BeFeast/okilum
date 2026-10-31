@@ -46,6 +46,7 @@ pub(crate) struct Loading {
     pub opts: Opts,
     pub warnings: Vec<okilum_core::vault::UnreadableEntry>,
     pub network: bool,
+    pub limited_external_refresh: bool,
     pub network_waiting: bool,
     pub progress_revision: u64,
 }
@@ -69,6 +70,7 @@ enum Event {
         log: Option<reader_log::LogDocument>,
     },
     NetworkRoot(bool),
+    LimitedExternalRefresh(bool),
     Progress(String),
     Siblings(Vault, Option<VaultWatcher>),
     SearchInventory {
@@ -595,6 +597,10 @@ fn prepare_rest_with_snapshot(
     send.send_blocking(Event::NetworkRoot(okilum_core::watch::is_network_root(
         root,
     )))
+    .map_err(|_| anyhow::anyhow!("Reader closed"))?;
+    send.send_blocking(Event::LimitedExternalRefresh(
+        okilum_core::watch::external_changes_need_rescan(root),
+    ))
     .map_err(|_| anyhow::anyhow!("Reader closed"))?;
     prepare_rest_with_io_and_snapshot(
         root,
@@ -2227,6 +2233,11 @@ impl Reader {
             .map_or(1, |l| l.generation.wrapping_add(1));
         let cancel = Cancellation::default();
         let network = refresh.is_some() && self.loading.as_ref().is_some_and(|load| load.network);
+        let limited_external_refresh = refresh.is_some()
+            && self
+                .loading
+                .as_ref()
+                .is_some_and(|load| load.limited_external_refresh);
         let network_waiting = network
             && self
                 .loading
@@ -2261,6 +2272,7 @@ impl Reader {
             opts: opts.clone(),
             warnings,
             network,
+            limited_external_refresh,
             network_waiting,
             progress_revision: 0,
         });
@@ -2514,6 +2526,9 @@ impl Reader {
                             Event::NetworkRoot(network) => {
                                 this.loading.as_mut().unwrap().network |= network;
                             }
+                            Event::LimitedExternalRefresh(limited) => {
+                                this.loading.as_mut().unwrap().limited_external_refresh |= limited;
+                            }
                             Event::Progress(phase) => {
                                 let load = this.loading.as_mut().unwrap();
                                 load.progress_revision = load.progress_revision.wrapping_add(1);
@@ -2678,49 +2693,100 @@ impl Reader {
             .max_w(px(420.))
             .gap_2()
             .text_xs()
-            .when_some(reader_diagnostics::cloud_status(self.vault.cloud_placeholders.len()), |view, status| {
-                let view = view.child(div().id("reader-cloud-pending").text_color(muted).child(status));
-                #[cfg(target_os = "macos")]
-                let view = {
-                    let active = self.loading.as_ref().and_then(|load| load.cloud_download.as_ref()).is_some_and(|batch| batch.active);
-                    view.child(Button::new("reader-cloud-download-all").ghost().small()
-                        .label(if active { "Requesting downloads…" } else { "Download all" })
-                        .disabled(active)
-                        .tooltip(reader_icloud::KEEP_DOWNLOADED)
-                        .on_click(cx.listener(|this, _, _, cx| this.download_all_icloud(cx))))
-                };
-                view
-            })
+            .when_some(
+                reader_diagnostics::cloud_status(self.vault.cloud_placeholders.len()),
+                |view, status| {
+                    let view = view.child(
+                        div()
+                            .id("reader-cloud-pending")
+                            .text_color(muted)
+                            .child(status),
+                    );
+                    #[cfg(target_os = "macos")]
+                    let view = {
+                        let active = self
+                            .loading
+                            .as_ref()
+                            .and_then(|load| load.cloud_download.as_ref())
+                            .is_some_and(|batch| batch.active);
+                        view.child(
+                            Button::new("reader-cloud-download-all")
+                                .ghost()
+                                .small()
+                                .label(if active {
+                                    "Requesting downloads…"
+                                } else {
+                                    "Download all"
+                                })
+                                .disabled(active)
+                                .tooltip(reader_icloud::KEEP_DOWNLOADED)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.download_all_icloud(cx)),
+                                ),
+                        )
+                    };
+                    view
+                },
+            )
             .when(issue_count > 0 && !network_waiting, |view| {
                 view.child(
                     Button::new("reader-unreadable-items")
                         .ghost()
                         .small()
-                            .label(if issue_count == 1 {
-                                "1 item unreadable".to_string()
-                            } else {
-                                format!("{issue_count} items unreadable")
-                            })
-                            .tooltip("Show items needing attention")
+                        .label(if issue_count == 1 {
+                            "1 item unreadable".to_string()
+                        } else {
+                            format!("{issue_count} items unreadable")
+                        })
+                        .tooltip("Show items needing attention")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.show_unreadable_items(window, cx);
                         })),
                 )
             })
             .when(warning_count > 0 && !network_waiting, |view| {
-                view.child(Button::new("reader-preparation-warnings").ghost().small()
-                    .label(format!("{warning_count} warning{}", if warning_count == 1 { "" } else { "s" }))
-                    .on_click(cx.listener(|this, _, window, cx| this.show_unreadable_items(window, cx))))
+                view.child(
+                    Button::new("reader-preparation-warnings")
+                        .ghost()
+                        .small()
+                        .label(format!(
+                            "{warning_count} warning{}",
+                            if warning_count == 1 { "" } else { "s" }
+                        ))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_unreadable_items(window, cx)
+                        })),
+                )
             })
-            .when(self.loading.as_ref().is_some_and(|load| !load.active && !load.network_waiting &&
-                (load.network || load.warnings.iter().any(|warning| warning.operation.starts_with("watch vault")))), |view| {
-                view.child(div().text_color(muted).child("Auto-refresh limited"))
-                    .child(Button::new("rescan-network-vault").small().label("Rescan")
-                    .tooltip("Automatic refresh is unavailable here. Use Rescan to check changes made by other clients.")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.refresh_inventory_with_read(okilum_core::Changes::default(), true, window, cx);
-                    })))
-            })
+            .when(
+                self.loading.as_ref().is_some_and(|load| {
+                    !load.active
+                        && !load.network_waiting
+                        && (load.network
+                            || load.limited_external_refresh
+                            || load
+                                .warnings
+                                .iter()
+                                .any(|warning| warning.operation.starts_with("watch vault")))
+                }),
+                |view| {
+                    view.child(div().text_color(muted).child("Auto-refresh limited"))
+                        .child(
+                            Button::new("rescan-network-vault")
+                                .small()
+                                .label("Rescan")
+                                .tooltip("Changes from other devices may need Rescan.")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.refresh_inventory_with_read(
+                                        okilum_core::Changes::default(),
+                                        true,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                },
+            )
             .when_some(
                 self.loading.as_ref().filter(|load| {
                     if load.active {
@@ -2742,8 +2808,11 @@ impl Reader {
                         // controls reachable and show the full text on hover.
                         let failed = !load.active && !load.phase.contains("cancelled");
                         let phase = if load.network_waiting && load.active {
-                            "Vault location is not responding — showing last loaded content".to_string()
-                        } else { load.phase.clone() };
+                            "Vault location is not responding — showing last loaded content"
+                                .to_string()
+                        } else {
+                            load.phase.clone()
+                        };
                         div()
                             .id("reader-loading-phase")
                             .min_w_0()
@@ -2765,29 +2834,35 @@ impl Reader {
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_loading(cx))),
                         )
                     })
-                    .when((!load.active && load.phase != "Ready") || load.network_waiting, |view| {
-                        view.child(
-                            Button::new("retry-reader-loading")
-                                .label("Retry")
-                                .small()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(opts) =
-                                        this.loading.as_ref().map(|l| l.opts.clone())
-                                    {
-                                        if this.loading.as_ref().is_some_and(|load| load.published)
+                    .when(
+                        (!load.active && load.phase != "Ready") || load.network_waiting,
+                        |view| {
+                            view.child(
+                                Button::new("retry-reader-loading")
+                                    .label("Retry")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(opts) =
+                                            this.loading.as_ref().map(|l| l.opts.clone())
                                         {
-                                            this.refresh_inventory(
-                                                okilum_core::Changes::default(),
-                                                window,
-                                                cx,
-                                            );
-                                        } else {
-                                            this.start_loading(opts, window, cx);
+                                            if this
+                                                .loading
+                                                .as_ref()
+                                                .is_some_and(|load| load.published)
+                                            {
+                                                this.refresh_inventory(
+                                                    okilum_core::Changes::default(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            } else {
+                                                this.start_loading(opts, window, cx);
+                                            }
                                         }
-                                    }
-                                })),
-                        )
-                    })
+                                    })),
+                            )
+                        },
+                    )
                 },
             )
     }
@@ -5081,6 +5156,34 @@ mod tests {
         });
         let reader = entity.unwrap();
         visual.run_until_parked();
+        // Remote FUSE keeps its local watcher and gains only the inline
+        // Rescan control. This must not open a modal or lose the document.
+        for limited in [true, false] {
+            reader.update_in(visual, |v, window, cx| {
+                let load = v.loading.as_mut().unwrap();
+                assert!(!load.active);
+                assert!(!load.network);
+                load.limited_external_refresh = limited;
+                assert!(
+                    v.watcher.is_some()
+                        || v.shared_session
+                            .as_ref()
+                            .is_some_and(reader_session::has_native_watcher),
+                    "limited visibility must retain native watching"
+                );
+                assert!(!window.has_active_dialog(cx));
+                cx.notify();
+            });
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert_eq!(
+                visual.debug_bounds("rescan-network-vault").is_some(),
+                limited
+            );
+            reader.update(visual, |v, _| {
+                assert!(v.document_ready());
+                assert!(!v.loading.as_ref().unwrap().network_waiting);
+            });
+        }
         // A slow local scan is the negative control: elapsed time alone must
         // never classify an ordinary folder as a disconnected network vault.
         for network in [false, true] {
