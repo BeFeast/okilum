@@ -520,12 +520,9 @@ mod tests {
             assert!(browser.query().is_none() && browser.fragment().is_none());
             let desktop = url::Url::parse(&identity.thread_url(expected)).unwrap();
             assert_eq!(desktop.scheme(), "t3code");
-            assert_eq!(desktop.host_str(), Some("app"));
-            assert_eq!(desktop.path(), "/");
-            assert_eq!(
-                desktop.fragment(),
-                Some(format!("/environment-1/{expected}").as_str())
-            );
+            assert_eq!(desktop.host_str(), Some("threads"));
+            assert_eq!(desktop.path(), format!("/environment-1/{expected}"));
+            assert!(desktop.fragment().is_none());
             assert!(desktop.query().is_none());
         }
         std::fs::remove_dir_all(vault).unwrap();
