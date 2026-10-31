@@ -487,7 +487,7 @@ mod tests {
     fn composer_uses_native_start_queue_and_pinned_steer_without_mcp_fallback(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let environment = Environment::new(
@@ -656,7 +656,7 @@ mod tests {
     fn question_keystrokes_leave_cached_history_and_parent_silent(cx: &mut TestAppContext) {
         use std::{cell::Cell, rc::Rc};
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_reduce_motion(true);
         });
         let temp = tempfile::tempdir().unwrap();

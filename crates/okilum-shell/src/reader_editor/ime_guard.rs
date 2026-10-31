@@ -79,7 +79,7 @@ mod tests {
         tempfile::TempDir,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();

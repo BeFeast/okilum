@@ -361,7 +361,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -484,7 +484,7 @@ mod tests {
     #[gpui::test]
     fn repeated_saves_retain_bounded_generations_and_reopen_warm(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -576,7 +576,7 @@ mod tests {
     #[gpui::test]
     fn queued_second_change_is_not_lost_and_old_root_batch_cannot_publish(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

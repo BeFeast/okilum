@@ -1978,7 +1978,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(super::super::reader_history::TestSessionDirectory(
                 state.clone(),
@@ -2077,7 +2077,7 @@ mod entry_tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             reader_ui_state::install(&fixture.path().join("state"), cx);
             finish_open(
@@ -2176,7 +2176,7 @@ mod entry_tests {
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("last.md"), "# Last document").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             reader_startup::launch(
                 Opts {
@@ -2235,7 +2235,7 @@ mod entry_tests {
         // A remembered document makes the launch open the Reader window, not the entry.
         ReadingHistory::record_usable_document(&state, &root, "last.md").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(reader_diagnostics::LaunchTrace(
                 reader_diagnostics::Trace::new(Some(state.clone()), None),
@@ -2302,7 +2302,7 @@ mod entry_tests {
         std::fs::write(root.join("last.md"), "# Restored quick document").unwrap();
         ReadingHistory::record_document_mode(&state, &root, "last.md", true).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             reader_startup::launch(
                 Opts {
@@ -2343,7 +2343,7 @@ mod entry_tests {
             ReadingHistory::record_usable_document(&state, &root, "saved.md").unwrap();
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_startup::launch(
@@ -2420,7 +2420,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             cx.set_global(reader_startup::ReopenBase(base.clone()));
@@ -2505,7 +2505,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_open_windows::install(state.clone(), cx);
@@ -2764,7 +2764,7 @@ mod entry_tests {
                 ..Default::default()
             };
             cx.update(|cx| {
-                gpui_component::init(cx);
+                crate::test_init(cx);
                 install(cx);
                 cx.set_global(TestSessionDirectory(state.clone()));
                 reader_open_windows::install(state.clone(), cx);
@@ -2885,7 +2885,7 @@ mod entry_tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             super::super::reader_ui_state::install(&state, cx);
@@ -2970,7 +2970,7 @@ mod entry_tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             super::super::reader_ui_state::install(&state, cx);
@@ -3067,7 +3067,7 @@ mod entry_tests {
         std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             open_window(
@@ -3154,7 +3154,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_open_windows::install(state.clone(), cx);
@@ -3230,7 +3230,7 @@ mod entry_tests {
         std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             open_window(
@@ -3309,7 +3309,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -3349,7 +3349,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_open_windows::install(state.clone(), cx);
@@ -3434,7 +3434,7 @@ mod entry_tests {
         let fixture = tempfile::tempdir().unwrap();
         let path = fixture.path().join("My Notes");
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.dispatch_action(&NewVault);
         });
@@ -3495,7 +3495,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_open_windows::install(state.clone(), cx);
@@ -3651,7 +3651,7 @@ mod entry_tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -3714,7 +3714,7 @@ mod entry_tests {
         let home = home.canonicalize().unwrap();
         let work = work.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
             open_deep_link_among(
@@ -3802,7 +3802,7 @@ mod entry_tests {
         std::fs::write(root.join("other.md"), &body).unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
             install(cx);
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
@@ -3860,7 +3860,7 @@ mod entry_tests {
         std::fs::write(root.join("Plan.md"), "# Plan\n").unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
             install(cx);
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
@@ -3928,7 +3928,7 @@ mod entry_tests {
         std::fs::write(root.join("Inbox/First.md"), "# First").unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(TestSessionDirectory(state.clone()));
             reader_startup::launch(
@@ -4101,7 +4101,7 @@ mod entry_tests {
         std::fs::write(other.join("a.md"), "# Other\n").unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
             let opts = super::super::Opts {
@@ -4342,7 +4342,7 @@ mod entry_tests {
             .try_send(vec![url::Url::from_file_path(&root).unwrap().into()])
             .unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
             install(cx);
             cx.set_global(super::super::reader_history::TestSessionDirectory(
@@ -4598,7 +4598,7 @@ mod update_restart_tests {
         std::fs::write(root.join("A.md"), "# A").unwrap();
         std::fs::write(root.join("Б.md"), "# B").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
             cx.set_global(crate::reader_history::TestSessionDirectory(
                 temp.path().join("state"),

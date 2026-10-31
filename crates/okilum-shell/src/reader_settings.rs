@@ -26,6 +26,10 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+pub(crate) fn show_features(cx: &mut App) {
+    show_section(None, Some(Section::Features), cx);
+}
+
 pub(crate) fn show_t3(cx: &mut App) {
     show_section(None, Some(Section::T3), cx);
 }
@@ -406,6 +410,7 @@ const INBOX_HELP: &str =
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    Features,
     /// The T3 server of the open project's Manager (#1507).
     T3,
     Appearance,
@@ -424,8 +429,17 @@ enum Section {
     Sync,
 }
 impl Section {
+    fn available(self, cx: &App) -> bool {
+        match self {
+            Self::T3 => reader_features::enabled(reader_features::Feature::Agents, cx),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::Sync => reader_features::enabled(reader_features::Feature::Sync, cx),
+            _ => true,
+        }
+    }
     fn key(self) -> &'static str {
         match self {
+            Self::Features => "features",
             Self::T3 => "t3",
             Self::Editor => "editor",
             Self::Appearance => "appearance",
@@ -441,6 +455,7 @@ impl Section {
     }
     fn remembered(cx: &App) -> Self {
         match reader_ui_state::settings_section(cx) {
+            Some("features") => Self::Features,
             Some("t3") => Self::T3,
             Some("editor") => Self::Editor,
             Some("appearance") => Self::Appearance,
@@ -457,6 +472,7 @@ impl Section {
 
     fn icon(self) -> Icon {
         match self {
+            Self::Features => Icon::new(IconName::Settings),
             Self::T3 => Icon::new(IconName::SquareTerminal),
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Editor => Icon::new(IconName::FileText),
@@ -472,6 +488,7 @@ impl Section {
     }
     fn label(self) -> &'static str {
         match self {
+            Self::Features => "Features",
             Self::T3 => "T3",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
@@ -499,6 +516,7 @@ struct Settings {
     reader: Option<WeakEntity<Reader>>,
     focus: FocusHandle,
     _reader_changes: Option<Subscription>,
+    _features: Subscription,
     #[cfg(any(unix, windows))]
     template_root: Option<PathBuf>,
     #[cfg(any(unix, windows))]
@@ -524,19 +542,28 @@ struct Settings {
 }
 impl Settings {
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        self.section = section;
+        self.section = if section.available(cx) {
+            section
+        } else {
+            Section::Features
+        };
         if section == Section::Vaults {
             if let Some(vaults) = &self.vaults {
                 vaults.update(cx, |vaults, cx| vaults.reload(cx));
             }
         }
+
         reader_ui_state::set_settings_section(section.key(), cx);
         cx.notify();
     }
 
     /// Explicit entries do not replace the pane chosen in the sidebar (#1496).
     fn show_entry_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        self.section = section;
+        self.section = if section.available(cx) {
+            section
+        } else {
+            Section::Features
+        };
         cx.notify();
     }
 
@@ -546,7 +573,19 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
+            _features: cx.observe_global::<reader_features::Features>(|this, cx| {
+                this.t3 = None;
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    this.sync = None;
+                }
+                if !this.section.available(cx) {
+                    this.section = Section::Features;
+                }
+                cx.notify();
+            }),
             vaults: None,
+
             t3: None,
             section: Section::remembered(cx),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1073,7 +1112,22 @@ impl Settings {
                 .child(self.section.label()),
         );
         match self.section {
+            Section::Features => content
+                .child("Keep the editor fast. Enable optional modules when you need them.")
+                .children(reader_features::Feature::ALL.map(|feature| {
+                    setting_row(feature.label(), feature.description(),
+                        div().debug_selector(move || format!("settings-feature-{}", feature.key())).child(
+                            Switch::new(SharedString::from(format!("feature-{}", feature.key())))
+                                .accessibility_label(feature.label())
+                                .checked(reader_features::enabled(feature, cx))
+                                .disabled(!feature.available() || (reader_features::error(cx).is_some() && !reader_features::enabled(feature, cx)))
+                                .on_click(move |value, _, cx| reader_features::set_enabled(feature, *value, cx)),
+                        ), cx)
+                }))
+                .children(reader_features::error(cx).map(|error| div().text_color(p.danger).child(error)))
+                .into_any_element(),
             Section::Vaults => content.children(self.vaults.clone()).into_any_element(),
+
             Section::Appearance => {
                 let current = cx.try_global::<AppearancePreference>().and_then(|p| p.0);
                 let vault = self
@@ -1566,6 +1620,9 @@ impl Settings {
 }
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.section.available(cx) {
+            self.section = Section::Features;
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.section == Section::Sync && self.sync.is_none() {
             self.sync = Some(reader_settings_sync::shared(window, cx));
@@ -1664,6 +1721,7 @@ impl Render for Settings {
                     .gap_1()
                     .children(
                         [
+                            Section::Features,
                             Section::Appearance,
                             Section::Editor,
                             Section::Vault,
@@ -1678,6 +1736,8 @@ impl Render for Settings {
                             // Platform convention: About comes last (#995).
                             Section::About,
                         ]
+                        .into_iter()
+                        .filter(|section| section.available(cx))
                         .map(|section| {
                             div()
                                 .debug_selector(move || {
@@ -1842,13 +1902,68 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    #[gpui::test]
+    fn feature_switches_apply_on_click_and_hide_disabled_module_settings(cx: &mut TestAppContext) {
+        use reader_features::{enabled, Feature};
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_features::install(temp.path(), cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = Settings::new(None, cx);
+                view.section = Section::Features;
+                view
+            });
+            Root::new(view, window, cx)
+        });
+        visual.simulate_resize(size(px(820.), px(650.)));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("settings-section-T3").is_none());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(visual.debug_bounds("settings-section-Sync").is_none());
+        for feature in Feature::ALL
+            .into_iter()
+            .filter(|feature| feature.available())
+        {
+            let selector = format!("settings-feature-{}", feature.key());
+            let toggle = visual.debug_bounds(&selector).unwrap();
+            visual.simulate_click(toggle.center(), Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert!(
+                    enabled(feature, cx),
+                    "a real switch click enabled {}",
+                    feature.label()
+                )
+            });
+        }
+        assert!(visual.debug_bounds("settings-section-T3").is_some());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(visual.debug_bounds("settings-section-Sync").is_some());
+        let toggle = visual.debug_bounds("settings-feature-agents").unwrap();
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("settings-section-T3").is_none());
+        visual.update(|_, cx| {
+            reader_features::install(temp.path(), cx);
+            assert!(!enabled(Feature::Agents, cx));
+            assert_eq!(
+                enabled(Feature::SecondBrain, cx),
+                Feature::SecondBrain.available()
+            );
+            assert_eq!(enabled(Feature::Sync, cx), Feature::Sync.available());
+        });
+    }
+
     #[cfg(any(unix, windows))]
     #[gpui::test]
     fn file_tree_label_setting_updates_folder_and_vault_live(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
         let state = fixture.path().join("state");
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&state, cx);
         });
         let mut readers = Vec::new();
@@ -2013,7 +2128,7 @@ mod tests {
             std::env::temp_dir().join(format!("okilum-settings-pane-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&directory, cx);
         });
         let owner = cx.add_window(|window, cx| {
@@ -2100,7 +2215,7 @@ mod tests {
     fn preview_uses_real_channel_controls_without_changing_the_platform_channel(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (root, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(None, cx);
@@ -2134,7 +2249,7 @@ mod tests {
 
     #[gpui::test]
     fn manager_settings_entry_keeps_active_project_prefill(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(directory.path().join("ops")).unwrap();
         std::fs::write(
@@ -2185,7 +2300,7 @@ mod tests {
 
     #[gpui::test]
     fn about_routes_reuse_settings_without_a_reader_modal(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
@@ -2229,7 +2344,7 @@ mod tests {
     fn reading_controls_update_the_shared_store(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(directory.path(), cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -2288,7 +2403,7 @@ mod tests {
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
         std::fs::write(root.join("Inbox/Remind.md"), "- [ ] Call Dana\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&state, cx);
         });
         let mut reader = None;
@@ -2372,7 +2487,7 @@ mod tests {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&state, cx);
         });
         let mut reader = None;
@@ -2465,7 +2580,7 @@ mod tests {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&state, cx);
         });
         let mut reader = None;
@@ -2531,7 +2646,7 @@ mod tests {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_ui_state::install(&state, cx);
         });
         let mut reader = None;
@@ -2597,7 +2712,7 @@ mod tests {
         use gpui_component::WindowExt;
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_global(AppearancePreference(None));
         });
         let (root, visual) = cx.add_window_view(|window, cx| {
@@ -2641,7 +2756,7 @@ mod tests {
     #[gpui::test]
     fn about_copies_one_line_version_info_and_says_so_inline(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_global(AppearancePreference(None));
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -2683,7 +2798,7 @@ mod tests {
     #[gpui::test]
     fn sections_switch_and_appearance_changes_without_a_vault(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_global(AppearancePreference(None));
         });
         let (root, visual) = cx.add_window_view(|window, cx| {
@@ -2731,7 +2846,7 @@ mod tests {
     }
     #[gpui::test]
     fn color_theme_actions_receive_the_current_canonical_root(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (root, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(None, cx);
@@ -3053,7 +3168,7 @@ mod tests {
 
     #[gpui::test]
     fn hidden_files_setting_uses_the_reader_toggle(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (root, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| Settings::new(None, cx));
             Root::new(settings, window, cx)
@@ -3090,7 +3205,7 @@ mod tests {
         // #1248: the same state and the same button as the offer when the vault opens.
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
         });
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
@@ -3170,7 +3285,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
         });
         let owner = cx.add_window(|_, cx| Settings::new(None, cx));
@@ -3214,7 +3329,7 @@ mod tests {
 
     #[gpui::test]
     fn application_menu_finds_active_reader_and_reuses_settings_window(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut owner = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
@@ -3255,7 +3370,7 @@ mod tests {
 
     #[gpui::test]
     fn about_keeps_each_reader_owner_and_reuses_only_its_own_window(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, first) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
@@ -3305,7 +3420,7 @@ mod tests {
     #[gpui::test]
     fn owned_settings_center_reuse_escape_and_close_with_owner(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {

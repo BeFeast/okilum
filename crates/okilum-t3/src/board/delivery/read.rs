@@ -369,6 +369,10 @@ pub fn refresh(area: &Path, binding: &Binding) -> Update {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut fetch = |url: &str| -> Result<Vec<u8>> {
         ensure!(
+            crate::NetworkAccess::current().allowed(),
+            "Agents is disabled"
+        );
+        ensure!(
             https_link(url) && url::Url::parse(url)?.host_str() != Some("api.github.com"),
             "Invalid public delivery source"
         );
@@ -405,6 +409,10 @@ pub fn refresh(area: &Path, binding: &Binding) -> Update {
     }
     for build in &builds {
         let result = (|| -> Result<Artifact> {
+            ensure!(
+                crate::NetworkAccess::current().allowed(),
+                "Agents is disabled"
+            );
             ensure!(
                 url::Url::parse(&build.artifact)?.host_str() != Some("api.github.com"),
                 "GitHub API is not an artifact source"

@@ -286,6 +286,9 @@ impl ManagerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         self.hide(cx);
         self.closed = false;
         self.loading = false;
@@ -344,6 +347,9 @@ impl ManagerPanel {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         if self.loading {
             return;
         }
@@ -740,7 +746,7 @@ mod status_tests {
 
     #[gpui::test]
     fn shared_connection_refreshes_only_panels_without_project_overrides(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let temp = tempfile::tempdir().unwrap();
         let project = Project {
             folder: temp.path().into(),
@@ -834,7 +840,7 @@ mod native_focus_tests {
 
     #[gpui::test]
     fn webview_mouse_down_notification_clears_focused_gpui_origin_input(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let temp = tempfile::tempdir().unwrap();
         let project = Project {
             folder: temp.path().into(),

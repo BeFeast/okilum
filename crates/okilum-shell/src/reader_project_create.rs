@@ -62,6 +62,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         use gpui_component::WindowExt as _;
         let fixed = folder.is_some();
         let relative = folder.unwrap_or_else(|| self.default_new_project_folder());

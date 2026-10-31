@@ -71,7 +71,7 @@ mod tests {
 
     #[gpui::test]
     fn more_button_is_visible_and_opens_and_dismisses_its_menu(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             let tooltip = cx.new(|_| gpui_base::TooltipOverlay::new());
@@ -107,7 +107,7 @@ mod tests {
 
     #[gpui::test]
     fn open_more_menu_suppresses_visible_and_delayed_tooltips(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let tooltip = cx.new(|_| gpui_base::TooltipOverlay::new());
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
@@ -180,7 +180,7 @@ mod tests {
     #[gpui::test]
     fn about_opens_settings_and_closes_without_covering_reader(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_settings::install(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {

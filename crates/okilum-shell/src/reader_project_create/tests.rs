@@ -109,7 +109,7 @@ fn open(
 ) {
     cx.update(|cx| {
         cx.set_reduce_motion(true);
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let temp = tempfile::tempdir().unwrap();

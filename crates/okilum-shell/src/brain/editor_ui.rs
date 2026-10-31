@@ -175,17 +175,26 @@ impl BrainView {
         }
         let store = self.editor_store();
         self.editor.flight = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { store?.list() })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.editor.flight = false;
-                this.editor_listing(result);
-                this.editor_protect(window, cx);
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(
+                            async move { store?.list() },
+                        ))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.editor.flight = false;
+                        this.editor_listing(result);
+                        this.editor_protect(window, cx);
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -239,43 +248,50 @@ impl BrainView {
         let store = self.editor_store();
         let expected = self.editor.active.clone();
         self.editor.flight = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let store = store?;
-                    match expected {
-                        Some(draft) => store.update(&draft, &value),
-                        None => store.create(&base, &value),
-                    }
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.editor.flight = false;
-                match result {
-                    Ok(draft) => {
-                        this.editor.active = Some(draft);
-                        this.editor.confirmed = true;
-                        this.editor_protect(window, cx);
-                    }
-                    Err(error) => {
-                        this.editor.error = Some(error);
-                        if this
-                            .editor
-                            .save
-                            .as_ref()
-                            .is_some_and(editor_recovery::is_guarded)
-                        {
-                            this.editor.guarded_retry = this.editor.save.take();
-                        } else {
-                            this.editor.save = None;
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let store = store?;
+                            match expected {
+                                Some(draft) => store.update(&draft, &value),
+                                None => store.create(&base, &value),
+                            }
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.editor.flight = false;
+                        match result {
+                            Ok(draft) => {
+                                this.editor.active = Some(draft);
+                                this.editor.confirmed = true;
+                                this.editor_protect(window, cx);
+                            }
+                            Err(error) => {
+                                this.editor.error = Some(error);
+                                if this
+                                    .editor
+                                    .save
+                                    .as_ref()
+                                    .is_some_and(editor_recovery::is_guarded)
+                                {
+                                    this.editor.guarded_retry = this.editor.save.take();
+                                } else {
+                                    this.editor.save = None;
+                                }
+                                this.source_loading = false;
+                                this.sync_source_policy(cx);
+                            }
                         }
-                        this.source_loading = false;
-                        this.sync_source_policy(cx);
-                    }
-                }
-                cx.notify();
-            });
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -347,12 +363,12 @@ impl BrainView {
         self.sync_source_policy(cx);
         // The worker owns the immutable draft identity, request and workspace.
         // Closing the process can leave the retained request for explicit recovery.
-        cx.spawn_in(window, async move |this,cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let submitted = request.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let store = store?;
                 Ok::<_,String>(save_attempt_with_mode(&store,&draft,&request,mode,|request|rpc_guarded(endpoint,request,Some(&workspace))))
-            }).await;
+            })).await;
             let _ = this.update_in(cx, |this,window,cx| {
                 if !this.editor_save_owner_matches(&expected_workspace,&expected_draft_id) {
                     this.error=Some("A late Save belongs to another workspace or draft. The visible editor was preserved; inspect recovery in its original workspace.".into());
@@ -418,7 +434,7 @@ impl BrainView {
                 this.editor_protect(window,cx);
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     pub(super) fn editor_restore(
         &mut self,
@@ -466,11 +482,11 @@ impl BrainView {
         let store = self.editor_store();
         let endpoint = self.endpoint;
         self.editor.flight = true;
-        cx.spawn_in(window,async move |this,cx| {
-            let result = cx.background_executor().spawn(async move {
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let current = rpc_guarded(endpoint,json!({"op":"source_conflict","brain_id":draft.base["brain_id"],"path":draft.base["path"],"conflict_id":conflict["conflict"]["conflict_id"]}),Some(&workspace))?;
                 store?.refresh_conflict(&draft,&current)
-            }).await;
+            })).await;
             let _ = this.update_in(cx,|this,window,cx| {
                 this.editor.flight = false;
                 match result {
@@ -479,7 +495,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     pub(super) fn editor_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editor_closing() || self.busy || self.editor.flight {
@@ -507,36 +523,45 @@ impl BrainView {
         self.editor.discarding = true;
         self.source_loading = true;
         self.sync_source_policy(cx);
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { store?.discard(&draft) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.editor.flight = false;
-                match result {
-                    Ok(()) => {
-                        this.editor.active = None;
-                        this.editor.guarded_retry = None;
-                        this.editor.records.retain(|d| d.id != discarded_id);
-                        this.editor.error = None;
-                        if let Some(source) = &this.source_snapshot {
-                            this.batch(
-                                vec![json!({"op":"source_read","path":source["path"]})],
-                                window,
-                                cx,
-                            );
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            store?.discard(&draft)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.editor.flight = false;
+                        match result {
+                            Ok(()) => {
+                                this.editor.active = None;
+                                this.editor.guarded_retry = None;
+                                this.editor.records.retain(|d| d.id != discarded_id);
+                                this.editor.error = None;
+                                if let Some(source) = &this.source_snapshot {
+                                    this.batch(
+                                        vec![json!({"op":"source_read","path":source["path"]})],
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                this.editor.error = Some(error);
+                                this.editor.discarding = false;
+                                this.source_loading = false;
+                                this.sync_source_policy(cx);
+                            }
                         }
-                    }
-                    Err(error) => {
-                        this.editor.error = Some(error);
-                        this.editor.discarding = false;
-                        this.source_loading = false;
-                        this.sync_source_policy(cx);
-                    }
-                }
-                cx.notify();
-            });
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -751,7 +776,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (dir, workspace, base, store) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;
@@ -810,7 +835,7 @@ mod tests {
         let retained = store
             .create(&base, "Explicitly discarded text\r\n")
             .unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;

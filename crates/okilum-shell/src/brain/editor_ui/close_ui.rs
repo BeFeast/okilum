@@ -332,7 +332,7 @@ mod tests {
         use super::super::super::app_quit;
         let (dir1, workspace1, base1, store1) = fixture();
         let (dir2, workspace2, base2, store2) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_empty_window();
         let (first, _) =
             managed_window(cx, &workspace1, &base1, &store1, "\u{feff}First latest\r\n");
@@ -407,7 +407,7 @@ mod tests {
             )
             .unwrap();
         lock.lock().unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_empty_window();
         let (first, _) = managed_window(cx, &workspace1, &base1, &store1, &uncertain.text);
         first.update(cx, |v, _| {
@@ -479,7 +479,7 @@ mod tests {
     #[gpui::test]
     fn close_waits_for_latest_coalesced_text_and_preserves_another_window(cx: &mut TestAppContext) {
         let (dir, workspace, base, store) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_empty_window();
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
@@ -526,7 +526,7 @@ mod tests {
             .open(dir.join(text(&workspace["brain_id"])).join("recovery.lock"))
             .unwrap();
         lock.lock().unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;
@@ -570,7 +570,7 @@ mod tests {
         let (dir, workspace, base, store) = fixture();
         let old = store.create(&base, "Old generation\r\n").unwrap();
         let newer = store.update(&old, "Another window\r\n").unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;
@@ -602,7 +602,7 @@ mod tests {
     #[gpui::test]
     fn legacy_view_keeps_unmanaged_dirty_close_behavior(cx: &mut TestAppContext) {
         let (_, _, base, _) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx)
         });
@@ -620,7 +620,7 @@ mod tests {
         let old = store.create(&base, "Uncertain draft\r\n").unwrap();
         let request = source_write(&base, &old.text, &uuid());
         let pending = store.retain_save(&old, &request).unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;
@@ -664,7 +664,7 @@ mod tests {
             writeln!(stream, "{response}").unwrap();
             wire
         });
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;
@@ -700,7 +700,7 @@ mod tests {
         let newer = store
             .update(&old, "Another window advanced this record\r\n")
             .unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&workspace, &store, window, cx);
             v.busy = true;

@@ -33,6 +33,7 @@ const MAX_PAGES: usize = 50;
 pub struct McpGateway {
     env: Environment,
     http: Client,
+    access: crate::NetworkAccess,
     token: Mutex<Option<StoredToken>>,
     /// `None` until `initialize` succeeded; then the session id, if T3 issued one.
     session: Mutex<Option<Session>>,
@@ -86,11 +87,17 @@ impl McpGateway {
         Ok(Self {
             env,
             http,
+            access: crate::NetworkAccess::current(),
             token: Mutex::new(token),
             session: Mutex::new(None),
             observed: Mutex::new(None),
             next_id: AtomicU64::new(1),
         })
+    }
+
+    pub fn with_access(mut self, access: crate::NetworkAccess) -> Self {
+        self.access = access;
+        self
     }
 
     pub fn environment(&self) -> &Environment {
@@ -107,6 +114,9 @@ impl McpGateway {
     /// Verify the saved credential with initialize + tools/list, without
     /// invoking a feature or starting browser authorization.
     pub fn connect(&self) -> GatewayResult<()> {
+        if !self.access.allowed() {
+            return Err(GatewayError::NotConnected);
+        }
         let token = self.current_token()?;
         let result = self
             .ensure_session(&token)
@@ -281,6 +291,9 @@ impl McpGateway {
         initialized: bool,
         body: &Value,
     ) -> Result<(Option<Value>, Option<String>), Failure> {
+        if !self.access.allowed() {
+            return Err(GatewayError::NotConnected.into());
+        }
         let mut request = self
             .http
             .post(self.env.mcp_url())

@@ -551,7 +551,7 @@ mod tests {
     fn picker_and_tree_drop_use_link_move_and_exact_undo(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

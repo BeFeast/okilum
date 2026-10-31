@@ -591,6 +591,14 @@ fn open_pr_reader_checks_real_responses_and_refuses_truncated_or_failed_sources(
         assert!(read_open_pulls(&client, &repo).is_err());
         worker.join().unwrap();
     }
+    let access = crate::NetworkAccess::new(false);
+    let _scope = access.enter();
+    assert!(
+        read_open_pulls(&client, &repo)
+            .unwrap_err()
+            .contains("Agents is disabled"),
+        "the same real-request path must stop before connecting when disabled"
+    );
 }
 
 #[test]

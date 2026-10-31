@@ -1118,7 +1118,7 @@ mod tests {
     }
     #[gpui::test]
     fn late_discovery_and_link_receipt_preserve_selected_goal_and_drafts(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{
@@ -1138,7 +1138,7 @@ mod tests {
     fn post_publication_failure_and_unknown_reply_keep_the_same_link_request(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{
@@ -1152,7 +1152,7 @@ mod tests {
     }
     #[gpui::test]
     fn committed_decision_closes_only_its_exact_review(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -1199,7 +1199,7 @@ mod tests {
     }
     #[gpui::test]
     fn unlink_handler_retains_uncertain_decision_and_creates_local_unlink(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -1234,7 +1234,7 @@ mod tests {
     }
     #[gpui::test]
     fn only_exact_terminal_disposition_can_retire_a_pending_request(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{

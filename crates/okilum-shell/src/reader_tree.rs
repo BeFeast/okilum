@@ -755,7 +755,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::*;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         std::fs::create_dir(&root).unwrap();

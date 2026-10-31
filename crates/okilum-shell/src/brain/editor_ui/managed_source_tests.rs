@@ -8,7 +8,7 @@ fn native_edits_and_preedit_coalesce_and_old_events_cannot_protect_reset_base(
     cx: &mut TestAppContext,
 ) {
     let (dir, workspace, base, store) = super::tests::fixture();
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, cx) = cx
         .add_window_view(|window, cx| BrainView::new_managed_test(&workspace, &store, window, cx));
     cx.run_until_parked();
@@ -61,7 +61,7 @@ fn native_edits_and_preedit_coalesce_and_old_events_cannot_protect_reset_base(
 #[gpui::test]
 fn readonly_blocks_native_mutation_same_turn_and_flight_remains_editable(cx: &mut TestAppContext) {
     let (dir, workspace, base, store) = super::tests::fixture();
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let (view, cx) = cx
         .add_window_view(|window, cx| BrainView::new_managed_test(&workspace, &store, window, cx));
     cx.run_until_parked();

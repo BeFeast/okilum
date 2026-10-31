@@ -113,7 +113,7 @@ mod tests {
     fn escape_and_cancel_answer_false_and_confirm_answers_true(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

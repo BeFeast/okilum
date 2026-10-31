@@ -117,7 +117,7 @@ mod tests {
 
     #[gpui::test]
     fn block_embed_find_copy_and_source_links_use_visible_human_context(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("Projects")).unwrap();
         std::fs::write(temp.path().join("Projects/technical-name.md"), "# Human Roadmap\n\nVisible paragraph. ^unique\n\nFirst hidden candidate. ^dup\n\nSecond hidden candidate. ^DUP\n").unwrap();

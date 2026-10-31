@@ -17,7 +17,7 @@ impl Render for MaskedFixture {
 fn masked_unicode_home_end_use_source_boundaries(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_reduce_motion(true);
-        gpui_component::init(cx);
+        crate::test_init(cx);
     });
     let mut input = None;
     let (_, visual) = cx.add_window_view(|window, cx| {

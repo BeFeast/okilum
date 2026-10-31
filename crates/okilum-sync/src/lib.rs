@@ -1,5 +1,6 @@
 //! Opt-in Syncthing compatibility boundary. No application lifecycle integration.
 use anyhow::{bail, ensure, Context, Result};
+pub use okilum_network_access::NetworkAccess;
 use reqwest::{
     blocking::Client,
     header::{HeaderMap, HeaderValue},
@@ -19,6 +20,7 @@ pub const FIXTURE_IGNORES: &[&str] = &["/.okilum-index", "/.claude/worktrees", "
 pub struct Syncthing {
     client: Client,
     origin: String,
+    access: NetworkAccess,
 }
 
 impl Syncthing {
@@ -38,10 +40,12 @@ impl Syncthing {
                 .timeout(Duration::from_secs(10))
                 .build()?,
             origin: format!("http://{address}"),
+            access: NetworkAccess::current(),
         })
     }
 
     fn request(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
+        ensure!(self.access.allowed(), "Sync is disabled");
         let mut request = self
             .client
             .request(method, format!("{}{path}", self.origin));
@@ -331,6 +335,50 @@ pub enum Destination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_syncthing_client_cannot_send_after_module_is_disabled() -> Result<()> {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let serve = listener.try_clone()?;
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = serve.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let body = r#"{"myID":"positive-control"}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let access = NetworkAccess::new(true);
+        let client = {
+            let _scope = access.enter();
+            Syncthing::connect(address, "synthetic")?
+        };
+        assert_eq!(client.identity()?["myID"], "positive-control");
+        server.join().unwrap();
+        access.revoke();
+        assert!(client
+            .identity()
+            .unwrap_err()
+            .to_string()
+            .contains("Sync is disabled"));
+        listener.set_nonblocking(true)?;
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "positive-control listener saw no disabled request"
+        );
+        Ok(())
+    }
+
     #[test]
     fn destinations_are_explicit() -> Result<()> {
         let root = tempfile::tempdir()?;

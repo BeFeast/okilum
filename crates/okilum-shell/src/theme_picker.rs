@@ -150,7 +150,7 @@ mod tests {
     #[gpui::test]
     fn cards_select_one_app_wide_theme_in_place(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_global(AppearancePreference(Some(ThemeMode::Dark)));
         });
         let (_, visual) = cx.add_window_view(|window, cx| {

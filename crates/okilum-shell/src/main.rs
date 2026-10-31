@@ -134,6 +134,9 @@ mod input_anchor_tests;
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
+mod reader_features;
+#[cfg(test)]
+use reader_features::test_init;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
@@ -2058,6 +2061,13 @@ impl Reader {
             _subs: vec![find_sub],
             _content_sub: content_sub,
         };
+        let weak = cx.weak_entity();
+        this._subs
+            .push(
+                window.observe_global::<reader_features::Features>(cx, move |window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.features_changed(window, cx));
+                }),
+            );
         this.side_panels = reader_side_panel::SidePanel::pair(cx);
         // Nothing has focus on a fresh window, and gpui then dispatches keys
         // to the root node only, where the reader's context is not on the
@@ -4928,9 +4938,10 @@ impl Reader {
                             d.context_menu(move |menu, window, cx| {
                                 // A folder that is not a project yet can
                                 // become one (#1475).
-                                let make_project = entity
-                                    .upgrade()
-                                    .is_some_and(|view| view.read(cx).can_make_project(&folder));
+                                let make_project = entity.upgrade().is_some_and(|view| {
+                                    reader_features::enabled(reader_features::Feature::Agents, cx)
+                                        && view.read(cx).can_make_project(&folder)
+                                });
                                 let menu = if let Some(view) = entity.upgrade() {
                                     reader_item_menu(menu, &view, folder.clone(), window, cx)
                                         .separator()
@@ -6692,14 +6703,31 @@ fn reader_more_menu(
                 "Inbox",
                 reader_project_navigation::Section::Inbox,
             ))
-            .item(app_section(
-                "Projects",
-                reader_project_navigation::Section::Projects,
-            ))
+            .when(
+                reader_features::enabled(reader_features::Feature::Agents, cx),
+                |menu| {
+                    menu.item(app_section(
+                        "Projects",
+                        reader_project_navigation::Section::Projects,
+                    ))
+                },
+            )
             .item(app_section(
                 "Logs",
                 reader_project_navigation::Section::Logs,
             ))
+            .when(
+                cfg!(all(unix, feature = "brain"))
+                    && reader_features::enabled(reader_features::Feature::SecondBrain, cx),
+                |menu| {
+                    #[cfg(all(unix, feature = "brain"))]
+                    let menu = menu.item(
+                        PopupMenuItem::new("Second brain…")
+                            .on_click(|_, _, cx| reader_features::open_second_brain(cx)),
+                    );
+                    menu
+                },
+            )
             .separator()
             .item(
                 PopupMenuItem::new("Settings…")
@@ -7657,6 +7685,7 @@ fn main() {
         reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));
         diagnostics.record_exits(cx);
+        reader_features::install_defaults(cx);
         let recovery_phase = diagnostics.phase("recovery_and_window_state");
         if let Ok(directory) = opts
             .session_directory
@@ -7666,6 +7695,7 @@ fn main() {
         {
             let config_directory = reader_layout::config_base().map(|base| base.join("okilum"));
             reader_recovery::install(&directory, config_directory.as_deref(), cx);
+            reader_features::install(&directory, cx);
             reader_ui_state::install(&directory, cx);
             reader_open_windows::install(directory.clone(), cx);
             window_state::install(directory, cx);
@@ -7758,6 +7788,14 @@ fn main() {
         }
         #[cfg(all(unix, feature = "brain"))]
         {
+            if !reader_features::enabled(reader_features::Feature::SecondBrain, cx) {
+                let mut opts = opts;
+                opts.brain_endpoint = None;
+                opts.managed_workspace = false;
+                reader_startup::launch(opts, cx);
+                reader_settings::show_features(cx);
+                return;
+            }
             let bounds = window_state::default_bounds(size(px(1500.), px(1000.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -8006,7 +8044,7 @@ mod document_link_landing_tests {
                 )
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let source = include_str!("../../../fixtures/reader/table-alias-columns.md");
         let vault = Vault::from_note_paths([
             "notes/alpha.md".into(),
@@ -8049,7 +8087,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture =
@@ -8147,7 +8185,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-scroll377-{}", uuid::Uuid::new_v4()));
@@ -8286,7 +8324,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn outline_rows_contain_text_at_every_heading_level(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-outline417-{}", uuid::Uuid::new_v4()));
@@ -8363,7 +8401,7 @@ mod document_link_landing_tests {
         // slower. Only the rows in view are built.
         const HEADINGS: usize = 436;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -8489,7 +8527,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -8569,7 +8607,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn wide_table_persistent_cues_follow_scroll_and_expand(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-reader418-{}", uuid::Uuid::new_v4()));
@@ -8707,7 +8745,7 @@ mod document_link_landing_tests {
             }
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -8779,7 +8817,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn reader_table_overlay_opens_closes_and_leaves_on_navigation(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-reader368-{}", uuid::Uuid::new_v4()));
@@ -8834,7 +8872,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn reader_properties_parse_on_open_and_links_navigate(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-reader386-{}", uuid::Uuid::new_v4()));
@@ -8895,7 +8933,7 @@ mod document_link_landing_tests {
         // wikilinks between the other notes still open instead of saying "still loading".
         use okilum_core::document_links::prepared::LinkStatus;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -8973,7 +9011,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -9046,7 +9084,7 @@ mod document_link_landing_tests {
         // typing anywhere in the Reader redrew all of them. Only the cards in view are built.
         const NOTES: usize = 400;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -9196,7 +9234,7 @@ mod document_link_landing_tests {
         // on the one the click lands on, on a cold start and again on the warm start that follows.
         use okilum_core::document_links::prepared::LinkStatus;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -9333,7 +9371,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn tree_mode_is_the_folder_tree_only_even_with_recent_and_pins(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -9386,7 +9424,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn empty_sidebar_tree_hint(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -9426,7 +9464,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -9513,7 +9551,7 @@ mod document_link_landing_tests {
         std::fs::create_dir(&other).unwrap();
         let state = fixture.path().join("state");
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });
@@ -9591,7 +9629,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn sidebar_scroll_preserves_height_and_has_no_other_sections(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -9670,7 +9708,7 @@ mod document_link_landing_tests {
     ) {
         use reader_sidebar::Section;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -9734,7 +9772,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn folder_view_header_actions_and_collapse_keep_the_file_list(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -9821,7 +9859,7 @@ mod document_link_landing_tests {
     ) {
         use reader_sidebar::Section;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -10020,7 +10058,7 @@ mod document_link_landing_tests {
     ) {
         use reader_sidebar::Section;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -10132,7 +10170,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn typed_projects_do_not_reappear_as_sidebar_sections(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -10194,7 +10232,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -10513,7 +10551,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn double_click_on_a_folder_name_toggles_the_folder(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -10655,7 +10693,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -10995,7 +11033,7 @@ mod document_link_landing_tests {
     #[gpui::test]
     fn reader_compact_clamp_preserves_nonzero_document_position(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -11109,7 +11147,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root =
@@ -11278,7 +11316,7 @@ mod document_link_landing_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-reader314-{}", uuid::Uuid::new_v4()));
@@ -11909,7 +11947,7 @@ mod reader_scroll_key_tests {
     #[gpui::test]
     fn document_keys_scroll_after_click_and_compact_sidebar_selection(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

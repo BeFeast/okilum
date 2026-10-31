@@ -166,26 +166,39 @@ impl BrainView {
         let origin = p.clone();
         let journal = self.discussion_journal();
         let generation = self.request_generation;
-        cx.spawn_in(window, async move |this, cx| {
-            let response = cx
-                .background_executor()
-                .spawn(async move {
-                    let request = if direct {
-                        serde_json::to_value(&p.request).unwrap()
-                    } else {
-                        p.request.lookup()
-                    };
-                    let data = rpc_guarded(endpoint, request, Some(&p.workspace))?;
-                    let status = classify(&p, &data, direct)?;
-                    // Persist terminal proof even if the view closes or changes
-                    // while the original request is on the wire.
-                    journal.acknowledge(&p, &data, direct)?;
-                    Ok::<_, String>((data, status))
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let response = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let request = if direct {
+                                serde_json::to_value(&p.request).unwrap()
+                            } else {
+                                p.request.lookup()
+                            };
+                            let data = rpc_guarded(endpoint, request, Some(&p.workspace))?;
+                            let status = classify(&p, &data, direct)?;
+                            // Persist terminal proof even if the view closes or changes
+                            // while the original request is on the wire.
+                            journal.acknowledge(&p, &data, direct)?;
+                            Ok::<_, String>((data, status))
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.finish_discussion_reply(
+                            origin,
+                            (direct, generation),
+                            response,
+                            window,
+                            cx,
+                        );
+                    });
                 })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_discussion_reply(origin, (direct, generation), response, window, cx);
-            });
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -566,7 +579,7 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui::{TestAppContext, VisualTestContext};
     fn setup(cx: &mut TestAppContext) -> (Entity<BrainView>, &mut VisualTestContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut v = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             v.busy = true;
@@ -931,7 +944,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use std::net::TcpListener;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let p = pending();
         let root = std::env::temp_dir().join(format!("discussion-startup-{}", uuid()));
         let journal = Journal::at(root.clone());

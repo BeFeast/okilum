@@ -122,62 +122,72 @@ impl BrainView {
         let workspace = self.expected_workspace.clone();
         let endpoint = self.endpoint;
         self.busy = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let owner = workspace.clone();
-            let g = goal.clone();
-            let d = id.clone();
-            let result = cx
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let owner = workspace.clone();
+                    let g = goal.clone();
+                    let d = id.clone();
+                    let result = cx
                 .background_executor()
-                .spawn(async move {
+                .spawn(okilum_t3::scope_current_network(async move {
                     rpc_guarded(
                         endpoint,
                         json!({"op":"discussion_decision_reuse_get","goal_id":g,"decision_id":d}),
                         owner.as_ref(),
                     )
-                })
+                }))
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                if this.expected_workspace != workspace || this.goal_id() != goal || this.dirty(cx)
-                {
-                    this.error = Some(
-                        "The original reuse review changed while loading. Open it again.".into(),
-                    );
-                    cx.notify();
-                    return;
-                }
-                let brain = text(&workspace.as_ref().unwrap_or(&Value::Null)["brain_id"]);
-                let path = format!(
-                    "{}/discussion-decision-{id}.md",
-                    text(&workspace.as_ref().unwrap_or(&Value::Null)["records_dir"])
-                );
-                match result.and_then(|view| {
-                    let body = validate_reuse_view(&view, &goal, &id, &brain, &path)?;
-                    Ok((view, body))
-                }) {
-                    Ok((view, body)) => {
-                        let preview = body.map(|body| {
-                            cx.new(|cx| {
-                                let mut p = TextareaState::new(window, cx).rows(8);
-                                p.set_value(body, window, cx);
-                                p
-                            })
-                        });
-                        this.decision_reuse = ReuseUi {
-                            active: true,
-                            goal,
-                            decision: id,
-                            workspace,
-                            view,
-                            preview,
-                            ..Default::default()
-                        };
-                        this.error = None;
-                    }
-                    Err(e) => this.error = Some(e),
-                }
-                cx.notify();
-            });
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.busy = false;
+                        if this.expected_workspace != workspace
+                            || this.goal_id() != goal
+                            || this.dirty(cx)
+                        {
+                            this.error = Some(
+                                "The original reuse review changed while loading. Open it again."
+                                    .into(),
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        let brain = text(&workspace.as_ref().unwrap_or(&Value::Null)["brain_id"]);
+                        let path = format!(
+                            "{}/discussion-decision-{id}.md",
+                            text(&workspace.as_ref().unwrap_or(&Value::Null)["records_dir"])
+                        );
+                        match result.and_then(|view| {
+                            let body = validate_reuse_view(&view, &goal, &id, &brain, &path)?;
+                            Ok((view, body))
+                        }) {
+                            Ok((view, body)) => {
+                                let preview = body.map(|body| {
+                                    cx.new(|cx| {
+                                        let mut p = TextareaState::new(window, cx).rows(8);
+                                        p.set_value(body, window, cx);
+                                        p
+                                    })
+                                });
+                                this.decision_reuse = ReuseUi {
+                                    active: true,
+                                    goal,
+                                    decision: id,
+                                    workspace,
+                                    view,
+                                    preview,
+                                    ..Default::default()
+                                };
+                                this.error = None;
+                            }
+                            Err(e) => this.error = Some(e),
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -308,9 +318,9 @@ impl BrainView {
         self.busy = true;
         self.source_loading = true;
         self.sync_source_policy(cx);
-        cx.spawn_in(window,async move |this,cx|{
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx|{ okilum_t3::scope_network(module_access, async move {
             let expected=request.clone();let g=request["goal_id"].clone();let id=request["decision_id"].clone();
-            let result=cx.background_executor().spawn(async move {rpc_guarded(endpoint,json!({"op":"discussion_decision_reuse_get","goal_id":g,"decision_id":id}),owner.as_ref())}).await;
+            let result=cx.background_executor().spawn(okilum_t3::scope_current_network(async move {rpc_guarded(endpoint,json!({"op":"discussion_decision_reuse_get","goal_id":g,"decision_id":id}),owner.as_ref())})).await;
             let _=this.update_in(cx,|this,window,cx|{
                 this.busy=false;this.source_loading=false;this.sync_source_policy(cx);
                 if this.expected_workspace!=workspace || this.source_snapshot.as_ref().is_none_or(|s|s["path"]!=expected["request"]["path"]) {this.error=Some("Reuse Save is acknowledged; the visible source changed before readback.".into());cx.notify();return;}
@@ -344,7 +354,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     pub(super) fn decision_reuse_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let s = &self.decision_reuse;

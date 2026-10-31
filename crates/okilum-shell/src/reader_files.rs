@@ -798,7 +798,7 @@ mod tests {
         std::fs::write(root.join("broken.json"), "{\n  \"a\": 1,\n}").unwrap();
         std::fs::write(root.join("tool.py"), "print(1)\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -878,7 +878,7 @@ mod tests {
         let big = vec![b' '; reader_code_file::MAX_BYTES as usize + 1];
         std::fs::write(root.join("big.json"), big).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -955,7 +955,7 @@ mod tests {
             std::fs::write(root.join(name), source).unwrap();
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -1235,7 +1235,7 @@ mod tests {
         // A PDF selection starts the viewer's real worker thread.
         cx.executor().allow_parking();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_global(reader_history::TestSessionDirectory(
                 fixture.0.join("state"),

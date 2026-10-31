@@ -124,22 +124,35 @@ impl Board {
         }
         self.editor_loading = true;
         let area = self.area.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { Session::load(&area) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.editor_loading = false;
-                match result {
-                    Ok(session) => this.editor = Some(Editor::new(session, window, cx)),
-                    Err(error) => {
-                        eprintln!("Board management: {error:#}");
-                        reader_toast::error(format!("Cannot manage Board: {error:#}"), window, cx);
-                    }
-                }
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            Session::load(&area)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.editor_loading = false;
+                        match result {
+                            Ok(session) => this.editor = Some(Editor::new(session, window, cx)),
+                            Err(error) => {
+                                eprintln!("Board management: {error:#}");
+                                reader_toast::error(
+                                    format!("Cannot manage Board: {error:#}"),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -173,51 +186,60 @@ impl Board {
         let session = editor.session.clone();
         let removed = matches!(change, Change::Remove(_));
         let previous = session.document.as_ref().map(|d| d.source.clone());
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { session.save(&change) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Some(editor) = &mut this.editor {
-                    editor.busy = false;
-                    match result {
-                        Ok(session) => {
-                            editor.undo = if removed {
-                                session.document.clone().zip(previous)
-                            } else {
-                                None
-                            };
-                            editor.session = session;
-                            editor.screen = Screen::List;
-                            editor.errors.clear();
-                            reader_toast::transient(
-                                if removed {
-                                    "Card removed. Undo is available in Board management."
-                                } else {
-                                    "Board saved"
-                                },
-                                window,
-                                cx,
-                            );
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            session.save(&change)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if let Some(editor) = &mut this.editor {
+                            editor.busy = false;
+                            match result {
+                                Ok(session) => {
+                                    editor.undo = if removed {
+                                        session.document.clone().zip(previous)
+                                    } else {
+                                        None
+                                    };
+                                    editor.session = session;
+                                    editor.screen = Screen::List;
+                                    editor.errors.clear();
+                                    reader_toast::transient(
+                                        if removed {
+                                            "Card removed. Undo is available in Board management."
+                                        } else {
+                                            "Board saved"
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                Err(error) => {
+                                    eprintln!("Board write refused: {error:#}");
+                                    editor.errors = error
+                                        .downcast_ref::<Problems>()
+                                        .map(|p| p.0.clone())
+                                        .unwrap_or_else(|| {
+                                            std::collections::BTreeMap::from([(
+                                                "file".into(),
+                                                format!("{error:#}"),
+                                            )])
+                                        });
+                                }
+                            }
                         }
-                        Err(error) => {
-                            eprintln!("Board write refused: {error:#}");
-                            editor.errors = error
-                                .downcast_ref::<Problems>()
-                                .map(|p| p.0.clone())
-                                .unwrap_or_else(|| {
-                                    std::collections::BTreeMap::from([(
-                                        "file".into(),
-                                        format!("{error:#}"),
-                                    )])
-                                });
-                        }
-                    }
-                }
-                this.reload_binding(window, cx);
-                cx.notify();
-            });
+                        this.reload_binding(window, cx);
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -234,28 +256,37 @@ impl Board {
         };
         editor.busy = true;
         let session = editor.session.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { session.undo(&source) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Some(editor) = &mut this.editor {
-                    editor.busy = false;
-                    match result {
-                        Ok(session) => {
-                            editor.session = session;
-                            editor.undo = None;
-                            editor.errors.clear();
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            session.undo(&source)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if let Some(editor) = &mut this.editor {
+                            editor.busy = false;
+                            match result {
+                                Ok(session) => {
+                                    editor.session = session;
+                                    editor.undo = None;
+                                    editor.errors.clear();
+                                }
+                                Err(error) => {
+                                    editor.errors.insert("file".into(), format!("{error:#}"));
+                                }
+                            }
                         }
-                        Err(error) => {
-                            editor.errors.insert("file".into(), format!("{error:#}"));
-                        }
-                    }
-                }
-                this.reload_binding(window, cx);
-                cx.notify();
-            });
+                        this.reload_binding(window, cx);
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -662,7 +693,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_reduce_motion(true);
         });
         let area = tempfile::tempdir().unwrap();
@@ -829,7 +860,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_reduce_motion(true);
         });
         let area = tempfile::tempdir().unwrap();

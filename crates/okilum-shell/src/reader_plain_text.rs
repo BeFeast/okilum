@@ -183,7 +183,7 @@ mod tests {
         let path = fixture.path().join("literal.TXT");
         let source = "# Heading\n[[missing]] **bold** <b>literal</b>\n```\n[link](https://example.com)\n````\n";
         std::fs::write(&path, source).unwrap();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| {

@@ -849,7 +849,7 @@ mod tests {
         )
         .unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&fixture.path().join("state"), cx);
             cx.set_global(reader_history::TestSessionDirectory(
@@ -945,7 +945,7 @@ mod tests {
         let root = fixture.path().join("Fresh");
         std::fs::create_dir_all(&root).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_global(reader_history::TestSessionDirectory(
                 fixture.path().join("state"),
@@ -1023,7 +1023,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("One.md"), "# One\n\nExact text\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_global(reader_history::TestSessionDirectory(state.clone()));
         });
@@ -1150,7 +1150,7 @@ mod tests {
         )
         .unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_global(reader_history::TestSessionDirectory(fixture.join("state")));
         });

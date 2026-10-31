@@ -18,7 +18,10 @@ impl Board {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.delivery_loading {
+        if self.delivery_loading
+            || !self.active
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
             return;
         }
         let Some(binding) = self.binding.clone() else {
@@ -26,26 +29,34 @@ impl Board {
         };
         self.delivery_loading = true;
         let area = self.area.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let update = cx
-                .background_executor()
-                .spawn(async move { facts::refresh(&area, &binding) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if !this.active || !this.snapshot.matches(&ticket) {
-                    return;
-                }
-                let old = this.delivery.problems(now(), binding_refresh(this));
-                this.delivery.accept(update, now());
-                this.delivery_loading = false;
-                let current = this.delivery.problems(now(), binding_refresh(this));
-                if current != old {
-                    for problem in current {
-                        eprintln!("Board delivery: {problem}");
-                    }
-                }
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access = reader_features::access(reader_features::Feature::Agents, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let update = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            facts::refresh(&area, &binding)
+                        }))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if !this.active || !this.snapshot.matches(&ticket) {
+                            return;
+                        }
+                        let old = this.delivery.problems(now(), binding_refresh(this));
+                        this.delivery.accept(update, now());
+                        this.delivery_loading = false;
+                        let current = this.delivery.problems(now(), binding_refresh(this));
+                        if current != old {
+                            for problem in current {
+                                eprintln!("Board delivery: {problem}");
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }

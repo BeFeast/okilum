@@ -18,6 +18,7 @@ pub enum Progress {
 
 pub struct Authorization {
     http: Client,
+    access: crate::NetworkAccess,
     metadata: AuthServerMetadata,
     client_id: String,
     pkce: Pkce,
@@ -48,6 +49,7 @@ impl Authorization {
         )?;
         Ok(Self {
             http,
+            access: crate::NetworkAccess::current(),
             metadata,
             client_id,
             pkce,
@@ -118,6 +120,7 @@ impl Authorization {
         let mut deadline = Instant::now() + timeout;
         let mut last_seconds = u64::MAX;
         loop {
+            anyhow::ensure!(self.access.allowed(), "Agents is disabled");
             let command = match input.try_recv() {
                 Ok(Input::Cancel) | Err(TryRecvError::Disconnected) => {
                     bail!("Sign-in cancelled. Choose Sign in to start again.")
@@ -173,6 +176,7 @@ impl Authorization {
             if let Some(url) = candidate {
                 match self.code(&url) {
                     Ok(code) => {
+                        let _access = self.access.enter();
                         let token = exchange_code(
                             &self.http,
                             &self.metadata,

@@ -379,7 +379,7 @@ mod tests {
         use okilum_core::document_links::prepared::LinkStatus;
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -463,7 +463,7 @@ mod tests {
     fn recovery_offer_goes_away_when_editing_starts(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -565,7 +565,7 @@ mod tests {
     ) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -711,7 +711,7 @@ mod tests {
     fn closing_a_notice_keeps_a_new_occurrence_of_the_same_message(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

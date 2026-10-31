@@ -1115,7 +1115,7 @@ mod tests {
     fn pages_are_sized_up_front_virtualized_and_released(cx: &mut TestAppContext) {
         // The worker is a real thread; its wake-ups are not test-scheduled.
         cx.executor().allow_parking();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("book.pdf");
         let pages: Vec<_> = (0..40)
@@ -1237,7 +1237,7 @@ mod tests {
     fn changed_file_reopens_and_broken_file_says_so(cx: &mut TestAppContext) {
         // The worker is a real thread; its wake-ups are not test-scheduled.
         cx.executor().allow_parking();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("doc.pdf");
         std::fs::write(&path, fixture::pdf(&[(300., 300., [1., 0., 0.])])).unwrap();
@@ -1273,7 +1273,7 @@ mod tests {
     #[gpui::test]
     fn failed_open_recovers_after_the_source_changes(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("incoming.pdf");
         std::fs::write(&path, b"%PDF-1.4 incomplete incoming file").unwrap();

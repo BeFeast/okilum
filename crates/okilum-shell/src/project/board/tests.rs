@@ -5,7 +5,7 @@ use ::core::prelude::v1::test;
 fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserved(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     let mut source: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
@@ -70,7 +70,7 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
 #[gpui::test]
 fn board_context_appends_to_the_actual_composer_and_never_sends(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let state = tempfile::tempdir().unwrap();
@@ -119,7 +119,7 @@ fn board_context_appends_to_the_actual_composer_and_never_sends(cx: &mut TestApp
 
 #[gpui::test]
 fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
@@ -173,7 +173,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
 ) {
     cx.update(|cx| {
         cx.set_reduce_motion(true);
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let temp = tempfile::tempdir().unwrap();
@@ -525,7 +525,7 @@ fn healthy_and_initial_board_sources_are_silent() {
 fn board_without_registered_agents_does_not_request_a_separate_t3_connection(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     let mut binding = Binding::parse(include_str!(
         "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
@@ -626,7 +626,7 @@ fn card_type_origin_and_native_icons_come_from_supported_sources() {
 
 #[gpui::test]
 fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     let mut binding = Binding::parse(include_str!(
         "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
@@ -733,7 +733,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     cx: &mut TestAppContext,
 ) {
     use okilum_t3::board::delivery as d;
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     std::fs::write(area.path().join("scenario.md"), "# Exact Board scenario\n").unwrap();
     let mut binding = Binding::parse(include_str!(
@@ -883,7 +883,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
 fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_stage_ui(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(area.path().join("ops")).unwrap();
     std::fs::write(

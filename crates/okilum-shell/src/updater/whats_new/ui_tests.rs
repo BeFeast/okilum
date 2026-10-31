@@ -35,7 +35,7 @@ impl Render for Surface {
 #[gpui::test]
 fn update_toast_does_not_steal_focus_and_expires(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         cx.set_reduce_motion(true);
     });
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -69,7 +69,7 @@ fn update_toast_does_not_steal_focus_and_expires(cx: &mut TestAppContext) {
 #[gpui::test]
 fn actual_reader_and_about_render_the_sheet_and_offline_fallback(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
         cx.set_reduce_motion(true);
     });
@@ -146,7 +146,7 @@ fn actual_reader_and_about_render_the_sheet_and_offline_fallback(cx: &mut TestAp
 fn unpublished_and_failed_ranges_show_changes_link_and_only_failures_offer_retry(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let mut view = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let notes = offline_view(cx);

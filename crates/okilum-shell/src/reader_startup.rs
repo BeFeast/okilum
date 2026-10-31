@@ -782,7 +782,7 @@ mod tests {
         ReadingHistory::record_usable_document(&state, &gone_root, "a.md").unwrap();
         std::fs::remove_dir_all(&gone_root).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_open::install(cx);
             launch(
                 Opts {

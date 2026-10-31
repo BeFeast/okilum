@@ -713,7 +713,7 @@ mod tests {
         std::fs::write(root.join("note.md"), source).unwrap();
         std::fs::write(root.join("other.md"), "# Other\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
         });

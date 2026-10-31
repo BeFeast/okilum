@@ -172,27 +172,34 @@ impl BrainView {
         let epoch = self.incoming_references.epoch;
         self.incoming_references.loading = true;
         self.incoming_references.error = None;
-        cx.spawn_in(window, async move |view, cx| {
-            let reply = cx
-                .background_executor()
-                .spawn(async move {
-                    let reply = rpc_guarded(endpoint, request, Some(&workspace))?;
-                    validate_page(reply, &source, previous.as_ref())
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |view, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let reply = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let reply = rpc_guarded(endpoint, request, Some(&workspace))?;
+                            validate_page(reply, &source, previous.as_ref())
+                        }))
+                        .await;
+                    let _ = view.update_in(cx, |this, _, cx| {
+                        if this.incoming_references.epoch != epoch
+                            || this.open_link_preview_owner(cx).as_ref() != Some(&owner)
+                        {
+                            return;
+                        }
+                        this.incoming_references.loading = false;
+                        match reply {
+                            Ok(page) => this.incoming_references.page = Some(page),
+                            Err(error) => this.incoming_references.error = Some(error),
+                        }
+                        cx.notify();
+                    });
                 })
-                .await;
-            let _ = view.update_in(cx, |this, _, cx| {
-                if this.incoming_references.epoch != epoch
-                    || this.open_link_preview_owner(cx).as_ref() != Some(&owner)
-                {
-                    return;
-                }
-                this.incoming_references.loading = false;
-                match reply {
-                    Ok(page) => this.incoming_references.page = Some(page),
-                    Err(error) => this.incoming_references.error = Some(error),
-                }
-                cx.notify();
-            });
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -482,7 +489,7 @@ mod tests {
     fn incoming_actual_buttons_page_stale_passage_and_back_preserve_source(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let workspace = json!({"brain_id":uuid(),"root":"/isolated/incoming297","records_dir":"records","managed":true});
         let dir = std::env::temp_dir().join(format!("incoming297-{}", uuid()));
         let store = editor_recovery::EditorRecovery::at(dir.clone(), &workspace).unwrap();

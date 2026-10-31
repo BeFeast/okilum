@@ -112,6 +112,7 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let access = reader_features::access(reader_features::Feature::Agents, cx);
         let mut view = Self::empty(state.clone(), window, cx);
         let area_copy = area.clone();
         view.area = Some(area);
@@ -187,7 +188,7 @@ impl ProjectView {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        reader_project_navigation::manager_gateway(env.clone(), gateway)
+                        reader_project_navigation::manager_gateway(env.clone(), gateway, access)
                             .map(|gateway| (env, gateway))
                     })
                     .await;
@@ -215,8 +216,10 @@ impl ProjectView {
                 Ok(token) => {
                     cx.background_executor()
                         .spawn(async move {
-                            let gateway = Arc::new(McpGateway::new(env.clone(), token)?);
-                            reader_project_navigation::manager_gateway(env.clone(), gateway)
+                            let gateway = Arc::new(
+                                McpGateway::new(env.clone(), token)?.with_access(access.clone()),
+                            );
+                            reader_project_navigation::manager_gateway(env.clone(), gateway, access)
                                 .map(|gateway| (env, gateway))
                         })
                         .await
@@ -335,6 +338,11 @@ impl ProjectView {
         }
     }
 
+    pub(super) fn suspend_module(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_active(false, window, cx);
+        self.clear_connection(cx);
+    }
+
     /// Append one undoable context block; this never prepares or sends a message intent.
     pub(super) fn append_board_context(
         &mut self,
@@ -376,6 +384,9 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         self.busy = false;
         if result
             .as_ref()
@@ -524,6 +535,10 @@ impl ProjectView {
     }
 
     fn connect_mode(&mut self, sign_in_again: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        let access = reader_features::access(reader_features::Feature::Agents, cx);
         if sign_in_again {
             reader_settings::show_t3(cx);
             return;
@@ -563,7 +578,8 @@ impl ProjectView {
                 .spawn(async move {
                     let gateway = reader_project_navigation::manager_gateway(
                         env.clone(),
-                        Arc::new(McpGateway::new(env.clone(), token?)?),
+                        Arc::new(McpGateway::new(env.clone(), token?)?.with_access(access.clone())),
+                        access,
                     )?;
                     if let Some(state) = state {
                         connections::save(&state, &env)?;
@@ -1349,6 +1365,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         if let Some(previous) = &self.project {
             previous.update(cx, |view, cx| view.set_active(false, window, cx));
         }

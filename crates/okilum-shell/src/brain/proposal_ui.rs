@@ -308,20 +308,27 @@ impl BrainView {
         }
         self.proposals.deadline_wake = Some(key.clone());
         let seconds = ((at - now).whole_seconds() + 1).clamp(1, 60) as u64;
-        cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(seconds))
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.proposals.deadline_wake.as_ref() != Some(&key) {
-                    return;
-                }
-                this.proposals.deadline_wake = None;
-                if this.collection == Collection::Attention {
-                    cx.notify();
-                    this.schedule_proposal_deadline(window, cx);
-                }
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(seconds))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.proposals.deadline_wake.as_ref() != Some(&key) {
+                            return;
+                        }
+                        this.proposals.deadline_wake = None;
+                        if this.collection == Collection::Attention {
+                            cx.notify();
+                            this.schedule_proposal_deadline(window, cx);
+                        }
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -1214,7 +1221,7 @@ mod tests {
     fn proposal_mixed_pages_retain_queued_and_failed_rows_and_reject_foreign_owner(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.busy = true;
@@ -1295,7 +1302,7 @@ mod tests {
     fn proposal_late_receipt_reconciles_without_navigating_or_replacing_drafts(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(format!("proposal-ui-{}", uuid()));
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -1339,7 +1346,7 @@ mod tests {
     fn proposal_terminal_receipt_retires_without_claiming_saved_or_touching_other_draft(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(format!("proposal-ui-{}", uuid()));
         let cleanup = dir.clone();
         cx.add_window_view(move |window, cx| {
@@ -1385,7 +1392,7 @@ mod tests {
     fn proposal_reads_are_owner_sequence_bound_and_stale_delivery_remains_retained(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(format!("proposal-ui-{}", uuid()));
         let cleanup = dir.clone();
         cx.add_window_view(move|window,cx|{let mut v=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);v.busy=true;v.expected_workspace=Some(workspace());v.collection=Collection::Attention;v.proposals.sequence=2;v.proposals.select(detail(),window,cx);
@@ -1401,7 +1408,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use super::proposal_retry_outbox::tests as retry;
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = std::env::temp_dir().join(format!("retry-ui-{}", uuid()));
         let cleanup = dir.clone();
         cx.add_window_view(move |window,cx| {

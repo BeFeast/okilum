@@ -9,7 +9,7 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<Reader>, &mut VisualTestContext, 
     std::fs::write(root.join("Folder/Sub/Note.md"), "# Note\n\nBody\n").unwrap();
     std::fs::write(root.join("Other/Else.md"), "# Else\n").unwrap();
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
         reader_ui_state::install(&temp.path().join("state"), cx);
         cx.set_global(reader_history::TestSessionDirectory(

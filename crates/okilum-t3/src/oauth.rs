@@ -99,6 +99,10 @@ pub fn http_client() -> Result<Client> {
 /// code or a token never goes to another host.
 pub fn discover(http: &Client, env: &Environment) -> Result<AuthServerMetadata> {
     let url = env.endpoint("/.well-known/oauth-authorization-server");
+    anyhow::ensure!(
+        crate::NetworkAccess::current().allowed(),
+        "Agents is disabled"
+    );
     let response = http
         .get(url.clone())
         .send()
@@ -152,6 +156,10 @@ pub fn register(
         .registration_endpoint
         .as_deref()
         .ok_or_else(|| anyhow!("the server offers no client registration"))?;
+    anyhow::ensure!(
+        crate::NetworkAccess::current().allowed(),
+        "Agents is disabled"
+    );
     let response = http
         .post(endpoint)
         .json(&json!({
@@ -243,6 +251,10 @@ pub fn exchange_code(
         expires_in: u64,
         scope: Option<String>,
     }
+    anyhow::ensure!(
+        crate::NetworkAccess::current().allowed(),
+        "Agents is disabled"
+    );
     let response = http
         .post(&metadata.token_endpoint)
         .form(&[

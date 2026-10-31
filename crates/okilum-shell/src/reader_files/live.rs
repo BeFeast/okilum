@@ -235,7 +235,7 @@ mod native_tests {
         root: &Path,
     ) -> (Entity<Reader>, &'a mut VisualTestContext) {
         cx.executor().allow_parking();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| {

@@ -92,7 +92,7 @@ mod tests {
     #[gpui::test]
     fn the_first_session_of_a_fresh_vault_sees_outside_changes(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -155,7 +155,7 @@ mod tests {
     #[gpui::test]
     fn the_first_session_sees_folders_and_a_sync_burst(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -226,7 +226,7 @@ mod tests {
     #[gpui::test]
     fn closing_settings_does_not_end_the_watcher_poll(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

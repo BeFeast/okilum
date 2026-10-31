@@ -2788,7 +2788,7 @@ mod tests {
         let directory = fixture.path().join("state");
         reader_history::ReadingHistory::record_usable_document(&directory, &root, "").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(&directory, cx);
             record(&root, Layout::default(), true, cx);
             flush(cx);
@@ -2904,7 +2904,7 @@ mod tests {
             ..Default::default()
         };
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             install(&directory, cx);
             record(&root, saved.clone(), true, cx);
             flush(cx);

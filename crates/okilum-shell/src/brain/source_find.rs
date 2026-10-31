@@ -330,31 +330,41 @@ impl BrainView {
         let generation = self.source_find.generation;
         let source = self.source.managed().unwrap().read(cx).text().clone();
         self.source_find.in_flight = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let worker_query = query.clone();
-            let ranges = cx
-                .background_executor()
-                .spawn(async move { search_ranges(source, &worker_query) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.source_find.in_flight = false;
-                this.sync_source_find(window, cx);
-                if this.source_find.generation == generation && this.source.stamp(cx) == Some(stamp)
-                {
-                    if let Some(panel) = &mut this.source_find.panel {
-                        if panel.owner == owner
-                            && panel.stamp == stamp
-                            && panel.query_text == query
-                            && Self::find_query_matches(panel, cx)
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let worker_query = query.clone();
+                    let ranges = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            search_ranges(source, &worker_query)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.source_find.in_flight = false;
+                        this.sync_source_find(window, cx);
+                        if this.source_find.generation == generation
+                            && this.source.stamp(cx) == Some(stamp)
                         {
-                            panel.ranges = ranges;
-                            panel.pending = false;
+                            if let Some(panel) = &mut this.source_find.panel {
+                                if panel.owner == owner
+                                    && panel.stamp == stamp
+                                    && panel.query_text == query
+                                    && Self::find_query_matches(panel, cx)
+                                {
+                                    panel.ranges = ranges;
+                                    panel.pending = false;
+                                }
+                            }
                         }
-                    }
-                }
-                this.start_source_find_worker(window, cx);
-                cx.notify();
-            });
+                        this.start_source_find_worker(window, cx);
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }

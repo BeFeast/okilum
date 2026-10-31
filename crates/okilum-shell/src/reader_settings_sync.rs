@@ -20,11 +20,30 @@ struct BackgroundSync(Entity<SyncSettings>);
 impl Global for BackgroundSync {}
 pub(super) fn shared(window: &mut Window, cx: &mut App) -> Entity<SyncSettings> {
     if let Some(background) = cx.try_global::<BackgroundSync>() {
-        return background.0.clone();
+        let view = background.0.clone();
+        if !view.read(cx).loaded && !view.read(cx).busy {
+            view.update(cx, |view, cx| view.run(Operation::Read, cx));
+        }
+        return view;
     }
     let view = cx.new(|cx| SyncSettings::new(window, cx));
     cx.set_global(BackgroundSync(view.clone()));
     view
+}
+
+pub(super) fn suspend(cx: &mut App) {
+    if let Some(view) = cx
+        .try_global::<BackgroundSync>()
+        .map(|background| background.0.clone())
+    {
+        view.update(cx, |view, cx| {
+            view.refresh_epoch += 1;
+            view.busy = false;
+            view.loaded = false;
+            view.output = None;
+            cx.notify();
+        });
+    }
 }
 
 struct Candidate {
@@ -121,6 +140,9 @@ impl SyncSettings {
         this
     }
     fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -129,63 +151,76 @@ impl SyncSettings {
             return;
         };
         self.refresh_epoch += 1;
+        let epoch = self.refresh_epoch;
         self.busy = true;
         self.error = None;
         self.error_field = ErrorField::General;
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let (result, recovered) = cx
-                .background_executor()
-                .spawn(async move {
-                    let result = perform(&desktop, operation);
-                    let recovered = if result.is_err() {
-                        desktop.read().ok()
-                    } else {
-                        None
-                    };
-                    (result, recovered)
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.busy = false;
-                match result {
-                    Ok(mut output) => {
-                        if let Some(candidates) = output.candidates.take() {
-                            this.candidates = candidates;
-                            this.unavailable = output.unavailable;
-                            this.selected = None;
-                        }
-                        this.loaded = true;
-                        this.output = Some(output);
-                    }
-                    Err(error) => {
-                        if let Some(snapshot) = recovered {
-                            this.loaded = true;
-                            if let Some(output) = this.output.as_mut() {
-                                output.snapshot = snapshot;
-                                output.folder = None;
-                                output.approval = None;
+        cx.spawn({
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Sync, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let (result, recovered) = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            let result = perform(&desktop, operation);
+                            let recovered = if result.is_err() {
+                                desktop.read().ok()
                             } else {
-                                this.output = Some(Output {
-                                    package_available: std::path::Path::new("/usr/bin/syncthing")
-                                        .is_file(),
-                                    snapshot,
-                                    candidates: None,
-                                    unavailable: false,
-                                    folder: None,
-                                    approval: None,
-                                    removal: None,
-                                });
+                                None
+                            };
+                            (result, recovered)
+                        }))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.refresh_epoch != epoch {
+                            return;
+                        }
+                        this.busy = false;
+                        match result {
+                            Ok(mut output) => {
+                                if let Some(candidates) = output.candidates.take() {
+                                    this.candidates = candidates;
+                                    this.unavailable = output.unavailable;
+                                    this.selected = None;
+                                }
+                                this.loaded = true;
+                                this.output = Some(output);
+                            }
+                            Err(error) => {
+                                if let Some(snapshot) = recovered {
+                                    this.loaded = true;
+                                    if let Some(output) = this.output.as_mut() {
+                                        output.snapshot = snapshot;
+                                        output.folder = None;
+                                        output.approval = None;
+                                    } else {
+                                        this.output = Some(Output {
+                                            package_available: std::path::Path::new(
+                                                "/usr/bin/syncthing",
+                                            )
+                                            .is_file(),
+                                            snapshot,
+                                            candidates: None,
+                                            unavailable: false,
+                                            folder: None,
+                                            approval: None,
+                                            removal: None,
+                                        });
+                                    }
+                                }
+                                // Credentials stay in controller journals, never in the view model.
+                                eprintln!("Sync operation failed: {error}");
+                                this.error = Some(user_error(&error).into());
                             }
                         }
-                        // Credentials stay in controller journals, never in the view model.
-                        eprintln!("Sync operation failed: {error}");
-                        this.error = Some(user_error(&error).into());
-                    }
-                }
-                cx.notify();
-                this.schedule_refresh(cx);
-            });
+                        cx.notify();
+                        this.schedule_refresh(cx);
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -204,12 +239,12 @@ impl SyncSettings {
         self.conflicts_busy = true;
         self.conflicts = None;
         cx.notify();
-        cx.spawn(async move |this, cx| {
+        cx.spawn({ let module_access = crate::reader_features::access(crate::reader_features::Feature::Sync, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             let root = destination.clone();
-            let result = cx.background_executor().spawn(async move {
+            let result = cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 okilum_sync_controller::conflicts::inspect(&root)
                     .map_err(|_| "Could not inspect this folder. Check its location and access permissions.".to_string())
-            }).await;
+            })).await;
             let _ = this.update(cx, |this, cx| {
                 this.conflicts_busy = false;
                 // A finished scan belongs to the original folder, never a new setup.
@@ -219,9 +254,12 @@ impl SyncSettings {
                 }
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+            return;
+        }
         let Some(output) = &self.output else {
             return;
         };
@@ -243,22 +281,29 @@ impl SyncSettings {
         }
         let removing = runtime.removed || output.removal.is_some();
         let epoch = self.refresh_epoch;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(5))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.refresh_epoch == epoch && !this.busy {
-                    this.run(
-                        if removing {
-                            Operation::Remove
-                        } else {
-                            Operation::Refresh
-                        },
-                        cx,
-                    );
-                }
-            });
+        cx.spawn({
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Sync, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(5))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.refresh_epoch == epoch && !this.busy {
+                            this.run(
+                                if removing {
+                                    Operation::Remove
+                                } else {
+                                    Operation::Refresh
+                                },
+                                cx,
+                            );
+                        }
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -344,12 +389,19 @@ impl SyncSettings {
             multiple: false,
             prompt: Some("Choose an empty folder or a known vault copy".into()),
         });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picker.await {
-                let _ = this.update(cx, |this, cx| {
-                    this.destination = paths.into_iter().next();
-                    cx.notify();
-                });
+        cx.spawn({
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Sync, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    if let Ok(Ok(Some(paths))) = picker.await {
+                        let _ = this.update(cx, |this, cx| {
+                            this.destination = paths.into_iter().next();
+                            cx.notify();
+                        });
+                    }
+                })
+                .await
             }
         })
         .detach();

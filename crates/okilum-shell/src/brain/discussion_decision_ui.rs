@@ -256,11 +256,11 @@ impl BrainView {
             wire["request"] = state.request.clone().unwrap();
         }
         self.busy = true;
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, { let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this, cx| { okilum_t3::scope_network(module_access, async move {
             let guard = workspace.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { rpc_guarded(endpoint, wire, guard.as_ref()) })
+                .spawn(okilum_t3::scope_current_network(async move { rpc_guarded(endpoint, wire, guard.as_ref()) }))
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if !this.discussion_decision.active
@@ -307,7 +307,7 @@ impl BrainView {
                 }
                 cx.notify();
             });
-        })
+         }).await } })
         .detach();
         cx.notify();
     }
@@ -585,7 +585,7 @@ mod tests {
     fn decision_review_protects_navigation_and_cancel_preserves_existing_source(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             view.busy = true;
@@ -637,7 +637,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
             Arc,
         };
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = listener.local_addr().unwrap();
@@ -759,7 +759,7 @@ mod tests {
     fn decision_readonly_exact_review_scrolls_to_last_line_without_editing(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let body = " Exact user text with preserved detail.\n".repeat(120);
         let original = body.clone();
         let (view, cx) = cx.add_window_view(|window, cx| {

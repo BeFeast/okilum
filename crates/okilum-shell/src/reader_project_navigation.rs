@@ -103,7 +103,10 @@ fn with_manager_session(
 pub(super) fn manager_gateway(
     env: okilum_t3::Environment,
     mcp: Arc<dyn okilum_t3::ManagerGateway>,
+    access: okilum_t3::NetworkAccess,
 ) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
+    anyhow::ensure!(access.allowed(), "Agents is disabled");
+    let _access = access.enter();
     #[cfg(test)]
     t3_probe::record_manager_gateway();
     #[cfg(target_os = "macos")]
@@ -126,6 +129,14 @@ pub(super) async fn t3_gateways(
     state: Option<PathBuf>,
     cx: &mut AsyncWindowContext,
 ) -> Option<Gateways> {
+    let access = this
+        .update_in_own_window(cx, |_, _, cx| {
+            reader_features::access(reader_features::Feature::Agents, cx)
+        })
+        .ok()?;
+    if !access.allowed() {
+        return None;
+    }
     #[cfg(test)]
     let probe = t3_probe::sweep().await;
     let projects = this
@@ -162,9 +173,13 @@ pub(super) async fn t3_gateways(
             };
             #[cfg(test)]
             let token = token.or_else(|| probe.as_ref().and_then(|p| p.token.clone()));
+            let access = access.clone();
             let gateway = cx
                 .background_executor()
-                .spawn(async move { paired_gateway(env, token, manager_session()) })
+                .spawn(async move {
+                    let _access = access.enter();
+                    paired_gateway(env, token, manager_session())
+                })
                 .await;
             match gateway {
                 Ok(gateway) => {
@@ -326,6 +341,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         self.project_navigation.section = section;
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         self.project_navigation.loading = false;
@@ -355,6 +373,9 @@ impl Reader {
 
     /// Rescan manifests off the UI thread and feed every mounted picker.
     fn discover_projects(&mut self, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         let vault = self.vault_root.clone();
         let state = self.session_directory.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -391,6 +412,9 @@ impl Reader {
     /// «<project> ▾» opens the shared picker below the switcher (#1519).
     /// Opening does not cancel an entry in flight: no generation bump.
     pub(super) fn show_project_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         let picker = self.ensure_switcher_picker(window, cx);
         let navigation = &self.project_navigation;
         let active = navigation.active.as_ref().map(|p| p.folder.clone());
@@ -410,6 +434,9 @@ impl Reader {
     /// manifests once, without the manager status sweep the switcher runs;
     /// the switcher and the Projects section rescan as before.
     pub(super) fn ensure_palette_projects(&mut self, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         if self.single_file || self.project_navigation.discovered || !self.vault_root.is_dir() {
             return;
         }
@@ -478,6 +505,9 @@ impl Reader {
     }
 
     fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         let projects = self.project_navigation.discovery.projects.clone();
         let state = self.session_directory.clone();
         let generation = self.project_navigation.generation;
@@ -938,6 +968,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         let generation = self.project_navigation.generation;
         let vault = self.vault_root.clone();
@@ -991,6 +1024,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
         if self.project_navigation.status_managers.get(&project.folder) == Some(&project.manager)
             && self
                 .project_navigation
@@ -1403,7 +1439,7 @@ mod icon_save_tests {
     ) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1530,7 +1566,7 @@ mod icon_save_tests {
     ) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -2044,7 +2080,7 @@ mod local_reader_without_t3_tests {
     fn init(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
     }
@@ -2363,6 +2399,72 @@ mod local_reader_without_t3_tests {
         let _client =
             std::net::TcpStream::connect(endpoint.listener.local_addr().unwrap()).unwrap();
         assert_eq!(endpoint.accepted_within(1), 1);
+    }
+
+    #[gpui::test]
+    fn disabled_agents_block_explicit_entries_and_revoke_a_running_module_without_restart(
+        cx: &mut TestAppContext,
+    ) {
+        use reader_features::{set_enabled, Feature};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        local_vault(&root);
+        let endpoint = Endpoint::new();
+        configured_project(&root, &state, &endpoint.origin());
+        let original = std::fs::read(root.join("start.md")).unwrap();
+        let t3 = Arc::new(UnreachableT3::default());
+        let probe = probe(&t3);
+        let _installed = t3_probe::install(probe.clone());
+        init(cx);
+        cx.update(|cx| reader_features::install(&state, cx));
+        let (reader, visual) = open_reader(cx, &root, &state);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("title-switcher").is_none());
+        reader.update_in(visual, |reader, window, cx| {
+            reader.show_app_section(Section::Projects, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert_no_t3(&probe, &t3, reader, "disabled explicit Projects")
+        });
+        assert_eq!(search(&reader, visual, "meridian"), ["Notes/Second.md"]);
+        visual.update(|_, cx| set_enabled(Feature::Agents, true, cx));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("title-switcher").is_some(),
+            "enabled UI appears without restart"
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.show_app_section(Section::Projects, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(
+            probe.sweeps.load(SeqCst) > 0,
+            "positive control: the enabled entry reaches the real connection path"
+        );
+        assert!(
+            !t3.calls().is_empty(),
+            "positive control: T3 operations ran"
+        );
+        visual.update(|_, cx| set_enabled(Feature::Agents, false, cx));
+        visual.run_until_parked();
+        let before = t3.calls();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.show_app_section(Section::Projects, window, cx)
+        });
+        visual.executor().advance_clock(Duration::from_secs(16));
+        visual.run_until_parked();
+        assert_eq!(
+            t3.calls(),
+            before,
+            "disabled module cannot restart from a stale action/timer"
+        );
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.project_navigation.active.is_none());
+            assert!(!reader.project_open);
+        });
+        assert_eq!(std::fs::read(root.join("start.md")).unwrap(), original);
     }
 
     const BOUNDARY_CHILD: &str = "OKILUM_1521_LIBC_BOUNDARY_CHILD";

@@ -205,7 +205,7 @@ mod tests {
                     ))
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         for mode in [ThemeMode::Light, ThemeMode::Dark] {
             for (text, needle) in [
                 ("שלום abc xyz", "שלום"),

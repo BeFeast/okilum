@@ -498,7 +498,7 @@ mod tests {
             // the persisted appearance store used by document zoom.
             reader_ui_state::install(&temp.path().join("state"), cx);
             assert!(reader_ui_state::installed(cx));
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
         });
         let vault = temp.path().join("vault");
@@ -693,7 +693,7 @@ mod tests {
     ) -> (Entity<Reader>, &'a mut gpui::VisualTestContext) {
         cx.update(|cx| {
             reader_ui_state::install(&temp.path().join("state"), cx);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
         });
         let vault = temp.path().join("vault");
@@ -775,7 +775,7 @@ mod tests {
         std::fs::write(vault.join("start.md"), source).unwrap();
         cx.update(|cx| {
             reader_ui_state::install(&temp.path().join("state"), cx);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             super::super::bind_keys(cx);
         });
         let mut reader = None;

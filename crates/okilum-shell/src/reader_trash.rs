@@ -885,7 +885,7 @@ mod tests {
     #[gpui::test]
     fn trash_during_published_warm_refresh_completes_and_undo_restores(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -959,7 +959,7 @@ mod tests {
     ) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
     fn trash_toast_expires_at_bottom_and_keyboard_undo_survives_dismissal(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1227,7 +1227,7 @@ mod tests {
     fn undo_after_vault_switch_keeps_the_other_vault_item_in_trash(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1364,7 +1364,7 @@ mod tests {
     fn unlinked_folder_moves_without_dialog_and_undo_restores_contents(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1438,7 +1438,7 @@ mod tests {
     fn incoming_links_require_confirmation_and_cancel_preserves_source(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

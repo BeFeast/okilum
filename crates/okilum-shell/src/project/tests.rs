@@ -3,7 +3,7 @@ use ::core::prelude::v1::test;
 
 #[gpui::test]
 fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {
@@ -134,7 +134,7 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
 
 #[gpui::test]
 fn manager_history_and_questions_render_through_the_gateway(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {
@@ -175,7 +175,7 @@ fn manager_history_and_questions_render_through_the_gateway(cx: &mut TestAppCont
 
 #[gpui::test]
 fn a_revoked_connection_has_a_visible_reason_and_keeps_the_draft(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake {
         revoked: true,
@@ -206,7 +206,7 @@ fn a_revoked_connection_has_a_visible_reason_and_keeps_the_draft(cx: &mut TestAp
 
 #[gpui::test]
 fn send_and_retry_keep_one_retained_message_and_one_request_id(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake {
         fail_first: true,
@@ -268,7 +268,7 @@ fn nearest_area_is_explicit_and_connections_never_contain_token_bytes() {
 
 #[gpui::test]
 fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake {
         wrong_project: true,
@@ -299,7 +299,7 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
 ) {
     cx.update(|cx| {
         cx.set_reduce_motion(true);
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let fixture = tempfile::tempdir().unwrap();
@@ -443,7 +443,7 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
 #[gpui::test]
 fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let fixture = tempfile::tempdir().unwrap();
@@ -564,7 +564,7 @@ fn a_failed_new_intent_keeps_a_draft_even_when_old_text_matches(cx: &mut TestApp
         return;
     }
 
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {
@@ -628,7 +628,7 @@ fn a_failed_new_intent_keeps_a_draft_even_when_old_text_matches(cx: &mut TestApp
 
 #[gpui::test]
 fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let files = tempfile::tempdir().unwrap();
     let vault = files.path().join("vault");
     std::fs::create_dir_all(vault.join("ops")).unwrap();
@@ -759,7 +759,7 @@ fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &m
 fn deactivation_and_reactivation_with_a_read_awaiting_publication_keep_one_poller(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake {
         grown: std::sync::Mutex::new(true),
@@ -822,7 +822,7 @@ fn deactivation_and_reactivation_with_a_read_awaiting_publication_keep_one_polle
 fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_draft_on_error(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let files = tempfile::tempdir().unwrap();
     let area = files.path().join("area");
     std::fs::create_dir_all(area.join("ops")).unwrap();
@@ -915,7 +915,7 @@ fn leak_selector(selector: String) -> &'static str {
 
 #[gpui::test]
 fn manager_address_field_normalizes_and_saves_a_strict_origin(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -969,7 +969,7 @@ fn manager_address_field_normalizes_and_saves_a_strict_origin(cx: &mut TestAppCo
 
 #[gpui::test]
 fn manager_address_field_shows_a_friendly_error_without_starting_oauth(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -1007,7 +1007,7 @@ fn manager_address_field_shows_a_friendly_error_without_starting_oauth(cx: &mut 
 
 #[gpui::test]
 fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake {
         question_failure: Some(okilum_t3::GatewayError::Unsupported {
@@ -1062,7 +1062,7 @@ fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppC
 fn connected_controls_collapse_until_requested_and_keep_the_renew_reminder(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let expiry = chrono::DateTime::parse_from_rfc3339("2026-10-30T15:00:00Z")
         .unwrap()
@@ -1132,7 +1132,7 @@ fn shared_sign_out_stops_matching_panels_and_preserves_drafts(cx: &mut TestAppCo
             h_flex().size_full().children(self.0.iter().cloned())
         }
     }
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let panels = [
@@ -1191,7 +1191,7 @@ fn shared_sign_out_stops_matching_panels_and_preserves_drafts(cx: &mut TestAppCo
 
 #[gpui::test]
 fn reconnect_browser_guidance_opens_only_the_entered_t3_origin(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake {
         connection_status: Some(GatewayStatus::Revoked),

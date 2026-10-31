@@ -136,7 +136,7 @@ mod tests {
     #[gpui::test]
     fn space_previews_selected_files_and_arrows_keep_compact_tree_focus(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

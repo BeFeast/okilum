@@ -113,7 +113,7 @@ mod tests {
         std::fs::write(root.join("Note.md"), "# Note\n").unwrap();
         std::fs::write(root.join("Damaged.md"), b"# Damaged\n\xff").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
         });
@@ -191,7 +191,7 @@ mod tests {
         let original = b"# Synthetic note\n\nBefore \xff After\n";
         std::fs::write(&path, original).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
         });

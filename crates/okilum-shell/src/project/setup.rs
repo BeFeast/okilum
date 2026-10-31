@@ -96,6 +96,7 @@ impl ProjectView {
         let existing = reader_t3_settings::gateway(&env, cx);
         self.error = None;
         self.busy = true;
+        let access = reader_features::access(reader_features::Feature::Agents, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = async {
                 let gateway = match existing {
@@ -117,7 +118,10 @@ impl ProjectView {
                             .spawn(async move {
                                 reader_project_navigation::manager_gateway(
                                     target.clone(),
-                                    Arc::new(McpGateway::new(target, token)?),
+                                    Arc::new(
+                                        McpGateway::new(target, token)?.with_access(access.clone()),
+                                    ),
+                                    access,
                                 )
                             })
                             .await?

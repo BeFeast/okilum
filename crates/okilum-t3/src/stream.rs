@@ -82,6 +82,7 @@ pub struct NativeClient {
     token: NativeToken,
     http: reqwest::blocking::Client,
     timeout: Duration,
+    access: crate::NetworkAccess,
 }
 
 impl NativeClient {
@@ -90,6 +91,9 @@ impl NativeClient {
         thread_id: &str,
         cursor: &str,
     ) -> StreamResult<crate::projection::HistoryPage> {
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         self.token.validate(&self.environment, crate::unix_now())?;
         auth::history(
             &self.http,
@@ -116,11 +120,18 @@ impl NativeClient {
             token,
             http,
             timeout,
+            access: crate::NetworkAccess::current(),
         })
     }
 
+    pub fn with_access(mut self, access: crate::NetworkAccess) -> Self {
+        self.access = access;
+        self
+    }
+
     pub fn can_operate(&self) -> bool {
-        self.token.can_operate()
+        self.access.allowed()
+            && self.token.can_operate()
             && self
                 .token
                 .validate(&self.environment, crate::unix_now())
@@ -130,6 +141,9 @@ impl NativeClient {
     /// One bounded attempt on a dedicated RPC socket. The live subscription is
     /// never interrupted by command traffic. No implicit retry or MCP fallback.
     pub fn dispatch(&self, command: &crate::actions::Command) -> StreamResult<u64> {
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         self.token.validate(&self.environment, crate::unix_now())?;
         if !self.token.can_operate() {
             return Err(StreamError::Protocol(
@@ -145,6 +159,7 @@ impl NativeClient {
             thread_id: command.thread_id.clone(),
             cursor: None,
             closed: false,
+            access: self.access.clone(),
         };
         rpc.send(json!({"_tag":"Request","id":"1","tag":"orchestration.dispatchCommand","payload":payload,"headers":[]}))?;
         let deadline = Instant::now() + self.timeout;
@@ -180,6 +195,9 @@ impl NativeClient {
     }
 
     fn open_socket(&self) -> StreamResult<(WebSocket<MaybeTlsStream<TcpStream>>, TcpStream)> {
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         let ticket = auth::ticket(&self.http, &self.environment, &self.token)?;
         let mut url = self.environment.endpoint("/ws");
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
@@ -189,12 +207,18 @@ impl NativeClient {
             .append_pair("orchestrationProtocol", "2")
             .append_pair("wsTicket", &ticket);
         let host = self.environment.host();
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         let addresses = (host.as_str(), url.port_or_known_default().unwrap_or(80))
             .to_socket_addrs()
             .map_err(|_| StreamError::Unreachable)?;
         let deadline = Instant::now() + self.timeout;
         let mut connected = None;
         for address in addresses {
+            if !self.access.allowed() {
+                return Err(StreamError::Closed);
+            }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
@@ -211,6 +235,9 @@ impl NativeClient {
             .set_write_timeout(Some(self.timeout))
             .map_err(|_| StreamError::Unreachable)?;
         let cancel = stream.try_clone().map_err(|_| StreamError::Unreachable)?;
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         let (socket, _) = tungstenite::client_tls_with_config(url.as_str(), stream, None, None)
             .map_err(|error| match error {
                 tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
@@ -238,6 +265,9 @@ impl NativeClient {
         thread_id: &str,
         resume: Option<ResumeCursor>,
     ) -> StreamResult<ThreadSubscription> {
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         self.token.validate(&self.environment, crate::unix_now())?;
         if thread_id.trim().is_empty() {
             return Err(StreamError::Protocol("empty thread id"));
@@ -257,6 +287,7 @@ impl NativeClient {
             thread_id: thread_id.into(),
             cursor: resume,
             closed: false,
+            access: self.access.clone(),
         };
         let mut payload = json!({"threadId":thread_id,"requestCompletionMarker":true,"acceptBoundedSnapshot":true});
         if let Some(cursor) = &subscription.cursor {
@@ -278,6 +309,7 @@ impl CancelSubscription {
 }
 
 pub struct ThreadSubscription {
+    access: crate::NetworkAccess,
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     cancel: TcpStream,
     origin: String,
@@ -389,6 +421,9 @@ impl ThreadSubscription {
     }
 
     fn send(&mut self, value: Value) -> StreamResult<()> {
+        if !self.access.allowed() {
+            return Err(StreamError::Closed);
+        }
         self.socket
             .send(Message::Text(value.to_string().into()))
             .map_err(|_| StreamError::Closed)

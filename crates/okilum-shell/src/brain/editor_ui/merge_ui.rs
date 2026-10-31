@@ -126,28 +126,40 @@ impl BrainView {
         self.editor.merge.result = None;
         self.editor.merge.preview = None;
         self.editor.merge.flight = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let calculate_binding = binding.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move { calculate(&calculate_binding) })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.editor.merge.sequence != sequence || !this.matches_merge(&binding, cx) {
-                    this.merge_check(cx);
-                    return;
-                }
-                this.editor.merge.flight = false;
-                if let Ok(MergePreview::Ready { text, .. }) = &result {
-                    this.editor.merge.preview = Some(cx.new(|cx| {
-                        let mut input = TextareaState::new(window, cx).rows(8).soft_wrap(false);
-                        input.set_value(text.clone(), window, cx);
-                        input
-                    }));
-                }
-                this.editor.merge.result = Some(result);
-                cx.notify();
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let calculate_binding = binding.clone();
+                    let result = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            calculate(&calculate_binding)
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.editor.merge.sequence != sequence
+                            || !this.matches_merge(&binding, cx)
+                        {
+                            this.merge_check(cx);
+                            return;
+                        }
+                        this.editor.merge.flight = false;
+                        if let Ok(MergePreview::Ready { text, .. }) = &result {
+                            this.editor.merge.preview = Some(cx.new(|cx| {
+                                let mut input =
+                                    TextareaState::new(window, cx).rows(8).soft_wrap(false);
+                                input.set_value(text.clone(), window, cx);
+                                input
+                            }));
+                        }
+                        this.editor.merge.result = Some(result);
+                        cx.notify();
+                    });
+                })
+                .await
+            }
         })
         .detach();
         cx.notify();
@@ -169,9 +181,9 @@ impl BrainView {
         self.editor.flight = true;
         self.source_loading = true;
         self.sync_source_policy(cx);
-        cx.spawn_in(window,async move |this,cx| {
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let expected=binding.draft.clone();
-            let result=cx.background_executor().spawn(async move {store?.update(&expected,&candidate)}).await;
+            let result=cx.background_executor().spawn(okilum_t3::scope_current_network(async move {store?.update(&expected,&candidate)})).await;
             let _=this.update_in(cx,|this,window,cx| {
                 this.editor.flight=false;
                 this.source_loading=false; this.sync_source_policy(cx);
@@ -192,7 +204,7 @@ impl BrainView {
                 this.editor_protect(window,cx);
                 cx.notify();
             });
-        }).detach();
+         }).await } }).detach();
         cx.notify();
     }
     pub(super) fn merge_panel(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -332,7 +344,7 @@ mod tests {
         assert!(
             matches!(calculate(&binding).unwrap(), MergePreview::Ready {text, ..} if text == "X\nY\nZ\n")
         );
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             BrainView::new_managed_test(&old_binding.workspace, &store, window, cx)
         });
@@ -382,7 +394,7 @@ mod tests {
     #[gpui::test]
     fn preview_is_separate_and_adoption_waits_for_exact_durability(cx: &mut TestAppContext) {
         let (dir, binding, store) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&binding.workspace, &store, window, cx);
             v.busy = true;
@@ -434,7 +446,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (dir, binding, store) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&binding.workspace, &store, window, cx);
             v.busy = true;
@@ -485,7 +497,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (dir, binding, store) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&binding.workspace, &store, window, cx);
             v.busy = true;
@@ -519,7 +531,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (dir, binding, store) = fixture();
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut v = BrainView::new_managed_test(&binding.workspace, &store, window, cx);
             v.busy = true;

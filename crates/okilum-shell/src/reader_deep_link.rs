@@ -336,7 +336,7 @@ mod tests {
     #[gpui::test]
     fn copy_link_to_heading_names_the_heading_under_the_pointer(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -422,7 +422,7 @@ mod tests {
     #[gpui::test]
     fn links_land_on_lines_in_reader_and_editor(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

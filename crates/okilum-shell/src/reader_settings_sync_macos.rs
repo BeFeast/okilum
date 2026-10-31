@@ -21,6 +21,9 @@ pub(super) struct SyncSettings {
 }
 impl SyncSettings {
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -29,27 +32,38 @@ impl SyncSettings {
         self.status = ManagedStatus::RecoveryPending;
         self.detail = RecoveryDetail::StateUnavailable;
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let status = cx
-                .background_executor()
-                .spawn(async {
-                    read_status().unwrap_or((
-                        ManagedStatus::RecoveryPending,
-                        RecoveryDetail::StateUnavailable,
-                    ))
+        cx.spawn({
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::Sync, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let status = cx
+                        .background_executor()
+                        .spawn(async {
+                            read_status().unwrap_or((
+                                ManagedStatus::RecoveryPending,
+                                RecoveryDetail::StateUnavailable,
+                            ))
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.status = status.0;
+                        this.detail = status.1;
+                        this.busy = false;
+                        cx.notify();
+                    });
                 })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.status = status.0;
-                this.detail = status.1;
-                this.busy = false;
-                cx.notify();
-            });
+                .await
+            }
         })
         .detach();
     }
 }
 fn read_status() -> anyhow::Result<(ManagedStatus, RecoveryDetail)> {
+    anyhow::ensure!(
+        okilum_t3::NetworkAccess::current().allowed(),
+        "Sync is disabled"
+    );
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
         macos::{account_state_directory, connection::NativeConnection},

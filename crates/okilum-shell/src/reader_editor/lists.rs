@@ -1400,7 +1400,7 @@ mod key_tests {
 
     fn open(cx: &mut TestAppContext) -> (Note, &mut VisualTestContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();

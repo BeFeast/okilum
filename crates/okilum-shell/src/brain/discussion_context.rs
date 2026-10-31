@@ -331,17 +331,26 @@ impl BrainView {
         let request =
             json!({"op":"chat_get","conversation_id":key.conversation,"context_turn_id":key.turn});
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let request_workspace = workspace.clone();
-            let response = cx
-                .background_executor()
-                .spawn(async move { rpc_guarded(endpoint, request, request_workspace.as_ref()) })
-                .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                if this.finish_discussion_context(&key, sequence, &workspace, response) {
-                    cx.notify();
-                }
-            });
+        cx.spawn_in(window, {
+            let module_access =
+                crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
+            async move |this, cx| {
+                okilum_t3::scope_network(module_access, async move {
+                    let request_workspace = workspace.clone();
+                    let response = cx
+                        .background_executor()
+                        .spawn(okilum_t3::scope_current_network(async move {
+                            rpc_guarded(endpoint, request, request_workspace.as_ref())
+                        }))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if this.finish_discussion_context(&key, sequence, &workspace, response) {
+                            cx.notify();
+                        }
+                    });
+                })
+                .await
+            }
         })
         .detach();
     }
@@ -548,7 +557,7 @@ mod tests {
     fn late_context_reply_cannot_cross_workspace_goal_conversation_or_turn(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             let (conversation, response) = fixture();
@@ -594,7 +603,7 @@ mod tests {
 
     #[gpui::test]
     fn expanded_context_keeps_retained_composer_below_transcript(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
             let (conversation, _) = fixture();

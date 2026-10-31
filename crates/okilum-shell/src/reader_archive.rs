@@ -668,7 +668,7 @@ mod tests {
         let state = fixture.path().join("state");
         std::fs::create_dir_all(&state).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });

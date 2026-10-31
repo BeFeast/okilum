@@ -613,7 +613,7 @@ mod tests {
     fn deleted_folder_operation(cx: &mut TestAppContext, operation: &str, nested: bool) {
         use gpui_component::WindowExt;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -866,7 +866,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             // Exercise hit testing at settled toast geometry, not animation timing.
             cx.set_reduce_motion(true);
             bind_keys(cx);
@@ -1005,7 +1005,7 @@ mod tests {
     #[gpui::test]
     fn creation_undo_is_scoped_to_its_toast_vault_and_tree(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             cx.set_reduce_motion(true);
             bind_keys(cx);
         });
@@ -1170,7 +1170,7 @@ mod tests {
     #[gpui::test]
     fn creation_uses_tree_selection_else_root(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1230,7 +1230,7 @@ mod tests {
     #[gpui::test]
     fn empty_folder_persists_inventory_without_forking_or_copying_search(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1289,7 +1289,7 @@ mod tests {
     fn typing_right_after_create_lands_in_the_body(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let dir = std::env::temp_dir().join(format!("okilum-create-{}", uuid::Uuid::new_v4()));
@@ -1363,7 +1363,7 @@ mod tests {
     fn narrow_window_shows_the_new_note_after_create(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -1432,7 +1432,7 @@ mod tests {
     fn new_note_uses_the_templates_folder_chosen_in_settings(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let dir = std::env::temp_dir().join(format!("okilum-create-{}", uuid::Uuid::new_v4()));
@@ -1533,7 +1533,7 @@ mod tests {
             // This test verifies file creation, not dialog animation. Keep the
             // hit target stable between selector lookup and dispatched input.
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let dir = std::env::temp_dir().join(format!("okilum-create-{}", uuid::Uuid::new_v4()));
@@ -1789,7 +1789,7 @@ mod tests {
     fn creation_entry_points(cx: &mut TestAppContext, folder_mode: bool) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         for route in 0..5 {
@@ -1947,7 +1947,7 @@ mod tests {
     fn creation_name_has_typing_space_in_nested_sidebar(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();
@@ -2010,7 +2010,7 @@ mod tests {
     fn creation_destination_is_shown_and_changeable(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let temp = tempfile::tempdir().unwrap();

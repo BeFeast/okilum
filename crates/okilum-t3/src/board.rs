@@ -495,6 +495,10 @@ pub fn read_issues(binding: &Binding) -> Vec<(u64, Result<Issue, String>)> {
         .iter()
         .map(|scope| {
             let result = (|| -> Result<Issue> {
+                ensure!(
+                    crate::NetworkAccess::current().allowed(),
+                    "Agents is disabled"
+                );
                 let endpoint = format!(
                     "{}/api/v1/repos{}/issues/{}",
                     repo.origin().ascii_serialization(),
@@ -575,6 +579,10 @@ fn read_open_pulls(
     repo: &url::Url,
 ) -> Result<Vec<PullRequest>, String> {
     let read = || -> Result<Vec<PullRequest>> {
+        ensure!(
+            crate::NetworkAccess::current().allowed(),
+            "Agents is disabled"
+        );
         let endpoint = format!(
             "{}/api/v1/repos{}/pulls?state=open&limit=50&page=1",
             repo.origin().ascii_serialization(),

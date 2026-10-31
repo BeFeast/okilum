@@ -10,7 +10,7 @@ fn setup(
     std::path::PathBuf,
 ) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
     });
     let directory = std::env::temp_dir().join(format!("find277-{}", uuid()));

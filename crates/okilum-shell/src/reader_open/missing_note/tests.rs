@@ -43,7 +43,7 @@ fn explicit_creation_never_overwrites_or_creates_parent_folders() {
 
 fn init(cx: &mut gpui::TestAppContext, state: &Path) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        crate::test_init(cx);
         bind_keys(cx);
         reader_open::install(cx);
         cx.set_global(reader_history::TestSessionDirectory(state.to_path_buf()));

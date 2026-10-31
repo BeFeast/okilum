@@ -2482,7 +2482,7 @@ mod tests {
         let original = "# Tasks\n\n1. [ ] first\n2. [ ] second\n";
         std::fs::write(root.join("note.md"), original).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });
@@ -2573,7 +2573,7 @@ mod tests {
         let original = "# Note\n\nFirst line.\nSecond line.";
         std::fs::write(root.join("note.md"), original).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });
@@ -2644,7 +2644,7 @@ mod tests {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(root.join("note.md"), "# Note\n\nSome **bold** text.\n").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });
@@ -2706,7 +2706,7 @@ mod tests {
         let text = "# Example\n\nOkilum okilum OKILUM\n\nЗаметка заметка ЗАМЕТКА\n";
         std::fs::write(root.join("note.md"), text).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_ui_state::install(&state, cx);
             assert!(!reader_ui_state::find_case_sensitive(cx));
@@ -2788,7 +2788,7 @@ mod tests {
 
     #[gpui::test]
     fn initial_source_highlighting_prepares_without_a_typing_debounce(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let mut input = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -2833,7 +2833,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("note.md"), "original").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -2921,7 +2921,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("note.md"), "original").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -3006,7 +3006,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_recovery::install(&state, None, cx);
         });
@@ -3088,7 +3088,7 @@ mod tests {
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("note.md"), "before check").unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_recovery::install(&state, None, cx);
         });
@@ -3180,7 +3180,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             reader_recovery::install(&state, None, cx);
         });
@@ -3244,7 +3244,7 @@ mod tests {
     ) {
         use gpui_component::WindowExt;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -3340,7 +3340,7 @@ mod tests {
     #[gpui::test]
     fn document_end_space_resizes_in_reader_and_editor(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-reader419-{}", uuid::Uuid::new_v4()));
@@ -3481,7 +3481,7 @@ mod tests {
     #[gpui::test]
     fn leaving_and_entering_the_editor_keep_the_place(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-place1296-{}", uuid::Uuid::new_v4()));
@@ -3597,7 +3597,7 @@ mod tests {
     #[gpui::test]
     fn undo_and_redo_scroll_to_the_restored_caret(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-undo945-{}", uuid::Uuid::new_v4()));
@@ -3724,7 +3724,7 @@ mod tests {
     fn save_status_clean_refresh_and_dirty_conflict(cx: &mut TestAppContext) {
         use gpui_component::WindowExt;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -3838,7 +3838,7 @@ mod tests {
     #[gpui::test]
     fn unclean_startup_offers_draft_without_restoring_editor(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
             cx.set_global(reader_recovery::RecoveryStartup(true));
         });
@@ -3934,7 +3934,7 @@ mod tests {
     #[gpui::test]
     fn unicode_native_click_places_cursor_and_command_click_navigates(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -4062,7 +4062,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -4151,7 +4151,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -4235,7 +4235,7 @@ mod tests {
     #[gpui::test]
     fn reader_round_trip_keeps_undo_history_for_unchanged_text(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -4339,7 +4339,7 @@ mod tests {
         let first = first.canonicalize().unwrap();
         let second = second.canonicalize().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             reader_open::install(cx);
             reader_ui_state::install(&temp.path().join("state"), cx);
             reader_ui_state::set_vault_open("current", cx);
@@ -4413,7 +4413,7 @@ mod tests {
     #[gpui::test]
     fn native_edit_undo_save_and_conflict_navigation(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -4594,7 +4594,7 @@ mod tests {
     #[gpui::test]
     async fn move_blocks_dirty_other_window_and_reloads_clean_input(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let directory =
@@ -4875,7 +4875,7 @@ mod autosave_tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("note.md"), text).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -5244,7 +5244,7 @@ mod mode_navigation_tests {
         // Neither text nor code: always a read-only preview.
         std::fs::write(root.join("asset.bin"), [0u8, 159, 146, 150]).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;

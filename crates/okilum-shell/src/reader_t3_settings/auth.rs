@@ -83,6 +83,10 @@ pub(super) fn status(origin: &str, cx: &App) -> String {
 /// An explicit sign-in may authorize. Restoring Settings only checks the saved
 /// credential; neither path starts another attempt while one is pending.
 pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool, cx: &mut App) {
+    if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        return;
+    }
+    let access = reader_features::access(reader_features::Feature::Agents, cx);
     let origin = env.origin();
     let current = entry(&origin, cx);
     if current.busy || current.pending.is_some() {
@@ -123,6 +127,12 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             let updates_job = cx.spawn(async move |cx| {
                 while let Ok(event) = updates.recv().await {
                     cx.update(|cx| {
+                        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+                            if let Event::Ready(pending) = event {
+                                let _ = pending.input.send(AuthInput::Cancel);
+                            }
+                            return;
+                        }
                         #[cfg(not(target_os = "macos"))]
                         if let Event::Ready(pending) = &event {
                             cx.open_url(&pending.url);
@@ -153,9 +163,12 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                 }
             });
             let final_events = events.clone();
+            let worker_access = access.clone();
             let (connected, mut retry) = cx
                 .background_executor()
                 .spawn(async move {
+                    let _access = worker_access.enter();
+                    anyhow::ensure!(worker_access.allowed(), "Agents is disabled");
                     let mut retry = okilum_t3::connection::Retry::default();
                     let notice = || {
                         let _ = events.try_send(Event::NetworkRetry);
@@ -211,6 +224,7 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                     Ok::<_, anyhow::Error>((connected, retry))
                 })
                 .await?;
+            anyhow::ensure!(access.allowed(), "Agents is disabled");
             if let Some(token) = &connected.issued_token {
                 cx.update(|cx| {
                     cx.write_credentials(&env.credential_url(), "Okilum", &token.to_secret())
@@ -250,9 +264,25 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
             Ok::<_, anyhow::Error>(Arc::new(connected.gateway) as Arc<dyn ManagerGateway>)
         }
         .await;
+        if !access.allowed() {
+            return;
+        }
         cx.update(|cx| finish_if_current(&origin, result, publish, cx));
     })
     .detach();
+}
+
+pub(super) fn suspend(cx: &mut App) {
+    if let Some(mut sessions) = cx.try_global::<Sessions>().cloned() {
+        for entry in sessions.entries.values_mut() {
+            if let Some(pending) = entry.pending.take() {
+                let _ = pending.input.send(AuthInput::Cancel);
+            }
+            entry.gateway = None;
+            entry.busy = false;
+        }
+        cx.set_global(sessions);
+    }
 }
 
 /// Local sign-out is shared by every panel at this origin. It does not revoke
@@ -310,6 +340,9 @@ fn finish_if_current(
     publish: bool,
     cx: &mut App,
 ) {
+    if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        return;
+    }
     let publish = publish && selected_origin(cx).as_deref() == Some(origin);
     finish(origin, result, publish, cx);
 }
@@ -361,7 +394,7 @@ mod tests {
 
     #[gpui::test]
     fn local_network_diagnostics_stay_under_details(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (root, visual) = cx.add_window_view(|window, cx| {
             let form = cx.new(|cx| {
                 let mut form = T3Settings::new(None, window, cx);
@@ -397,7 +430,7 @@ mod tests {
 
     #[gpui::test]
     fn pending_sign_in_is_shared_across_aliases_and_survives_the_form(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let (_, visual) = cx.add_window_view(|window, cx| {
             let form = cx.new(|cx| T3Settings::new(None, window, cx));
             Root::new(form, window, cx)

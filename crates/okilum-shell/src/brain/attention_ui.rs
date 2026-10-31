@@ -742,7 +742,7 @@ mod tests {
     fn reads_and_saved_decision_preserve_active_goal_source_and_later_drafts(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window,cx|{
@@ -768,7 +768,7 @@ mod tests {
     fn stale_reply_retains_draft_until_explicit_rebind_and_local_failure_reuses_identity(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window,cx|{
@@ -791,7 +791,7 @@ mod tests {
     fn stale_null_can_archive_exact_rejected_request_but_unknown_delivery_cannot(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window,cx|{
@@ -807,7 +807,7 @@ mod tests {
     fn disabled_new_writes_still_allow_exact_recovery_and_clear_old_stale_proof(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let dir = temp();
         let cleanup = dir.clone();
         cx.add_window_view(move |window,cx| {

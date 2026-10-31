@@ -1084,7 +1084,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) -> (Entity<Reader>, &mut gpui::VisualTestContext, PathBuf) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let root = std::env::temp_dir().join(format!("okilum-hover-{}", uuid::Uuid::new_v4()));
@@ -1375,7 +1375,7 @@ mod tests {
                     ))
             }
         }
-        cx.update(gpui_component::init);
+        cx.update(crate::test_init);
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed = calls.clone();
         let (_, visual) = cx.add_window_view(|_, cx| Harness {

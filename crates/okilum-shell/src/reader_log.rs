@@ -5207,7 +5207,7 @@ mod tests {
             "{\"level\":\"info\",\"msg\":\"first\"}\n{\"level\":\"warn\",\"msg\":\"second\"}\n";
         std::fs::write(root.join("events.jsonl"), text).unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
             reader_ui_state::install(&state, cx);
         });
@@ -5356,7 +5356,7 @@ mod tests {
     fn vault_tree_logs_publish_records_copy_and_return_to_notes(cx: &mut TestAppContext) {
         let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();
@@ -5445,7 +5445,7 @@ mod tests {
     fn a_log_opens_in_the_quick_viewer_and_copies_its_raw_line(cx: &mut TestAppContext) {
         let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();
@@ -5541,7 +5541,7 @@ mod tests {
     fn queued_note_open_wins_over_the_initial_log_publication(cx: &mut TestAppContext) {
         let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
@@ -5650,7 +5650,7 @@ mod tests {
         cx: &'a mut TestAppContext,
     ) -> (tempfile::TempDir, Entity<Reader>, &'a mut VisualTestContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();
@@ -6362,7 +6362,7 @@ mod tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let mut entity = None;
@@ -7141,7 +7141,7 @@ mod tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let mut entity = None;
@@ -7899,7 +7899,7 @@ mod tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let mut entity = None;
@@ -8200,7 +8200,7 @@ mod tests {
             })
             .collect();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             crate::bind_keys(cx);
         });
         let mut entity = None;

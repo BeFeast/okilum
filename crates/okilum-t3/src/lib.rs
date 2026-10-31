@@ -11,6 +11,9 @@
 //! [`StoredToken::to_secret`] under [`Environment::credential_url`]), never in
 //! a file or in the vault, and its `Debug` output is redacted.
 
+pub use okilum_network_access::{
+    scoped as scope_network, scoped_current as scope_current_network, NetworkAccess,
+};
 pub mod actions;
 pub mod area_files;
 pub mod board;

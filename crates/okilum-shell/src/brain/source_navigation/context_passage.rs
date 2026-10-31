@@ -78,16 +78,16 @@ impl BrainView {
         self.source_navigation.context_flight = Some(flight.clone());
         self.error = None;
         self.notice = "Opening Context source passage…".into();
-        cx.spawn_in(window,async move |this,cx| {
+        cx.spawn_in(window,{ let module_access = crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx); async move |this,cx| { okilum_t3::scope_network(module_access, async move {
             let f=flight.clone();
-            let reply=cx.background_executor().spawn(async move {
+            let reply=cx.background_executor().spawn(okilum_t3::scope_current_network(async move {
                 let data=rpc_guarded(f.owner.endpoint,json!({"op":"source_read","path":f.path}),Some(&f.owner.workspace))?;
                 let raw=validated_source(&data,&f.path,&f.owner.workspace)?;
                 let offset=passage_offset(&raw,&data,&f.passage).map_err(|_|"This search passage changed or its lines are invalid. Find sources again before opening it.".to_owned())?;
                 Ok::<_,String>((data,offset))
-            }).await;
+            })).await;
             let _=this.update_in(cx,|this,window,cx|this.finish_context_passage(flight,reply,window,cx));
-        }).detach();
+         }).await } }).detach();
         cx.notify();
     }
     fn finish_context_passage(

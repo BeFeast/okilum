@@ -1096,3 +1096,27 @@ fn invalid_credential_code_is_scoped_to_a_bearer_challenge() {
         );
     }
 }
+
+#[test]
+fn revoked_module_access_blocks_even_initialized_clients_without_more_http() {
+    let server = fake_t3(|_, _| structured(json!({"projects": [], "nextCursor": null})));
+    let access = crate::NetworkAccess::new(true);
+    let client = gateway(&server, Some(token("good"))).with_access(access.clone());
+    client.connect().unwrap();
+    assert!(
+        !server.requests().is_empty(),
+        "positive control: real initialize reached the server"
+    );
+    let before = server.requests().len();
+    access.revoke();
+    assert!(matches!(
+        client.list_projects(),
+        Err(GatewayError::NotConnected)
+    ));
+    assert!(matches!(client.connect(), Err(GatewayError::NotConnected)));
+    assert_eq!(
+        server.requests().len(),
+        before,
+        "a retained initialized client must not send when disabled"
+    );
+}
