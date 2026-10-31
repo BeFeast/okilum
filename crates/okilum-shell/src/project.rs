@@ -273,7 +273,11 @@ impl ProjectView {
         #[cfg(target_os = "linux")]
         let feed = cx.new(|cx| feed::Feed::new(parent, cx));
         #[cfg(target_os = "linux")]
-        let composer = cx.new(|cx| composer::Composer::new(compose.clone(), cx));
+        let composer = cx.new(|cx| {
+            let mut composer = composer::Composer::new(compose.clone(), cx);
+            composer.bind_history(feed.clone());
+            composer
+        });
         #[cfg(target_os = "linux")]
         let native = native::Native::new(window, cx);
         #[cfg(target_os = "linux")]
@@ -294,6 +298,15 @@ impl ProjectView {
                 this.attachment_request(request, window, cx)
             },
         );
+        #[cfg(target_os = "linux")]
+        cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, _: &composer::HistoryRecalled, window, cx| {
+                this.draft_changed(window, cx);
+            },
+        )
+        .detach();
         let weak = cx.weak_entity();
         let connection =
             window.observe_global::<reader_t3_settings::Connection>(cx, move |window, cx| {
@@ -1199,6 +1212,7 @@ impl ProjectView {
             self.composer.update(cx, |composer, cx| {
                 composer.set_native(self.native.active(), can_steer, cx);
                 composer.set_attachments(has_attachments, can_attach, cx);
+                composer.set_history_blocked(_pending > 0);
                 composer.set_controls(enabled && native_ready, self.busy, cx)
             });
             div()
