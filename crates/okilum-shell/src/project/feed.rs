@@ -10,11 +10,17 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 mod attachments;
 pub(super) mod content;
 mod details;
+mod message_actions;
 
 #[derive(Clone, PartialEq)]
 struct Message {
+    source_id: String,
     user: bool,
     text: SharedString,
+    status: SharedString,
+    run_id: Option<String>,
+    complete_text: bool,
+    nonblank_text: bool,
     preview: SharedString,
     kind: MessageKind,
 }
@@ -59,6 +65,10 @@ pub(super) struct Feed {
     expanded: HashSet<u64>,
     details: HashMap<u64, details::Detail>,
     attachments: attachments::History,
+    copy_terminals: HashSet<u64>,
+    copy_active_runs: HashSet<String>,
+    copy_response_runs: HashSet<String>,
+    copy_lease: Arc<()>,
     next_native_position: u64,
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
@@ -90,6 +100,10 @@ impl Feed {
             expanded: HashSet::new(),
             details: HashMap::new(),
             attachments: Default::default(),
+            copy_terminals: HashSet::new(),
+            copy_active_runs: HashSet::new(),
+            copy_response_runs: HashSet::new(),
+            copy_lease: Arc::new(()),
             next_native_position: 1,
             scroller,
             enabled: false,
@@ -116,6 +130,10 @@ impl Feed {
         self.expanded.clear();
         self.details.clear();
         self.attachments = Default::default();
+        self.copy_terminals.clear();
+        self.copy_active_runs.clear();
+        self.copy_response_runs.clear();
+        self.copy_lease = Arc::new(());
         self.next_native_position = 1;
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         cx.notify();
@@ -147,6 +165,7 @@ impl Feed {
     ) {
         let mut topology = force_topology;
         let mut changed = Vec::new();
+        let mut copy_groups_changed = topology;
         for item in items {
             if self.ids.get(&item.position) != item.message_id.as_ref() {
                 if let Some(old) = self.ids.remove(&item.position) {
@@ -221,13 +240,25 @@ impl Feed {
                     SharedString::default()
                 };
                 Message {
+                    source_id: item.item_id.clone(),
                     user: item.kind == "user_message",
+                    nonblank_text: !text.trim().is_empty(),
                     text,
+                    status: item.status.clone().into(),
+                    run_id: item.run_id.clone(),
+                    complete_text: !item.text_truncated && item.next_text_offset.is_none(),
                     preview,
                     kind,
                 }
             });
             if self.messages.get(&item.position) != next.as_ref() {
+                copy_groups_changed |= self
+                    .messages
+                    .get(&item.position)
+                    .map(|message| (&message.kind, message.user, &message.run_id))
+                    != next
+                        .as_ref()
+                        .map(|message| (&message.kind, message.user, &message.run_id));
                 topology |= self.messages.contains_key(&item.position) != next.is_some();
                 let hidden_detail_only = self
                     .messages
@@ -317,6 +348,9 @@ impl Feed {
                     .collect();
             }
         }
+        if copy_groups_changed {
+            changed.extend(self.refresh_copy_terminals());
+        }
         let mut remeasure: Vec<usize> = changed
             .iter()
             .filter_map(|position| self.indices.get(position).copied())
@@ -349,7 +383,7 @@ impl Feed {
             cx.notify();
         }
     }
-    fn row(&self, index: usize, cx: &mut App) -> AnyElement {
+    fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(test)]
         self.row_calls.set(self.row_calls.get() + 1);
         match self.rows.get(index) {
@@ -389,6 +423,15 @@ impl Feed {
                         cx,
                     ))
                     .child(self.render_attachments(position, cx))
+                    .when(self.copy_text(position).is_some(), |row| {
+                        row.child(message_actions::MessageActions {
+                            feed: cx.weak_entity(),
+                            position,
+                            lease: self.copy_lease.clone(),
+                            user: message.user,
+                            source_id: message.source_id.clone(),
+                        })
+                    })
                     .into_any_element()
             }
             Some(Row::Retained(index)) => {

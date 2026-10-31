@@ -156,6 +156,13 @@ fn entities(v: &Value) -> StreamResult<HashMap<String, Value>> {
 }
 
 impl Projection {
+    /// Authoritative run metadata currently represented by this projection.
+    /// UI adapters can derive run-scoped affordances without treating a
+    /// completed message as a completed run.
+    pub fn timeline_runs(&self) -> impl Iterator<Item = &Value> {
+        self.runs.values()
+    }
+
     pub fn new(thread: impl Into<String>, project: impl Into<String>) -> Self {
         Self {
             thread: thread.into(),

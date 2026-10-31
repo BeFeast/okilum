@@ -98,7 +98,7 @@ impl Feed {
             items.push(TimelineItem {
                 position,
                 item_id: row.key.element_id(),
-                run_id: None,
+                run_id: row.item["runId"].as_str().map(str::to_owned),
                 message_id: row.item["messageId"].as_str().map(str::to_owned),
                 created_by: None,
                 kind: kind.into(),

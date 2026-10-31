@@ -3,6 +3,19 @@
 use super::*;
 use okilum_t3::stream::{NativeClient, NativeToken};
 
+struct NativeQaHost {
+    view: Entity<ProjectView>,
+}
+
+impl Render for NativeQaHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(self.view.clone())
+            .children(Root::render_dialog_layer(window, cx))
+    }
+}
+
 pub(in crate::project) fn open(cx: &mut App) -> bool {
     if std::env::var("OKILUM_PROJECT_UI_FIXTURE").as_deref() != Ok("native-drafts") {
         return false;
@@ -61,7 +74,8 @@ pub(in crate::project) fn open(cx: &mut App) -> bool {
                 view.install_native(client, expiry, window, cx);
                 view
             });
-            cx.new(|cx| Root::new(view, window, cx))
+            let host = cx.new(|_| NativeQaHost { view });
+            cx.new(|cx| Root::new(host, window, cx))
         },
     )
     .expect("native draft QA window");
