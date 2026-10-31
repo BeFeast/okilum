@@ -41,3 +41,26 @@ Regressions cover default/persisted choices, malformed storage preservation,
 failed-save local revocation, actual Settings clicks, lazy/disabled Projects with
 an enabled positive control (#1521), retained HTTP/native/Sync clients, RPC
 permission and scope restoration across executor threads.
+
+## Contextual Agents offer (#2093)
+
+With Agents off, an opened folder with a Git checkout (including worktree `.git`
+files), a root project manifest, a code/build manifest or top-level source files
+receives one inline “Board + Manager?” offer with Enable and Not now. A running local T3 Code
+executable is also a relevance signal. Detection reads local filesystem/process
+metadata on a worker; it does not start processes, inspect command lines or
+credentials, probe ports, resolve hosts or contact T3. A plain notes folder with
+no running T3 Code has no offer. Single-file windows have no offer.
+
+The offer occupies a fixed footer slot in the sidebar, so its arrival and dismissal
+do not move the tree. “Not now” persists for the opened folder using its existing
+sidebar state key; older snapshots cannot undo that answer. Settings → Features
+remains available after declining.
+
+“Enable” persists Agents on and opens a local empty Board without an onboarding
+form. An existing project/Board is reused. Otherwise the folder gets the existing
+local project manifest/index creation and a Board with its folder name as title,
+no repository, stage note or cards. Existing notes, manifests and Boards are not
+rewritten. No T3 project, thread or connection is created by this action. A failed
+profile save leaves Agents off; a local setup error is shown without automatic
+retry or claiming that Board setup succeeded.

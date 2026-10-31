@@ -40,6 +40,8 @@ gpui-kit-assets.workspace = true
 # The Windows HLSL profile uses debug assertions; icons must still be portable.
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 anyhow = "1"
+# Already locked through GPUI; process names only, no network discovery (#2093).
+sysinfo = { version = "=0.31.4", default-features = false, features = ["system"] }
 raw-window-handle = { version = "0.6", features = ["std"] }
 # Named in GPUI's Platform trait signatures, wrapped for #1121 and #1312; already locked through gpui.
 futures = "0.3"
