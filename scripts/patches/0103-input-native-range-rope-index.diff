@@ -1,0 +1,62 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -1276,11 +1276,20 @@
+         if range.start > range.end {
+             return None;
+         }
+-        let text = self.text.to_string();
+-        Some(
+-            source_utf16_to_byte(&text, SourceUtf16(range.start))?.0
+-                ..source_utf16_to_byte(&text, SourceUtf16(range.end))?.0,
+-        )
++        Some(self.checked_utf16_to_byte(range.start)?..self.checked_utf16_to_byte(range.end)?)
++    }
++
++    /// The byte at native UTF-16 `offset`, or None out of range or inside a
++    /// surrogate pair: [`source_utf16_to_byte`] on the rope, in O(log n).
++    /// The platform asks for the caret's bounds on every paint; flattening
++    /// and scanning the whole note there cost a frame on long notes (#1621).
++    fn checked_utf16_to_byte(&self, offset: usize) -> Option<usize> {
++        if offset > self.text.len_utf16() {
++            return None;
++        }
++        let byte = self.text.utf16_to_byte_idx(offset);
++        // Inside a surrogate pair the rope rounds down to its character.
++        (self.text.byte_to_utf16_idx(byte) == offset).then_some(byte)
+     }
+ 
+     fn reveal_replacement(&mut self, range: &Range<usize>) {
+@@ -3757,12 +3766,19 @@
+     pub(super) fn cursor_boundary(&self, offset: usize, bias: Bias) -> usize {
+         let offset = self.text.clip_offset(offset, bias);
+         if self.projection.enabled {
+-            let text = self.text.to_string();
+-            let mut previous = 0;
+-            for boundary in text
++            // A grapheme never continues past a line feed (UAX #29 GB4/GB5):
++            // the offset's line, its LF included, has the whole note's
++            // boundaries there. Segmenting the whole note on every caret move
++            // and keystroke cost time growing with the note (#1621).
++            let row = self.text.offset_to_point(offset).row;
++            let start = self.text.line_start_offset(row);
++            let end = (self.text.line_end_offset(row) + 1).min(self.text.len());
++            let line = self.text.slice(start..end).to_string();
++            let mut previous = start;
++            for boundary in line
+                 .grapheme_indices(true)
+-                .map(|(i, _)| i)
+-                .chain(std::iter::once(text.len()))
++                .map(|(i, _)| start + i)
++                .chain(std::iter::once(end))
+             {
+                 if boundary == offset {
+                     return offset;
+@@ -3776,7 +3792,7 @@
+                 }
+                 previous = boundary;
+             }
+-            return text.len();
++            return end;
+         }
+         if offset > 0
+             && self.text.char_at(offset - 1) == Some('\r')
