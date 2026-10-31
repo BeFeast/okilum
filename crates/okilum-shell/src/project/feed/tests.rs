@@ -469,6 +469,148 @@ fn questions_and_failures_stay_visible_and_reasoning_can_expand(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn composer_tab_order_reaches_work_and_response_disclosures(cx: &mut TestAppContext) {
+    use okilum_t3::projection::TurnRow;
+    use serde_json::json;
+
+    fn press(visual: &mut VisualTestContext, key: &str) {
+        visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            for _ in 0..2 {
+                window.simulate_next_frame(cx);
+                window.refresh();
+                window.draw(cx).clear(cx);
+            }
+        });
+    }
+
+    for completed in [false, true] {
+        let (view, visual, _temp) = fixture(cx, 0);
+        let feed = view.read_with(visual, |view, _| view.feed.clone());
+        let mut rows: Vec<_> = (0..3)
+            .map(|index| {
+                Arc::new(TurnRow {
+                    key: RowKey {
+                        thread: "keyboard-thread".into(),
+                        item: format!("tool-{index}"),
+                    },
+                    local: true,
+                    item: Arc::new(json!({"type":"command_execution", "runId":"run",
+                        "status":"completed", "input":format!("printf 'tool-{index}'"),
+                        "output":format!("Full tool-{index} output")})),
+                })
+            })
+            .collect();
+        if completed {
+            rows.push(Arc::new(TurnRow {
+                key: RowKey {
+                    thread: "keyboard-thread".into(),
+                    item: "final".into(),
+                },
+                local: true,
+                item: Arc::new(json!({"type":"assistant_message", "runId":"run",
+                    "status":"completed", "streaming":false, "text":"Final answer stays visible"})),
+            }));
+        }
+        feed.update(visual, |feed, cx| {
+            feed.set_timeline_runs(
+                "keyboard-thread",
+                &[
+                    json!({"id":"run", "threadId":"keyboard-thread", "ordinal":1,
+                    "status":if completed {"completed"} else {"running"},
+                    "startedAt":"2026-10-31T12:00:00Z",
+                    "completedAt":if completed {json!("2026-10-31T12:00:47Z")} else {json!(null)}}),
+                ],
+                (!completed).then(|| "run".into()),
+                cx,
+            );
+            feed.apply_native(
+                NativeChanges {
+                    order: Some(rows.iter().map(|row| row.key.clone()).collect()),
+                    rows,
+                    ..Default::default()
+                },
+                &[],
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        let context = if completed {
+            "ManagerResponseDisclosure"
+        } else {
+            "ManagerWorkDisclosure"
+        };
+        let selector = if completed {
+            "manager-fold-toggle"
+        } else {
+            "manager-work-toggle"
+        };
+        assert!(visual.debug_bounds(selector).is_some());
+        let input = visual.debug_bounds("project-composer-input").unwrap();
+        visual.simulate_click(input.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.update(|window, cx| {
+                view.read(cx)
+                    .compose
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            }),
+            "positive control: the actual composer owns focus"
+        );
+        let mut reached = false;
+        // The disclosure precedes the composer and its adjacent controls,
+        // rather than sorting after all the panel's ordinary controls.
+        for _ in 0..4 {
+            press(visual, "shift-tab");
+            reached = visual.update(|window, _| {
+                window
+                    .context_stack()
+                    .iter()
+                    .any(|entry| entry.contains(context))
+            });
+            if reached {
+                break;
+            }
+        }
+        assert!(reached, "real ShiftTab from composer reaches {context}");
+        let focused = visual.update(|window, cx| window.focused(cx).unwrap());
+        press(visual, "enter");
+        if completed {
+            assert!(visual.debug_bounds("manager-work-toggle").is_some());
+            assert!(visual.debug_bounds("project-message-4").is_some());
+        } else {
+            assert!(visual.debug_bounds("manager-work-details").is_some());
+            press(visual, "tab");
+            assert_ne!(
+                visual.update(|window, cx| window.focused(cx)),
+                Some(focused.clone())
+            );
+            press(visual, "space");
+            assert!(
+                visual.debug_bounds("project-tool-detail-1").is_some(),
+                "Tab reaches the first actual nested tool"
+            );
+            press(visual, "shift-tab");
+            assert_eq!(
+                visual.update(|window, cx| window.focused(cx)),
+                Some(focused.clone()),
+                "ShiftTab returns to the same disclosure button"
+            );
+        }
+        press(visual, "space");
+        if completed {
+            assert!(visual.debug_bounds("manager-work-toggle").is_none());
+            assert!(visual.debug_bounds("project-message-4").is_some());
+        } else {
+            assert!(visual.debug_bounds("manager-work-details").is_none());
+        }
+    }
+}
+
+#[gpui::test]
 fn native_activity_history_remains_virtualized_and_hidden_updates_are_quiet(
     cx: &mut TestAppContext,
 ) {

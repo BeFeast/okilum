@@ -510,7 +510,8 @@ impl Feed {
         div()
             .id(SharedString::from(format!("work-summary-{key:?}")))
             .aria_expanded(expanded)
-            .tab_group()
+            // Keep disclosure buttons at the surrounding controls' tab depth.
+            .key_context("ManagerWorkDisclosure")
             .child(
                 Button::new("work-group-toggle")
                     .ghost()
@@ -567,7 +568,7 @@ impl Feed {
         div()
             .id(SharedString::from(format!("fold-{key:?}")))
             .aria_expanded(expanded)
-            .tab_group()
+            .key_context("ManagerResponseDisclosure")
             .child(
                 Button::new("completed-fold-toggle")
                     .ghost()
@@ -721,8 +722,11 @@ mod tests {
         _parent: Entity<ProjectView>,
     }
     impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(self.feed.clone())
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            v_flex()
+                .size_full()
+                .child(div().flex_1().min_h_0().child(self.feed.clone()))
+                .child(self._parent.read(cx).composer.clone())
         }
     }
     fn row(id: &str, ordinal: u64, kind: &str) -> Arc<TurnRow> {
@@ -789,6 +793,11 @@ mod tests {
                 .feed
                 .clone()
         });
+        feed.read_with(visual, |feed, _| feed.parent.upgrade().unwrap())
+            .update_in(visual, |parent, window, cx| {
+                parent.compose.read(cx).focus_handle(cx).focus(window, cx)
+            });
+        visual.run_until_parked();
         (feed, visual)
     }
     fn draw(visual: &mut VisualTestContext) {
@@ -803,15 +812,6 @@ mod tests {
         });
     }
     fn key(visual: &mut VisualTestContext, name: &str) {
-        if name == "enter" {
-            visual.update(|window, cx| {
-                window.focus_next(cx);
-                window.refresh();
-                window.draw(cx).clear(cx);
-            });
-            visual.simulate_keystrokes("tab");
-            visual.run_until_parked();
-        }
         let keystroke = Keystroke::parse(name).unwrap();
         visual.simulate_event(KeyDownEvent {
             keystroke: keystroke.clone(),
@@ -891,6 +891,7 @@ mod tests {
         visual.run_until_parked();
         draw(visual);
         assert!(visual.debug_bounds("manager-work-details").is_none());
+        key(visual, "shift-tab");
         key(visual, "enter");
         assert!(
             visual.debug_bounds("manager-work-details").is_some(),
