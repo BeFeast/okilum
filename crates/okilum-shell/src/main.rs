@@ -65,6 +65,7 @@ mod reader_hover;
 #[cfg(any(target_os = "macos", test))]
 mod reader_icloud;
 mod reader_image;
+mod reader_image_actions;
 mod reader_incremental;
 mod reader_instance;
 mod reader_layout;
@@ -1153,6 +1154,7 @@ fn reader_plugins_at(
     };
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
+    let image_actions = entity.clone();
     let view = markdown_plugins_at(
         scope.fold_base,
         view,
@@ -1166,6 +1168,9 @@ fn reader_plugins_at(
             }
         }),
         Arc::new(move |url| {
+            if url == okilum_core::render::UNAVAILABLE_IMAGE {
+                return Some(MarkdownImage::Unavailable);
+            }
             if let Some(payload) = url.strip_prefix("okilum-drawing-unavailable:") {
                 return Some(MarkdownImage::DrawingUnavailable(payload.to_owned()));
             }
@@ -1189,6 +1194,7 @@ fn reader_plugins_at(
         }),
         sel_format,
         scope.live,
+        Some(image_actions),
     )
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
@@ -1227,7 +1233,15 @@ fn markdown_plugins(
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
 ) -> TextView {
-    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format, false)
+    markdown_plugins_at(
+        0,
+        view,
+        link_handler,
+        image_resolver,
+        sel_format,
+        false,
+        None,
+    )
 }
 
 /// [`markdown_plugins`] for one part of a note; see [`reader_plugins_at`].
@@ -1238,6 +1252,7 @@ fn markdown_plugins_at(
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
     live: bool,
+    image_actions: Option<WeakEntity<Reader>>,
 ) -> TextView {
     let link_click = link_handler.clone();
     let parse_image = image_resolver.clone();
@@ -1305,7 +1320,16 @@ fn markdown_plugins_at(
                         _ => {}
                     }
                     let Some(MarkdownImage::Source(image)) = render_image(&data.url) else {
-                        return node.render_part("status", |style| style, _window, cx);
+                        let element = node.render_part("status", |style| style, _window, cx);
+                        return match &image_actions {
+                            Some(reader) => reader_image_actions::decorate(
+                                reader.clone(),
+                                &data.url,
+                                element,
+                                cx,
+                            ),
+                            None => element,
+                        };
                     };
                     let mut el = v_flex()
                         .py_2()
@@ -1314,7 +1338,13 @@ fn markdown_plugins_at(
                     if !data.caption.is_empty() {
                         el = el.child(node.render_part("caption", |style| style, _window, cx));
                     }
-                    el.into_any_element()
+                    let element = el.into_any_element();
+                    match &image_actions {
+                        Some(reader) => {
+                            reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
+                        }
+                        None => element,
+                    }
                 }
                 None => div().into_any_element(),
             }
@@ -6856,6 +6886,11 @@ impl Render for Reader {
             })
             .track_focus(&self.focus_handle)
             .map(|view| reader_text_zoom::reader(view, cx))
+            .on_action(cx.listener(
+                |reader, action: &reader_image_actions::ImageCommand, window, cx| {
+                    reader.image_command(action, window, cx)
+                },
+            ))
             .on_action(
                 cx.listener(|this, _: &reader_reminder::CopyLinkToLine, window, cx| {
                     this.copy_link_to_line(window, cx)

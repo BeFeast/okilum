@@ -179,7 +179,10 @@ struct Facts {
 /// `defer_in`), where reading that state panics (#955). Observers run after an
 /// update, when reading is allowed, so the builder only reads this snapshot.
 #[derive(Clone, Default)]
-pub(super) struct MenuFacts(std::rc::Rc<std::cell::Cell<Facts>>);
+pub(super) struct MenuFacts(
+    std::rc::Rc<std::cell::Cell<Facts>>,
+    reader_image_actions::SourceFacts,
+);
 
 impl MenuFacts {
     #[cfg(test)]
@@ -188,18 +191,23 @@ impl MenuFacts {
     }
 
     pub(super) fn watch(
+        reader: &Reader,
         input: &Entity<EditorState>,
+        markdown: bool,
         cx: &mut Context<Reader>,
     ) -> (Self, Subscription) {
         let facts = Self::default();
-        facts.refresh(input, cx);
+        facts.refresh(reader, input, markdown, cx);
         let mirror = facts.clone();
-        let subscription = cx.observe(input, move |_, input, cx| mirror.refresh(&input, cx));
+        let subscription = cx.observe(input, move |reader, input, cx| {
+            mirror.refresh(reader, &input, markdown, cx)
+        });
         (facts, subscription)
     }
 
-    fn refresh(&self, input: &Entity<EditorState>, cx: &App) {
+    fn refresh(&self, reader: &Reader, input: &Entity<EditorState>, markdown: bool, cx: &App) {
         let state = input.read(cx);
+        self.1.refresh(reader, state, markdown);
         #[cfg(any(unix, windows))]
         let date = {
             let range = state.selected_range();
@@ -226,7 +234,7 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
         || cx
             .try_global::<crate::note_paste::ManagedNoteClipboard>()
             .is_some_and(|clipboard| clipboard.0.has_content());
-    editor_entries(&capabilities, clipboard, date)
+    let menu = editor_entries(&capabilities, clipboard, date)
         .into_iter()
         .fold(menu, |menu, entry| match entry {
             Entry::Separator => menu.separator(),
@@ -249,7 +257,8 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                 };
                 menu.menu_with_disabled(label, disabled, action)
             }
-        })
+        });
+    facts.1.menu(menu)
 }
 
 /// The editor's selection and its date, when the whole selection is one.

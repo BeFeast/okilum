@@ -1452,6 +1452,17 @@ mod tests {
         assert_eq!(routed.route, Route::Text);
     }
 
+    /// The URL's twelfth byte falls inside a Cyrillic codepoint.
+    #[test]
+    fn a_selection_and_a_unicode_url_make_a_link() {
+        let note = Note::new();
+        let board = Board::with(&[(offer::UTF8_TEXT, "http://пример.рф".as_bytes())]);
+        let source = "read the docs now";
+        let routed = route(&board, &note.cx(Mode::Smart, source, 9..13)).unwrap();
+        assert_eq!(routed.route, Route::SelectionLink);
+        assert_eq!(routed.insert.as_deref(), Some("[docs](http://пример.рф)"));
+    }
+
     #[test]
     fn vscode_code_becomes_a_fenced_block() {
         let note = Note::new();
