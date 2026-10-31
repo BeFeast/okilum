@@ -2,7 +2,7 @@ use super::*;
 
 impl ProjectView {
     pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = !self.model_busy && !self.busy && self.can_send();
+        let enabled = !self.model_busy && !self.busy && self.can_write_models();
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
             .w(px(440.))
@@ -20,7 +20,7 @@ impl ProjectView {
                             .small()
                             .icon(IconName::RotateCw)
                             .tooltip("Refresh models")
-                            .disabled(!enabled)
+                            .disabled(self.model_busy || self.busy || !self.can_read_models())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.model_request(None, window, cx)
                             })),
