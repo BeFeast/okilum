@@ -16,6 +16,10 @@ enum Command {
     Sidebar,
     CopyPath,
     CopyImage,
+    /// The web address of a remote image (#2025).
+    CopyAddress,
+    /// The image file's exact bytes, to a place the user picks (#2025).
+    SaveAs,
     Download,
 }
 
@@ -107,10 +111,38 @@ impl Target {
             Command::CopyImage,
             !available || self.placeholder,
         ));
+        if self.local.is_none() && available {
+            entries.push(("Copy image address", Command::CopyAddress, false));
+        }
+        entries.push((
+            "Save image as…",
+            Command::SaveAs,
+            !available || self.placeholder,
+        ));
         if self.placeholder {
             entries.push(("Download from iCloud", Command::Download, false));
         }
         entries
+    }
+
+    /// The name the save panel suggests: the image's own file name.
+    fn file_name(&self) -> String {
+        let name = match &self.local {
+            Some(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            None => self
+                .url
+                .as_deref()
+                .and_then(|url| url::Url::parse(url).ok())
+                .and_then(|url| {
+                    url.path_segments()
+                        .and_then(|mut segments| segments.next_back().map(str::to_owned))
+                })
+                .map(|name| okilum_core::document_links::decode(&name)),
+        };
+        name.filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Image".into())
     }
     fn notice(&self) -> Option<&'static str> {
         if self.placeholder {
@@ -272,6 +304,17 @@ impl Reader {
             }
             return;
         }
+        if command == Command::CopyAddress {
+            if let Some(url) = &target.url {
+                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                reader_toast::transient("Image address copied", window, cx);
+            }
+            return;
+        }
+        if command == Command::SaveAs {
+            self.save_image_as(target, window, cx);
+            return;
+        }
         cx.spawn_in(window, async move |this, cx| {
             let work = target.clone();
             let result = cx
@@ -295,6 +338,8 @@ impl Reader {
                         }
                     },
                     Ok(Prepared::Url(url)) => cx.open_url(&url),
+                    // Saving has its own flow; `prepare` never answers it here.
+                    Ok(Prepared::Bytes(_)) => {}
                     Ok(Prepared::Image(bytes)) => cx.write_to_clipboard(ClipboardItem::new_image(
                         &gpui::Image::from_bytes(ImageFormat::Png, bytes),
                     )),
@@ -323,10 +368,72 @@ impl Reader {
     }
 }
 
+impl Reader {
+    /// «Save image as…»: the platform save panel, then the image's exact
+    /// bytes. Nothing is written until the user picks a place; the note and
+    /// the vault are never changed.
+    fn save_image_as(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        // The panel opens beside the image when it is a vault file.
+        let directory = target
+            .local
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|directory| directory.is_dir())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.vault_root.clone());
+        let picker = cx.prompt_for_new_path(&directory, Some(&target.file_name()));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = picker.await else {
+                return;
+            };
+            let work = target.clone();
+            let written = cx
+                .background_executor()
+                .spawn(async move {
+                    match prepare(&work, Command::SaveAs)? {
+                        // A copy of the file as stored: no re-encoding.
+                        Prepared::Path(source) => {
+                            anyhow::ensure!(
+                                !same_file(&source, &path),
+                                "The image is already there"
+                            );
+                            std::fs::copy(source, &path)?;
+                            Ok(())
+                        }
+                        Prepared::Bytes(bytes) => write_image(&path, &bytes),
+                        _ => anyhow::bail!("The image could not be read"),
+                    }
+                })
+                .await;
+            let _ = this.update_in_own_window(cx, |_, window, cx| match written {
+                Ok(()) => reader_toast::transient("Image saved", window, cx),
+                Err(error) => {
+                    reader_toast::error(format!("Image action failed: {error:#}"), window, cx)
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+fn write_image(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 enum Prepared {
     Path(PathBuf),
     Url(String),
     Image(Vec<u8>),
+    /// The image file exactly as stored, for Save image as.
+    Bytes(Vec<u8>),
     #[cfg(target_os = "macos")]
     Downloaded,
 }
@@ -339,10 +446,14 @@ fn prepare(target: &Target, command: Command) -> anyhow::Result<Prepared> {
             .ok_or_else(|| anyhow::anyhow!("Image file not found"))?;
         return if command == Command::Open {
             Ok(Prepared::Url(url.clone()))
-        } else if command == Command::CopyImage {
+        } else if command == Command::CopyImage || command == Command::SaveAs {
             let bytes = note_paste::download::fetch_remote_image(url)
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
-            Ok(Prepared::Image(clipboard_png(&bytes)?))
+            Ok(if command == Command::SaveAs {
+                Prepared::Bytes(bytes)
+            } else {
+                Prepared::Image(clipboard_png(&bytes)?)
+            })
         } else {
             anyhow::bail!("This image is on the web")
         };
@@ -392,7 +503,7 @@ fn prepare(target: &Target, command: Command) -> anyhow::Result<Prepared> {
             "Download this image from iCloud first"
         );
     }
-    if command == Command::Open {
+    if command == Command::Open || command == Command::SaveAs {
         return Ok(Prepared::Path(path));
     }
     let limit = note_paste::offer::MAX_IMAGE_BYTES;
@@ -540,8 +651,18 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let local = target(&root, "attachments/Привет image.png");
-        assert_eq!(local.entries().len(), 5);
+        assert_eq!(local.entries().len(), 6);
         assert!(local.entries().iter().all(|(_, _, disabled)| !disabled));
+        assert_eq!(
+            local.entries()[5],
+            ("Save image as…", Command::SaveAs, false)
+        );
+        // A local image has a path, not a web address (#2025).
+        assert!(!local
+            .entries()
+            .iter()
+            .any(|(_, command, _)| *command == Command::CopyAddress));
+        assert_eq!(local.file_name(), "Привет image.png");
         let remote = Target {
             url: Some("https://example.invalid/image.png".into()),
             local: None,
@@ -549,16 +670,27 @@ mod tests {
             ..local.clone()
         };
         let entries = remote.entries();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[0], ("Open in browser", Command::Open, false));
         assert_eq!(entries[1], ("Copy image", Command::CopyImage, false));
+        assert_eq!(
+            entries[2],
+            ("Copy image address", Command::CopyAddress, false)
+        );
+        assert_eq!(entries[3], ("Save image as…", Command::SaveAs, false));
+        assert_eq!(remote.file_name(), "image.png");
+        let bare = Target {
+            url: Some("https://example.invalid/".into()),
+            ..remote.clone()
+        };
+        assert_eq!(bare.file_name(), "Image");
         let missing = Target {
             url: None,
             local: None,
             relative: None,
             ..local.clone()
         };
-        assert_eq!(missing.entries().len(), 5);
+        assert_eq!(missing.entries().len(), 6);
         assert!(missing.entries().iter().all(|(_, _, disabled)| *disabled));
         assert!(missing.notice().unwrap().contains("not found"));
         let placeholder = Target {
@@ -573,6 +705,7 @@ mod tests {
         };
         assert!(enabled(Command::Reveal) && enabled(Command::Download));
         assert!(!enabled(Command::Open) && !enabled(Command::CopyImage));
+        assert!(!enabled(Command::SaveAs));
         assert_eq!(reveal_label(platform::labels::Os::Mac), "Show in Finder");
         assert_eq!(
             reveal_label(platform::labels::Os::Windows),
@@ -773,6 +906,11 @@ mod tests {
                 "rendered image opens its context menu"
             )
         });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("read-menu-Select all").is_none(),
+            "#2025: the image menu is the only menu on an image"
+        );
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
@@ -811,6 +949,29 @@ mod tests {
                 .iter()
                 .any(|entry| matches!(entry, ClipboardEntry::Image(_))))
         });
+        // #2025: Save image as… writes the file's exact bytes where the user
+        // picks, after the save panel, and leaves the vault alone.
+        let saved = fixture.path().join("saved copy.png");
+        reader.update_in(visual, |reader, window, cx| {
+            reader.image_command(
+                &ImageCommand {
+                    target: captured.clone(),
+                    command: Command::SaveAs,
+                },
+                window,
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_new_path(), "asks where to save");
+        assert!(!saved.exists(), "nothing is written before the choice");
+        visual.simulate_new_path_selection({
+            let saved = saved.clone();
+            move |_| Some(saved)
+        });
+        visual.run_until_parked();
+        assert_eq!(std::fs::read(&saved).unwrap(), png());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 3);
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx)
         });

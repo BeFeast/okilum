@@ -45,6 +45,7 @@ mod reader_code_file;
 mod reader_code_language;
 #[cfg(any(unix, windows))]
 mod reader_confirm;
+mod reader_context_menu;
 #[cfg(any(unix, windows))]
 mod reader_create;
 #[cfg(windows)]
@@ -1312,7 +1313,9 @@ fn markdown_plugins_at(
     let embed_link_handler = link_handler.clone();
     let footnote_link_handler = link_handler.clone();
     // Read mode only: a right-click on a table offers to copy it (#2025).
-    reader_table_copy::install(view, image_actions.clone(), live)
+    let view = reader_table_copy::install(view, image_actions.clone(), live);
+    // Right presses on links and code blocks feed the Read menu (#2025).
+    reader_context_menu::install(view, image_actions.clone(), live)
         .selection_format(sel_format)
         .code_block_language(reader_code_language::resolver())
         .code_block_actions(reader_code::actions)
@@ -1685,6 +1688,8 @@ struct Reader {
     /// the document generation so a link left behind by navigation is stale:
     /// a right-click there opens only the link's menu (#943).
     pointer_link: Option<(String, u64)>,
+    /// What the last right press in the Reader landed on (#2025).
+    read_press: Option<reader_context_menu::ReadPress>,
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,
@@ -2000,6 +2005,7 @@ impl Reader {
             recovery_toast: None,
             recovery_toast_generation: 0,
             pointer_link: None,
+            read_press: None,
             displayed_history_notice: None,
             history_notice_generation: 0,
             notice_generation: 0,
@@ -5297,20 +5303,10 @@ impl Reader {
                                     this.file_link_menu(&url, event.position, window, cx);
                                 }),
                             )
+                            // The Read menu by place: selection, code block,
+                            // heading, reminder and the whole note (#2025).
                             .context_menu(move |menu, window, cx| {
-                                let menu = reader_reminder::menu(menu, &menu_entity, cx);
-                                // A right-click on a heading offers its link (#1049).
-                                let heading = menu_entity.upgrade().and_then(|reader| {
-                                    reader.read(cx).heading_at(window.mouse_position(), cx)
-                                });
-                                match heading {
-                                    Some(text) => reader_deep_link::heading_link_item(
-                                        menu,
-                                        &menu_entity,
-                                        text,
-                                    ),
-                                    None => menu,
-                                }
+                                reader_context_menu::menu(menu, &menu_entity, window, cx)
                             })
                             .children(self.render_landing_flash(cx))
                             .child(
