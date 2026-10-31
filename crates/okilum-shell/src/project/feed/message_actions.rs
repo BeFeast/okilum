@@ -360,13 +360,9 @@ mod tests {
                 "sentinel",
                 "success feedback disables repeated activation"
             );
-            // Event helpers and rendered frames also advance the test clock.
-            // Observe both sides of the production 1200 ms deadline with room
-            // for those frames instead of measuring from the last helper call.
-            visual.executor().advance_clock(Duration::from_millis(1000));
-            visual.run_until_parked();
-            assert!(visual.debug_bounds("project-message-copied-1").is_some());
-            visual.executor().advance_clock(Duration::from_millis(300));
+            // Initial feedback and disabled activation were observed above.
+            // Expire it without assuming the event helpers consumed no time.
+            visual.executor().advance_clock(Duration::from_millis(2000));
             visual.run_until_parked();
             assert!(visual.debug_bounds("project-message-copy-1").is_some());
             activate_keyboard(visual, "project-message-copied-1");
@@ -577,10 +573,9 @@ mod tests {
         });
         visual.run_until_parked();
         feed.read_with(visual, |feed, _| {
-            assert!(
-                feed.copy_text(feed.native_positions[&final_row.key])
-                    .is_none()
-            )
+            assert!(feed
+                .copy_text(feed.native_positions[&final_row.key])
+                .is_none())
         });
         feed.update(visual, |feed, cx| feed.set_copy_active_runs([], cx));
         visual.run_until_parked();

@@ -4,8 +4,8 @@ use gpui_component::WindowExt as _;
 use okilum_t3::stream::{AttachmentKind, ChatAttachment, NativeClient};
 use serde_json::Value;
 use std::sync::{
-    Weak,
     atomic::{AtomicUsize, Ordering},
+    Weak,
 };
 
 const MAX_TRANSFERS: usize = 2;
@@ -706,6 +706,14 @@ mod tests {
         }
     }
 
+    fn draw_history(visual: &mut VisualTestContext, feed: &Entity<Feed>) {
+        // A clean redraw may reuse cached paint without re-registering debug
+        // selectors. Collect current hitboxes from a real Feed render, without
+        // changing the list offset or masking a download-driven anchor shift.
+        feed.update(visual, |_, cx| cx.notify());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
     fn png() -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(1200, 900)
@@ -858,11 +866,9 @@ mod tests {
             "images share a two-column grid row"
         );
         assert!(second.right() - first.left() <= px(420.));
-        assert!(
-            visual
-                .debug_bounds("history-attachment-99-0-Preview")
-                .is_none()
-        );
+        assert!(visual
+            .debug_bounds("history-attachment-99-0-Preview")
+            .is_none());
         view.update(visual, |view, cx| {
             view.native.set_detail_test_client(client(&environment));
             view.feed.update(cx, |_, cx| cx.notify());
@@ -910,7 +916,7 @@ mod tests {
         });
         // Refresh hitboxes after download-driven remeasurement before choosing
         // the click point. A started fetch is not a completed/painted thumbnail.
-        visual.update(|window, cx| window.draw(cx).clear(cx));
+        draw_history(visual, &feed);
         let before = visual.debug_bounds("history-image-0-0").unwrap();
         let viewport = visual.debug_bounds("project-history").unwrap();
         assert!(before.center().y >= viewport.top() && before.center().y < viewport.bottom());
@@ -920,7 +926,7 @@ mod tests {
         }));
         visual.simulate_click(before.center(), Modifiers::default());
         visual.run_until_parked();
-        visual.update(|window, cx| window.draw(cx).clear(cx));
+        draw_history(visual, &feed);
         assert!(
             visual.debug_bounds("dialog-layer").is_some(),
             "positive control: the real click opened the host's visible dialog layer"
@@ -928,7 +934,7 @@ mod tests {
         assert!(visual.debug_bounds("history-image-expanded").is_some());
         visual.update(|window, cx| window.close_dialog(cx));
         visual.run_until_parked();
-        visual.update(|window, cx| window.draw(cx).clear(cx));
+        draw_history(visual, &feed);
         assert!(visual.debug_bounds("history-image-expanded").is_none());
         assert_eq!(
             visual.debug_bounds("history-image-0-0").unwrap(),
