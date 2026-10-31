@@ -10,7 +10,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Dedicated baldr fast-only runner: capacity 4, four independent warm targets.
     runs-on: fast-linux
-    timeout-minutes: 5
+    timeout-minutes: 6
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only

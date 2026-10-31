@@ -11,10 +11,10 @@ It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner 
 desktop/supervisor build, `cargo check --locked --workspace --tests` (compilation
 only), plus deterministic okilum-paste library unit tests. Test fixture/API drift
 therefore blocks merge without executing the full overnight suites.
-The five-minute job budget includes setup and build. The LAN compiler cache and
+The six-minute job budget includes setup and build. The LAN compiler cache and
 Cargo downloads are reused; four separately locked persistent targets
 allow four simultaneous builds. Each job has three compiler workers (twelve total).
-The runner queues additional jobs before their five-minute execution budget starts.
+The runner queues additional jobs before their six-minute execution budget starts.
 A timeout or failed build/test fails closed. No GitHub hosted job or bridge participates in PR admission.
 Windows and macOS compilation moves to each post-merge beta producer; an OS beta
 failure belongs to the last merge author, who repairs it immediately. This is
