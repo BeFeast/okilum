@@ -1663,10 +1663,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-network-access"
+version = "0.1.0"
+
+[[package]]
 name = "okilum-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "okilum-network-access",
  "reqwest",
  "serde_json",
 ]
