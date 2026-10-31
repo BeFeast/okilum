@@ -91,6 +91,7 @@ impl ProjectView {
                         .disabled(self.model_busy)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.model_ui.provider = Some(id.clone());
+                            this.model_ui.scroll.set_offset(point(px(0.), px(0.)));
                             cx.notify();
                         })),
                 );
@@ -116,11 +117,13 @@ impl ProjectView {
             }
             let mut list = v_flex()
                 .id("project-model-choices")
+                .debug_selector(|| "project-model-choices".into())
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
                 .max_h(px(240.))
                 .overflow_y_scroll()
+                .track_scroll(&self.model_ui.scroll)
                 .gap_1();
             for (index, choice) in choices.iter().enumerate() {
                 let selection = choice.selection.clone();

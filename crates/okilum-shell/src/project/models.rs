@@ -10,6 +10,7 @@ pub(super) struct PickerUi {
     search: Option<Entity<InputState>>,
     changes: Option<Subscription>,
     provider: Option<String>,
+    scroll: ScrollHandle,
 }
 
 impl ProjectView {
@@ -116,6 +117,9 @@ impl ProjectView {
                         Ok(snapshot) => {
                             if this.model_ui.provider.is_none() {
                                 this.model_ui.provider = Some(snapshot.configuration.model_selection.instance_id.clone());
+                            }
+                            if let Some(index) = snapshot.picker_choices(this.model_ui.provider.as_deref().unwrap_or(""), "").iter().position(|choice| choice.current) {
+                                this.model_ui.scroll.scroll_to_item(index);
                             }
                             this.models = Some(snapshot);
                             this.model_candidate = None;

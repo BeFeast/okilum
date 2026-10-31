@@ -28,13 +28,8 @@ fn exact_instance_browse_search_and_click_preserve_confirmed_current(cx: &mut Te
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<ProjectView>().unwrap()
     });
-    visual.simulate_click(
-        visual
-            .debug_bounds("project-manager-model")
-            .unwrap()
-            .center(),
-        Modifiers::default(),
-    );
+    let trigger = visual.debug_bounds("project-manager-model").unwrap();
+    visual.simulate_click(trigger.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("project-model-current-0").is_some());
     assert!(visual.debug_bounds("project-model-current-1").is_none());
@@ -66,23 +61,13 @@ fn exact_instance_browse_search_and_click_preserve_confirmed_current(cx: &mut Te
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("project-model-current-0").is_some());
-    visual.simulate_click(
-        visual
-            .debug_bounds("project-model-provider-1")
-            .unwrap()
-            .center(),
-        Modifiers::default(),
-    );
+    let provider = visual.debug_bounds("project-model-provider-1").unwrap();
+    visual.simulate_click(provider.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("project-model-current-0").is_none());
     assert!(visual.debug_bounds("project-model-choice-1").is_none());
-    visual.simulate_click(
-        visual
-            .debug_bounds("project-model-choice-0")
-            .unwrap()
-            .center(),
-        Modifiers::default(),
-    );
+    let choice = visual.debug_bounds("project-model-choice-0").unwrap();
+    visual.simulate_click(choice.center(), Modifiers::default());
     visual.run_until_parked();
     let writes = gateway.model_writes.lock().unwrap();
     assert_eq!(writes.len(), 1);
@@ -102,6 +87,38 @@ fn exact_instance_browse_search_and_click_preserve_confirmed_current(cx: &mut Te
         )
     });
     assert!(gateway.sends.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn current_near_the_end_of_a_large_catalog_is_visible_when_opened(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(super::super::fixture::Fake {
+        many_models: true,
+        ..Default::default()
+    });
+    *gateway.model_current.lock().unwrap() = Some(ModelSelection {
+        instance_id: "codex".into(),
+        model: "model-39".into(),
+        options: vec![],
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            super::super::fixture::view(temp.path().to_owned(), gateway.clone(), window, cx)
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let trigger = visual.debug_bounds("project-manager-model").unwrap();
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.run_until_parked();
+    let list = visual.debug_bounds("project-model-choices").unwrap();
+    let current = visual.debug_bounds("project-model-current-41").unwrap();
+    assert!(
+        list.contains(&current.center()),
+        "current checkmark must be visible, not below the scroll viewport: {current:?} in {list:?}"
+    );
+    assert!(gateway.model_writes.lock().unwrap().is_empty());
 }
 
 #[gpui::test]
