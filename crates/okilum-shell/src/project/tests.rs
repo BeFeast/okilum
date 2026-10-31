@@ -266,7 +266,17 @@ fn a_revoked_connection_has_a_visible_reason_and_keeps_the_draft(cx: &mut TestAp
             .unwrap()
             .contains("revoked"));
     });
-    assert!(visual.debug_bounds("project-connection-status").is_some());
+    assert!(visual.debug_bounds("project-chat-status").is_some());
+    assert!(visual.debug_bounds("project-connection-status").is_none());
+    view.update_in(visual, |view, _, cx| {
+        view.connection_details = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-connection-status").is_some(),
+        "revocation details remain available on request"
+    );
 }
 
 #[gpui::test]
@@ -914,10 +924,11 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
         Root::new(view, window, cx)
     });
     let view = entity.unwrap();
-    let tab = visual
-        .debug_bounds("project-executors")
-        .expect("real Executors segment");
-    visual.simulate_click(tab.center(), Modifiers::default());
+    let menu = visual.debug_bounds("project-connection-menu").unwrap();
+    visual.simulate_click(menu.center(), Modifiers::default());
+    visual.run_until_parked();
+    // The secondary Executors view is the second item in the options menu.
+    visual.simulate_keystrokes("down down enter");
     visual.executor().advance_clock(Duration::from_secs(20));
     visual.run_until_parked();
     view.read_with(visual, |v, _| {

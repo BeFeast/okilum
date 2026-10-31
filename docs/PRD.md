@@ -75,6 +75,11 @@ to the existing Reader window through `ManagerGateway`. Managers remain in T3;
 credentials use OS storage and sends retain durable request identities. Executor
 controls, scheduled-task model following and live-server acceptance remain separate.
 
+**Linux Manager workspace (2026-10-31, #2098 / #2104):**
+[Native chat](project-manager.md#linux-manager-workspace-2098-2104) adds a scoped
+thread picker, independent drafts, live WebSocket replies and run status, with a
+compact model dropdown. Operational details require explicit Diagnostics.
+
 **Project navigation extension (2026-10-22, #1472 / #1474):**
 [Vault projects and application navigation](project-navigation.md) moves app
 sections into the app menu, limits the sidebar to vault navigation, and defines

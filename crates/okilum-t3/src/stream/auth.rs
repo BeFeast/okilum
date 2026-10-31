@@ -105,6 +105,10 @@ impl NativeToken {
     pub fn credential_key(environment: &Environment) -> String {
         environment.endpoint("/ws").to_string()
     }
+    /// Device enrollment is consumed only by the explicit Pair action.
+    pub fn pairing_key(environment: &Environment) -> String {
+        environment.endpoint("/ws/pairing").to_string()
+    }
 
     pub fn can_operate(&self) -> bool {
         self.scope.split_whitespace().any(|scope| scope == OPERATE)

@@ -33,6 +33,33 @@ fn row_key(id: &str) -> RowKey {
 }
 
 #[test]
+fn header_model_updates_do_not_erase_the_thread_title() {
+    let mut initial = snapshot(vec![]);
+    if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
+        projection["thread"]["modelSelection"] = json!({"model":"original"});
+    }
+    let mut p = Projection::new("thread", "project");
+    p.apply(&[initial]).unwrap();
+    assert_eq!(p.metadata.title, "Manager");
+    assert_eq!(p.take_changes().metadata.unwrap().model, "original");
+    p.apply(&[update(
+        "thread.metadata-updated",
+        json!({"id":"thread","projectId":"project","modelSelection":{"model":"changed"}}),
+    )])
+    .unwrap();
+    let metadata = p.take_changes().metadata.unwrap();
+    assert_eq!(metadata.model, "changed");
+    assert_eq!(metadata.title, "Manager");
+    p.apply(&[update(
+        "thread.metadata-updated",
+        json!({"id":"thread","projectId":"project","title":"Renamed"}),
+    )])
+    .unwrap();
+    assert_eq!(p.metadata.title, "Renamed");
+    assert_eq!(p.take_changes().metadata.unwrap().model, "changed");
+}
+
+#[test]
 fn streaming_changes_one_row_and_preserves_completed_history_allocations() {
     let mut p = model(
         (0..5000)

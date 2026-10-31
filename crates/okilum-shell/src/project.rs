@@ -12,6 +12,7 @@ use okilum_t3::{
 use std::time::Duration;
 
 pub(crate) mod board;
+mod chat_ui;
 #[cfg(target_os = "linux")]
 mod composer;
 mod connections;
@@ -23,6 +24,8 @@ mod models;
 #[cfg(target_os = "linux")]
 mod native;
 mod setup;
+#[cfg(target_os = "linux")]
+mod threads;
 
 pub(super) fn save_browser_environment(
     state: &Path,
@@ -100,6 +103,8 @@ pub(crate) struct ProjectView {
     composer: Entity<composer::Composer>,
     #[cfg(target_os = "linux")]
     native: native::Native,
+    #[cfg(target_os = "linux")]
+    threads: threads::Directory,
 }
 
 pub(super) struct ManagerStarted;
@@ -115,6 +120,10 @@ impl ProjectView {
     ) -> Self {
         let access = reader_features::access(reader_features::Feature::Agents, cx);
         let mut view = Self::empty(state.clone(), window, cx);
+        #[cfg(target_os = "linux")]
+        {
+            view.threads.enabled = true;
+        }
         let area_copy = area.clone();
         view.area = Some(area);
         let state_copy = state.clone();
@@ -337,6 +346,8 @@ impl ProjectView {
             composer,
             #[cfg(target_os = "linux")]
             native: native::Native::new(window, cx),
+            #[cfg(target_os = "linux")]
+            threads: threads::Directory::default(),
         }
     }
 
@@ -356,6 +367,8 @@ impl ProjectView {
         if self.area.as_deref() != Some(area) {
             return false;
         }
+        #[cfg(target_os = "linux")]
+        self.select_manager_thread(window, cx);
         self.executors_open = false;
         self.compose.update(cx, |input, cx| {
             let end = input.value().len();
@@ -370,8 +383,13 @@ impl ProjectView {
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
         #[cfg(target_os = "linux")]
+        self.set_threads_active(active, window, cx);
+        #[cfg(target_os = "linux")]
         if active {
             self.native_start(window, cx);
+            if self.threads.enabled && !self.native.active() && self.environment.is_some() {
+                self.native_restore(false, window, cx);
+            }
         } else {
             self.native.pause();
         }
@@ -400,7 +418,11 @@ impl ProjectView {
         match result {
             Ok((env, gateway)) => {
                 #[cfg(target_os = "linux")]
-                self.native.clear();
+                {
+                    self.set_threads_active(false, window, cx);
+                    self.threads.reset(cx);
+                    self.native.clear();
+                }
                 self.environment = Some(env);
                 self.connection_details = false;
                 self.gateway = Some(gateway);
@@ -441,7 +463,10 @@ impl ProjectView {
         self.model_open = false;
         self.error = None;
         #[cfg(target_os = "linux")]
-        self.native.clear();
+        {
+            self.threads.reset(cx);
+            self.native.clear();
+        }
         // History, retained send intents, and the unsent draft stay intact.
         cx.notify();
     }
@@ -455,13 +480,21 @@ impl ProjectView {
         let Some(env) = self.environment.clone() else {
             return div().into_any_element();
         };
-        let label = if matches!(
-            status,
-            GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
-        ) {
-            "Connected"
+        let origin = env.origin();
+        let host = url::Url::parse(&origin)
+            .ok()
+            .map(|url| url[url::Position::BeforeHost..url::Position::AfterPort].to_owned())
+            .unwrap_or(origin);
+        let _ = host;
+        let label = match status {
+            GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. } => "Connected",
+            _ => "Offline",
+        };
+        #[cfg(target_os = "linux")]
+        let label = if self.native.active() || self.threads.enabled {
+            self.native.status_label(cx)
         } else {
-            "Offline"
+            label
         };
         let owner = cx.entity().downgrade();
         let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);
@@ -472,8 +505,9 @@ impl ProjectView {
             .debug_selector(|| "project-connected-line".into())
             .child(
                 div()
-                    .flex_1()
                     .min_w_0()
+                    .text_size(px(11.))
+                    .debug_selector(|| "project-chat-status".into())
                     .text_color(brand::palette(cx).text_muted)
                     .child(label),
             )
@@ -483,11 +517,38 @@ impl ProjectView {
                     .ghost()
                     .small()
                     .icon(IconName::Ellipsis)
-                    .tooltip("T3 connection")
+                    .tooltip("Manager options")
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                         let change = owner.clone();
+                        let diagnostics = owner.clone();
+                        let executors = owner.clone();
+                        let launch = owner.clone();
                         let sign_out = env.clone();
-                        menu.item(
+                        menu.item(PopupMenuItem::new("Diagnostics").on_click(move |_, _, cx| {
+                            let _ = diagnostics.update(cx, |this, cx| {
+                                this.connection_details = true;
+                                cx.notify();
+                            });
+                        }))
+                        .item(
+                            PopupMenuItem::new("Executors").on_click(move |_, window, cx| {
+                                let _ = executors.update(cx, |this, cx| {
+                                    this.executors_open = !this.executors_open;
+                                    this.start_polling(window, cx);
+                                    cx.notify();
+                                });
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Request executor")
+                                .disabled(disabled)
+                                .on_click(move |_, window, cx| {
+                                    let _ =
+                                        launch.update(cx, |this, cx| this.open_launch(window, cx));
+                                }),
+                        )
+                        .separator()
+                        .item(
                             PopupMenuItem::new(if renew {
                                 "Renew connection…"
                             } else {
@@ -545,6 +606,45 @@ impl ProjectView {
                 return;
             }
         };
+        #[cfg(target_os = "linux")]
+        if self.threads.enabled {
+            self.set_threads_active(false, window, cx);
+            self.threads.reset(cx);
+            self.native.clear();
+            self.generation = self.generation.wrapping_add(1);
+            let generation = self.generation;
+            let state = self.state.clone().filter(|_| self.project_override);
+            self.busy = true;
+            cx.spawn_in(window, async move |this, cx| {
+                let saved_env = env.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        state
+                            .as_deref()
+                            .map_or(Ok(()), |state| connections::save(state, &saved_env))
+                    })
+                    .await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if this.generation != generation {
+                        return;
+                    }
+                    this.busy = false;
+                    match result {
+                        Ok(()) => {
+                            this.environment = Some(env);
+                            this.native_restore(true, window, cx);
+                        }
+                        Err(error) => {
+                            this.error = Some(error.to_string());
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
@@ -667,6 +767,10 @@ impl ProjectView {
     }
 
     fn start_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        if self.threads.enabled && !self.executors_open {
+            return;
+        }
         if self.polling || !self.active || self.gateway.is_none() || self.chat.is_none() {
             return;
         }
@@ -679,7 +783,7 @@ impl ProjectView {
                         return None;
                     }
                     #[cfg(target_os = "linux")]
-                    if this.native.active() && this.identity.is_some() && !this.executors_open {
+                    if (this.native.active() || this.threads.enabled) && !this.executors_open {
                         this.polling = false;
                         return None;
                     }
@@ -833,6 +937,15 @@ impl ProjectView {
     }
 
     fn send(&mut self, retry: Option<MessageRecord>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active || !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if self.threads.enabled && !self.native.active() {
+            self.error = Some("Pair the T3 WebSocket connection before sending.".into());
+            cx.notify();
+            return;
+        }
         #[cfg(target_os = "linux")]
         if retry.is_none() && self.native.active() {
             self.native_send(window, cx);
@@ -940,8 +1053,8 @@ fn status_note(status: &GatewayStatus) -> Option<&'static str> {
     }
 }
 
-impl Render for ProjectView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl ProjectView {
+    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.local_setup.is_some() {
             return self.render_local_setup(cx).into_any_element();
         }
@@ -953,6 +1066,18 @@ impl Render for ProjectView {
         let enabled = self.can_send();
         let note = status_note(&status);
         let compact = self.connection_is_compact(&status);
+        #[cfg(target_os = "linux")]
+        let (enabled, note, compact) = if self.native.active() {
+            (enabled, None, compact)
+        } else if self.threads.enabled {
+            (false, None, compact)
+        } else {
+            (enabled, note, compact)
+        };
+        #[cfg(target_os = "linux")]
+        let legacy_controls = !self.threads.enabled && !self.native.active();
+        #[cfg(not(target_os = "linux"))]
+        let legacy_controls = true;
         let expiry = self
             .gateway
             .as_ref()
@@ -972,7 +1097,7 @@ impl Render for ProjectView {
             .ok()
             .map(|environment| environment.origin());
 
-        let pending = self
+        let _pending = self
             .chat
             .as_ref()
             .filter(|chat| chat.pending_question_error.is_none())
@@ -1109,82 +1234,8 @@ impl Render for ProjectView {
             .min_h_0()
             .p_4()
             .gap_3()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        gpui_component::button::ButtonGroup::new("project-segments")
-                            .child(
-                                Button::new("project-manager")
-                                    .ghost()
-                                    .label("Manager")
-                                    .selected(!self.executors_open)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.executors_open = false;
-                                        cx.notify();
-                                    })),
-                            )
-                            .when(
-                                self.binding
-                                    .as_ref()
-                                    .is_some_and(|b| !b.executor.project_id.is_empty()),
-                                |group| {
-                                    group.child(
-                                        Button::new("project-executors")
-                                            .ghost()
-                                            .label("Executors")
-                                            .debug_selector(|| "project-executors".into())
-                                            .selected(self.executors_open)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.executors_open = true;
-                                                this.start_polling(window, cx);
-                                                cx.notify();
-                                            })),
-                                    )
-                                },
-                            ),
-                    )
-                    .child(div().flex_1())
-                    .when(
-                        self.binding
-                            .as_ref()
-                            .is_some_and(|b| !b.executor.project_id.is_empty()),
-                        |row| {
-                            row.child(
-                                Button::new("project-launch")
-                                    .debug_selector(|| "project-launch".into())
-                                    .ghost()
-                                    .icon(IconName::Plus)
-                                    .tooltip("Request executor")
-                                    .disabled(self.busy || self.model_busy || !enabled)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_launch(window, cx)
-                                    })),
-                            )
-                        },
-                    )
-                    .when_some(self.manager_model_target(), |row, target| {
-                        row.child(self.model_picker("project-manager-model", target, cx))
-                    })
-                    .when(pending > 0, |row| {
-                        row.child(
-                            div()
-                                .text_color(brand::palette(cx).text_muted)
-                                .child("Question in T3"),
-                        )
-                    })
-                    .when_some(open, |row, url| {
-                        row.child(
-                            Button::new("project-open-t3")
-                                .debug_selector(|| "project-open-t3".into())
-                                .ghost()
-                                .icon(IconName::ExternalLink)
-
-                                .tooltip("Open in T3")
-                                .on_click(move |_, _, cx| cx.open_url(&url)),
-                        )
-                    }),
-            )
+            .child(self.render_chat_header(&status, open, cx))
+            .when(self.connection_details, |view| view.child(self.render_chat_diagnostics(cx)))
             .when(
                 self.binding
                     .as_ref()
@@ -1201,9 +1252,6 @@ impl Render for ProjectView {
                     )
                 },
             )
-            .when(self.binding.is_some() && compact, |view| {
-                view.child(self.connection_line(&status, cx))
-            })
             .when(self.binding.is_some(),|view| {
                 #[cfg(target_os="linux")] let view=view.child(self.render_native(cx));
                 view
@@ -1237,7 +1285,7 @@ impl Render for ProjectView {
                             Button::new("project-connect")
                                 .ghost()
                                 .icon(IconName::RotateCw)
-                                .tooltip("Reconnect using the saved T3 token")
+                                .tooltip("Reconnect using the saved T3 connection")
                                 .disabled(self.busy || self.model_busy)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.connect(window, cx)),
@@ -1258,7 +1306,7 @@ impl Render for ProjectView {
             .when(self.connection_details, |view| view.child(Button::new("project-connection-done")
                 .debug_selector(|| "project-connection-done".into()).ghost().icon(IconName::Check).tooltip("Done with connection settings")
                 .on_click(cx.listener(|this, _, _, cx| { this.connection_details = false; cx.notify(); }))))
-            .when(self.binding.is_some() && browser_help, |view| {
+            .when(self.binding.is_some() && browser_help && legacy_controls, |view| {
                 view.child(v_flex().gap_1()
                     .child(div().w_full().min_w_0().whitespace_normal().child("Settings › T3 shows the shared sign-in state and can accept a browser callback URL."))
                     .child(Button::new("project-browser-sign-in").debug_selector(|| "project-browser-sign-in".into()).ghost().label("Open T3 in browser")
@@ -1274,9 +1322,7 @@ impl Render for ProjectView {
                         div()
                             .debug_selector(|| "project-questions-unavailable".into())
                             .text_color(cx.theme().danger)
-                            .child(format!(
-                                "Questions unavailable: {error}. Open T3 to view questions."
-                            )),
+                            .child(if compact { "Questions unavailable. Open T3 to view them.".to_owned() } else { format!("Questions unavailable: {error}. Open T3 to view questions.") }),
                     )
                 },
             )
@@ -1285,7 +1331,7 @@ impl Render for ProjectView {
                     div()
                         .debug_selector(|| "project-error".into())
                         .text_color(cx.theme().danger)
-                        .child(error),
+                        .child(if compact { "Could not connect. Open Diagnostics to retry.".to_owned() } else { error }),
                 )
             })
             .when(self.launch.open, |view| view.child(self.render_launch(cx)))
@@ -1319,6 +1365,38 @@ impl Render for ProjectView {
                         ).into_any_element();
                 view.child(div().debug_selector(|| "project-chat-composer".into()).child(composer))
             }).into_any_element()
+    }
+}
+
+impl Render for ProjectView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "linux")]
+        if self.threads.enabled {
+            let selected = self.threads.selected.clone();
+            let content = if let Some(id) = selected {
+                let available = self
+                    .threads
+                    .model
+                    .as_ref()
+                    .is_some_and(|m| m.lock().unwrap().threads.contains_key(&id));
+                if available {
+                    self.native_thread_view(&id)
+                        .map(|view| div().size_full().child(view.clone()).into_any_element())
+                        .unwrap_or_else(|| div().child("Loading thread…").into_any_element())
+                } else {
+                    div().p_3().child("This thread is no longer available in the bound project. Choose another thread.").into_any_element()
+                }
+            } else {
+                self.render_body(cx)
+            };
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(self.render_thread_directory(cx))
+                .child(div().flex_1().min_h_0().child(content))
+                .into_any_element();
+        }
+        self.render_body(cx)
     }
 }
 

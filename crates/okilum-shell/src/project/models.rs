@@ -5,6 +5,13 @@ use okilum_t3::{models::Target, ModelSelection};
 impl ProjectView {
     pub(super) fn manager_model_target(&self) -> Option<Target> {
         let binding = self.binding.as_ref()?;
+        #[cfg(target_os = "linux")]
+        if self.native.active() {
+            return Some(Target {
+                thread_id: self.chat.as_ref()?.thread_id.clone(),
+                project_id: binding.manager.project_id.clone()?,
+            });
+        }
         Some(Target {
             thread_id: binding.manager.thread_id.clone()?,
             project_id: binding.manager.project_id.clone()?,
@@ -41,9 +48,9 @@ impl ProjectView {
         let Some(target) = self.model_target.clone() else {
             return;
         };
-        let Some(gateway) = self.gateway.clone() else {
-            return;
-        };
+        let gateway = self.gateway.clone();
+        #[cfg(target_os = "linux")]
+        let native = self.native.model_client();
         let generation = self.generation;
         let applying = selection.is_some();
         self.model_busy = true;
@@ -53,6 +60,14 @@ impl ProjectView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    #[cfg(target_os = "linux")]
+                    if let Some(client) = native {
+                        return match selection {
+                            Some(selection) => client.configure_manager_model(&target,&selection),
+                            None => client.manager_models(&target),
+                        }.map_err(anyhow::Error::from);
+                    }
+                    let gateway = gateway.ok_or_else(||anyhow::anyhow!("Not connected"))?;
                     match selection {
                         Some(selection) => target.configure(gateway.as_ref(), &selection),
                         None => target.load(gateway.as_ref()),
@@ -116,7 +131,19 @@ impl ProjectView {
                     .and_then(|model| model.label.clone())
                     .unwrap_or_else(|| current.model.clone())
             })
-            .unwrap_or_else(|| "Model".into());
+            .unwrap_or_else(|| {
+                #[cfg(target_os = "linux")]
+                if self
+                    .chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.thread_id == target.thread_id)
+                {
+                    if let Some(model) = self.native.current_model(&target.thread_id) {
+                        return model.into();
+                    }
+                }
+                "Model".into()
+            });
         let owner = cx.entity().downgrade();
         Popover::new(id)
             .anchor(Anchor::TopRight)

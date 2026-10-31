@@ -1,5 +1,37 @@
 # Project manager chat (#1418, #1415)
 
+## Linux Manager workspace (#2098, #2104)
+
+With Agents enabled, Linux opens a native conversation over T3 WebSocket v2.
+The thread picker subscribes to the explicitly bound Manager and executor
+projects, filters archived/deleted threads, and supports searching a virtualized
+list. Selecting a thread never rewrites the area's Manager binding. Each
+origin/thread retains its own composer, history projection and durable command
+journal; returning to Manager restores its independent draft.
+
+The chat header shows the current model in a compact dropdown and a one-word
+connection/run status. Selecting a model requires **Apply** and a confirmed
+server readback. Model options do not resize the history or composer. Messages
+and run state arrive through the retained subscription without reloading;
+scrolling away preserves position and **Jump to latest** resumes following.
+Thread IDs, credential details and scheduler limitations are available only
+through **… → Diagnostics**, outside the conversation.
+
+**Pair** first restores the origin-bound native session from OS credential
+storage. A device enrollment already registered there can be exchanged once
+and removed after the resulting session is saved. This does not convert MCP
+credentials or expand their audience. A fresh device without enrollment still
+needs native enrollment; generic browser-native authorization is not provided
+by this client. The existing manual recovery is confined to Diagnostics.
+
+Closing Manager, changing server or disabling Agents cancels subscriptions and
+revokes the corresponding network lease. Reopening requires a fresh synchronized
+thread response before any send is enabled. Reconnect never resends an
+unconfirmed command automatically. The macOS embedded Manager is unchanged.
+
+The sections below describe the earlier MCP-compatible surfaces and their
+incremental history; this Linux workspace supersedes their primary chat UI.
+
 The 22 October [project navigation contract](project-navigation.md) supersedes
 the current-note Project button and adds manager-only bindings for minimal
 projects. The native transport and chat behavior below remain the fallback.
