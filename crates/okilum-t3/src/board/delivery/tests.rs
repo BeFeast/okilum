@@ -29,6 +29,8 @@ fn build() -> Build {
         build: "100".into(),
         source: A.into(),
         artifact: "https://updates.example/build100.AppImage".into(),
+        published_at: None,
+        release_url: None,
     }
 }
 fn fixture_evidence(issue: u64) -> Evidence {
@@ -371,5 +373,27 @@ fn rebinding_a_feed_does_not_present_the_previous_urls_snapshot_as_the_new_sourc
     assert_eq!(
         s.feeds[&(Platform::Linux, Channel::Beta)].last_success,
         None
+    );
+}
+
+#[test]
+fn publication_matches_exact_platform_channel_and_build() {
+    let mut b = build();
+    read::publication(
+        &mut b,
+        &serde_json::json!([
+            {"tag_name":"macos-beta-100", "html_url":"https://example.test/wrong", "published_at":"2026-10-31T10:00:00Z"}
+        ]),
+    );
+    assert!(b.release_url.is_none() && b.published_at.is_none());
+    read::publication(
+        &mut b,
+        &serde_json::json!([
+            {"tag_name":"linux-beta-100", "html_url":"https://example.test/release", "published_at":"2026-10-31T11:00:00Z"}
+        ]),
+    );
+    assert_eq!(
+        b.release_url.as_deref(),
+        Some("https://example.test/release")
     );
 }

@@ -929,6 +929,23 @@ The document title receives space before optional header controls. At narrow wid
 
 The note-header pencil toggles Edit/Read and is a primary action: optional controls overflow first; the pencil stays visible alongside Read. Its label and accessible name are Edit. Edit restores the last Live Preview/Source choice. Escape dismisses local transient UI first, then returns to Reader through the existing safe save/conflict path. Rename remains title click, F2 and the document menu.
 
+### Entering a rendered Live Preview block (#1642)
+
+A rendered table, image, callout or code block shows its source while the caret
+or selection touches it. Besides arrows and a click:
+
+- A click lands on the source of what was clicked: a table cell's text, an
+  image's embed. A callout's body still lands on the source line under the
+  pointer.
+- A double-click opens the source with the whole block selected.
+- F2 opens the rendered block next to the caret (nothing but blank space between
+  them) with the whole block selected. With no such block F2 renames the note.
+- Escape with the selection inside a block's source draws it rendered again
+  before it leaves Edit. The caret returns to where F2 or Enter found it, else to
+  the line after the block, and the block keeps a focus ring while the caret
+  stays there. Enter or F2 then opens it again. Once the caret moves or the text
+  changes the ring is gone and Enter is a new line again.
+
 ### Image file actions (#1897)
 
 Reader and Live Preview image blocks offer a context menu for the image itself:
