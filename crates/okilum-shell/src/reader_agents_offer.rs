@@ -145,9 +145,13 @@ impl Reader {
                     {
                         this.enter_vault_project(project, window, cx)
                     }
-                    Ok(_) => {}
+                    Ok(_) => reader_toast::transient(
+                        "Board saved locally. Enable Agents in Settings → Features to open it.",
+                        window,
+                        cx,
+                    ),
                     Err(error) => reader_toast::error(
-                        format!("Agents is on, but the local Board could not be opened: {error:#}"),
+                        format!("Could not open the local Board: {error:#}"),
                         window,
                         cx,
                     ),
