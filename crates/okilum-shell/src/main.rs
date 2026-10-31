@@ -34,6 +34,7 @@ mod pdf_engine;
 mod platform;
 mod prepared_links;
 mod project;
+mod project_terminal;
 mod quick_open;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
@@ -435,6 +436,7 @@ const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
 const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
+    project_terminal::bind_keys(cx);
     reader_text_zoom::bind_keys(cx);
     reader_editor::format::bind_keys(cx);
     reader_title_nav::bind_menu_keys(cx);
@@ -7278,6 +7280,11 @@ impl Render for Reader {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
                 cx.stop_propagation();
             }))
+            .on_action(
+                cx.listener(|this, _: &project_terminal::OpenTerminal, window, cx| {
+                    this.open_project_terminal(window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleProject, window, cx| {
                 if this.project_navigation.active.is_some() {
                     this.leave_vault_project(window, cx);

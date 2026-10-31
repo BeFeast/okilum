@@ -507,6 +507,7 @@ impl ProjectView {
         let owner = cx.entity().downgrade();
         let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);
         let renew = matches!(status, GatewayStatus::ExpiresSoon { .. });
+        let terminal_area = self.area.clone();
         h_flex()
             .items_center()
             .gap_2()
@@ -532,12 +533,22 @@ impl ProjectView {
                         let executors = owner.clone();
                         let launch = owner.clone();
                         let sign_out = env.clone();
+                        let terminal_area = terminal_area.clone();
                         menu.item(PopupMenuItem::new("Diagnostics").on_click(move |_, _, cx| {
                             let _ = diagnostics.update(cx, |this, cx| {
                                 this.connection_details = true;
                                 cx.notify();
                             });
                         }))
+                        .item(
+                            PopupMenuItem::new("Open terminal")
+                                .disabled(terminal_area.is_none())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(area) = &terminal_area {
+                                        project_terminal::open_project(area.clone(), window, cx);
+                                    }
+                                }),
+                        )
                         .item(
                             PopupMenuItem::new("Executors").on_click(move |_, window, cx| {
                                 let _ = executors.update(cx, |this, cx| {
