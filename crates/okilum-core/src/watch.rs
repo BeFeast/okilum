@@ -70,10 +70,7 @@ mod mounts;
 
 /// Keep native watches on remote FUSE, but do not promise other clients' writes.
 /// This preparation-worker probe never starts a scan or a periodic timer.
-pub fn external_changes_need_rescan(root: &Path) -> bool {
-    if is_network_root(root) {
-        return true;
-    }
+pub fn is_remote_fuse_root(root: &Path) -> bool {
     #[cfg(target_os = "linux")]
     {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -81,7 +78,10 @@ pub fn external_changes_need_rescan(root: &Path) -> bool {
             .is_ok_and(|info| mounts::remote_fuse_mount(&root, &info))
     }
     #[cfg(not(target_os = "linux"))]
-    false
+    {
+        let _ = root;
+        false
+    }
 }
 
 /// Native local watchers cannot promise visibility of another network client's
@@ -267,6 +267,8 @@ impl VaultWatcher {
                     continue;
                 }
             };
+            // Rescan is an explicit lost-events flag, not a Create/Remove
+            // event kind. It applies to the whole watch even on a service path.
             let mut relevant = ev.need_rescan();
             if relevant {
                 self.pending.rescan = true;
@@ -445,7 +447,20 @@ mod topology_tests {
             temp.path().join(".okilum-save-test"),
             temp.path().parent().unwrap().join("outside.md"),
         ] {
-            tx.send(write_event(path)).unwrap();
+            for kind in [
+                EventKind::Create(notify::event::CreateKind::File),
+                EventKind::Remove(notify::event::RemoveKind::File),
+                EventKind::Modify(notify::event::ModifyKind::Data(
+                    notify::event::DataChange::Any,
+                )),
+            ] {
+                let event = Event::new(kind).add_path(path.clone());
+                assert!(
+                    !event.need_rescan(),
+                    "ordinary event kind is not a lost-events flag"
+                );
+                tx.send(Ok(event)).unwrap();
+            }
         }
         let batch = watcher
             .poll()
@@ -453,6 +468,22 @@ mod topology_tests {
         assert_eq!(batch.changed, BTreeSet::from(["a.md".into()]));
         assert!(batch.removed.is_empty() && batch.directories.is_empty());
         assert!(watcher.first_event.is_none());
+    }
+
+    #[test]
+    fn explicit_lost_events_flag_requires_rescan_even_on_an_ignored_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut watcher, tx) = controlled_watcher(temp.path());
+        tx.send(Ok(Event::new(EventKind::Other)
+            .add_path(temp.path().join(".git/index"))
+            .set_flag(notify::event::Flag::Rescan)))
+            .unwrap();
+        assert!(watcher.poll().is_none());
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        assert!(
+            watcher.poll().unwrap().rescan,
+            "lost-event recovery cannot be filtered by its path"
+        );
     }
 
     #[test]

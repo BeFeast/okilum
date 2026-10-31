@@ -594,12 +594,11 @@ fn prepare_rest_with_snapshot(
     send: &async_channel::Sender<Event>,
     previous: Option<okilum_core::vault::warm::Snapshot>,
 ) -> Result<Event> {
-    send.send_blocking(Event::NetworkRoot(okilum_core::watch::is_network_root(
-        root,
-    )))
-    .map_err(|_| anyhow::anyhow!("Reader closed"))?;
+    let network = okilum_core::watch::is_network_root(root);
+    send.send_blocking(Event::NetworkRoot(network))
+        .map_err(|_| anyhow::anyhow!("Reader closed"))?;
     send.send_blocking(Event::LimitedExternalRefresh(
-        okilum_core::watch::external_changes_need_rescan(root),
+        network || okilum_core::watch::is_remote_fuse_root(root),
     ))
     .map_err(|_| anyhow::anyhow!("Reader closed"))?;
     prepare_rest_with_io_and_snapshot(
@@ -609,7 +608,7 @@ fn prepare_rest_with_snapshot(
         send,
         &mut |path| std::fs::read(path),
         |root| {
-            if okilum_core::watch::is_network_root(root) {
+            if network {
                 bail!(
                     "Auto-refresh is limited on this network drive. Use Rescan to check changes made by other clients."
                 );
