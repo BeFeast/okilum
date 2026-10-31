@@ -47,6 +47,7 @@ impl PreparedProvider {
         let text = Arc::from(view.display());
         let styles = projected_styles(&view, view.styles(), colors, super::CODE_FONT)?;
         let line_scales = heading_line_scales(&view, view.styles());
+        let line_indents = container_line_indents(view.display());
         let markers = projection_markers(view.decorations());
         let tables = view
             .decorations()
@@ -74,6 +75,7 @@ impl PreparedProvider {
                 text,
                 styles,
                 line_scales,
+                line_indents,
                 markers,
                 blocks,
             }),
@@ -105,6 +107,7 @@ struct PreparedProjection {
     text: Arc<str>,
     styles: Vec<ProjectionStyle>,
     line_scales: Vec<LineScale>,
+    line_indents: Vec<LineIndent>,
     markers: Vec<ProjectionMarker>,
     blocks: Vec<ProjectionBlock>,
 }
@@ -132,6 +135,9 @@ impl SourceProjection for PreparedProjection {
     }
     fn line_scales(&self) -> &[LineScale] {
         &self.line_scales
+    }
+    fn line_indents(&self) -> &[LineIndent] {
+        &self.line_indents
     }
     fn markers(&self) -> &[ProjectionMarker] {
         &self.markers

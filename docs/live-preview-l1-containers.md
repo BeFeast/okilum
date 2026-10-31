@@ -84,8 +84,9 @@ advance, so source bytes, wrap breaks, rows and hit-testing do not change.
 - A quote whose delimiter is joined to a combining mark stays raw alone. Other
   quotes, bullets and rules keep their decorations.
 
-Bars on soft-wrapped continuation rows need a hanging indent: in the Reader a
-wrapped row starts at x = 0, under the bar. See PR 3.
+Bars on soft-wrapped continuation rows need a hanging indent: without one a
+wrapped row starts at x = 0, under the bar. See PR 3 and the hanging gutter
+below (#1641).
 
 # PR 3: paint-only line decorations
 
@@ -99,9 +100,40 @@ wrapped row starts at x = 0, under the bar. See PR 3.
   inside containers gets no background yet.
 - **Rules (#727).** Thematic breaks already paint a rule at the existing row
   height; setext underlines, front matter and fenced text stay raw.
-- **Quote bars.** One bar per `>` on every line that carries a delimiter (PR 2).
-  Soft-wrapped continuation rows get no bar: without a hanging indent it would
-  cover glyphs, and a hanging indent is per-line metrics (S6b).
+- **Quote bars.** One bar per `>` on every line that carries a delimiter (PR 2),
+  and on every soft-wrapped row of such a line, inside its hanging gutter
+  (#1641). A bar is never drawn where it would cover glyphs.
 
 Switching decorations on or off changes no source bytes, advances, wrap breaks,
 rows or hit targets.
+
+# Hanging gutter for block markers (#1641)
+
+The heading gutter (S6b) hangs a revealed `##` left of the text. Lists, tasks
+and quotes get the matching hanging indent: the bytes before an item's text
+(indentation, `>` delimiters, `-`/`+`/`*`/`1.`/`1)` markers and a task box after
+a list marker) form a gutter, and soft-wrapped rows of the line start under the
+first character of its text instead of under the marker.
+
+- The provider lists one `LineIndent { line, prefix }` per projected line that
+  starts with such a prefix (vendor patch 0103). Only each line's first bytes
+  are read; the newline scan is a byte search, with no parse on the UI thread.
+- Container syntax is never concealed, and markers are replaced by bullets,
+  boxes and bars in the same advance, so the prefix bytes, their styles and the
+  gutter width are identical with the caret on the line and off it: entering
+  or leaving a list, task or quote line moves neither its text nor its wrapped
+  rows (0 px; the acceptance bound is 1 px).
+- The wrapper shapes the rest of a line that already wraps at the width left
+  of the gutter, so each continuation row fits; caret movement, clicks and
+  paint use the same `wrap_indent`. A gutter wider than half the text width,
+  a right-to-left line and a hanging heading keep the previous wrapping.
+- Every continuation row of a quoted line repeats its bars inside the gutter.
+- Headings inside a list keep `- ` as their gutter; a revealed `##` after it
+  stays inline as before.
+
+Evidence: `okilum-shell` source presentation tests cover the prefix grammar and
+caret reveal on every byte of list, ordered, task, nested and quote lines with a
+positive control that markers really revealed; the vendor GPUI test checks wrap
+indent, row widths, hit-testing, vertical movement and repeated quote bars,
+against a no-indent control. Native Live Preview acceptance on macOS and Linux
+is not claimed by this change.

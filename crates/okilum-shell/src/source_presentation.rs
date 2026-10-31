@@ -6,7 +6,7 @@ use std::{
 };
 
 use gpui_component::input::projection::{
-    ActiveSource, ConcealBias, LineScale, MarkerKind, ProjectedByte, ProjectionBlock,
+    ActiveSource, ConcealBias, LineIndent, LineScale, MarkerKind, ProjectedByte, ProjectionBlock,
     ProjectionMarker, ProjectionProvider, ProjectionStyle, SourceByte, SourceProjection,
     SourceSnapshot,
 };
@@ -299,6 +299,7 @@ impl CachedProvider {
             self.syntax.project(source, &projection, theme, &mut styles);
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
+        let line_indents = container_line_indents(projection.display());
         let blocks = table_blocks(
             &source.text,
             self.current_tables(&current, &source.text),
@@ -314,6 +315,7 @@ impl CachedProvider {
             reveal: reveal_snapshot,
             styles,
             line_scales,
+            line_indents,
             blocks,
         }))
     }
@@ -622,12 +624,75 @@ fn heading_line_scales(
     scales
 }
 
+/// One entry per projected line that starts with container syntax or
+/// indentation: its soft-wrapped rows hang under the text after it, so the
+/// bullet, number, task box or `>` forms a gutter (#1641). Container syntax
+/// is never concealed, so caret reveal leaves the prefix and the rows alone.
+/// Only each line's first bytes are read; the newline scan is a byte search.
+pub(crate) fn container_line_indents(display: &str) -> Vec<LineIndent> {
+    display
+        .split('\n')
+        .enumerate()
+        .filter_map(|(line, text)| {
+            let prefix = container_prefix(text.strip_suffix('\r').unwrap_or(text));
+            (prefix > 0).then_some(LineIndent { line, prefix })
+        })
+        .collect()
+}
+
+/// Bytes of `line` before its text: indentation, `>` delimiters, list
+/// markers (`-`, `+`, `*`, `1.`, `1)`) and a task box after a list marker.
+/// 0 when nothing follows the prefix: such a line has no text to wrap.
+fn container_prefix(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let blank = |at: usize| matches!(bytes.get(at), Some(b' ' | b'\t'));
+    let mut at = 0;
+    let mut after_list = false;
+    loop {
+        while blank(at) {
+            at += 1;
+        }
+        let digits = bytes[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let next = match bytes.get(at) {
+            Some(b'>') => at + 1,
+            Some(b'-' | b'+' | b'*') if blank(at + 1) => at + 1,
+            Some(b'0'..=b'9')
+                if digits <= 9
+                    && matches!(bytes.get(at + digits), Some(b'.' | b')'))
+                    && blank(at + digits + 1) =>
+            {
+                at + digits + 1
+            }
+            Some(b'[')
+                if after_list
+                    && matches!(bytes.get(at + 1), Some(b' ' | b'x' | b'X'))
+                    && bytes.get(at + 2) == Some(&b']')
+                    && blank(at + 3) =>
+            {
+                at + 3
+            }
+            _ => break,
+        };
+        after_list = !matches!(bytes.get(at), Some(b'>' | b'['));
+        at = next;
+    }
+    if at < bytes.len() {
+        at
+    } else {
+        0
+    }
+}
+
 struct MappedProjection {
     markers: Vec<ProjectionMarker>,
     source: SourceSnapshot,
     reveal: source_classifier::RevealSnapshot,
     styles: Vec<ProjectionStyle>,
     line_scales: Vec<LineScale>,
+    line_indents: Vec<LineIndent>,
     blocks: Vec<ProjectionBlock>,
 }
 impl SourceProjection for MappedProjection {
@@ -656,6 +721,9 @@ impl SourceProjection for MappedProjection {
     }
     fn line_scales(&self) -> &[LineScale] {
         &self.line_scales
+    }
+    fn line_indents(&self) -> &[LineIndent] {
+        &self.line_indents
     }
     fn marker_scope_is_raw(&self, scope: &Range<SourceByte>) -> bool {
         self.reveal
@@ -1895,5 +1963,117 @@ This paragraph remains ordinary Markdown.
                 format!("{:?}", expected.markers())
             );
         }
+    }
+
+    /// #1641: the gutter of each block marker, in bytes before the item text.
+    #[test]
+    fn container_prefixes_cover_bullets_numbers_tasks_and_quotes() {
+        for (line, prefix) in [
+            ("- item", 2),
+            ("* item", 2),
+            ("+  item", 3),
+            ("1. item", 3),
+            ("10) item", 4),
+            ("- [ ] task", 6),
+            ("- [x] done", 6),
+            ("1. [X] done", 7),
+            ("> quote", 2),
+            (">quote", 1),
+            ("> > nested", 4),
+            ("> - quoted item", 4),
+            ("- > item quote", 4),
+            ("  - nested", 4),
+            ("    - [ ] deep task", 10),
+            ("  lazy continuation", 2),
+            ("\t- tabbed", 3),
+            ("- ## heading in a list", 2),
+            // No text after the prefix: nothing to wrap.
+            ("- ", 0),
+            ("> ", 0),
+            ("- [ ] ", 0),
+            // Not container syntax.
+            ("plain text", 0),
+            ("-1 degrees", 0),
+            ("*emphasis*", 0),
+            ("**bold**", 0),
+            ("1.5 litres", 0),
+            ("1234567890. too long", 0),
+            ("[ ] not a task without a list", 0),
+            ("# heading", 0),
+        ] {
+            assert_eq!(container_prefix(line), prefix, "{line:?}");
+        }
+        let indents = container_line_indents("# Title\r\n- item\r\ntext\n> quote\n");
+        assert_eq!(
+            indents,
+            vec![
+                LineIndent { line: 1, prefix: 2 },
+                LineIndent { line: 3, prefix: 2 }
+            ]
+        );
+    }
+
+    /// #1641: entering or leaving a list, task or quote line never moves its
+    /// text. The bytes before the item text, their styles and the wrap gutter
+    /// are the same with the caret anywhere on the line as with it elsewhere,
+    /// so the text and its wrapped rows lay out at the same x.
+    #[test]
+    fn caret_reveal_keeps_block_marker_gutters_and_text_in_place() {
+        let text = "# Notes\n\n- first **bold** item\n  - nested item\n1. ordered item\n2) second\n- [ ] open task\n- [x] done task\n\n> quoted line\n> > nested quote\n> - quoted item\n\nend\n";
+        let source = source(text);
+        let provider = CachedProvider::classify(source.clone());
+        let idle = provider.compose(&source, &inactive(&source)).unwrap();
+        let mut revealed_markers = 0;
+        let mut line_start = 0;
+        for (line, body) in text.split('\n').enumerate() {
+            let prefix = container_prefix(body);
+            if prefix == 0 {
+                line_start += body.len() + 1;
+                continue;
+            }
+            // The display keeps every source line and its container syntax.
+            let shown = |p: &Arc<dyn SourceProjection>| {
+                let display = p.text().split('\n').nth(line).unwrap().to_owned();
+                let styles: Vec<_> = p
+                    .styles()
+                    .iter()
+                    .filter(|style| {
+                        let start = p
+                            .text()
+                            .split('\n')
+                            .take(line)
+                            .map(|l| l.len() + 1)
+                            .sum::<usize>();
+                        style.range.start.0 < start + prefix && style.range.end.0 > start
+                    })
+                    .map(|style| format!("{style:?}"))
+                    .collect();
+                let indent = gpui_component::input::projection::line_indent(p.line_indents(), line);
+                (display[..prefix].to_owned(), styles, indent)
+            };
+            let expected = shown(&idle);
+            assert_eq!(expected.2, prefix, "line {line}: {body:?} hangs");
+            for caret in line_start..=line_start + body.len() {
+                let active = ActiveSource {
+                    anchor: SourceByte(caret),
+                    head: SourceByte(caret),
+                    ..ActiveSource::default()
+                };
+                let revealed = provider.compose(&source, &active).unwrap();
+                assert_eq!(shown(&revealed), expected, "line {line}, caret {caret}");
+                revealed_markers += revealed
+                    .markers()
+                    .iter()
+                    .filter(|m| {
+                        (line_start..line_start + body.len()).contains(&m.range.start.0)
+                            && revealed.marker_scope_is_raw(&m.scope)
+                            && !idle.marker_scope_is_raw(&m.scope)
+                    })
+                    .count();
+            }
+            line_start += body.len() + 1;
+        }
+        // Positive control: the caret really revealed markers on these lines.
+        assert!(revealed_markers > 0);
     }
 }
