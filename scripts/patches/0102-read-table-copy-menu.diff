@@ -1,0 +1,255 @@
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -572,6 +572,11 @@
+                     parse_table_row(&mut table, row, cx);
+                 }
+             });
++            table.source = val
++                .position
++                .as_ref()
++                .and_then(|pos| source.get(pos.start.offset..pos.end.offset))
++                .map(|text| SharedString::from(text.to_string()));
+             table.span = new_span(val.position, cx);
+
+             BlockNode::Table(table)
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -977,6 +977,8 @@
+     pub(crate) children: Vec<TableRow>,
+     pub(crate) column_aligns: Vec<ColumnumnAlign>,
+     pub(crate) span: Option<Span>,
++    /// The exact source bytes the table was parsed from (its `span`).
++    pub(crate) source: Option<SharedString>,
+     /// What a table renders the same on every frame (shared across clones,
+     /// like a code block's highlights): its measured column widths and its
+     /// `table_actions` snapshot. Not part of the table's identity.
+@@ -1626,6 +1628,23 @@
+     out
+ }
+
++/// The secondary-press listener for a whole table, when a
++/// [`crate::text::TextView::on_table_secondary_press`] hook is installed.
++/// The snapshot is the table's cached frame data, so it costs nothing per frame.
++fn table_secondary_press(
++    table: &Table,
++    node_cx: &NodeContext,
++) -> Option<impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static> {
++    let f = node_cx.table_secondary_press.clone()?;
++    let press = super::text_view::TableSecondaryPress::new(
++        table.frame_data(false),
++        table.source.clone(),
++    );
++    Some(move |event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| {
++        f(&press, event, window, cx)
++    })
++}
++
+ /// The press listener for table cell (`row`, `column`), when a
+ /// [`crate::text::TextView::on_table_cell_press`] hook is installed.
+ fn cell_press(
+@@ -1657,6 +1676,7 @@
+     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
+     pub(crate) table_cell_press: Option<Arc<super::text_view::TableCellPressFn>>,
++    pub(crate) table_secondary_press: Option<Arc<super::text_view::TableSecondaryPressFn>>,
+     pub(crate) link_presentation: Option<Arc<super::text_view::LinkPresentationFn>>,
+     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     pub(crate) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+@@ -2700,6 +2720,9 @@
+                     }
+                     let frame = div()
+                         .debug_selector(|| "table-content-frame".into())
++                        .when_some(table_secondary_press(table, node_cx), |this, f| {
++                            this.on_mouse_down(MouseButton::Right, f)
++                        })
+                         .relative()
+                         .child(horizontal_scroll_area(
+                             ("table", options.ix),
+@@ -2864,6 +2887,9 @@
+             .child(
+                 div()
+                     .id(("table", options.ix))
++                    .when_some(table_secondary_press(table, node_cx), |this, f| {
++                        this.on_mouse_down(MouseButton::Right, f)
++                    })
+                     .w_full()
+                     .bg(cx.theme().tokens.colors.surface)
+                     .border_1()
+@@ -3059,6 +3085,7 @@
+             }],
+             column_aligns: vec![],
+             span: None,
++            source: None,
+             frame_cache: Default::default(),
+         };
+         let node_cx = NodeContext {
+@@ -3424,6 +3451,7 @@
+             ],
+             column_aligns: vec![ColumnumnAlign::Left, ColumnumnAlign::Right],
+             span: None,
++            source: None,
+             frame_cache: Default::default(),
+         };
+         let block = BlockNode::Table(table);
+@@ -3450,6 +3478,7 @@
+                 .collect(),
+             column_aligns,
+             span: None,
++            source: None,
+             frame_cache: Default::default(),
+         }
+     }
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -124,6 +124,8 @@
+     pub(super) code_block_highlighter: Option<std::sync::Arc<CodeBlockHighlighterFn>>,
+     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
+     pub(super) table_cell_press: Option<std::sync::Arc<super::text_view::TableCellPressFn>>,
++    pub(super) table_secondary_press:
++        Option<std::sync::Arc<super::text_view::TableSecondaryPressFn>>,
+     pub(super) link_presentation: Option<std::sync::Arc<super::text_view::LinkPresentationFn>>,
+     pub(super) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+@@ -305,6 +307,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             table_cell_press: None,
++            table_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -1099,6 +1102,7 @@
+         node_cx.code_block_highlighter = self.code_block_highlighter.clone();
+         node_cx.table_actions = self.table_actions.clone();
+         node_cx.table_cell_press = self.table_cell_press.clone();
++        node_cx.table_secondary_press = self.table_secondary_press.clone();
+         node_cx.link_click_handler = self.link_click_handler.clone();
+         node_cx.link_hover_handler = self.link_hover_handler.clone();
+         node_cx.link_presentation = self.link_presentation.clone();
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -98,6 +98,34 @@
+ pub(crate) type TableCellPressFn =
+     dyn Fn(TableCellPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
+
++/// A secondary (right) press anywhere on a rendered Markdown table: the
++/// snapshot of the pressed table and the exact source bytes it was parsed from.
++#[derive(Debug, Clone)]
++pub struct TableSecondaryPress {
++    data: Arc<TableData>,
++    source: Option<SharedString>,
++}
++
++impl TableSecondaryPress {
++    pub(crate) fn new(data: Arc<TableData>, source: Option<SharedString>) -> Self {
++        Self { data, source }
++    }
++
++    /// The pressed table, with plain-text cells and its source span.
++    pub fn data(&self) -> &TableData {
++        &self.data
++    }
++
++    /// The table's Markdown exactly as written in the text the view parsed
++    /// (escapes, delimiter row, inline markup and line endings kept).
++    pub fn source(&self) -> Option<&str> {
++        self.source.as_deref()
++    }
++}
++
++pub(crate) type TableSecondaryPressFn =
++    dyn Fn(&TableSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
++
+ pub(crate) type LinkHoverHandlerFn =
+     dyn Fn(&SharedString, bool, gpui::Point<Pixels>, &mut Window, &mut App) + Send + Sync;
+
+@@ -157,6 +185,7 @@
+     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     table_actions: Option<Arc<TableActionsFn>>,
+     table_cell_press: Option<Arc<TableCellPressFn>>,
++    table_secondary_press: Option<Arc<TableSecondaryPressFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     link_hover_handler: Option<Arc<LinkHoverHandlerFn>>,
+     link_presentation: Option<Arc<LinkPresentationFn>>,
+@@ -205,6 +234,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             table_cell_press: None,
++            table_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -230,6 +260,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             table_cell_press: None,
++            table_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -255,6 +286,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             table_cell_press: None,
++            table_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -382,6 +414,20 @@
+         self
+     }
+
++    /// Observe secondary (right) presses anywhere on a rendered table, for a
++    /// table context menu. Layout is unchanged; the host decides whether the
++    /// press propagates to the elements around the table.
++    pub fn on_table_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&TableSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.table_secondary_press = Some(Arc::new(f));
++        self
++    }
++
+     /// Style and explain links without replacing their text or selection runs.
+     pub fn link_presentation<F>(mut self, presentation: F) -> Self
+     where
+@@ -641,6 +687,7 @@
+             state.code_block_highlighter = code_block_highlighter.clone();
+             state.table_actions = self.table_actions.clone();
+             state.table_cell_press = self.table_cell_press.clone();
++            state.table_secondary_press = self.table_secondary_press.clone();
+             state.link_click_handler = self.link_click_handler.clone();
+             state.link_hover_handler = self.link_hover_handler.clone();
+             state.link_presentation = self.link_presentation.clone();
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -118,6 +118,17 @@
+         self.inner = self.inner.on_table_cell_press(f);
+         self
+     }
++    /// Observes secondary (right) presses anywhere on a rendered table.
++    pub fn on_table_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&gpui_base::text::TableSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.inner = self.inner.on_table_secondary_press(f);
++        self
++    }
+     /// Handles link clicks instead of opening the URL.
+     pub fn link_presentation<F>(mut self, f: F) -> Self
+     where
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -10,5 +10,5 @@
+     LinkPresentation, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
+     MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData,
+-    TextViewState, markdown_ast,
++    TableSecondaryPress, TextViewState, markdown_ast,
+ };
+ pub use style::TextViewStyle;
