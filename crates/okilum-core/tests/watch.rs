@@ -62,13 +62,15 @@ fn the_legacy_index_and_service_directories_are_never_reported() {
     // A legacy index can live inside the vault. A watcher that reacted to
     // its own index writes would loop forever.
     let root = fresh("dotdirs");
+    fs::write(root.join("notes/image.png"), "an existing attachment").unwrap();
     let mut w = VaultWatcher::new(&root).unwrap();
 
     fs::write(root.join(".okilum-index/meta.json"), "{}").unwrap();
     fs::write(root.join(".okilum-index/segment.md"), "not a note").unwrap();
     fs::create_dir_all(root.join(".obsidian")).unwrap();
     fs::write(root.join(".obsidian/workspace.md"), "not a note").unwrap();
-    fs::write(root.join("notes/image.png"), "not a note either").unwrap();
+    // An attachment's content write is not an inventory change.
+    fs::write(root.join("notes/image.png"), "rewritten, not a note").unwrap();
 
     assert!(
         w.wait(Duration::from_millis(800)).is_none(),
@@ -229,4 +231,28 @@ fn note_rename_atomic_save_and_directory_move_report_incremental_hints() {
             && changes.directories.contains("moved"),
         "directory endpoints are topology hints: {changes:?}"
     );
+}
+
+/// #8: a file another application creates or deletes changes the listed
+/// inventory, Markdown or not. The watcher reports its folder.
+#[test]
+fn an_attachment_created_or_deleted_reports_its_folder() {
+    let root = fresh("attachment");
+    let mut w = VaultWatcher::new(&root).unwrap();
+
+    fs::write(root.join("notes/report.pdf"), "from another application").unwrap();
+    let created = w.wait(WAIT).expect("an attachment creation must arrive");
+    assert_eq!(
+        created.directories.iter().collect::<Vec<_>>(),
+        vec!["notes"]
+    );
+    assert!(created.changed.is_empty() && created.removed.is_empty() && !created.rescan);
+
+    fs::remove_file(root.join("notes/report.pdf")).unwrap();
+    let removed = w.wait(WAIT).expect("an attachment removal must arrive");
+    assert_eq!(
+        removed.directories.iter().collect::<Vec<_>>(),
+        vec!["notes"]
+    );
+    assert!(removed.changed.is_empty() && removed.removed.is_empty() && !removed.rescan);
 }
