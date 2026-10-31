@@ -46,7 +46,7 @@ jobs:
         id: native
         if: github.ref != 'refs/heads/main' || steps.native-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: bash scripts/ci/check-macos.sh
+        run: python3 scripts/ci/gate-step.py --name 'Compile Reader and run quick native regressions' -- bash scripts/ci/check-macos.sh
       - name: Save shared native Cargo cache
         if: github.ref == 'refs/heads/main' && steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

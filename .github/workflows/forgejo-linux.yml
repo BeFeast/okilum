@@ -123,8 +123,11 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run full Linux gate
         env:
           CHECKS: ${{ needs.linux-checks.result }}
           APPIMAGE: ${{ needs.appimage.result }}
-        run: test "$CHECKS" = success && test "$APPIMAGE" = success
+        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -c 'test "$CHECKS" = success && test "$APPIMAGE" = success'
