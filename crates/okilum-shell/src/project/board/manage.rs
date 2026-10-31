@@ -16,6 +16,7 @@ pub(super) struct Editor {
     screen: Screen,
     title: Entity<InputState>,
     goal: Entity<InputState>,
+    repository: Entity<InputState>,
     issue: Entity<InputState>,
     expected: Entity<InputState>,
     executor: Entity<InputState>,
@@ -38,6 +39,7 @@ impl Editor {
             },
             title: field("Board title", cx),
             goal: field("Expected project outcome", cx),
+            repository: field("https://forgejo.example/owner/repository", cx),
             issue: field("Issue number or Forgejo URL", cx),
             expected: field("Expected result", cx),
             executor: field("Executor", cx),
@@ -57,6 +59,9 @@ impl Editor {
             .update(cx, |input, cx| input.set_value(details.title, window, cx));
         self.goal
             .update(cx, |input, cx| input.set_value(details.goal, window, cx));
+        self.repository.update(cx, |input, cx| {
+            input.set_value(details.repository, window, cx)
+        });
         self.stage_note = details.stage_note;
     }
     fn show(&mut self, screen: Screen, window: &mut Window, cx: &mut App) {
@@ -86,6 +91,7 @@ impl Editor {
             Screen::Details => Change::Details(Details {
                 title: self.title.read(cx).value().to_string(),
                 goal: self.goal.read(cx).value().to_string(),
+                repository: self.repository.read(cx).value().to_string(),
                 stage_note: self.stage_note.clone(),
             }),
             Screen::Add | Screen::Edit(_) => {
@@ -264,8 +270,16 @@ impl Board {
         let mut row = v_flex()
             .gap_1()
             .w_full()
+            .debug_selector({
+                let key = key.to_owned();
+                move || format!("board-field-{key}")
+            })
             .child(div().text_size(px(13.)).child(label.to_owned()))
-            .child(Input::new(input).disabled(self.editor.as_ref().is_some_and(|e| e.busy)));
+            .child(Input::new(input).disabled(
+                self.editor.as_ref().is_some_and(|e| {
+                    e.busy || (key == "repository" && e.session.document.is_some())
+                }),
+            ));
         if let Some(error) = self.editor.as_ref().and_then(|e| e.errors.get(key)) {
             row = row.child(
                 div()
@@ -445,7 +459,9 @@ impl Board {
             Screen::Details => {
                 content = content
                     .child(self.management_field("title", "Title", &editor.title, cx))
-                    .child(self.management_field("goal", "Goal", &editor.goal, cx));
+                    .child(self.management_field("goal", "Goal", &editor.goal, cx))
+                    .child(self.management_field("repository","Repository",&editor.repository,cx))
+                    .child(div().text_size(px(12.)).text_color(colors.text_muted).child("Enter the project's Forgejo repository URL here, for example https://forgejo.example/owner/repository. The Board stores it explicitly; no repository is guessed."));
                 let selected = editor.stage_note.clone();
                 let mut notes = editor.session.stage_notes.clone();
                 if !selected.is_empty() && !notes.contains(&selected) {
@@ -454,12 +470,26 @@ impl Board {
                 let selector = Button::new("board-stage-note")
                     .debug_selector(|| "board-stage-note".into())
                     .label(if selected.is_empty() {
-                        "Choose a stage note".into()
+                        "None (optional)".into()
                     } else {
                         note_label(&selected)
                     })
                     .disabled(busy)
                     .dropdown_menu(move |mut menu, _, _| {
+                        let target = weak.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new("None (optional)")
+                                .checked(selected.is_empty())
+                                .on_click(move |_, _, cx| {
+                                    let _ = target.update(cx, |this, cx| {
+                                        if let Some(e) = &mut this.editor {
+                                            e.stage_note.clear();
+                                            e.errors.remove("stage_note");
+                                        }
+                                        cx.notify();
+                                    });
+                                }),
+                        );
                         for note in &notes {
                             let target = weak.clone();
                             let note = note.clone();
@@ -481,7 +511,7 @@ impl Board {
                     });
                 let mut note_field = v_flex()
                     .gap_1()
-                    .child(div().text_size(px(13.)).child("Stage note"))
+                    .child(div().text_size(px(13.)).child("Stage note (optional)"))
                     .child(selector);
                 if let Some(error) = editor.errors.get("stage_note") {
                     note_field = note_field.child(
@@ -498,19 +528,11 @@ impl Board {
                             .text_size(px(12.))
                             .text_color(colors.text_muted)
                             .child(
-                                "Add a Markdown note to Planning, then reopen Board management.",
+                                "No stage note is required. You can create this Board now; existing Planning notes are offered here when available.",
                             ),
                     );
                 }
                 content = content.child(note_field);
-                if let Some(error) = editor.errors.get("repository") {
-                    content = content.child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(colors.danger)
-                            .child(error.clone()),
-                    );
-                }
                 content = content.child(self.management_save(creating, busy, cx));
             }
             Screen::Add | Screen::Edit(_) => {
@@ -786,5 +808,71 @@ mod tests {
         assert!(visual.debug_bounds("board-empty").is_none());
         assert!(visual.debug_bounds("board-expand-42").is_some());
         assert!(visual.debug_bounds("board-manage").is_some());
+    }
+    #[gpui::test]
+    fn create_board_without_planning_or_project_repo_has_an_editable_repository_and_saves(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let area = tempfile::tempdir().unwrap();
+        std::fs::create_dir(area.path().join("ops")).unwrap();
+        let project = "name: Pulse fixture\nproduct: {outcome: Keep work in view}\n";
+        std::fs::write(area.path().join("ops/project.yaml"), project).unwrap();
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let board = cx.new(|cx| {
+                let mut b = Board::with_reader(area.path().into(), |_| Vec::new(), window, cx);
+                b.active = true;
+                b
+            });
+            Root::new(board, window, cx)
+        });
+        let board = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Board>().unwrap()
+        });
+        visual.simulate_resize(size(px(1100.), px(1000.)));
+        visual.run_until_parked();
+        let click = |v: &mut VisualTestContext, selector: &'static str| {
+            let bounds = v
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            v.simulate_click(bounds.center(), Modifiers::default());
+            v.run_until_parked();
+        };
+        click(visual, "board-create");
+        assert!(
+            visual.debug_bounds("board-field-repository").is_some(),
+            "the user can actually supply the missing repository in this form"
+        );
+        click(visual, "board-save");
+        assert!(visual
+            .debug_bounds("board-field-error-repository")
+            .is_some());
+        assert!(visual
+            .debug_bounds("board-field-error-stage_note")
+            .is_none());
+        assert!(!area.path().join("ops/board.toml").exists());
+        board.update_in(visual, |board, window, cx| {
+            let editor = board.editor.as_mut().unwrap();
+            assert!(editor.stage_note.is_empty());
+            editor.repository.update(cx, |input, cx| {
+                input.set_value("https://git.example/Team/pulse", window, cx)
+            });
+        });
+        click(visual, "board-save");
+        let binding = Binding::read(area.path())
+            .unwrap()
+            .expect("real saved Board");
+        assert_eq!(binding.repository, "https://git.example/Team/pulse");
+        assert!(binding.stage_note.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(area.path().join("ops/project.yaml")).unwrap(),
+            project
+        );
+        assert!(visual
+            .debug_bounds("board-field-error-repository")
+            .is_none());
     }
 }

@@ -307,6 +307,7 @@ pub(crate) fn sweep_stale_search_sessions() {
 #[cfg(windows)]
 pub(crate) fn uninstall() {
     crate::markdown_handler::uninstall();
+    okilum_core::folder_registration::uninstall();
     crate::url_protocol::uninstall();
     windows::remove_registrations();
     let state = crate::reader_history::state_directory().ok();

@@ -35,6 +35,7 @@ impl Problems {
 pub struct Details {
     pub title: String,
     pub goal: String,
+    pub repository: String,
     pub stage_note: String,
 }
 #[derive(Clone, Debug, Default)]
@@ -163,7 +164,8 @@ impl Session {
                 let repo = &p["repo"];
                 let repository = repo["host"]
                     .as_str()
-                    .zip(repo["full_name"].as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .zip(repo["full_name"].as_str().filter(|s| !s.trim().is_empty()))
                     .map(|(host, name)| format!("https://{host}/{name}"))
                     .unwrap_or_default();
                 json!({"version":1,"title":project_name,"goal":goal,"repository":repository,
@@ -195,6 +197,7 @@ impl Session {
         Details {
             title: self.value["title"].as_str().unwrap_or_default().into(),
             goal: self.value["goal"].as_str().unwrap_or_default().into(),
+            repository: self.value["repository"].as_str().unwrap_or_default().into(),
             stage_note: self.value["stage_note"].as_str().unwrap_or_default().into(),
         }
     }
@@ -229,31 +232,29 @@ impl Session {
             "Describe the expected project outcome",
         );
         let note = &details.stage_note;
-        let valid = relative_note(note)
-            && self.area.join(note).is_file()
-            && self.area.join(note).canonicalize().is_ok_and(|p| {
-                self.area
-                    .canonicalize()
-                    .is_ok_and(|root| p.starts_with(root))
-            });
+        let valid = note.is_empty()
+            || (relative_note(note)
+                && self.area.join(note).is_file()
+                && self.area.join(note).canonicalize().is_ok_and(|p| {
+                    self.area
+                        .canonicalize()
+                        .is_ok_and(|root| p.starts_with(root))
+                }));
         errors.require(
             valid,
             "stage_note",
-            "Choose an existing Markdown stage note inside this project",
+            "Stage note is optional; choose existing Markdown inside this project or leave None",
         );
-        if self.document.is_none() {
-            errors.require(
-                note.starts_with("planning/"),
-                "stage_note",
-                "Choose a stage note from Planning",
-            );
-            let repository = self.value["repository"].as_str().unwrap_or_default();
-            errors.require(
-                https_link(repository),
-                "repository",
-                "Set the project's repository before creating its Board",
-            );
+        let repository = details.repository.trim();
+        match repository_url(repository)
+            .and_then(|url| check_project_repository(&self.project.value, &url))
+        {
+            Ok(()) => {}
+            Err(error) => {
+                errors.0.insert("repository".into(), error.to_string());
+            }
         }
+        errors.require(self.document.is_none() || self.value["repository"].as_str()==Some(repository),"repository","This Board's Repository is fixed after creation; existing issue numbers cannot be silently moved to another repository");
         errors.finish()
     }
     fn card_value(&self, index: Option<usize>, card: &Card) -> Result<Value> {
@@ -317,6 +318,7 @@ impl Session {
                 value["title"] = json!(details.title.trim());
                 value["goal"] = json!(details.goal.trim());
                 value["stage_note"] = json!(details.stage_note);
+                value["repository"] = json!(details.repository.trim());
                 "details"
             }
             Change::Add(card) => {
@@ -485,7 +487,8 @@ impl Session {
             Binding::parse_toml(&source)?
         };
         ensure!(
-            parsed.repository == self.value["repository"].as_str().unwrap_or_default(),
+            self.document.is_none()
+                || parsed.repository == self.value["repository"].as_str().unwrap_or_default(),
             "Repository changed"
         );
         Ok(source)

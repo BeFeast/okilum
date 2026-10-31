@@ -150,3 +150,29 @@ fn optional_current_task_is_stable_and_old_registry_columns_remain_supported() {
     ))
     .is_err());
 }
+
+#[test]
+fn malformed_current_task_reports_file_line_role_and_exact_value_without_guessing() {
+    let source="## Current threads\n\n| Role | Thread | Current task |\n|---|---|---|\n| Manager | `mcp:manager` | |\n| UI | `mcp:ui` | #2020 PR #2026; #2001 main ownership |\n";
+    let error = format!("{:#}", Registry::parse(source).unwrap_err());
+    assert!(
+        error.contains("ops/thread-ids.md:6")
+            && error.contains("UI")
+            && error.contains("#2020 PR #2026; #2001 main ownership"),
+        "{error}"
+    );
+    assert!(error.contains("another column"));
+    for (value, expected) in [
+        ("#2020", Some(2020)),
+        ("`#2020`", Some(2020)),
+        ("2020", Some(2020)),
+        ("—", None),
+        ("", None),
+    ] {
+        let valid = source.replace("#2020 PR #2026; #2001 main ownership", value);
+        assert_eq!(
+            Registry::parse(&valid).unwrap().executors[0].current_task,
+            expected
+        );
+    }
+}

@@ -16,6 +16,7 @@ pub struct Binding {
     pub title: String,
     pub goal: String,
     pub repository: String,
+    #[serde(default)]
     pub stage_note: String,
     #[serde(default = "refresh_default")]
     pub refresh_seconds: u64,
@@ -46,6 +47,39 @@ pub fn https_link(value: &str) -> bool {
 }
 pub fn note_link(value: &str) -> bool {
     relative_note(value) || https_link(value)
+}
+fn repository_url(value: &str) -> Result<url::Url> {
+    let url = url::Url::parse(value).context(
+        "Enter Repository in Board management as https://forgejo.example/owner/repository",
+    )?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "Repository must be a public HTTPS Forgejo URL without credentials, query or fragment"
+    );
+    let parts = url.path().trim_matches('/').split('/').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 2
+            && parts.iter().all(|p| !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))),
+        "Enter Repository in Board management as https://forgejo.example/owner/repository"
+    );
+    Ok(url)
+}
+fn check_project_repository(project: &serde_yaml::Value, url: &url::Url) -> Result<()> {
+    let host = project["repo"]["host"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty());
+    let name = project["repo"]["full_name"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty());
+    ensure!((host.is_none() && name.is_none()) || (host==url.host_str() && name==Some(url.path().trim_matches('/'))),"Board Repository must match repo.host and repo.full_name in the project's ops/project manifest");
+    Ok(())
 }
 /// Human-owned next actions. No issue/thread state creates these entries.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -201,31 +235,14 @@ impl Binding {
         ensure!(
             !binding.title.trim().is_empty()
                 && !binding.goal.trim().is_empty()
-                && relative_note(&binding.stage_note),
-            "Board requires a title and area-relative stage note"
+                && (binding.stage_note.is_empty() || relative_note(&binding.stage_note)),
+            "Board requires a title and goal; an optional stage note must be area-relative Markdown"
         );
         ensure!(
             binding.refresh_seconds > 0,
             "Board refresh_seconds must be positive (default 30)"
         );
-        let url = url::Url::parse(&binding.repository)?;
-        ensure!(
-            url.scheme() == "https"
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none(),
-            "Board requires a public HTTPS repository without credentials"
-        );
-        let parts = url.path().trim_matches('/').split('/').collect::<Vec<_>>();
-        ensure!(
-            parts.len() == 2
-                && parts.iter().all(|p| !p.is_empty()
-                    && p.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))),
-            "Expected a Forgejo owner/repository URL"
-        );
+        repository_url(&binding.repository)?;
         // An explicitly created empty Board has no cards until its first add.
         ensure!(
             binding.stuck_after_seconds > 0,
@@ -297,14 +314,10 @@ impl Binding {
         let project = crate::area_files::read(area, "project")?
             .context("Board requires a project manifest")?
             .value;
-        let repo = url::Url::parse(&binding.repository)?;
-        ensure!(
-            project["repo"]["host"].as_str() == repo.host_str()
-                && project["repo"]["full_name"].as_str() == Some(repo.path().trim_matches('/')),
-            "Board repository differs from explicit project manifest"
-        );
+        let repo = repository_url(&binding.repository)?;
+        check_project_repository(&project, &repo)?;
         let canonical = area.canonicalize()?;
-        if area.join(&binding.stage_note).exists() {
+        if !binding.stage_note.is_empty() && area.join(&binding.stage_note).exists() {
             ensure!(
                 area.join(&binding.stage_note)
                     .canonicalize()?
