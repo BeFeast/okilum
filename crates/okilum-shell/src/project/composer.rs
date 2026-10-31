@@ -21,6 +21,11 @@ pub(super) struct Composer {
 }
 impl Composer {
     pub(super) fn new(input: Entity<TextareaState>, cx: &mut Context<Self>) -> Self {
+        // Match Reader's IME commit settle policy: some input methods deliver
+        // the candidate-confirming Enter after the marked range is cleared.
+        input.update(cx, |input, _| {
+            input.set_ime_settle(Duration::from_millis(500))
+        });
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { shift: false, .. })
                 && this.enabled

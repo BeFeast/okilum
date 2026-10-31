@@ -16,7 +16,7 @@ of using it. The corpus note is `fixtures/reader/obsidian-syntax.md`.
 | `==highlight==` | Unchanged (#47). |
 | `%%comment%%` | Hidden, inline or across lines. A comment that fills its lines removes them, so it cannot split the paragraph around it. |
 | `[^id]` footnotes, `^[inline]` | Numbered by first reference, shown as a superscript link. Definitions move to the end of the note after a rule, one block per footnote, each with a back-to-reference glyph. |
-| `$…$`, `$$…$$` math | No math renderer: inline math is shown as a code span, display math as its TeX source centred in the monospace face on the code tint. |
+| `$…$`, `$$…$$` math | Reader: inline math is shown as a code span, display math as its TeX source centred in the monospace face on the code tint. Live Preview draws inline formulas in place and previews the one under the caret ([inline math](live-preview-inline-math.md), #1645). |
 | `^id` block IDs | Hidden. `[[note#^id]]` and `[text](note.md#^id)` open the note and land on the block; `![[note#^id]]` embeds just that block (a paragraph, a list item with its children, or the block before an ID alone on its line). |
 | `![[note#Heading]]` | Unchanged (#49): the heading's section. |
 
@@ -32,7 +32,9 @@ of using it. The corpus note is `fixtures/reader/obsidian-syntax.md`.
   the rendering bar; until one does, the formula's source is the honest
   fallback, and inline math is never mistaken for prose. A currency pair such
   as `$5 and $10` is not math (Pandoc's rule: no space inside the delimiters,
-  no digit after the closing `$`).
+  no digit after the closing `$`). Conservatively, the closing `$` must be the
+  next one and a bare amount such as `$2$` stays text, so
+  `~$1.5k/mo and $2$` is money in every view (#1645).
 - **Block IDs follow the heading contract.** A missing ID refuses with "No block
   with that ID exists" and keeps the current document; a duplicated ID is
   ambiguous and never picks a winner. The managed Source editor reports block

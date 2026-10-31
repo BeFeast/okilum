@@ -211,6 +211,10 @@ pub(super) fn view(
 
 #[cfg(feature = "project-ui-harness")]
 pub(super) fn open(cx: &mut App) -> bool {
+    #[cfg(target_os = "linux")]
+    if threads::native_fixture::open(cx) {
+        return true;
+    }
     let Ok(mode) = std::env::var("OKILUM_PROJECT_UI_FIXTURE") else {
         return false;
     };

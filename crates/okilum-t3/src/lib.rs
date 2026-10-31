@@ -18,6 +18,7 @@ pub mod actions;
 pub mod area_files;
 pub mod board;
 pub mod chat;
+pub mod chat_drafts;
 pub mod connection;
 mod environment;
 pub mod executors;

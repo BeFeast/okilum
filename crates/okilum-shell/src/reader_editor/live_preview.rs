@@ -74,6 +74,24 @@ impl LivePreview {
             .map(Into::into)
     }
 
+    /// The inline formula the caret is in, while Live Preview shows this
+    /// note and the selection stays inside that formula (#1645).
+    pub(super) fn formula_at(
+        &self,
+        input: &EditorState,
+    ) -> Option<crate::source_presentation::FormulaAt> {
+        if !self.enabled {
+            return None;
+        }
+        let selection = input.selected_range();
+        let formula = self
+            .accepted
+            .as_ref()?
+            .formula_at(input.source_stamp(), input.cursor())?;
+        (formula.range.start <= selection.start && selection.end <= formula.range.end)
+            .then_some(formula)
+    }
+
     pub(super) fn new(
         reader: &Reader,
         entity: EntityId,

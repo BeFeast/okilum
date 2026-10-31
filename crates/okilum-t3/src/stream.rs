@@ -15,6 +15,7 @@ pub use assets::{
     validate_attachments, AttachmentKind, AttachmentMetadata, ChatAttachment, MAX_FILE_BYTES,
     MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
 };
+pub mod thread_create;
 pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
 

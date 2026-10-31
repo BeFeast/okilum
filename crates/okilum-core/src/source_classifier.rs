@@ -36,6 +36,9 @@ pub enum Style {
     WikiLink,
     /// A reference definition row: kept at source height and rendered quietly.
     Definition,
+    /// The TeX content of an inline `$…$` formula; its `$` delimiters are
+    /// concealed markers. Live Preview draws the formula in its place (#1645).
+    Math,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,6 +267,9 @@ fn canonical_options<'a>(
     // Task markers are authored container syntax, not paragraph text.
     options.extension.tasklist = true;
     options.extension.wikilinks_title_after_pipe = true;
+    // Dollar math is parsed so TeX is never read as emphasis (`$a_i b_j$`);
+    // `inline` then keeps only formulas `tex::is_inline_formula` accepts.
+    options.extension.math_dollars = true;
     if !references.is_empty() {
         options.parse.broken_link_callback =
             Some(std::sync::Arc::new(References(references.to_vec())));
@@ -348,6 +354,12 @@ fn classify_parsed<'a>(
                 match &child.data.borrow().value {
                     NodeValue::Text(value) => text.push_str(value),
                     NodeValue::Code(code) => text.push_str(&code.literal),
+                    // Authored as written, so `[[note#Area $x^2$]]` matches.
+                    NodeValue::Math(_) => {
+                        if let Some(raw) = context.range(child).and_then(|r| source.get(r)) {
+                            text.push_str(raw)
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -622,7 +634,8 @@ impl<'s> Context<'s> {
                 NodeValue::Link(_)
                 | NodeValue::WikiLink(_)
                 | NodeValue::Image(_)
-                | NodeValue::Code(_) => text.push('\u{0}'),
+                | NodeValue::Code(_)
+                | NodeValue::Math(_) => text.push('\u{0}'),
                 _ => self.loose_text(child, text)?,
             }
         }
@@ -667,6 +680,7 @@ impl<'s> Context<'s> {
                 });
                 return Some(());
             }
+            NodeValue::Math(math) => return self.math(math, range, raw, candidate),
             NodeValue::Link(_) | NodeValue::WikiLink(_) => {
                 return self.link(
                     node,
@@ -704,6 +718,37 @@ impl<'s> Context<'s> {
         for child in node.children() {
             self.inline(child, candidate)?;
         }
+        Some(())
+    }
+    /// An inline `$…$` formula conceals its delimiters and styles its TeX.
+    /// Display math and anything the conservative rule rejects (`$2$`) stay
+    /// exact source text: the parser already kept TeX out of emphasis.
+    fn math(
+        &self,
+        math: &comrak::nodes::NodeMath,
+        range: Range<usize>,
+        raw: &str,
+        candidate: &mut Candidate,
+    ) -> Option<()> {
+        let content = range.start + 1..range.end - 1;
+        if math.display_math
+            || !math.dollar_math
+            || raw.len() < 3
+            || !raw.starts_with('$')
+            || !raw.ends_with('$')
+            || raw.starts_with("$$")
+            || raw.contains(['\r', '\n'])
+            || !crate::tex::is_inline_formula(self.source.get(content.clone())?)
+        {
+            return Some(());
+        }
+        candidate
+            .markers
+            .extend([range.start..content.start, content.end..range.end]);
+        candidate.styles.push(StyleSpan {
+            range: content,
+            style: Style::Math,
+        });
         Some(())
     }
     fn link<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate, wiki: bool) -> Option<()> {
@@ -829,7 +874,9 @@ impl<'s> Context<'s> {
     }
 }
 
-/// Keep authored escapes/entities. Unclassified markup-looking text makes the
+/// Keep authored escapes/entities. A `$` left as text is money or a formula
+/// the conservative rule kept as text (#1645): plain, like any other symbol.
+/// Unclassified markup-looking text makes the
 /// containing block Source, including valid formatting next to a malformed link.
 /// Brackets are the exception: the parser leaves an unresolved reference
 /// (`[ref][id]`, `[id][]`, `[id]`) as text, and like CommonMark and Obsidian
@@ -844,7 +891,7 @@ fn plain(raw: &str) -> Option<()> {
             if !next.is_ascii_punctuation() {
                 return None;
             }
-        } else if b"*_~`=$".contains(&byte) {
+        } else if b"*_~`=".contains(&byte) {
             return None;
         }
     }

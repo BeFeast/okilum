@@ -409,6 +409,7 @@ impl ProjectView {
             a.error = None;
             cx.notify();
         });
+        let sent_snapshot = draft.as_ref().map(|_| self.draft_sent(cx));
         let generation = self.generation;
         cx.spawn_in(window, async move |this,cx| {
             let (result, records, retained) = cx.background_executor().spawn(async move {
@@ -423,9 +424,7 @@ impl ProjectView {
             let _ = this.update_in(cx, |this,window,cx| {
                 if generation != this.generation { return; }
                 this.busy = false;
-                if retained && draft.as_ref().is_some_and(|d| this.compose.read(cx).value() == *d) {
-                    this.compose.update(cx, |input,cx| input.set_value("",window,cx));
-                }
+                if retained { if let Some(sent) = &sent_snapshot { this.draft_clear_after_send(sent,window,cx); } }
                 this.native.actions.update(cx, |a,cx| {
                     a.busy=false;
                     match records { Ok(records) => a.records=records, Err(e) => a.error=Some(format!("{e:#}")) }
