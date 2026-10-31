@@ -51,6 +51,16 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
             .is_none(),
         "internal migration diagnostics are not ordinary chat content"
     );
+    let first_label = visual.debug_bounds("project-model-label-0").unwrap();
+    let second_label = visual.debug_bounds("project-model-label-1").unwrap();
+    assert_eq!(
+        first_label.origin.x, second_label.origin.x,
+        "model names share a left edge regardless of label width"
+    );
+    assert!(
+        first_label.origin.x - dropdown.origin.x < px(40.),
+        "model names must align near the dropdown's left edge"
+    );
     assert!(
         gateway.model_writes.lock().unwrap().is_empty(),
         "opening the catalog is read-only"

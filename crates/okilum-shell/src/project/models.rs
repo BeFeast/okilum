@@ -214,12 +214,40 @@ impl ProjectView {
                             .w_full()
                             .justify_start()
                             .overflow_hidden()
-                            .icon(if selected {
-                                IconName::Check
-                            } else {
-                                IconName::Bot
-                            })
-                            .label(model.label.as_deref().unwrap_or(&model.id).to_owned())
+                            .accessibility_label(
+                                model.label.as_deref().unwrap_or(&model.id).to_owned(),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(if selected {
+                                            IconName::Check
+                                        } else {
+                                            IconName::Bot
+                                        })
+                                        .small(),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .debug_selector(move || {
+                                                format!("project-model-label-{id}")
+                                            })
+                                            .child(
+                                                model
+                                                    .label
+                                                    .as_deref()
+                                                    .unwrap_or(&model.id)
+                                                    .to_owned(),
+                                            ),
+                                    ),
+                            )
                             .selected(selected)
                             .disabled(!enabled || !valid)
                             .on_click(cx.listener(move |this, _, _, cx| {
