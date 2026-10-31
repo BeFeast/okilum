@@ -88,6 +88,8 @@ impl PaletteSection {
 /// One selectable palette row, in the order shown.
 #[derive(Clone, Debug)]
 pub(super) enum PaletteItem {
+    OpenTerminal,
+    TerminalSettings,
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
     Note(reader_title_nav::Entry),
     /// Boxed: a row carries its project, icon included (#1627).
@@ -746,6 +748,8 @@ impl Reader {
         let key = match item {
             PaletteItem::Note(entry) => entry.path.clone(),
             PaletteItem::Project(row) => row.project.folder.to_string_lossy().into_owned(),
+            PaletteItem::OpenTerminal => "open-terminal".into(),
+            PaletteItem::TerminalSettings => "terminal-settings".into(),
             PaletteItem::AllProjects => String::new(),
             PaletteItem::File(row) => self
                 .quick_open
@@ -821,6 +825,18 @@ impl Reader {
         }
         let sections = &palette.sections;
         let mut items = Vec::new();
+        if self.project_navigation.active.is_some()
+            && !palette.query.trim().is_empty()
+            && "open terminal".contains(&palette.query.to_lowercase())
+        {
+            items.push((PaletteSection::Projects, PaletteItem::OpenTerminal));
+        }
+        if self.project_navigation.active.is_some()
+            && !palette.query.trim().is_empty()
+            && "terminal settings".contains(&palette.query.to_lowercase())
+        {
+            items.push((PaletteSection::Projects, PaletteItem::TerminalSettings));
+        }
         for (section, entries) in [
             (PaletteSection::Pinned, &sections.pinned),
             (PaletteSection::Recent, &sections.recent),
@@ -1152,6 +1168,16 @@ impl Reader {
             return;
         };
         match item {
+            PaletteItem::TerminalSettings => {
+                self.close_quick_open(window, cx);
+                if let Some(project) = self.project_navigation.active.clone() {
+                    project_terminal::settings(project.folder, cx);
+                }
+            }
+            PaletteItem::OpenTerminal => {
+                self.close_quick_open(window, cx);
+                self.open_project_terminal(window, cx);
+            }
             PaletteItem::File(row) => self.open_quick_open_row(row, window, cx),
             PaletteItem::Note(entry) => {
                 self.close_quick_open(window, cx);
@@ -1536,6 +1562,20 @@ impl Reader {
                             )
                             .into_any_element()
                     }
+                    PaletteItem::TerminalSettings => section_row(*ix)
+                        .h(px(30.))
+                        .text_sm()
+                        .child("Terminal settings…")
+                        .into_any_element(),
+                    PaletteItem::OpenTerminal => section_row(*ix)
+                        .h(px(30.))
+                        .text_sm()
+                        .child("Open terminal")
+                        .child(reader_shortcuts::all_shortcuts(
+                            &project_terminal::OpenTerminal,
+                            cx,
+                        ))
+                        .into_any_element(),
                     PaletteItem::AllProjects => section_row(*ix)
                         .h(px(30.))
                         .text_sm()
@@ -2966,6 +3006,8 @@ canaryhidden [[Target]]",
                 let what = match item {
                     PaletteItem::Note(entry) => entry.path.clone(),
                     PaletteItem::Project(row) => row.project.name.clone(),
+                    PaletteItem::OpenTerminal => "Open terminal".into(),
+                    PaletteItem::TerminalSettings => "Terminal settings".into(),
                     PaletteItem::AllProjects => "All projects…".into(),
                     PaletteItem::File(ix) => v.quick_open.rows[*ix].path.clone(),
                 };

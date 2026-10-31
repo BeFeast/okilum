@@ -144,6 +144,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleLeftMode>("Now / Tree", View),
         entry::<FocusCurrentFolder>("Reveal in Tree", Navigation),
         entry::<ToggleProject>("Projects", Navigation),
+        entry::<project_terminal::OpenTerminal>("Open terminal", Navigation),
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<MaximizeNote>("Maximize / restore note", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
@@ -257,6 +258,12 @@ pub(crate) fn key_cap(
 /// `label` followed by the bound key of `action`, e.g. "Back ⌥←" — the same
 /// shape as [`platform::labels::with_shortcut`] for keys the keymap cannot
 /// describe (keys an input handles itself).
+pub(crate) fn all_shortcuts(action: &dyn Action, cx: &App) -> String {
+    let bindings = cx.key_bindings();
+    let map = bindings.borrow();
+    keys_for(&map, action.name(), Os::CURRENT).join(" · ")
+}
+
 pub(crate) fn hint(label: &str, action: &dyn Action, cx: &App) -> SharedString {
     match shortcut(action, cx) {
         Some(key) => format!("{label} {key}").into(),
