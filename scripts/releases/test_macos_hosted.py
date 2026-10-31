@@ -45,9 +45,15 @@ class ShippingPolicy(unittest.TestCase):
             m.source_identity(SOURCE, WORKFLOW)
 
     @patch.object(m.subprocess, 'run')
+    def test_stale_local_variable_cannot_reenable_corporate_runner(self, run):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.env() | {'MACOS_LANE':'local', 'GITHUB_OUTPUT':str(Path(tmp)/'output')}
+            m.route(env)
+            self.assertIn('lane=hosted', Path(env['GITHUB_OUTPUT']).read_text())
+
+    @patch.object(m.subprocess, 'run')
     def test_no_workday_local_fallback_or_old_source_local_route(self, run):
-        for changes in [{'GITHUB_EVENT_NAME': 'schedule'}, {'MACOS_LANE': 'local'},
-                        {'MACOS_LANE': 'typo'}]:
+        for changes in [{'GITHUB_EVENT_NAME': 'schedule'}]:
             with self.assertRaises(ValueError):
                 m.route(self.env() | changes)
 
@@ -142,7 +148,7 @@ class ShippingPolicy(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         fj = (root / '.forgejo/workflows/macos-release.yml').read_text()
         gh = (root / '.github/workflows/forgejo-macos-shipping.yml').read_text()
-        self.assertIn("needs.select.outputs.lane == 'local'", fj)
+        self.assertIn('if: false # Corporate M4 CI prohibited', fj)
         self.assertIn("needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')", fj)
         self.assertIn('python3 scripts/releases/macos-hosted.py route', fj)
         self.assertIn('persist-credentials: false', gh)

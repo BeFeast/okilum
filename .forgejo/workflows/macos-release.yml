@@ -91,7 +91,7 @@ jobs:
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'local'
+    if: false # Corporate M4 CI prohibited (Defender/network incident 2026-10-31)
     runs-on: macos
     timeout-minutes: 90
     env:
