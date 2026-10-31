@@ -208,7 +208,6 @@ impl Reader {
             self.file_operation_blocked("move", &from, reason, cx);
             return;
         }
-        self.trace_file_operation("move_picker", "start", &from, None, cx);
         let mut folders = vec![String::new()];
         folders.extend(
             self.vault

@@ -280,7 +280,6 @@ impl Reader {
             );
             return;
         }
-        self.trace_file_operation("rename", "start", &path, None, cx);
         let directory =
             std::fs::symlink_metadata(self.vault_root.join(&path)).is_ok_and(|m| m.is_dir());
         if (!directory
