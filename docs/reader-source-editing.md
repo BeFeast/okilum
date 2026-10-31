@@ -86,10 +86,15 @@ PNG/JPEG and other supported image MIME offers, local `text/uri-list` files,
 and `text/html` alongside its plain-text fallback through the common Smart paste
 router. HTML images use the same attachment pipeline before an embed is inserted;
 Paste as Plain Text keeps the plain flavor. The Wayland data-control read
-keeps the same pinned-offer checks, deadline and payload limits; self-owned
-selections, X11 and unsupported compositors use GPUI's typed clipboard on the
-UI thread. The locked GPUI X11 clipboard exposes image or plain text, not an
-HTML representation; this Wayland HTML fix does not add X11 rich-text transport.
+keeps the same pinned-offer checks, deadline and payload limits. Where GPUI
+runs on X11, the locked GPUI clipboard exposes only image or plain text, so
+Okilum reads the CLIPBOARD selection's targets (`text/html`, images,
+`text/uri-list`, UTF-8 text, including `INCR` transfers) over its own
+short-lived X11 connection inside the paste command, with the same MIME
+negotiation, deadline and limits (#2006); GPUI core stays unpatched. Okilum's
+own copy (owner process named by the X-Resource extension), servers without
+X-Resource, self-owned Wayland selections and unsupported compositors use
+GPUI's typed clipboard on the UI thread.
 Plain text containing HTML syntax stays literal instead of being guessed as an
 HTML clipboard offer. Windows (#1619) still pastes text as described above. Completed
 local attachment writes publish their exact saved paths to inventory, so a

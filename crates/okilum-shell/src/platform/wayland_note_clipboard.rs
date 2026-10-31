@@ -1,6 +1,10 @@
-//! Typed Linux note clipboard over the existing bounded data-control reader.
-//! GPUI's own connection supplies self-owned/X11/unsupported-compositor offers.
-use super::exact_wayland_clipboard::{self, Selection};
+//! Typed Linux note clipboard over the existing bounded data-control reader,
+//! or Okilum's own CLIPBOARD read where GPUI runs on X11 (#2006). GPUI's own
+//! connection supplies self-owned and unsupported-compositor offers.
+use super::{
+    exact_wayland_clipboard::{self, Selection},
+    exact_x11_clipboard,
+};
 use crate::note_paste::{
     self,
     offer::{self, OfferError, PasteOffer, Pasteboard},
@@ -14,6 +18,10 @@ use std::path::PathBuf;
 pub struct LinuxNoteClipboard {
     socket: Option<PathBuf>,
     seat: Option<String>,
+    /// The X11 display GPUI itself runs on and this process's id; never set
+    /// beside a Wayland socket, so an Xwayland bridge never asks Okilum's own
+    /// UI thread.
+    x11: Option<(String, u32)>,
 }
 impl Default for LinuxNoteClipboard {
     fn default() -> Self {
@@ -22,13 +30,27 @@ impl Default for LinuxNoteClipboard {
 }
 impl LinuxNoteClipboard {
     pub fn new() -> Self {
+        let socket = exact_wayland_clipboard::existing_compositor();
+        let x11 = (socket.is_none() && gpui::guess_compositor() == "X11")
+            .then(|| std::env::var("DISPLAY").ok())
+            .flatten()
+            .map(|display| (display, std::process::id()));
         Self {
-            socket: exact_wayland_clipboard::existing_compositor(),
+            socket,
             seat: std::env::var("OKILUM_CLIPBOARD_SEAT").ok(),
+            x11,
         }
     }
     fn read(&self) -> Result<Selection, Error> {
-        exact_wayland_clipboard::read_note_in_command(self.socket.as_deref(), self.seat.clone())
+        match (&self.socket, &self.x11) {
+            (None, Some((display, own_pid))) => {
+                exact_x11_clipboard::read_note_in_command(display, *own_pid)
+            }
+            _ => exact_wayland_clipboard::read_note_in_command(
+                self.socket.as_deref(),
+                self.seat.clone(),
+            ),
+        }
     }
 }
 
@@ -503,6 +525,7 @@ mod tests {
             let clipboard = LinuxNoteClipboard {
                 socket: None,
                 seat: None,
+                x11: None,
             };
             let routed = clipboard
                 .route_in_command(&context(root.path()), cx)
@@ -519,6 +542,80 @@ mod tests {
                 note_paste::platform_note_clipboard().is_some(),
                 "Linux notes must install the typed provider"
             );
+        });
+    }
+
+    /// #2006: on X11, a page copied in a browser offers `text/html`; GPUI
+    /// 0.3.3 reads only its plain text. The X11 path must reach Markdown.
+    #[gpui::test]
+    fn x11_smart_paste_reads_html_and_images_that_gpui_drops(cx: &mut gpui::TestAppContext) {
+        use exact_x11_clipboard::tests::{Owner, Xvfb};
+        let Some(server) = Xvfb::start() else { return };
+        let root = tempfile::tempdir().unwrap();
+        let _owner = Owner::serve(
+            &server.display,
+            vec![
+                ("text/html", b"<p>Hello <strong>world</strong></p>".to_vec()),
+                ("UTF8_STRING", b"Hello world".to_vec()),
+            ],
+            usize::MAX,
+        );
+        cx.update(|cx| {
+            // What GPUI's X11 clipboard reads from the same copy.
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("Hello world".into()));
+            let route = |x11: Option<(String, u32)>| {
+                let clipboard = LinuxNoteClipboard {
+                    socket: None,
+                    seat: None,
+                    x11,
+                };
+                clipboard
+                    .route_in_command(&context(root.path()), cx)
+                    .unwrap()
+            };
+            // Positive control: without the X11 read, GPUI's plain text is all there is.
+            let gpui_only = route(None);
+            assert_ne!(gpui_only.route, router::Route::RichText);
+            assert_eq!(gpui_only.insert.as_deref(), Some("Hello world"));
+            // The owner thread stands in for a browser: another process.
+            let routed = route(Some((server.display.clone(), u32::MAX)));
+            assert_eq!(
+                routed.route,
+                router::Route::RichText,
+                "#2006: X11 smart paste got no text/html"
+            );
+            assert_eq!(routed.insert.as_deref(), Some("Hello **world**"));
+        });
+        drop(_owner);
+        let pixels = png();
+        let vault = root.path().join("image vault");
+        std::fs::create_dir(&vault).unwrap();
+        let _owner = Owner::serve(
+            &server.display,
+            vec![
+                (
+                    "text/html",
+                    b"<img src=\"https://example.invalid/a.png\">".to_vec(),
+                ),
+                ("image/png", pixels),
+                ("UTF8_STRING", b"https://example.invalid/a.png".to_vec()),
+            ],
+            usize::MAX,
+        );
+        cx.update(|cx| {
+            let clipboard = LinuxNoteClipboard {
+                socket: None,
+                seat: None,
+                x11: Some((server.display.clone(), u32::MAX)),
+            };
+            let routed = clipboard.route_in_command(&context(&vault), cx).unwrap();
+            assert_eq!(routed.route, router::Route::Image);
+            assert_eq!(
+                routed.saved_files.len(),
+                1,
+                "image is embedded in the vault"
+            );
+            assert_eq!(image::open(&routed.saved_files[0]).unwrap().width(), 2);
         });
     }
 }
