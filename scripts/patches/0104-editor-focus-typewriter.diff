@@ -1,0 +1,225 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -406,6 +406,14 @@
+     }
+ }
+ 
++/// The scroll y that puts a caret row at the middle of the viewport, within
++/// the scrollable extent: near the start of a note the caret sits above the
++/// middle, as there is nothing to scroll (#1643).
++fn typewriter_scroll_y(row_top: Pixels, row_height: Pixels, viewport: Pixels, content: Pixels) -> Pixels {
++    let max = (content - viewport).max(px(0.));
++    (viewport.half() - row_top - row_height.half()).min(px(0.)).max(-max)
++}
++
+ /// Layout information for fold icons.
+ struct FoldIconLayout {
+     /// Hitbox for the line number area (used for hover detection)
+@@ -2237,6 +2245,39 @@
+                     state.deferred_scroll_offset = Some(scroll);
+                 }
+             }
++            let caret = state.ime_marked_range.as_ref().map_or(state.cursor(), |range| range.end);
++            // Typewriter mode (#1643): a caret move or an edit (Undo too) puts
++            // the caret row at the middle of the viewport. It runs here, on
++            // the rows of this frame and before the visible lines are chosen,
++            // so the frame lays out the lines around the centred caret: an
++            // offset found later in caret-follow showed the old lines for a
++            // frame. Its cost is the caret's row lookup, whatever the length.
++            let caret_moved = state.last_selected_range != Some(state.selected_range);
++            if state.typewriter && count > 0 && !state.selecting && (frame_edit || caret_moved) {
++                let row = state.display_map
++                    .offset_to_wrap_display_point_with_affinity(caret, state.cursor_line_end_affinity)
++                    .row;
++                let content = rows.rows_height(state.display_map.wrap_row_count())
++                    + empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
++                        bounds.size.height, window.line_height());
++                let y = typewriter_scroll_y(rows.row_top(row), rows.row_height(row),
++                    bounds.size.height, content);
++                let scroll = point(state.scroll_handle.offset().x, y);
++                state.scroll_handle.set_offset(scroll);
++                // This replaces the edit's source anchor and caret-follow.
++                state.deferred_scroll_offset = Some(scroll);
++                state.projection_anchored = false;
++                state.projection_anchor_tail = px(0.);
++                anchor_kind = "typewriter";
++            }
++            // Focus mode (#1643): the lines kept bright this frame.
++            // Recomputed only when the caret or the text changed: a caret
++            // blink or a scroll keeps the lines it already has.
++            if let Some(mode) = state.focus_mode.clone() {
++                if frame_edit || caret_moved || state.focus_lines.is_empty() {
++                    state.focus_lines = mode.lines(&state.text, caret);
++                }
++            }
+             frame_rows = Some(rows);
+         });
+         let state = self.state.read(cx);
+@@ -2920,6 +2961,37 @@
+             });
+         }
+ 
++        // Focus mode (#1643): wash every line it does not keep, text and
++        // rendered blocks alike, one quad per run of washed lines.
++        let focus = self.state.read(cx).focus_mode.as_ref().map(|mode| mode.wash());
++        if let Some(wash) = focus {
++            let state = self.state.read(cx);
++            let kept = |line: &usize| state.focus_lines.iter().any(|range| range.contains(line));
++            let layout = &prepaint.last_layout;
++            let mut y = origin.y + invisible_top_padding;
++            let mut run: Option<(Pixels, Pixels)> = None;
++            let mut runs = Vec::new();
++            for (line, buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
++                let height = line.size(&layout.rows).height;
++                if kept(buffer_line) {
++                    runs.extend(run.take());
++                } else {
++                    let top = run.map_or(y, |(top, _)| top);
++                    run = Some((top, y + height));
++                }
++                y += height;
++            }
++            runs.extend(run);
++            window.with_content_mask(Some(gpui::ContentMask { bounds: input_bounds }), |window| {
++                for (top, bottom) in runs {
++                    window.paint_quad(fill(
++                        Bounds::new(point(input_bounds.left(), top), size(input_bounds.size.width, bottom - top)),
++                        wash,
++                    ));
++                }
++            });
++        }
++
+         // Clicks toggle exactly the task boxes drawn here (S5, #1034).
+         *self.state.read(cx).painted_tasks.borrow_mut() =
+             Some((prepaint.last_layout.source_stamp, painted_tasks));
+@@ -3312,6 +3384,21 @@
+     }
+ 
+     #[test]
++    fn typewriter_scroll_centres_the_caret_row_within_the_extent() {
++        let y = |top: f32, viewport: f32, content: f32| {
++            f32::from(super::typewriter_scroll_y(px(top), px(20.), px(viewport), px(content)))
++        };
++        // Mid-note: the row's middle sits at the viewport's middle.
++        assert_eq!(y(10_000., 400., 1_000_000.), 200. - 10_000. - 10.);
++        // Near the start there is nothing above to scroll to.
++        assert_eq!(y(100., 400., 1_000_000.), 0.);
++        // Near the end it stops at the scrollable extent.
++        assert_eq!(y(990_000., 400., 990_100.), -(990_100. - 400.));
++        // A note shorter than the view never scrolls.
++        assert_eq!(y(40., 400., 200.), 0.);
++    }
++
++    #[test]
+     fn test_plain_text_decorations_include_unstyled_gaps() {
+         let decoration = HighlightStyle {
+             background_color: Some(gpui::red()),
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -363,6 +363,34 @@
+ /// Decides, from the typed character and the text, whether to autoformat.
+ pub type TypedTextHook = Rc<dyn Fn(&TypedText<'_>, &App) -> Option<TypedEdit>>;
+ 
++/// Which lines focus mode keeps bright (#1643): called once per frame with
++/// the text and the caret's byte offset, it returns buffer-line ranges. It
++/// runs on every frame, so it must not do work that grows with the text.
++pub type FocusLines = Rc<dyn Fn(&Rope, usize) -> Vec<Range<usize>>>;
++
++/// Focus mode (#1643): every line but the ones [`FocusLines`] keeps is
++/// covered with `wash`, the surface colour at partial opacity, so a dimmed
++/// line reads as the text at reduced opacity on that surface.
++#[derive(Clone)]
++pub struct FocusMode {
++    lines: FocusLines,
++    wash: gpui::Hsla,
++}
++
++impl FocusMode {
++    pub fn new(wash: gpui::Hsla, lines: impl Fn(&Rope, usize) -> Vec<Range<usize>> + 'static) -> Self {
++        Self { lines: Rc::new(lines), wash }
++    }
++
++    pub fn wash(&self) -> gpui::Hsla {
++        self.wash
++    }
++
++    pub(super) fn lines(&self, text: &Rope, cursor: usize) -> Vec<Range<usize>> {
++        (self.lines)(text, cursor)
++    }
++}
++
+ /// The shared text-editing engine behind [`crate::input::InputState`],
+ /// [`crate::input::TextareaState`] and [`crate::input::EditorState`].
+ ///
+@@ -510,6 +538,13 @@
+     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+     /// A buffer line to scroll to the top of the viewport at the next layout.
+     pub(super) pending_top_line: Option<usize>,
++    /// Typewriter mode: every caret move or edit scrolls the caret row to the
++    /// middle of the viewport (#1643).
++    pub(super) typewriter: bool,
++    /// Focus mode: the lines it keeps bright, the rest washed (#1643).
++    pub(super) focus_mode: Option<FocusMode>,
++    /// The buffer lines focus mode kept bright in the last prepaint.
++    pub(super) focus_lines: Vec<Range<usize>>,
+     /// The size of the scrollable content.
+     pub(crate) scroll_size: gpui::Size<Pixels>,
+     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+@@ -892,6 +927,9 @@
+             text_gutter: px(0.),
+             deferred_scroll_offset: None,
+             pending_top_line: None,
++            typewriter: false,
++            focus_mode: None,
++            focus_lines: Vec::new(),
+             preferred_column: None,
+             placeholder: SharedString::default(),
+             mask_pattern: MaskPattern::default(),
+@@ -3359,6 +3397,44 @@
+         cx.notify();
+     }
+ 
++    /// Typewriter mode (#1643): from the next frame on, every caret move and
++    /// every edit (Undo too) puts the caret row at the middle of the
++    /// viewport. Scrolling by hand is free until the caret moves again. Room
++    /// below the last line comes from [`Self::set_scroll_beyond_last_line`].
++    pub fn set_typewriter(&mut self, on: bool, cx: &mut Context<Self>) {
++        if self.typewriter == on {
++            return;
++        }
++        self.typewriter = on;
++        // Centre at once instead of on the next key.
++        self.last_selected_range = None;
++        cx.notify();
++    }
++
++    pub fn is_typewriter(&self) -> bool {
++        self.typewriter
++    }
++
++    /// Focus mode (#1643): `None` turns it off.
++    pub fn set_focus_mode(&mut self, mode: Option<FocusMode>, cx: &mut Context<Self>) {
++        if mode.is_none() {
++            self.focus_lines.clear();
++        }
++        self.focus_mode = mode;
++        cx.notify();
++    }
++
++    /// The wash of the current focus mode; `None` when it is off.
++    pub fn focus_wash(&self) -> Option<gpui::Hsla> {
++        self.focus_mode.as_ref().map(FocusMode::wash)
++    }
++
++    /// The buffer lines focus mode kept bright in the last frame; empty when
++    /// it is off or before the first frame.
++    pub fn focus_lines(&self) -> &[Range<usize>] {
++        &self.focus_lines
++    }
++
+     /// Laid-out line height; `None` before first layout.
+     pub fn line_height(&self) -> Option<gpui::Pixels> {
+         self.last_layout.as_ref().map(|l| l.line_height)

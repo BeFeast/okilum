@@ -375,8 +375,15 @@ actions!(
         PdfZoomFit,
         ToggleShortcutSheet,
         ToggleNoteWidth,
+        ToggleFocusMode,
+        ToggleTypewriterMode,
     ]
 );
+
+/// F8 / F9: focus and typewriter modes in the note editor (#1643), the keys
+/// Typora gives them. Free in every Reader context.
+const FOCUS_MODE_KEY: &str = "f8";
+const TYPEWRITER_MODE_KEY: &str = "f9";
 
 /// ⌥⌘W / Ctrl+Alt+W: normal (reading width) or full note width. Free in
 /// every Reader context; W for width.
@@ -414,6 +421,11 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
             MenuItem::action("Maximize Note", MaximizeNote),
             MenuItem::action("Full Note Width", ToggleNoteWidth)
                 .checked(reader_ui_state::full_note_width(cx)),
+            MenuItem::separator(),
+            MenuItem::action("Focus Mode", ToggleFocusMode)
+                .checked(reader_ui_state::focus_mode(cx)),
+            MenuItem::action("Typewriter Mode", ToggleTypewriterMode)
+                .checked(reader_ui_state::typewriter_mode(cx)),
         ],
     }
 }
@@ -451,6 +463,22 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(NOTE_WIDTH_KEY, ToggleNoteWidth, Some(READER_CONTEXT)),
         KeyBinding::new(NOTE_WIDTH_KEY, ToggleNoteWidth, Some("Reader > Input")),
+    ]);
+    cx.on_action(|_: &ToggleFocusMode, cx| reader_editor::toggle_focus_mode(cx));
+    cx.on_action(|_: &ToggleTypewriterMode, cx| reader_editor::toggle_typewriter_mode(cx));
+    cx.bind_keys([
+        KeyBinding::new(FOCUS_MODE_KEY, ToggleFocusMode, Some(READER_CONTEXT)),
+        KeyBinding::new(FOCUS_MODE_KEY, ToggleFocusMode, Some("Reader > Input")),
+        KeyBinding::new(
+            TYPEWRITER_MODE_KEY,
+            ToggleTypewriterMode,
+            Some(READER_CONTEXT),
+        ),
+        KeyBinding::new(
+            TYPEWRITER_MODE_KEY,
+            ToggleTypewriterMode,
+            Some("Reader > Input"),
+        ),
     ]);
     cx.bind_keys([
         KeyBinding::new("secondary-alt-p", ToggleProject, Some(READER_CONTEXT)),
