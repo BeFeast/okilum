@@ -18,146 +18,6 @@ struct Scope {
     generation: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ::core::prelude::v1::test;
-
-    #[test]
-    fn preparation_uploads_actual_file_bytes_and_rejects_missing_empty_and_over_budget_images() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("report.txt");
-        let bytes = b"Actual file bytes, not a path.\n\0\xff";
-        std::fs::write(&path, bytes).unwrap();
-        let (meta, actual) = prepare(&Source::File(path.clone()), "report.txt", 0).unwrap();
-        assert_eq!(meta.kind, AttachmentKind::File);
-        assert_eq!(meta.size_bytes, bytes.len() as u64);
-        assert_eq!(actual, bytes);
-        std::fs::write(&path, []).unwrap();
-        assert!(prepare(&Source::File(path.clone()), "report.txt", 0).is_err());
-        std::fs::remove_file(&path).unwrap();
-        assert!(prepare(&Source::File(path), "report.txt", 0).is_err());
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(2, 2)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .unwrap();
-        let png = png.into_inner();
-        assert!(thumbnail(&png).is_some());
-        assert!(prepare(
-            &Source::Image(Arc::new(png.clone())),
-            "Screenshot.png",
-            MAX_TOTAL_IMAGE_BYTES
-        )
-        .is_err());
-        let (meta, actual) =
-            prepare(&Source::Image(Arc::new(png.clone())), "Screenshot.png", 0).unwrap();
-        assert_eq!(meta.kind, AttachmentKind::Image);
-        assert_eq!(actual, png);
-    }
-
-    #[gpui::test]
-    fn chooser_remove_restore_guard_and_confirmed_native_references_preserve_text(
-        cx: &mut TestAppContext,
-    ) {
-        use okilum_t3::stream::NativeToken;
-        cx.update(crate::test_init);
-        let temp = tempfile::tempdir().unwrap();
-        let env = Environment::new("fixture", "http://127.0.0.1:1").unwrap();
-        // No network requests can be sent by this fixture.
-        let token = NativeToken::from_secret(&env, &serde_json::to_vec(&serde_json::json!({"origin":env.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read"})).unwrap()).unwrap();
-        let client =
-            Arc::new(NativeClient::new(env.clone(), token, Duration::from_millis(10)).unwrap());
-        let (root, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                let mut view = super::super::fixture::view(
-                    temp.path().to_owned(),
-                    Arc::new(super::super::fixture::Fake::default()),
-                    window,
-                    cx,
-                );
-                view.active = false;
-                view.environment = Some(env);
-                view.native.set_detail_test_client(client.clone());
-                view.compose.update(cx, |input, cx| {
-                    input.set_value("Keep this\nmultiline text", window, cx)
-                });
-                view
-            });
-            Root::new(view, window, cx)
-        });
-        let view = root.read_with(visual, |root, _| {
-            root.view().clone().downcast::<ProjectView>().unwrap()
-        });
-        view.update_in(visual, |view, window, cx| {
-            view.pick_attachment(None, window, cx)
-        });
-        visual.simulate_path_prompt_response(|options| {
-            assert!(options.files && !options.directories && options.multiple);
-            Some(vec![PathBuf::from("/missing/notes.txt")])
-        });
-        visual.run_until_parked();
-        view.update_in(visual, |view, window, cx| {
-            assert_eq!(view.draft_attachments().len(), 1);
-            let id = view.draft_attachments()[0].id.clone();
-            assert!(view.prepared_attachments().is_err());
-            view.remove_attachment(&id, window, cx);
-            assert!(view.draft_attachments().is_empty());
-            assert_eq!(
-                view.compose.read(cx).value().as_str(),
-                "Keep this\nmultiline text"
-            );
-            let identity = ServerIdentity {
-                environment_id: "native-environment".into(),
-                label: "Fixture".into(),
-            };
-            view.attachments.identity = Some((Arc::downgrade(&client), identity));
-            let mut row = Attachment {
-                id: "local".into(),
-                kind: DraftKind::File,
-                name: "notes.txt".into(),
-                mime_type: "text/plain".into(),
-                size_bytes: 4,
-                source: None,
-                state: AttachmentState::NeedsReselect,
-            };
-            view.draft_set_attachments(vec![row.clone()], window, cx);
-            assert!(view.prepared_attachments().is_err());
-            row.state = AttachmentState::Uploaded {
-                attachment_id: "server-asset".into(),
-                environment_id: "wrong-environment".into(),
-            };
-            view.draft_set_attachments(vec![row.clone()], window, cx);
-            assert!(view.prepared_attachments().is_err());
-            row.state = AttachmentState::Uploaded {
-                attachment_id: "server-asset".into(),
-                environment_id: "native-environment".into(),
-            };
-            view.draft_set_attachments(vec![row], window, cx);
-            let prepared = view.prepared_attachments().unwrap();
-            assert_eq!(prepared[0].id, "server-asset");
-            assert!(
-                !view.draft_is_sendable(),
-                "MCP must never discard native attachments"
-            );
-            view.attachments.connection_changed();
-            assert!(
-                view.prepared_attachments().is_err(),
-                "a replacement client must reconfirm its environment"
-            );
-            assert_eq!(
-                view.compose.read(cx).value().as_str(),
-                "Keep this\nmultiline text"
-            );
-            view.draft_prepare_identity(window, cx);
-            assert!(!view.draft_ready());
-            assert!(
-                !view.attachment_can_add(),
-                "restore must finish before attaching files"
-            );
-        });
-    }
-}
-
 #[derive(Clone)]
 enum Source {
     File(PathBuf),
@@ -913,5 +773,145 @@ impl ProjectView {
         })
         .detach();
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn preparation_uploads_actual_file_bytes_and_rejects_missing_empty_and_over_budget_images() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("report.txt");
+        let bytes = b"Actual file bytes, not a path.\n\0\xff";
+        std::fs::write(&path, bytes).unwrap();
+        let (meta, actual) = prepare(&Source::File(path.clone()), "report.txt", 0).unwrap();
+        assert_eq!(meta.kind, AttachmentKind::File);
+        assert_eq!(meta.size_bytes, bytes.len() as u64);
+        assert_eq!(actual, bytes);
+        std::fs::write(&path, []).unwrap();
+        assert!(prepare(&Source::File(path.clone()), "report.txt", 0).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(prepare(&Source::File(path), "report.txt", 0).is_err());
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        assert!(thumbnail(&png).is_some());
+        assert!(prepare(
+            &Source::Image(Arc::new(png.clone())),
+            "Screenshot.png",
+            MAX_TOTAL_IMAGE_BYTES
+        )
+        .is_err());
+        let (meta, actual) =
+            prepare(&Source::Image(Arc::new(png.clone())), "Screenshot.png", 0).unwrap();
+        assert_eq!(meta.kind, AttachmentKind::Image);
+        assert_eq!(actual, png);
+    }
+
+    #[gpui::test]
+    fn chooser_remove_restore_guard_and_confirmed_native_references_preserve_text(
+        cx: &mut TestAppContext,
+    ) {
+        use okilum_t3::stream::NativeToken;
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let env = Environment::new("fixture", "http://127.0.0.1:1").unwrap();
+        // No network requests can be sent by this fixture.
+        let token = NativeToken::from_secret(&env, &serde_json::to_vec(&serde_json::json!({"origin":env.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read"})).unwrap()).unwrap();
+        let client =
+            Arc::new(NativeClient::new(env.clone(), token, Duration::from_millis(10)).unwrap());
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = super::super::fixture::view(
+                    temp.path().to_owned(),
+                    Arc::new(super::super::fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                view.active = false;
+                view.environment = Some(env);
+                view.native.set_detail_test_client(client.clone());
+                view.compose.update(cx, |input, cx| {
+                    input.set_value("Keep this\nmultiline text", window, cx)
+                });
+                view
+            });
+            Root::new(view, window, cx)
+        });
+        let view = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ProjectView>().unwrap()
+        });
+        view.update_in(visual, |view, window, cx| {
+            view.pick_attachment(None, window, cx)
+        });
+        visual.simulate_path_prompt_response(|options| {
+            assert!(options.files && !options.directories && options.multiple);
+            Some(vec![PathBuf::from("/missing/notes.txt")])
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
+            assert_eq!(view.draft_attachments().len(), 1);
+            let id = view.draft_attachments()[0].id.clone();
+            assert!(view.prepared_attachments().is_err());
+            view.remove_attachment(&id, window, cx);
+            assert!(view.draft_attachments().is_empty());
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "Keep this\nmultiline text"
+            );
+            let identity = ServerIdentity {
+                environment_id: "native-environment".into(),
+                label: "Fixture".into(),
+            };
+            view.attachments.identity = Some((Arc::downgrade(&client), identity));
+            let mut row = Attachment {
+                id: "local".into(),
+                kind: DraftKind::File,
+                name: "notes.txt".into(),
+                mime_type: "text/plain".into(),
+                size_bytes: 4,
+                source: None,
+                state: AttachmentState::NeedsReselect,
+            };
+            view.draft_set_attachments(vec![row.clone()], window, cx);
+            assert!(view.prepared_attachments().is_err());
+            row.state = AttachmentState::Uploaded {
+                attachment_id: "server-asset".into(),
+                environment_id: "wrong-environment".into(),
+            };
+            view.draft_set_attachments(vec![row.clone()], window, cx);
+            assert!(view.prepared_attachments().is_err());
+            row.state = AttachmentState::Uploaded {
+                attachment_id: "server-asset".into(),
+                environment_id: "native-environment".into(),
+            };
+            view.draft_set_attachments(vec![row], window, cx);
+            let prepared = view.prepared_attachments().unwrap();
+            assert_eq!(prepared[0].id, "server-asset");
+            assert!(
+                !view.draft_is_sendable(),
+                "MCP must never discard native attachments"
+            );
+            view.attachments.connection_changed();
+            assert!(
+                view.prepared_attachments().is_err(),
+                "a replacement client must reconfirm its environment"
+            );
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "Keep this\nmultiline text"
+            );
+            view.draft_prepare_identity(window, cx);
+            assert!(!view.draft_ready());
+            assert!(
+                !view.attachment_can_add(),
+                "restore must finish before attaching files"
+            );
+        });
     }
 }

@@ -27,136 +27,6 @@ pub(super) struct Directory {
     error: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ::core::prelude::v1::test;
-    use okilum_t3::stream::{NativeClient, NativeToken};
-    use serde_json::json;
-
-    fn row(id: &str, project_id: &str) -> shell::Thread {
-        shell::Thread {
-            id: id.into(),
-            project_id: project_id.into(),
-            title: id.into(),
-            status: "idle".into(),
-            active_run_id: None,
-            latest_run_id: None,
-            archived_at: None,
-            deleted_at: None,
-        }
-    }
-
-    #[gpui::test]
-    fn thread_selection_retains_independent_drafts_and_never_changes_the_area_manager(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        cx.update(crate::test_init);
-        let state = tempfile::tempdir().unwrap();
-        let environment = Environment::new("fixture", "http://127.0.0.1:1").unwrap();
-        let expiry = chrono::Utc::now().timestamp() as u64 + 3600;
-        let token = NativeToken::from_secret(
-            &environment,
-            &serde_json::to_vec(&json!({
-                "origin":environment.origin(), "access_token":"fixture-not-a-secret",
-                "expires_at":expiry, "scope":"orchestration:read orchestration:operate"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        // Transport tests separately prove enabled real socket traffic and its
-        // revocation control. This UI fixture cannot open a real connection.
-        let client = Arc::new(
-            NativeClient::new(environment.clone(), token, Duration::from_secs(1))
-                .unwrap()
-                .with_access(okilum_t3::NetworkAccess::new(false)),
-        );
-        let mut entity = None;
-        let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                let mut view = ProjectView::empty(Some(state.path().to_owned()), window, cx);
-                view.binding = AreaBinding::parse("t3:\n  schema_version: 1\n  environment: fixture\n  manager: {project_id: managers, thread_id: 'mcp:manager', workspace_mode: local}\n  executor: {project_id: executors}\n  default_models:\n    manager: {instanceId: codex, model: gpt-6.1-sol}\n    executor: {instanceId: codex, model: gpt-6.1-sol}\n").unwrap();
-                view.chat = Some(Conversation::new("mcp:manager"));
-                view.environment = Some(environment.clone());
-                view.reason = None;
-                view.threads.enabled = true;
-                view.active = false;
-                view.install_native(client, expiry, window, cx);
-                let mut directory = shell::Directory::new(["managers".into(), "executors".into()]);
-                directory.apply(&[shell::Update::Snapshot(vec![
-                    row("mcp:manager", "managers"), row("executor-a", "executors"),
-                    row("executor-b", "executors"), row("foreign", "unbound"),
-                ])]);
-                view.threads.model = Some(Arc::new(Mutex::new(directory)));
-                view.active = true;
-                view
-            });
-            entity = Some(view.clone());
-            Root::new(view, window, cx)
-        });
-        let view = entity.unwrap();
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("manager-workspace").is_some());
-        view.update_in(visual, |view, window, cx| {
-            view.compose.update(cx, |input, cx| {
-                input.set_value("Keep manager draft", window, cx)
-            });
-            view.select_native_thread("executor-a".into(), window, cx);
-        });
-        visual.run_until_parked();
-        view.update_in(visual, |view, window, cx| {
-            let child = view.native_thread_view("executor-a").unwrap().clone();
-            child.update(cx, |child, cx| {
-                assert_eq!(child.chat.as_ref().unwrap().thread_id, "executor-a");
-                child.compose.update(cx, |input, cx| {
-                    input.set_value("Keep executor draft", window, cx)
-                });
-            });
-            view.select_native_thread("executor-b".into(), window, cx);
-            view.select_native_thread("executor-a".into(), window, cx);
-            assert_eq!(
-                child.read(cx).compose.read(cx).value().as_str(),
-                "Keep executor draft"
-            );
-            assert_eq!(
-                view.binding.as_ref().unwrap().manager.thread_id.as_deref(),
-                Some("mcp:manager")
-            );
-            view.select_native_thread("foreign".into(), window, cx);
-            assert_eq!(view.threads.selected.as_deref(), Some("executor-a"));
-            let original = view.environment.clone();
-            view.environment = Some(Environment::new("other", "https://other.invalid").unwrap());
-            assert!(
-                view.native_thread_view("executor-a").is_none(),
-                "equal thread IDs on another origin cannot reuse drafts"
-            );
-            view.environment = original;
-            let directory = view.threads.model.as_ref().unwrap().clone();
-            directory
-                .lock()
-                .unwrap()
-                .apply(&[shell::Update::Thread(row("executor-a", "managers"), true)]);
-            assert!(
-                view.native_thread_view("executor-a").is_none(),
-                "equal origin/thread IDs in another project cannot reuse drafts"
-            );
-            directory
-                .lock()
-                .unwrap()
-                .apply(&[shell::Update::Thread(row("executor-a", "executors"), true)]);
-            view.select_manager_thread(window, cx);
-            assert_eq!(view.compose.read(cx).value().as_str(), "Keep manager draft");
-            reader_features::set_enabled(reader_features::Feature::Agents, false, cx);
-            view.select_native_thread("executor-b".into(), window, cx);
-            assert!(
-                view.threads.selected.is_none(),
-                "a disabled module cannot activate a thread"
-            );
-            view.set_active(false, window, cx);
-            assert!(view.threads.worker.is_none() && view.threads.cancel.is_none());
-        });
-    }
-}
 impl Directory {
     fn pause(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
@@ -696,5 +566,136 @@ impl ProjectView {
             }
         }
         view.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use okilum_t3::stream::{NativeClient, NativeToken};
+    use serde_json::json;
+
+    fn row(id: &str, project_id: &str) -> shell::Thread {
+        shell::Thread {
+            id: id.into(),
+            project_id: project_id.into(),
+            title: id.into(),
+            status: "idle".into(),
+            active_run_id: None,
+            latest_run_id: None,
+            archived_at: None,
+            deleted_at: None,
+        }
+    }
+
+    #[gpui::test]
+    fn thread_selection_retains_independent_drafts_and_never_changes_the_area_manager(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let state = tempfile::tempdir().unwrap();
+        let environment = Environment::new("fixture", "http://127.0.0.1:1").unwrap();
+        let expiry = chrono::Utc::now().timestamp() as u64 + 3600;
+        let token = NativeToken::from_secret(
+            &environment,
+            &serde_json::to_vec(&json!({
+                "origin":environment.origin(), "access_token":"fixture-not-a-secret",
+                "expires_at":expiry, "scope":"orchestration:read orchestration:operate"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Transport tests separately prove enabled real socket traffic and its
+        // revocation control. This UI fixture cannot open a real connection.
+        let client = Arc::new(
+            NativeClient::new(environment.clone(), token, Duration::from_secs(1))
+                .unwrap()
+                .with_access(okilum_t3::NetworkAccess::new(false)),
+        );
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = ProjectView::empty(Some(state.path().to_owned()), window, cx);
+                view.binding = AreaBinding::parse("t3:\n  schema_version: 1\n  environment: fixture\n  manager: {project_id: managers, thread_id: 'mcp:manager', workspace_mode: local}\n  executor: {project_id: executors}\n  default_models:\n    manager: {instanceId: codex, model: gpt-6.1-sol}\n    executor: {instanceId: codex, model: gpt-6.1-sol}\n").unwrap();
+                view.chat = Some(Conversation::new("mcp:manager"));
+                view.environment = Some(environment.clone());
+                view.reason = None;
+                view.threads.enabled = true;
+                view.active = false;
+                view.install_native(client, expiry, window, cx);
+                let mut directory = shell::Directory::new(["managers".into(), "executors".into()]);
+                directory.apply(&[shell::Update::Snapshot(vec![
+                    row("mcp:manager", "managers"), row("executor-a", "executors"),
+                    row("executor-b", "executors"), row("foreign", "unbound"),
+                ])]);
+                view.threads.model = Some(Arc::new(Mutex::new(directory)));
+                view.active = true;
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("manager-workspace").is_some());
+        view.update_in(visual, |view, window, cx| {
+            view.compose.update(cx, |input, cx| {
+                input.set_value("Keep manager draft", window, cx)
+            });
+            view.select_native_thread("executor-a".into(), window, cx);
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
+            let child = view.native_thread_view("executor-a").unwrap().clone();
+            child.update(cx, |child, cx| {
+                assert_eq!(child.chat.as_ref().unwrap().thread_id, "executor-a");
+                child.compose.update(cx, |input, cx| {
+                    input.set_value("Keep executor draft", window, cx)
+                });
+            });
+            view.select_native_thread("executor-b".into(), window, cx);
+            view.select_native_thread("executor-a".into(), window, cx);
+            assert_eq!(
+                child.read(cx).compose.read(cx).value().as_str(),
+                "Keep executor draft"
+            );
+            assert_eq!(
+                view.binding.as_ref().unwrap().manager.thread_id.as_deref(),
+                Some("mcp:manager")
+            );
+            view.select_native_thread("foreign".into(), window, cx);
+            assert_eq!(view.threads.selected.as_deref(), Some("executor-a"));
+            let original = view.environment.clone();
+            view.environment = Some(Environment::new("other", "https://other.invalid").unwrap());
+            assert!(
+                view.native_thread_view("executor-a").is_none(),
+                "equal thread IDs on another origin cannot reuse drafts"
+            );
+            view.environment = original;
+            let directory = view.threads.model.as_ref().unwrap().clone();
+            directory
+                .lock()
+                .unwrap()
+                .apply(&[shell::Update::Thread(row("executor-a", "managers"), true)]);
+            assert!(
+                view.native_thread_view("executor-a").is_none(),
+                "equal origin/thread IDs in another project cannot reuse drafts"
+            );
+            directory
+                .lock()
+                .unwrap()
+                .apply(&[shell::Update::Thread(row("executor-a", "executors"), true)]);
+            view.select_manager_thread(window, cx);
+            assert_eq!(view.compose.read(cx).value().as_str(), "Keep manager draft");
+            reader_features::set_enabled(reader_features::Feature::Agents, false, cx);
+            view.select_native_thread("executor-b".into(), window, cx);
+            assert!(
+                view.threads.selected.is_none(),
+                "a disabled module cannot activate a thread"
+            );
+            view.set_active(false, window, cx);
+            assert!(view.threads.worker.is_none() && view.threads.cancel.is_none());
+        });
     }
 }

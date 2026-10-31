@@ -179,6 +179,27 @@ fn normalized_absolute(path: &Path) -> Option<PathBuf> {
     Some(normalized)
 }
 
+impl super::Feed {
+    pub(super) fn markdown(
+        &self,
+        id: impl Into<ElementId>,
+        text: impl Into<SharedString>,
+        cx: &App,
+    ) -> TextView {
+        let root = self
+            .parent
+            .upgrade()
+            .and_then(|parent| parent.read(cx).area.clone());
+        markdown(
+            id,
+            text,
+            root,
+            crate::project::ProjectView::chat_link_handler(self.parent.clone()),
+            cx,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,26 +285,5 @@ mod tests {
             resolve_link("missing.md", root),
             LinkTarget::File { .. }
         ));
-    }
-}
-
-impl super::Feed {
-    pub(super) fn markdown(
-        &self,
-        id: impl Into<ElementId>,
-        text: impl Into<SharedString>,
-        cx: &App,
-    ) -> TextView {
-        let root = self
-            .parent
-            .upgrade()
-            .and_then(|parent| parent.read(cx).area.clone());
-        markdown(
-            id,
-            text,
-            root,
-            crate::project::ProjectView::chat_link_handler(self.parent.clone()),
-            cx,
-        )
     }
 }
