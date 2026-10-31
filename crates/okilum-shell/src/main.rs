@@ -78,7 +78,7 @@ mod reader_loading;
 mod reader_log;
 #[cfg(target_os = "macos")]
 mod reader_manager_focus;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod reader_manager_links;
 #[cfg(any(target_os = "macos", test))]
 mod reader_manager_occlusion;

@@ -16,6 +16,7 @@ pub(super) struct Directory {
     pub(super) draft: super::drafts::State,
     create_busy: bool,
     create_error: Option<String>,
+    pub(super) link_notice: Option<String>,
     pub model: Option<Arc<Mutex<shell::Directory>>>,
     open: bool,
     input: Option<Entity<InputState>>,
@@ -459,6 +460,7 @@ impl ProjectView {
                 view.install_native(client, expiry, window, cx);
                 view
             });
+            Self::forward_chat_links(&view, cx);
             cx.observe(&view, |_, _, cx| cx.notify()).detach();
             self.threads.views.insert(
                 (
@@ -600,6 +602,24 @@ impl ProjectView {
                     .text_color(cx.theme().danger)
                     .whitespace_normal()
                     .child(error),
+            );
+        }
+        let link_notice = if let Some(child) = self
+            .threads
+            .selected
+            .as_deref()
+            .and_then(|id| self.native_thread_view(id))
+        {
+            child.read(cx).threads.link_notice.clone()
+        } else {
+            self.threads.link_notice.clone()
+        };
+        if let Some(notice) = link_notice {
+            view = view.child(
+                div()
+                    .whitespace_normal()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(notice),
             );
         }
         if self.threads.error.is_some() {

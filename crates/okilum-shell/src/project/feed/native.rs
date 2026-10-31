@@ -31,6 +31,7 @@ impl Feed {
             self.remove_native(key);
         }
         let mut items = Vec::new();
+        let mut previews = HashMap::new();
         for row in changes.rows {
             let position = if let Some(position) = self.native_positions.get(&row.key) {
                 *position
@@ -40,6 +41,11 @@ impl Feed {
                 self.native_positions.insert(row.key.clone(), next);
                 next
             };
+            self.retain_detail_source(position, &row, cx);
+            previews.insert(
+                position,
+                activity_preview(&presentation::preview(&row.item)),
+            );
             let (kind, title, text) = match presentation::body(&row.item) {
                 Body::Message { user, text } => (
                     if user {
@@ -81,12 +87,13 @@ impl Feed {
             );
             topology = true;
         }
-        self.apply_rows(items.iter(), Some(records), topology, cx);
+        self.apply_rows(items.iter(), Some(records), topology, Some(&previews), cx);
     }
     fn remove_native(&mut self, key: &RowKey) {
         if let Some(position) = self.native_positions.remove(key) {
             self.messages.remove(&position);
             self.expanded.remove(&position);
+            self.details.remove(&position);
             if let Some(id) = self.ids.remove(&position) {
                 if let Some(count) = self.projected.get_mut(&id) {
                     *count -= 1;
@@ -100,6 +107,7 @@ impl Feed {
     fn toggle_activity(&mut self, position: u64, cx: &mut Context<Self>) {
         if !self.expanded.remove(&position) {
             self.expanded.insert(position);
+            self.load_detail(position, cx);
         }
         if let Some(index) = self.indices.get(&position).copied() {
             self.scroller
@@ -170,16 +178,14 @@ impl Feed {
                 row.child(
                     div()
                         .debug_selector(move || format!("project-{kind}-detail-{position}"))
-                        .child(
-                            TextView::markdown(
-                                ("project-activity", position as usize),
-                                message.text.clone(),
-                            )
-                            .selectable(true)
-                            .style(reader_text_style(cx.theme())),
-                        ),
+                        .child(self.markdown(
+                            ("project-activity", position as usize),
+                            self.detail_text(position, &message.text),
+                            cx,
+                        )),
                 )
             })
+            .when(expanded, |row| row.child(self.detail_status(position, cx)))
             .into_any_element()
     }
 }

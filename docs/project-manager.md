@@ -315,3 +315,22 @@ integration; this storage contract does not claim that upload is implemented.
 A storage failure is visible and preserves the existing saved record; the user
 is told to retain/copy unsaved text before closing. Concurrent writers use
 revision checks rather than overwriting another window's saved draft.
+
+
+## Readable native messages and activity (#2135)
+
+Messages, retained messages and expanded activity share the Reader's selectable
+Markdown style and exact code-block Copy action. External HTTP(S) links open in
+the system browser. Local file links resolve against the linked local project,
+with explicit notices for missing, ambiguous or outside-project destinations;
+they never inherit the currently open Reader note's directory. A valid local
+note link opens through the Reader, including a heading or `#L<number>` landing.
+
+Tool activity stays collapsed by default. Its bounded input/path/tool preview is
+independent of the complete available detail. Disclosure loads omitted output
+with `orchestration.getTurnItem` using the original source thread/item and
+revision, including inherited activity. A late response cannot replace another
+row or conversation. A missing/unsupported/abbreviated response stays explicitly
+incomplete; Open in T3 is not treated as completed in-panel parity. Live output
+may be refreshed, and terminal revisions replace stale live detail. Proposed
+plans preserve all Markdown, and todo lists retain every step and its status.

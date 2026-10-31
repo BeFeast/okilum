@@ -3,7 +3,7 @@
 use super::*;
 use futures::channel::oneshot;
 use okilum_t3::chat_drafts::{Attachment, Draft, Snapshot, Store};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Mutex, OnceLock};
 
 type Key = (String, String, String);
 type ChatDraft = Draft<Attachment>;
@@ -11,21 +11,75 @@ type Saved = Snapshot<Attachment>;
 type Barrier = oneshot::Receiver<Result<(), String>>;
 
 enum Work {
-    Save,
-    Flush(oneshot::Sender<Result<(), String>>),
+    Save(Arc<Mutex<Pending>>),
+    Flush(Arc<Mutex<Pending>>, oneshot::Sender<Result<(), String>>),
+    Drain(oneshot::Sender<Result<(), String>>),
 }
 
-/// The worker owns its store and revision. Dropping a view closes its queue;
-/// already queued edits continue to drain against their original identity.
+struct Pending {
+    store: Store<Attachment>,
+    desired: Arc<Mutex<ChatDraft>>,
+    saved: Saved,
+    failure: Option<String>,
+}
+impl Pending {
+    fn flush(&mut self) -> Result<(), String> {
+        let draft = self.desired.lock().unwrap().clone();
+        if self.failure.is_none() && draft != self.saved.draft {
+            match self.store.save(self.saved.revision, draft) {
+                Ok(next) => self.saved = next,
+                Err(error) => self.failure = Some(error.to_string()),
+            }
+        }
+        self.failure.clone().map_or(Ok(()), Err)
+    }
+}
+
+/// One process-wide disk worker. Queued work owns its conversation until it is
+/// written; closed windows need neither parked threads nor retained Writers.
+fn queue() -> std::io::Result<mpsc::Sender<Work>> {
+    static QUEUE: OnceLock<mpsc::Sender<Work>> = OnceLock::new();
+    static START: Mutex<()> = Mutex::new(());
+    let _start = START.lock().unwrap();
+    if let Some(sender) = QUEUE.get() {
+        return Ok(sender.clone());
+    }
+    let (sender, receiver) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("manager-drafts".into())
+        .spawn(move || {
+            let mut failed = false;
+            while let Ok(work) = receiver.recv() {
+                match work {
+                    Work::Save(pending) => failed |= pending.lock().unwrap().flush().is_err(),
+                    Work::Flush(pending, reply) => {
+                        let result = pending.lock().unwrap().flush();
+                        failed |= result.is_err();
+                        let _ = reply.send(result);
+                    }
+                    Work::Drain(reply) => {
+                        let _ = reply.send(if failed {
+                            Err("A Manager draft could not be saved".into())
+                        } else {
+                            Ok(())
+                        });
+                    }
+                }
+            }
+        })?;
+    let _ = QUEUE.set(sender.clone());
+    Ok(sender)
+}
+
 struct Writer {
     desired: Arc<Mutex<ChatDraft>>,
+    pending: Arc<Mutex<Pending>>,
     sender: mpsc::Sender<Work>,
 }
 
 #[derive(Default)]
 struct Writers {
     views: Vec<WeakEntity<ProjectView>>,
-    workers: Vec<Arc<Writer>>,
 }
 impl Global for Writers {}
 
@@ -35,24 +89,18 @@ fn install_shutdown(cx: &mut App) {
     }
     cx.set_global(Writers::default());
     cx.on_app_quit(|cx| {
-        // Capture still-live composers before adding barriers. Keep workers
-        // for released windows too, so closing the last window cannot race a
-        // final asynchronous save against process exit.
         let views = cx.global::<Writers>().views.clone();
         for view in views {
             let _ = view.update(cx, |view, cx| view.draft_capture(cx));
         }
-        let barriers: Vec<_> = cx
-            .global::<Writers>()
-            .workers
-            .iter()
-            .map(|w| w.barrier())
-            .collect();
+        // This FIFO barrier follows work from both live and released windows.
+        let (reply, barrier) = oneshot::channel();
+        if let Ok(sender) = queue() {
+            let _ = sender.send(Work::Drain(reply));
+        }
         async move {
-            for barrier in barriers {
-                if !matches!(barrier.await, Ok(Ok(()))) {
-                    eprintln!("Manager draft could not be flushed before quit");
-                }
+            if !matches!(barrier.await, Ok(Ok(()))) {
+                eprintln!("Manager draft could not be flushed before quit");
             }
         }
     })
@@ -61,37 +109,27 @@ fn install_shutdown(cx: &mut App) {
 impl Writer {
     fn new(store: Store<Attachment>, initial: Saved) -> std::io::Result<Self> {
         let desired = Arc::new(Mutex::new(initial.draft.clone()));
-        let pending = desired.clone();
-        let (sender, receiver) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("manager-draft".into())
-            .spawn(move || {
-                let mut saved = initial;
-                let mut failure = None;
-                while let Ok(work) = receiver.recv() {
-                    let draft = pending.lock().unwrap().clone();
-                    if failure.is_none() && draft != saved.draft {
-                        match store.save(saved.revision, draft) {
-                            Ok(next) => saved = next,
-                            Err(error) => failure = Some(error.to_string()),
-                        }
-                    }
-                    if let Work::Flush(reply) = work {
-                        let _ = reply.send(failure.clone().map_or(Ok(()), Err));
-                    }
-                }
-            })?;
-        Ok(Self { desired, sender })
+        let pending = Arc::new(Mutex::new(Pending {
+            store,
+            desired: desired.clone(),
+            saved: initial,
+            failure: None,
+        }));
+        Ok(Self {
+            desired,
+            pending,
+            sender: queue()?,
+        })
     }
 
     fn save(&self, draft: ChatDraft) {
         *self.desired.lock().unwrap() = draft;
-        let _ = self.sender.send(Work::Save);
+        let _ = self.sender.send(Work::Save(self.pending.clone()));
     }
 
     fn barrier(&self) -> Barrier {
         let (sender, receiver) = oneshot::channel();
-        let _ = self.sender.send(Work::Flush(sender));
+        let _ = self.sender.send(Work::Flush(self.pending.clone(), sender));
         receiver
     }
 }
@@ -121,8 +159,11 @@ impl ProjectView {
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft_key() != self.threads.draft.key {
             self.threads.draft.loading = true;
+            let first_identity = self.threads.draft.key.is_none();
             self.compose.update(cx, |input, cx| {
-                input.set_value("", window, cx);
+                if !first_identity {
+                    input.set_value("", window, cx);
+                }
                 input.set_disabled(true, cx);
             });
         }
@@ -147,6 +188,14 @@ impl ProjectView {
         if self.threads.draft.subscriptions.is_empty() {
             install_shutdown(cx);
             let weak = cx.weak_entity();
+            let live: Vec<_> = cx
+                .global::<Writers>()
+                .views
+                .iter()
+                .filter(|view| view.upgrade().is_some())
+                .cloned()
+                .collect();
+            cx.global_mut::<Writers>().views = live;
             cx.global_mut::<Writers>().views.push(weak);
             let input = cx.subscribe_in(
                 &self.compose,
@@ -159,6 +208,14 @@ impl ProjectView {
         if self.threads.draft.key.as_ref() == Some(&key) {
             return;
         }
+        // Text may have been entered while the first connection was loading.
+        // Preserve it, but never transfer an established key's text elsewhere.
+        let initial = self
+            .threads
+            .draft
+            .key
+            .is_none()
+            .then(|| self.draft_sent(cx).draft);
         self.draft_capture(cx);
         let draft = &mut self.threads.draft;
         draft.epoch = draft.epoch.wrapping_add(1);
@@ -177,8 +234,14 @@ impl ProjectView {
             self.threads.draft.error = Some(
                 "Draft storage is unavailable. Text is kept only while this window is open.".into(),
             );
-            self.compose
-                .update(cx, |input, cx| input.set_disabled(false, cx));
+            self.compose.update(cx, |input, cx| {
+                input.set_value(
+                    initial.as_ref().map_or("", |draft| draft.text.as_str()),
+                    window,
+                    cx,
+                );
+                input.set_disabled(false, cx);
+            });
             return;
         };
         let environment = self.environment.clone().unwrap();
@@ -186,6 +249,7 @@ impl ProjectView {
         let identity_client = self.native.model_client().filter(|c| c.access_allowed());
         let store = Store::<Attachment>::new(&state, &environment, &key.1, &key.2);
         cx.spawn_in(window, async move |this, cx| {
+            let initial_copy = initial.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -210,7 +274,7 @@ impl ProjectView {
                     saved
                         .draft
                         .restore_for(environment_id.as_deref().unwrap_or(""));
-                    let restored = saved.draft.clone();
+                    let restored = merge_initial(initial_copy, saved.draft.clone())?;
                     // Start from the actual disk version, then retain restored status.
                     saved.draft = original;
                     let writer = Writer::new(store, saved)
@@ -227,13 +291,17 @@ impl ProjectView {
                 match result {
                     Ok((writer, restored)) => {
                         let writer = Arc::new(writer);
-                        cx.global_mut::<Writers>().workers.push(writer.clone());
                         this.threads.draft.writer = Some(writer);
                         this.threads.draft.attachments = restored.attachments;
                         this.compose
                             .update(cx, |input, cx| input.set_value(restored.text, window, cx));
                     }
                     Err(error) => {
+                        if let Some(initial) = initial {
+                            this.threads.draft.attachments = initial.attachments;
+                            this.compose
+                                .update(cx, |input, cx| input.set_value(initial.text, window, cx));
+                        }
                         this.threads.draft.error =
                             Some(format!("{error}. The saved draft was preserved."))
                     }
@@ -382,10 +450,71 @@ impl ProjectView {
     }
 }
 
+fn merge_initial(initial: Option<ChatDraft>, saved: ChatDraft) -> Result<ChatDraft, String> {
+    match initial.filter(|initial| *initial != ChatDraft::default()) {
+        None => Ok(saved),
+        Some(initial) if saved == ChatDraft::default() || saved == initial => Ok(initial),
+        Some(_) => Err("Current text differs from the saved draft; neither was overwritten. Keep this window open and copy your text before closing".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn first_connection_preserves_early_input_without_overwriting_a_different_saved_draft() {
+        let local = ChatDraft {
+            text: "Typed before connection".into(),
+            attachments: vec![],
+        };
+        let saved = ChatDraft {
+            text: "Retained on disk".into(),
+            attachments: vec![],
+        };
+        assert_eq!(
+            merge_initial(Some(local.clone()), ChatDraft::default()).unwrap(),
+            local
+        );
+        assert_eq!(merge_initial(None, saved.clone()).unwrap(), saved);
+        assert!(merge_initial(Some(local), saved).is_err());
+    }
+
+    #[test]
+    fn released_conversation_writers_drain_and_release_their_retained_state() {
+        let state = tempfile::tempdir().unwrap();
+        let env = Environment::new("qa", "https://drafts.invalid").unwrap();
+        let mut released = Vec::new();
+        let mut stores = Vec::new();
+        for n in 0..32 {
+            let store =
+                Store::<Attachment>::new(state.path(), &env, "project", &format!("thread-{n}"));
+            let writer = Writer::new(store.clone(), store.load().unwrap()).unwrap();
+            released.push(Arc::downgrade(&writer.pending));
+            writer.save(ChatDraft {
+                text: format!("Retained after close {n}"),
+                attachments: vec![],
+            });
+            stores.push(store);
+            drop(writer);
+        }
+        let (reply, barrier) = oneshot::channel();
+        queue().unwrap().send(Work::Drain(reply)).unwrap();
+        // Other tests deliberately inject persistence failures into the shared
+        // queue. This test checks its own retained writes and releases directly.
+        let _ = futures::executor::block_on(barrier).unwrap();
+        assert!(
+            released.iter().all(|pending| pending.upgrade().is_none()),
+            "closed conversations must not remain owned by the process registry"
+        );
+        for (n, store) in stores.iter().enumerate() {
+            assert_eq!(
+                store.load().unwrap().draft.text,
+                format!("Retained after close {n}")
+            );
+        }
+    }
 
     fn binding(project: &str, thread: &str) -> AreaBinding {
         AreaBinding::parse(&format!("t3:\n  schema_version: 1\n  environment: fixture\n  manager: {{project_id: '{project}', thread_id: '{thread}', workspace_mode: local}}\n  executor: {{project_id: executors}}\n  default_models:\n    manager: {{instanceId: codex, model: gpt-6.1-sol}}\n    executor: {{instanceId: codex, model: gpt-6.1-sol}}\n")).unwrap().unwrap()

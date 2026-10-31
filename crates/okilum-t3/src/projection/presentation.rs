@@ -1,5 +1,5 @@
-//! Compact Tier 1 presentation; commands/files use upstream work-log's
-//! input/path/status summaries. Full details and unsupported controls open T3.
+//! Full message/activity bodies and independent compact disclosure previews.
+pub mod content;
 use serde_json::Value;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
@@ -21,7 +21,26 @@ pub fn body(item: &Value) -> Body {
     if kind == "reasoning" {
         return Body::Reasoning(text(item, "text"));
     }
-    let (label, detail) = match kind {
+    let (label, summary) = summary(item);
+    let detail = content::detail(item).map_or(summary, |content| content.markdown);
+    let status = item["status"].as_str().unwrap_or("");
+    Body::Compact {
+        label: if status.is_empty() {
+            label.into()
+        } else {
+            format!("{label} · {status}")
+        },
+        detail,
+    }
+}
+
+/// Authored input/path/tool summary; the UI bounds only this preview.
+pub fn preview(item: &Value) -> String {
+    summary(item).1
+}
+
+fn summary(item: &Value) -> (&'static str, String) {
+    match item["type"].as_str().unwrap_or("") {
         "command_execution" => ("Command", text(item, "input")),
         "file_change" => (
             "File changed",
@@ -62,7 +81,7 @@ pub fn body(item: &Value) -> Body {
                 .unwrap_or("")
                 .into(),
         ),
-        "proposed_plan" => ("Plan in T3", text(item, "markdown")),
+        "proposed_plan" => ("Plan", text(item, "markdown")),
         "todo_list" => (
             "Plan",
             format!("{} steps", item["steps"].as_array().map_or(0, Vec::len)),
@@ -83,22 +102,5 @@ pub fn body(item: &Value) -> Body {
                 .unwrap_or("")
                 .into(),
         ),
-    };
-    // Keep tool cards compact, including commands with large stdin/scripts.
-    let detail = detail
-        .lines()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .take(240)
-        .collect::<String>();
-    let status = item["status"].as_str().unwrap_or("");
-    Body::Compact {
-        label: if status.is_empty() {
-            label.into()
-        } else {
-            format!("{label} · {status}")
-        },
-        detail,
     }
 }

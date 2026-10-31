@@ -7,6 +7,8 @@ use okilum_t3::projection::{
 };
 use okilum_t3::TimelineItem;
 use std::collections::{BTreeMap, HashMap, HashSet};
+pub(super) mod content;
+mod details;
 
 #[derive(Clone, PartialEq)]
 struct Message {
@@ -51,6 +53,7 @@ pub(super) struct Feed {
     native_order: Option<Vec<u64>>,
     native_positions: HashMap<RowKey, u64>,
     expanded: HashSet<u64>,
+    details: HashMap<u64, details::Detail>,
     next_native_position: u64,
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
@@ -76,6 +79,7 @@ impl Feed {
             native_order: None,
             native_positions: HashMap::new(),
             expanded: HashSet::new(),
+            details: HashMap::new(),
             next_native_position: 1,
             scroller,
             enabled: false,
@@ -97,6 +101,7 @@ impl Feed {
         self.native_order = None;
         self.native_positions.clear();
         self.expanded.clear();
+        self.details.clear();
         self.next_native_position = 1;
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         cx.notify();
@@ -116,13 +121,14 @@ impl Feed {
     ) {
         // A late MCP result cannot replace an active native history.
         let native = self.native_order.is_some();
-        self.apply_rows(items.filter(|_| !native), records, false, cx);
+        self.apply_rows(items.filter(|_| !native), records, false, None, cx);
     }
     fn apply_rows<'a>(
         &mut self,
         items: impl Iterator<Item = &'a TimelineItem>,
         records: Option<&[MessageRecord]>,
         force_topology: bool,
+        previews: Option<&HashMap<u64, SharedString>>,
         cx: &mut Context<Self>,
     ) {
         let mut topology = force_topology;
@@ -193,7 +199,10 @@ impl Feed {
                         ..
                     }
                 ) {
-                    activity_preview(&text)
+                    previews
+                        .and_then(|previews| previews.get(&item.position))
+                        .cloned()
+                        .unwrap_or_else(|| activity_preview(&text))
                 } else {
                     SharedString::default()
                 };
@@ -358,14 +367,11 @@ impl Feed {
                             .text_color(brand::palette(cx).text_muted)
                             .child(if message.user { "You" } else { "Manager" }),
                     )
-                    .child(
-                        TextView::markdown(
-                            ("project-message", position as usize),
-                            message.text.clone(),
-                        )
-                        .selectable(true)
-                        .style(reader_text_style(cx.theme())),
-                    )
+                    .child(self.markdown(
+                        ("project-message", position as usize),
+                        message.text.clone(),
+                        cx,
+                    ))
                     .into_any_element()
             }
             Some(Row::Retained(index)) => {
@@ -387,14 +393,11 @@ impl Feed {
                         },
                     ))
                     .when(record.receipt.is_some(), |row| {
-                        row.child(
-                            TextView::markdown(
-                                ("project-retained", index),
-                                record.message.text.clone(),
-                            )
-                            .selectable(true)
-                            .style(reader_text_style(cx.theme())),
-                        )
+                        row.child(self.markdown(
+                            ("project-retained", index),
+                            record.message.text.clone(),
+                            cx,
+                        ))
                     })
                     .when(record.receipt.is_none(), |row| {
                         row.child(
