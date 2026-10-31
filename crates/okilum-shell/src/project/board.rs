@@ -1186,6 +1186,21 @@ impl Render for Board {
 }
 
 impl Reader {
+    fn return_to_project_board(&mut self, cx: &mut Context<Self>) {
+        if !self.current_rel.is_empty() {
+            let position = self.retained_document_position(cx);
+            self.navigation.places.insert(
+                (self.vault_root.clone(), self.current_rel.clone()),
+                position,
+            );
+        }
+        self.cancel_pending_landing();
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
+        self.project_navigation.board_visible = true;
+        cx.notify();
+    }
+
     pub(crate) fn ensure_project_board(
         &mut self,
         area: PathBuf,
@@ -1292,8 +1307,7 @@ impl Reader {
                                 .ghost()
                                 .label("← Board")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.project_navigation.board_visible = true;
-                                    cx.notify();
+                                    this.return_to_project_board(cx);
                                 })),
                         ),
                     )

@@ -187,7 +187,11 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         .map(|i| format!("Paragraph {i}\n\n"))
         .collect::<String>();
     std::fs::write(vault.join("start.md"), format!("# Start\n\n{paragraphs}")).unwrap();
-    std::fs::write(folder.join("note.md"), "# Related note\nActual body\n").unwrap();
+    std::fs::write(
+        folder.join("note.md"),
+        format!("# Related note\nActual body\n\n{paragraphs}"),
+    )
+    .unwrap();
     std::fs::write(folder.join("stage.md"), "# Stage metadata\n").unwrap();
     std::fs::write(
         folder.join("ops/project.yaml"),
@@ -442,6 +446,26 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             .value()
             .contains("Keep my draft"));
     });
+    reader.update_in(visual, |reader, _, cx| {
+        reader.content.read(cx).list_state().scroll_to(ListOffset {
+            item_ix: 10,
+            offset_in_item: px(3.),
+        });
+        reader.cancel_pending_landing();
+        // An earlier visit's cache must not beat a newly scrolled visible note.
+        reader.navigation.places.insert(
+            (vault.clone(), "project/note.md".into()),
+            ListOffset::default(),
+        );
+    });
+    visual.run_until_parked();
+    let fresh_place = reader.read_with(visual, |reader, cx| {
+        reader.content.read(cx).list_state().logical_scroll_top()
+    });
+    assert!(
+        fresh_place.item_ix > 0,
+        "positive control: visible related note scrolled further"
+    );
     let back = visual
         .debug_bounds("project-return-board")
         .expect("one-action Board return");
@@ -449,6 +473,12 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
         assert!(reader.project_navigation.board_visible);
+        assert_eq!(
+            coordinates(reader.navigation.places[&(vault.clone(), "project/note.md".into())]),
+            coordinates(fresh_place),
+            "Back to Board captures the visible viewport before hiding it"
+        );
+        assert!(reader.navigation.pending_landing.is_none());
         let board = reader.project_navigation.boards[&folder].read(cx);
         assert_eq!(board.filter.as_deref(), Some("Editing"));
         assert_eq!(board.selected, Some(1767));
