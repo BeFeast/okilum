@@ -57,6 +57,7 @@ fn reader_settings_sync_nonempty_and_expired_errors_have_actionable_recovery() {
 fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
     Snapshot {
         offer_url: None,
+        preparing: false,
         pending,
         peers: vec![],
         catalog: vec![],
@@ -239,4 +240,17 @@ fn direct_metadata_parent_is_private_without_creating_managed_sync_state() -> an
     assert!(mac_direct_state(&alias.join("Sync")).is_err());
     assert!(!managed.exists());
     Ok(())
+}
+
+#[test]
+fn preparing_receive_continues_refresh_after_pairing_finishes() {
+    let mut value = snapshot(None);
+    assert!(!sync_refresh_needed(&value));
+    value.preparing = true;
+    assert!(sync_refresh_needed(&value));
+    value.preparing = false;
+    value.offer_url = Some("fixture-only invitation".into());
+    assert!(sync_refresh_needed(&value));
+    value.offer_url = None;
+    assert!(!sync_refresh_needed(&value));
 }

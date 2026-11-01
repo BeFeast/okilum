@@ -1,8 +1,10 @@
 //! Empty-folder first receive. Unknown nonempty folders never enter this path.
 use super::*;
 use crate::daemon::{self, DaemonIdentity};
+use crate::readiness::HubStatus;
 use okilum_sync::{validate_destination, Destination};
 use serde_json::{json, Value};
+use std::time::Instant;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +22,14 @@ pub(super) struct Transfer {
     daemon: DaemonIdentity,
     connection: Option<Connection>,
     active: bool,
+    #[serde(default)]
+    owner: Option<Uuid>,
+    #[serde(default)]
+    destination_identity: Option<DirectoryIdentity>,
+    #[serde(default)]
+    phase: Phase,
+    #[serde(default)]
+    witness: Option<Value>,
 }
 
 pub(super) fn share(source: &ExistingVault, device: &str) -> Result<Connection> {
@@ -103,6 +113,14 @@ fn ignore_lines(value: &Value) -> Result<Vec<String>> {
 }
 impl Controller {
     pub fn attach(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<Snapshot> {
+        let guard = self.shared.transfer_lock.lock().unwrap();
+        self.attach_locked(peer_id, vault_id, destination)?;
+        drop(guard);
+        self.reconcile_transfers()?;
+        self.refresh_attached()?;
+        self.snapshot()
+    }
+    fn attach_locked(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<()> {
         self.check()?;
         ensure!(
             !vault_id.is_empty()
@@ -167,6 +185,10 @@ impl Controller {
                     daemon: daemon.clone(),
                     connection: None,
                     active: false,
+                    owner: Some(Uuid::new_v4()),
+                    destination_identity: Some(DirectoryIdentity::read(&path)?),
+                    phase: Phase::Preparing,
+                    witness: None,
                 };
                 db.transfers.push(t.clone());
                 self.save(&db)?;
@@ -174,8 +196,13 @@ impl Controller {
             };
             (paired, transfer)
         };
+        ensure!(
+            transfer.owner.is_some() && transfer.phase != Phase::Legacy,
+            "legacy first receive has no ownership witness; cannot acquire promotion authority"
+        );
         if transfer.active {
-            return self.snapshot();
+            validate_owned(&transfer, &api.folder(vault_id)?)?;
+            return Ok(());
         }
         let connection = match &transfer.connection {
             Some(c) => c.clone(),
@@ -221,22 +248,18 @@ impl Controller {
             // Revalidate the empty-folder/no-overlap gate immediately before
             // creation; never use stale empty-destination evidence after a pause.
             validate_destination(&path, vault_id, &daemon::discover(&configs).folders()?)?;
-            api.add_paused_folder(&json!({"id":vault_id,"label":vault_id,"path":path,"type":"receiveonly","paused":true,
+            api.add_paused_folder(&json!({"id":vault_id,"label":owned_label(&transfer)?,"path":path,"type":"receiveonly","paused":true,
                 "devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
-                "versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
+                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
         }
         let folder = api.folder(vault_id)?;
-        ensure!(
-            Path::new(folder["path"].as_str().context("folder path missing")?).canonicalize()?
-                == path
-                && folder["type"] == "receiveonly"
-                && folder["devices"]
-                    .as_array()
-                    .context("invalid folder peers")?
-                    .iter()
-                    .any(|d| d["deviceID"] == connection.device_id),
-            "prepared folder differs; external configuration unchanged"
-        );
+        validate_owned(&transfer, &folder)?;
+        // Capture the complete expanded configuration before the first unpause.
+        // The UUID label predates folder creation and scopes lost-create recovery.
+        if transfer.witness.is_none() {
+            transfer.witness = Some(folder.clone());
+            self.save_transfer(&transfer)?;
+        }
         if folder["paused"] == true {
             api.set_ignores(
                 vault_id,
@@ -250,6 +273,8 @@ impl Controller {
             api.patch_folder(vault_id, &json!({"paused":false}))?;
         }
         transfer.active = true;
+        transfer.phase = Phase::Receiving;
+        transfer.witness = Some(api.folder(vault_id)?);
         self.save_transfer(&transfer)?;
         let attached = inspect_existing(&configs, &path)?;
         let mut db = self.shared.db.lock().unwrap();
@@ -257,7 +282,7 @@ impl Controller {
             db.attached.push(attached);
         }
         self.save(&db)?;
-        snapshot(&db)
+        Ok(())
     }
     fn save_transfer(&self, transfer: &Transfer) -> Result<()> {
         let mut db = self.shared.db.lock().unwrap();
@@ -268,5 +293,631 @@ impl Controller {
             .context("attachment intent missing")?;
         *saved = transfer.clone();
         self.save(&db)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+impl DirectoryIdentity {
+    fn read(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "destination must remain a real directory"
+        );
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Phase {
+    #[default]
+    Legacy,
+    Preparing,
+    Receiving,
+    Promoting,
+    Bidirectional,
+}
+impl Transfer {
+    pub(super) fn preparing(&self) -> bool {
+        self.phase != Phase::Bidirectional
+    }
+    pub(super) fn legacy_hold(&self) -> bool {
+        self.owner.is_none() || self.destination_identity.is_none() || self.phase == Phase::Legacy
+    }
+}
+fn owned_label(transfer: &Transfer) -> Result<String> {
+    Ok(format!(
+        "Okilum Sync {}",
+        transfer.owner.context("owned folder identity missing")?
+    ))
+}
+fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
+    ensure!(
+        !transfer.legacy_hold(),
+        "legacy replica has no ownership witness"
+    );
+    ensure!(
+        transfer.destination_identity.as_ref() == Some(&DirectoryIdentity::read(&transfer.path)?),
+        "destination directory identity changed"
+    );
+    ensure!(
+        transfer.path.canonicalize()? == transfer.path,
+        "destination identity/path changed"
+    );
+    ensure!(
+        Path::new(folder["path"].as_str().context("folder path missing")?).canonicalize()?
+            == transfer.path
+            && folder["id"] == transfer.vault
+            && folder["label"] == owned_label(transfer)?,
+        "owned replica identity changed"
+    );
+    let connection = transfer
+        .connection
+        .as_ref()
+        .context("owned connection missing")?;
+    let mut actual_peers = folder["devices"]
+        .as_array()
+        .context("folder peers missing")?
+        .iter()
+        .map(|v| {
+            v["deviceID"]
+                .as_str()
+                .map(str::to_owned)
+                .context("peer identity missing")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut expected_peers = vec![
+        transfer.daemon.device_id.clone(),
+        connection.device_id.clone(),
+    ];
+    actual_peers.sort();
+    expected_peers.sort();
+    ensure!(
+        actual_peers == expected_peers,
+        "owned replica membership changed"
+    );
+    ensure!(
+        folder["versioning"]["type"] == "staggered"
+            && folder["versioning"]["params"]["maxAge"] == "2592000",
+        "owned version history policy changed"
+    );
+    let allowed_mode = match transfer.phase {
+        Phase::Promoting => folder["type"] == "receiveonly" || folder["type"] == "sendreceive",
+        Phase::Bidirectional => folder["type"] == "sendreceive",
+        _ => folder["type"] == "receiveonly",
+    };
+    ensure!(
+        allowed_mode,
+        "owned replica mode changed outside its promotion intent"
+    );
+    if let Some(expected) = &transfer.witness {
+        let mut expected = expected.clone();
+        let mut actual = folder.clone();
+        // Only these two fields belong to the recorded preparation/promotion.
+        expected["paused"] = json!(false);
+        actual["paused"] = json!(false);
+        expected["type"] = json!("receiveonly");
+        actual["type"] = json!("receiveonly");
+        ensure!(
+            actual == expected,
+            "owned replica configuration witness changed"
+        );
+    } else {
+        ensure!(
+            transfer.phase == Phase::Preparing && folder["paused"] == true,
+            "missing first-receive configuration witness"
+        );
+    }
+    Ok(())
+}
+
+/// Source authorization is independent from the receiver's claimed readiness.
+/// The exact approved computer/daemon identity and canonical folder are durable.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ShareGrant {
+    pub peer: Uuid,
+    pub vault: String,
+    receiver: String,
+    source: ExistingVault,
+}
+impl ShareGrant {
+    pub(super) fn new(peer: Uuid, source: &ExistingVault, receiver: &str) -> Self {
+        Self {
+            peer,
+            vault: source.folder_id.clone(),
+            receiver: receiver.into(),
+            source: source.clone(),
+        }
+    }
+    pub(super) fn validate(&self, source: &ExistingVault, receiver: &str) -> Result<()> {
+        ensure!(
+            self.receiver == receiver && existing::same_binding(&self.source, source),
+            "explicit share scope changed"
+        );
+        Ok(())
+    }
+    pub(super) fn observe(&self, configs: &[PathBuf], generation: Uuid) -> Result<Observation> {
+        ensure!(
+            configs.iter().any(|p| p
+                .canonicalize()
+                .is_ok_and(|p| p == self.source.daemon.config_file)),
+            "source daemon is no longer selected"
+        );
+        self.source.daemon.verify_local()?;
+        let api = self.source.daemon.connect()?;
+        let identity = api.identity()?;
+        let version = api.version()?["version"]
+            .as_str()
+            .context("source version missing")?
+            .to_owned();
+        ensure!(
+            daemon::compatible_external_version(&version),
+            "unsupported source readiness counters"
+        );
+        let folder = api.folder(&self.vault)?;
+        ensure!(
+            folder["id"] == self.vault
+                && Path::new(folder["path"].as_str().context("source path missing")?)
+                    .canonicalize()?
+                    == self.source.path,
+            "source folder path or identity changed"
+        );
+        let devices = folder["devices"]
+            .as_array()
+            .context("source folder peers missing")?;
+        ensure!(
+            devices.iter().any(|d| d["deviceID"] == self.receiver)
+                && devices
+                    .iter()
+                    .any(|d| d["deviceID"] == self.source.daemon.device_id),
+            "explicit source share was removed"
+        );
+        let started = identity["startTime"]
+            .as_str()
+            .context("source daemon start time missing")?
+            .to_owned();
+        ensure!(!started.is_empty(), "source daemon generation missing");
+        let config_hash = wire::fingerprint(&serde_json::to_vec(&folder)?);
+        Ok(Observation {
+            id: Uuid::new_v4(),
+            pair: self.peer,
+            folder: self.vault.clone(),
+            sender: self.source.daemon.device_id.clone(),
+            receiver: self.receiver.clone(),
+            generation,
+            started,
+            version,
+            expires: now()? + 30,
+            config_hash,
+            folder_type: folder["type"]
+                .as_str()
+                .context("source mode missing")?
+                .into(),
+            paused: folder["paused"]
+                .as_bool()
+                .context("source pause state missing")?,
+            connected: api.connections()?["connections"][&self.receiver]["connected"]
+                .as_bool()
+                .unwrap_or(false),
+            remote_state: api.completion(&self.vault, &self.receiver)?["remoteState"]
+                .as_str()
+                .unwrap_or("unknown")
+                .into(),
+            status: api.status(&self.vault)?,
+        })
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Observation {
+    id: Uuid,
+    pair: Uuid,
+    folder: String,
+    sender: String,
+    receiver: String,
+    generation: Uuid,
+    started: String,
+    version: String,
+    expires: u64,
+    config_hash: String,
+    folder_type: String,
+    paused: bool,
+    connected: bool,
+    remote_state: String,
+    status: Value,
+}
+struct Receipt {
+    observation: Observation,
+    received: Instant,
+}
+impl Receipt {
+    fn new(observation: Observation, transfer: &Transfer) -> Result<Self> {
+        let connection = transfer.connection.as_ref().context("connection missing")?;
+        ensure!(
+            observation.pair == transfer.peer
+                && observation.folder == transfer.vault
+                && observation.sender == connection.device_id
+                && observation.receiver == transfer.daemon.device_id
+                && !observation.id.is_nil()
+                && !observation.generation.is_nil()
+                && !observation.started.is_empty()
+                && daemon::compatible_external_version(&observation.version),
+            "direct readiness scope mismatch"
+        );
+        ensure!(
+            observation.expires > now()? && observation.expires <= now()? + 30,
+            "direct readiness observation expired"
+        );
+        Ok(Self {
+            observation,
+            received: Instant::now(),
+        })
+    }
+    fn fresh(&self) -> Result<bool> {
+        Ok(self.received.elapsed() < Duration::from_secs(30)
+            && self.observation.expires > now()?
+            && self.observation.expires <= now()? + 30)
+    }
+}
+fn settled(status: &HubStatus) -> bool {
+    status.state == "idle"
+        && status.need_total_items == Some(0)
+        && status.receive_only_total_items == Some(0)
+        && status.errors == Some(0)
+        && status.pull_errors == Some(0)
+        && status.error.as_deref() == Some("")
+        && status.invalid.as_deref() == Some("")
+        && status.watch_error.as_deref() == Some("")
+        && status.global_total_items.is_some()
+        && status.global_total_items == status.local_total_items
+        && status.global_bytes.is_some()
+        && status.global_bytes == status.local_bytes
+        && status.global_directories.is_some()
+        && status.global_symlinks.is_some()
+}
+/// Same guarded interval contract as readiness::interval_complete, but both
+/// authenticated direct peers use explicit 2.1.x file-byte counters. Never apply
+/// the legacy 1.29.5 128-byte directory/symlink adjustment to this protocol.
+fn interval_complete(a: &Receipt, b: &Receipt, local: &Value) -> Result<bool> {
+    let first = &a.observation;
+    let second = &b.observation;
+    let ready = |o: &Observation| -> bool {
+        !o.paused
+            && o.folder_type == "sendreceive"
+            && o.connected
+            && o.remote_state == "valid"
+            && serde_json::from_value::<HubStatus>(o.status.clone())
+                .is_ok_and(|status| settled(&status))
+    };
+    if !a.fresh()?
+        || !b.fresh()?
+        || !ready(first)
+        || !ready(second)
+        || a.received > b.received
+        || first.id == second.id
+        || first.pair != second.pair
+        || first.folder != second.folder
+        || first.sender != second.sender
+        || first.receiver != second.receiver
+        || first.generation != second.generation
+        || first.started != second.started
+        || first.version != second.version
+        || first.config_hash != second.config_hash
+        || serde_json::from_value::<HubStatus>(first.status.clone())?
+            != serde_json::from_value::<HubStatus>(second.status.clone())?
+    {
+        return Ok(false);
+    }
+    let status: HubStatus = serde_json::from_value(second.status.clone())?;
+    let received = local["remoteSequence"][&second.sender]
+        .as_u64()
+        .is_some_and(|s| s >= status.sequence)
+        || status.sequence == 0
+            && status.global_total_items == Some(0)
+            && local["remoteSequence"][&second.sender].is_null();
+    Ok(received
+        && local["state"] == "idle"
+        && [
+            "needTotalItems",
+            "receiveOnlyTotalItems",
+            "errors",
+            "pullErrors",
+        ]
+        .iter()
+        .all(|k| local[*k].as_u64() == Some(0))
+        && ["error", "invalid", "watchError"]
+            .iter()
+            .all(|k| local[*k].as_str() == Some(""))
+        && local["globalTotalItems"].as_u64() == status.global_total_items
+        && local["localTotalItems"].as_u64() == status.global_total_items
+        && local["globalBytes"].as_u64() == status.global_bytes
+        && local["localBytes"].as_u64() == status.global_bytes)
+}
+
+pub(super) fn offline(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.is_connect() || e.is_timeout())
+            || cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::NotConnected
+                )
+            })
+    })
+}
+impl Controller {
+    /// Called by refresh. No service grant and no externally supplied readiness
+    /// receipt can authorize promotion; every interval comes from the paired peer.
+    pub fn reconcile_transfers(&self) -> Result<()> {
+        self.check()?;
+        let _guard = self.shared.transfer_lock.lock().unwrap();
+        let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        for mut transfer in transfers {
+            if transfer.legacy_hold() || !transfer.active || transfer.phase == Phase::Preparing {
+                continue;
+            }
+            match self.reconcile_one(&mut transfer) {
+                Ok(()) => {}
+                Err(error) if offline(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+    fn observe_transfer(&self, transfer: &Transfer, peer: &Paired) -> Result<Option<Receipt>> {
+        match self.call(
+            peer.endpoint,
+            transfer.peer,
+            &peer.key,
+            &peer.public,
+            Operation::Observe {
+                vault: transfer.vault.clone(),
+                device: transfer.daemon.device_id.clone(),
+            },
+        )? {
+            Reply::Observed { observation } => Ok(Some(Receipt::new(observation, transfer)?)),
+            Reply::NotReady => Ok(None),
+            _ => anyhow::bail!(
+                "authenticated peer readiness unavailable or its share authority changed"
+            ),
+        }
+    }
+    fn reconcile_one(&self, transfer: &mut Transfer) -> Result<()> {
+        transfer.daemon.verify_local()?;
+        let configs = self.configuration_paths()?;
+        ensure!(
+            configs.iter().any(|p| p
+                .canonicalize()
+                .is_ok_and(|p| p == transfer.daemon.config_file)),
+            "owned daemon is no longer selected"
+        );
+        let api = transfer.daemon.connect()?;
+        let folder = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &folder)?;
+        if transfer.phase == Phase::Bidirectional {
+            return Ok(());
+        }
+        if transfer.phase == Phase::Promoting && folder["type"] == "sendreceive" {
+            // Lost PATCH acknowledgement: only the prior durable intent and exact
+            // owned witness authorize observational completion, never another PATCH.
+            transfer.phase = Phase::Bidirectional;
+            self.save_transfer(transfer)?;
+            return Ok(());
+        }
+        let peer = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .peers
+            .get(&transfer.peer)
+            .cloned()
+            .context("paired share authority removed")?;
+        let connection = transfer
+            .connection
+            .as_ref()
+            .context("owned connection missing")?;
+        if folder["paused"] != false
+            || ignore_lines(&api.ignores(&transfer.vault)?)? != connection.ignores
+        {
+            return Ok(());
+        }
+        let Some(first) = self.observe_transfer(transfer, &peer)? else {
+            return Ok(());
+        };
+        self.check()?;
+        api.scan(&transfer.vault)?;
+        let Some(second) = self.observe_transfer(transfer, &peer)? else {
+            return Ok(());
+        };
+        self.check()?;
+        api.scan(&transfer.vault)?;
+        let local = api.status(&transfer.vault)?;
+        let current = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &current)?;
+        if current != folder
+            || ignore_lines(&api.ignores(&transfer.vault)?)? != connection.ignores
+            || !interval_complete(&first, &second, &local)?
+        {
+            return Ok(());
+        }
+        self.check()?;
+        transfer.phase = Phase::Promoting;
+        self.save_transfer(transfer)?;
+        // Recheck local edits and configuration immediately before the scoped
+        // PATCH. A resumed Promoting record must re-observe if it is still receiving.
+        api.scan(&transfer.vault)?;
+        let latest = api.status(&transfer.vault)?;
+        let latest_folder = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &latest_folder)?;
+        if latest_folder != current
+            || ignore_lines(&api.ignores(&transfer.vault)?)? != connection.ignores
+            || !interval_complete(&first, &second, &latest)?
+        {
+            return Ok(());
+        }
+        self.check()?;
+        api.patch_folder(&transfer.vault, &json!({"type":"sendreceive"}))?;
+        let promoted = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &promoted)?;
+        ensure!(
+            promoted["type"] == "sendreceive",
+            "promotion readback failed"
+        );
+        transfer.phase = Phase::Bidirectional;
+        self.save_transfer(transfer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture() -> Result<(tempfile::TempDir, Transfer, Value, Observation, Value)> {
+        let root = tempfile::tempdir()?;
+        let transfer = Transfer {
+            peer: Uuid::new_v4(),
+            vault: "fixture".into(),
+            path: root.path().to_owned(),
+            daemon: DaemonIdentity {
+                config_file: root.path().join("config.xml"),
+                device_id: "receiver".into(),
+                certificate_hash: "fixture".into(),
+            },
+            connection: Some(Connection {
+                folder_id: "fixture".into(),
+                device_id: "sender".into(),
+                ignores: vec![],
+            }),
+            active: true,
+            owner: Some(Uuid::new_v4()),
+            destination_identity: Some(DirectoryIdentity::read(root.path())?),
+            phase: Phase::Receiving,
+            witness: None,
+        };
+        let folder = json!({"id":"fixture","label":owned_label(&transfer)?,"path":root.path(),"type":"receiveonly","paused":false,
+            "devices":[{"deviceID":"receiver"},{"deviceID":"sender"}],"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}});
+        let status = json!({"state":"idle","sequence":5,"globalTotalItems":2,"localTotalItems":2,"globalDirectories":1,
+            "globalSymlinks":0,"globalBytes":12,"localBytes":12,"needTotalItems":0,"receiveOnlyTotalItems":0,
+            "errors":0,"pullErrors":0,"error":"","invalid":"","watchError":""});
+        let observation = Observation {
+            id: Uuid::new_v4(),
+            pair: transfer.peer,
+            folder: "fixture".into(),
+            sender: "sender".into(),
+            receiver: "receiver".into(),
+            generation: Uuid::new_v4(),
+            started: "daemon-start".into(),
+            version: "v2.1.7".into(),
+            expires: now()? + 30,
+            config_hash: "config-hash".into(),
+            folder_type: "sendreceive".into(),
+            paused: false,
+            connected: true,
+            remote_state: "valid".into(),
+            status: status.clone(),
+        };
+        let mut local = status;
+        local["remoteSequence"] = json!({"sender":5});
+        Ok((root, transfer, folder, observation, local))
+    }
+    #[test]
+    fn direct_21_interval_counts_directory_without_legacy_synthetic_bytes() -> Result<()> {
+        let (_root, transfer, _folder, observation, mut local) = fixture()?;
+        let first = Receipt::new(observation.clone(), &transfer)?;
+        let mut next = observation;
+        next.id = Uuid::new_v4();
+        let second = Receipt::new(next.clone(), &transfer)?;
+        assert!(
+            interval_complete(&first, &second, &local)?,
+            "directory positive control must use 2.1.x file bytes"
+        );
+        local["receiveOnlyTotalItems"] = json!(1);
+        assert!(!interval_complete(&first, &second, &local)?);
+        local["receiveOnlyTotalItems"] = json!(0);
+        for key in [
+            "errors",
+            "pullErrors",
+            "globalBytes",
+            "localTotalItems",
+            "watchError",
+        ] {
+            let mut incomplete = next.clone();
+            incomplete.status.as_object_mut().unwrap().remove(key);
+            let incomplete = Receipt::new(incomplete, &transfer)?;
+            assert!(
+                !interval_complete(&first, &incomplete, &local)?,
+                "missing {key} became ready"
+            );
+        }
+        let mut restarted = next.clone();
+        restarted.generation = Uuid::new_v4();
+        assert!(!interval_complete(
+            &first,
+            &Receipt::new(restarted, &transfer)?,
+            &local
+        )?);
+        let mut restarted = next;
+        restarted.started = "restarted-daemon".into();
+        assert!(!interval_complete(
+            &first,
+            &Receipt::new(restarted, &transfer)?,
+            &local
+        )?);
+        Ok(())
+    }
+    #[test]
+    fn ownership_and_durable_phase_never_adopt_an_external_receiveonly_folder() -> Result<()> {
+        let (_root, mut transfer, mut folder, _observation, _local) = fixture()?;
+        transfer.witness = Some(folder.clone());
+        validate_owned(&transfer, &folder)?;
+        let mut forged = folder.clone();
+        forged["label"] = json!("external receiveonly");
+        assert!(validate_owned(&transfer, &forged).is_err());
+        folder["type"] = json!("sendreceive");
+        assert!(
+            validate_owned(&transfer, &folder).is_err(),
+            "Receiving adopted an external mode change"
+        );
+        transfer.phase = Phase::Promoting;
+        validate_owned(&transfer, &folder)?; // exact owned lost-ACK readback
+        transfer.owner = None;
+        assert!(validate_owned(&transfer, &folder).is_err());
+        let mut legacy = serde_json::to_value(&transfer)?;
+        for field in ["owner", "phase", "witness", "destination_identity"] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        let legacy: Transfer = serde_json::from_value(legacy)?;
+        assert!(legacy.legacy_hold());
+        assert!(legacy.preparing());
+        Ok(())
+    }
+    #[test]
+    fn replaced_destination_directory_fails_even_when_its_canonical_path_matches() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("vault");
+        std::fs::create_dir(&destination)?;
+        let identity = DirectoryIdentity::read(&destination)?;
+        std::fs::rename(&destination, root.path().join("previous"))?;
+        std::fs::create_dir(&destination)?;
+        assert_ne!(identity, DirectoryIdentity::read(&destination)?);
+        Ok(())
     }
 }

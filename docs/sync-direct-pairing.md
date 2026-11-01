@@ -48,6 +48,9 @@ A lifetime lock prevents two controllers from owning the same journal.
   remote share or local configuration mutation. It saves intent before external
   work, adds only the selected folder membership, preserves external device
   settings, applies reviewed ignores while paused and starts first receive.
+- `refresh()` automatically reconciles owned initial receives. `Snapshot.preparing`
+  remains true until guarded promotion finishes; Settings must continue polling
+  while it is true. No additional Enable or promotion button is required.
 - `set_configurations` accepts paths from the separately verified platform runtime
   bootstrap. An empty inventory is an explicit bootstrap-required error, not
   evidence permitting a second daemon.
@@ -96,16 +99,29 @@ runtime. External reuse has a separate explicit compatibility allowlist containi
 become a selected client. Supporting external v2.1.7 does not replace the packaged
 runtime, its provenance, installation gates or native evidence.
 
-The empty-folder path starts **receiveonly** and keeps versioning at 30 days on
-that new local folder. This is the safe first-receive phase, not accepted complete
-bidirectional Sync. It does not bypass the existing readiness/promotion or native
-data gate. Unknown nonempty directories are rejected; no speculative merge or
-lossless-preview implementation is provided. Existing source settings and global
+The empty-folder path starts **receiveonly**, keeps staggered versioning at 30
+days and retains conflict copies on that new local folder. A durable UUID label,
+exact expanded configuration witness, canonical path and directory device/inode
+bind ownership. Only that new owned folder may become **sendreceive** after the
+guarded direct-peer readiness interval. Two fresh authenticated source observations
+surround local scans; source generation/start time/configuration and counters must
+remain stable, the initial remote sequence must be received, and both sides must
+be settled with zero need, errors and receive-only local delta. Both 2.1.x peers
+use file-byte counters; the legacy hub directory-byte adjustment is not applied.
+The durable Promoting intent precedes PATCH; lost-ack recovery reads back only the
+exact owned folder. If PATCH did not happen, restart requires fresh observations.
+Legacy journals without an ownership witness never acquire promotion authority.
+The approved receiving Syncthing ID is signed during pairing, displayed for old-
+computer confirmation, and bound to subsequent share and readiness requests.
+Unknown nonempty directories are rejected; no speculative merge or lossless-
+preview implementation is provided. This does not bypass the native data gate.
+Executed Linux two-daemon evidence and exact source hashes are recorded in
+[sync-direct-bidirectional-evidence.md](sync-direct-bidirectional-evidence.md). Existing source settings and global
 network/discovery/relay/lifecycle settings are retained. Syncthing REST has no CAS;
 external administrative writers still require coordination.
 
 Current explicit missing boundaries: fresh macOS native absence inventory and
-signed-package/offline staging composition; native acceptance and safe promotion;
+signed-package/offline staging composition; native acceptance;
 automatic application listener restoration after process restart; symmetric
 catalog serving from a formerly receiving computer; later catalog authorization
 changes and peer removal. A running source controller serves additional authorized

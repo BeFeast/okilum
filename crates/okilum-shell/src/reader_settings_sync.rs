@@ -145,12 +145,7 @@ impl SyncSettings {
         .detach();
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
-        if !self
-            .snapshot
-            .as_ref()
-            .is_some_and(|s| s.offer_url.is_some() || s.pending.is_some())
-            || self.error.is_some()
-        {
+        if !self.snapshot.as_ref().is_some_and(sync_refresh_needed) || self.error.is_some() {
             return;
         }
         let epoch = self.epoch;
@@ -218,6 +213,9 @@ impl SyncSettings {
         })
         .detach();
     }
+}
+fn sync_refresh_needed(snapshot: &Snapshot) -> bool {
+    snapshot.offer_url.is_some() || snapshot.pending.is_some() || snapshot.preparing
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
     use anyhow::Context as _;

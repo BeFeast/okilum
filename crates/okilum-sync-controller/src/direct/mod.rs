@@ -52,6 +52,8 @@ pub struct Snapshot {
     pub catalog: Vec<Vault>,
     pub attached: Vec<ExistingVault>,
     pub status: String,
+    /// An owned first receive still needs guarded bidirectional promotion.
+    pub preparing: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -69,6 +71,8 @@ struct Request {
     id: Uuid,
     name: String,
     public: Vec<u8>,
+    #[serde(default)]
+    syncthing_device: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +90,8 @@ struct Paired {
     key: [u8; 32],
     endpoint: SocketAddr,
     allowed: Vec<String>,
+    #[serde(default)]
+    syncthing_device: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,6 +107,8 @@ struct Database {
     catalog: Vec<Vault>,
     #[serde(default)]
     transfers: Vec<transfer::Transfer>,
+    #[serde(default)]
+    share_grants: Vec<transfer::ShareGrant>,
 }
 struct Shared {
     state: PathBuf,
@@ -109,6 +117,8 @@ struct Shared {
     listener: Mutex<Option<Listener>>,
     stopped: AtomicBool,
     access: okilum_sync::NetworkAccess,
+    observation_generation: Uuid,
+    transfer_lock: Mutex<()>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
 }
@@ -137,6 +147,7 @@ enum Operation {
     Redeem { request: Request },
     Catalog,
     Share { vault: String, device: String },
+    Observe { vault: String, device: String },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,6 +170,8 @@ enum Reply {
     Approved { paired: Paired, catalog: Vec<Vault> },
     Catalog { catalog: Vec<Vault> },
     Shared { connection: transfer::Connection },
+    Observed { observation: transfer::Observation },
+    NotReady,
     Error { message: String },
 }
 
@@ -179,6 +192,7 @@ impl Controller {
                 attached: vec![],
                 catalog: vec![],
                 transfers: vec![],
+                share_grants: vec![],
             }
         };
         // Persist identity once, before creating an offer or exposing its public key.
@@ -191,6 +205,8 @@ impl Controller {
                 listener: Mutex::new(None),
                 stopped: AtomicBool::new(false),
                 access: okilum_sync::NetworkAccess::current(),
+                observation_generation: Uuid::new_v4(),
+                transfer_lock: Mutex::new(()),
                 _lock,
             }),
         })
@@ -351,6 +367,16 @@ impl Controller {
         validate_name(name)?;
         let offer = decode_url(url)?;
         ensure!(offer.expires > now()?, "pairing invitation expired");
+        let configs = self.configuration_paths()?;
+        let inventory = crate::daemon::discover(&configs);
+        inventory.folders()?;
+        let syncthing_device = if inventory.candidates.len() == 1 {
+            let identity = &inventory.candidates[0].identity;
+            identity.connect()?;
+            Some(identity.device_id.clone())
+        } else {
+            None
+        };
         let mut db = self.shared.db.lock().unwrap();
         ensure!(
             offer.public != wire::public(&db.seed)?,
@@ -361,6 +387,7 @@ impl Controller {
             id: Uuid::new_v4(),
             name: name.to_owned(),
             public: wire::public(&db.seed)?,
+            syncthing_device,
         };
         db.name = name.to_owned();
         db.outbound = Some((offer, request));
@@ -402,6 +429,7 @@ impl Controller {
                 _ => anyhow::bail!("unexpected pairing response"),
             }
         }
+        self.reconcile_transfers()?;
         self.refresh_attached()?;
         self.snapshot()
     }
@@ -432,6 +460,7 @@ impl Controller {
                 device_id: wire::fingerprint(&request.public),
             },
             public: request.public,
+            syncthing_device: request.syncthing_device,
             key: wire::random()?,
             endpoint: invitation.offer.endpoint,
             allowed: db.attached.iter().map(|v| v.folder_id.clone()).collect(),
@@ -585,7 +614,8 @@ impl Controller {
                     ensure!(
                         old.id == request.id
                             && old.public == request.public
-                            && old.name == request.name,
+                            && old.name == request.name
+                            && old.syncthing_device == request.syncthing_device,
                         "invitation already claimed"
                     );
                 } else {
@@ -605,6 +635,7 @@ impl Controller {
                         key: local.key,
                         endpoint: local.endpoint,
                         allowed: vec![],
+                        syncthing_device: None,
                     };
                     Ok(Reply::Approved {
                         paired: remote,
@@ -623,6 +654,10 @@ impl Controller {
             Operation::Share { vault, device } => {
                 let peer = db.peers.get(&scope).context("computer not approved")?;
                 ensure!(peer.allowed.contains(&vault), "vault not authorized");
+                ensure!(
+                    peer.syncthing_device.as_deref() == Some(device.as_str()),
+                    "Syncthing identity was not approved for this paired computer"
+                );
                 let source = db
                     .attached
                     .iter()
@@ -635,9 +670,44 @@ impl Controller {
                     existing::same_binding(&source, &fresh),
                     "authorized vault identity changed"
                 );
+                ensure!(
+                    fresh.folder_type == "sendreceive",
+                    "source folder is not bidirectional; existing mode retained"
+                );
+                if let Some(grant) = db
+                    .share_grants
+                    .iter()
+                    .find(|g| g.peer == scope && g.vault == vault)
+                {
+                    grant.validate(&fresh, &device)?;
+                } else {
+                    // Durable authorization precedes every remote membership mutation.
+                    db.share_grants
+                        .push(transfer::ShareGrant::new(scope, &fresh, &device));
+                    self.save(db)?;
+                }
                 Ok(Reply::Shared {
                     connection: transfer::share(&fresh, &device)?,
                 })
+            }
+            Operation::Observe { vault, device } => {
+                let peer = db.peers.get(&scope).context("computer not approved")?;
+                ensure!(
+                    peer.allowed.contains(&vault)
+                        && peer.syncthing_device.as_deref() == Some(device.as_str()),
+                    "readiness identity was not approved"
+                );
+                let grant = db
+                    .share_grants
+                    .iter()
+                    .find(|g| g.peer == scope && g.vault == vault)
+                    .context("readiness has no explicit share grant")?;
+                let configs = self.shared.configs.lock().unwrap().clone();
+                match grant.observe(&configs, self.shared.observation_generation) {
+                    Ok(observation) => Ok(Reply::Observed { observation }),
+                    Err(error) if transfer::offline(&error) => Ok(Reply::NotReady),
+                    Err(error) => Err(error),
+                }
             }
         }
     }
@@ -683,10 +753,17 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
         peers: db.peers.values().map(|p| p.peer.clone()).collect(),
         catalog: db.catalog.clone(),
         attached: db.attached.clone(),
+        preparing: db.transfers.iter().any(transfer::Transfer::preparing),
         status: if db.outbound.is_some() {
             "Waiting for confirmation on the other computer"
         } else if offer.is_some() {
             "Waiting for the new computer"
+        } else if db.transfers.iter().any(transfer::Transfer::legacy_hold) {
+            "Initial receive held: ownership witness unavailable"
+        } else if db.transfers.iter().any(transfer::Transfer::preparing) {
+            "Receiving vault; checking safe bidirectional readiness"
+        } else if !db.transfers.is_empty() {
+            "Bidirectional Sync active"
         } else {
             "Ready"
         }
@@ -698,7 +775,10 @@ fn pending(r: &Request, incoming: bool) -> Pending {
     Pending {
         request_id: r.id,
         name: r.name.clone(),
-        device_id: fingerprint.clone(),
+        device_id: r
+            .syncthing_device
+            .clone()
+            .unwrap_or_else(|| fingerprint.clone()),
         fingerprint,
         incoming,
     }
