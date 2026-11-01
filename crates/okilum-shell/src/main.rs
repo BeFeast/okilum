@@ -1604,6 +1604,7 @@ struct Reader {
     file_preview: Option<reader_files::FilePreview>,
     tree_preview: reader_tree_preview::Session,
     tree_sticky: Vec<reader_tree::Row>,
+    tree_earlier_roots: Vec<reader_tree::Row>,
     project: Option<Entity<project::ProjectView>>,
     project_open: bool,
     project_navigation: reader_project_navigation::State,
@@ -2096,6 +2097,7 @@ impl Reader {
             file_preview: None,
             tree_preview: Default::default(),
             tree_sticky: Vec::new(),
+            tree_earlier_roots: Vec::new(),
             project: None,
             project_open: false,
             project_navigation: Default::default(),
@@ -3392,6 +3394,7 @@ impl Reader {
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
             self.tree_sticky.clear();
+            self.tree_earlier_roots.clear();
             #[cfg(any(unix, windows))]
             if !self.single_file {
                 let folder = self
@@ -5213,6 +5216,7 @@ impl Reader {
             let observer = cx.entity().downgrade();
             let observed_root = self.vault_root.clone();
             let observed_generation = self.watcher_generation;
+            let observed_tree_rows = self.tree.rows.clone();
             let observed_scroll = self.tree_scroll.clone();
             let last_first = std::cell::Cell::new(None);
             section_views.push(
@@ -5277,11 +5281,13 @@ impl Reader {
                                 }
                                 let observer = observer.clone();
                                 let observed_root = observed_root.clone();
-                                let sticky = sticky_source.at(first);
+                                let observed_tree_rows = observed_tree_rows.clone();
+                                let (sticky, earlier_roots) = sticky_source.context(first);
                                 cx.defer(move |cx| {
                                     let _ = observer.update(cx, |this, cx| {
                                         if this.vault_root != observed_root
                                             || this.watcher_generation != observed_generation
+                                            || !Rc::ptr_eq(&this.tree.rows, &observed_tree_rows)
                                         {
                                             return;
                                         }
@@ -5290,8 +5296,14 @@ impl Reader {
                                             .iter()
                                             .map(|r| &r.path)
                                             .ne(sticky.iter().map(|r| &r.path))
+                                            || this
+                                                .tree_earlier_roots
+                                                .iter()
+                                                .map(|r| &r.path)
+                                                .ne(earlier_roots.iter().map(|r| &r.path))
                                         {
                                             this.tree_sticky = sticky;
+                                            this.tree_earlier_roots = earlier_roots;
                                             cx.notify();
                                         }
                                     });
@@ -7027,6 +7039,7 @@ impl Render for Reader {
             .set_note_titles(reader_ui_state::tree_note_titles(cx))
         {
             self.tree_sticky.clear();
+            self.tree_earlier_roots.clear();
             self.tree_revealed.clear();
         }
         self.prepare_tree_follow(cx);
