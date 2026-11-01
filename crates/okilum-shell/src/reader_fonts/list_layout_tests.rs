@@ -1,5 +1,6 @@
 //! #2239: measure actual rendered list geometry without changing note source.
 use super::*;
+use ::core::prelude::v1::test;
 use gpui::{TestAppContext, VisualTestContext};
 
 struct Document {
