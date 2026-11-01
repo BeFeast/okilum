@@ -393,10 +393,41 @@ fn live_agent_bindings_are_literal_and_ambiguous_lists_keep_the_previous_snapsho
     snapshot.threads(&first, Ok(vec![thread.clone()]), 10);
     snapshot.issues(&first, vec![], 10);
     let second = snapshot.begin().unwrap();
-    snapshot.threads(&second, Ok(vec![thread.clone(), thread]), 20);
+    let mut conflicting = thread.clone();
+    conflicting.active_run_id = Some("different-run".into());
+    snapshot.threads(&second, Ok(vec![thread, conflicting]), 20);
     assert!(snapshot.t3.error.is_some());
     assert_eq!(snapshot.t3.value.len(), 1);
     assert_eq!(snapshot.t3.last_success, Some(10));
+}
+
+#[test]
+fn repeated_offset_page_boundary_keeps_each_identical_thread_once_in_order() {
+    let thread: ThreadSummary = serde_json::from_value(serde_json::json!({
+        "threadId":"agent-a","title":"agent","status":"running",
+        "latestRunId":"run-a","activeRunId":"run-a",
+        "providerInstanceId":"codex","model":"model","runtimeMode":"full-access",
+        "updatedAt":"2026-11-01T13:42:00Z"
+    }))
+    .unwrap();
+    let mut later = thread.clone();
+    later.thread_id = "agent-b".into();
+    let mut snapshot = Snapshot::new("one-environment-project".into());
+    let first = snapshot.begin().unwrap();
+    snapshot.threads(&first, Err("previous connection error".into()), 10);
+    snapshot.issues(&first, vec![], 10);
+    let refresh = snapshot.begin().unwrap();
+    // The last item of page one reappears at the start of page two.
+    snapshot.threads(
+        &refresh,
+        Ok(vec![thread.clone(), thread.clone(), later.clone()]),
+        20,
+    );
+    assert_eq!(snapshot.t3.value, vec![thread, later]);
+    assert_eq!(snapshot.t3.last_success, Some(20));
+    assert!(snapshot.t3.error.is_none());
+    snapshot.issues(&refresh, vec![], 20);
+    assert!(!snapshot.busy());
 }
 
 #[test]

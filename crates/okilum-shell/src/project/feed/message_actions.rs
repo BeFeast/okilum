@@ -183,7 +183,9 @@ impl RenderOnce for MessageActions {
         }
         let copied = state.read(cx).copied;
         h_flex()
-            .w_full()
+            .items_center()
+            .flex_shrink_0()
+            .text_color(brand::palette(cx).text_muted)
             .when(user, |row| row.justify_end())
             .tab_group()
             .child(

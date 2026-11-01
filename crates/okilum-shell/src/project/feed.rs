@@ -455,34 +455,20 @@ impl Feed {
                 if message.kind != MessageKind::Chat {
                     return self.activity(position, message, cx);
                 }
-                v_flex()
-                    .id(SharedString::from(format!("project-message-{position}")))
-                    .debug_selector(move || format!("project-message-{position}"))
+                let colors = brand::palette(cx);
+                let heading = h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
                     .gap_2()
-                    .mb_3()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(brand::palette(cx).border_subtle)
-                    .bg(if message.user {
-                        brand::palette(cx).selected
-                    } else {
-                        brand::palette(cx).surface
-                    })
-                    .when(message.user, |row| row.ml_6())
-                    .when(!message.user, |row| row.mr_6())
                     .child(
                         div()
-                            .text_color(brand::palette(cx).text_muted)
+                            .flex_1()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text_muted)
                             .child(if message.user { "You" } else { "Manager" }),
                     )
-                    .child(self.markdown(
-                        ("project-message", position as usize),
-                        message.text.clone(),
-                        cx,
-                    ))
-                    .child(self.render_attachments(position, cx))
                     .when(self.copy_text(position).is_some(), |row| {
                         row.child(message_actions::MessageActions {
                             feed: cx.weak_entity(),
@@ -491,7 +477,34 @@ impl Feed {
                             user: message.user,
                             source_id: message.source_id.clone(),
                         })
+                    });
+                // Conversation hierarchy comes from alignment and a quiet user
+                // surface, not a bordered card around every assistant paragraph.
+                let body = v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .max_w(px(760.))
+                    .gap_1()
+                    .when(message.user, |row| {
+                        row.px_3().py_2().rounded_lg().bg(colors.selected)
                     })
+                    .when(!message.user, |row| row.px_1().py_1())
+                    .child(heading)
+                    .child(self.markdown(
+                        ("project-message", position as usize),
+                        message.text.clone(),
+                        cx,
+                    ))
+                    .child(self.render_attachments(position, cx));
+                v_flex()
+                    .id(SharedString::from(format!("project-message-{position}")))
+                    .debug_selector(move || format!("project-message-{position}"))
+                    .w_full()
+                    .min_w_0()
+                    .mb_3()
+                    .when(message.user, |row| row.pl_4().items_end())
+                    .when(!message.user, |row| row.items_start())
+                    .child(body)
                     .into_any_element()
             }
             Some(Row::WorkSummary(key)) => self.work_summary(key, cx),

@@ -43,6 +43,10 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
         cx.notify();
     });
     visual.run_until_parked();
+    assert!(visual.debug_bounds("board-source-problem").is_none());
+    let status = visual.debug_bounds("board-source-status").unwrap();
+    visual.simulate_click(status.center(), Modifiers::default());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("board-source-problem").is_some());
     assert!(visual.debug_bounds("board-expand-1733").is_some());
     assert_eq!(visual.opened_url(), None);
@@ -65,6 +69,66 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
         visual.opened_url().as_deref(),
         Some("https://git.oklabs.uk/BeFeast/okilum/issues/1859")
     );
+}
+
+#[gpui::test]
+fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let binding = Binding::parse(include_str!(
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+    ))
+    .unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| {
+            let mut board = Board::with_reader(
+                area.path().into(),
+                okilum_t3::board::read_issues,
+                window,
+                cx,
+            );
+            board.binding = Some(binding);
+            board
+        });
+        Root::new(board, window, cx)
+    });
+    let board = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Board>().unwrap()
+    });
+    visual.run_until_parked();
+    let columns = visual.debug_bounds("board-columns").unwrap();
+    let card = visual.debug_bounds("board-expand-1733").unwrap();
+    let indicator = visual.debug_bounds("board-source-status").unwrap();
+    assert!(visual.debug_bounds("board-source-problem").is_none());
+
+    for error in [
+        Some("T3 returned duplicate thread IDs; previous source retained"),
+        Some("A much longer repeated transport diagnostic that must wrap only inside its disclosure, never above the Board's cards"),
+        None,
+    ] {
+        board.update(visual, |board, cx| {
+            board.snapshot.t3.error = error.map(str::to_owned);
+            assert_eq!(board.problem(now()).is_some(), error.is_some());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("board-columns").unwrap(), columns);
+        assert_eq!(visual.debug_bounds("board-expand-1733").unwrap(), card);
+        assert_eq!(visual.debug_bounds("board-source-status").unwrap(), indicator);
+        assert!(visual.debug_bounds("board-source-problem").is_none());
+    }
+
+    board.update(visual, |board, cx| {
+        board.snapshot.t3.error = Some("Retained source diagnostic".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_click(indicator.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-source-details").is_some());
+    assert!(visual.debug_bounds("board-source-problem").is_some());
+    assert_eq!(visual.debug_bounds("board-columns").unwrap(), columns);
+    assert_eq!(visual.debug_bounds("board-expand-1733").unwrap(), card);
 }
 
 #[gpui::test]
