@@ -1,0 +1,7 @@
+2026-10-10T06:00:00.123456789Z stdout P hello 
+2026-10-10T08:00:00.123456790+02:00 stdout P world
+2026-10-10T06:00:00.123456791Z stdout F !
+2026-10-10T06:00:01Z stderr F warning
+2026-10-10T06:00:02Z stdout P unfinished
+2026-10-10T06:00:03Z stderr F independent
+2026-10-10T06:00:04Z stdout F separate
