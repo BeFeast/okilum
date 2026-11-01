@@ -34,6 +34,177 @@ pub struct Snapshot {
     pub diagnostics: Vec<String>,
 }
 
+/// All inputs that can change the meaning of an inventory. The owner advances
+/// `config_revision` even when a failed config reload retains the same paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryScope {
+    pub root: PathBuf,
+    pub project: PathBuf,
+    pub disabled: Vec<PathBuf>,
+    pub config_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Freshness {
+    NotLoaded,
+    Refreshing,
+    Fresh,
+    Incomplete,
+    Stale(String),
+    Failed(String),
+}
+
+/// Immutable worker input. Its private generation prevents a result for an old
+/// project/configuration or an invalidated scan from replacing current state.
+#[derive(Clone, Debug)]
+pub struct RefreshRequest {
+    generation: u64,
+    scope: DiscoveryScope,
+}
+
+impl RefreshRequest {
+    /// Run on the owner's background executor, never the UI thread.
+    pub fn discover(&self) -> Snapshot {
+        discover(&self.scope.root, &self.scope.project, &self.scope.disabled)
+    }
+}
+
+/// Session-only projection; no timers, watchers, writes or provider calls.
+/// Keep this instance across refreshes. Feed source/config events to `invalidate`
+/// or `configure`, and submit a new request through the owner's executor.
+pub struct Inventory {
+    scope: Option<DiscoveryScope>,
+    generation: u64,
+    pending: bool,
+    config_error: Option<String>,
+    snapshot: Option<Snapshot>,
+    freshness: Freshness,
+}
+
+impl Default for Inventory {
+    fn default() -> Self {
+        Self {
+            scope: None,
+            generation: 0,
+            pending: false,
+            config_error: None,
+            snapshot: None,
+            freshness: Freshness::NotLoaded,
+        }
+    }
+}
+
+impl Inventory {
+    pub fn scope(&self) -> Option<&DiscoveryScope> {
+        self.scope.as_ref()
+    }
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.snapshot.as_ref()
+    }
+    pub fn freshness(&self) -> &Freshness {
+        &self.freshness
+    }
+
+    /// Returns true when a scan is needed. Project/vault switches clear old rows;
+    /// config changes retain rows only as explicitly stale historical information.
+    pub fn configure(&mut self, mut scope: DiscoveryScope) -> bool {
+        scope.disabled.sort();
+        scope.disabled.dedup();
+        if self.scope.as_ref() == Some(&scope) && self.config_error.is_none() {
+            return false;
+        }
+        let same_project = self
+            .scope
+            .as_ref()
+            .is_some_and(|old| old.root == scope.root && old.project == scope.project);
+        if !same_project {
+            self.snapshot = None;
+        }
+        self.scope = Some(scope);
+        self.config_error = None;
+        self.invalidate("Project skill configuration changed");
+        true
+    }
+
+    /// A failed config reload must not rescan using the old disabled policy and
+    /// silently claim fresh availability. Reload config successfully and call
+    /// `configure` before starting another scan, even if its revision is unchanged.
+    pub fn configuration_failed(&mut self, error: impl Into<String>) {
+        let error = format!("Skill configuration could not be loaded: {}", error.into());
+        self.invalidate(error.clone());
+        self.config_error = Some(error.clone());
+        self.freshness = Freshness::Failed(error);
+    }
+
+    /// Call when leaving project scope or disabling the owning feature. Old
+    /// completions are rejected and no previous project's sources remain visible.
+    pub fn clear(&mut self) {
+        self.invalidate("No project selected");
+        self.scope = None;
+        self.snapshot = None;
+        self.config_error = None;
+        self.freshness = Freshness::NotLoaded;
+    }
+
+    /// Also call on a watcher overflow, source rename/delete,
+    /// or failed Open revalidation. Invalidates any scan already in flight.
+    pub fn invalidate(&mut self, reason: impl Into<String>) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("Skill generation exhausted");
+        self.pending = false;
+        self.freshness = match &self.config_error {
+            Some(error) => Freshness::Failed(error.clone()),
+            None => Freshness::Stale(reason.into()),
+        };
+    }
+
+    /// Explicit Refresh supersedes an earlier request, allowing recovery without
+    /// waiting for an obsolete or failed worker to finish.
+    pub fn begin_refresh(&mut self) -> Option<RefreshRequest> {
+        if self.config_error.is_some() {
+            return None;
+        }
+        let scope = self.scope.clone()?;
+        self.invalidate("Refreshing project skills");
+        self.pending = true;
+        self.freshness = Freshness::Refreshing;
+        Some(RefreshRequest {
+            generation: self.generation,
+            scope,
+        })
+    }
+
+    /// Returns false for obsolete or repeated completions. Failed refreshes retain
+    /// previous rows with a visible error; partial discovery is never called fresh.
+    pub fn finish_refresh(
+        &mut self,
+        request: &RefreshRequest,
+        result: Result<Snapshot, String>,
+    ) -> bool {
+        if !self.pending
+            || self.generation != request.generation
+            || self.scope.as_ref() != Some(&request.scope)
+        {
+            return false;
+        }
+        self.pending = false;
+        match result {
+            Ok(snapshot) => {
+                self.freshness = if snapshot.diagnostics.is_empty() {
+                    Freshness::Fresh
+                } else {
+                    Freshness::Incomplete
+                };
+                self.snapshot = Some(snapshot);
+            }
+            Err(error) => self.freshness = Freshness::Failed(error),
+        }
+        true
+    }
+}
+
 /// Only immediate children of `.agents/skills` in project ancestors are supported.
 /// Disabled paths are explicit vault-relative identities supplied by the caller;
 /// no provider configuration or user-global directories are consulted.
@@ -209,7 +380,7 @@ fn read_metadata(root: &Path, source: &Path) -> Result<(String, String), String>
     Ok((field("name")?, field("description")?))
 }
 
-/// Revalidate an explicit Open action; unavailable/outside-root sources never open.
+/// Revalidate an explicit Open action; outside-root/non-file sources never open.
 pub fn open_source(root: &Path, skill: &Skill) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     if skill.source.is_absolute()
@@ -253,6 +424,136 @@ mod tests {
         )
         .unwrap();
     }
+    fn scope(root: &Path) -> DiscoveryScope {
+        DiscoveryScope {
+            root: root.to_path_buf(),
+            project: root.to_path_buf(),
+            disabled: vec![],
+            config_revision: 1,
+        }
+    }
+    fn complete(inventory: &mut Inventory) {
+        let request = inventory.begin_refresh().unwrap();
+        let result = request.discover();
+        assert!(inventory.finish_refresh(&request, Ok(result)));
+    }
+
+    #[test]
+    fn config_refresh_changes_availability_and_rejects_old_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), ".agents/skills/review", "review");
+        let mut inventory = Inventory::default();
+        let initial = scope(temp.path());
+        assert!(inventory.configure(initial.clone()));
+        complete(&mut inventory);
+        assert_eq!(inventory.freshness(), &Freshness::Fresh);
+        assert_eq!(
+            inventory.snapshot().unwrap().skills[0].availability,
+            Availability::Available
+        );
+        let obsolete = inventory.begin_refresh().unwrap();
+        let obsolete_result = obsolete.discover();
+        let mut changed = initial.clone();
+        changed
+            .disabled
+            .push(PathBuf::from(".agents/skills/review/SKILL.md"));
+        changed.config_revision += 1;
+        assert!(inventory.configure(changed.clone()));
+        assert!(matches!(inventory.freshness(), Freshness::Stale(_)));
+        assert!(!inventory.finish_refresh(&obsolete, Ok(obsolete_result)));
+        complete(&mut inventory);
+        assert_eq!(
+            inventory.snapshot().unwrap().skills[0].availability,
+            Availability::Disabled
+        );
+        changed.disabled.extend(changed.disabled.clone());
+        assert!(!inventory.configure(changed));
+        assert!(inventory.configure(initial));
+        complete(&mut inventory);
+        assert_eq!(
+            inventory.snapshot().unwrap().skills[0].availability,
+            Availability::Available
+        );
+    }
+
+    #[test]
+    fn failed_config_cannot_publish_an_old_policy_as_fresh() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), ".agents/skills/review", "review");
+        let mut inventory = Inventory::default();
+        let scope = scope(temp.path());
+        inventory.configure(scope.clone());
+        complete(&mut inventory);
+        let old = inventory.begin_refresh().unwrap();
+        inventory.configuration_failed("Invalid disabled list");
+        assert!(
+            matches!(inventory.freshness(), Freshness::Failed(error) if error.contains("Invalid disabled list"))
+        );
+        assert!(inventory.snapshot().is_some());
+        inventory.invalidate("Another source event");
+        assert!(
+            matches!(inventory.freshness(), Freshness::Failed(error) if error.contains("Invalid disabled list"))
+        );
+        assert!(inventory.begin_refresh().is_none());
+        assert!(!inventory.finish_refresh(&old, Ok(old.discover())));
+        assert!(inventory.configure(scope));
+        complete(&mut inventory);
+        assert_eq!(inventory.freshness(), &Freshness::Fresh);
+    }
+
+    #[test]
+    fn source_events_failure_retry_and_partial_coverage_remain_visible() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), ".agents/skills/review", "review");
+        let mut inventory = Inventory::default();
+        inventory.configure(scope(temp.path()));
+        complete(&mut inventory);
+        let old = inventory.begin_refresh().unwrap();
+        inventory.invalidate("Skill source changed");
+        assert!(!inventory.finish_refresh(&old, Ok(old.discover())));
+        let failed = inventory.begin_refresh().unwrap();
+        assert!(inventory.finish_refresh(&failed, Err("Worker failed".into())));
+        assert!(matches!(inventory.freshness(), Freshness::Failed(_)));
+        assert_eq!(inventory.snapshot().unwrap().skills.len(), 1);
+        let superseded = inventory.begin_refresh().unwrap();
+        let retry = inventory.begin_refresh().unwrap();
+        assert!(!inventory.finish_refresh(&superseded, Ok(superseded.discover())));
+        let mut partial = retry.discover();
+        partial.diagnostics.push("Skill limit reached".into());
+        assert!(inventory.finish_refresh(&retry, Ok(partial)));
+        assert_eq!(inventory.freshness(), &Freshness::Incomplete);
+        assert!(!inventory.finish_refresh(&retry, Ok(Snapshot::default())));
+        fs::remove_file(temp.path().join(".agents/skills/review/SKILL.md")).unwrap();
+        inventory.invalidate("Skill removed");
+        complete(&mut inventory);
+        assert_eq!(inventory.freshness(), &Freshness::Fresh);
+        assert!(inventory.snapshot().unwrap().skills.is_empty());
+    }
+
+    #[test]
+    fn switching_projects_and_clearing_never_leaks_old_rows() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        write(first.path(), ".agents/skills/review", "review");
+        let mut inventory = Inventory::default();
+        inventory.configure(scope(first.path()));
+        complete(&mut inventory);
+        let old = inventory.begin_refresh().unwrap();
+        inventory.configure(scope(second.path()));
+        assert!(inventory.snapshot().is_none());
+        assert!(!inventory.finish_refresh(&old, Ok(old.discover())));
+        let pending = inventory.begin_refresh().unwrap();
+        inventory.clear();
+        assert!(inventory.scope().is_none());
+        assert!(inventory.snapshot().is_none());
+        assert!(inventory.begin_refresh().is_none());
+        assert!(!inventory.finish_refresh(&pending, Ok(pending.discover())));
+        inventory.configure(scope(second.path()));
+        complete(&mut inventory);
+        assert_eq!(inventory.freshness(), &Freshness::Fresh);
+        assert!(inventory.snapshot().unwrap().skills.is_empty());
+    }
+
     #[test]
     fn ancestors_duplicates_disabled_and_exact_sources() {
         let temp = tempfile::tempdir().unwrap();
