@@ -1,4 +1,5 @@
 use super::*;
+use ::core::prelude::v1::test;
 use gpui::TestAppContext;
 use okilum_core::log::stream::Assembler;
 
