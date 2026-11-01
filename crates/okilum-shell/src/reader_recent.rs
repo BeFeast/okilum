@@ -1,6 +1,8 @@
 //! A frozen MRU gesture: highlight is not navigation; Control release commits once.
 use super::*;
 
+pub(super) mod gallery;
+
 #[derive(Default)]
 pub(super) struct Switcher {
     paths: Vec<String>,
