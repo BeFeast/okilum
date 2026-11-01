@@ -122,11 +122,11 @@ impl Fields {
                 Some(TimeRange::Absolute { start, end })
             }
         };
-        let optional = |value: &str| (!value.trim().is_empty()).then(|| value.trim().to_owned());
+        let optional = |value: &str| (!value.trim().is_empty()).then(|| value.to_owned());
         let definition = Definition {
             version: 1,
-            name: self.name.trim().into(),
-            glob: self.glob.trim().into(),
+            name: self.name.clone(),
+            glob: self.glob.clone(),
             vault_root: self.vault_root,
             query: optional(&self.query),
             rotation: optional(&self.rotation),
@@ -195,6 +195,16 @@ mod tests {
             std::fs::read_to_string(vault.join("view.okilog")).unwrap(),
             source,
             "loading never rewrites canonical configuration"
+        );
+    }
+
+    #[test]
+    fn configuration_preserves_literal_glob_and_rotation_whitespace() {
+        let definition = Definition::parse(r#"{"version":1,"name":"Named view ","glob":" logs/**","rotation":" app.log","query":" level>=warn "}"#).unwrap();
+        let next = Fields::from_definition(&definition).definition().unwrap();
+        assert_eq!(
+            serde_json::to_value(next).unwrap(),
+            serde_json::to_value(definition).unwrap()
         );
     }
 }

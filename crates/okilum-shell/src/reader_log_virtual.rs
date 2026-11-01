@@ -1,5 +1,6 @@
 //! Definition-selected snapshots in the existing LogView; no second row renderer.
 use super::*;
+use gpui::size;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use okilum_core::log::virtual_log::{Candidate, Definition, Reason};
 #[path = "reader_log_virtual/model.rs"]
