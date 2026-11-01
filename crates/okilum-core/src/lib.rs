@@ -5,6 +5,11 @@
 //! exposes the same thing over a versioned protocol, so a second client never
 //! needs a private API.
 
+pub mod agent_imports;
+pub mod agent_language;
+pub mod agent_rules;
+pub mod agent_search;
+pub mod agent_skills;
 pub mod analyzer;
 pub mod archive;
 pub mod callout;

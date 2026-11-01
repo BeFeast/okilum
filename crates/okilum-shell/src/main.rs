@@ -142,6 +142,9 @@ mod input_frame_cost_tests;
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
+mod reader_agent_imports;
+mod reader_agent_language;
+mod reader_agent_search;
 mod reader_agents_context;
 mod reader_agents_offer;
 mod reader_features;
@@ -1810,6 +1813,9 @@ struct Reader {
     sidebar: reader_sidebar::State,
     sidebar_path: Option<PathBuf>,
     agents_offer: reader_agents_offer::Offer,
+    agent_document: Option<AgentDocument>,
+    agent_language: Option<reader_agent_language::Controller>,
+    _agent_language_events: Option<Task<()>>,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
     workbench: Arc<okilum_core::workbench::Index>,
@@ -2121,6 +2127,9 @@ impl Reader {
             sidebar: reader_sidebar::State::default(),
             sidebar_path: None,
             agents_offer: reader_agents_offer::Offer::default(),
+            agent_document: None,
+            agent_language: None,
+            _agent_language_events: None,
             inbox: Vec::new(),
             projects: Arc::default(),
             workbench: Arc::default(),
@@ -2163,7 +2172,10 @@ impl Reader {
         this._subs
             .push(
                 window.observe_global::<reader_features::Features>(cx, move |window, cx| {
-                    let _ = weak.update(cx, |this, cx| this.features_changed(window, cx));
+                    let _ = weak.update(cx, |this, cx| {
+                        this.features_changed(window, cx);
+                        this.sync_agent_document(cx);
+                    });
                 }),
             );
         this.side_panels = reader_side_panel::SidePanel::pair(cx);
@@ -7015,6 +7027,429 @@ impl Render for ReaderPanelDrag {
     }
 }
 
+// Shared-session publications can replace the inventory without advancing this
+// Reader's local watcher counter. Both identities must stay current.
+fn agent_publication_is_current<T>(
+    captured: &Arc<T>,
+    current: &Arc<T>,
+    captured_generation: u64,
+    current_generation: u64,
+) -> bool {
+    Arc::ptr_eq(captured, current) && captured_generation == current_generation
+}
+
+#[cfg(test)]
+mod agent_publication_tests {
+    use super::agent_publication_is_current;
+    use std::sync::Arc;
+
+    #[test]
+    fn shared_publication_replacement_retires_same_generation_results() {
+        let captured = Arc::new("same inventory contents");
+        let retained = captured.clone();
+        assert!(agent_publication_is_current(&captured, &retained, 7, 7));
+        let shared_refresh = Arc::new("same inventory contents");
+        assert!(!agent_publication_is_current(
+            &captured,
+            &shared_refresh,
+            7,
+            7
+        ));
+        assert!(!agent_publication_is_current(&captured, &retained, 7, 8));
+        assert!(agent_publication_is_current(
+            &shared_refresh,
+            &shared_refresh,
+            8,
+            8
+        ));
+    }
+}
+
+/// One displayed agent source and the exact inventory publication used by its
+/// read-only context. The unique token prevents navigate-away/back ABA results.
+struct AgentDocument {
+    root: PathBuf,
+    path: String,
+    source: Arc<str>,
+    inventory: u64,
+    inventory_source: Arc<Vault>,
+    token: Arc<()>,
+    imports: reader_agent_imports::LiveImportView,
+    notice: Option<String>,
+    language_error: Option<String>,
+    _preparation: Option<Task<()>>,
+}
+
+impl Reader {
+    /// Event-driven from normal Reader/editor notifications and reconciled vault
+    /// publications. No timer, extra watcher, remote gateway or source writes.
+    fn sync_agent_document(&mut self, cx: &mut Context<Self>) {
+        let enabled = reader_features::enabled(reader_features::Feature::Agents, cx)
+            && !self.single_file
+            && okilum_core::quick_open::is_agent_file(&self.current_rel);
+        let source = enabled
+            .then(|| {
+                self.source_text(cx)
+                    .map(Arc::<str>::from)
+                    .or_else(|| self.note_canonical_source.clone())
+            })
+            .flatten();
+        let Some(source) = source else {
+            self.agent_document = None;
+            if let Some(controller) = &mut self.agent_language {
+                controller.retire();
+            }
+            return;
+        };
+        if self.agent_document.as_ref().is_some_and(|current| {
+            current.root == self.vault_root
+                && current.path == self.current_rel
+                && current.source == source
+                && agent_publication_is_current(
+                    &current.inventory_source,
+                    &self.vault,
+                    current.inventory,
+                    self.watcher_generation,
+                )
+        }) {
+            return;
+        }
+        // Retire immediately, before loading the next policy or preparing links.
+        if let Some(controller) = &mut self.agent_language {
+            controller.retire();
+        }
+        if self.agent_language.is_none() {
+            let (send, receive) = async_channel::bounded(1);
+            match reader_agent_language::Controller::new(move || {
+                let _ = send.try_send(());
+            }) {
+                Ok(controller) => {
+                    self.agent_language = Some(controller);
+                    self._agent_language_events = Some(cx.spawn(async move |this, cx| {
+                        while receive.recv().await.is_ok() {
+                            if this
+                                .update(cx, |this, cx| {
+                                    // Captures can change before their next paint. Never apply
+                                    // completion ranges to a newer editor or policy generation.
+                                    this.sync_agent_document(cx);
+                                    if this
+                                        .agent_language
+                                        .as_mut()
+                                        .is_some_and(|c| c.apply_ready())
+                                    {
+                                        cx.notify();
+                                    }
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }));
+                }
+                Err(error) => {
+                    eprintln!("Agent language worker unavailable: {error}");
+                }
+            }
+        }
+        let root = self.vault_root.clone();
+        let path = self.current_rel.clone();
+        let expanded = self.agent_document.as_ref().is_some_and(|current| {
+            current.root == root && current.path == path && current.imports.expanded()
+        });
+        let mut imports = reader_agent_imports::LiveImportView::new(
+            root.clone(),
+            root.join(&path),
+            source.to_string(),
+            Default::default(),
+        );
+        imports.set_expanded(expanded);
+        let token = Arc::new(());
+        self.agent_document = Some(AgentDocument {
+            root: root.clone(),
+            path: path.clone(),
+            source: source.clone(),
+            inventory: self.watcher_generation,
+            inventory_source: self.vault.clone(),
+            token: token.clone(),
+            imports,
+            notice: None,
+            language_error: self
+                .agent_language
+                .is_none()
+                .then(|| "Language check unavailable: local worker could not start".into()),
+            _preparation: None,
+        });
+        self.prepare_agent_document(cx);
+    }
+
+    fn prepare_agent_document(&mut self, cx: &mut Context<Self>) {
+        let Some(current) = &mut self.agent_document else {
+            return;
+        };
+        let root = current.root.clone();
+        let path = current.path.clone();
+        let source = current.source.clone();
+        let token = current.token.clone();
+        let preparation = current.imports.preparation();
+        current.notice = None;
+        current._preparation = Some(cx.spawn(async move |this, cx| {
+            let read_root = root.clone();
+            let read_source = source.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    use okilum_core::agent_imports::Source as _;
+                    use sha2::{Digest, Sha256};
+                    let source_revision = format!("{:x}", Sha256::digest(read_source.as_bytes()));
+                    let store = okilum_core::agent_imports::RootedSource::new(&read_root);
+                    let policy: Result<Arc<str>, Arc<str>> = match &store {
+                        Ok(store) => store
+                            .canonicalize(&store.root().join(reader_agent_language::POLICY_PATH))
+                            .and_then(|path| {
+                                store.read(&path, okilum_core::agent_language::MAX_SCHEMA_BYTES)
+                            })
+                            .map(Arc::from)
+                            .map_err(|failure| Arc::from(format!("{failure:?}"))),
+                        Err(failure) => Err(Arc::from(format!("{failure:?}"))),
+                    };
+                    let policy_bytes = match &policy {
+                        Ok(text) => text.as_bytes(),
+                        Err(reason) => reason.as_bytes(),
+                    };
+                    let schema_revision = format!(
+                        "{}:{:x}",
+                        if policy.is_ok() { "ok" } else { "error" },
+                        Sha256::digest(policy_bytes)
+                    );
+                    let prepared = store
+                        .as_ref()
+                        .map(|store| preparation.run(store))
+                        .map_err(|failure| format!("{failure:?}"));
+                    (prepared, policy, source_revision, schema_revision)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.sync_agent_document(cx);
+                let Some(current) = &mut this.agent_document else {
+                    return;
+                };
+                if !Arc::ptr_eq(&current.token, &token) {
+                    return;
+                }
+                match result.0 {
+                    Ok(prepared) => {
+                        if let Err(error) = current.imports.apply_prepared(prepared) {
+                            current.notice = Some(format!("Imports unavailable: {error:?}"));
+                        }
+                    }
+                    Err(error) => current.notice = Some(format!("Imports unavailable: {error}")),
+                }
+                if let Some(controller) = &mut this.agent_language {
+                    controller.observe(reader_agent_language::Snapshot {
+                        document: format!("{:?}", root.join(&path)),
+                        path,
+                        source_revision: result.2,
+                        schema_revision: result.3,
+                        source,
+                        policy: result.1,
+                    });
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn render_agent_document(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.project_open || self.project_navigation.board_visible {
+            return None;
+        }
+        let current = self.agent_document.as_ref()?;
+        let token = current.token.clone();
+        let expanded = current.imports.expanded();
+        let mut panel = v_flex()
+            .id("agent-document-context")
+            .w_full()
+            .max_h(px(160.))
+            .overflow_y_scroll()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .px_3()
+            .py_1()
+            .gap_1()
+            .child(
+                h_flex().gap_2().child("Agent file").child(
+                    Button::new("agent-expand-imports")
+                        .ghost()
+                        .small()
+                        .label(if expanded {
+                            "Collapse imports"
+                        } else {
+                            "Expand imports"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.sync_agent_document(cx);
+                            let Some(current) = &mut this.agent_document else {
+                                return;
+                            };
+                            if !Arc::ptr_eq(&current.token, &token) {
+                                return;
+                            }
+                            current.imports.set_expanded(!expanded);
+                            this.prepare_agent_document(cx);
+                            cx.notify();
+                        })),
+                ),
+            );
+        if let Some(notice) = &current.notice {
+            panel = panel.child(notice.clone());
+        }
+        for (index, link) in current.imports.links().iter().enumerate() {
+            let label = match &link.destination {
+                Ok(path) => format!("@{} → {}", link.import.target, path.display()),
+                Err(error) => format!("@{} — {error:?}", link.import.target),
+            };
+            let token = current.token.clone();
+            let captured_link = link.clone();
+            panel = panel.child(
+                Button::new(("agent-import-open", index))
+                    .ghost()
+                    .small()
+                    .label(label)
+                    .disabled(link.destination.is_err())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.sync_agent_document(cx);
+                        let Some(current) = this.agent_document.as_ref() else {
+                            return;
+                        };
+                        if !Arc::ptr_eq(&current.token, &token)
+                            || current.imports.state() != &reader_agent_imports::ViewState::Ready
+                            || current.imports.links().get(index) != Some(&captured_link)
+                        {
+                            return;
+                        }
+                        // Navigation re-resolves the captured target on a rooted reader;
+                        // never let an external symlink replacement redirect the click.
+                        let root = current.root.clone();
+                        let token = token.clone();
+                        let link = captured_link.clone();
+                        let clicked = link.clone();
+                        cx.spawn_in(window, async move |this, cx| {
+                            let read_root = root.clone();
+                            let target = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    let store =
+                                        okilum_core::agent_imports::RootedSource::new(&read_root)?;
+                                    let resolved = okilum_core::agent_imports::resolve(
+                                        &store,
+                                        store.root(),
+                                        &link.source,
+                                        &link.import.target,
+                                    );
+                                    if resolved != link.destination {
+                                        return Err(okilum_core::agent_imports::Failure::Changed);
+                                    }
+                                    resolved
+                                })
+                                .await;
+                            let _ = this.update_in(cx, |this, window, cx| {
+                                this.sync_agent_document(cx);
+                                let Some(current) = &mut this.agent_document else {
+                                    return;
+                                };
+                                if !Arc::ptr_eq(&current.token, &token)
+                                    || current.imports.state()
+                                        != &reader_agent_imports::ViewState::Ready
+                                    || current.imports.links().get(index) != Some(&clicked)
+                                {
+                                    return;
+                                }
+                                match target {
+                                    Ok(target) => match target.strip_prefix(&root) {
+                                        Ok(relative) => {
+                                            let relative = okilum_core::vault::note_path(relative);
+                                            this.open_note_landing(
+                                                &relative, None, None, None, window, cx,
+                                            );
+                                        }
+                                        Err(_) => {
+                                            current.notice =
+                                                Some("Import is outside this vault".into())
+                                        }
+                                    },
+                                    Err(error) => {
+                                        current.notice = Some(format!(
+                                            "Import changed or unavailable: {error:?}"
+                                        ))
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    })),
+            );
+        }
+        fn expanded_source(
+            nodes: &[okilum_core::agent_imports::Expansion],
+            panel: &mut Vec<AnyElement>,
+        ) {
+            for node in nodes {
+                match &node.result {
+                    Ok(imported) => {
+                        panel.push(
+                            v_flex()
+                                .child(imported.path.display().to_string())
+                                .child(imported.text.clone())
+                                .into_any_element(),
+                        );
+                        expanded_source(&imported.children, panel);
+                    }
+                    Err(error) => panel.push(
+                        div()
+                            .child(format!("@{} — {error:?}", node.import.target))
+                            .into_any_element(),
+                    ),
+                }
+            }
+        }
+        let mut expanded_rows = Vec::new();
+        expanded_source(current.imports.tree(), &mut expanded_rows);
+        panel = panel.children(expanded_rows);
+        if let Some(error) = &current.language_error {
+            panel = panel.child(error.clone());
+        }
+        if let Some(published) = self
+            .agent_language
+            .as_ref()
+            .and_then(|controller| controller.published())
+        {
+            panel = panel.child(reader_agent_language::status_text(&published.report));
+            for (index, diagnostic) in published.report.diagnostics.iter().enumerate() {
+                let Some(text) = published.snapshot.source.get(diagnostic.range.clone()) else {
+                    continue;
+                };
+                let hover = diagnostic.replacement.clone();
+                panel = panel.child(
+                    div()
+                        .id(("agent-language-diagnostic", index))
+                        .child(format!(
+                            "Line {} · {:?} · {}",
+                            diagnostic.line, diagnostic.bucket, text
+                        ))
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(hover.clone()).build(window, cx)
+                        }),
+                );
+            }
+        } else if current.language_error.is_none() {
+            panel = panel.child("Checking language…");
+        }
+        Some(panel.into_any_element())
+    }
+}
+
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_timing =
@@ -7044,6 +7479,7 @@ impl Render for Reader {
         self.sync_tree();
         self.schedule_tree_follow(cx);
         self.sync_sidebar(cx);
+        self.sync_agent_document(cx);
         self.restore_ui_tree();
         self.restore_ui_source(window, cx);
         self.restore_workspace_mode(window, cx);
@@ -7107,7 +7543,18 @@ impl Render for Reader {
                     .when(self.restoring_source() || self.restoring_reader(), |view| {
                         view.opacity(0.)
                     })
+                    .when(
+                        self.agent_document.is_some()
+                            && !self.project_open
+                            && !self.project_navigation.board_visible,
+                        |view| view.flex_1().min_h_0(),
+                    )
                     .child(self.render_project_center(window, cx)),
+            )
+            .children(self.render_agent_document(cx))
+            .when(
+                self.project_open || self.project_navigation.active.is_some(),
+                |view| view.children(self.render_agents_rules_offer(cx)),
             )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)))
             .children(reader_text_zoom::hud(self, cx));
