@@ -816,7 +816,7 @@ impl Reader {
                 // a page title) run whatever was inserted now.
                 let pending = paste_outbox
                     .lock()
-                    .map(|mut outbox| std::mem::take(&mut *outbox))
+                    .map(|mut outbox| std::mem::take(&mut *outbox).for_event(event))
                     .unwrap_or_default();
                 this.pasted_attachments_saved(&pending.saved_files, cx);
                 let handled = pending.notice.is_some() || pending.follow_up.is_some();

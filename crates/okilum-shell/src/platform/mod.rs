@@ -6,6 +6,8 @@ pub mod exact_windows_clipboard;
 pub(crate) mod exact_x11_clipboard;
 #[cfg(target_os = "linux")]
 pub mod wayland_note_clipboard;
+#[cfg(any(windows, test))]
+pub(crate) mod windows_note_clipboard;
 
 pub mod labels;
 

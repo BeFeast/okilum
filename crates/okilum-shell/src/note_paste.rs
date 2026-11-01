@@ -70,9 +70,28 @@ pub trait NoteClipboard: Send + Sync {
 /// event handler.
 #[derive(Debug, Default)]
 pub struct Outbox {
+    /// Async acquisition commits follow-ups only after the editor accepts it.
+    pub apply_only: bool,
     pub notice: Option<Notice>,
     pub follow_up: Option<FollowUp>,
     pub saved_files: Vec<PathBuf>,
+}
+impl Outbox {
+    pub(crate) fn for_event(
+        self,
+        event: &gpui_component::input::clipboard::ClipboardPasteEvent,
+    ) -> Self {
+        if self.apply_only
+            && !matches!(
+                event,
+                gpui_component::input::clipboard::ClipboardPasteEvent::Applied { .. }
+            )
+        {
+            Self::default()
+        } else {
+            self
+        }
+    }
 }
 pub type PasteOutbox = Arc<Mutex<Outbox>>;
 
@@ -158,7 +177,7 @@ pub fn ask_above_bytes(cx: &App) -> Option<u64> {
     (mb > 0).then(|| u64::from(mb) * 1024 * 1024)
 }
 
-fn router_mode(mode: PasteMode) -> router::Mode {
+pub(crate) fn router_mode(mode: PasteMode) -> router::Mode {
     match mode {
         PasteMode::Smart => router::Mode::Smart,
         PasteMode::Plain => router::Mode::Plain,
@@ -214,6 +233,20 @@ pub fn provider_for_note(
     let text = cx
         .try_global::<crate::platform::ManagedClipboard>()
         .map(|managed| managed.0.clone());
+    // Only Markdown note editors opt into Windows CF_HTML. Other fields and
+    // plain/code files keep the exact CF_UNICODETEXT provider unchanged.
+    #[cfg(windows)]
+    if let (Some(text), Some(note)) = (text.as_ref(), note_rel.as_ref()) {
+        return Some(Arc::new(
+            crate::platform::windows_note_clipboard::WindowsNoteClipboard::new(
+                text.clone(),
+                vault_root,
+                note.clone(),
+                notice,
+                outbox,
+            ),
+        ));
+    }
     let Some(clipboard) = cx
         .try_global::<ManagedNoteClipboard>()
         .map(|managed| managed.0.clone())
