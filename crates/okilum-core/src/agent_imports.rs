@@ -79,11 +79,14 @@ pub trait Source {
 /// interpolation, shell execution, or unbounded whole-file reads are performed.
 /// Unix reads walk directory descriptors with NOFOLLOW after resolution, so a
 /// replaced symlink cannot redirect an already resolved import outside the root.
-/// Other platforms fail closed until an equivalent rooted handle reader exists.
+/// Windows reuses the local-NTFS pinned-ancestry reader and refuses reparse points,
+/// offline files, network locations and unsupported names. Other platforms fail closed.
 pub struct RootedSource {
     root: PathBuf,
     #[cfg(unix)]
     directory: std::fs::File,
+    #[cfg(windows)]
+    windows: windows_rooted::Root,
 }
 
 fn io_failure(error: std::io::Error) -> Failure {
@@ -95,13 +98,19 @@ fn io_failure(error: std::io::Error) -> Failure {
 
 impl RootedSource {
     pub fn new(root: &Path) -> Result<Self, Failure> {
+        #[cfg(unix)]
         let root = std::fs::canonicalize(root).map_err(io_failure)?;
         #[cfg(unix)]
         {
             let directory = open_directory(&root)?;
             Ok(Self { root, directory })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (root, windows) = windows_rooted::Root::new(root)?;
+            Ok(Self { root, windows })
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = root;
             Err(Failure::Unreadable)
@@ -161,21 +170,28 @@ fn open_directory(path: &Path) -> Result<std::fs::File, Failure> {
 
 impl Source for RootedSource {
     fn canonicalize(&self, path: &Path) -> Result<PathBuf, Failure> {
-        #[cfg(unix)]
-        self.validate_root()?;
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.root.join(path)
-        };
-        if !normalize(&path)?.starts_with(&self.root) {
-            return Err(Failure::OutsideRoot);
+        #[cfg(windows)]
+        {
+            return self.windows.canonicalize(&self.root, path);
         }
-        let canonical = std::fs::canonicalize(path).map_err(io_failure)?;
-        if !canonical.starts_with(&self.root) {
-            return Err(Failure::OutsideRoot);
+        #[cfg(not(windows))]
+        {
+            #[cfg(unix)]
+            self.validate_root()?;
+            let path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                self.root.join(path)
+            };
+            if !normalize(&path)?.starts_with(&self.root) {
+                return Err(Failure::OutsideRoot);
+            }
+            let canonical = std::fs::canonicalize(path).map_err(io_failure)?;
+            if !canonical.starts_with(&self.root) {
+                return Err(Failure::OutsideRoot);
+            }
+            Ok(canonical)
         }
-        Ok(canonical)
     }
 
     fn read(&self, canonical: &Path, max_bytes: usize) -> Result<String, Failure> {
@@ -244,10 +260,371 @@ impl Source for RootedSource {
             }
             Err(Failure::InvalidPath)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.windows.read(&self.root, canonical, max_bytes)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (canonical, max_bytes);
             Err(Failure::Unreadable)
+        }
+    }
+}
+
+// This read/revision policy is shared by the Windows adapter and host-side mocks.
+// Frozen public APIs deliberately keep unsupported locations as Unreadable.
+#[cfg(any(windows, test))]
+mod windows_policy {
+    use super::Failure;
+    use std::io::Read;
+    // Win32 REPARSE_POINT, OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS.
+    pub(super) const DENIED_ATTRIBUTES: u32 = 0x400 | 0x1000 | 0x40000 | 0x400000;
+    pub(super) type Identity = (u32, u32, u32);
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) struct Revision {
+        pub identity: Identity,
+        pub length: u64,
+        pub write_time: u64,
+        pub change_time: i64,
+        pub creation_time: u64,
+        pub attributes: u32,
+        pub links: u32,
+        pub regular: bool,
+    }
+    pub(super) fn validate(revision: &Revision) -> Result<(), Failure> {
+        if !revision.regular || revision.links != 1 || revision.attributes & DENIED_ATTRIBUTES != 0
+        {
+            return Err(Failure::Unreadable);
+        }
+        Ok(())
+    }
+    pub(super) fn ancestry(expected: &[Identity], actual: &[Identity]) -> Result<(), Failure> {
+        if !actual.starts_with(expected) {
+            return Err(Failure::Changed);
+        }
+        Ok(())
+    }
+    pub(super) fn read(
+        mut reader: impl Read,
+        max_bytes: usize,
+        mut revision: impl FnMut() -> Result<Revision, Failure>,
+        mut location: impl FnMut() -> Result<(), Failure>,
+    ) -> Result<String, Failure> {
+        let before = revision()?;
+        validate(&before)?;
+        location()?;
+        if before.length > max_bytes as u64 {
+            return Err(Failure::Budget);
+        }
+        let mut bytes = Vec::new();
+        reader
+            .by_ref()
+            .take((max_bytes as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(super::io_failure)?;
+        if bytes.len() > max_bytes {
+            return Err(Failure::Budget);
+        }
+        let after = revision()?;
+        validate(&after)?;
+        if before != after || after.length != bytes.len() as u64 {
+            return Err(Failure::Changed);
+        }
+        location()?;
+        String::from_utf8(bytes).map_err(|_| Failure::Unreadable)
+    }
+}
+
+#[cfg(windows)]
+mod windows_rooted {
+    use super::{
+        windows_policy::{self, Identity, Revision},
+        *,
+    };
+    use crate::windows_files::{self, Directory};
+    use std::{
+        ffi::OsString,
+        fs::{File, OpenOptions},
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        path::Prefix,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+        FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+        FILE_FLAG_OPEN_NO_RECALL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, VOLUME_NAME_DOS,
+    };
+    const _: () = assert!(
+        windows_policy::DENIED_ATTRIBUTES
+            == FILE_ATTRIBUTE_REPARSE_POINT
+                | FILE_ATTRIBUTE_OFFLINE
+                | FILE_ATTRIBUTE_RECALL_ON_OPEN
+                | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+    );
+
+    pub(super) struct Root {
+        identities: Vec<Identity>,
+    }
+
+    fn failure(error: anyhow::Error) -> Failure {
+        if let Some(error) = error.downcast_ref::<std::io::Error>() {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Failure::Missing;
+            }
+        }
+        Failure::Unreadable
+    }
+    // Only drive-qualified local names reach native primitives. UNC, device,
+    // drive-relative and rooted-without-drive paths cannot trigger network I/O.
+    fn local(path: &Path) -> Result<(u8, Vec<Component<'_>>), Failure> {
+        let mut parts = path.components();
+        let drive = match parts.next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive.to_ascii_uppercase(),
+                _ => return Err(Failure::Unreadable),
+            },
+            _ => return Err(Failure::InvalidPath),
+        };
+        if parts.next() != Some(Component::RootDir) {
+            return Err(Failure::InvalidPath);
+        }
+        Ok((drive, parts.collect()))
+    }
+    fn same_name(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+        // NTFS can enable case-sensitive directories. Refuse noncanonical root
+        // spelling instead of guessing whether case folding would name its sibling.
+        a == b
+    }
+
+    fn relative(root: &Path, path: &Path) -> Result<Vec<OsString>, Failure> {
+        let (root_drive, root_parts) = local(root)?;
+        let (drive, parts) = local(path)?;
+        if drive != root_drive || parts.len() < root_parts.len() {
+            return Err(Failure::OutsideRoot);
+        }
+        for (a, b) in root_parts.iter().zip(&parts) {
+            match (a, b) {
+                (Component::Normal(a), Component::Normal(b)) if same_name(a, b) => (),
+                _ => return Err(Failure::OutsideRoot),
+            }
+        }
+        parts[root_parts.len()..]
+            .iter()
+            .map(|part| match part {
+                Component::Normal(name) => Ok(name.to_os_string()),
+                Component::ParentDir => Ok(OsString::from("..")),
+                Component::CurDir => Ok(OsString::from(".")),
+                _ => Err(Failure::InvalidPath),
+            })
+            .collect()
+    }
+    // Reuse the approved no-DELETE-sharing ancestry pins. Inspect every directory
+    // before opening its child, refusing even cloud reparse directories here.
+    fn pin(path: &Path) -> Result<Directory, Failure> {
+        let (_, parts) = local(path)?;
+        if parts.iter().any(|p| !matches!(p, Component::Normal(_))) {
+            return Err(Failure::InvalidPath);
+        }
+        let mut current = path
+            .ancestors()
+            .last()
+            .ok_or(Failure::InvalidPath)?
+            .to_path_buf();
+        let mut directory = Directory::open(&current).map_err(failure)?;
+        check_directory(&directory)?;
+        for part in parts {
+            let Component::Normal(name) = part else {
+                unreachable!()
+            };
+            current = directory.child(name).map_err(failure)?;
+            let next = Directory::open(&current).map_err(failure)?;
+            check_directory(&next)?;
+            directory = next;
+        }
+        Ok(directory)
+    }
+    fn check_directory(directory: &Directory) -> Result<(), Failure> {
+        if directory.information().map_err(failure)?.dwFileAttributes
+            & windows_policy::DENIED_ATTRIBUTES
+            != 0
+        {
+            return Err(Failure::Unreadable);
+        }
+        Ok(())
+    }
+    fn open_import(directory: &Directory, name: &std::ffi::OsStr) -> Result<File, Failure> {
+        let path = directory.child(name).map_err(failure)?;
+        // The pinned parent/name validation is shared with Windows source editing.
+        // Add OPEN_NO_RECALL for imports: unsupported placeholders must never be
+        // hydrated by merely expanding a reference. Omit WRITE sharing during read.
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL)
+            .open(path)
+            .map_err(io_failure)
+    }
+    fn final_path(file: &File) -> Result<PathBuf, Failure> {
+        use std::os::windows::ffi::OsStringExt;
+        // A local extended-length Windows path is bounded at 32K UTF-16 units.
+        let mut buffer = vec![0u16; 32768];
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        } as usize;
+        if length == 0 || length >= buffer.len() {
+            return Err(Failure::Unreadable);
+        }
+        let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+        local(&path)?;
+        Ok(path)
+    }
+    fn revision(file: &File) -> Result<Revision, Failure> {
+        let info = windows_files::information(file).map_err(failure)?;
+        let mut basic = FILE_BASIC_INFO::default();
+        // The owned file handle remains alive and basic has the exact Win32 layout.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&mut basic as *mut FILE_BASIC_INFO).cast(),
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(Failure::Unreadable);
+        }
+        Ok(Revision {
+            identity: windows_files::identity(&info),
+            length: ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64,
+            write_time: ((info.ftLastWriteTime.dwHighDateTime as u64) << 32)
+                | info.ftLastWriteTime.dwLowDateTime as u64,
+            creation_time: ((info.ftCreationTime.dwHighDateTime as u64) << 32)
+                | info.ftCreationTime.dwLowDateTime as u64,
+            change_time: basic.ChangeTime,
+            attributes: info.dwFileAttributes,
+            links: info.nNumberOfLinks,
+            regular: file.metadata().map_err(io_failure)?.is_file(),
+        })
+    }
+    impl Root {
+        pub(super) fn new(path: &Path) -> Result<(PathBuf, Self), Failure> {
+            // Pin before canonicalization: no arbitrary path-following is allowed.
+            let directory = pin(path)?;
+            let identities = directory.identities().map_err(failure)?;
+            let canonical = std::fs::canonicalize(directory.path()).map_err(io_failure)?;
+            let canonical_directory = pin(&canonical)?;
+            if canonical_directory.identities().map_err(failure)? != identities {
+                return Err(Failure::Changed);
+            }
+            Ok((canonical, Self { identities }))
+        }
+        fn root(&self, root: &Path) -> Result<Directory, Failure> {
+            let directory = pin(root)?;
+            let identities = directory.identities().map_err(failure)?;
+            if identities != self.identities {
+                return Err(Failure::Changed);
+            }
+            Ok(directory)
+        }
+        fn descendant(&self, path: &Path) -> Result<Directory, Failure> {
+            let directory = pin(path)?;
+            windows_policy::ancestry(&self.identities, &directory.identities().map_err(failure)?)?;
+            Ok(directory)
+        }
+        pub(super) fn canonicalize(&self, root: &Path, path: &Path) -> Result<PathBuf, Failure> {
+            // A plain relative path is source/root-relative; a Windows prefix or
+            // leading separator without an absolute drive is never reinterpreted.
+            let path = if path.is_absolute() {
+                path.to_path_buf()
+            } else if path.has_root()
+                || matches!(path.components().next(), Some(Component::Prefix(_)))
+            {
+                return Err(Failure::InvalidPath);
+            } else {
+                root.join(path)
+            };
+            let parts = relative(root, &path)?;
+            let mut directories = vec![self.root(root)?];
+            for (index, name) in parts.iter().enumerate() {
+                if name == ".." {
+                    if directories.len() == 1 {
+                        return Err(Failure::OutsideRoot);
+                    }
+                    directories.pop();
+                    continue;
+                }
+                if name == "." {
+                    continue;
+                }
+                let directory = directories.last().unwrap();
+                let child = directory.child(name).map_err(failure)?;
+                match self.descendant(&child) {
+                    Ok(next) => {
+                        directories.push(next);
+                    }
+                    Err(_) if index + 1 == parts.len() => {
+                        let file = open_import(directory, name)?;
+                        let info = revision(&file)?;
+                        windows_policy::validate(&info)?;
+                        let final_path = final_path(&file)?;
+                        relative(root, &final_path)?;
+                        self.verify_directory(directory)?;
+                        return Ok(final_path);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            // Only checked, pinned directories reach this path-based operation.
+            let canonical =
+                std::fs::canonicalize(directories.last().unwrap().path()).map_err(io_failure)?;
+            relative(root, &canonical)?;
+            self.verify_directory(directories.last().unwrap())?;
+            Ok(canonical)
+        }
+        fn verify_directory(&self, directory: &Directory) -> Result<(), Failure> {
+            let current = self.descendant(directory.path())?;
+            if current.identities().map_err(failure)? != directory.identities().map_err(failure)? {
+                return Err(Failure::Changed);
+            }
+            Ok(())
+        }
+        pub(super) fn read(
+            &self,
+            root: &Path,
+            canonical: &Path,
+            max_bytes: usize,
+        ) -> Result<String, Failure> {
+            let parts = relative(root, canonical)?;
+            if parts.is_empty() || parts.iter().any(|name| name == "." || name == "..") {
+                return Err(Failure::InvalidPath);
+            }
+            let _root = self.root(root)?;
+            let parent = canonical.parent().ok_or(Failure::InvalidPath)?;
+            let directory = self.descendant(parent)?;
+            let file = open_import(&directory, parts.last().unwrap())?;
+            windows_policy::read(
+                &file,
+                max_bytes,
+                || revision(&file),
+                || {
+                    self.verify_directory(&directory)?;
+                    let current = final_path(&file)?;
+                    let actual = relative(root, &current)?;
+                    if parts.len() != actual.len()
+                        || !parts.iter().zip(actual).all(|(a, b)| same_name(a, &b))
+                    {
+                        return Err(Failure::Changed);
+                    }
+                    Ok(())
+                },
+            )
         }
     }
 }
@@ -630,6 +1007,214 @@ mod rooted_tests {
         );
         assert_eq!(
             store.read(&root.join("AGENTS.md"), 100),
+            Err(Failure::Changed)
+        );
+    }
+}
+
+#[cfg(test)]
+mod windows_policy_tests {
+    use super::{
+        windows_policy::{self, Revision},
+        Failure,
+    };
+    use std::{
+        cell::Cell,
+        io::{self, Read},
+    };
+    fn stable() -> Revision {
+        Revision {
+            identity: (1, 2, 3),
+            length: 4,
+            write_time: 10,
+            change_time: 20,
+            creation_time: 1,
+            attributes: 0x20,
+            links: 1,
+            regular: true,
+        }
+    }
+    struct Counted<'a> {
+        input: &'a [u8],
+        read: &'a Cell<usize>,
+    }
+    impl Read for Counted<'_> {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            let count = self.input.read(out)?;
+            self.read.set(self.read.get() + count);
+            Ok(count)
+        }
+    }
+    #[test]
+    fn real_read_policy_preserves_utf8_crlf_and_caps_growth_at_budget_plus_one() {
+        let bytes = Cell::new(0);
+        let checks = Cell::new(0);
+        let input = Counted {
+            input: "é\r\n".as_bytes(),
+            read: &bytes,
+        };
+        let text = windows_policy::read(
+            input,
+            4,
+            || Ok(stable()),
+            || {
+                checks.set(checks.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(text, "é\r\n");
+        assert_eq!(bytes.get(), 4);
+        assert_eq!(checks.get(), 2);
+        bytes.set(0);
+        let input = Counted {
+            input: b"1234567890",
+            read: &bytes,
+        };
+        assert_eq!(
+            windows_policy::read(input, 4, || Ok(stable()), || Ok(())),
+            Err(Failure::Budget)
+        );
+        assert_eq!(bytes.get(), 5, "growth cannot become an unbounded read");
+        bytes.set(0);
+        let input = Counted {
+            input: b"12345",
+            read: &bytes,
+        };
+        assert_eq!(
+            windows_policy::read(input, 3, || Ok(stable()), || Ok(())),
+            Err(Failure::Budget)
+        );
+        assert_eq!(
+            bytes.get(),
+            0,
+            "oversized metadata stops before source bytes"
+        );
+    }
+    #[test]
+    fn unsupported_attributes_types_links_and_outside_locations_never_read_bytes() {
+        for bit in [0x400, 0x1000, 0x40000, 0x400000] {
+            let bytes = Cell::new(0);
+            let mut state = stable();
+            state.attributes |= bit;
+            assert_eq!(
+                windows_policy::read(
+                    Counted {
+                        input: b"data",
+                        read: &bytes
+                    },
+                    4,
+                    || Ok(state.clone()),
+                    || Ok(())
+                ),
+                Err(Failure::Unreadable)
+            );
+            assert_eq!(bytes.get(), 0);
+        }
+        for (regular, links) in [(false, 1), (true, 2), (true, 0)] {
+            let mut state = stable();
+            state.regular = regular;
+            state.links = links;
+            let bytes = Cell::new(0);
+            assert_eq!(
+                windows_policy::read(
+                    Counted {
+                        input: b"data",
+                        read: &bytes
+                    },
+                    4,
+                    || Ok(state.clone()),
+                    || Ok(())
+                ),
+                Err(Failure::Unreadable)
+            );
+            assert_eq!(bytes.get(), 0);
+        }
+        let bytes = Cell::new(0);
+        assert_eq!(
+            windows_policy::read(
+                Counted {
+                    input: b"data",
+                    read: &bytes
+                },
+                4,
+                || Ok(stable()),
+                || Err(Failure::OutsideRoot)
+            ),
+            Err(Failure::OutsideRoot)
+        );
+        assert_eq!(bytes.get(), 0);
+    }
+    #[test]
+    fn identity_size_and_times_are_revision_bound_and_ancestry_cannot_change() {
+        let before = stable();
+        let mut variants = Vec::new();
+        let mut after = before.clone();
+        after.identity.2 += 1;
+        variants.push(after);
+        let mut after = before.clone();
+        after.length += 1;
+        variants.push(after);
+        let mut after = before.clone();
+        after.write_time += 1;
+        variants.push(after);
+        let mut after = before.clone();
+        after.change_time += 1;
+        variants.push(after);
+        let mut after = before.clone();
+        after.creation_time += 1;
+        variants.push(after);
+        for after in variants {
+            let mut calls = 0;
+            assert_eq!(
+                windows_policy::read(
+                    &b"data"[..],
+                    4,
+                    || {
+                        calls += 1;
+                        Ok(if calls == 1 {
+                            before.clone()
+                        } else {
+                            after.clone()
+                        })
+                    },
+                    || Ok(())
+                ),
+                Err(Failure::Changed)
+            );
+        }
+        let mut location_checks = 0;
+        assert_eq!(
+            windows_policy::read(
+                &b"data"[..],
+                4,
+                || Ok(stable()),
+                || {
+                    location_checks += 1;
+                    if location_checks == 1 {
+                        Ok(())
+                    } else {
+                        Err(Failure::Changed)
+                    }
+                }
+            ),
+            Err(Failure::Changed)
+        );
+        assert_eq!(
+            windows_policy::read(&[0xff; 4][..], 4, || Ok(stable()), || Ok(())),
+            Err(Failure::Unreadable)
+        );
+        let root = [(1, 2, 3), (1, 2, 4)];
+        assert_eq!(
+            windows_policy::ancestry(&root, &[(1, 2, 3), (1, 2, 4), (1, 2, 5)]),
+            Ok(())
+        );
+        assert_eq!(
+            windows_policy::ancestry(&root, &[(1, 2, 3), (1, 9, 9)]),
+            Err(Failure::Changed)
+        );
+        assert_eq!(
+            windows_policy::ancestry(&root, &[(1, 2, 3)]),
             Err(Failure::Changed)
         );
     }
