@@ -1442,7 +1442,7 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
     });
     visual.simulate_resize(size(px(320.), px(900.)));
     visual.run_until_parked();
-    let bounds = |selector| {
+    let mut bounds = |selector| {
         visual
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("missing visible {selector}"))
