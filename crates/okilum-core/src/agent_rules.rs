@@ -57,6 +57,92 @@ impl RuleStack {
     }
 }
 
+/// Pure single-flight refresh coordinator. Events invalidate a running read;
+/// they never publish its obsolete snapshot or start parallel discovery jobs.
+#[derive(Debug, Default)]
+pub struct Refresh {
+    target: Option<(PathBuf, PathBuf)>,
+    generation: u64,
+    running: Option<DiscoveryTicket>,
+    dirty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryTicket {
+    generation: u64,
+    pub vault: PathBuf,
+    pub project: PathBuf,
+}
+
+impl Refresh {
+    pub fn bind(&mut self, vault: PathBuf, project: PathBuf) {
+        self.target = Some((vault, project));
+        self.request();
+    }
+
+    /// A validated/coalesced filesystem write batch, explicit refresh, or rescan.
+    /// No disk access is needed to invalidate a snapshot on the UI thread.
+    pub fn request(&mut self) {
+        if self.target.is_some() {
+            self.advance();
+            self.dirty = true;
+        }
+    }
+
+    pub fn deactivate(&mut self) {
+        self.target = None;
+        self.supersede();
+    }
+
+    /// Installing an owner-provided snapshot also invalidates older worker reads.
+    pub fn supersede(&mut self) {
+        self.advance();
+        self.dirty = false;
+    }
+
+    fn advance(&mut self) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("Rules generation exhausted");
+    }
+
+    pub fn is_bound(&self) -> bool {
+        self.target.is_some()
+    }
+    pub fn is_pending(&self) -> bool {
+        self.is_bound() && (self.dirty || self.running.is_some())
+    }
+
+    pub fn begin(&mut self) -> Option<DiscoveryTicket> {
+        if self.running.is_some() || !self.dirty {
+            return None;
+        }
+        let (vault, project) = self.target.as_ref()?;
+        let ticket = DiscoveryTicket {
+            generation: self.generation,
+            vault: vault.clone(),
+            project: project.clone(),
+        };
+        self.running = Some(ticket.clone());
+        self.dirty = false;
+        Some(ticket)
+    }
+
+    /// Always drain the matching job, even when invalidated. The caller then
+    /// invokes begin() once to launch any coalesced follow-up.
+    pub fn finish(&mut self, ticket: &DiscoveryTicket) -> bool {
+        if self.running.as_ref() != Some(ticket) {
+            return false;
+        }
+        self.running = None;
+        self.generation == ticket.generation
+            && self.target.as_ref().is_some_and(|(vault, project)| {
+                vault == &ticket.vault && project == &ticket.project
+            })
+    }
+}
+
 /// Rebuild on a background executor. Only ancestors inside this explicit vault
 /// are inspected. Existing exact-name discovery is shared with search/Tree.
 pub fn discover(vault: &Path, project: &Path) -> RuleStack {
@@ -310,6 +396,96 @@ fn mark_duplicates(stack: &mut RuleStack) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refresh_coalesces_writes_and_rejects_old_project_and_disabled_results() {
+        let mut refresh = Refresh::default();
+        assert!(refresh.begin().is_none(), "unbound views do no work");
+        refresh.bind("vault".into(), "vault/A".into());
+        let initial = refresh.begin().unwrap();
+        assert!(refresh.begin().is_none());
+        for _ in 0..20 {
+            refresh.request();
+        }
+        assert!(refresh.begin().is_none(), "at most one worker");
+        assert!(
+            !refresh.finish(&initial),
+            "external writes supersede old read"
+        );
+        let latest = refresh.begin().unwrap();
+        assert!(
+            refresh.finish(&latest),
+            "positive current-generation control"
+        );
+        assert!(!refresh.is_pending());
+        assert!(refresh.begin().is_none(), "no polling or idle reads");
+        refresh.request();
+        let old_project = refresh.begin().unwrap();
+        refresh.bind("vault".into(), "vault/B".into());
+        assert!(!refresh.finish(&old_project));
+        let new_project = refresh.begin().unwrap();
+        assert_eq!(new_project.project, Path::new("vault/B"));
+        assert!(
+            !refresh.finish(&old_project),
+            "duplicate completion cannot drain a newer job"
+        );
+        refresh.deactivate();
+        assert!(!refresh.finish(&new_project));
+        assert!(!refresh.is_pending());
+        assert!(refresh.begin().is_none());
+        refresh.bind("vault".into(), "vault/B".into());
+        let resumed = refresh.begin().unwrap();
+        refresh.supersede();
+        assert!(!refresh.finish(&resumed), "explicit replacement wins");
+        assert!(refresh.begin().is_none());
+    }
+
+    #[test]
+    fn refresh_discovers_external_import_edits_creates_and_deletes() {
+        let root =
+            std::env::temp_dir().join(format!("okilum-rules-refresh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Project")).unwrap();
+        fs::write(root.join("AGENTS.md"), "@import.md\n").unwrap();
+        let mut refresh = Refresh::default();
+        refresh.bind(root.clone(), root.join("Project"));
+        let first = refresh.begin().unwrap();
+        let before = discover(&first.vault, &first.project);
+        assert!(refresh.finish(&first));
+        assert!(
+            before.layers[1].error.is_some(),
+            "missing import is visible"
+        );
+        fs::write(root.join("import.md"), "First external rule\n").unwrap();
+        refresh.request();
+        let pending = refresh.begin().unwrap();
+        let stale = discover(&pending.vault, &pending.project);
+        fs::write(root.join("import.md"), "Second external rule\n").unwrap();
+        fs::write(root.join("Project/AGENTS.md"), "New project layer\n").unwrap();
+        refresh.request();
+        assert!(!refresh.finish(&pending));
+        assert_eq!(
+            stale.layers[1].source.as_deref(),
+            Some("First external rule\n")
+        );
+        let latest = refresh.begin().unwrap();
+        let updated = discover(&latest.vault, &latest.project);
+        assert!(refresh.finish(&latest));
+        assert_eq!(
+            updated.layers[1].source.as_deref(),
+            Some("Second external rule\n")
+        );
+        assert_eq!(updated.layers[2].path, Path::new("Project/AGENTS.md"));
+        fs::remove_file(root.join("import.md")).unwrap();
+        fs::remove_file(root.join("Project/AGENTS.md")).unwrap();
+        refresh.request();
+        let deleted = refresh.begin().unwrap();
+        let after = discover(&deleted.vault, &deleted.project);
+        assert!(refresh.finish(&deleted));
+        assert_eq!(after.layers.len(), 2);
+        assert!(after.layers[1].source.is_none() && after.layers[1].error.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_escape_is_visible_and_never_read() {
