@@ -14,6 +14,7 @@ pub(super) struct Directory {
     worker: Option<Task<()>>,
     cancel: Option<CancelSubscription>,
     epoch: u64,
+    pub(super) handoff_revoked: Option<Arc<okilum_t3::stream::NativeClient>>,
     error: Option<String>,
 }
 
@@ -47,28 +48,41 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Invalidate before cancelling streams or starting async replacement
+        // work. Hiding must revoke even when the conversation key is unchanged.
+        self.draft_handoff_connection_changing();
         if !active {
             self.threads.pause();
         }
         if active {
+            self.draft_handoff_connection_ready(cx);
             self.start_thread_directory(window, cx);
         }
     }
     pub(super) fn start_thread_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.threads.enabled
             || !self.active
-            || self.threads.worker.is_some()
             || !reader_features::enabled(reader_features::Feature::Agents, cx)
         {
+            self.draft_handoff_connection_changing();
             return;
         }
         let Some((client, _)) = self.native.connection() else {
+            self.draft_handoff_connection_changing();
             return;
         };
         if !client.access_allowed() {
+            self.draft_handoff_connection_changing();
             return;
         }
+        if self.threads.worker.is_some() {
+            return;
+        }
+        // This is also the install_native completion path, after its pause and
+        // connection replacement. Never re-enable from an old stream callback.
+        self.draft_handoff_connection_ready(cx);
         let Some(binding) = &self.binding else {
+            self.draft_handoff_connection_changing();
             return;
         };
         let projects = binding
@@ -89,7 +103,19 @@ impl ProjectView {
             let mut failures = 0u32;
             loop {
                 let active = this
-                    .update(cx, |this, _| this.active && this.threads.epoch == epoch)
+                    .update(cx, |this, cx| {
+                        if this.threads.epoch != epoch {
+                            return false;
+                        }
+                        if !this.active
+                            || !client.access_allowed()
+                            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+                        {
+                            this.draft_handoff_connection_changing();
+                            return false;
+                        }
+                        true
+                    })
                     .unwrap_or(false);
                 if !active {
                     return;
@@ -106,6 +132,10 @@ impl ProjectView {
                             let accepted = this
                                 .update(cx, |this, _| {
                                     if !this.active || this.threads.epoch != epoch {
+                                        return false;
+                                    }
+                                    if !client.access_allowed() {
+                                        this.draft_handoff_connection_changing();
                                         return false;
                                     }
                                     this.threads.cancel = cancel;
@@ -131,6 +161,10 @@ impl ProjectView {
                                 .update(cx, |this, cx| {
                                     if this.threads.epoch != epoch {
                                         return false;
+                                    }
+                                    if terminal || !client.access_allowed() {
+                                        this.threads.handoff_revoked = Some(client.clone());
+                                        this.draft_handoff_connection_changing();
                                     }
                                     if this.threads.error.as_ref() != Some(&message) {
                                         this.threads.error = Some(message);
@@ -177,6 +211,10 @@ impl ProjectView {
                         if !this.active || this.threads.epoch != epoch {
                             return false;
                         }
+                        if terminal_error || !client.access_allowed() {
+                            this.threads.handoff_revoked = Some(client.clone());
+                            this.draft_handoff_connection_changing();
+                        }
                         if changed || this.threads.error != message {
                             this.threads.error = message;
                             cx.notify();
@@ -202,7 +240,11 @@ impl ProjectView {
     }
 
     pub(super) fn select_manager_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Returning to the configured Manager is a surface transition, not a
+        // request to transfer another thread's draft or retarget an old handoff.
+        self.draft_handoff_connection_changing();
         self.native_start(window, cx);
+        self.draft_handoff_connection_ready(cx);
         cx.notify();
     }
 
