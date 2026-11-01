@@ -480,7 +480,7 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
         view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
         1
     );
-    for (query, expected_count) in [("Codex model 119", 1), ("no-such-model-at-all", 0), ("", 1)] {
+    for query in ["Codex model 119", "no-such-model-at-all", ""] {
         redraw_picker(&view, visual, |view, window, cx| {
             view.model_ui
                 .search
@@ -489,10 +489,25 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
                 .update(cx, |input, cx| input.set_value(query, window, cx));
         });
         assert_surface_stable(&view, visual, expected, "search/empty-search");
-        assert_eq!(
-            view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
-            expected_count
-        );
+        view.read_with(visual, |view, cx| {
+            let choices = view.visible_model_choices(cx);
+            match query {
+                "" => assert_eq!(
+                    choices.len(),
+                    1,
+                    "clearing search returns the selected one-model account"
+                ),
+                "no-such-model-at-all" => {
+                    assert!(choices.is_empty(), "unmatched query is visibly empty")
+                }
+                _ => assert!(
+                    choices
+                        .iter()
+                        .any(|choice| choice.selection.model == "model-119"),
+                    "fuzzy search must include the actual requested last Codex model"
+                ),
+            }
+        });
         assert!(
             visual
                 .debug_bounds("project-model-settings-title")
