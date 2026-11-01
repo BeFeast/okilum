@@ -62,6 +62,8 @@ pub(crate) fn note(cx: &App) -> SharedString {
 /// Document styles shared by notes, rendered Live blocks and hover previews.
 pub(crate) fn text_style(cx: &App) -> TextViewStyle {
     let mut style = reader_text_style(cx.theme());
+    // Match the existing nested-list step, once before the outer marker (#2239).
+    style.root_list_indent = rems(1.);
     style.inline_code_font_family = Some(code(cx));
     style.code_block.text.font_family = Some(code(cx));
     style

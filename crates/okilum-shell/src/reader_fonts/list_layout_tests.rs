@@ -99,8 +99,17 @@ fn root_list_indent_moves_numbered_bulleted_nested_and_wrapped_text_as_one_unit(
         );
         if [1, 2, 5, 6].contains(&index) {
             text.read_with(visual, |text, _| {
-                let rows = (0..1000)
+                let positions = (0..1000)
                     .filter_map(|offset| text.rendered_position_for_source(*id, offset))
+                    .collect::<Vec<_>>();
+                assert!(
+                    positions
+                        .iter()
+                        .all(|point| point.x <= text.bounds().right() + px(1.)),
+                    "list text stays inside the viewport"
+                );
+                let rows = positions
+                    .into_iter()
                     .filter(|point| point.y > new.y)
                     .collect::<Vec<_>>();
                 assert!(!rows.is_empty(), "long item must actually wrap");
