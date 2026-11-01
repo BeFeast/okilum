@@ -168,7 +168,7 @@ pub struct Controller {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
     Redeem { request: Request },
-    Catalog,
+    Catalog {},
     Share { vault: String, device: String },
     Observe { vault: String, device: String },
 }
@@ -590,7 +590,7 @@ impl Controller {
             peer_id,
             &paired.key,
             &paired.public,
-            Operation::Catalog,
+            Operation::Catalog {},
         )? {
             Reply::Catalog { catalog } => {
                 let mut db = self.shared.db.lock().unwrap();
@@ -719,7 +719,7 @@ impl Controller {
                     Ok(Reply::Pending)
                 }
             }
-            Operation::Catalog => {
+            Operation::Catalog {} => {
                 let peer = db.peers.get(&scope).context("computer not approved")?;
                 Ok(Reply::Catalog {
                     catalog: catalog_for(db, &peer.allowed),
@@ -1011,6 +1011,10 @@ mod tests {
         );
         drop(db);
         source.shutdown();
+        assert!(matches!(
+            serde_json::from_value::<Operation>(serde_json::json!({"operation":"catalog"}))?,
+            Operation::Catalog {}
+        ));
         assert!(serde_json::from_value::<Operation>(
             serde_json::json!({"operation":"catalog","unexpected":true})
         )
@@ -1437,7 +1441,7 @@ mod tests {
         let message = Message {
             nonce: Uuid::new_v4(),
             target: wire::public(&seed)?,
-            operation: Operation::Catalog,
+            operation: Operation::Catalog {},
         };
         let frame = wire::seal(id, &credential, &seed, &message)?;
         let (decoded, _): (Message, _) =
