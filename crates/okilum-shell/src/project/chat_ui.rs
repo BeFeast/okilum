@@ -61,7 +61,11 @@ impl ProjectView {
             .into_any_element()
     }
 
-    pub(super) fn render_model_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_model_controls(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let controls = h_flex()
             .w_full()
             .min_w_0()
@@ -70,7 +74,7 @@ impl ProjectView {
             .gap_2();
         if let Some(target) = self.manager_model_target() {
             controls
-                .child(self.model_picker("project-manager-model", target, cx))
+                .child(self.model_picker("project-manager-model", target, window, cx))
                 .into_any_element()
         } else {
             controls.into_any_element()

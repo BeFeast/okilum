@@ -163,21 +163,31 @@ impl ProjectView {
         let mut panel = v_flex()
             .w_full()
             .min_w_0()
+            .text_size(px(13.))
+            .line_height(px(18.))
             .gap_2()
             .debug_selector(|| "project-model-options".into());
         if let Some(model) = snapshot.model_info(selection) {
             panel = panel.child(
                 div()
+                    .flex_shrink_0()
+                    .min_h(px(18.))
                     .truncate()
                     .text_size(px(12.))
+                    .line_height(px(18.))
                     .text_color(palette.text_muted)
                     .child(model.display_name().to_owned()),
             );
         }
         for (index, control) in controls.iter().enumerate() {
-            let mut section = v_flex().w_full().min_w_0().gap_1().child(
+            let mut section = v_flex().w_full().min_w_0().flex_shrink_0().gap_1().child(
                 div()
+                    .debug_selector(move || format!("project-model-option-heading-{index}"))
+                    .flex_shrink_0()
+                    .min_h(px(20.))
+                    .whitespace_normal()
                     .text_size(px(13.))
+                    .line_height(px(20.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(control.label.clone()),
             );
@@ -199,6 +209,12 @@ impl ProjectView {
                     .ghost()
                     .small()
                     .w_full()
+                    .h_auto()
+                    .min_h(px(28.))
+                    .flex_shrink_0()
+                    .py_1()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
                     .justify_start()
                     .selected(selected)
                     .toggled(selected)
@@ -209,6 +225,9 @@ impl ProjectView {
                         h_flex()
                             .w_full()
                             .min_w_0()
+                            .min_h(px(18.))
+                            .items_center()
+                            .line_height(px(18.))
                             .gap_1()
                             .child(
                                 div()
@@ -221,6 +240,7 @@ impl ProjectView {
                                 row.child(
                                     div()
                                         .text_size(px(12.))
+                                        .line_height(px(18.))
                                         .text_color(palette.text_muted)
                                         .child("Default"),
                                 )

@@ -3,11 +3,34 @@
 use super::*;
 use okilum_t3::ProviderCapability;
 
+// T3's Claude mark explicitly uses this brand foreground. The other mask
+// glyphs inherit the theme; multi-color marks use an image instead of a mask.
+const CLAUDE_BRAND: u32 = 0xD97757;
+const ANTIGRAVITY_COLOR: &str = "icons/providers/antigravity.png";
+
 pub(super) fn provider_glyph(driver: &str) -> Icon {
-    if let Some(path) = provider_asset(driver) {
+    let glyph = if let Some(path) = provider_asset(driver) {
         Icon::default().path(path)
     } else {
         Icon::new(IconName::SquareTerminal)
+    };
+    if driver == "claudeAgent" {
+        glyph.text_color(gpui::rgb(CLAUDE_BRAND))
+    } else {
+        glyph
+    }
+}
+
+pub(super) fn provider_visual(driver: &str, size: Pixels) -> AnyElement {
+    if driver == "antigravity" {
+        // img's embedded resource path retains the source RGBA channels. An
+        // Icon/Svg would use those pixels as a single-color foreground mask.
+        gpui::img(ANTIGRAVITY_COLOR)
+            .size(size)
+            .flex_shrink_0()
+            .into_any_element()
+    } else {
+        provider_glyph(driver).size(size).into_any_element()
     }
 }
 
@@ -83,42 +106,6 @@ pub(super) fn instance_badge(
         .map(|index| (index + 1).to_string())
 }
 
-pub(super) fn provider_mark(
-    provider: &ProviderCapability,
-    providers: &[ProviderCapability],
-    cx: &App,
-) -> AnyElement {
-    let mark = div()
-        .relative()
-        .size(px(24.))
-        .flex_shrink_0()
-        .child(provider_glyph(&provider.driver_kind).size(px(24.)));
-    if let Some(badge) = instance_badge(provider, providers) {
-        let palette = brand::palette(cx);
-        mark.child(
-            div()
-                .absolute()
-                .right(px(-4.))
-                .bottom(px(-4.))
-                .min_w(px(16.))
-                .h(px(16.))
-                .px(px(2.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .bg(palette.surface_raised)
-                .text_color(palette.text_muted)
-                .child(badge),
-        )
-        .into_any_element()
-    } else {
-        mark.into_any_element()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +164,56 @@ mod tests {
             );
         }
         assert!(provider_asset("an-unrecognized-driver").is_none());
+    }
+
+    #[test]
+    fn claude_uses_the_upstream_brand_color_and_antigravity_retains_original_rgba() {
+        assert_eq!(CLAUDE_BRAND, 0xD97757);
+        let claude = brand::Assets
+            .load("icons/providers/claude.svg")
+            .unwrap()
+            .unwrap();
+        assert!(std::str::from_utf8(&claude)
+            .unwrap()
+            .contains("fill=\"#D97757\""));
+        let original = brand::Assets
+            .load("icons/providers/antigravity.svg")
+            .unwrap()
+            .unwrap();
+        let original = std::str::from_utf8(&original).unwrap();
+        let encoded = original
+            .split("data:image/png;base64,")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        use base64::Engine as _;
+        let original = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let color = brand::Assets.load(ANTIGRAVITY_COLOR).unwrap().unwrap();
+        assert_eq!(
+            color.as_ref(),
+            original,
+            "full-color asset is the original upstream PNG without recoloring"
+        );
+        let rgba = image::load_from_memory(&color).unwrap().to_rgba8();
+        assert_eq!(rgba.dimensions(), (128, 128));
+        let colored = rgba
+            .pixels()
+            .filter(|pixel| {
+                pixel[3] > 0
+                    && pixel[0]
+                        .max(pixel[1])
+                        .max(pixel[2])
+                        .saturating_sub(pixel[0].min(pixel[1]).min(pixel[2]))
+                        > 32
+            })
+            .count();
+        assert!(
+            colored > 128,
+            "positive control: source contains distinct RGB channels, not a monochrome mask"
+        );
     }
 }
