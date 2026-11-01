@@ -1,11 +1,14 @@
-//! Reuse independently parsed Markdown blocks. The fast path deliberately
-//! accepts only context-free paragraphs/ATX/Setext; context-sensitive Markdown
-//! falls back to the canonical whole-document parser, never a guessed boundary.
+//! Cache dirty blocks; context-sensitive containers use canonical-parser
+//! checkpoints rather than treating blank lines as unconditional barriers.
 use okilum_core::document_links::{HeadingEntry, HeadingInventory};
+
+#[path = "incremental/context.rs"]
+mod context;
 
 #[derive(Default)]
 pub(super) struct Cache {
     blocks: Vec<Block>,
+    context: context::Context,
 }
 
 struct Block {
@@ -25,8 +28,10 @@ impl Cache {
     ) -> Vec<HeadingEntry> {
         let Some(parts) = independent_blocks(source) else {
             self.blocks.clear();
-            return parse(source);
+            return self.context.update(source, &mut parse);
         };
+        // A change of strategy cannot carry checkpoints from an older revision.
+        self.context = Default::default();
         let old = std::mem::take(&mut self.blocks);
         let prefix = parts
             .iter()
@@ -65,9 +70,8 @@ impl Cache {
     }
 }
 
-/// Blank lines are barriers only in this conservative grammar. A fence, list,
-/// quote, HTML, reference definition/use, indentation or extension delimiter
-/// invalidates the fast path for the entire snapshot, including cached blocks.
+/// Blank lines are barriers only in the context-free subset. Other syntax
+/// uses parser-certified checkpoints, or full parsing for global references.
 fn independent_blocks(source: &str) -> Option<Vec<&str>> {
     let mut blocks = Vec::new();
     let mut start = 0;
@@ -170,6 +174,33 @@ mod tests {
         let entries = cache.update_with("# Last\n", &mut parse);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].target.offset, 0);
+    }
+
+    #[test]
+    fn cache_routes_container_edits_through_incremental_canonical_checkpoints() {
+        let source = (0..100)
+            .map(|i| format!("# Section {i}\n\n- Item {i}\n\n```\n# Hidden\n```\n\n"))
+            .collect::<String>();
+        let mut cache = Cache::default();
+        let before = cache.update(&source);
+        assert_eq!(before.iter().filter(|h| h.supported_container).count(), 100);
+        let changed = source.replace("- Item 50\n", "- Item 50 Ω\n  - Nested\n");
+        let mut bytes = 0;
+        let mut entries = cache.update_with(&changed, |text| {
+            bytes += text.len();
+            HeadingInventory::new(text).entries
+        });
+        let mut expected = HeadingInventory::new(&changed).entries;
+        for inventory in [&mut entries, &mut expected] {
+            for (index, heading) in inventory.iter_mut().enumerate() {
+                heading.target.block = index;
+            }
+        }
+        assert_eq!(entries, expected);
+        assert!(
+            bytes > 0 && bytes < 256,
+            "product cache parsed {bytes} bytes"
+        );
     }
 
     #[test]
