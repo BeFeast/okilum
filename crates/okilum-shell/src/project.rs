@@ -933,7 +933,7 @@ impl ProjectView {
                 })
                 .await;
             let next = this
-                .update_in(cx, |this, _, cx| {
+                .update_in(cx, |this, window, cx| {
                     if generation != this.generation {
                         return 0;
                     }
@@ -1003,6 +1003,18 @@ impl ProjectView {
                             this.identity = None;
                             this.error = error;
                             delay = 15_000;
+                        }
+                    }
+                    // MCP fallback warms after authenticated polling, never on
+                    // combobox open. Native connections use the shared stream.
+                    if this.identity.is_some() && this.model_target.is_none() && !this.model_busy {
+                        #[cfg(target_os = "linux")]
+                        let native = this.native.active() || this.threads.enabled;
+                        #[cfg(not(target_os = "linux"))]
+                        let native = false;
+                        if !native {
+                            this.model_target = this.manager_model_target();
+                            this.model_request(None, window, cx);
                         }
                     }
                     if changed {

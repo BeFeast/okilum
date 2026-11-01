@@ -4,7 +4,7 @@ use std::time::Duration;
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 
-use super::{StreamError, StreamResult};
+use super::{transport_failure, StreamError, StreamResult};
 use crate::Environment;
 
 const READ: &str = "orchestration:read";
@@ -233,8 +233,13 @@ pub(super) fn ticket(
         .post(environment.endpoint("/api/auth/websocket-ticket"))
         .bearer_auth(&token.access_token)
         .send()
-        .map_err(|_| StreamError::Unreachable)?;
-    let ticket: Ticket = decode(response)?;
+        .map_err(|error| transport_failure("WebSocket ticket HTTP request", error.is_timeout()))?;
+    let ticket: Ticket = decode(response).inspect_err(|error| {
+        if *error == StreamError::Unreachable {
+            // decode deliberately erases the peer's body and I/O error.
+            let _ = transport_failure("WebSocket ticket HTTP body", false);
+        }
+    })?;
     if ticket.ticket.trim().is_empty() {
         return Err(StreamError::Protocol("empty WebSocket ticket"));
     }

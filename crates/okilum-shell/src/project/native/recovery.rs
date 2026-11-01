@@ -12,7 +12,7 @@ struct ErrorDetailsState {
 /// the test's next input would otherwise stop that input from being delivered.
 /// Production keeps its existing background-executor path; test I/O is bounded
 /// by the same client timeouts and cancellation sockets.
-pub(super) async fn stream_io<T: Send + 'static>(
+pub(in crate::project) async fn stream_io<T: Send + 'static>(
     executor: &gpui::BackgroundExecutor,
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> T {

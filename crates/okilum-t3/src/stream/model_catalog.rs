@@ -37,8 +37,10 @@ fn providers(value: &Value) -> StreamResult<Vec<ProviderCapability>> {
     let mut instances = BTreeSet::new();
     let mut result = Vec::new();
     for row in rows {
-        if row["enabled"] == false {
-            continue;
+        match row["enabled"].as_bool() {
+            Some(false) => continue,
+            Some(true) => {}
+            None => return Err(invalid()),
         }
         let instance = nonempty(row, "instanceId")?;
         if !instances.insert(instance.clone()) {
@@ -65,7 +67,20 @@ fn providers(value: &Value) -> StreamResult<Vec<ProviderCapability>> {
             driver_kind: nonempty(row, "driver")?,
             display_name: row["displayName"].as_str().map(str::to_owned),
             models,
-            runtime_modes: Vec::new(),
+            runtime_modes: match row.get("supportedRuntimeModes") {
+                None => Vec::new(),
+                Some(value) => value
+                    .as_array()
+                    .ok_or_else(invalid)?
+                    .iter()
+                    .map(|mode| {
+                        mode.as_str()
+                            .filter(|mode| !mode.trim().is_empty())
+                            .map(str::to_owned)
+                            .ok_or_else(invalid)
+                    })
+                    .collect::<StreamResult<Vec<_>>>()?,
+            },
         });
     }
     Ok(result)
@@ -79,7 +94,7 @@ fn snapshot(value: &Value) -> StreamResult<Snapshot> {
     }
     Ok(Snapshot {
         environment,
-        providers: providers(&value["providers"])? ,
+        providers: providers(&value["providers"])?,
     })
 }
 
@@ -89,25 +104,35 @@ fn decode(value: &Value, initialized: bool) -> StreamResult<Vec<Update>> {
         .filter(|values| !values.is_empty())
         .ok_or_else(invalid)?;
     let mut initialized = initialized;
-    values.iter().map(|value| {
-        if value["version"] != 1 {
-            return Err(StreamError::IncompatibleProtocol);
-        }
-        if value["type"] == "snapshot" {
-            let result = snapshot(&value["config"])?;
-            initialized = true;
-            return Ok(Update::Snapshot(result));
-        }
-        if !initialized {
-            return Err(invalid());
-        }
-        match value["type"].as_str() {
-            Some("providerStatuses") => Ok(Update::Providers(providers(&value["payload"]["providers"])?)),
-            Some("settingsUpdated") => Ok(Update::Refresh),
-            Some("keybindingsUpdated" | "environmentThemesUpdated" | "usageLimitSourcesUpdated") => Ok(Update::Unchanged),
-            _ => Err(StreamError::IncompatibleProtocol),
-        }
-    }).collect()
+    values
+        .iter()
+        .map(|value| {
+            if value["version"] != 1 {
+                return Err(StreamError::IncompatibleProtocol);
+            }
+            if value["type"] == "snapshot" {
+                let result = snapshot(&value["config"])?;
+                initialized = true;
+                return Ok(Update::Snapshot(result));
+            }
+            if !initialized {
+                return Err(invalid());
+            }
+            match value["type"].as_str() {
+                Some("providerStatuses") => Ok(Update::Providers(providers(
+                    &value["payload"]["providers"],
+                )?)),
+                Some("settingsUpdated") if value["payload"]["settings"].is_object() => {
+                    Ok(Update::Refresh)
+                }
+                Some("settingsUpdated") => Err(invalid()),
+                Some(
+                    "keybindingsUpdated" | "environmentThemesUpdated" | "usageLimitSourcesUpdated",
+                ) => Ok(Update::Unchanged),
+                _ => Err(StreamError::IncompatibleProtocol),
+            }
+        })
+        .collect()
 }
 
 pub struct Subscription {
@@ -125,12 +150,19 @@ impl NativeClient {
         self.token.validate(&self.environment, crate::unix_now())?;
         let (socket, cancel) = self.open_socket()?;
         let mut inner = ThreadSubscription {
-            access: self.access.clone(), socket, cancel,
-            origin: self.environment.origin(), thread_id: String::new(),
-            cursor: None, closed: false,
+            access: self.access.clone(),
+            socket,
+            cancel,
+            origin: self.environment.origin(),
+            thread_id: String::new(),
+            cursor: None,
+            closed: false,
         };
         inner.send(json!({"_tag":"Request","id":"1","tag":"subscribeServerConfig","payload":{},"headers":[]}))?;
-        Ok(Subscription { inner, initialized: false })
+        Ok(Subscription {
+            inner,
+            initialized: false,
+        })
     }
 
     /// Existing read-only RPC, used only for coalesced configuration refreshes.
@@ -147,7 +179,10 @@ impl Subscription {
         self.inner.cancellation()
     }
 
-    pub fn receive(&mut self, apply: impl FnOnce(&[Update]) -> StreamResult<()>) -> StreamResult<()> {
+    pub fn receive(
+        &mut self,
+        apply: impl FnOnce(&[Update]) -> StreamResult<()>,
+    ) -> StreamResult<()> {
         let result = (|| {
             if self.inner.closed || !self.inner.access.allowed() {
                 return Err(StreamError::Closed);
@@ -155,7 +190,9 @@ impl Subscription {
             let value = self.inner.read_chunk()?;
             let updates = decode(&value, self.initialized)?;
             apply(&updates)?;
-            self.initialized |= updates.iter().any(|update| matches!(update, Update::Snapshot(_)));
+            self.initialized |= updates
+                .iter()
+                .any(|update| matches!(update, Update::Snapshot(_)));
             self.inner.send(json!({"_tag":"Ack","requestId":"1"}))
         })();
         if result.is_err() {
@@ -165,3 +202,6 @@ impl Subscription {
         result
     }
 }
+
+#[cfg(test)]
+mod tests;

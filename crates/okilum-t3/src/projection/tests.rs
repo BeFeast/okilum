@@ -32,6 +32,50 @@ fn row_key(id: &str) -> RowKey {
 }
 
 #[test]
+fn same_model_slug_keeps_live_instance_and_option_changes_in_metadata() {
+    let mut initial = snapshot(vec![]);
+    if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {
+        projection["thread"]["modelSelection"] = json!({"instanceId":"seat-a","model":"shared","options":[{"id":"effort","value":"high"}]});
+    }
+    let mut p = Projection::new("thread", "project");
+    p.apply(&[initial]).unwrap();
+    let metadata = p.take_changes().metadata.unwrap();
+    assert_eq!(metadata.thread_id, "thread");
+    assert_eq!(metadata.model_selection.unwrap().instance_id, "seat-a");
+    for (kind, instance, effort) in [
+        ("thread.provider-switched", "seat-b", "high"),
+        ("thread.model-selection-updated", "seat-b", "max"),
+        ("thread.provider-switched", "seat-a", "high"),
+    ] {
+        // v2 domain events carry the complete AppThread, including binding IDs.
+        let payload = json!({"id":"thread","projectId":"project","modelSelection":{"instanceId":instance,"model":"shared","options":[{"id":"effort","value":effort}]}});
+        p.apply(&[update(kind, payload.clone())]).unwrap();
+        let metadata = p
+            .take_changes()
+            .metadata
+            .expect("instance/options changes emit metadata even when the model slug is unchanged");
+        assert_eq!(metadata.title, "Manager");
+        assert_eq!(metadata.model, "shared");
+        let selection = metadata.model_selection.unwrap();
+        assert_eq!(selection.instance_id, instance);
+        assert_eq!(selection.options[0].value, effort);
+        p.apply(&[update(kind, payload)]).unwrap();
+        assert!(!p.take_changes().changed(), "duplicate events are silent");
+    }
+}
+
+#[test]
+fn model_selection_events_validate_binding_before_mutating_metadata() {
+    let mut p = model(vec![]);
+    for kind in ["thread.model-selection-updated", "thread.provider-switched"] {
+        let before = p.metadata.clone();
+        assert!(p.apply(&[update(kind, json!({"id":"thread","projectId":"another-project","modelSelection":{"instanceId":"other","model":"shared","options":[]}}))]).is_err());
+        assert_eq!(p.metadata, before);
+        assert!(!p.take_changes().changed());
+    }
+}
+
+#[test]
 fn header_model_updates_do_not_erase_the_thread_title() {
     let mut initial = snapshot(vec![]);
     if let ThreadUpdate::Snapshot { projection, .. } = &mut initial {

@@ -1504,3 +1504,155 @@ fn uploaded_question_bytes_and_native_response_map_reach_only_the_named_question
     }
     fixture.finish();
 }
+
+#[test]
+fn catalog_subscription_uses_existing_config_stream_and_never_reads_thread_history() {
+    let fixture = Fixture::start(|listener| {
+        ticket(&listener);
+        let mut socket = socket(&listener);
+        let request = read(&mut socket);
+        assert_eq!(request["tag"], "subscribeServerConfig");
+        assert_eq!(request["payload"], json!({}));
+        assert_eq!(read(&mut socket), json!({"_tag":"Ping"}));
+        send(&mut socket, json!({"_tag":"Pong"}));
+        chunk(
+            &mut socket,
+            vec![json!({"version":1,"type":"snapshot","config":{
+                "environment":{"environmentId":"env-a","label":"A"},
+                "providers":[{"instanceId":"seat-a","driver":"codex","enabled":true,
+                    "models":[{"slug":"model-a","name":"A"}]}]
+            }})],
+        );
+        ack(&mut socket);
+        assert_eq!(read(&mut socket), json!({"_tag":"Ping"}));
+        send(&mut socket, json!({"_tag":"Pong"}));
+        chunk(
+            &mut socket,
+            vec![json!({"version":1,"type":"settingsUpdated","payload":{"settings":{}}})],
+        );
+        ack(&mut socket);
+    });
+    let mut stream = client(&fixture.env).subscribe_model_catalog().unwrap();
+    stream
+        .receive(|updates| {
+            let [model_catalog::Update::Snapshot(snapshot)] = updates else {
+                panic!("initial config is ready without fetching a thread snapshot");
+            };
+            assert_eq!(snapshot.environment.environment_id, "env-a");
+            assert_eq!(snapshot.providers[0].provider_instance_id, "seat-a");
+            assert_eq!(snapshot.providers[0].models[0].id, "model-a");
+            Ok(())
+        })
+        .unwrap();
+    stream
+        .receive(|updates| {
+            assert_eq!(updates, &[model_catalog::Update::Refresh]);
+            Ok(())
+        })
+        .unwrap();
+    fixture.finish();
+}
+
+#[test]
+fn catalog_rejects_malformed_batch_before_apply_or_ack_and_consumer_can_reject() {
+    for malformed in [false, true] {
+        let fixture = Fixture::start(move |listener| {
+            ticket(&listener);
+            let mut socket = socket(&listener);
+            assert_eq!(read(&mut socket)["tag"], "subscribeServerConfig");
+            assert_eq!(read(&mut socket), json!({"_tag":"Ping"}));
+            send(&mut socket, json!({"_tag":"Pong"}));
+            let mut values = vec![json!({"version":1,"type":"snapshot","config":{
+                "environment":{"environmentId":"env-a","label":"A"},"providers":[]
+            }})];
+            if malformed {
+                values.push(json!({"version":1,"type":"settingsUpdated","payload":{}}));
+            }
+            chunk(&mut socket, values);
+            assert!(
+                socket.read().is_err(),
+                "a rejected batch must close without ACK"
+            );
+        });
+        let mut stream = client(&fixture.env).subscribe_model_catalog().unwrap();
+        let mut calls = 0;
+        assert!(stream
+            .receive(|_| {
+                calls += 1;
+                Err(StreamError::Protocol("fixture refused application"))
+            })
+            .is_err());
+        assert_eq!(calls, usize::from(!malformed));
+        fixture.finish();
+    }
+}
+
+#[test]
+fn disabled_catalog_access_performs_no_http_and_valid_access_has_positive_control() {
+    let server = FakeServer::start(|_| Response::json(200, json!({"ticket":TICKET})));
+    let environment = Environment::new("fixture", &server.origin).unwrap();
+    let access = crate::NetworkAccess::new(true);
+    let native = client(&environment).with_access(access.clone());
+    assert!(native.subscribe_model_catalog().is_err());
+    assert!(
+        !server.requests().is_empty(),
+        "positive control: an enabled connection requests a ticket"
+    );
+    let before = server.requests().len();
+    access.revoke();
+    assert!(matches!(
+        native.subscribe_model_catalog(),
+        Err(StreamError::Closed)
+    ));
+    assert_eq!(native.model_catalog_snapshot(), Err(StreamError::Closed));
+    assert_eq!(server.requests().len(), before);
+}
+
+#[test]
+fn catalog_scope_is_shared_only_for_the_same_origin_and_native_session() {
+    let environment = Environment::new("first alias", "http://127.0.0.1:9").unwrap();
+    let shared_token = token(&environment);
+    let native = NativeClient::new(
+        environment.clone(),
+        shared_token.clone(),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let alias = Environment::new("another alias", "http://127.0.0.1:9").unwrap();
+    let alias_client = NativeClient::new(alias, shared_token, Duration::from_secs(2)).unwrap();
+    assert_eq!(native.catalog_scope(), alias_client.catalog_scope());
+    let mut secret: Value = serde_json::from_slice(&token(&environment).to_secret()).unwrap();
+    secret["access_token"] = "another-session-secret".into();
+    let rotated = NativeClient::new(
+        environment.clone(),
+        NativeToken::from_secret(&environment, &serde_json::to_vec(&secret).unwrap()).unwrap(),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_ne!(native.catalog_scope(), rotated.catalog_scope());
+    let other = Environment::new("first alias", "http://127.0.0.1:10").unwrap();
+    assert_ne!(native.catalog_scope(), client(&other).catalog_scope());
+}
+
+#[test]
+fn manager_response_timeout_is_transport_failure_without_an_implicit_retry() {
+    let fixture = Fixture::start(|listener| {
+        ticket(&listener);
+        let mut socket = socket(&listener);
+        assert_eq!(read(&mut socket)["tag"], "server.getConfig");
+        thread::sleep(Duration::from_millis(250));
+    });
+    let native = NativeClient::new(
+        fixture.env.clone(),
+        token(&fixture.env),
+        Duration::from_millis(80),
+    )
+    .unwrap();
+    let started = Instant::now();
+    assert_eq!(
+        native.manager_rpc("server.getConfig", json!({}), false),
+        Err(StreamError::Unreachable)
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    fixture.finish();
+}
