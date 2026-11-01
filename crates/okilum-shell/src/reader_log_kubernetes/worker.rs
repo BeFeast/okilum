@@ -53,15 +53,11 @@ impl Worker {
             });
             match prepared {
                 Ok((session, assembler)) => {
-                    run(session, assembler, &stopped, |update, terminal| {
-                        if terminal {
-                            sender.send_blocking(update).is_ok()
-                        } else {
-                            match sender.try_send(update) {
-                                Ok(()) | Err(async_channel::TrySendError::Full(_)) => true,
-                                Err(async_channel::TrySendError::Closed(_)) => false,
-                            }
-                        }
+                    run(session, assembler, &stopped, |update, _| {
+                        // Backpressure preserves the latest rows even if the UI
+                        // pauses and no more transport data arrives afterwards.
+                        // Dropping the window's receiver releases a blocked send.
+                        sender.send_blocking(update).is_ok()
                     })
                 }
                 Err(error) => {
