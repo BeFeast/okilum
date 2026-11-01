@@ -104,6 +104,64 @@ fn staging_again_is_idempotent_and_never_replaces_a_different_file() {
 }
 
 #[test]
+fn only_a_complete_matching_source_snapshot_can_be_published_or_reused() {
+    // Cross copy-buffer boundaries, including a short final chunk.
+    let complete = vec![b'a'; (1 << 17) + 31];
+    let partial = complete[..(1 << 16) + 7].to_vec();
+    let mut mismatched = complete.clone();
+    mismatched[1 << 16] = b'b';
+    for (label, content) in [
+        ("complete", &complete),
+        ("partial", &partial),
+        ("mismatched", &mismatched),
+    ] {
+        for already_exists in [false, true] {
+            let f = Fixture::new(&complete);
+            let directory = f.root.join("supervisor").join("0.1.1");
+            fs::create_dir_all(&directory).unwrap();
+            let destination = directory.join(NAME);
+            let mut source = File::open(&f.payload).unwrap();
+            let expected_digest = digest_of(&mut source).unwrap();
+            source.rewind().unwrap();
+            assert_eq!(expected_digest, digest(&complete));
+
+            // Deterministically model a package changing between verification and
+            // copying. Keep the same open file, as the public staging path does.
+            fs::write(&f.payload, content).unwrap();
+            if already_exists {
+                // Even an existing copy matching the changed stream cannot make
+                // that stream a valid image of the original source snapshot.
+                fs::write(&destination, content).unwrap();
+            }
+            let result = stage_source(&mut source, &destination, &expected_digest);
+            if label == "complete" {
+                let staged = result.unwrap(); // positive control for both paths
+                assert_eq!(staged.path, destination);
+                assert_eq!(staged.digest, expected_digest);
+                assert_eq!(fs::read(&destination).unwrap(), complete);
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("changed during staging"), "{label}: {error}");
+                assert_eq!(
+                    destination.exists(),
+                    already_exists,
+                    "{label}: an invalid source was published"
+                );
+                if already_exists {
+                    assert_eq!(fs::read(&destination).unwrap(), *content);
+                }
+            }
+            assert_eq!(fs::read(&f.payload).unwrap(), *content);
+            assert_eq!(
+                fs::read_dir(&directory).unwrap().count(),
+                usize::from(label == "complete" || already_exists),
+                "{label}: a temporary copy was left behind"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_root_must_be_private_absolute_and_outside_the_application_folder() {
     let f = Fixture::new(b"image");
     let version = "0.1.1";

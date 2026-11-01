@@ -43,8 +43,11 @@ fn soon() -> Instant {
 }
 /// A prepared private directory (protected owner-only DACL) and a store on it.
 fn prepared() -> (tempfile::TempDir, PathBuf, Store) {
+    prepared_named("managed")
+}
+fn prepared_named(name: &str) -> (tempfile::TempDir, PathBuf, Store) {
     let parent = tempfile::tempdir().unwrap();
-    let path = parent.path().join("managed");
+    let path = parent.path().join(name);
     let text = path.to_str().unwrap().to_string();
     drop(PrivateDirectory::prepare(&text).unwrap());
     let store = Store::open_existing(&text).unwrap();
@@ -76,6 +79,118 @@ fn absent_is_inert_and_a_commit_survives_reopen() {
     let reopened = Store::open_existing(path.to_str().unwrap()).unwrap();
     assert_eq!(
         reopened.begin(soon()).unwrap().state().unwrap(),
+        &Stored::Current(first)
+    );
+}
+
+#[test]
+fn unicode_and_spaces_state_path_preserves_journal_and_hint_across_reopen() {
+    use crate::sidecar::store::Hint;
+    let (_parent, path, store) = prepared_named("Sync state — заметки 世界 🦀");
+    let mut bound = binding();
+    bound.state_directory = path.to_str().unwrap().into();
+    let first = Envelope::first(bound);
+    let hint = Hint::new(Uuid::from_u128(9), 42).unwrap();
+    store.begin(soon()).unwrap().commit(first.clone()).unwrap();
+    store.publish_hint(soon(), &hint).unwrap();
+    let (second, _) = first.disable(scope()).unwrap();
+    store.dir.fault.set(true);
+    assert!(store.begin(soon()).unwrap().commit(second.clone()).is_err());
+    drop(store);
+
+    // Reopen the exact spelling, including a trailing separator. Failed replace
+    // must preserve both records and leave no temporary file at this path.
+    let reopened = Store::open_existing(&format!("{}\\", path.display())).unwrap();
+    assert_eq!(names(&path), ["endpoint.json", "sidecar.json"]);
+    assert_eq!(
+        reopened.begin(soon()).unwrap().state().unwrap(),
+        &Stored::Current(first)
+    );
+    assert_eq!(reopened.read_hint(soon()).unwrap(), Some(hint));
+    reopened
+        .begin(soon())
+        .unwrap()
+        .commit(second.clone())
+        .unwrap();
+    reopened.clear_hint(soon()).unwrap();
+    let final_store = Store::open_existing(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        final_store.begin(soon()).unwrap().state().unwrap(),
+        &Stored::Current(second)
+    );
+    assert_eq!(final_store.read_hint(soon()).unwrap(), None);
+    assert_eq!(names(&path), ["sidecar.json"]);
+}
+
+#[test]
+fn invalid_or_missing_state_paths_are_refused_without_creating_or_adopting_state() {
+    let (parent, path, store) = prepared();
+    let text = path.to_str().unwrap();
+    for invalid in [
+        format!("{text}\0ignored"),
+        format!("{text}\\..\\managed"),
+        format!("{text}\\."),
+        text.replace('\\', "/"),
+        "relative state 世界".into(),
+    ] {
+        assert!(
+            Store::open_existing(&invalid).is_err(),
+            "accepted {invalid:?}"
+        );
+    }
+    let missing = parent.path().join("missing state 世界");
+    assert!(Store::open_existing(missing.to_str().unwrap()).is_err());
+    assert!(!missing.exists(), "read-only open created missing state");
+    assert_eq!(names(parent.path()), ["managed"]);
+    assert!(names(&path).is_empty());
+    // A valid directory still works after all refused opens, including the NUL
+    // suffix whose prefix names this directory (never silently truncate it).
+    store
+        .begin(soon())
+        .unwrap()
+        .commit(Envelope::first(binding()))
+        .unwrap();
+    assert!(Store::open_existing(text).unwrap().begin(soon()).is_ok());
+}
+
+#[test]
+fn directory_in_record_slot_is_an_error_not_absence_and_is_never_replaced() {
+    use crate::sidecar::store::Hint;
+    let (_parent, path, store) = prepared();
+    let journal = path.join("sidecar.json");
+    fs::create_dir(&journal).unwrap();
+    fs::write(journal.join("preserve"), b"journal obstacle").unwrap();
+    assert!(store.begin(soon()).is_err());
+    assert_eq!(
+        fs::read(journal.join("preserve")).unwrap(),
+        b"journal obstacle"
+    );
+    fs::remove_dir_all(&journal).unwrap();
+    let first = Envelope::first(binding());
+    store.begin(soon()).unwrap().commit(first.clone()).unwrap();
+    let journal_bytes = fs::read(&journal).unwrap();
+
+    let endpoint = path.join("endpoint.json");
+    fs::create_dir(&endpoint).unwrap();
+    fs::write(endpoint.join("preserve"), b"hint obstacle").unwrap();
+    let hint = Hint::new(Uuid::from_u128(9), 42).unwrap();
+    assert!(store.read_hint(soon()).is_err());
+    assert!(store.peek_hint().is_err());
+    assert!(store.publish_hint(soon(), &hint).is_err());
+    assert!(store.clear_hint(soon()).is_err());
+    assert_eq!(
+        fs::read(endpoint.join("preserve")).unwrap(),
+        b"hint obstacle"
+    );
+    assert_eq!(fs::read(&journal).unwrap(), journal_bytes);
+    assert_eq!(names(&path), ["endpoint.json", "sidecar.json"]);
+    fs::remove_dir_all(&endpoint).unwrap();
+    // Positive controls: the same operations succeed after the obstacle is gone.
+    store.publish_hint(soon(), &hint).unwrap();
+    assert_eq!(store.read_hint(soon()).unwrap(), Some(hint));
+    store.clear_hint(soon()).unwrap();
+    assert_eq!(
+        store.begin(soon()).unwrap().state().unwrap(),
         &Stored::Current(first)
     );
 }
