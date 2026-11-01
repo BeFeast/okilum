@@ -1428,6 +1428,14 @@ impl Reader {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 reader_log_sftp::show(this.vault_root.clone(), cx)
                             })),
+                    )
+                    .child(
+                        Button::new("app-virtual-logs")
+                            .ghost()
+                            .label("Virtual logs…")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                reader_log::virtual_sources::show(this.vault_root.clone(), cx)
+                            })),
                     );
                 for (index, entry) in self
                     .vault

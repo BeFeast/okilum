@@ -28,6 +28,8 @@ use std::ops::Range;
 pub(crate) mod http;
 #[path = "reader_log_remote.rs"]
 pub(crate) mod remote;
+#[path = "reader_log_virtual.rs"]
+pub(crate) mod virtual_sources;
 
 const CONTEXT: &str = "ReaderLog";
 const ROW_HEIGHT: f32 = 24.;
@@ -539,6 +541,9 @@ pub(crate) struct LogView {
     extra: Vec<ExtraSource>,
     /// Source 0 is shown.
     primary_enabled: bool,
+    /// Definition-selected immutable sources cannot acquire unrelated files or
+    /// reopen canonical paths through the ordinary file Follow controls.
+    source_locked: bool,
     /// The time order of the shown sources, when there is more than one.
     merge: Option<Merge>,
     /// Showing one request (#1166): the query text to go back to.
@@ -751,6 +756,7 @@ impl LogView {
             _follow_open: None,
             extra: Vec::new(),
             primary_enabled: true,
+            source_locked: false,
             merge: None,
             request_back: None,
             histogram: None,
@@ -1017,6 +1023,9 @@ impl LogView {
     /// Indexes `paths` off the UI thread and adds them to the view (#1160);
     /// while following, they are followed too.
     fn add_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.source_locked {
+            return;
+        }
         let regex = automatic_regex(cx);
         cx.spawn(async move |this, cx| {
             let opened = cx
@@ -1068,6 +1077,14 @@ impl LogView {
     /// Log files dropped on the view join it (#1160); other files are
     /// named and left out.
     fn drop_files(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if self.source_locked {
+            reader_toast::transient(
+                "Change virtual source criteria and Rescan to add files",
+                window,
+                cx,
+            );
+            return;
+        }
         let (logs, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
             .paths()
             .iter()
@@ -1092,6 +1109,9 @@ impl LogView {
     }
 
     fn prompt_add_files(&mut self, cx: &mut Context<Self>) {
+        if self.source_locked {
+            return;
+        }
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -2092,6 +2112,9 @@ impl LogView {
     /// Follow on, off, or on again. Every file of the view is followed: the
     /// view's own file and the added ones, read afresh with `LogTail`.
     fn toggle_follow(&mut self, cx: &mut Context<Self>) {
+        if self.source_locked {
+            return;
+        }
         match &mut self.follow {
             Some(follow) if follow.poll.is_some() => {
                 follow.poll = None;
@@ -3546,7 +3569,7 @@ impl LogView {
             }))
             .children(history)
             .when(
-                !matches!(&self.state, State::Remote(_) | State::Stream(_)),
+                !self.source_locked && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
                 |bar| bar.child(self.regex_button(cx)),
             )
             .child(self.saved_button(cx))
@@ -3555,12 +3578,14 @@ impl LogView {
             })
             .child(self.columns_button(cx))
             .when(
-                !matches!(&self.state, State::Remote(_) | State::Stream(_)),
+                !self.source_locked && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
                 |bar| bar.child(self.files_button(cx)),
             )
             // A compressed log does not grow (#1164).
             .when(
-                !self.compressed() && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
+                !self.source_locked
+                    && !self.compressed()
+                    && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
                 |bar| bar.child(self.follow_button(cx)),
             )
             .child(
@@ -3639,6 +3664,9 @@ impl LogView {
         regex: Option<Arc<okilum_core::log::regex_text::RegexParser>>,
         cx: &mut Context<Self>,
     ) {
+        if self.source_locked {
+            return;
+        }
         let Some(data) = self.data() else {
             return;
         };
