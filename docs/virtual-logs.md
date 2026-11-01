@@ -67,7 +67,13 @@ during enumeration to close the discovery race. Backend overflow requires an
 explicit rescan and visible incomplete coverage until that succeeds.
 
 Logs → **Virtual logs…** loads a vault-scoped saved `.okilog` through Browse or
-an explicit path. The form exposes name, glob/root, optional file-level query,
+an explicit path. Opening a definition through the ordinary file route (including
+Tree and Quick Open activation) embeds the same source form and result viewer
+inside the document, preserving its filename header and navigation/history.
+Opening only loads configuration; selection/watch still requires explicit Start.
+Malformed definitions remain visible in this typed view, with their attempted
+path available for retry, rather than falling through to a generic file card.
+The form exposes name, glob/root, optional file-level query,
 rotation family and all supported time modes (all, relative seconds, absolute
 RFC3339 timestamps). Session edits are separate from the saved file; Copy
 definition returns canonical supported JSON to the clipboard.
@@ -89,8 +95,8 @@ wakes an idle watcher immediately. A currently running backend selection pass
 finishes within its existing bounds before cleanup; its result is discarded after
 Stop. No immediate interruption inside a file read is claimed.
 
-Tree/Quick Open `.okilog` routing, in-app canonical definition saving and automatic
-membership/rotation Follow remain open. Full Follow must keep existing `LogTail`
+In-app canonical definition saving and automatic membership/rotation Follow
+remain open. Full Follow must keep existing `LogTail`
 sessions, consume reset segments and avoid duplicating a moved source. #1382
 remains open for these capabilities and native acceptance; a usable desktop
 snapshot flow does not establish them.
