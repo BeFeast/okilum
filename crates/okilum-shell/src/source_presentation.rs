@@ -1221,58 +1221,70 @@ mod tests {
 
     #[test]
     fn punctuation_overlay_copy_ranges_follow_logical_bytes() {
-        let raw = "עברית \"\u{2066}Hello\u{2069}\" -- ... שלום\r\n";
-        let replacements = punctuation::replacements(raw, |_| true);
-        assert_eq!(replacements.len(), 4);
-        let overlay = MathOverlay::new(
-            raw,
-            replacements
-                .iter()
-                .map(|(range, glyph)| {
-                    (
-                        range.clone(),
-                        Arc::new(tex::Linear {
-                            text: (*glyph).into(),
-                            runs: Vec::new(),
-                        }),
-                    )
-                })
-                .collect(),
-        );
-        assert_eq!(overlay.text, "עברית “\u{2066}Hello\u{2069}” — … שלום\r\n");
-        for (range, glyph) in &replacements {
-            let shown = overlay.forward(range.start, ConcealBias::Left);
-            let end = shown + glyph.len();
-            for bias in [ConcealBias::Left, ConcealBias::Right] {
-                assert_eq!(overlay.forward(range.start, bias), shown);
-                assert_eq!(overlay.forward(range.end, bias), end);
-                assert_eq!(overlay.back(shown, bias), range.start);
-                assert_eq!(overlay.back(end, bias), range.end);
+        for (raw, expected, count) in [
+            (
+                "עברית \"\u{2066}Hello\u{2069}\" -- ... שלום\r\n",
+                "עברית “\u{2066}Hello\u{2069}” — … שלום\r\n",
+                4,
+            ),
+            (
+                "cafe\u{301}'s isn't שָׁלוֹם's...",
+                "cafe\u{301}’s isn’t שָׁלוֹם’s…",
+                4,
+            ),
+        ] {
+            let replacements = punctuation::replacements(raw, |_| true);
+            assert_eq!(replacements.len(), count);
+            let overlay = MathOverlay::new(
+                raw,
+                replacements
+                    .iter()
+                    .map(|(range, glyph)| {
+                        (
+                            range.clone(),
+                            Arc::new(tex::Linear {
+                                text: (*glyph).into(),
+                                runs: Vec::new(),
+                            }),
+                        )
+                    })
+                    .collect(),
+            );
+            assert_eq!(overlay.text, expected);
+            for (range, glyph) in &replacements {
+                let shown = overlay.forward(range.start, ConcealBias::Left);
+                let end = shown + glyph.len();
+                for bias in [ConcealBias::Left, ConcealBias::Right] {
+                    assert_eq!(overlay.forward(range.start, bias), shown);
+                    assert_eq!(overlay.forward(range.end, bias), end);
+                    assert_eq!(overlay.back(shown, bias), range.start);
+                    assert_eq!(overlay.back(end, bias), range.end);
+                }
+                for at in range.start + 1..range.end {
+                    assert_eq!(overlay.forward(at, ConcealBias::Left), shown);
+                    assert_eq!(overlay.forward(at, ConcealBias::Right), end);
+                }
+                // Native hit testing may report a byte inside the drawn UTF-8 glyph.
+                for at in shown + 1..end {
+                    assert_eq!(overlay.back(at, ConcealBias::Left), range.start);
+                    assert_eq!(overlay.back(at, ConcealBias::Right), range.end);
+                }
             }
-            for at in range.start + 1..range.end {
-                assert_eq!(overlay.forward(at, ConcealBias::Left), shown);
-                assert_eq!(overlay.forward(at, ConcealBias::Right), end);
+            // Every glyph-aligned selection copies its exact contiguous authored range.
+            for (i, (start, _)) in replacements.iter().enumerate() {
+                for (end, _) in &replacements[i..] {
+                    let left = overlay.forward(start.start, ConcealBias::Left);
+                    let right = overlay.forward(end.end, ConcealBias::Right);
+                    let from = overlay.back(left, ConcealBias::Left);
+                    let to = overlay.back(right, ConcealBias::Right);
+                    assert_eq!(&raw[from..to], &raw[start.start..end.end]);
+                }
             }
-            // Native hit testing may report a byte inside the drawn UTF-8 glyph.
-            for at in shown + 1..end {
-                assert_eq!(overlay.back(at, ConcealBias::Left), range.start);
-                assert_eq!(overlay.back(at, ConcealBias::Right), range.end);
-            }
+            assert_eq!(
+                overlay.back(overlay.text.len(), ConcealBias::Right),
+                raw.len()
+            );
         }
-        // Every glyph-aligned selection copies its exact contiguous authored range.
-        for (i, (start, _)) in replacements.iter().enumerate() {
-            for (end, _) in &replacements[i..] {
-                let left = overlay.forward(start.start, ConcealBias::Left);
-                let right = overlay.forward(end.end, ConcealBias::Right);
-                let from = overlay.back(left, ConcealBias::Left);
-                let to = overlay.back(right, ConcealBias::Right);
-                assert_eq!(&raw[from..to], &raw[start.start..end.end]);
-            }
-        }
-        assert_eq!(
-            overlay.back(overlay.text.len(), ConcealBias::Right),
-            raw.len()
-        );
     }
 
     #[test]

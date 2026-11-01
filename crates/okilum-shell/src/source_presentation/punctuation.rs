@@ -1,6 +1,7 @@
 //! Render-only punctuation candidates in a classifier-approved prose block.
 //! Coordinates always refer to authored UTF-8; this module never edits source.
 use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) fn replacements(
     source: &str,
@@ -64,17 +65,23 @@ fn scan(
                 // boundaries. Keep every authored byte and pair in logical
                 // source order, including isolates around embedded LTR text.
                 let before = source[paragraph.start..at]
-                    .chars()
+                    .graphemes(true)
                     .rev()
-                    .find(|c| !direction_control(*c));
+                    .find(|cluster| !cluster.chars().all(direction_control))
+                    .and_then(|cluster| cluster.chars().next());
                 let after = source[at + len..paragraph.end]
                     .chars()
                     .find(|c| !direction_control(*c));
-                if ch == '\''
-                    && before.is_some_and(char::is_alphanumeric)
-                    && after.is_some_and(char::is_alphanumeric)
-                {
-                    out.push((range, "’"));
+                let contraction = (ch == '\'')
+                    .then(|| contraction_context(source, &paragraph, &range))
+                    .flatten();
+                if let Some(context) = contraction {
+                    // Context must belong to the same approved prose span.
+                    // The replacement itself covers only the ASCII apostrophe,
+                    // never a neighbouring letter, mark or bidi control.
+                    if eligible(&context) {
+                        out.push((range, "’"));
+                    }
                 } else {
                     let pending = if ch == '"' { &mut double } else { &mut single };
                     if before.is_none_or(|c| !c.is_alphanumeric() && c != '"' && c != '\'')
@@ -99,6 +106,35 @@ fn scan(
         }
         at += len;
     }
+}
+
+/// The adjacent logical word clusters, including intervening bidi controls.
+/// Grapheme context handles decomposed accents and RTL vowel marks without
+/// widening the replacement range or borrowing text from another paragraph.
+fn contraction_context(
+    source: &str,
+    paragraph: &Range<usize>,
+    apostrophe: &Range<usize>,
+) -> Option<Range<usize>> {
+    // A mark attached to the apostrophe is not a word cluster after it.
+    if source[apostrophe.start..paragraph.end]
+        .graphemes(true)
+        .next()?
+        != "'"
+    {
+        return None;
+    }
+    let (left, before) = source[paragraph.start..apostrophe.start]
+        .grapheme_indices(true)
+        .rev()
+        .find(|(_, cluster)| !cluster.chars().all(direction_control))?;
+    let (right, after) = source[apostrophe.end..paragraph.end]
+        .grapheme_indices(true)
+        .find(|(_, cluster)| !cluster.chars().all(direction_control))?;
+    if !before.chars().next()?.is_alphanumeric() || !after.chars().next()?.is_alphanumeric() {
+        return None;
+    }
+    Some(paragraph.start + left..apostrophe.end + right + after.len())
 }
 
 // Unicode Bidi_Control characters only: ZWJ/ZWNJ and combining marks
@@ -163,6 +199,49 @@ mod tests {
             shown(raw, |_| true),
             "\u{2067}“שלום\u{200f}”\u{2069} and “Hello”"
         );
+    }
+
+    #[test]
+    fn contractions_use_word_clusters_but_replace_only_the_ascii_apostrophe() {
+        for raw in [
+            "isn't",
+            "cafe\u{301}'s",
+            "שָׁלוֹם's",
+            "α\u{301}'s",
+            "can\u{200f}'\u{200e}t",
+        ] {
+            let at = raw.find('\'').unwrap();
+            let candidates = replacements(raw, |_| true);
+            assert_eq!(candidates, vec![(at..at + 1, "’")], "{raw:?}");
+            assert_eq!(shown(raw, |_| true), raw.replacen('\'', "’", 1));
+        }
+        assert_eq!(
+            shown("'cafe\u{301}' isn't", |_| true),
+            "‘cafe\u{301}’ isn’t"
+        );
+    }
+
+    #[test]
+    fn contraction_context_cannot_cross_excluded_source_or_paragraph_boundaries() {
+        let raw = "can\u{200f}'\u{200e}t";
+        let apostrophe = raw.find('\'').unwrap();
+        // Even if the punctuation is eligible, an excluded neighbour/control
+        // must not supply the evidence that it is an in-word apostrophe.
+        for excluded in [
+            0..3,
+            3..apostrophe,
+            apostrophe..apostrophe + 1,
+            apostrophe + 1..raw.len() - 1,
+            raw.len() - 1..raw.len(),
+        ] {
+            assert_eq!(
+                shown(raw, |r| !(r.start < excluded.end && excluded.start < r.end)),
+                raw
+            );
+        }
+        assert_eq!(shown("can'\r\n\r\n't", |_| true), "can'\r\n\r\n't");
+        assert_eq!(shown("can\\'t", |_| true), "can\\'t");
+        assert_eq!(shown("a'\u{301}b", |_| true), "a'\u{301}b");
     }
 
     #[test]
