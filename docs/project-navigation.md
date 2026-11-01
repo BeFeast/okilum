@@ -176,3 +176,16 @@ letter tile; a deliberately configured monogram remains unchanged. Local logo
 discovery includes `.okilum/icon` (with supported image extensions), public favicons
 and a Tauri app icon, with the existing regular-file and size bounds. It makes no
 additional network request.
+
+
+## Independent Tree and Project presentation (#2279)
+
+Tree and Project keep separate panel visibility and preferred widths per vault.
+Switching to Project preserves the Tree snapshot and restores the last Project
+presentation; returning restores Tree without copying the wider Manager panel
+back into it. The two preferences survive restart, including when the last active
+view was Project. Existing profiles retain their Tree panels/widths; the first
+Project entry uses the prior default (no left tree, Manager open at least 560 px)
+until the user chooses a different Project presentation. This uses the two existing
+view modes, without named layouts or per-project layout profiles. Explicit Files
+still opens Tree, and maximize/viewport clamps do not replace preferred widths.

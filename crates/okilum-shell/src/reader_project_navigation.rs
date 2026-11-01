@@ -322,6 +322,8 @@ pub(super) struct State {
     pub boards: std::collections::BTreeMap<PathBuf, Entity<project::board::Board>>,
     pub board_visible: bool,
     pub(super) saved: Option<Saved>,
+    /// Shared Project presentation for this vault, persisted independently of Tree.
+    pub(super) layout: Option<reader_layout::ViewLayout>,
     pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
     /// The shared #1520 picker is the Projects section surface.
     pub picker: Option<Entity<ProjectsPicker>>,
@@ -1106,6 +1108,12 @@ impl Reader {
             return;
         };
         let relative = okilum_core::vault::note_path(relative);
+        if self.project_navigation.active.is_some() {
+            self.project_navigation.layout = Some(reader_layout::ViewLayout::capture(
+                &self.panels,
+                &self.panel_widths,
+            ));
+        }
         if self.project_navigation.saved.is_none() {
             self.project_navigation.saved = Some(Saved {
                 tree: self.tree.clone(),
@@ -1130,11 +1138,17 @@ impl Reader {
             self.navigation.preparation_generation.wrapping_add(1);
         self.tree.scope_to(relative.as_str());
         self.tree_revealed = self.selected_file().to_owned();
-        self.panel_widths.backlinks = self.panel_widths.backlinks.max(560.);
+        if let Some(layout) = &self.project_navigation.layout {
+            (self.panels, self.panel_widths) = layout.restore();
+        } else {
+            // Preserve the existing first-entry default when migrating profiles.
+            self.panel_widths.backlinks = self.panel_widths.backlinks.max(560.);
+            self.panels.close(reader_layout::Panel::Notes);
+            self.panels.open(reader_layout::Panel::Backlinks);
+        }
+        self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
         self.tree_sticky.clear();
         self.tree_earlier_roots.clear();
-        self.panels.close(reader_layout::Panel::Notes);
-        self.panels.open(reader_layout::Panel::Backlinks);
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));
         }
@@ -1162,6 +1176,12 @@ impl Reader {
 
     pub(super) fn leave_vault_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_workspace_restore();
+        if self.project_navigation.active.is_some() {
+            self.project_navigation.layout = Some(reader_layout::ViewLayout::capture(
+                &self.panels,
+                &self.panel_widths,
+            ));
+        }
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));
@@ -1179,6 +1199,7 @@ impl Reader {
             self.tree_revealed = self.selected_file().to_owned();
             self.panels = saved.panels;
             self.panel_widths = saved.widths;
+            self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
             self.tree_sticky.clear();
             self.tree_earlier_roots.clear();
             self.tree_scroll
