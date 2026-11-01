@@ -159,7 +159,12 @@ impl LogIndex {
         let start = self.bytes as usize;
         let format = self.format;
         let span = &data[start..end];
-        let threads = threads.clamp(1, (span.len() / MIN_CHUNK_BYTES).max(1));
+        // CRI fragments must not be split across workers.
+        let threads = if format == Format::Cri {
+            1
+        } else {
+            threads.clamp(1, (span.len() / MIN_CHUNK_BYTES).max(1))
+        };
         let mut bounds = chunk_bounds(span, threads);
         let regex = self.regex.as_deref();
         if !matches!(format, Format::Plain | Format::Regex) {
@@ -335,6 +340,7 @@ fn index_chunk(
     // every following line up to the next record.
     let mut open: Option<bool> = None;
     let grouping = !matches!(format, Format::Plain | Format::Regex);
+    let mut cri_partial = None;
     while pos < end {
         let line_end = memchr::memchr(b'\n', &data[pos..end]).map_or(end, |at| pos + at);
         let mut text_end = line_end;
@@ -347,11 +353,21 @@ fn index_chunk(
                 Some(regex) => record::classify_with_regex(text, format, Some(regex)),
                 None => record::classify(text, format),
             };
-            let continues = level == Level::Unparsed
-                && open.is_some_and(|block| block || block::is_continuation(text))
+            let cri = (format == Format::Cri)
+                .then(|| super::cri::header(text))
+                .flatten();
+            let cri_continues = cri.is_some_and(|h| cri_partial == Some(h.stream))
                 && entries
                     .last()
-                    .is_some_and(|entry| line - entry.line < block::MAX_LINES);
+                    .is_some_and(|e| line - e.line < block::MAX_LINES);
+            cri_partial = cri.and_then(|h| (h.tag == b"P").then_some(h.stream));
+            let continues = cri_continues
+                || (format != Format::Cri
+                    && level == Level::Unparsed
+                    && open.is_some_and(|block| block || block::is_continuation(text))
+                    && entries
+                        .last()
+                        .is_some_and(|entry| line - entry.line < block::MAX_LINES));
             if continues {
                 let entry = entries.last_mut().expect("an open entry");
                 entry.len = (text_end - entry.offset as usize) as u32;
@@ -377,6 +393,9 @@ fn index_chunk(
                 open = grouping.then_some(opens_block);
             }
         }
+        if text.trim_ascii().is_empty() {
+            cri_partial = None;
+        }
         line += 1;
         pos = line_end + 1;
     }
@@ -387,6 +406,24 @@ fn index_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cri_follow_completes_the_last_partial_without_changing_identity() {
+        let data = b"2026-10-10T06:00:00Z stdout P start\n2026-10-10T06:00:01Z stdout F end\n";
+        let cut = memchr::memchr(b'\n', data).unwrap() + 1;
+        let mut index = LogIndex::build(&data[..cut]);
+        let first = *index.get(0).unwrap();
+        assert!(index.extend(data, data.len()));
+        assert_eq!(index, LogIndex::build(data));
+        let completed = index.get(0).unwrap();
+        assert_eq!(completed.offset(), first.offset());
+        assert_eq!(completed.line(), first.line());
+        assert_eq!(completed.timestamp(), first.timestamp());
+        assert_eq!(
+            index.record(index.raw(data, 0).unwrap()).unwrap().fields[3].value,
+            "startend"
+        );
+    }
 
     #[test]
     fn entry_stays_compact() {

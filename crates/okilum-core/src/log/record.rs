@@ -354,6 +354,7 @@ fn scan_with_regex<'a>(
         Format::Glog => text::glog(line, visit),
         Format::AccessLog => text::access(line, visit),
         Format::Syslog => text::syslog(line, visit),
+        Format::Cri => super::cri::scan(line, visit),
         Format::Plain => Err(()),
     }
 }
@@ -434,6 +435,9 @@ pub(crate) fn within_decode_budget(
     format: Format,
     regex: Option<&super::regex_text::RegexParser>,
 ) -> bool {
+    if format == Format::Cri && line.len().saturating_mul(6) > DECODE_BYTES {
+        return false;
+    }
     let head = block::head(line);
     if head.len() > super::window::WINDOW_LINE_BYTES {
         return false;
@@ -479,6 +483,7 @@ impl Record {
         if !within_decode_budget(line, format, regex) {
             return None;
         }
+        let source = line;
         let line = ansi::strip(block::head(line));
         let mut record = Record::default();
         let mut roles = Roles::<usize>::new();
@@ -496,6 +501,9 @@ impl Record {
         .ok()?;
         for role in [Role::Time, Role::Level, Role::Message, Role::Logger] {
             *record.role_mut(role) = roles.pick(role);
+        }
+        if format == Format::Cri {
+            super::cri::assemble(source, &mut record)?;
         }
         Some(record)
     }

@@ -16,6 +16,7 @@
 pub mod ansi;
 pub mod block;
 pub mod correlation;
+mod cri;
 mod detect;
 pub mod elapsed;
 pub mod export;
