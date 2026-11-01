@@ -1,109 +1,12 @@
 //! Outline clicks target the visible document surface, including Source/Live.
 use super::*;
 use gpui_component::input::EditorState;
-use okilum_core::document_links::{HeadingEntry, HeadingInventory};
+use okilum_core::document_links::HeadingEntry;
 
-/// The outline and its click coordinates share one exact editor snapshot.
-#[derive(Default)]
-pub(super) struct DraftOutline {
-    source: String,
-    entries: Vec<HeadingEntry>,
-    lines: Vec<usize>,
-}
+mod draft;
+pub(super) use draft::DraftOutline;
 
-impl DraftOutline {
-    fn new(source: &str) -> Self {
-        let body = okilum_core::render::without_frontmatter(source);
-        let prefix = source.len() - body.len();
-        let entries: Vec<_> = HeadingInventory::new(body)
-            .entries
-            .into_iter()
-            .filter(|heading| heading.supported_container)
-            .map(|mut heading| {
-                heading.target.offset += prefix;
-                heading
-            })
-            .collect();
-        let mut previous = 0;
-        let mut line = 0;
-        let lines = entries
-            .iter()
-            .map(|heading| {
-                line += source[previous..heading.target.offset]
-                    .bytes()
-                    .filter(|byte| *byte == b'\n')
-                    .count();
-                previous = heading.target.offset;
-                line
-            })
-            .collect();
-        Self {
-            source: source.into(),
-            entries,
-            lines,
-        }
-    }
-
-    pub(super) fn current(&self, line: usize) -> Option<usize> {
-        self.lines
-            .partition_point(|heading| *heading <= line)
-            .checked_sub(1)
-    }
-}
-
-const STALE_HEADING: &str =
-    "This heading changed in the editor. Return to Read to refresh the outline.";
-
-/// Match the clicked Reader heading to authored source, then to the current
-/// draft. Body/frontmatter edits may shift lines without changing heading
-/// identity. Changed duplicate headings are surfaced instead of guessed.
-fn editor_line(
-    original: &str,
-    rendered: &str,
-    current: &str,
-    heading: &HeadingEntry,
-) -> Result<u32, &'static str> {
-    let line = okilum_core::deep_link::block_line(original, rendered, heading.target.block)
-        .ok_or("This heading cannot be mapped to the editable source.")?;
-    let line_at = |text: &str, offset: usize| -> Option<u32> {
-        u32::try_from(
-            text.get(..offset)?
-                .bytes()
-                .filter(|byte| *byte == b'\n')
-                .count(),
-        )
-        .ok()
-    };
-    let same = |a: &HeadingEntry, b: &HeadingEntry| {
-        a.text == b.text && a.level == b.level && a.supported_container == b.supported_container
-    };
-    let before = HeadingInventory::new(original).entries;
-    let index = before
-        .iter()
-        .position(|entry| {
-            entry.supported_container
-                && line_at(original, entry.target.offset) == line.checked_sub(1)
-        })
-        .ok_or(STALE_HEADING)?;
-    let now = HeadingInventory::new(current).entries;
-    let target = if before.len() == now.len() && before.iter().zip(&now).all(|(a, b)| same(a, b)) {
-        &now[index]
-    } else {
-        let mut matches = now.iter().filter(|entry| same(entry, &before[index]));
-        let target = matches.next().ok_or(STALE_HEADING)?;
-        if matches.next().is_some()
-            || before
-                .iter()
-                .filter(|entry| same(entry, &before[index]))
-                .count()
-                != 1
-        {
-            return Err(STALE_HEADING);
-        }
-        target
-    };
-    line_at(current, target.target.offset).ok_or(STALE_HEADING)
-}
+const STALE_HEADING: &str = "The outline is updating. Click the heading again when it refreshes.";
 
 impl Reader {
     pub(super) fn visible_outline(&self) -> &[HeadingEntry] {
@@ -114,14 +17,60 @@ impl Reader {
         }
     }
 
-    pub(super) fn refresh_draft_outline(&mut self, source: &str, _cx: &mut Context<Self>) {
-        self.draft_outline = DraftOutline::new(source);
-        if self.outline_list.item_count() != self.draft_outline.entries.len() {
-            self.outline_list.reset_with_uniform_height(
-                self.draft_outline.entries.len(),
-                px(OUTLINE_ROW_HEIGHT),
-            );
+    pub(super) fn refresh_draft_outline(&mut self, _source: &str, cx: &mut Context<Self>) {
+        self.draft_outline.pending = true;
+        // One parser in flight, with no queue of intermediate drafts. Every
+        // completion either publishes its exact revision or reads the latest.
+        if self.draft_outline.worker.is_some() {
+            return;
         }
+        self.draft_outline.worker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
+                    let Some(editing) = &this.editing else {
+                        this.draft_outline.worker = None;
+                        return None;
+                    };
+                    let input = editing.input().clone();
+                    let state = input.read(cx);
+                    Some((input.clone(), state.source_stamp(), state.value()))
+                }) else {
+                    return;
+                };
+                let snapshot = cx
+                    .background_executor()
+                    .spawn(async move { DraftOutline::new(&source) })
+                    .await;
+                let Ok(done) = this.update(cx, |this, cx| {
+                    if this
+                        .editing
+                        .as_ref()
+                        .is_none_or(|editing| editing.input() != &input)
+                        || input.read(cx).source_stamp() != stamp
+                    {
+                        return false;
+                    }
+                    this.draft_outline.source = snapshot.source;
+                    this.draft_outline.entries = snapshot.entries;
+                    this.draft_outline.lines = snapshot.lines;
+                    this.draft_outline.pending = false;
+                    this.draft_outline.worker = None;
+                    if this.outline_list.item_count() != this.draft_outline.entries.len() {
+                        this.outline_list.reset_with_uniform_height(
+                            this.draft_outline.entries.len(),
+                            px(OUTLINE_ROW_HEIGHT),
+                        );
+                    }
+                    cx.notify();
+                    true
+                }) else {
+                    return;
+                };
+                if done {
+                    return;
+                }
+            }
+        }));
     }
 
     pub(super) fn open_outline_heading(
@@ -140,9 +89,8 @@ impl Reader {
             return;
         };
         let input = editing.input().clone();
-        let original = self.draft_outline.source.clone();
-        let rendered = okilum_core::render::without_frontmatter(&original).to_owned();
         let current = input.read(cx).value();
+        let line = self.draft_outline.line_for(&current, &heading);
         let untouched = (
             input.read(cx).source_stamp(),
             input.read(cx).selected_range(),
@@ -153,10 +101,7 @@ impl Reader {
         let request = self.navigation.landing_generation;
         input.read(cx).focus_handle(cx).focus(window, cx);
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { editor_line(&original, &rendered, &current, &heading) })
-                .await;
+            let result = line;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.navigation.landing_generation != request
                     || this.vault_root != root
@@ -229,34 +174,6 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[test]
-    fn authored_heading_lines_follow_dirty_body_edits_and_refuse_changed_duplicates() {
-        let original = "---\r\ntitle: Synthetic\r\n---\r\n# Start\r\n\r\nBody\r\n\r\nЦель 🎯\r\n-------\r\n\r\nTail\r\n";
-        let rendered = okilum_core::render::without_frontmatter(original);
-        let heading = HeadingInventory::new(rendered).entries[1].clone();
-        assert_eq!(editor_line(original, rendered, original, &heading), Ok(7));
-        let changed = original.replace("Body\r\n", "Body\r\n\r\nExtra Unicode Ω paragraph\r\n");
-        assert_eq!(editor_line(original, rendered, &changed, &heading), Ok(9));
-        let removed = changed.replace("Цель 🎯", "Renamed");
-        assert!(editor_line(original, rendered, &removed, &heading).is_err());
-        let duplicate = "# Same\n\nFirst\n\n# Same\n\nSecond\n";
-        let second = HeadingInventory::new(duplicate).entries[1].clone();
-        assert_eq!(editor_line(duplicate, duplicate, duplicate, &second), Ok(4));
-        let body_change = duplicate.replace("First", "First\n\nAnother paragraph");
-        assert_eq!(
-            editor_line(duplicate, duplicate, &body_change, &second),
-            Ok(6)
-        );
-        let removed_first = duplicate.replacen("# Same", "# Different", 1);
-        assert!(editor_line(duplicate, duplicate, &removed_first, &second).is_err());
-        // Reader link rewriting can change heading text without changing its
-        // authored line. Identity comes from the mapped block, not that label.
-        let wiki = "# [[Target|Alias]]\n\nBody\n";
-        let rendered = "# [Alias](Target.md)\n\nBody\n";
-        let heading = HeadingInventory::new(rendered).entries[0].clone();
-        assert_eq!(editor_line(wiki, rendered, wiki, &heading), Ok(0));
-    }
-
-    #[test]
     fn draft_outline_tracks_added_renamed_removed_and_duplicate_headings() {
         let old = "---\ntitle: Note\n---\n# Old\n\nBody\n";
         let before = DraftOutline::new(old);
@@ -276,12 +193,7 @@ mod tests {
         assert_eq!(after.current(9), Some(3));
         for (index, heading) in after.entries.iter().enumerate() {
             assert_eq!(
-                editor_line(
-                    &after.source,
-                    okilum_core::render::without_frontmatter(&after.source),
-                    &draft,
-                    heading,
-                ),
+                after.line_for(&draft, heading),
                 Ok(after.lines[index] as u32)
             );
         }
@@ -290,8 +202,7 @@ mod tests {
         assert_eq!(removed.current(0), None);
     }
 
-    #[gpui::test]
-    fn source_edit_and_save_refresh_outline_without_leaving_source(cx: &mut TestAppContext) {
+    fn edit_and_save_refresh_outline(cx: &mut TestAppContext, live: bool) {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
         std::fs::create_dir(&root).unwrap();
@@ -327,7 +238,11 @@ mod tests {
         settle(visual);
         reader.update_in(visual, |reader, window, cx| {
             assert_eq!(reader.outline.len(), 20, "loaded note positive control");
-            reader.toggle_source(window, cx);
+            if live {
+                reader.open_live_preview(window, cx);
+            } else {
+                reader.toggle_source(window, cx);
+            }
         });
         settle(visual);
         let draft = format!("## QA heading\n\n{original}");
@@ -360,6 +275,16 @@ mod tests {
             assert_eq!(input.cursor_position().line, 0);
             assert_eq!(reader.current_section(cx), Some(0));
         });
+    }
+
+    #[gpui::test]
+    fn source_edit_and_save_refresh_outline_without_leaving_source(cx: &mut TestAppContext) {
+        edit_and_save_refresh_outline(cx, false);
+    }
+
+    #[gpui::test]
+    fn live_edit_and_save_refresh_outline_without_leaving_live(cx: &mut TestAppContext) {
+        edit_and_save_refresh_outline(cx, true);
     }
 
     #[derive(Clone, Copy, Debug)]
