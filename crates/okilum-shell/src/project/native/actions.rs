@@ -1131,13 +1131,15 @@ mod tests {
             let input = a.read(cx).inputs[&("r".into(), "q".into())].clone();
             (v.feed.clone(), a, input)
         });
-        input.update_in(visual, |i, window, cx| i.focus_handle(cx).focus(window, cx));
-        visual.run_until_parked();
-        visual.simulate_keystrokes("left");
-        visual.run_until_parked();
+        // GPUI 0.3.3 clears debug_bounds every frame but does not replay it
+        // for cached views. Check history before an Actions-only focus frame.
+        assert!(
+            visual.debug_bounds("project-native-actions").is_some(),
+            "positive control: the request surface is pinned above the composer"
+        );
         assert!(
             visual.debug_bounds("project-request-r").is_some(),
-            "positive control: inline request is visible"
+            "positive control: pinned current request is visible"
         );
         let history_diagnostics = feed.read_with(visual, |feed, cx| {
             (
@@ -1152,6 +1154,19 @@ mod tests {
             visual.debug_bounds("project-native-actions"),
             visual.debug_bounds("project-request-r"),
         );
+        let history_anchor = history_diagnostics
+            .0
+            .expect("positive control: actual source-keyed history anchor before focus");
+        input.update_in(visual, |i, window, cx| i.focus_handle(cx).focus(window, cx));
+        visual.run_until_parked();
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(
+                input.read(cx).focus_handle(cx).is_focused(window),
+                "positive control: keystrokes target the pinned answer Input"
+            );
+        });
         feed.read_with(visual, |f, _| f.rendered_positions.borrow_mut().clear());
         let counts = Rc::new([Cell::new(0), Cell::new(0), Cell::new(0)]);
         let _observer: Entity<()> = visual.update(|_, cx| {
@@ -1173,9 +1188,8 @@ mod tests {
             input.read_with(visual, |i, _| i.value().to_string()),
             "answer"
         );
-        // GPUI marks rendered ancestors dirty when an inline Input changes.
-        // Its list may repaint visible rows; it must not traverse all history
-        // or emit model notifications/remeasure requests for each character.
+        // Editing the pinned Input invalidates only Actions. The history must
+        // reuse its cache without rendering rows or emitting notifications.
         feed.read_with(visual, |f, _| {
             let positions = f.rendered_positions.borrow();
             assert!(
@@ -1185,6 +1199,11 @@ mod tests {
         });
         assert_eq!(counts[0].get(), 0);
         assert_eq!(counts[1].get(), 0);
+        assert_eq!(
+            feed.read_with(visual, |feed, cx| feed.test_scroll_anchor(cx)),
+            Some(history_anchor),
+            "focus and typing preserve the actual source key, item index and intra-row offset"
+        );
         assert!(
             counts[2].get() > 0,
             "positive control: action draft changed"
