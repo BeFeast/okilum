@@ -14,6 +14,31 @@ manifest readers. Its live status remains a projection; explicit in-app Board
 authoring is described below. Editing a card never changes its Forgejo issue or
 starts executor work.
 
+## Live repository projection (#2161)
+
+A repository-bound Board now discovers all open issues from that exact Forgejo
+repository. Manual `issues` entries annotate titles/outcomes, agents and related
+notes; they no longer determine membership. `attention` remains human-owned.
+An optional `pinned = true` keeps a manual card after closure; explicit Ready /
+Verified stages also retain their existing human-owned semantics. No manifest is
+rewritten by discovery. Local Boards and local card persistence are unchanged.
+
+On entry and every at most 30 seconds while visible, the existing background read
+loads open issues and open PRs, and scans recently updated closed PRs for merges
+in the last 24 hours. PR links come from current references or explicit card
+links. Open PRs with pending/failed/unknown aggregate checks enter Checks; successful
+checks retain In progress. Closing an issue removes its unpinned card on the next
+successful read. A recent merge retains its issue and PR link for 24 hours. Can try
+still requires the existing exact-source inclusion, available artifact and scenario
+evidence; merge alone never claims delivery or acceptance.
+
+Reads use no credentials, reject redirects, share a 20-second deadline and cap
+responses at 2 MiB and each list at 1000 entries. A failed/incomplete read retains
+the last complete snapshot and reports its source error. Delivery refresh follows
+the issue read so newly discovered PRs reach the existing delivery verifier in the
+same refresh cycle. The earlier selected-scope descriptions below document the
+historical Board slices; this live membership rule supersedes them.
+
 Entering a project opens a native Board in its existing center pane. Notes and
 Board share that center. Returning with **Board** retains the executor filter,
 selected card and scroll. The existing right-hand Manager and its draft stay in

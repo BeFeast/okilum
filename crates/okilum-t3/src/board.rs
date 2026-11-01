@@ -9,6 +9,7 @@ use std::{
 };
 pub mod context;
 pub mod delivery;
+pub mod live;
 pub mod local;
 pub mod manage;
 
@@ -131,6 +132,9 @@ fn refresh_default() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct Scope {
     pub number: u64,
+    /// Keep this card even after its issue closes.
+    #[serde(default)]
+    pub pinned: bool,
     pub expected: String,
     pub executor: String,
     /// Stable issue ownership; independent of the executor's changing run IDs.
@@ -458,6 +462,8 @@ pub struct Issue {
     /// Verified open references from this refresh, never inferred from a URL badge.
     #[serde(skip)]
     pub open_pull_requests: Vec<u64>,
+    #[serde(skip)]
+    pub live_pulls: Vec<live::Pull>,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct IssueLabel {
@@ -660,7 +666,12 @@ pub fn column(scope: &Scope, issue: Option<&Issue>, threads: &[ThreadSummary]) -
         Some(HumanStage::Verified) => return Column::Verified,
         None => {}
     }
-    if issue.is_some_and(|i| i.state == "closed") {
+    if issue.is_some_and(live::checks) {
+        return Column::Checks;
+    }
+    if issue
+        .is_some_and(|i| i.state == "closed" || i.live_pulls.iter().any(|p| p.merged_at.is_some()))
+    {
         return Column::Checks;
     }
     if !issue.is_some_and(|issue| issue.state == "open") {
@@ -752,6 +763,17 @@ impl Snapshot {
             self.forgejo.last_success = Some(now);
         }
         self.forgejo.error = (!errors.is_empty()).then(|| errors.join("; "));
+        self.pending = self.pending.saturating_sub(1);
+    }
+    /// Complete repository reads replace membership; failed reads retain the last snapshot.
+    pub fn live_issues(&mut self, ticket: &Ticket, value: Result<Vec<Issue>, String>, now: u64) {
+        if !self.matches(ticket) {
+            return;
+        }
+        self.forgejo.accept(
+            value.map(|issues| issues.into_iter().map(|i| (i.number, i)).collect()),
+            now,
+        );
         self.pending = self.pending.saturating_sub(1);
     }
     pub fn threads(

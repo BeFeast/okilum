@@ -99,6 +99,13 @@ stage outcome/scope remains in linked notes (Oleg, 2026-10-30).
 fallback. Invalid cards retain precise visible diagnostics beside healthy cards.
 Delivery/human acceptance and execution mutations remain separate.
 
+**Live Board (2026-11-01, #2161):** [live repository projection](project-board.md#live-repository-projection-2161)
+derives issue membership, PR links and check state from the explicitly bound
+Forgejo repository on entry and every at most 30 seconds. Closed unpinned issues
+leave automatically; recent merges retain their PR link for 24 hours. Existing
+exact-build delivery/scenario and human acceptance gates still govern Can try /
+Verified. Manual attention, pins and local cards retain their own sources.
+
 **Board management (2026-10-29, #1862):** [inline authoring](project-board.md#board-management-1862)
 creates an empty `board.toml` explicitly and edits project cards and the selected
 stage note. Existing boards retain their selected format, revision checks and
