@@ -144,7 +144,7 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let bounds = visual
-            .debug_bounds("reader-text")
+            .debug_bounds("reader-column")
             .expect("Read surface rendered");
         let at = point(bounds.center().x, bounds.bottom() - px(20.));
         let right_click = |visual: &mut gpui::VisualTestContext| {
