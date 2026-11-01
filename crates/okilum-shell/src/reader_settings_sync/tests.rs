@@ -254,3 +254,41 @@ fn preparing_receive_continues_refresh_after_pairing_finishes() {
     value.offer_url = None;
     assert!(!sync_refresh_needed(&value));
 }
+
+#[test]
+fn malformed_pairing_is_rejected_before_locations_or_bootstrap() {
+    let error = perform(
+        None,
+        Operation::Redeem("not a URL".into(), "New computer".into()),
+    )
+    .err()
+    .expect("invalid URL must fail preflight");
+    assert!(error.to_string().contains("URL"));
+    let error = perform(None, Operation::Begin("bad\nname".into()))
+        .err()
+        .expect("invalid name must fail preflight");
+    assert_eq!(error.to_string(), "invalid computer name");
+}
+
+#[gpui::test]
+fn invalid_pasted_pairing_url_never_starts_controller(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture(window, cx));
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    view.update_in(visual, |view, window, cx| {
+        view.name
+            .update(cx, |input, cx| input.set_value("New computer", window, cx));
+        view.invitation
+            .update(cx, |input, cx| input.set_value("not a URL", window, cx));
+        view.start_pairing(true, cx);
+        assert!(view.error.is_some());
+        assert!(view.controller.is_none());
+        assert!(!view.busy);
+        assert_eq!(view.epoch, 0, "no background operation was dispatched");
+    });
+}

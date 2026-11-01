@@ -123,6 +123,10 @@ impl Controller {
     fn attach_locked(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<()> {
         self.check()?;
         ensure!(
+            catalog_contains(&self.shared.db.lock().unwrap(), peer_id, vault_id),
+            "choose a vault from the selected computer's authorized catalog first"
+        );
+        ensure!(
             !vault_id.is_empty()
                 && vault_id.len() <= 128
                 && vault_id
@@ -156,7 +160,7 @@ impl Controller {
                 .cloned()
                 .context("unknown paired computer")?;
             ensure!(
-                db.catalog.iter().any(|v| v.id == vault_id),
+                catalog_contains(&db, peer_id, vault_id),
                 "choose a vault from the authorized catalog first"
             );
             let existing = db

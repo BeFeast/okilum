@@ -161,8 +161,10 @@ impl SyncSettings {
     }
     fn start_pairing(&mut self, redeem: bool, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().trim().to_string();
-        if name.is_empty() || name.chars().count() > 100 {
-            self.error = Some("Give this computer a name of up to 100 characters.".into());
+        if direct::validate_name(&name).is_err() {
+            self.error = Some(
+                "Give this computer a name of up to 100 bytes without control characters.".into(),
+            );
             cx.notify();
             return;
         }
@@ -170,6 +172,11 @@ impl SyncSettings {
             let invitation = self.invitation.read(cx).value().trim().to_string();
             if invitation.is_empty() {
                 self.error = Some("Paste the pairing URL from your other computer.".into());
+                cx.notify();
+                return;
+            }
+            if let Err(error) = direct::validate_pairing_input(&invitation, &name) {
+                self.error = Some(user_error(&error));
                 cx.notify();
                 return;
             }
@@ -271,6 +278,12 @@ fn perform(controller: Option<Controller>, operation: Operation) -> anyhow::Resu
         okilum_t3::NetworkAccess::current().allowed(),
         "Sync is disabled"
     );
+    // Validate before filesystem discovery and macOS runtime bootstrap.
+    match &operation {
+        Operation::Begin(name) => direct::validate_name(name)?,
+        Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
+        _ => {}
+    }
     let (state, configs) = locations()?;
     let controller = match controller {
         Some(c) => c,

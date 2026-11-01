@@ -56,7 +56,7 @@ pub struct Snapshot {
     pub preparing: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Offer {
     id: Uuid,
@@ -105,6 +105,8 @@ struct Database {
     attached: Vec<ExistingVault>,
     #[serde(default)]
     catalog: Vec<Vault>,
+    #[serde(default)]
+    catalog_peer: Option<Uuid>,
     #[serde(default)]
     transfers: Vec<transfer::Transfer>,
     #[serde(default)]
@@ -191,6 +193,7 @@ impl Controller {
                 peers: BTreeMap::new(),
                 attached: vec![],
                 catalog: vec![],
+                catalog_peer: None,
                 transfers: vec![],
                 share_grants: vec![],
             }
@@ -367,6 +370,19 @@ impl Controller {
         validate_name(name)?;
         let offer = decode_url(url)?;
         ensure!(offer.expires > now()?, "pairing invitation expired");
+        {
+            let db = self.shared.db.lock().unwrap();
+            if let Some((current, request)) = &db.outbound {
+                ensure!(
+                    current == &offer && request.name == name,
+                    "cancel the current request before connecting again"
+                );
+                // A timeout may follow remote receipt. Retry the durable identity,
+                // including its approved Syncthing binding, rather than replacing it.
+                drop(db);
+                return self.refresh();
+            }
+        }
         let configs = self.configuration_paths()?;
         let inventory = crate::daemon::discover(&configs);
         inventory.folders()?;
@@ -397,9 +413,34 @@ impl Controller {
     }
     pub fn refresh(&self) -> Result<Snapshot> {
         self.check()?;
+        // Opening the journal stays offline. Explicit refresh restores only a
+        // source endpoint already pinned by a durable paired capability. A
+        // receiving peer's remote endpoint must never become a local listener.
+        let endpoint = {
+            let db = self.shared.db.lock().unwrap();
+            db.endpoint
+                .filter(|endpoint| db.peers.values().any(|peer| peer.endpoint == *endpoint))
+        };
+        if let Some(endpoint) = endpoint {
+            // Rebind the exact advertised address and port. An unavailable
+            // address is an error, never permission to invalidate peer pins.
+            self.listen(endpoint, endpoint.ip())?;
+        }
         let outbound = self.shared.db.lock().unwrap().outbound.clone();
         if let Some((offer, request)) = outbound {
-            ensure!(offer.expires > now()?, "pairing invitation expired");
+            if offer.expires <= now()? {
+                let mut db = self.shared.db.lock().unwrap();
+                if db
+                    .outbound
+                    .as_ref()
+                    .is_some_and(|(o, r)| o.id == offer.id && r.id == request.id)
+                {
+                    db.outbound = None;
+                    self.save(&db)?;
+                }
+                anyhow::bail!("pairing invitation expired");
+            }
+            let request_id = request.id;
             let reply = self.call(
                 offer.endpoint,
                 offer.id,
@@ -408,6 +449,12 @@ impl Controller {
                 Operation::Redeem { request },
             )?;
             let mut db = self.shared.db.lock().unwrap();
+            ensure!(
+                db.outbound
+                    .as_ref()
+                    .is_some_and(|(o, r)| { o.id == offer.id && r.id == request_id }),
+                "pairing request cancelled or changed"
+            );
             match reply {
                 Reply::Pending => {}
                 Reply::Rejected => {
@@ -421,6 +468,7 @@ impl Controller {
                         "pairing approval scope changed"
                     );
                     db.catalog = catalog;
+                    db.catalog_peer = Some(paired.peer.id);
                     db.peers.insert(paired.peer.id, paired);
                     db.outbound = None;
                     self.save(&db)?;
@@ -518,6 +566,7 @@ impl Controller {
             Reply::Catalog { catalog } => {
                 let mut db = self.shared.db.lock().unwrap();
                 db.catalog = catalog.clone();
+                db.catalog_peer = Some(peer_id);
                 self.save(&db)?;
                 Ok(catalog)
             }
@@ -754,7 +803,13 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
         catalog: db.catalog.clone(),
         attached: db.attached.clone(),
         preparing: db.transfers.iter().any(transfer::Transfer::preparing),
-        status: if db.outbound.is_some() {
+        status: if db
+            .outbound
+            .as_ref()
+            .is_some_and(|(o, _)| o.expires <= current)
+        {
+            "Pairing invitation expired"
+        } else if db.outbound.is_some() {
             "Waiting for confirmation on the other computer"
         } else if offer.is_some() {
             "Waiting for the new computer"
@@ -783,6 +838,9 @@ fn pending(r: &Request, incoming: bool) -> Pending {
         incoming,
     }
 }
+fn catalog_contains(db: &Database, peer: Uuid, vault: &str) -> bool {
+    db.catalog_peer == Some(peer) && db.catalog.iter().any(|v| v.id == vault)
+}
 fn catalog_for(db: &Database, allowed: &[String]) -> Vec<Vault> {
     db.attached
         .iter()
@@ -796,7 +854,8 @@ fn catalog_for(db: &Database, allowed: &[String]) -> Vec<Vault> {
 fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
-fn validate_name(name: &str) -> Result<()> {
+/// Validate a computer name without starting controller or runtime IO.
+pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
             && name.len() <= 100
@@ -804,6 +863,14 @@ fn validate_name(name: &str) -> Result<()> {
             && !name.chars().any(char::is_control),
         "invalid computer name"
     );
+    Ok(())
+}
+/// Validate pasted input before platform runtime bootstrap. Redemption rechecks
+/// expiry because approval or bootstrap may take time. This performs no IO.
+pub fn validate_pairing_input(url: &str, name: &str) -> Result<()> {
+    validate_name(name)?;
+    let offer = decode_url(url)?;
+    ensure!(offer.expires > now()?, "pairing invitation expired");
     Ok(())
 }
 fn encode_url(offer: &Offer) -> Result<String> {
@@ -858,6 +925,60 @@ mod tests {
     use super::*;
     fn controller(root: &Path, name: &str) -> Result<Controller> {
         Controller::open(root.join(name), vec![])
+    }
+    #[test]
+    fn pairing_preflight_checks_scope_expiry_and_names_without_controller() -> Result<()> {
+        let mut offer = Offer {
+            id: Uuid::new_v4(),
+            key: [7; 32],
+            expires: now()? + 300,
+            endpoint: "127.0.0.1:12345".parse()?,
+            public: vec![3; 32],
+        };
+        let url = encode_url(&offer)?;
+        validate_pairing_input(&url, "New computer")?;
+        assert!(validate_pairing_input("not a URL", "New computer").is_err());
+        assert!(validate_pairing_input(&url.replace("12345#", "12346#"), "New computer").is_err());
+        assert!(validate_pairing_input(&url, "bad\nname").is_err());
+        assert!(validate_pairing_input(&url, &"é".repeat(51)).is_err());
+        offer.expires = now()? - 1;
+        let error = validate_pairing_input(&encode_url(&offer)?, "New computer").unwrap_err();
+        assert!(error.to_string().contains("expired"));
+        Ok(())
+    }
+    #[test]
+    fn attachment_rejects_catalog_from_another_peer_before_daemon_access() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let controller = controller(root.path(), "catalog-binding")?;
+        let selected = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        {
+            let mut db = controller.shared.db.lock().unwrap();
+            db.catalog = vec![Vault {
+                id: "same-id".into(),
+                label: "Selected vault".into(),
+            }];
+            db.catalog_peer = Some(selected);
+            assert!(
+                catalog_contains(&db, selected, "same-id"),
+                "positive selected catalog control"
+            );
+            assert!(!catalog_contains(&db, other, "same-id"));
+        }
+        let error = controller
+            .attach(other, "same-id", root.path())
+            .unwrap_err();
+        assert!(error.to_string().contains("selected computer"));
+        {
+            let mut db = controller.shared.db.lock().unwrap();
+            db.catalog_peer = None;
+            assert!(
+                !catalog_contains(&db, selected, "same-id"),
+                "legacy catalog cannot infer authority"
+            );
+        }
+        controller.shutdown();
+        Ok(())
     }
     #[test]
     fn configuration_snapshot_tracks_bootstrap_selection_and_capability_revocation() -> Result<()> {
@@ -967,6 +1088,195 @@ mod tests {
         source.shutdown();
         target.shutdown();
         attacker.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn connect_retry_preserves_claimed_identity_through_approval_and_restart() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = controller(root.path(), "source")?;
+        let target = controller(root.path(), "target")?;
+        let url = offer(&source)?;
+        target.redeem(&url, "New computer")?;
+        let request = source.snapshot()?.pending.unwrap();
+        assert!(
+            request.incoming,
+            "positive control: source received request"
+        );
+        assert!(target.redeem(&url, "Changed name").is_err());
+        let retry = target.redeem(&url, "New computer")?;
+        assert_eq!(retry.pending.unwrap().request_id, request.request_id);
+        drop(target);
+        let target = controller(root.path(), "target")?;
+        source.approve(request.request_id)?;
+        let approved = target.redeem(&url, "New computer")?;
+        assert!(approved.pending.is_none());
+        assert_eq!(approved.peers.len(), 1);
+        assert_eq!(source.snapshot()?.peers.len(), 1);
+        source.shutdown();
+        target.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn cancelled_request_cannot_accept_an_inflight_approval() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let target = controller(root.path(), "target")?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let seed = wire::random()?;
+        let offer = Offer {
+            id: Uuid::new_v4(),
+            key: wire::random()?,
+            expires: now()? + LIFETIME,
+            endpoint: listener.local_addr()?,
+            public: wire::public(&seed)?,
+        };
+        let url = encode_url(&offer)?;
+        let (received, receipt) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            wire::limits(&stream)?;
+            let (message, _): (Message, _) =
+                wire::open(wire::read(&mut stream)?, &offer.key, None)?;
+            ensure!(
+                matches!(message.operation, Operation::Redeem { .. }),
+                "expected redeem"
+            );
+            received.send(())?;
+            released.recv_timeout(Duration::from_secs(3))?;
+            let reply = Reply::Approved {
+                paired: Paired {
+                    peer: Peer {
+                        id: Uuid::new_v4(),
+                        name: "Source computer".into(),
+                        device_id: wire::fingerprint(&offer.public),
+                    },
+                    public: offer.public,
+                    key: wire::random()?,
+                    endpoint: offer.endpoint,
+                    allowed: vec![],
+                    syncthing_device: None,
+                },
+                catalog: vec![Vault {
+                    id: "private".into(),
+                    label: "Private".into(),
+                }],
+            };
+            let response = wire::seal(
+                offer.id,
+                &offer.key,
+                &seed,
+                &Response {
+                    nonce: message.nonce,
+                    result: reply,
+                },
+            )?;
+            wire::write(&mut stream, &response)
+        });
+        let retained = target.clone();
+        let redeem = thread::spawn(move || retained.redeem(&url, "New computer"));
+        receipt.recv_timeout(Duration::from_secs(3))?;
+        assert!(
+            target.snapshot()?.pending.is_some(),
+            "positive control: request in flight"
+        );
+        target.cancel()?;
+        release.send(())?;
+        server.join().unwrap()?;
+        assert!(redeem.join().unwrap().is_err());
+        let cancelled = target.snapshot()?;
+        assert!(cancelled.pending.is_none());
+        assert!(cancelled.peers.is_empty());
+        assert!(cancelled.catalog.is_empty());
+        target.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn expired_outbound_is_terminal_and_can_be_replaced() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = controller(root.path(), "source")?;
+        let target = controller(root.path(), "target")?;
+        let url = offer(&source)?;
+        target.redeem(&url, "New computer")?;
+        assert!(
+            target.snapshot()?.pending.is_some(),
+            "positive control: live request"
+        );
+        {
+            let mut db = target.shared.db.lock().unwrap();
+            db.outbound.as_mut().unwrap().0.expires = now()? - 1;
+            target.save(&db)?;
+        }
+        assert_eq!(target.snapshot()?.status, "Pairing invitation expired");
+        assert!(target.refresh().is_err());
+        assert!(target.shared.db.lock().unwrap().outbound.is_none());
+        drop(target);
+        let target = controller(root.path(), "target")?;
+        assert!(target.shared.db.lock().unwrap().outbound.is_none());
+        assert!(target.snapshot()?.pending.is_none());
+        source.cancel()?;
+        let replacement = offer(&source)?;
+        assert!(target
+            .redeem(&replacement, "New computer")?
+            .pending
+            .is_some());
+        source.shutdown();
+        target.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn explicit_refresh_restores_only_the_durable_source_endpoint() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let access = okilum_sync::NetworkAccess::new(true);
+        let _scope = access.enter();
+        let source = controller(root.path(), "source")?;
+        let target = controller(root.path(), "target")?;
+        let url = offer(&source)?;
+        let endpoint = decode_url(&url)?.endpoint;
+        target.redeem(&url, "Restart fixture")?;
+        source.approve(source.snapshot()?.pending.unwrap().request_id)?;
+        let peer = target.refresh()?.peers[0].id;
+        assert!(
+            target.catalog(peer)?.is_empty(),
+            "encrypted positive control"
+        );
+        let worker = Arc::downgrade(&source.shared);
+        source.shutdown();
+        drop(source);
+        // A worker finishing its last request may briefly retain the journal.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while worker.strong_count() != 0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(worker.strong_count(), 0, "source worker did not terminate");
+        // No daemon or Syncthing configuration is used by this fixture.
+        let source = controller(root.path(), "source")?;
+        assert!(source.shared.listener.lock().unwrap().is_none());
+        assert!(wire::connect(endpoint).is_err(), "open must stay offline");
+        assert!(target.catalog(peer).is_err());
+        let occupied = TcpListener::bind(endpoint)?;
+        assert!(source.refresh().is_err(), "no alternate-port fallback");
+        assert!(source.shared.listener.lock().unwrap().is_none());
+        assert_eq!(source.shared.db.lock().unwrap().endpoint, Some(endpoint));
+        drop(occupied);
+        source.refresh()?;
+        assert!(
+            target.catalog(peer)?.is_empty(),
+            "restored encrypted catalog"
+        );
+        assert_eq!(source.shared.db.lock().unwrap().endpoint, Some(endpoint));
+        target.refresh()?;
+        assert!(target.shared.listener.lock().unwrap().is_none());
+        source.cancel()?;
+        access.revoke();
+        assert!(
+            source.refresh().is_err(),
+            "revoked access restored a listener"
+        );
+        assert!(target.refresh().is_err());
+        assert!(source.shared.listener.lock().unwrap().is_none());
+        assert!(wire::connect(endpoint).is_err());
+        source.shutdown();
+        target.shutdown();
         Ok(())
     }
     #[test]
