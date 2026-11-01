@@ -4,6 +4,7 @@ use okilum_t3::board::{Binding, Column, Snapshot, Source};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod appearance;
+mod columns;
 mod delivery;
 mod live;
 mod local;
@@ -42,6 +43,7 @@ pub(crate) struct Board {
     notes_loading: bool,
     notes_expanded: bool,
     next_stage_open: bool,
+    columns: columns::State,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -141,6 +143,7 @@ impl Board {
             notes_loading: false,
             notes_expanded: false,
             next_stage_open: false,
+            columns: columns::State::default(),
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -170,6 +173,7 @@ impl Board {
                                     .zip(binding.as_ref())
                                     .is_some_and(|(old, new)| old.same_issue_source(new));
                                 if this.binding != binding && !same_source {
+                                    this.columns.invalidate();
                                     this.snapshot.invalidate();
                                     this.snapshot.forgejo = Source::default();
                                     this.selected = None;
@@ -1073,6 +1077,15 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
+        let mut counts = self.column_counts(binding);
+        let ready = self.column_sources_ready(binding);
+        self.columns.observe(counts, ready);
+        let mut compact = h_flex()
+            .debug_selector(|| "board-empty-columns".into())
+            .flex_wrap()
+            .items_center()
+            .gap_2();
+        let mut collapsed = 0;
         let mut columns = h_flex()
             .id("board-columns")
             .debug_selector(|| "board-columns".into())
@@ -1105,6 +1118,21 @@ impl Render for Board {
                 .iter()
                 .filter(|card| self.filter.is_none() && card.state.column() == column)
                 .collect();
+            let count = scopes.len()
+                + local_cards.len()
+                + if column == Column::Queue {
+                    binding.card_problems.len()
+                } else {
+                    0
+                };
+            counts[column as usize] = count;
+            // Never fold a lane that actually has a rendered card, even if a
+            // delivery freshness boundary changed since the count snapshot.
+            if self.columns.collapsed(column, count) {
+                compact = compact.child(self.expand_empty_column(column, cx));
+                collapsed += 1;
+                continue;
+            }
             let (color, glyph) = appearance::stage(column, cx);
             let mut lane = v_flex()
                 .id(("board-lane", column as usize))
@@ -1132,18 +1160,20 @@ impl Render for Board {
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.text_muted)
-                                .child(
-                                    (scopes.len()
-                                        + local_cards.len()
-                                        + if column == Column::Queue {
-                                            binding.card_problems.len()
-                                        } else {
-                                            0
-                                        })
-                                    .to_string(),
-                                ),
-                        ),
+                                .child(count.to_string()),
+                        )
+                        .when(count == 0 && self.columns.known_empty(column), |header| {
+                            header.child(self.collapse_empty_column(column, cx))
+                        }),
                 );
+            if count == 0 && self.columns.known_empty(column) {
+                lane = lane.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(colors.text_muted)
+                        .child("No cards"),
+                );
+            }
             for scope in scopes {
                 lane = lane.child(self.card(scope, column, binding, cx));
             }
@@ -1151,17 +1181,7 @@ impl Render for Board {
                 lane = lane.child(self.local_card(card, cx));
             }
             if column == Column::Queue {
-                lane = lane.child(
-                    Button::new("board-local-add")
-                        .debug_selector(|| "board-local-add".into())
-                        .ghost()
-                        .small()
-                        .label("Add card")
-                        .disabled(self.editor_loading)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_local_management(local::Mode::Add, window, cx)
-                        })),
-                );
+                lane = lane.child(self.add_card_button(cx));
                 for (index, problem) in binding.card_problems.iter().enumerate() {
                     let title = problem
                         .number
@@ -1186,6 +1206,39 @@ impl Render for Board {
                 }
             }
             columns = columns.child(lane);
+        }
+        if collapsed > 0 {
+            if self
+                .columns
+                .collapsed(Column::Queue, counts[Column::Queue as usize])
+            {
+                compact = compact.child(self.add_card_button(cx));
+            }
+            root = root.child(compact);
+        }
+        if counts.iter().all(|count| *count == 0)
+            && [
+                Column::Queue,
+                Column::Working,
+                Column::Checks,
+                Column::Ready,
+            ]
+            .iter()
+            .all(|column| self.columns.collapsed(*column, 0))
+        {
+            root = root.child(
+                div()
+                    .debug_selector(|| "board-empty-state".into())
+                    .p_3()
+                    .rounded_md()
+                    .bg(colors.surface_raised)
+                    .text_color(colors.text_muted)
+                    .child(if self.filter.is_some() {
+                        "No cards for this executor. Expand a column to view it."
+                    } else {
+                        "No cards yet. Add a card to get started, or expand a column."
+                    }),
+            );
         }
         let verified = binding
             .issues

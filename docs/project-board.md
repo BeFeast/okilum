@@ -118,9 +118,17 @@ a steady indicator replace browser effects. Cards show the explicit expected
 outcome, agent and state, and at most one PR link badge; a PR link never claims
 that its CI passed or it merged. The expanded card retains notes and draft actions.
 
-Columns have zero minimum width and equal flexible bases. The Verified toggle is
-a narrow native icon/count strip with a full accessible label and tooltip; opening
-it adds the fifth flexible column instead of forcing the first column off-screen.
+Nonempty and explicitly expanded columns have zero minimum width and equal
+flexible bases. Once card sources have completed a successful read, empty columns
+collapse into compact name/count controls above the lanes (#2219), giving their
+width to useful content. Each control expands its empty lane with the keyboard
+or pointer; the empty lane offers Collapse. Explicit expansion is window-local,
+not a persisted setting. A newly nonempty lane always opens. Initial loading is
+not zero cards; refreshes retain the last completed layout decision. An all-empty
+Board shows a short empty state and keeps Add card available.
+The Verified toggle remains a narrow native icon/count strip with a full
+accessible label and tooltip; opening it exposes its column under the same rules
+instead of forcing the first column off-screen.
 `stage: ready` and `stage: verified` on an issue are optional, explicit human-owned
 marks in `ops/board.toml`. Issue closure alone still means Checks. No current
 binding is marked ready/verified by this implementation. The optional `stuck: true`
