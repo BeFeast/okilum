@@ -174,6 +174,7 @@ mod reader_trash_fs;
 #[path = "reader_trash_fs_windows.rs"]
 mod reader_trash_fs;
 mod reader_tree;
+mod reader_tree_breadcrumbs;
 mod reader_tree_follow;
 mod reader_tree_preview;
 mod reader_typed_view;
@@ -4221,6 +4222,9 @@ impl Reader {
             && project.is_none()
         {
             &SidebarAction::ALL[..usize::from(cfg!(any(unix, windows)))]
+        } else if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree && project.is_none() {
+            // Creation and Collapse all have permanent slots beside Vault Index.
+            &SidebarAction::ALL[3..]
         } else {
             SidebarAction::available()
         };
@@ -5181,13 +5185,14 @@ impl Reader {
         let rows: Vec<SideItem> = items;
         if !rows.is_empty() {
             let count = rows.len();
-            let sticky_source: Vec<_> = rows
-                .iter()
-                .map(|item| match item {
-                    SideItem::Tree(row) => Some(row.clone()),
-                    _ => None,
-                })
-                .collect();
+            let sticky_source = Rc::new(reader_tree_breadcrumbs::Ancestors::new(
+                rows.iter()
+                    .map(|item| match item {
+                        SideItem::Tree(row) => Some(row.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ));
             let render = render_row.clone();
             let list = uniform_list(
                 SharedString::from("sidebar-body-Folders"),
@@ -5201,6 +5206,8 @@ impl Reader {
             let observer = cx.entity().downgrade();
             let observed_root = self.vault_root.clone();
             let observed_generation = self.watcher_generation;
+            let observed_scroll = self.tree_scroll.clone();
+            let last_first = std::cell::Cell::new(None);
             section_views.push(
                 div()
                     .id("reader-tree")
@@ -5248,30 +5255,22 @@ impl Reader {
                         .left_0()
                         .size_full()
                     })
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w_full()
-                            .bg(brand::palette(cx).sidebar)
-                            .occlude()
-                            .debug_selector(|| "tree-sticky-ancestors".into())
-                            .children(
-                                self.tree_sticky
-                                    .iter()
-                                    .cloned()
-                                    .enumerate()
-                                    .map(|(index, row)| render_row(SideItem::Tree(row), index)),
-                            ),
-                    )
+                    .child(self.render_tree_breadcrumbs(window, cx))
                     .child(
                         canvas(
                             |_, _, _| (),
                             move |_, _, _, cx| {
+                                let offset =
+                                    f32::from(observed_scroll.0.borrow().base_handle.offset().y);
+                                let first = ((-offset / TREE_ROW_HEIGHT).floor().max(0.)) as usize;
+                                // A pixel scroll never rebuilds ancestry. Only a new
+                                // first row can change the one overlaid context strip.
+                                if last_first.replace(Some(first)) == Some(first) {
+                                    return;
+                                }
                                 let observer = observer.clone();
                                 let observed_root = observed_root.clone();
-                                let sticky_source = sticky_source.clone();
+                                let sticky = sticky_source.at(first);
                                 cx.defer(move |cx| {
                                     let _ = observer.update(cx, |this, cx| {
                                         if this.vault_root != observed_root
@@ -5279,13 +5278,6 @@ impl Reader {
                                         {
                                             return;
                                         }
-                                        let offset = f32::from(
-                                            this.tree_scroll.0.borrow().base_handle.offset().y,
-                                        );
-                                        let sticky = reader_tree::sticky_ancestors(
-                                            &sticky_source,
-                                            ((-offset / 28.).floor().max(0.)) as usize,
-                                        );
                                         if this
                                             .tree_sticky
                                             .iter()
@@ -5310,6 +5302,7 @@ impl Reader {
             .w_full()
             .h_full()
             .flex_none()
+            .child(self.render_tree_header(cx))
             .child(
                 v_flex()
                     .flex_1()
