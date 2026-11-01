@@ -76,6 +76,7 @@ pub(crate) struct Gallery {
     layout_epoch: u64,
     query: String,
     selected: Option<String>,
+    scroll: ScrollHandle,
     generation: u64,
     theme_revision: u64,
     requests: async_channel::Sender<Work>,
@@ -95,6 +96,7 @@ impl Gallery {
         let mut this = Self {
             root,
             selected: None,
+            scroll: ScrollHandle::new(),
             previews: Vec::new(),
             entries: Vec::new(),
             cache: HashMap::new(),
@@ -217,6 +219,13 @@ impl Gallery {
         cx.notify();
     }
 
+    /// Closing retains derived previews but stops queued/obsolete source work.
+    pub(crate) fn suspend(&mut self, cx: &mut Context<Self>) {
+        self.generation = self.generation.wrapping_add(1);
+        while self.pending.try_recv().is_ok() {}
+        cx.notify();
+    }
+
     pub(crate) fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         self.query = query;
         let visible = self.visible();
@@ -225,6 +234,12 @@ impl Gallery {
             .any(|&i| Some(&self.entries[i].path) == self.selected.as_ref())
         {
             self.selected = visible.first().map(|&i| self.entries[i].path.clone());
+        }
+        if let Some(index) = visible
+            .iter()
+            .position(|&i| Some(&self.entries[i].path) == self.selected.as_ref())
+        {
+            self.scroll.scroll_to_item(index);
         }
         cx.notify();
     }
@@ -243,7 +258,7 @@ impl Gallery {
             .map(|(i, _)| i)
             .collect()
     }
-    /// Parent maps Left/Right to +/-1 and Up/Down to +/-3 in the overlay key context.
+    /// Caller maps arrows using the current viewport's number of card columns.
     pub(crate) fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         let visible = self.visible();
         if visible.is_empty() {
@@ -255,6 +270,7 @@ impl Gallery {
             .unwrap_or(0);
         let next = (current as isize + delta).rem_euclid(visible.len() as isize) as usize;
         self.selected = Some(self.entries[visible[next]].path.clone());
+        self.scroll.scroll_to_item(next);
         cx.notify();
     }
     pub(crate) fn accept(&self, cx: &mut Context<Self>) {
@@ -271,7 +287,8 @@ impl Gallery {
     }
 }
 impl Render for Gallery {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let max_height = (f32::from(window.viewport_size().height) - 224.).clamp(80., 640.);
         let palette = brand::palette(cx);
         let visible = self.visible();
         for &index in &visible {
@@ -317,8 +334,9 @@ impl Render for Gallery {
                     .flex()
                     .flex_wrap()
                     .gap_3()
-                    .max_h(px(640.))
+                    .max_h(px(max_height))
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .children(visible.into_iter().map(|index| {
                         let entry = &self.entries[index];
                         let relative = entry.path.clone();
