@@ -221,6 +221,7 @@ impl SyncSettings {
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
     use anyhow::Context as _;
+    #[cfg(target_os = "linux")]
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -232,9 +233,40 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home.join(".local/state"))
         .join("okilum/sync/direct");
+    #[cfg(target_os = "linux")]
+    for parent in [state.parent().and_then(Path::parent), state.parent()] {
+        ensure_private_sync_directory(parent.context("Sync state parent unavailable")?)?;
+    }
     #[cfg(target_os = "macos")]
-    let state = home.join("Library/Application Support/Okilum/Sync/direct");
+    let state =
+        mac_direct_state(&okilum_sync_controller::sidecar::macos::account_state_directory()?)?;
     Ok((state, configs))
+}
+fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new().mode(0o700).create(path)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == rustix::process::geteuid().as_raw()
+            && metadata.mode() & 0o077 == 0,
+        "private Sync state parent required"
+    );
+    Ok(())
+}
+#[cfg(any(target_os = "macos", test))]
+fn mac_direct_state(managed: &Path) -> anyhow::Result<PathBuf> {
+    use anyhow::Context as _;
+    let parent = managed.parent().context("Sync state parent unavailable")?;
+    ensure_private_sync_directory(parent)?;
+    Ok(parent.join("SyncDirect"))
 }
 fn perform(controller: Option<Controller>, operation: Operation) -> anyhow::Result<Output> {
     anyhow::ensure!(
@@ -246,6 +278,12 @@ fn perform(controller: Option<Controller>, operation: Operation) -> anyhow::Resu
         Some(c) => c,
         None => Controller::open(state, configs.clone())?,
     };
+    #[cfg(target_os = "macos")]
+    if matches!(&operation, Operation::Begin(_) | Operation::Redeem(_, _))
+        && controller.configuration_paths()?.is_empty()
+    {
+        connect_managed_runtime(&controller)?;
+    }
     let mut inspected = None;
     let snapshot = match operation {
         Operation::Read => controller.refresh()?,
@@ -261,7 +299,10 @@ fn perform(controller: Option<Controller>, operation: Operation) -> anyhow::Resu
             snapshot
         }
         Operation::Inspect(path) => {
-            inspected = Some(direct::inspect_existing(&configs, &path)?);
+            inspected = Some(direct::inspect_existing(
+                &controller.configuration_paths()?,
+                &path,
+            )?);
             controller.snapshot()?
         }
         Operation::Consent(vault) => {
@@ -276,9 +317,42 @@ fn perform(controller: Option<Controller>, operation: Operation) -> anyhow::Resu
         inspected,
     })
 }
+#[cfg(target_os = "macos")]
+fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use okilum_sync_controller::sidecar::{
+        macos::bootstrap::{connect_current_app, ConnectOutcome, SigningPolicy},
+        supervisor::ipc::code_requirement::CodeRequirement,
+    };
+    let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
+    let identifier = option_env!("OKILUM_BUNDLE_ID").context("Sync bundle policy unavailable")?;
+    let policy = SigningPolicy {
+        app: CodeRequirement::team_and_identifier(team, identifier)?,
+        helper: CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
+        runtime: CodeRequirement::team_and_identifier(team, &format!("{identifier}.syncthing"))?,
+    };
+    match connect_current_app(true, policy, Duration::from_secs(45))? {
+        ConnectOutcome::Ready {
+            config_path,
+            device_id,
+        } => {
+            // Only authenticated REST-ready identity becomes a usable direct target.
+            anyhow::ensure!(!device_id.is_empty(), "Sync device identity unavailable");
+            controller.set_configurations(vec![config_path])?;
+            Ok(())
+        }
+        ConnectOutcome::RequiresApproval { .. } => {
+            anyhow::bail!("macOS Sync approval required; Connect again after approval")
+        }
+    }
+}
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if text.contains("nonempty") || text.contains("non-empty") {
+    if text.contains("approval") {
+        "Allow Okilum Sync in macOS System Settings → General → Login Items, then choose Connect again.".into()
+    } else if text.contains("signing") || text.contains("bundle") || text.contains("runtime") {
+        "A verified Sync runtime is not available in this build. Install a signed beta that includes Sync and try again.".into()
+    } else if text.contains("nonempty") || text.contains("non-empty") {
         "This folder already contains files. Lossless merge preview is required; choose an empty folder to continue.".into()
     } else if text.contains("expired") {
         "This pairing URL expired. Create a new one on the other computer.".into()
@@ -286,7 +360,7 @@ fn user_error(error: &anyhow::Error) -> String {
         || text.contains("configuration")
         || text.contains("syncthing")
     {
-        "No compatible Syncthing connection is available. Check the existing instance and refresh. Automatic runtime setup is not available in this build.".into()
+        "No compatible Syncthing connection is available. Select the existing instance explicitly, or check its connection and refresh.".into()
     } else if text.contains("reject") {
         "The other computer declined pairing. Create a new pairing URL to try again.".into()
     } else {

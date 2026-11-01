@@ -13,6 +13,10 @@ pub mod connection;
 pub mod payload;
 #[cfg(unix)]
 pub mod preparation;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub mod inventory;
+#[cfg(target_os = "macos")]
+pub mod bootstrap;
 pub mod recovery;
 #[cfg(unix)]
 pub mod registration;

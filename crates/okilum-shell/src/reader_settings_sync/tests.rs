@@ -219,3 +219,24 @@ fn reader_settings_sync_suspend_revokes_a_real_listener_and_retained_controller(
     });
     // No Syncthing configuration, process or canonical vault exists in this fixture.
 }
+
+#[test]
+fn direct_metadata_parent_is_private_without_creating_managed_sync_state() -> anyhow::Result<()> {
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+    let root = tempfile::tempdir()?;
+    let managed = root.path().join("Okilum/Sync");
+    let direct = mac_direct_state(&managed)?;
+    assert_eq!(direct, root.path().join("Okilum/SyncDirect"));
+    assert!(!managed.exists());
+    assert!(!direct.exists());
+    let parent = managed.parent().unwrap();
+    assert_eq!(std::fs::metadata(parent)?.mode() & 0o777, 0o700);
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))?;
+    assert!(mac_direct_state(&managed).is_err());
+    assert_eq!(std::fs::metadata(parent)?.mode() & 0o777, 0o755);
+    let alias = root.path().join("linked");
+    symlink(parent, &alias)?;
+    assert!(mac_direct_state(&alias.join("Sync")).is_err());
+    assert!(!managed.exists());
+    Ok(())
+}
