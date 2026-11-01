@@ -10,6 +10,7 @@ pub(crate) const HEIGHT: f32 = 28.;
 pub(crate) struct Ancestors {
     rows: Vec<Option<reader_tree::Row>>,
     folders: HashMap<String, (usize, reader_tree::Row)>,
+    roots: Vec<(usize, reader_tree::Row)>,
 }
 impl Ancestors {
     pub(crate) fn new(rows: Vec<Option<reader_tree::Row>>) -> Self {
@@ -22,7 +23,51 @@ impl Ancestors {
                     .map(|row| (row.path.clone(), (index, row.clone())))
             })
             .collect();
-        Self { rows, folders }
+        let roots = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                row.as_ref()
+                    .filter(|row| row.kind == EntryKind::Directory && !row.path.contains('/'))
+                    .map(|row| (index, row.clone()))
+            })
+            .collect();
+        Self {
+            rows,
+            folders,
+            roots,
+        }
+    }
+
+    pub(crate) fn earlier_roots(&self, first: usize) -> Vec<reader_tree::Row> {
+        let Some(current) = self.rows.iter().skip(first).find_map(Option::as_ref) else {
+            return vec![];
+        };
+        let current_root = current.path.split('/').next().unwrap_or("");
+        let end = self.roots.partition_point(|(index, _)| *index < first);
+        self.roots[..end]
+            .iter()
+            .filter(|(_, row)| row.path != current_root)
+            .map(|(_, row)| row.clone())
+            .collect()
+    }
+
+    pub(crate) fn context(&self, first: usize) -> (Vec<reader_tree::Row>, Vec<reader_tree::Row>) {
+        let earlier = self.earlier_roots(first);
+        let mut ancestors = self.at(first);
+        // Keep the root's name when the count overlays that root-folder row.
+        if ancestors.is_empty() && !earlier.is_empty() {
+            if let Some(row) = self
+                .rows
+                .iter()
+                .skip(first)
+                .find_map(Option::as_ref)
+                .filter(|row| row.kind == EntryKind::Directory)
+            {
+                ancestors.push(row.clone());
+            }
+        }
+        (ancestors, earlier)
     }
 
     pub(crate) fn at(&self, first: usize) -> Vec<reader_tree::Row> {
@@ -261,7 +306,8 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let rows = &self.tree_sticky;
-        if rows.is_empty() {
+        let earlier = &self.tree_earlier_roots;
+        if rows.is_empty() && earlier.is_empty() {
             return div().into_any_element();
         }
         let measured = f32::from(self.tree_scroll.0.borrow().base_handle.bounds().size.width);
@@ -274,7 +320,13 @@ impl Reader {
             .iter()
             .map(|row| toolbar_text_width(&row.label, FontWeight::NORMAL, window) + 12.)
             .collect();
-        let (visible, hidden) = compact(&widths, (width - 12.).max(0.));
+        let indicator = format!("↑ {}", earlier.len());
+        let lead = if earlier.is_empty() {
+            0.
+        } else {
+            toolbar_text_width(&indicator, FontWeight::NORMAL, window) + 24.
+        };
+        let (visible, hidden) = compact(&widths, (width - 12. - lead).max(0.));
         let root = self.vault_root.clone();
         let generation = self.watcher_generation;
         let reader = cx.entity().downgrade();
@@ -303,6 +355,45 @@ impl Reader {
             .bg(brand::palette(cx).sidebar)
             .occlude()
             .text_size(px(12.));
+        if !earlier.is_empty() {
+            let tooltip = format!(
+                "Earlier root folders\n{}",
+                earlier
+                    .iter()
+                    .map(|row| row.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            let destinations = earlier.clone();
+            let click = click.clone();
+            strip = strip
+                .child(
+                    Button::new("tree-earlier-roots")
+                        .ghost()
+                        .xsmall()
+                        .flex_none()
+                        .label(indicator)
+                        .accessibility_label(format!("{} earlier root folders", earlier.len()))
+                        .tooltip(tooltip)
+                        .debug_selector(|| "tree-earlier-roots".into())
+                        .dropdown_menu(move |menu, _, _| {
+                            destinations.iter().fold(menu, |menu, row| {
+                                menu.item(
+                                    PopupMenuItem::new(row.label.clone())
+                                        .on_click(click(row.path.clone())),
+                                )
+                            })
+                        }),
+                )
+                .when(!rows.is_empty(), |strip| {
+                    strip.child(
+                        div()
+                            .flex_none()
+                            .text_color(brand::palette(cx).text_muted)
+                            .child("·"),
+                    )
+                });
+        }
         for (position, index) in visible.iter().copied().enumerate() {
             if position > 0 {
                 strip = strip.child(
@@ -366,6 +457,77 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[test]
+    fn earlier_roots_count_only_visible_past_root_folders() {
+        let paths = [
+            "AI",
+            "AI/Notes",
+            "Business",
+            "Dev",
+            "Finance",
+            "Readme.md",
+            "Health",
+            "Health/Areas",
+            "Health/Areas/Current",
+            "Health/Areas/Current/note.md",
+            "Healthcare",
+            "Healthcare/else.md",
+        ];
+        let rows = paths
+            .into_iter()
+            .map(|path| {
+                Some(reader_tree::Row {
+                    path: path.into(),
+                    label: path.rsplit('/').next().unwrap().into(),
+                    kind: if path.ends_with(".md") {
+                        EntryKind::Markdown
+                    } else {
+                        EntryKind::Directory
+                    },
+                    depth: path.matches('/').count(),
+                    expanded: true,
+                    archived: false,
+                    hidden: false,
+                    index: false,
+                })
+            })
+            .collect();
+        let source = Ancestors::new(rows);
+        assert!(source.earlier_roots(0).is_empty());
+        assert!(
+            source.earlier_roots(1).is_empty(),
+            "current root is not an earlier sibling"
+        );
+        let (parents, earlier) = source.context(9);
+        assert_eq!(
+            earlier
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            ["AI", "Business", "Dev", "Finance"]
+        );
+        assert_eq!(
+            parents
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            ["Health", "Health/Areas", "Health/Areas/Current"]
+        );
+        let (parents, earlier) = source.context(6);
+        assert_eq!(
+            earlier.len(),
+            4,
+            "root boundary excludes that root and root-level files"
+        );
+        assert_eq!(parents[0].path, "Health");
+        assert_eq!(
+            source.earlier_roots(11).len(),
+            5,
+            "Health is a sibling of Healthcare, not its parent"
+        );
+        assert!(source.earlier_roots(paths.len()).is_empty());
+    }
+
+    #[test]
     fn narrow_breadcrumbs_keep_both_ends_and_every_middle_destination() {
         let (visible, hidden) = compact(&[60., 60., 60., 60., 60.], 220.);
         assert_eq!(visible, [0, 4]);
@@ -378,15 +540,26 @@ mod tests {
     fn fixture(
         cx: &mut TestAppContext,
     ) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+        fixture_with_branch(cx, "Area/LongDeepDirectory/Leaf", &[])
+    }
+
+    fn fixture_with_branch<'a>(
+        cx: &'a mut TestAppContext,
+        branch: &str,
+        roots: &[&str],
+    ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
         let temp = tempfile::tempdir().unwrap();
         let vault = temp.path().join("vault");
-        std::fs::create_dir_all(vault.join("Area/LongDeepDirectory/Leaf")).unwrap();
+        std::fs::create_dir_all(vault.join(branch)).unwrap();
+        for folder in roots {
+            std::fs::create_dir_all(vault.join(folder)).unwrap();
+        }
         std::fs::write(vault.join("_Index.md"), "# Vault Index — Bird View\n").unwrap();
         std::fs::write(vault.join("Other.md"), "# Another document\n").unwrap();
         std::fs::write(vault.join("_hidden.md"), "# Hidden fixture\n").unwrap();
         for index in 0..50 {
             std::fs::write(
-                vault.join(format!("Area/LongDeepDirectory/Leaf/Note {index:02}.md")),
+                vault.join(format!("{branch}/Note {index:02}.md")),
                 "# Note\n",
             )
             .unwrap();
@@ -424,7 +597,8 @@ mod tests {
         reader.update(visual, |view, cx| {
             view.panels.open(reader_layout::Panel::Notes);
             view.panel_widths.notes = 225.;
-            view.tree.set_subtree("Area", true);
+            view.tree
+                .set_subtree(branch.split('/').next().unwrap(), true);
             view.tree.cursor = None;
             cx.notify();
         });
@@ -540,6 +714,78 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui::test]
+    fn earlier_roots_indicator_preserves_viewport_and_folder_navigation(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = fixture_with_branch(
+            cx,
+            "Health/Areas/Current",
+            &["AI/Notes", "Business", "Dev", "Finance", "_filtered"],
+        );
+        let viewport = visual.debug_bounds("sidebar-tree-body").unwrap();
+        assert!(visual.debug_bounds("tree-earlier-roots").is_none());
+        reader.update(visual, |view, cx| {
+            assert!(
+                view.vault
+                    .entries
+                    .iter()
+                    .any(|entry| entry.path == "_filtered"),
+                "positive control: hidden root exists in inventory"
+            );
+            assert!(!view.tree.rows.iter().any(|row| row.path == "_filtered"));
+            view.tree.set_subtree("AI", true);
+            let first = view
+                .sidebar_items_named("")
+                .iter()
+                .position(|item| {
+                    matches!(item,
+                        SideItem::Tree(row) if row.path == "Health/Areas/Current/Note 10.md"
+                    )
+                })
+                .unwrap();
+            view.tree_scroll
+                .scroll_to_item_strict(first, ScrollStrategy::Top);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("tree-earlier-roots").is_some());
+        assert_eq!(
+            visual
+                .debug_bounds("tree-scroll-breadcrumbs")
+                .unwrap()
+                .size
+                .height,
+            px(HEIGHT)
+        );
+        assert_eq!(visual.debug_bounds("sidebar-tree-body").unwrap(), viewport);
+        let (expanded, offset) = reader.read_with(visual, |view, _| {
+            assert_eq!(
+                view.tree_earlier_roots
+                    .iter()
+                    .map(|row| row.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["AI", "Business", "Dev", "Finance"]
+            );
+            assert_eq!(view.selected_file(), "Other.md");
+            (
+                view.tree.expanded_paths().clone(),
+                view.tree_scroll.0.borrow().base_handle.offset(),
+            )
+        });
+        reader.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        reader.update(visual, |view, cx| {
+            assert_eq!(view.tree_scroll.0.borrow().base_handle.offset(), offset);
+            // This is the same path-bound navigation callback used by the menu.
+            view.scroll_to_tree_ancestor("AI", cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("tree-earlier-roots").is_none());
+        reader.read_with(visual, |view, _| {
+            assert_eq!(view.tree.expanded_paths(), &expanded);
+            assert_eq!(view.selected_file(), "Other.md");
+        });
     }
 
     #[gpui::test]

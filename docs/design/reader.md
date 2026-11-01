@@ -329,6 +329,19 @@ Every icon-only button has a tooltip naming the action and shortcut.
 
 ## Sidebar (R2)
 
+**Tree scroll context (Oleg, 2026-11-01).** The permanent Tree header opens
+the real index as `Vault Index`, with the existing Contents icon and a left-aligned
+title. New note, New folder, Collapse all and Show/Hide hidden remain compact
+icon-only actions in that row; the index path, Reveal and Pin remain available.
+One overlaid breadcrumb row follows the first visible tree item without changing
+the list viewport. Its prefix `↑ 4 · Health › Areas › Current` counts only earlier
+root-folder rows fully scrolled above the viewport in the current visible tree
+projection. It excludes the current root ancestor, nested folders and filtered
+items. Tooltip and menu list those earlier folders; selecting one uses the same
+scroll-only navigation as an ancestor click and preserves expansion. The prefix
+disappears at zero. At a root-folder boundary its name remains beside the prefix;
+no additional sticky row or stacked folder headers are introduced.
+
 The panel header gives the vault name width priority and a full-name tooltip.
 Clicking it opens vault actions. New note, New folder and Collapse all folders
 follow. Measured text determines overflow: Collapse all, then New folder, then

@@ -43,6 +43,8 @@ mod reader_cache;
 mod reader_code;
 mod reader_code_file;
 mod reader_code_language;
+mod reader_context_menu;
+mod reader_read_menu;
 #[cfg(any(unix, windows))]
 mod reader_confirm;
 #[cfg(any(unix, windows))]
@@ -1360,7 +1362,11 @@ fn markdown_plugins_at(
     let embed_link_handler = link_handler.clone();
     let footnote_link_handler = link_handler.clone();
     // Read mode only: a right-click on a table offers to copy it (#2025).
-    reader_table_copy::install(view, image_actions.clone(), live)
+    reader_context_menu::install(
+        reader_table_copy::install(view, image_actions.clone(), live),
+        image_actions.clone(),
+        live,
+    )
         .selection_format(sel_format)
         .code_block_language(reader_code_language::resolver())
         .code_block_actions(reader_code::actions)
@@ -1604,6 +1610,7 @@ struct Reader {
     file_preview: Option<reader_files::FilePreview>,
     tree_preview: reader_tree_preview::Session,
     tree_sticky: Vec<reader_tree::Row>,
+    tree_earlier_roots: Vec<reader_tree::Row>,
     project: Option<Entity<project::ProjectView>>,
     project_open: bool,
     project_navigation: reader_project_navigation::State,
@@ -1733,6 +1740,7 @@ struct Reader {
     /// the document generation so a link left behind by navigation is stale:
     /// a right-click there opens only the link's menu (#943).
     pointer_link: Option<(String, u64)>,
+    read_press: Option<reader_context_menu::ReadPress>,
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,
@@ -2057,6 +2065,7 @@ impl Reader {
             recovery_toast: None,
             recovery_toast_generation: 0,
             pointer_link: None,
+            read_press: None,
             displayed_history_notice: None,
             history_notice_generation: 0,
             notice_generation: 0,
@@ -2096,6 +2105,7 @@ impl Reader {
             file_preview: None,
             tree_preview: Default::default(),
             tree_sticky: Vec::new(),
+            tree_earlier_roots: Vec::new(),
             project: None,
             project_open: false,
             project_navigation: Default::default(),
@@ -3392,6 +3402,7 @@ impl Reader {
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
             self.tree_sticky.clear();
+            self.tree_earlier_roots.clear();
             #[cfg(any(unix, windows))]
             if !self.single_file {
                 let folder = self
@@ -5213,6 +5224,7 @@ impl Reader {
             let observer = cx.entity().downgrade();
             let observed_root = self.vault_root.clone();
             let observed_generation = self.watcher_generation;
+            let observed_tree_rows = self.tree.rows.clone();
             let observed_scroll = self.tree_scroll.clone();
             let last_first = std::cell::Cell::new(None);
             section_views.push(
@@ -5277,11 +5289,13 @@ impl Reader {
                                 }
                                 let observer = observer.clone();
                                 let observed_root = observed_root.clone();
-                                let sticky = sticky_source.at(first);
+                                let observed_tree_rows = observed_tree_rows.clone();
+                                let (sticky, earlier_roots) = sticky_source.context(first);
                                 cx.defer(move |cx| {
                                     let _ = observer.update(cx, |this, cx| {
                                         if this.vault_root != observed_root
                                             || this.watcher_generation != observed_generation
+                                            || !Rc::ptr_eq(&this.tree.rows, &observed_tree_rows)
                                         {
                                             return;
                                         }
@@ -5290,8 +5304,14 @@ impl Reader {
                                             .iter()
                                             .map(|r| &r.path)
                                             .ne(sticky.iter().map(|r| &r.path))
+                                            || this
+                                                .tree_earlier_roots
+                                                .iter()
+                                                .map(|r| &r.path)
+                                                .ne(earlier_roots.iter().map(|r| &r.path))
                                         {
                                             this.tree_sticky = sticky;
+                                            this.tree_earlier_roots = earlier_roots;
                                             cx.notify();
                                         }
                                     });
@@ -5418,19 +5438,7 @@ impl Reader {
                                 }),
                             )
                             .context_menu(move |menu, window, cx| {
-                                let menu = reader_reminder::menu(menu, &menu_entity, cx);
-                                // A right-click on a heading offers its link (#1049).
-                                let heading = menu_entity.upgrade().and_then(|reader| {
-                                    reader.read(cx).heading_at(window.mouse_position(), cx)
-                                });
-                                match heading {
-                                    Some(text) => reader_deep_link::heading_link_item(
-                                        menu,
-                                        &menu_entity,
-                                        text,
-                                    ),
-                                    None => menu,
-                                }
+                                reader_context_menu::menu(menu, &menu_entity, window, cx)
                             })
                             .children(self.render_landing_flash(cx))
                             .child(
@@ -7027,6 +7035,7 @@ impl Render for Reader {
             .set_note_titles(reader_ui_state::tree_note_titles(cx))
         {
             self.tree_sticky.clear();
+            self.tree_earlier_roots.clear();
             self.tree_revealed.clear();
         }
         self.prepare_tree_follow(cx);

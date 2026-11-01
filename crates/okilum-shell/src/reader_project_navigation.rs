@@ -379,6 +379,7 @@ impl Reader {
         };
         cx.set_global(okilum_shell::project_avatar::ProjectIcons::default());
         self.tree_sticky.clear();
+        self.tree_earlier_roots.clear();
     }
 
     pub(super) fn show_app_section(
@@ -1147,6 +1148,7 @@ impl Reader {
         }
         self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
         self.tree_sticky.clear();
+        self.tree_earlier_roots.clear();
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));
         }
@@ -1199,6 +1201,7 @@ impl Reader {
             self.panel_widths = saved.widths;
             self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
             self.tree_sticky.clear();
+            self.tree_earlier_roots.clear();
             self.tree_scroll
                 .0
                 .borrow()
