@@ -3,11 +3,14 @@
 ## Linux Manager workspace (#2098, #2104)
 
 With Agents enabled, Linux opens a native conversation over T3 WebSocket v2.
-The thread picker subscribes to the explicitly bound Manager and executor
-projects, filters archived/deleted threads, and supports searching a virtualized
-list. Selecting a thread never rewrites the area's Manager binding. Each
-origin/thread retains its own composer, history projection and durable command
-journal; returning to Manager restores its independent draft.
+The panel shows only `binding.manager.thread_id` for the current project
+(#2203, 1 November scope override). Its ordinary title, transcript, composer,
+model selection and runtime actions all belong to that configured Manager.
+Other conversations and new threads are opened in T3 through **Open in T3**;
+there is no embedded thread dropdown, search, New thread or return control.
+The separate Okilum project picker still switches projects and their Managers.
+The native connection, history, questions, approvals, Stop, attachments and
+per-origin/project/thread durable drafts retain their existing contracts.
 
 The chat header shows the current model in a compact dropdown and a one-word
 connection/run status. Selecting a model requires **Apply** and a confirmed
@@ -20,7 +23,7 @@ through **… → Diagnostics**, outside the conversation.
 The Linux composer starts with three visible lines, grows up to ten, and then
 scrolls within the draft. Enter sends once; Shift+Enter adds a newline. Pasting
 multiline text and confirming an active IME composition do not send a message.
-The searchable thread picker supplies the conversation title once. Scrolling
+The configured Manager supplies the conversation title once. Scrolling
 up automatically loads earlier server pages while preserving the retained
 history and read anchor. A failed page offers an explicit retry instead of
 retrying during every repaint. New messages follow the bottom only while the
@@ -291,20 +294,17 @@ requires explicit confirmation and the same project verification and T3 readback
 
 ## Scoped conversations and retained drafts (#2134)
 
-The Linux Manager workspace switches and filters conversations only in the
-explicitly bound Manager and executor projects. **New thread** creates an idle
-conversation in the selected conversation's project, inheriting its confirmed
-model and interaction/runtime policy. It neither starts a provider turn nor
-changes the Area's canonical Manager binding. An unconfirmed creation retains
-its complete operation identity across restart; an explicit retry resumes that
-operation instead of creating another conversation.
+**Scope override #2203 (1 November):** embedded conversation navigation and
+creation are superseded. The panel always uses the configured Manager; other
+threads belong to T3. The draft storage contract below remains in force, and
+existing drafts are neither migrated nor deleted by the navigation change.
 
 Composer drafts live in application state, outside the rebuildable index and
 vault. Their identity is the normalized server origin, project and thread;
 server aliases intentionally share a draft. Text changes are serialized to disk
 off the UI thread, and application quit waits for pending writes, including
-writers from already closed windows. Reconnection and thread switching retain
-independent drafts. A prepared send clears only the exact unchanged draft that
+writers from already closed windows. Reconnection and project/Manager switching
+retain independent drafts. A prepared send clears only the exact unchanged draft that
 was handed to durable message preparation, including its attachment metadata.
 
 The attachment adapter retains display metadata and confirmed asset references,

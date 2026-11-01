@@ -15,19 +15,26 @@ impl ProjectView {
             .gap_1()
             .debug_selector(|| "project-chat-header".into());
         #[cfg(target_os = "linux")]
-        {
-            // The searchable thread picker is the transcript's sole title.
-            row = row.child(div().flex_1().min_w_0());
-        }
+        let title = if self.native.title().trim().is_empty() {
+            "Manager"
+        } else {
+            self.native.title()
+        };
         #[cfg(not(target_os = "linux"))]
-        {
-            row = row.child(div().flex_1().child("Manager"));
-        }
+        let title = "Manager";
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .debug_selector(|| "project-manager-title".into())
+                .child(title.to_owned()),
+        );
         if let Some(target) = self.manager_model_target() {
             row = row.child(self.model_picker("project-manager-model", target, cx));
         }
         #[cfg(target_os = "linux")]
-        if !self.native.active() && !self.threads.enabled {
+        if !self.native.active() {
             row = row.child(
                 Button::new("project-pair")
                     .debug_selector(|| "project-pair".into())
