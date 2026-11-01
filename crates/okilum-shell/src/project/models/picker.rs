@@ -1,4 +1,5 @@
 use super::*;
+use crate::project::design as ui;
 
 impl ProjectView {
     pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -9,12 +10,14 @@ impl ProjectView {
         let available = if measured > px(0.) {
             measured
         } else {
-            px(760.)
+            px(920.)
         };
-        let width = available.min(if has_options { px(760.) } else { px(680.) });
+        let width = available.min(if has_options { px(920.) } else { px(800.) });
         // Keep both names and descriptor labels readable; stack the options
         // only when the window cannot fit a useful model list beside them.
-        let options_beside = has_options && width >= px(640.);
+        let options_beside = has_options && width >= px(800.);
+        let named_providers = width >= px(640.);
+        let rail_width = if named_providers { px(144.) } else { px(36.) };
         let measured_height = self.model_ui.panel_height.get();
         let height = if measured_height > px(0.) {
             measured_height
@@ -30,11 +33,54 @@ impl ProjectView {
             .w(width)
             .max_w_full()
             .max_h(height)
-            .text_size(px(brand::READER_CHROME_FONT_SIZE))
+            .text_size(px(ui::CHROME))
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .gap_2();
+            .gap(px(ui::GAP))
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .h(px(48.))
+                    .flex_shrink_0()
+                    .items_start()
+                    .gap(px(ui::GAP))
+                    .border_b_1()
+                    .border_color(palette.border_subtle)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .debug_selector(|| "project-model-title".into())
+                                    .text_size(px(ui::TITLE))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Select a model"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(ui::LABEL))
+                                    .line_height(px(18.))
+                                    .text_color(palette.text_muted)
+                                    .child("Model and settings for this Manager"),
+                            ),
+                    )
+                    .child(
+                        Button::new("project-model-close")
+                            .debug_selector(|| "project-model-close".into())
+                            .ghost()
+                            .small()
+                            .icon(IconName::Close)
+                            .accessibility_label("Close model selector")
+                            .tooltip("Close model selector (Esc)")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_models(window, cx)),
+                            ),
+                    ),
+            );
         let mut search_row = h_flex()
             .w_full()
             .min_w_0()
@@ -127,7 +173,7 @@ impl ProjectView {
             // Search, status and errors keep their own line boxes. The body
             // spends only the remaining visible-window budget, and each column
             // owns its scroll rather than clipping the popup's final controls.
-            let chrome = px(40.)
+            let chrome = px(96.)
                 + if loading { px(24.) } else { px(0.) }
                 + if self.model_error.is_some() {
                     px(56.)
@@ -141,11 +187,11 @@ impl ProjectView {
                 };
             let body_budget = (height - chrome).max(px(0.));
             let rail_rows = snapshot.catalog.providers.len() as f32;
-            let rail_natural = px(72. + rail_rows * 36.);
-            let natural_height = px((row_count as f32 * 36.).clamp(108., 324.)).max(if searching {
+            let rail_natural = px(88. + rail_rows * 40.);
+            let natural_height = px((row_count as f32 * 44.).clamp(132., 396.)).max(if searching {
                 px(108.)
             } else {
-                rail_natural.min(px(324.))
+                rail_natural.min(px(396.))
             });
             let (list_height, option_height) = if has_options && !options_beside {
                 let column_budget = (body_budget - px(8.)).max(px(0.));
@@ -162,24 +208,31 @@ impl ProjectView {
                 ((column_budget - options).min(natural_height), options)
             } else {
                 let shared = body_budget.min(if has_options {
-                    natural_height.max(px(288.))
+                    natural_height.max(px(340.))
                 } else {
                     natural_height
                 });
                 (shared, shared)
             };
             let mut rail = v_flex()
-                .w(px(32.))
+                .debug_selector(|| "project-model-provider-rail".into())
+                .w(rail_width)
                 .h(list_height)
                 .flex_shrink_0()
+                .rounded(px(ui::RADIUS))
+                .bg(palette.surface_raised)
+                .p_1()
                 .gap_1()
                 .child(
                     Button::new("project-model-favorites")
                         .debug_selector(|| "project-model-favorites".into())
                         .ghost()
-                        .size(px(32.))
+                        .w_full()
+                        .h(px(32.))
                         .flex_shrink_0()
+                        .justify_start()
                         .icon(IconName::StarFill)
+                        .when(named_providers, |button| button.label("Favorites"))
                         .tooltip("Favorites")
                         .accessibility_label("Favorite models")
                         .selected(self.model_ui.favorites)
@@ -217,14 +270,31 @@ impl ProjectView {
                     Button::new(("project-model-provider", index))
                         .debug_selector(move || format!("project-model-provider-{index}"))
                         .ghost()
-                        .size(px(32.))
+                        .w_full()
+                        .h(px(36.))
                         .flex_shrink_0()
+                        .justify_start()
+                        .gap_2()
                         .p_1()
                         .child(self.render_picker_provider_mark(
                             provider,
                             &snapshot.catalog.providers,
                             cx,
                         ))
+                        .when(named_providers, |button| {
+                            button.child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("project-model-account-label-{index}")
+                                    })
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(ui::LABEL))
+                                    .line_height(px(ui::LINE))
+                                    .child(title.clone()),
+                            )
+                        })
                         .tooltip(title.clone())
                         .accessibility_label(format!("Models from {title}"))
                         .selected(!self.model_ui.favorites && instance == id)
@@ -256,7 +326,8 @@ impl ProjectView {
                     Button::new("project-model-missing-provider")
                         .debug_selector(|| "project-model-missing-provider".into())
                         .ghost()
-                        .size(px(32.))
+                        .w_full()
+                        .h(px(32.))
                         .flex_shrink_0()
                         .icon(IconName::TriangleAlert)
                         .tooltip("Current provider is unavailable")
@@ -274,9 +345,12 @@ impl ProjectView {
                 Button::new("project-model-show-current")
                     .debug_selector(|| "project-model-show-current".into())
                     .ghost()
-                    .size(px(32.))
+                    .w_full()
+                    .h(px(32.))
                     .flex_shrink_0()
+                    .justify_start()
                     .icon(IconName::Check)
+                    .when(named_providers, |button| button.label("Current model"))
                     .tooltip("Show current model")
                     .accessibility_label("Show current model")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -347,10 +421,13 @@ impl ProjectView {
                     div()
                         .id("project-model-option-column")
                         .debug_selector(|| "project-model-option-column".into())
-                        .w(px(200.))
+                        .w(px(260.))
                         .flex_shrink_0()
                         .h(option_height)
                         .min_h_0()
+                        .rounded(px(ui::RADIUS))
+                        .bg(palette.surface_raised)
+                        .p(px(ui::INSET))
                         .overflow_y_scroll()
                         .child(self.render_model_options(cx)),
                 );
@@ -366,6 +443,9 @@ impl ProjectView {
                         .h(option_height)
                         .min_h_0()
                         .flex_shrink_0()
+                        .rounded(px(ui::RADIUS))
+                        .bg(palette.surface_raised)
+                        .p(px(ui::INSET))
                         .overflow_y_scroll()
                         .child(self.render_model_options(cx)),
                 );
@@ -501,11 +581,14 @@ impl ProjectView {
         let mut title = v_flex()
             .flex_1()
             .min_w_0()
-            .line_height(px(16.))
+            .line_height(px(20.))
             .child(
                 div()
                     .truncate()
                     .debug_selector(move || format!("project-model-label-{index}"))
+                    .text_size(px(ui::BODY))
+                    .line_height(px(ui::LINE))
+                    .font_weight(FontWeight::MEDIUM)
                     .child(choice.label.clone()),
             )
             .when_some(secondary, |title, secondary| {
@@ -513,7 +596,8 @@ impl ProjectView {
                     div()
                         .debug_selector(move || format!("project-model-provider-label-{index}"))
                         .truncate()
-                        .text_size(px(12.))
+                        .text_size(px(ui::LABEL))
+                        .line_height(px(16.))
                         .text_color(palette.text_muted)
                         .child(secondary),
                 )
@@ -555,7 +639,7 @@ impl ProjectView {
             .id(("project-model-row", index))
             .debug_selector(move || format!("project-model-row-{index}"))
             .w_full()
-            .h(px(36.))
+            .h(px(44.))
             .min_w_0()
             .items_center()
             .gap_1()
@@ -575,8 +659,8 @@ impl ProjectView {
                     .ghost()
                     .flex_1()
                     .min_w_0()
-                    .h(px(36.))
-                    .px_1()
+                    .h(px(44.))
+                    .px_2()
                     .py(px(2.))
                     .justify_start()
                     .overflow_hidden()

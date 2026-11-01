@@ -1,5 +1,6 @@
 //! Linux-only bounded rendering of the MCP projection. Data changes arrive by position.
 use super::*;
+use crate::project::design;
 use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
 use okilum_t3::projection::{
     presentation::{self, Body},
@@ -460,11 +461,15 @@ impl Feed {
                     .w_full()
                     .min_w_0()
                     .items_center()
-                    .gap_2()
+                    .min_h(px(28.))
+                    .gap(px(design::GAP))
+                    .debug_selector(move || format!("project-message-header-{position}"))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(12.))
+                            .min_w_0()
+                            .text_size(px(design::LABEL))
+                            .line_height(px(design::LINE))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.text_muted)
                             .child(if message.user { "You" } else { "Manager" }),
@@ -478,17 +483,22 @@ impl Feed {
                             source_id: message.source_id.clone(),
                         })
                     });
-                // Conversation hierarchy comes from alignment and a quiet user
-                // surface, not a bordered card around every assistant paragraph.
+                // One reading column and quiet role chrome carry the hierarchy.
+                // The user prompt has a distinct accent surface; assistant prose
+                // stays directly on the shared conversation surface.
                 let body = v_flex()
                     .w_full()
                     .min_w_0()
-                    .max_w(px(760.))
-                    .gap_1()
+                    .max_w(px(if message.user { 640. } else { 720. }))
+                    .gap(px(design::GAP * 0.5))
+                    .debug_selector(move || format!("project-message-surface-{position}"))
+                    .text_color(colors.text)
                     .when(message.user, |row| {
-                        row.px_3().py_2().rounded_lg().bg(colors.selected)
+                        row.p(px(design::INSET))
+                            .rounded(px(design::RADIUS))
+                            .bg(colors.accent.opacity(0.08))
                     })
-                    .when(!message.user, |row| row.px_1().py_1())
+                    .when(!message.user, |row| row.py(px(design::GAP)))
                     .child(heading)
                     .child(self.markdown(
                         ("project-message", position as usize),
@@ -501,8 +511,11 @@ impl Feed {
                     .debug_selector(move || format!("project-message-{position}"))
                     .w_full()
                     .min_w_0()
-                    .mb_3()
-                    .when(message.user, |row| row.pl_4().items_end())
+                    .px(px(design::INSET))
+                    .mb(px(design::GAP * 2.5))
+                    .when(message.user, |row| {
+                        row.pl(px(design::INSET * 2.)).items_end()
+                    })
                     .when(!message.user, |row| row.items_start())
                     .child(body)
                     .into_any_element()
@@ -520,14 +533,21 @@ impl Feed {
                         "project-retained-{}",
                         record.message.client_request_id
                     )))
-                    .gap_1()
-                    .child(div().text_color(brand::palette(cx).text_muted).child(
-                        if record.receipt.is_some() {
-                            "You · queued"
-                        } else {
-                            "Message delivery unconfirmed"
-                        },
-                    ))
+                    .px(px(design::INSET))
+                    .py(px(design::GAP))
+                    .mb(px(design::GAP * 2.))
+                    .gap(px(design::GAP))
+                    .child(
+                        div()
+                            .text_size(px(design::LABEL))
+                            .line_height(px(design::LINE))
+                            .text_color(brand::palette(cx).text_muted)
+                            .child(if record.receipt.is_some() {
+                                "You · queued"
+                            } else {
+                                "Message delivery unconfirmed"
+                            }),
+                    )
                     .when(record.receipt.is_some(), |row| {
                         row.child(self.markdown(
                             ("project-retained", index),
@@ -594,6 +614,7 @@ impl Render for Feed {
         .min_h_0();
         div()
             .debug_selector(|| "project-history".into())
+            .bg(brand::palette(cx).surface)
             .size_full()
             .min_h_0()
             .when(self.groups.error, |view| {
@@ -610,3 +631,90 @@ impl Render for Feed {
 mod native;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod design_layout_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn concept_message_surfaces_keep_copy_reachable_inside_narrow_reading_columns(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let owner = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let retained_owner = owner.clone();
+        let authored = "Original **prompt** with retained Markdown.";
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let parent = cx.new(|cx| ProjectView::empty(Some(temp.path().to_owned()), window, cx));
+            let feed = parent.read(cx).feed.clone();
+            let items = [
+                serde_json::from_value::<TimelineItem>(serde_json::json!({
+                    "position":1,"itemId":"design-response","type":"assistant_message",
+                    "status":"completed","text":"## Clear next step\n\nA readable reply with **emphasis** and a [link](https://example.org).","updatedAt":"now"
+                })).unwrap(),
+                serde_json::from_value::<TimelineItem>(serde_json::json!({
+                    "position":2,"itemId":"design-prompt","type":"user_message",
+                    "status":"completed","text":authored,"updatedAt":"now"
+                })).unwrap(),
+            ];
+            feed.update(cx, |feed, cx| feed.apply(items.iter(), None, cx));
+            *retained_owner.borrow_mut() = Some(parent);
+            Root::new(feed, window, cx)
+        });
+        for width in [760., 320.] {
+            visual.simulate_resize(size(px(width), px(600.)));
+            visual.run_until_parked();
+            let history = visual
+                .debug_bounds("project-history")
+                .expect("actual history is mounted");
+            for (surface_selector, heading_selector, copy_selector) in [
+                (
+                    "project-message-surface-1",
+                    "project-message-header-1",
+                    "project-message-copy-1",
+                ),
+                (
+                    "project-message-surface-2",
+                    "project-message-header-2",
+                    "project-message-copy-2",
+                ),
+            ] {
+                let surface = visual
+                    .debug_bounds(surface_selector)
+                    .expect("actual message surface is painted");
+                let heading = visual
+                    .debug_bounds(heading_selector)
+                    .expect("role and copy share a stable header");
+                let copy = visual
+                    .debug_bounds(copy_selector)
+                    .expect("whole-message copy remains reachable");
+                assert!(surface.left() >= history.left() && surface.right() <= history.right(),
+                    "message surface cannot escape its reading column: surface={surface:?}, history={history:?}");
+                assert!(copy.left() >= surface.left() && copy.right() <= surface.right());
+                assert!(copy.top() >= heading.top() && copy.bottom() <= heading.bottom());
+                assert!(
+                    heading.bottom() < surface.bottom(),
+                    "header must leave space for the actual prose"
+                );
+            }
+            let user = visual.debug_bounds("project-message-surface-2").unwrap();
+            let assistant = visual.debug_bounds("project-message-surface-1").unwrap();
+            assert!(
+                user.left() > assistant.left(),
+                "the quiet user surface has distinct alignment"
+            );
+        }
+        let copy = visual.debug_bounds("project-message-copy-2").unwrap();
+        visual.simulate_click(copy.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(authored)
+            )
+        });
+        drop(root);
+        drop(owner);
+    }
+}

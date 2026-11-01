@@ -334,3 +334,14 @@ row or conversation. A missing/unsupported/abbreviated response stays explicitly
 incomplete; Open in T3 is not treated as completed in-panel parity. Live output
 may be refreshed, and terminal revisions replace stale live detail. Proposed
 plans preserve all Markdown, and todo lists retain every step and its status.
+
+
+### Manager visual composition (2026-11-01)
+
+The generated [workspace concept](https://pomoi.co/f/88b2efbd-aae4-4eea-ad8a-ae015cb393f0/01-workspace.png) and [model-selector concept](https://pomoi.co/f/c0a007cd-f9cd-45c7-85b5-dc1d1ef825aa/02-model-selector.png) guide the native composition. They are design references, not product screenshots or acceptance evidence. Their synthetic avatars, tasks and model metadata are not app features.
+
+Manager shares one typography and spacing scale across its compact identity header, readable message history and single message surface. Active status/current request and the exact run-scoped Stop action belong above text entry inside that surface. Attachments, the real model control and Send/mode disclosure belong to its wrapping toolbar. Composer observes its owning ProjectView for confirmed model/catalog state; ordinary keystrokes remain local to Composer and do not invalidate history.
+
+The window-bounded model selector separates readable provider/account identities and virtualized model discovery from the current model's supported descriptor options. Existing authenticated warmup, zero RPC on open/close, favorites, keyboard mapping and confirmation semantics remain authoritative. Colors use the live app palette, not the generated illustration's invented branding.
+
+Source, Linux headless regressions, published beta and actual native rendering are separate evidence. The stopped native harness is not resumed by this composition change; visual acceptance remains open until actual product rendering is available.

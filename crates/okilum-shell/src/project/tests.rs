@@ -156,8 +156,9 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
     let dropdown = visual
         .debug_bounds("project-model-panel")
         .expect("model dropdown");
-    assert!(dropdown.size.width <= px(440.));
-    assert!(dropdown.size.height <= px(360.));
+    let viewport = visual.update(|window, _| window.viewport_size());
+    assert!(dropdown.left() >= px(0.) && dropdown.right() <= viewport.width);
+    assert!(dropdown.top() >= px(0.) && dropdown.bottom() <= viewport.height);
     assert_eq!(
         visual.debug_bounds("project-chat-history"),
         Some(history_before),
@@ -1461,16 +1462,16 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
         "model configuration belongs to the composer, not the identity header"
     );
     assert!(
-        model.top() >= composer.top() && model.bottom() <= input.top(),
-        "model and textarea form one message area"
+        model.top() >= input.bottom() && model.bottom() <= composer.bottom(),
+        "model belongs to the unified composer toolbar below text entry"
     );
     assert!(
         input.size.width >= px(240.),
         "text entry keeps the full narrow-panel width: {input:?}"
     );
     assert!(
-        stop.bottom() <= composer.top(),
-        "the active run action stays beside the message area"
+        stop.top() >= composer.top() && stop.bottom() <= input.top(),
+        "active status and Stop belong to the same message surface above text entry"
     );
     for selector in [
         "project-manager-title",

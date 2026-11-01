@@ -252,6 +252,13 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
 fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &mut TestAppContext) {
     let viewport = size(px(1000.), px(760.));
     let (view, visual, _state, gateway) = fixture(cx, viewport, 23, Some(px(320.)));
+    let reads = gateway.reads.lock().unwrap().len();
+    view.update_in(visual, |view, window, cx| {
+        view.compose.update(cx, |input, cx| {
+            input.set_value("Keep the Manager draft", window, cx)
+        });
+    });
+    visual.run_until_parked();
     // Let the normal closed view pass through idle display frames before the
     // completed click. The trigger must not require an extra capture-open cycle.
     for _ in 0..3 {
@@ -285,13 +292,48 @@ fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &m
         panel.size.width > px(320.),
         "the popup has a workspace-width budget, not a narrow Manager-panel budget"
     );
+    inside(
+        bounds(visual, "project-model-title"),
+        panel,
+        "model-selector identity",
+    );
+    inside(
+        bounds(visual, "project-model-close"),
+        panel,
+        "visible close action",
+    );
+    let rail = bounds(visual, "project-model-provider-rail");
+    assert!(
+        rail.size.width >= px(120.),
+        "a spacious window shows readable account identities"
+    );
+    let providers = bounds(visual, "project-model-providers");
+    inside(
+        bounds(visual, "project-model-account-label-0"),
+        providers,
+        "readable account label",
+    );
     let choices = bounds(visual, "project-model-choices");
+    assert!(
+        choices.size.width >= px(300.),
+        "provider labels must not squeeze readable model names"
+    );
     let current = bounds(visual, "project-model-current-23");
     assert!(
         choices.contains(&current.center()),
         "the current last model is visible without an offscreen click"
     );
     let options = bounds(visual, "project-model-option-column");
+    inside(
+        bounds(visual, "project-model-inspector-title"),
+        options,
+        "current-model inspector identity",
+    );
+    inside(
+        bounds(visual, "project-model-settings-title"),
+        options,
+        "supported settings heading",
+    );
     let reasoning = bounds(visual, "project-model-option-heading-0");
     assert!(
         reasoning.size.height >= px(18.),
@@ -319,4 +361,24 @@ fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &m
     view.read_with(visual, |view, _| assert!(view.model_open));
     assert!(gateway.model_writes.lock().unwrap().is_empty());
     assert!(gateway.sends.lock().unwrap().is_empty());
+    let close = bounds(visual, "project-model-close");
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-model-panel").is_none());
+    view.update_in(visual, |view, window, cx| {
+        assert!(!view.model_open);
+        assert_eq!(
+            view.compose.read(cx).value().as_str(),
+            "Keep the Manager draft"
+        );
+        assert!(
+            view.compose.read(cx).focus_handle(cx).is_focused(window),
+            "closing restores composer focus"
+        );
+    });
+    assert_eq!(
+        gateway.reads.lock().unwrap().len(),
+        reads,
+        "visual selector navigation and close issue zero RPC"
+    );
 }

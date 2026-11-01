@@ -18,6 +18,7 @@ mod chat_ui;
 #[cfg(target_os = "linux")]
 mod composer;
 mod connections;
+mod design;
 mod desktop;
 #[cfg(target_os = "linux")]
 mod drafts;
@@ -271,11 +272,12 @@ impl ProjectView {
         #[cfg(target_os = "linux")]
         let parent = cx.entity().downgrade();
         #[cfg(target_os = "linux")]
-        let feed = cx.new(|cx| feed::Feed::new(parent, cx));
+        let feed = cx.new(|cx| feed::Feed::new(parent.clone(), cx));
         #[cfg(target_os = "linux")]
         let composer = cx.new(|cx| {
             let mut composer = composer::Composer::new(compose.clone(), cx);
             composer.bind_history(feed.clone());
+            composer.bind_parent(parent.clone(), cx);
             composer
         });
         #[cfg(target_os = "linux")]
@@ -575,10 +577,15 @@ impl ProjectView {
             .items_center()
             .gap_2()
             .debug_selector(|| "project-connected-line".into())
+            .child(div().size(px(6.)).rounded_full().bg(match label {
+                "Connected" | "Ready" => brand::palette(cx).success,
+                "Working" => brand::palette(cx).accent,
+                _ => brand::palette(cx).text_muted,
+            }))
             .child(
                 div()
                     .min_w_0()
-                    .text_size(px(12.))
+                    .text_size(px(design::LABEL))
                     .debug_selector(|| "project-chat-status".into())
                     .text_color(brand::palette(cx).text_muted)
                     .child(label),
@@ -1382,8 +1389,11 @@ impl ProjectView {
             })
             .size_full()
             .min_h_0()
-            .p_4()
-            .gap_3()
+            .text_size(px(design::CHROME))
+            .line_height(px(design::LINE))
+            .text_color(brand::palette(cx).text)
+            .bg(brand::palette(cx).surface)
+            .gap_2()
             .child(self.render_chat_header(&status, open, cx))
             .when(self.connection_details, |view| view.child(self.render_chat_diagnostics(cx)))
             .when(
@@ -1522,18 +1532,33 @@ impl ProjectView {
                                 ),
                         ).into_any_element();
                 #[cfg(target_os = "linux")]
-                let view = view.when(self.native.actions.read(cx).has_visible_content(cx), |view|view.child(self.native.actions.clone()));
-                #[cfg(target_os = "linux")]
                 let attachments = if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)};
                 #[cfg(target_os = "linux")]
-                let composer = v_flex().w_full().min_w_0().gap_2()
-                    .child(self.render_model_controls(_window, cx))
+                let composer = v_flex()
+                    .w_full().min_w_0().gap(px(design::GAP))
+                    .when(self.native.actions.read(cx).has_visible_content(cx), |surface| {
+                        surface.child(self.native.actions.clone())
+                    })
                     .child(attachments)
                     .child(composer);
                 #[cfg(not(target_os = "linux"))]
-                let composer = v_flex().w_full().min_w_0().gap_2()
+                let composer = v_flex().w_full().min_w_0().gap(px(design::GAP))
                     .child(self.render_model_controls(_window, cx)).child(composer);
-                view.child(div().w_full().min_w_0().debug_selector(|| "project-chat-composer".into()).child(composer))
+                let palette = brand::palette(cx);
+                view.child(
+                    div().w_full().min_w_0().px(px(design::INSET)).pb(px(design::INSET))
+                        .child(div()
+                            .id("project-message-surface")
+                            .debug_selector(|| "project-chat-composer".into())
+                            .w_full().min_w_0()
+                            .track_focus(&self.compose.read(cx).focus_handle(cx))
+                            .border_1().border_color(palette.border_subtle)
+                            .focus(move |style| style.border_color(palette.focus))
+                            .rounded(px(design::RADIUS))
+                            .bg(palette.surface_raised)
+                            .p(px(design::INSET))
+                            .child(composer))
+                )
             }).into_any_element()
     }
 }
