@@ -74,6 +74,7 @@ fn build(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App, object: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn background_and_selection_menu_write_captured_clipboard_bytes(cx: &mut TestAppContext) {
