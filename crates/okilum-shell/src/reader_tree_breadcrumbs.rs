@@ -92,8 +92,33 @@ impl Reader {
         let title = Button::new("tree-vault-index")
             .ghost()
             .small()
-            .icon(IconName::FileText)
-            .label("Vault Index")
+            .accessibility_label("Vault Index")
+            .w_full()
+            .justify_start()
+            .px(px(4.))
+            // Button's built-in label centers itself in the available width.
+            // A full-width start-aligned child keeps Contents + title at the tree inset.
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .justify_start()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(16.))
+                            .debug_selector(|| "tree-vault-index-icon".into())
+                            .child(Icon::default().path("icons/list.svg").small()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .debug_selector(|| "tree-vault-index-label".into())
+                            .child("Vault Index"),
+                    ),
+            )
             .tooltip(tooltip)
             .disabled(path.is_none())
             .min_w_0()
@@ -108,7 +133,8 @@ impl Reader {
                 });
             });
         let menu_reader = reader.clone();
-        let title = div()
+        let title = h_flex()
+            .justify_start()
             .flex_1()
             .min_w_0()
             .overflow_hidden()
@@ -156,21 +182,28 @@ impl Reader {
                 )
             });
         let mut actions = h_flex().flex_none().gap_0p5();
-        for action in [
-            SidebarAction::NewNote,
-            SidebarAction::NewFolder,
-            SidebarAction::CollapseAll,
-        ] {
-            if !SidebarAction::available().contains(&action) {
-                continue;
-            }
+        for &action in SidebarAction::available() {
+            let tooltip = if action == SidebarAction::ShowHidden {
+                reader_shortcuts::hint(
+                    if self.sidebar.show_hidden {
+                        "Hide hidden files"
+                    } else {
+                        "Show hidden files"
+                    },
+                    action.action().as_ref(),
+                    cx,
+                )
+            } else {
+                action.tooltip(cx)
+            };
             actions = actions.child(
                 reader_icon_button(
                     action.id(),
                     action.icon(self.sidebar.show_hidden),
-                    action.tooltip(cx),
+                    tooltip,
                     cx,
                 )
+                .selected(action == SidebarAction::ShowHidden && self.sidebar.show_hidden)
                 .debug_selector(move || action.id().into())
                 .on_click({
                     let reader = reader.clone();
@@ -350,6 +383,7 @@ mod tests {
         std::fs::create_dir_all(vault.join("Area/LongDeepDirectory/Leaf")).unwrap();
         std::fs::write(vault.join("_Index.md"), "# Vault Index — Bird View\n").unwrap();
         std::fs::write(vault.join("Other.md"), "# Another document\n").unwrap();
+        std::fs::write(vault.join("_hidden.md"), "# Hidden fixture\n").unwrap();
         for index in 0..50 {
             std::fs::write(
                 vault.join(format!("Area/LongDeepDirectory/Leaf/Note {index:02}.md")),
@@ -448,6 +482,64 @@ mod tests {
         reader.read_with(visual, |view, _| {
             assert_eq!(view.creation.as_ref().unwrap().folder, "")
         });
+    }
+
+    #[gpui::test]
+    fn index_alignment_and_hidden_toggle_keep_the_same_header_row(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        reader.update(visual, |view, _| {
+            view.sidebar_path = Some(temp.path().join("sidebar-toggle.json"));
+        });
+        for width in [225., 400.] {
+            reader.update(visual, |view, cx| {
+                view.panel_widths.notes = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let header = visual.debug_bounds("tree-index-header").unwrap();
+            let viewport = visual.debug_bounds("sidebar-tree-body").unwrap();
+            let icon = visual.debug_bounds("tree-vault-index-icon").unwrap();
+            let label = visual.debug_bounds("tree-vault-index-label").unwrap();
+            assert_eq!(
+                icon.left(),
+                viewport.left() + px(4.),
+                "Contents icon follows the tree inset, never the remainder center"
+            );
+            assert_eq!(label.left(), icon.right() + px(4.));
+            for selector in [
+                "sidebar-new-note",
+                "sidebar-new-folder",
+                "sidebar-collapse-all",
+                "sidebar-show-hidden",
+            ] {
+                let action = visual
+                    .debug_bounds(selector)
+                    .expect("permanent icon-only action");
+                assert!(action.left() >= header.left() && action.right() <= header.right());
+                assert!(action.top() >= header.top() && action.bottom() <= header.bottom());
+            }
+        }
+        reader.read_with(visual, |view, _| {
+            assert!(!view.sidebar.show_hidden);
+            assert!(!view.tree.rows.iter().any(|row| row.path == "_hidden.md"));
+        });
+        for enabled in [true, false] {
+            let toggle = visual.debug_bounds("sidebar-show-hidden").unwrap();
+            visual.simulate_click(toggle.center(), Modifiers::default());
+            visual.run_until_parked();
+            reader.read_with(visual, |view, _| {
+                assert_eq!(view.sidebar.show_hidden, enabled);
+                assert_eq!(
+                    view.tree.rows.iter().any(|row| row.path == "_hidden.md"),
+                    enabled
+                );
+                let saved = reader_sidebar::State::load(view.sidebar_path.as_ref().unwrap());
+                assert_eq!(
+                    saved.show_hidden, enabled,
+                    "the existing per-vault setting persists"
+                );
+            });
+        }
     }
 
     #[gpui::test]
