@@ -2,6 +2,7 @@
 mod block_context;
 mod block_entry;
 mod code_comforts;
+mod context_menu;
 mod external_edit;
 pub(crate) mod format;
 mod ime_guard;
@@ -1815,7 +1816,8 @@ impl Reader {
                     })
                     .context_menu({
                         let facts = editing.menu_facts.clone();
-                        move |menu, _, cx| reader_reminder::editor_menu(menu, &facts, cx)
+                        let markdown = editing.markdown;
+                        move |menu, _, cx| context_menu::editor_menu(menu, &facts, markdown, cx)
                     })
                     .font_family(if editing.live_preview.enabled {
                         reader_fonts::note(cx)
