@@ -1629,11 +1629,13 @@ mod tests {
                     origin: Point::default(),
                     size: window.viewport_size(),
                 });
-                assert!(
-                    tray.contains(&thumb.center()) && viewport.contains(&thumb.center()),
-                    "positive control: the actual click point must be inside both the visible tray and window"
-                );
-                visual.simulate_click(thumb.center(), Modifiers::default());
+                let tray = visual.debug_bounds("project-attachment-tray").unwrap();
+                let visible_thumb = thumb.intersect(&tray).intersect(&viewport);
+                assert!(visible_thumb.size.width > px(0.) && visible_thumb.size.height > px(0.),
+                    "positive control: actual thumbnail pixels must be visible before clicking: thumb={thumb:?}, tray={tray:?}, viewport={viewport:?}");
+                // A scrolled thumbnail may be partially clipped. Click its
+                // genuinely visible pixels rather than an off-window center.
+                visual.simulate_click(visible_thumb.center(), Modifiers::default());
                 visual.run_until_parked();
                 draw_attachment_preview(visual);
                 assert!(

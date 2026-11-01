@@ -8,6 +8,18 @@ pub(super) fn surface_size(available: Size<Pixels>) -> Size<Pixels> {
     )
 }
 
+/// A normal same-frame component boundary keeps settings construction out of
+/// the large picker builder's stack frame; it schedules no frames or requests.
+#[derive(IntoElement)]
+struct ModelSettings(WeakEntity<ProjectView>);
+impl RenderOnce for ModelSettings {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.0
+            .update(cx, |view, cx| view.render_model_options(cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 impl ProjectView {
     pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
         let measured = self.model_ui.panel_width.get();
@@ -434,7 +446,10 @@ impl ProjectView {
                         .bg(palette.surface_raised)
                         .p(px(ui::INSET))
                         .overflow_y_scroll()
-                        .child(self.render_model_options(cx)),
+                        .child(ModelSettings(cx.weak_entity()))
+                        .when(self.connection_details, |pane| {
+                            pane.child(self.render_picker_diagnostics(cx))
+                        }),
                 );
             }
             panel = panel.child(body);
@@ -452,11 +467,76 @@ impl ProjectView {
                         .bg(palette.surface_raised)
                         .p(px(ui::INSET))
                         .overflow_y_scroll()
-                        .child(self.render_model_options(cx)),
+                        .child(ModelSettings(cx.weak_entity()))
+                        .when(self.connection_details, |pane| {
+                            pane.child(self.render_picker_diagnostics(cx))
+                        }),
                 );
             }
+        } else if self.connection_details {
+            panel = panel.child(
+                div()
+                    .id("project-model-option-column")
+                    .debug_selector(|| "project-model-option-column".into())
+                    .w_full()
+                    .h(body_budget)
+                    .min_h_0()
+                    .flex_shrink_0()
+                    .overflow_y_scroll()
+                    .child(self.render_picker_diagnostics(cx)),
+            );
         }
         panel.into_any_element()
+    }
+
+    fn render_picker_diagnostics(&self, cx: &App) -> AnyElement {
+        let mut details = v_flex()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap_2()
+            .debug_selector(|| "project-model-diagnostics".into());
+        if let Some(error) = &self.model_error {
+            details = details.child(self.picker_diagnostic_line(
+                "project-model-error-detail",
+                error.clone(),
+                cx,
+            ));
+        }
+        details
+            .child(self.picker_diagnostic_line(
+                "project-model-scheduler-limit",
+                okilum_t3::models::SCHEDULED_TASK_LIMIT.into(),
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn picker_diagnostic_line(&self, selector: &'static str, text: String, cx: &App) -> AnyElement {
+        let line = div()
+            .relative()
+            .debug_selector(move || selector.into())
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .whitespace_normal()
+            .text_size(px(ui::LABEL))
+            .line_height(px(ui::LINE))
+            .text_color(brand::palette(cx).text_muted)
+            .child(text.clone());
+        #[cfg(test)]
+        let line = line.child({
+            let painted = self.model_ui.diagnostics_painted.clone();
+            gpui::canvas(
+                |_, _, _| (),
+                move |_, _, _, _| {
+                    painted.borrow_mut().push(text);
+                },
+            )
+            .absolute()
+            .size_full()
+        });
+        line.into_any_element()
     }
 
     fn render_picker_provider_mark(

@@ -17,8 +17,8 @@ fn composer_grows_and_shift_enter_keeps_a_newline_while_enter_sends_once(cx: &mu
     });
     let initial = visual.debug_bounds("project-composer-input").unwrap();
     assert!(
-        initial.size.height >= px(48.),
-        "the empty composer must visibly have several lines: {initial:?}"
+        initial.size.height >= px(24.) && initial.size.height < px(48.),
+        "the empty composer starts compact and grows with authored text: {initial:?}"
     );
     view.update_in(visual, |view, window, cx| {
         view.compose.update(cx, |input, cx| input.focus(window, cx))

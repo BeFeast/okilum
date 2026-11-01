@@ -480,7 +480,7 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
         view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
         1
     );
-    for (query, expected_count) in [("Codex model 119", 1), ("no-such-model-at-all", 0), ("", 1)] {
+    for query in ["Codex model 119", "no-such-model-at-all", ""] {
         redraw_picker(&view, visual, |view, window, cx| {
             view.model_ui
                 .search
@@ -489,10 +489,25 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
                 .update(cx, |input, cx| input.set_value(query, window, cx));
         });
         assert_surface_stable(&view, visual, expected, "search/empty-search");
-        assert_eq!(
-            view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
-            expected_count
-        );
+        view.read_with(visual, |view, cx| {
+            let choices = view.visible_model_choices(cx);
+            match query {
+                "" => assert_eq!(
+                    choices.len(),
+                    1,
+                    "clearing search returns the selected one-model account"
+                ),
+                "no-such-model-at-all" => {
+                    assert!(choices.is_empty(), "unmatched query is visibly empty")
+                }
+                _ => assert!(
+                    choices
+                        .iter()
+                        .any(|choice| choice.selection.model == "model-119"),
+                    "fuzzy search must include the actual requested last Codex model"
+                ),
+            }
+        });
         assert!(
             visual
                 .debug_bounds("project-model-settings-title")
@@ -534,9 +549,56 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
         expected,
         "restored catalog with error/details",
     );
+    let settings = bounds(visual, "project-model-option-column");
+    scroll(visual, settings, -10000.);
+    view.read_with(visual, |view, _| {
+        let painted = view.model_ui.diagnostics_painted.borrow();
+        assert!(
+            painted
+                .iter()
+                .any(|text| text == "Read-only fixture catalog failure"),
+            "expanded diagnostics must paint the actual error bytes, not only a generic status"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|text| text == okilum_t3::models::SCHEDULED_TASK_LIMIT),
+            "expanded diagnostics must paint the existing scheduler help"
+        );
+    });
+    inside(
+        bounds(visual, "project-model-error-detail"),
+        settings,
+        "actual expanded error",
+    );
+    inside(
+        bounds(visual, "project-model-scheduler-limit"),
+        settings,
+        "actual expanded help",
+    );
+    assert_surface_stable(&view, visual, expected, "diagnostics scroll");
+    redraw_picker(&view, visual, |view, _, _| {
+        view.connection_details = false;
+        view.model_ui.diagnostics_painted.borrow_mut().clear();
+    });
+    assert_surface_stable(
+        &view,
+        visual,
+        expected,
+        "collapsed diagnostics with error retained",
+    );
+    assert!(visual.debug_bounds("project-model-error-detail").is_none());
+    assert!(visual
+        .debug_bounds("project-model-scheduler-limit")
+        .is_none());
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.model_ui.diagnostics_painted.borrow().is_empty(),
+            "collapsed diagnostics cannot paint private error/help text"
+        )
+    });
     redraw_picker(&view, visual, |view, _, _| {
         view.model_error = None;
-        view.connection_details = false;
     });
     click(visual, "project-model-provider-0");
     assert_surface_stable(&view, visual, expected, "120-model Codex provider");
