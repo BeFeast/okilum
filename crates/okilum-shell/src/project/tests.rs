@@ -1515,3 +1515,83 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
     assert!(gateway.sends.lock().unwrap().is_empty());
     let _ = root;
 }
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    std::fs::create_dir_all(vault.join("ops")).unwrap();
+    std::fs::write(vault.join("ops/project.toml"), "kind = 'knowledge'\n").unwrap();
+    std::fs::write(vault.join("home.md"), "# Home\n").unwrap();
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(vault.clone()),
+                    note: Some("home.md".into()),
+                    index_dir: Some(temp.path().join("index")),
+                    session_directory: Some(temp.path().join("state")),
+                    panel_settings_override: Some(temp.path().join("panels.json")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1400.), px(800.)));
+    visual.run_until_parked();
+    let reader = reader.unwrap();
+    reader.update_in(visual, |reader, window, cx| {
+        let project = cx.new(|cx| {
+            let mut project = fixture::view(
+                temp.path().join("fixture"),
+                Arc::new(fixture::Fake::default()),
+                window,
+                cx,
+            );
+            project.active = false;
+            project
+        });
+        reader.project_navigation.active =
+            Some(okilum_t3::projects::Project::read(&vault).unwrap());
+        reader.project = Some(project);
+        reader.project_open = true;
+        reader.panels.close(reader_layout::Panel::Notes);
+        reader.panels.open(reader_layout::Panel::Backlinks);
+        reader.panel_widths.backlinks = 560.;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let panel = visual
+        .debug_bounds("reader-backlinks-panel")
+        .expect("mounted Manager panel");
+    let header = visual
+        .debug_bounds("project-chat-header")
+        .expect("conversation owns one header");
+    assert!(
+        visual.debug_bounds("reader-backlinks-header").is_none(),
+        "no duplicate outer Manager title"
+    );
+    assert_eq!(header.top(), panel.top());
+    assert_eq!(header.size.height, px(40.));
+    for selector in [
+        "project-manager-title",
+        "project-chat-status",
+        "project-connection-menu",
+        "project-open-t3",
+    ] {
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("functional header control");
+        assert!(
+            bounds.top() >= header.top() && bounds.bottom() <= header.bottom(),
+            "{selector} stays in the single header"
+        );
+    }
+}

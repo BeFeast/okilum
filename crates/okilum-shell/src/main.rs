@@ -7121,15 +7121,19 @@ impl Render for Reader {
                     }
                 })
             });
-        // The Manager panel has no Okilum header: T3 starts at the top of the
-        // panel and its own thread header says where you are.
-        let manager_headerless = cfg!(target_os = "macos")
-            && self.project_navigation.manager_panel.is_some()
-            && self
-                .project_navigation
-                .active
-                .as_ref()
-                .is_some_and(|p| p.manager != okilum_t3::projects::Manager::NotStarted);
+        // A mounted native conversation supplies its own identity/status/actions.
+        // Do not stack the Reader's generic Manager title above that header.
+        // The Mac webview likewise supplies its own T3 thread header.
+        let manager_headerless = (cfg!(not(target_os = "macos"))
+            && self.project_navigation.active.is_some()
+            && self.project.is_some())
+            || (cfg!(target_os = "macos")
+                && self.project_navigation.manager_panel.is_some()
+                && self
+                    .project_navigation
+                    .active
+                    .as_ref()
+                    .is_some_and(|p| p.manager != okilum_t3::projects::Manager::NotStarted));
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
             .filter(|panel| workspace_panels.visible(*panel, available))
