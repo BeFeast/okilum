@@ -232,6 +232,22 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
         .filter(|p| p.is_absolute())
         .context("home unavailable")?;
     let configs = direct::configuration_paths()?;
+    #[cfg(target_os = "macos")]
+    let configs = {
+        // Offline inventory only. A saved managed config is still authenticated
+        // by the controller's ordinary inspection; rediscovery never bootstraps.
+        let mut configs = configs;
+        if let Some(managed) =
+            okilum_sync_controller::sidecar::discovery::managed_configuration_path(
+                &okilum_sync_controller::sidecar::macos::account_state_directory()?,
+            )?
+        {
+            if !configs.contains(&managed) {
+                configs.push(managed);
+            }
+        }
+        configs
+    };
     #[cfg(target_os = "linux")]
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)

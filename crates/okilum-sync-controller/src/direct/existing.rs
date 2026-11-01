@@ -7,6 +7,32 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Hold the original directory open so replacement cannot recycle its inode while
+/// authenticated daemon inspection is in flight. Canonical paths alone are not
+/// filesystem identities.
+struct VaultRoot(std::fs::File);
+impl VaultRoot {
+    fn open(path: &Path) -> Result<Self> {
+        let root = Self(std::fs::File::open(path)?);
+        root.verify(path)?;
+        Ok(root)
+    }
+
+    fn verify(&self, path: &Path) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let current = std::fs::symlink_metadata(path)?;
+        let original = self.0.metadata()?;
+        ensure!(
+            current.is_dir()
+                && original.is_dir()
+                && current.dev() == original.dev()
+                && current.ino() == original.ino(),
+            "vault root must remain the same real directory"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExistingVault {
@@ -18,13 +44,17 @@ pub struct ExistingVault {
     pub paused: bool,
     pub folder_type: String,
     pub peers: Vec<String>,
+    /// Persisted inspection witness. Legacy records need explicit fresh consent.
+    #[serde(default)]
+    pub root_identity: Option<(u64, u64)>,
 }
 
 /// No state is created, no daemon is started, and every REST operation is GET.
 /// The inventory must include all known daemons, including custom configurations.
 pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVault> {
+    let root = VaultRoot::open(vault)?;
     let path = vault.canonicalize()?;
-    ensure!(path.is_dir(), "vault must be a directory");
+    root.verify(&path)?;
     let inventory = daemon::discover(configs);
     let folders = inventory.folders()?;
     let matches: Vec<_> = inventory
@@ -69,7 +99,12 @@ pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVau
                 .context("invalid peer identity")
         })
         .collect::<Result<Vec<_>>>()?;
+    root.verify(vault)?;
+    root.verify(&path)?;
+    use std::os::unix::fs::MetadataExt;
+    let metadata = root.0.metadata()?;
     Ok(ExistingVault {
+        root_identity: Some((metadata.dev(), metadata.ino())),
         daemon: candidate.identity.clone(),
         version: candidate.version.clone(),
         folder_id: id.clone(),
@@ -86,8 +121,11 @@ pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVau
     })
 }
 
-pub(super) fn same_binding(a: &ExistingVault, b: &ExistingVault) -> bool {
+pub(super) fn same_replica(a: &ExistingVault, b: &ExistingVault) -> bool {
     a.daemon == b.daemon && a.folder_id == b.folder_id && a.path == b.path
+}
+pub(super) fn same_binding(a: &ExistingVault, b: &ExistingVault) -> bool {
+    same_replica(a, b) && a.root_identity.is_some() && a.root_identity == b.root_identity
 }
 
 /// Association itself confers no permission to change daemon configuration.
@@ -115,7 +153,8 @@ pub fn attach_existing(
     if file.try_exists()? {
         let saved: ExistingVault = serde_json::from_slice(&private::read(&file)?)?;
         ensure!(
-            same_binding(&saved, &fresh),
+            same_binding(&saved, &fresh)
+                || saved.root_identity.is_none() && same_replica(&saved, &fresh),
             "saved replica association differs"
         );
     }
@@ -174,5 +213,93 @@ pub fn configuration_paths() -> Result<Vec<PathBuf>> {
             }
         }
         Ok(paths)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::symlink};
+
+    #[test]
+    fn saved_inspection_cannot_authorize_a_replaced_root_or_legacy_identity() -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir()?;
+        let vault = temp.path().join("vault");
+        fs::create_dir(&vault)?;
+        fs::write(vault.join("note.md"), b"old notes")?;
+        let metadata = fs::metadata(&vault)?;
+        let inspected = ExistingVault {
+            daemon: DaemonIdentity {
+                config_file: temp.path().join("fixture.xml"),
+                device_id: "fixture".into(),
+                certificate_hash: "fixture".into(),
+            },
+            version: "v2.1.7".into(),
+            folder_id: "fixture".into(),
+            path: vault.clone(),
+            label: "fixture".into(),
+            paused: false,
+            folder_type: "sendreceive".into(),
+            peers: vec![],
+            root_identity: Some((metadata.dev(), metadata.ino())),
+        };
+        assert!(same_binding(&inspected, &inspected));
+        fs::rename(&vault, temp.path().join("previous"))?;
+        fs::create_dir(&vault)?;
+        fs::write(vault.join("note.md"), b"different notes")?;
+        let metadata = fs::metadata(&vault)?;
+        let mut replaced = inspected.clone();
+        replaced.root_identity = Some((metadata.dev(), metadata.ino()));
+        assert!(same_replica(&inspected, &replaced));
+        assert!(!same_binding(&inspected, &replaced));
+        let mut legacy = inspected.clone();
+        legacy.root_identity = None;
+        assert!(!same_binding(&legacy, &inspected));
+        assert_eq!(
+            fs::read(temp.path().join("previous/note.md"))?,
+            b"old notes"
+        );
+        assert_eq!(fs::read(vault.join("note.md"))?, b"different notes");
+        Ok(())
+    }
+    #[test]
+    fn inspection_rejects_symlink_root_before_discovery_and_preserves_bytes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let vault = temp.path().join("vault");
+        fs::create_dir(&vault)?;
+        fs::write(vault.join("note.md"), b"local bytes")?;
+        let root = VaultRoot::open(&vault)?;
+        root.verify(&vault)?; // Positive control: the actual directory is admitted.
+        let alias = temp.path().join("alias");
+        symlink(&vault, &alias)?;
+        let error = inspect_existing(&[], &alias).unwrap_err();
+        assert!(error.to_string().contains("same real directory"));
+        assert_eq!(fs::read(vault.join("note.md"))?, b"local bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn inspection_root_guard_rejects_replacement_directory_and_symlink() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let vault = temp.path().join("vault");
+        let previous = temp.path().join("previous");
+        fs::create_dir(&vault)?;
+        fs::write(vault.join("note.md"), b"original bytes")?;
+        let root = VaultRoot::open(&vault)?;
+        root.verify(&vault)?;
+        let canonical = vault.canonicalize()?;
+        fs::rename(&vault, &previous)?;
+        fs::create_dir(&vault)?;
+        fs::write(vault.join("note.md"), b"replacement bytes")?;
+        assert_eq!(vault.canonicalize()?, canonical);
+        assert!(root.verify(&vault).is_err());
+        assert_eq!(fs::read(previous.join("note.md"))?, b"original bytes");
+        assert_eq!(fs::read(vault.join("note.md"))?, b"replacement bytes");
+        fs::rename(&vault, temp.path().join("replacement"))?;
+        symlink(&previous, &vault)?;
+        assert!(root.verify(&vault).is_err());
+        assert_eq!(fs::read(vault.join("note.md"))?, b"original bytes");
+        Ok(())
     }
 }

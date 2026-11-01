@@ -263,11 +263,19 @@ impl Controller {
             "operational state must be outside the vault"
         );
         let mut db = self.shared.db.lock().unwrap();
-        if let Some(old) = db.attached.iter().find(|v| v.folder_id == fresh.folder_id) {
+        if let Some(old) = db
+            .attached
+            .iter_mut()
+            .find(|v| v.folder_id == fresh.folder_id)
+        {
             ensure!(
-                existing::same_binding(old, &fresh),
+                existing::same_binding(old, &fresh)
+                    || old.root_identity.is_none() && existing::same_replica(old, &fresh),
                 "folder ID already associated with another replica"
             );
+            // Only this explicit, freshly inspected consent can upgrade a legacy
+            // path-only association. Automatic refresh/catalog never acquires it.
+            *old = fresh.clone();
         } else {
             db.attached.push(fresh.clone());
         }
@@ -1047,6 +1055,7 @@ mod tests {
                 paused: false,
                 folder_type: "sendreceive".into(),
                 peers: vec![],
+                root_identity: None,
             });
         let url = offer(&source)?;
         assert!(!url.contains("private-local-path"));

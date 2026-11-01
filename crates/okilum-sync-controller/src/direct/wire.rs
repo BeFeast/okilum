@@ -17,6 +17,33 @@ use uuid::Uuid;
 pub(super) const MAX_FRAME: usize = 256 * 1024;
 const AAD: &[u8] = b"okilum-direct-pairing-v1";
 
+// Stop serialization at the bound, before an oversized value can allocate its
+// complete JSON representation (including the nested signed body).
+fn bounded_json<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>> {
+    struct Bounded {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit - self.bytes.len() {
+                return Err(std::io::Error::other("pairing frame exceeds bound"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Bounded {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(writer.bytes)
+}
+
 pub(super) fn random<const N: usize>() -> Result<[u8; N]> {
     let mut bytes = [0; N];
     getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("secure randomness unavailable"))?;
@@ -57,14 +84,14 @@ pub(super) fn seal<T: Serialize>(
     seed: &[u8; 32],
     body: &T,
 ) -> Result<Envelope> {
-    let body = serde_json::to_vec(body)?;
+    let body = bounded_json(body, MAX_FRAME)?;
     let pair = key(seed)?;
     let signed = Signed {
         signature: pair.sign(&body).as_ref().to_vec(),
         signer: pair.public_key().as_ref().to_vec(),
         body,
     };
-    let mut body = serde_json::to_vec(&signed)?;
+    let mut body = bounded_json(&signed, MAX_FRAME / 2 - 1)?;
     ensure!(body.len() < MAX_FRAME / 2, "pairing response exceeds bound");
     let nonce = random()?;
     let key = aead::LessSafeKey::new(
@@ -122,7 +149,7 @@ pub(super) fn read<T: DeserializeOwned>(stream: &mut TcpStream) -> Result<T> {
     Ok(serde_json::from_slice(&body)?)
 }
 pub(super) fn write<T: Serialize>(stream: &mut TcpStream, value: &T) -> Result<()> {
-    let body = serde_json::to_vec(value)?;
+    let body = bounded_json(value, MAX_FRAME)?;
     ensure!(body.len() <= MAX_FRAME, "pairing frame exceeds bound");
     stream.write_all(&(body.len() as u32).to_be_bytes())?;
     stream.write_all(&body)?;
@@ -139,4 +166,79 @@ pub(super) fn limits(stream: &TcpStream) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::ser::SerializeSeq;
+    use std::cell::Cell;
+
+    struct Oversized<'a>(&'a Cell<usize>);
+    impl Serialize for Oversized<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut seq = serializer.serialize_seq(None)?;
+            for _ in 0..MAX_FRAME * 4 {
+                self.0.set(self.0.get() + 1);
+                seq.serialize_element(&0u8)?;
+            }
+            seq.end()
+        }
+    }
+
+    #[test]
+    fn bounded_reads_reject_truncation_oversize_and_unknown_fields() -> Result<()> {
+        fn input(bytes: &[u8]) -> Result<TcpStream> {
+            use std::net::{Shutdown, TcpListener};
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let mut sender = connect(listener.local_addr()?)?;
+            let (receiver, _) = listener.accept()?;
+            limits(&receiver)?;
+            sender.write_all(bytes)?;
+            sender.shutdown(Shutdown::Write)?;
+            Ok(receiver)
+        }
+        let envelope = seal(Uuid::new_v4(), &[1; 32], &[2; 32], &"positive")?;
+        let body = serde_json::to_vec(&envelope)?;
+        let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(&body);
+        let decoded: Envelope = read(&mut input(&frame)?)?;
+        assert_eq!(decoded.scope, envelope.scope);
+        assert!(read::<Envelope>(&mut input(&frame[..2])?).is_err());
+        assert!(read::<Envelope>(&mut input(&frame[..frame.len() - 1])?).is_err());
+        assert!(read::<Envelope>(&mut input(&((MAX_FRAME + 1) as u32).to_be_bytes())?).is_err());
+        assert!(read::<Envelope>(&mut input(&0u32.to_be_bytes())?).is_err());
+        let mut unknown = serde_json::to_value(&envelope)?;
+        unknown["unexpected"] = serde_json::json!(true);
+        let body = serde_json::to_vec(&unknown)?;
+        let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(&body);
+        assert!(read::<Envelope>(&mut input(&frame)?).is_err());
+        Ok(())
+    }
+    #[test]
+    fn serialization_stops_before_visiting_an_oversized_value() {
+        let visited = Cell::new(0);
+        let error = bounded_json(&Oversized(&visited), MAX_FRAME).unwrap_err();
+        assert!(error.to_string().contains("pairing frame exceeds bound"));
+        assert!(
+            visited.get() > 0,
+            "positive control: serializer was invoked"
+        );
+        assert!(visited.get() <= MAX_FRAME / 2 + 1);
+
+        visited.set(0);
+        assert!(seal(Uuid::nil(), &[1; 32], &[2; 32], &Oversized(&visited)).is_err());
+        assert!(visited.get() > 0);
+        assert!(visited.get() <= MAX_FRAME / 2 + 1);
+    }
+
+    #[test]
+    fn bounded_serialization_accepts_exact_limit_and_rejects_next_byte() -> Result<()> {
+        let value = "pairing";
+        let expected = serde_json::to_vec(value)?;
+        assert_eq!(bounded_json(&value, expected.len())?, expected);
+        assert!(bounded_json(&value, expected.len() - 1).is_err());
+        Ok(())
+    }
 }
