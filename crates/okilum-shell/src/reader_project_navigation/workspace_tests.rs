@@ -198,7 +198,7 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
         base: &Path,
         explicit: bool,
     ) -> (Entity<Reader>, &'a mut gpui::VisualTestContext) {
-        cx.update(|cx| reader_ui_state::install(&state, cx));
+        cx.update(|cx| reader_ui_state::install(state, cx));
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| {
