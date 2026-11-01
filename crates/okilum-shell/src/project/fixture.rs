@@ -12,6 +12,7 @@ type Result<T> = std::result::Result<T, GatewayError>;
 pub(super) struct Fake {
     pub revoked: bool,
     pub many_models: bool,
+    pub picker_reference: bool,
     pub model_catalog: Mutex<Option<Capabilities>>,
     pub connection_status: Option<GatewayStatus>,
     pub wrong_project: bool,
@@ -110,6 +111,11 @@ impl ManagerGateway for Fake {
         };
         let items = if q.after_position.is_some() {
             serde_json::json!([])
+        } else if self.picker_reference {
+            serde_json::json!([
+                {"position":0,"itemId":"user-0","messageId":"message-0","type":"user_message","status":"completed","text":"The model picker should stay quick and easy to use in a narrow Manager panel.","updatedAt":"now"},
+                {"position":1,"itemId":"reply-1","messageId":"message-1","type":"assistant_message","status":"completed","text":"The connection is ready. Your current model is **GPT-6 Astra**, with **High** reasoning.\n\n- Search across your connected providers.\n- Star the models you use most often.\n- Choose only the reasoning options supported by that model.\n\nYour draft stays here while you compare models.","updatedAt":"now"}
+            ])
         } else {
             serde_json::json!([
                 {"position":0,"itemId":"user-0","messageId":"message-0","type":"user_message","status":"completed","text":"What is the next step for this project?","updatedAt":"now"},
@@ -117,7 +123,7 @@ impl ManagerGateway for Fake {
             ])
         };
         serde_json::from_value(serde_json::json!({
-            "thread":{"threadId":q.thread_id,"projectId":if self.wrong_project {"different-project"}else{project_id},"title":"Project manager","status":"running","activeRunId":"run-1","providerInstanceId":"codex","model":"gpt-6.1-sol","runtimeMode":"full-access","updatedAt":"now"},
+            "thread":{"threadId":q.thread_id,"projectId":if self.wrong_project {"different-project"}else{project_id},"title":"Project manager","status":if self.picker_reference {"completed"} else {"running"},"activeRunId":if self.picker_reference {None::<&str>} else {Some("run-1")},"providerInstanceId":"codex","model":if self.picker_reference {"gpt-6-astra"} else {"gpt-6.1-sol"},"runtimeMode":"full-access","updatedAt":"now"},
             "items":items,"nextPosition":1,"hasMore":false
         })).map_err(|error|GatewayError::Protocol(error.to_string()))
     }
@@ -141,7 +147,11 @@ impl ManagerGateway for Fake {
         if let Some(error) = &self.question_failure {
             return Err(error.clone());
         }
-        Ok(vec!["question-1".into()])
+        Ok(if self.picker_reference {
+            Vec::new()
+        } else {
+            vec!["question-1".into()]
+        })
     }
     fn capabilities(&self) -> Result<Capabilities> {
         if let Some(catalog) = self.model_catalog.lock().unwrap().clone() {
@@ -213,6 +223,101 @@ pub(super) fn view(
     view
 }
 
+/// Deterministic screenshot fixture. These are advertised per-model option
+/// descriptors, not provider-family assumptions in the production picker.
+#[cfg(any(test, feature = "project-ui-harness"))]
+fn picker_reference_catalog() -> Capabilities {
+    use serde_json::json;
+    let effort = |levels: &[(&str, &str)], default: &str| {
+        json!({
+            "type":"select","id":"reasoningEffort","label":"Reasoning",
+            "description":"Choose the reasoning level supported by this model.",
+            "options":levels.iter().map(|(id,label)| json!({"id":id,"label":label,"isDefault":*id==default})).collect::<Vec<_>>(),
+            "currentValue":default
+        })
+    };
+    let fast = json!({"type":"boolean","id":"fastMode","label":"Fast","description":"Prefer faster responses when available.","currentValue":false});
+    let model = |id: &str,
+                 name: &str,
+                 short: &str,
+                 vendor: &str,
+                 descriptors: Vec<serde_json::Value>| {
+        json!({
+            "id":id,"label":name,"shortName":short,"subProvider":vendor,"capabilities":{"optionDescriptors":descriptors}
+        })
+    };
+    let standard_effort = effort(
+        &[
+            ("low", "Low"),
+            ("medium", "Medium"),
+            ("high", "High"),
+            ("xhigh", "Extra High"),
+            ("max", "Max"),
+        ],
+        "medium",
+    );
+    let mut claude_effort = effort(
+        &[
+            ("low", "Low"),
+            ("medium", "Medium"),
+            ("high", "High"),
+            ("max", "Max"),
+            ("ultrathink", "Ultracode"),
+        ],
+        "high",
+    );
+    claude_effort["promptInjectedValues"] = json!(["ultrathink"]);
+    serde_json::from_value(json!({"runtimeMode":"full-access","providers":[
+        {"providerInstanceId":"codex","driverKind":"codex","displayName":"OpenAI","models":[
+            model("gpt-6-astra","OpenAI · GPT-6 Astra","GPT-6 Astra","OpenAI",vec![standard_effort.clone(),fast.clone()]),
+            model("gpt-6.1-sol","OpenAI · GPT-6.1 Sol","GPT-6.1 Sol","OpenAI",vec![standard_effort.clone()]),
+            model("gpt-6-luna","OpenAI · GPT-6 Luna","GPT-6 Luna","OpenAI",vec![standard_effort.clone(),fast])
+        ]},
+        {"providerInstanceId":"claude-primary","driverKind":"claudeAgent","displayName":"Claude","models":[
+            model("claude-opus-5-5","Anthropic · Claude Opus 5.5","Claude Opus 5.5","Anthropic",vec![claude_effort]),
+            model("claude-fable-5-1","Anthropic · Claude Fable 5.1","Claude Fable 5.1","Anthropic",vec![effort(&[("low","Low"),("high","High")],"high")])
+        ]},
+        {"providerInstanceId":"claude-relay","driverKind":"claudeAgent","displayName":"Claude → Astra","models":[
+            model("gpt-6-astra","OpenAI · GPT-6 Astra","GPT-6 Astra","OpenAI",vec![standard_effort])
+        ]},
+        {"providerInstanceId":"grok","driverKind":"grok","displayName":"Grok","models":[
+            model("grok-4-7","xAI · Grok 4.7","Grok 4.7","xAI",vec![]),
+            model("grok-4-7-fast","xAI · Grok 4.7 Fast","Grok 4.7 Fast","xAI",vec![])
+        ]},
+        {"providerInstanceId":"opencode","driverKind":"opencode","displayName":"OpenCode","models":[
+            model("kimi-k3","Moonshot · Kimi K3","Kimi K3","Moonshot",vec![]),
+            model("deepseek-v4","DeepSeek · DeepSeek V4","DeepSeek V4","DeepSeek",vec![])
+        ]},
+        {"providerInstanceId":"antigravity","driverKind":"antigravity","displayName":"Antigravity","models":[
+            model("gemini-3-8-flash","Google · Gemini 3.8 Flash","Gemini 3.8 Flash","Google",vec![])
+        ]}
+    ]})).expect("typed reference model catalog")
+}
+
+#[cfg(feature = "project-ui-harness")]
+fn picker_reference_preferences(state: &std::path::Path) {
+    use sha2::{Digest as _, Sha256};
+    let origin = "https://t3.example.test";
+    let directory = state.join("manager-model-preferences");
+    std::fs::create_dir_all(&directory).expect("isolated model preference directory");
+    let path = directory.join(format!("{:x}.json", Sha256::digest(origin.as_bytes())));
+    if path.exists() {
+        return;
+    } // Explicit fixture edits survive its restart.
+    std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({
+            "version":1,"origin":origin,"instances":{
+                "codex":{"gpt-6-astra":{"favorite":true},"gpt-6.1-sol":{"favorite":true}},
+                "claude-primary":{"claude-opus-5-5":{"favorite":true}},
+                "grok":{"grok-4-7":{"favorite":true}}
+            }
+        }))
+        .unwrap(),
+    )
+    .expect("isolated model preferences");
+}
+
 #[cfg(feature = "project-ui-harness")]
 pub(super) fn open(cx: &mut App) -> bool {
     #[cfg(target_os = "linux")]
@@ -228,10 +333,25 @@ pub(super) fn open(cx: &mut App) -> bool {
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
     }
     brand::apply_theme(cx);
+    let picker_reference = matches!(
+        mode.as_str(),
+        "picker-reference-light" | "picker-reference-dark"
+    );
+    if picker_reference {
+        reader_features::set_enabled(reader_features::Feature::Agents, true, cx);
+    }
     let state = reader_history::state_directory().expect("isolated fixture state");
+    if picker_reference {
+        picker_reference_preferences(&state);
+    }
     let gateway = Arc::new(Fake {
         revoked: mode.starts_with("revoked"),
+        picker_reference,
         many_models: true,
+        model_catalog: Mutex::new(picker_reference.then(picker_reference_catalog)),
+        model_current: Mutex::new(picker_reference.then(|| serde_json::from_value(serde_json::json!({
+            "instanceId":"codex","model":"gpt-6-astra","options":[{"id":"reasoningEffort","value":"high"}]
+        })).expect("reference current model"))),
         grown: Mutex::new(true),
         ..Default::default()
     });
@@ -246,10 +366,76 @@ pub(super) fn open(cx: &mut App) -> bool {
         },
         move |window, cx| {
             window.set_window_title("Okilum — Project fixture");
-            let view = cx.new(|cx| view(state, gateway, window, cx));
+            let view = cx.new(|cx| {
+                let project = view(state, gateway, window, cx);
+                if picker_reference {
+                    project.compose.update(cx, |input, cx| {
+                        input.set_value("Keep this draft while I compare models.", window, cx)
+                    });
+                }
+                project
+            });
             cx.new(|cx| Root::new(view, window, cx))
         },
     )
     .expect("Project fixture window");
     true
+}
+
+#[cfg(test)]
+mod picker_reference_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn reference_catalog_has_distinct_accounts_supported_options_and_a_prompt_only_claude_value() {
+        let catalog = picker_reference_catalog();
+        assert_eq!(catalog.providers.len(), 6);
+        let snapshot = okilum_t3::models::Snapshot {
+            target: okilum_t3::models::Target {
+                thread_id: "qa".into(),
+                project_id: "qa".into(),
+            },
+            catalog,
+            configuration: ThreadConfiguration {
+                thread_id: "qa".into(),
+                model_selection: ModelSelection {
+                    instance_id: "codex".into(),
+                    model: "gpt-6-astra".into(),
+                    options: vec![],
+                },
+                runtime_mode: "full-access".into(),
+                interaction_mode: "default".into(),
+            },
+        };
+        let current = &snapshot.configuration.model_selection;
+        let controls = snapshot.option_controls(current);
+        assert_eq!(controls[0].label, "Reasoning");
+        assert!(controls[0]
+            .choices
+            .iter()
+            .any(|choice| choice.is_default && choice.label == "Medium"));
+        assert!(controls[0]
+            .choices
+            .iter()
+            .all(|choice| !choice.prompt_injected));
+        assert_eq!(controls[1].label, "Fast");
+        let claude = ModelSelection {
+            instance_id: "claude-primary".into(),
+            model: "claude-opus-5-5".into(),
+            options: vec![],
+        };
+        assert!(snapshot.option_controls(&claude)[0]
+            .choices
+            .iter()
+            .any(|choice| choice.prompt_injected && choice.label == "Ultracode"));
+        assert_eq!(
+            snapshot.model_info(current).unwrap().display_name(),
+            "GPT-6 Astra"
+        );
+        assert_ne!(
+            snapshot.catalog.providers[1].provider_instance_id,
+            snapshot.catalog.providers[2].provider_instance_id
+        );
+    }
 }

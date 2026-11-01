@@ -1,0 +1,181 @@
+//! Provider marks mirror the configured driver, while instance badges make
+//! separate accounts distinguishable without a wide provider-name column.
+use super::*;
+use okilum_t3::ProviderCapability;
+
+pub(super) fn provider_glyph(driver: &str) -> Icon {
+    if let Some(path) = provider_asset(driver) {
+        Icon::default().path(path)
+    } else {
+        Icon::new(IconName::SquareTerminal)
+    }
+}
+
+fn provider_asset(driver: &str) -> Option<&'static str> {
+    match driver {
+        "codex" => Some("icons/providers/openai.svg"),
+        "claudeAgent" => Some("icons/providers/claude.svg"),
+        "grok" => Some("icons/providers/grok.svg"),
+        "cursor" => Some("icons/providers/cursor.svg"),
+        "opencode" => Some("icons/providers/opencode.svg"),
+        "antigravity" => Some("icons/providers/antigravity.svg"),
+        _ => None,
+    }
+}
+
+fn initials(label: &str) -> String {
+    let words = label
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let characters = if words.len() > 1 {
+        words
+            .iter()
+            .take(2)
+            .filter_map(|word| word.chars().next())
+            .collect::<Vec<_>>()
+    } else {
+        label
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .take(2)
+            .collect()
+    };
+    characters
+        .into_iter()
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+pub(super) fn instance_badge(
+    provider: &ProviderCapability,
+    providers: &[ProviderCapability],
+) -> Option<String> {
+    let siblings = providers
+        .iter()
+        .filter(|candidate| candidate.driver_kind == provider.driver_kind)
+        .collect::<Vec<_>>();
+    if siblings.len() < 2 {
+        return None;
+    }
+    let label = |provider: &ProviderCapability| {
+        provider
+            .display_name
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or(&provider.provider_instance_id)
+            .to_owned()
+    };
+    let badge = initials(&label(provider));
+    if !badge.is_empty()
+        && siblings
+            .iter()
+            .filter(|candidate| initials(&label(candidate)) == badge)
+            .count()
+            == 1
+    {
+        return Some(badge);
+    }
+    // Equal display names still need separate, visible account identities.
+    siblings
+        .iter()
+        .position(|candidate| candidate.provider_instance_id == provider.provider_instance_id)
+        .map(|index| (index + 1).to_string())
+}
+
+pub(super) fn provider_mark(
+    provider: &ProviderCapability,
+    providers: &[ProviderCapability],
+    cx: &App,
+) -> AnyElement {
+    let mark = div()
+        .relative()
+        .size(px(24.))
+        .flex_shrink_0()
+        .child(provider_glyph(&provider.driver_kind).size(px(24.)));
+    if let Some(badge) = instance_badge(provider, providers) {
+        let palette = brand::palette(cx);
+        mark.child(
+            div()
+                .absolute()
+                .right(px(-4.))
+                .bottom(px(-4.))
+                .min_w(px(16.))
+                .h(px(16.))
+                .px(px(2.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .bg(palette.surface_raised)
+                .text_color(palette.text_muted)
+                .child(badge),
+        )
+        .into_any_element()
+    } else {
+        mark.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use gpui::AssetSource as _;
+
+    fn provider(id: &str, name: &str) -> ProviderCapability {
+        ProviderCapability {
+            provider_instance_id: id.into(),
+            driver_kind: "claudeAgent".into(),
+            display_name: Some(name.into()),
+            models: vec![],
+            runtime_modes: vec![],
+        }
+    }
+
+    #[test]
+    fn configured_accounts_have_distinct_badges_even_with_equal_labels() {
+        let providers = vec![
+            provider("default", "Claude"),
+            provider("relay", "Claude → Astra"),
+        ];
+        assert_eq!(
+            instance_badge(&providers[0], &providers).as_deref(),
+            Some("CL")
+        );
+        assert_eq!(
+            instance_badge(&providers[1], &providers).as_deref(),
+            Some("CA")
+        );
+        let equal = vec![provider("work", "Claude"), provider("personal", "Claude")];
+        assert_eq!(instance_badge(&equal[0], &equal).as_deref(), Some("1"));
+        assert_eq!(instance_badge(&equal[1], &equal).as_deref(), Some("2"));
+        assert!(instance_badge(&equal[0], &equal[..1]).is_none());
+    }
+
+    #[test]
+    fn provider_glyphs_are_distinct_embedded_assets() {
+        let drivers = [
+            "codex",
+            "claudeAgent",
+            "grok",
+            "cursor",
+            "opencode",
+            "antigravity",
+        ];
+        let paths = drivers
+            .iter()
+            .map(|driver| provider_asset(driver).unwrap())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(paths.len(), drivers.len());
+        for path in paths {
+            assert!(
+                brand::Assets.load(path).unwrap().is_some(),
+                "missing provider glyph {path}"
+            );
+        }
+        assert!(provider_asset("an-unrecognized-driver").is_none());
+    }
+}

@@ -1074,7 +1074,10 @@ fn model_catalog(listener: &TcpListener) {
     send(
         &mut socket,
         json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"providers":[
-            {"instanceId":"claudeAgent","driver":"claudeAgent","displayName":"Claude","enabled":true,"models":(0..42).map(|n|json!({"slug":format!("model-{n}"),"name":format!("Model {n}")})).collect::<Vec<_>>()},
+            {"instanceId":"claudeAgent","driver":"claudeAgent","displayName":"Claude","enabled":true,"models":(0..42).map(|n|json!({"slug":format!("model-{n}"),"name":format!("Model {n}"),"shortName":format!("M{n}"),"subProvider":"Native vendor","capabilities":{"optionDescriptors":[
+                {"type":"select","id":"effort","label":"Reasoning","options":[{"id":"high","label":"High","isDefault":true},{"id":"ultracode","label":"Ultracode"},{"id":"prompt-only","label":"Prompt mode"}],"promptInjectedValues":["prompt-only"]},
+                {"type":"boolean","id":"fastMode","label":"Fast","currentValue":false}
+            ]}})).collect::<Vec<_>>()},
             {"instanceId":"disabled","driver":"codex","enabled":false,"models":[{"slug":"unavailable","name":"Disabled"}]}
         ]}}}),
     );
@@ -1104,6 +1107,14 @@ fn manager_models_read_only_the_bounded_target_and_preserve_real_options() {
             let snapshot = result.unwrap();
             assert_eq!(snapshot.catalog.providers.len(), 1);
             assert_eq!(snapshot.catalog.providers[0].models.len(), 42);
+            let model = snapshot
+                .model_info(&snapshot.configuration.model_selection)
+                .unwrap();
+            assert_eq!(model.display_name(), "M17");
+            assert_eq!(model.sub_provider.as_deref(), Some("Native vendor"));
+            let controls = snapshot.option_controls(&snapshot.configuration.model_selection);
+            assert_eq!(controls.len(), 2);
+            assert!(controls[0].choices[2].prompt_injected);
             assert_eq!(
                 serde_json::to_value(&snapshot.configuration.model_selection).unwrap(),
                 selection
@@ -1162,8 +1173,23 @@ fn manager_model_change_requires_a_fresh_target_readback() {
             &serde_json::from_value(selection.clone()).unwrap(),
         );
         if confirmed {
+            let snapshot = result.unwrap();
             assert_eq!(
-                serde_json::to_value(result.unwrap().configuration.model_selection).unwrap(),
+                snapshot
+                    .model_info(&snapshot.configuration.model_selection)
+                    .unwrap()
+                    .display_name(),
+                "M17"
+            );
+            assert_eq!(
+                snapshot
+                    .option_controls(&snapshot.configuration.model_selection)
+                    .len(),
+                2,
+                "confirmed mutation snapshots retain typed descriptors too"
+            );
+            assert_eq!(
+                serde_json::to_value(snapshot.configuration.model_selection).unwrap(),
                 selection
             );
         } else {
@@ -1655,4 +1681,80 @@ fn manager_response_timeout_is_transport_failure_without_an_implicit_retry() {
     );
     assert!(started.elapsed() < Duration::from_secs(1));
     fixture.finish();
+}
+
+#[test]
+fn model_confirmation_accepts_reordered_options_but_rejects_different_values_or_accounts() {
+    let requested = json!({"instanceId":"claudeAgent","model":"model-17","options":[
+        {"id":"effort","value":"high"},{"id":"fastMode","value":true}
+    ]});
+    for difference in ["order", "value", "account"] {
+        let selection = requested.clone();
+        let fixture = Fixture::start(move |listener| {
+            model_thread(
+                &listener,
+                model_thread_value(
+                    "bound",
+                    json!({"instanceId":"claudeAgent","model":"model-0","options":[]}),
+                ),
+            );
+            model_catalog(&listener);
+            ticket(&listener);
+            let mut command = socket(&listener);
+            let request = read(&mut command);
+            assert_eq!(request["tag"], "orchestration.dispatchCommand");
+            assert_eq!(request["payload"]["type"], "thread.model-selection.set");
+            assert_eq!(request["payload"]["modelSelection"], selection);
+            send(
+                &mut command,
+                json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{}}}),
+            );
+            drop(command);
+            let mut observed = selection;
+            observed["options"].as_array_mut().unwrap().reverse();
+            match difference {
+                "order" => {}
+                "value" => observed["options"][0]["value"] = json!(false),
+                "account" => observed["instanceId"] = json!("another-account"),
+                _ => unreachable!(),
+            }
+            model_thread(&listener, model_thread_value("bound", observed));
+            model_catalog(&listener);
+        });
+        let mut secret = serde_json::from_slice::<Value>(&token(&fixture.env).to_secret()).unwrap();
+        secret["scope"] = json!("orchestration:read orchestration:operate");
+        let native = NativeClient::new(
+            fixture.env.clone(),
+            NativeToken::from_secret(&fixture.env, &serde_json::to_vec(&secret).unwrap()).unwrap(),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let result = native.configure_manager_model(
+            &crate::models::Target {
+                thread_id: "thread-a".into(),
+                project_id: "bound".into(),
+            },
+            &serde_json::from_value(requested.clone()).unwrap(),
+        );
+        if difference == "order" {
+            let confirmed = result.unwrap();
+            assert_eq!(
+                confirmed.configuration.model_selection.options[0].id, "fastMode",
+                "the confirmed snapshot retains the server's canonical order"
+            );
+            assert_eq!(
+                confirmed.configuration.model_selection.options[1].id,
+                "effort"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(StreamError::Protocol("model change not confirmed"))
+                ),
+                "a different option value or provider instance is not confirmation"
+            );
+        }
+        fixture.finish();
+    }
 }

@@ -341,10 +341,81 @@ pub struct ProviderCapability {
     pub runtime_modes: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,
     pub label: Option<String>,
+    #[serde(default)]
+    pub short_name: Option<String>,
+    #[serde(default)]
+    pub sub_provider: Option<String>,
+    #[serde(default)]
+    pub capabilities: Option<ModelCapabilities>,
+}
+
+impl ModelInfo {
+    /// T3's supplied short name is presentation; the exact model id still
+    /// belongs to every selection and mutation.
+    pub fn display_name(&self) -> &str {
+        self.short_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| self.label.as_deref().filter(|name| !name.trim().is_empty()))
+            .unwrap_or(&self.id)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCapabilities {
+    #[serde(default)]
+    pub option_descriptors: Vec<ModelOptionDescriptor>,
+}
+
+/// Preserve the model's own ids, labels, typed choices and reported/default
+/// values. Unknown future descriptor kinds are not synthesized as controls.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ModelOptionDescriptor {
+    #[serde(rename_all = "camelCase")]
+    Select {
+        id: String,
+        label: String,
+        description: Option<String>,
+        options: Vec<ModelOptionValue>,
+        current_value: Option<String>,
+        #[serde(default)]
+        prompt_injected_values: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Boolean {
+        id: String,
+        label: String,
+        description: Option<String>,
+        current_value: Option<bool>,
+    },
+    #[serde(other)]
+    Unsupported,
+}
+
+impl ModelOptionDescriptor {
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Select { id, .. } | Self::Boolean { id, .. } => Some(id),
+            Self::Unsupported => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOptionValue {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 #[cfg(test)]

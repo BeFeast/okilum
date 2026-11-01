@@ -32,7 +32,7 @@ fn nonempty(value: &Value, name: &str) -> StreamResult<String> {
         .ok_or_else(invalid)
 }
 
-fn providers(value: &Value) -> StreamResult<Vec<ProviderCapability>> {
+pub(super) fn providers(value: &Value) -> StreamResult<Vec<ProviderCapability>> {
     let rows = value.as_array().ok_or_else(invalid)?;
     let mut instances = BTreeSet::new();
     let mut result = Vec::new();
@@ -59,6 +59,14 @@ fn providers(value: &Value) -> StreamResult<Vec<ProviderCapability>> {
                 Ok(ModelInfo {
                     id,
                     label: model["name"].as_str().map(str::to_owned),
+                    short_name: model["shortName"].as_str().map(str::to_owned),
+                    sub_provider: model["subProvider"].as_str().map(str::to_owned),
+                    capabilities: match model.get("capabilities") {
+                        None | Some(Value::Null) => None,
+                        Some(value) => {
+                            Some(serde_json::from_value(value.clone()).map_err(|_| invalid())?)
+                        }
+                    },
                 })
             })
             .collect::<StreamResult<Vec<_>>>()?;

@@ -1358,6 +1358,8 @@ impl ProjectView {
             history
         };
         v_flex()
+            .relative()
+            .capture_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,window,cx| { this.model_key(event,window,cx); }))
             .id("project-tab")
             .debug_selector(|| "project-tab".into())
             .when(cfg!(target_os = "linux"), |view| {
@@ -1366,6 +1368,7 @@ impl ProjectView {
                     if this.active
                         && !this.busy
                         && this.native_actions_pinned()
+                        && !this.model_open
                         && reader_features::enabled(reader_features::Feature::Agents, cx)
                         && !this.compose.read(cx).focus_handle(cx).is_focused(window)
                         && !this.origin.read(cx).focus_handle(cx).is_focused(window)
@@ -1381,6 +1384,7 @@ impl ProjectView {
             .min_h_0()
             .p_4()
             .gap_3()
+            .child(self.measure_model_panel(cx))
             .child(self.render_chat_header(&status, open, cx))
             .when(self.connection_details, |view| view.child(self.render_chat_diagnostics(cx)))
             .when(

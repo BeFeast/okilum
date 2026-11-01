@@ -173,17 +173,12 @@ impl NativeClient {
             interaction_mode: thread.interaction_mode,
         };
         let config = self.manager_rpc("server.getConfig", json!({}), false)?;
-        let providers = config["providers"]
-            .as_array()
-            .ok_or(StreamError::Protocol("missing model catalog"))?;
-        let providers = providers.iter().filter(|p| p["enabled"] != false).map(|p| json!({
-            "providerInstanceId":p["instanceId"], "driverKind":p["driver"], "displayName":p["displayName"],
-            "models":p["models"].as_array().into_iter().flatten().map(|m|json!({"id":m["slug"],"label":m["name"]})).collect::<Vec<_>>()
-        })).collect::<Vec<_>>();
-        let catalog = serde_json::from_value(
-            json!({"runtimeMode":configuration.runtime_mode,"providers":providers}),
-        )
-        .map_err(|_| StreamError::Protocol("invalid model catalog"))?;
+        // Use the same typed catalog decoder as connection warmup, including
+        // server names and model-specific option descriptors on readback.
+        let catalog = crate::Capabilities {
+            runtime_mode: configuration.runtime_mode.clone(),
+            providers: super::model_catalog::providers(&config["providers"])?,
+        };
         Ok(crate::models::Snapshot {
             target: target.clone(),
             catalog,
@@ -205,7 +200,7 @@ impl NativeClient {
             .map_err(|_| StreamError::Rejected)?;
         self.manager_rpc("orchestration.dispatchCommand", json!({"type":"thread.model-selection.set","commandId":uuid::Uuid::new_v4().to_string(),"threadId":target.thread_id,"modelSelection":selection}), false)?;
         let actual = self.manager_models(target)?;
-        if actual.configuration.model_selection != *selection {
+        if !crate::models::selections_match(&actual.configuration.model_selection, selection) {
             return Err(StreamError::Protocol("model change not confirmed"));
         }
         Ok(actual)
