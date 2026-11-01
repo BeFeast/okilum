@@ -356,6 +356,14 @@ mod tests {
             index.query(&query).is_empty(),
             "tomorrow becomes today at the local date boundary"
         );
+        // A westward timezone or clock correction can move local today back.
+        assert!(cache.refresh(cache.source.clone(), cache.preferences.clone(), day));
+        let query = Query::parse(
+            &filtered_query("path includes Work", cache.filter),
+            cache.today,
+        );
+        assert_eq!(cache.filter, FILTER_UPCOMING);
+        assert_eq!(index.query(&query).len(), 1);
         index.replace("Work.md", "- [ ] Newly indexed 📅 2026-10-10\n");
         assert_eq!(
             index.query(&query).len(),
