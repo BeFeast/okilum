@@ -27,6 +27,15 @@ impl RequestCard {
         let request_revision = actions.read(cx).request_revision;
         let observation = cx.observe(&actions, |this, actions, cx| {
             let actions = actions.read(cx);
+            #[cfg(test)]
+            if let Some(observations) = &actions.request_observations {
+                observations.borrow_mut().push((
+                    this.request_revision,
+                    actions.request_revision,
+                    actions.pinned,
+                    !actions.pinned || this.request_revision != actions.request_revision,
+                ));
+            }
             // A pinned history summary has no draft controls. Only request
             // presentation changes invalidate it, never answer keystrokes.
             if !actions.pinned || this.request_revision != actions.request_revision {
@@ -170,6 +179,8 @@ pub(crate) struct Actions {
     lease: Option<Arc<()>>,
     #[cfg(test)]
     deferred_dispatches: std::cell::Cell<usize>,
+    #[cfg(test)]
+    request_observations: Option<std::cell::RefCell<Vec<(u64, u64, bool, bool)>>>,
     records: Vec<Record>,
     inputs: HashMap<(String, String), Entity<InputState>>,
     selections: HashMap<(String, String), Vec<String>>,
@@ -191,6 +202,8 @@ impl Actions {
             lease: None,
             #[cfg(test)]
             deferred_dispatches: std::cell::Cell::new(0),
+            #[cfg(test)]
+            request_observations: None,
             records: Vec::new(),
             inputs: HashMap::new(),
             selections: HashMap::new(),
@@ -1147,6 +1160,9 @@ mod tests {
             let input = a.read(cx).inputs[&("r".into(), "q".into())].clone();
             (v.feed.clone(), a, input)
         });
+        actions.update(visual, |actions, _| {
+            actions.request_observations = Some(Default::default());
+        });
         // GPUI 0.3.3 clears debug_bounds every frame but does not replay it
         // for cached views. Check history before an Actions-only focus frame.
         assert!(
@@ -1198,8 +1214,44 @@ mod tests {
                     .detach();
             })
         });
-        visual.simulate_input("answer");
+        let diagnostic = |stage: &str, visual: &mut VisualTestContext| {
+            let history = feed.read_with(visual, |feed, cx| {
+                (
+                    feed.test_scroll_anchor(cx),
+                    feed.rendered_positions.borrow().clone(),
+                    feed.render_calls.get(),
+                )
+            });
+            let requests = actions.read_with(visual, |actions, _| {
+                (
+                    actions.request_revision,
+                    std::mem::take(
+                        &mut *actions.request_observations.as_ref().unwrap().borrow_mut(),
+                    ),
+                )
+            });
+            eprintln!("typing probe {stage}: history(anchor,rows,renders)={history:?}; requests(revision,observations[cached,current,pinned,notify])={requests:?}; notifications={:?}; panel={:?}; history_bounds={:?}",
+                counts.iter().map(Cell::get).collect::<Vec<_>>(),
+                visual.debug_bounds("project-native-actions"),
+                visual.debug_bounds("project-history"));
+        };
+        diagnostic("before observer setup flush", visual);
         visual.run_until_parked();
+        diagnostic("after observer setup flush", visual);
+        assert!(
+            input.read_with(visual, |input, _| input.value().is_empty()),
+            "positive control: setup flush precedes all answer input"
+        );
+        feed.read_with(visual, |feed, _| feed.rendered_positions.borrow_mut().clear());
+        for count in counts.iter() {
+            count.set(0);
+        }
+        visual.simulate_input("a");
+        visual.run_until_parked();
+        diagnostic("after first character", visual);
+        visual.simulate_input("nswer");
+        visual.run_until_parked();
+        diagnostic("after remaining characters", visual);
         assert_eq!(
             input.read_with(visual, |i, _| i.value().to_string()),
             "answer"
