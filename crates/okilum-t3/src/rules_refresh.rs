@@ -1,6 +1,20 @@
 //! Explicit rules refresh offers. Saving only creates an offer; dispatch is a
 //! separate user action through the existing Manager message pipeline.
 
+/// Retried delivery must find the exact original durable identity. Absence or
+/// a different transport's identity cannot authorize preparation of a new send.
+pub fn validate_rules_retry(
+    expected: Option<&str>,
+    retained: Option<&str>,
+) -> Result<(), &'static str> {
+    match (expected, retained) {
+        (Some(expected), Some(actual)) if expected == actual => Ok(()),
+        (None, _) => Ok(()),
+        (Some(_), None) => Err("Original rules request is missing; nothing was sent"),
+        _ => Err("Retained rules request identity changed; nothing was sent"),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RulesTarget {
     pub origin: String,
@@ -32,6 +46,7 @@ pub struct RulesDispatch {
 #[derive(Clone, Debug, Default)]
 pub struct RulesRefresh {
     offer: Option<RulesOffer>,
+    preparing: Option<RulesOffer>,
     pending: Option<RulesDispatch>,
     acknowledged: Option<RulesDispatch>,
 }
@@ -119,6 +134,29 @@ impl RulesRefresh {
         Ok(dispatch)
     }
 
+    /// Capture the clicked offer before its worker starts. A subsequent save
+    /// may replace the visible offer without erasing this operation's recovery.
+    pub fn begin_delivery(&mut self, clicked: &RulesOffer) -> Result<(), &'static str> {
+        if self.preparing.is_some() {
+            return Err("Rules delivery is already in progress");
+        }
+        if let Some(pending) = &self.pending {
+            if &pending.offer != clicked {
+                return Err("Retry the original retained rules request first");
+            }
+        } else {
+            self.message(clicked, &clicked.target)?;
+        }
+        self.preparing = Some(clicked.clone());
+        Ok(())
+    }
+
+    pub fn end_delivery(&mut self, clicked: &RulesOffer) {
+        if self.preparing.as_ref() == Some(clicked) {
+            self.preparing = None;
+        }
+    }
+
     /// Apply a worker result using its captured durable receipt. A save may
     /// replace the visible offer while delivery is in flight: complete a known
     /// old pending receipt, but never install it as the new offer's receipt.
@@ -129,7 +167,20 @@ impl RulesRefresh {
             }
             return true;
         }
-        if self.pending.is_some() || self.offer.as_ref() != Some(&receipt.offer) {
+        if self.pending.is_some() {
+            return false;
+        }
+        if self.preparing.as_ref() == Some(&receipt.offer) {
+            if receipt.request_id.trim().is_empty() {
+                return false;
+            }
+            self.pending = Some(receipt.clone());
+            if acknowledged {
+                self.acknowledge(receipt);
+            }
+            return true;
+        }
+        if self.offer.as_ref() != Some(&receipt.offer) {
             return false;
         }
         if self
@@ -239,5 +290,39 @@ mod tests {
         assert!(state.message(&second, &second.target).is_ok());
         assert!(!state.record_delivery(&receipt, true));
         assert_eq!(state.offer(), Some(&second));
+    }
+    #[test]
+    fn retry_cannot_be_recreated_or_switched_to_another_transport_identity() {
+        assert!(validate_rules_retry(Some("native-command-1"), Some("native-command-1")).is_ok());
+        assert!(validate_rules_retry(Some("native-command-1"), Some("mcp-request-2")).is_err());
+        assert!(validate_rules_retry(Some("mcp-request-1"), None).is_err());
+        assert!(validate_rules_retry(None, Some("retained-before-restart")).is_ok());
+        assert!(
+            validate_rules_retry(None, None).is_ok(),
+            "new explicit send positive control"
+        );
+    }
+    #[test]
+    fn failed_inflight_old_revision_remains_retryable_after_a_new_save() {
+        let mut state = RulesRefresh::default();
+        let old = offer("old");
+        state.saved(old.clone()).unwrap();
+        state.begin_delivery(&old).unwrap();
+        let latest = offer("latest");
+        state.saved(latest.clone()).unwrap();
+        let receipt = RulesDispatch {
+            offer: old.clone(),
+            request_id: "original-command".into(),
+        };
+        assert!(state.record_delivery(&receipt, false));
+        state.end_delivery(&old);
+        assert_eq!(state.pending(), Some(&receipt));
+        assert_eq!(state.offer(), Some(&latest));
+        assert!(state.begin_delivery(&latest).is_err());
+        state.begin_delivery(&old).unwrap();
+        assert!(state.record_delivery(&receipt, true));
+        state.end_delivery(&old);
+        assert!(state.pending().is_none());
+        assert!(state.message(&latest, &latest.target).is_ok());
     }
 }

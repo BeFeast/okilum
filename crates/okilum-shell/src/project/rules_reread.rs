@@ -25,7 +25,7 @@ pub fn rules_reread_intent(
 }
 
 use super::*;
-use okilum_t3::rules_refresh::{RulesDispatch, RulesRevision};
+use okilum_t3::rules_refresh::{validate_rules_retry, RulesDispatch, RulesRevision};
 
 pub(crate) struct RulesDelivery {
     pub receipt: Option<RulesDispatch>,
@@ -128,6 +128,7 @@ impl ProjectView {
             .clone()
             .ok_or("Missing Manager environment")?;
         let offer = clicked.clone();
+        let retry_id = refresh.pending().map(|receipt| receipt.request_id.clone());
         let validate_binding = move || -> anyhow::Result<()> {
             let current = okilum_t3::projects::Project::read(&area)?.native_binding()?;
             anyhow::ensure!(
@@ -168,8 +169,43 @@ impl ProjectView {
                         matches!(&r.command.intent, Intent::Message { text: retained, .. } if retained == &text)
                     });
                     let record = match existing {
-                        Some(record) => record,
-                        None => journal.prepare(intent)?,
+                        Some(record) => {
+                            validate_rules_retry(
+                                retry_id.as_deref(),
+                                Some(&record.command.command_id),
+                            )
+                            .map_err(anyhow::Error::msg)?;
+                            record
+                        }
+                        None => {
+                            // Reconnection can change the available protocol. A
+                            // retained MCP request must never become a new native
+                            // command, including after the Reader was reopened.
+                            let legacy =
+                                MessageJournal::new(&state, &environment, &offer.target.thread_id);
+                            if let Some(record) = legacy
+                                .records()?
+                                .into_iter()
+                                .find(|r| r.message.text == text)
+                            {
+                                validate_rules_retry(
+                                    retry_id.as_deref(),
+                                    Some(&record.message.client_request_id),
+                                )
+                                .map_err(anyhow::Error::msg)?;
+                                delivery.receipt = Some(RulesDispatch {
+                                    offer: offer.clone(),
+                                    request_id: record.message.client_request_id,
+                                });
+                                delivery.acknowledged = record.receipt.is_some();
+                                anyhow::ensure!(delivery.acknowledged,
+                                    "This rules request is retained in the MCP transport; reconnect that transport to retry the original message");
+                                return Ok(());
+                            }
+                            validate_rules_retry(retry_id.as_deref(), None)
+                                .map_err(anyhow::Error::msg)?;
+                            journal.prepare(intent)?
+                        }
                     };
                     delivery.receipt = Some(RulesDispatch {
                         offer,
@@ -213,8 +249,32 @@ impl ProjectView {
                 let records = journal.records()?;
                 let existing = records.iter().find(|r| r.message.text == text).cloned();
                 let record = match existing {
-                    Some(record) => record,
+                    Some(record) => {
+                        validate_rules_retry(
+                            retry_id.as_deref(),
+                            Some(&record.message.client_request_id),
+                        )
+                        .map_err(anyhow::Error::msg)?;
+                        record
+                    }
                     None => {
+                        let native = okilum_t3::actions::Journal::new(
+                            &state,
+                            &environment,
+                            &offer.target.thread_id,
+                        );
+                        if let Some(record) = native.records()?.into_iter().find(|r| {
+                            matches!(&r.command.intent, Intent::Message { text: retained, .. } if retained == &text)
+                        }) {
+                            validate_rules_retry(retry_id.as_deref(), Some(&record.command.command_id)).map_err(anyhow::Error::msg)?;
+                            delivery.receipt = Some(RulesDispatch { offer: offer.clone(), request_id: record.command.command_id });
+                            delivery.acknowledged = record.sequence.is_some();
+                            anyhow::ensure!(delivery.acknowledged,
+                                "This rules request is retained in the native transport; reconnect that transport to retry the original command");
+                            return Ok(());
+                        }
+                        validate_rules_retry(retry_id.as_deref(), None)
+                            .map_err(anyhow::Error::msg)?;
                         anyhow::ensure!(
                             !records.iter().any(|r| r.receipt.is_none()),
                             "Resolve the retained Manager message before another request"

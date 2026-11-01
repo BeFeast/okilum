@@ -11,6 +11,9 @@ pub(super) struct Offer {
 }
 
 struct RulesUi {
+    // A returning worker belongs to this mounted offer, not a later reopen of
+    // the same vault/project that happens to reuse its ProjectView entity.
+    lease: Arc<()>,
     root: PathBuf,
     project: Entity<project::ProjectView>,
     refresh: okilum_t3::rules_refresh::RulesRefresh,
@@ -163,6 +166,7 @@ impl Reader {
             return;
         }
         self.agents_offer.rules = Some(RulesUi {
+            lease: Arc::new(()),
             root: self.vault_root.clone(),
             project,
             refresh,
@@ -178,6 +182,14 @@ impl Reader {
             && self.agents_offer.rules.as_ref().is_some_and(|ui| {
                 ui.root == self.vault_root && self.project.as_ref() == Some(&ui.project)
             })
+    }
+
+    /// Mount in the Reader-owned project layout, outside the sidebar (the
+    /// sidebar is intentionally absent for an active project). Returns no node
+    /// for a different vault/project or when Agents is disabled.
+    pub(super) fn render_agents_rules_offer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.has_rules_offer(cx)
+            .then(|| self.render_rules_offer(cx))
     }
 
     fn render_rules_offer(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -249,16 +261,22 @@ impl Reader {
                 return;
             }
         };
+        if let Err(error) = ui.refresh.begin_delivery(&clicked) {
+            ui.status = Some(error.into());
+            cx.notify();
+            return;
+        }
         ui.busy = true;
         let root = ui.root.clone();
         let project = ui.project.clone();
+        let lease = ui.lease.clone();
         cx.spawn_in(window, async move |this, cx| {
             let delivery = cx.background_executor().spawn(async move { job() }).await;
             let _ = this.update_in(cx, |this, _window, cx| {
                 let Some(ui) = this.agents_offer.rules.as_mut() else {
                     return;
                 };
-                if ui.root != root || ui.project != project {
+                if ui.root != root || ui.project != project || !Arc::ptr_eq(&ui.lease, &lease) {
                     return;
                 }
                 ui.busy = false;
@@ -267,6 +285,7 @@ impl Reader {
                 if let Some(receipt) = &delivery.receipt {
                     ui.refresh.record_delivery(receipt, delivery.acknowledged);
                 }
+                ui.refresh.end_delivery(&clicked);
                 if ui.refresh.offer() != Some(&clicked) {
                     cx.notify();
                     return;
