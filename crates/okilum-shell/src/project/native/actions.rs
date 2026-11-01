@@ -66,6 +66,8 @@ impl RequestCard {
 }
 impl Render for RequestCard {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A render can consume a presentation change before its notification.
+        self.request_revision = self.actions.read(cx).request_revision;
         let id = self.item["requestId"].as_str().unwrap_or("");
         let pending = self.local
             && self
