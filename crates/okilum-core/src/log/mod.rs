@@ -31,6 +31,7 @@ pub mod query;
 mod record;
 pub mod regex_text;
 pub mod saved_query;
+pub mod sftp;
 mod snapshot;
 pub mod source_link;
 pub mod tail;
