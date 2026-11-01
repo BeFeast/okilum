@@ -321,7 +321,7 @@ pub(super) struct State {
     pub active: Option<Project>,
     pub boards: std::collections::BTreeMap<PathBuf, Entity<project::board::Board>>,
     pub board_visible: bool,
-    saved: Option<Saved>,
+    pub(super) saved: Option<Saved>,
     pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
     /// The shared #1520 picker is the Projects section surface.
     pub picker: Option<Entity<ProjectsPicker>>,
@@ -330,11 +330,11 @@ pub(super) struct State {
     pub switcher: Option<Entity<ProjectsPicker>>,
 }
 
-struct Saved {
-    tree: reader_tree::Tree,
-    panels: reader_layout::Panels,
-    widths: reader_layout::Widths,
-    tree_offset: Point<Pixels>,
+pub(super) struct Saved {
+    pub(super) tree: reader_tree::Tree,
+    pub(super) panels: reader_layout::Panels,
+    pub(super) widths: reader_layout::Widths,
+    pub(super) tree_offset: Point<Pixels>,
 }
 
 impl Reader {
@@ -1013,30 +1013,48 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.enter_project_folder(project.folder, window, cx);
+    }
+
+    pub(super) fn enter_project_folder(
+        &mut self,
+        folder: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         let generation = self.project_navigation.generation;
         let vault = self.vault_root.clone();
-        let folder = project.folder.clone();
+        let restore_note = self
+            .ui_state
+            .restoring_workspace
+            .then(|| self.current_rel.clone());
         cx.spawn_in(window, async move |this, cx| {
             let root = vault.clone();
+            let requested = folder.clone();
             let fresh = cx
                 .background_executor()
                 .spawn(async move {
                     anyhow::ensure!(
-                        project
-                            .folder
-                            .canonicalize()?
-                            .starts_with(root.canonicalize()?),
+                        requested.canonicalize()?.starts_with(root.canonicalize()?),
                         "Project moved outside this vault"
                     );
-                    Project::read(&project.folder)
+                    Project::read(&requested)
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.vault_root != vault || this.project_navigation.generation != generation {
+                    return;
+                }
+                this.ui_state.restoring_workspace = false;
+                // A delivered document that arrived during validation wins.
+                if restore_note
+                    .as_ref()
+                    .is_some_and(|note| note != &this.current_rel)
+                {
                     return;
                 }
                 match fresh {
@@ -1139,6 +1157,7 @@ impl Reader {
     }
 
     pub(super) fn leave_vault_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ui_state.restoring_workspace = false;
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));

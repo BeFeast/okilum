@@ -890,6 +890,8 @@ struct Opts {
     reusable_roots: Vec<PathBuf>,
     session_directory: Option<PathBuf>,
     exact_restore: bool,
+    /// Session replay may supply a note without making it an external intent.
+    restore_workspace: bool,
     diagnostics: Option<reader_diagnostics::Trace>,
     /// Explicit manual refresh verifies canonical bytes even with unchanged revisions.
     force_source_read: bool,
@@ -7030,6 +7032,7 @@ impl Render for Reader {
         self.sync_sidebar(cx);
         self.restore_ui_tree();
         self.restore_ui_source(window, cx);
+        self.restore_workspace_mode(window, cx);
         self.record_ui_state(window.is_window_active(), cx);
         {
             let _timing =
