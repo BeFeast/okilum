@@ -6,6 +6,34 @@ use std::sync::{
 };
 use velopack::{UpdateCheck, UpdateManager, UpdateOptions};
 
+#[path = "windows_transport.rs"]
+mod windows_transport;
+
+fn offered_package_matches(
+    pending: &velopack::VelopackAsset,
+    sha256: &str,
+    offered: &velopack::VelopackAsset,
+) -> bool {
+    use windows_transport::Package;
+    offered.Type == "Full"
+        && windows_transport::matches(
+            Package {
+                id: &pending.PackageId,
+                version: &pending.Version,
+                filename: &pending.FileName,
+                size: pending.Size,
+                sha256,
+            },
+            Package {
+                id: &offered.PackageId,
+                version: &offered.Version,
+                filename: &offered.FileName,
+                size: offered.Size,
+                sha256: &offered.SHA256,
+            },
+        )
+}
+
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
 static BETA: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -319,9 +347,10 @@ fn check_and_download() -> anyhow::Result<&'static str> {
         let sha256 = package_sha256(&asset).ok_or_else(|| {
             anyhow::anyhow!("The downloaded update could not be read. Okilum will try again later")
         })?;
-        let listed = feed.Assets.iter().any(|offered| {
-            offered.Version == asset.Version && offered.SHA256.eq_ignore_ascii_case(&sha256)
-        });
+        let listed = feed
+            .Assets
+            .iter()
+            .any(|offered| offered_package_matches(&asset, &sha256, offered));
         if listed {
             record_verified(&sha256);
             state().lock().unwrap().observe(Some(identity(&asset)));
@@ -347,18 +376,26 @@ fn check_and_download() -> anyhow::Result<&'static str> {
                 result
             })?;
             status::set(CheckStatus::Preparing);
+            // The SDK locates the latest local package, which need not be the
+            // target it just downloaded. Never mark a different local package
+            // trusted merely because the transport completed successfully.
+            forget_verified();
+            state().lock().unwrap().observe(None);
             let pending = manager.get_update_pending_restart();
-            if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
-                record_verified(&sha256);
-            }
-            state()
-                .lock()
-                .unwrap()
-                .observe(pending.as_ref().map(identity));
             anyhow::ensure!(
                 pending.is_some(),
                 "The downloaded package is no longer available. Check for updates again."
             );
+            let pending = pending.unwrap();
+            let sha256 = package_sha256(&pending).ok_or_else(|| {
+                anyhow::anyhow!("The downloaded update could not be read. Check for updates again.")
+            })?;
+            anyhow::ensure!(
+                offered_package_matches(&pending, &sha256, &update.TargetFullRelease),
+                "The pending package does not match the selected update. Check for updates again."
+            );
+            record_verified(&sha256);
+            state().lock().unwrap().observe(Some(identity(&pending)));
             Ok("Update ready. Choose Restart to update.")
         }
         UpdateCheck::NoUpdateAvailable => Ok(UP_TO_DATE),
