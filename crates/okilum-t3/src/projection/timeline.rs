@@ -149,7 +149,8 @@ pub struct GroupKey {
     pub identity: GroupIdentity,
 }
 impl GroupKey {
-    fn for_row(row: &SourceRow) -> Self {
+    /// Canonical anchor identity, independent of visibility, collapse or run folds.
+    pub fn for_row(row: &SourceRow) -> Self {
         let identity = match &row.kind {
             RowKind::Work(work) => work
                 .tool_call_id
