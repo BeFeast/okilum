@@ -582,35 +582,68 @@ fn priority_icon(priority: u8, color: Hsla) -> impl IntoElement {
             )
         })
 }
-pub(super) fn today() -> time::Date {
-    use chrono::Datelike;
-    let now = chrono::Local::now();
-    time::Date::from_calendar_date(
-        now.year(),
-        (now.month() as u8).try_into().unwrap(),
-        now.day() as u8,
-    )
-    .unwrap()
+/// A timezone change can move today's boundary before a previously scheduled
+/// midnight timer fires. Sample the local clock at a bounded interval, but only
+/// invalidate the window when its calendar date or UTC offset changes.
+const CALENDAR_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CalendarDay {
+    date: time::Date,
+    utc_offset: i32,
 }
-#[cfg(not(test))]
-fn until_midnight() -> std::time::Duration {
-    let now = chrono::Local::now();
-    now.date_naive()
-        .succ_opt()
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .and_then(|d| d.and_local_timezone(chrono::Local).earliest())
-        .and_then(|d| (d - now).to_std().ok())
-        .unwrap_or(std::time::Duration::from_secs(3600))
-        + std::time::Duration::from_secs(1)
+impl CalendarDay {
+    fn at(now: chrono::DateTime<chrono::FixedOffset>) -> Self {
+        use chrono::Datelike;
+        Self {
+            date: time::Date::from_calendar_date(
+                now.year(),
+                (now.month() as u8).try_into().unwrap(),
+                now.day() as u8,
+            )
+            .unwrap(),
+            utc_offset: now.offset().local_minus_utc(),
+        }
+    }
+
+    fn now() -> Self {
+        Self::at(chrono::Local::now().fixed_offset())
+    }
+
+    fn update(&mut self, current: Self) -> bool {
+        if *self == current {
+            return false;
+        }
+        *self = current;
+        true
+    }
+}
+
+pub(super) fn today() -> time::Date {
+    CalendarDay::now().date
 }
 fn results_state(window: &mut Window, cx: &mut App) -> Entity<Results> {
-    let now = today();
+    let calendar = CalendarDay::now();
+    let now = calendar.date;
     window.use_keyed_state("tasks-results", cx, |_, _cx| {
         #[cfg(not(test))]
-        _cx.spawn(async move |state, cx| loop {
-            cx.background_executor().timer(until_midnight()).await;
-            if state.update(cx, |_, cx| cx.notify()).is_err() {
-                break;
+        _cx.spawn(async move |state, cx| {
+            let mut observed = calendar;
+            loop {
+                cx.background_executor()
+                    .timer(CALENDAR_CHECK_INTERVAL)
+                    .await;
+                let changed = observed.update(CalendarDay::now());
+                if state
+                    .update(cx, |_, cx| {
+                        if changed {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .detach();
@@ -689,7 +722,16 @@ impl RenderOnce for TasksList {
             return list.into_any_element();
         }
         if results.rows.is_empty() {
-            return div().into_any_element();
+            return div()
+                .when(self.native, |empty| {
+                    empty
+                        .text_sm()
+                        .text_color(muted)
+                        .debug_selector(|| "tasks-empty".into())
+                        .child(self.title.clone().unwrap_or_else(|| "Tasks".into()))
+                        .child(": No tasks match this section.")
+                })
+                .into_any_element();
         }
         if !self.has_heading {
             list = list.child(
@@ -1120,6 +1162,26 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn calendar_refresh_detects_date_timezone_and_dst_without_idle_invalidations() {
+        fn at(value: &str) -> CalendarDay {
+            CalendarDay::at(chrono::DateTime::parse_from_rfc3339(value).unwrap())
+        }
+        let mut clock = at("2026-10-08T23:59:59+03:00");
+        assert!(!clock.update(at("2026-10-08T23:59:59+03:00")));
+        assert!(clock.update(at("2026-10-09T00:00:00+03:00")));
+        assert_eq!(clock.date, time::macros::date!(2026 - 10 - 09));
+        // Same instant, westward timezone change: local today moves backwards.
+        assert!(clock.update(at("2026-10-08T16:00:00-05:00")));
+        assert_eq!(clock.date, time::macros::date!(2026 - 10 - 08));
+        assert!(!clock.update(at("2026-10-08T18:30:00-05:00")));
+        // DST changes offset even when the calendar date does not change.
+        let mut dst = at("2026-11-01T01:59:59-04:00");
+        assert!(dst.update(at("2026-11-01T01:00:00-05:00")));
+        assert!(!dst.update(at("2026-11-01T01:30:00-05:00")));
+        assert!(CALENDAR_CHECK_INTERVAL <= std::time::Duration::from_secs(60));
+    }
 
     #[test]
     fn count_badge_counts_distinct_notes_not_tasks() {

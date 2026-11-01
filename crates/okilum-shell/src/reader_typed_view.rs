@@ -90,6 +90,16 @@ enum View {
 const FILTER_ALL: usize = 0;
 const FILTER_OPEN: usize = 1;
 const FILTER_OVERDUE: usize = 2;
+const FILTER_UPCOMING: usize = 3;
+
+fn filtered_query(source: &str, filter: usize) -> String {
+    match filter {
+        FILTER_OPEN => format!("{source}\nnot done"),
+        FILTER_OVERDUE => format!("{source}\nnot done\ndue before today"),
+        FILTER_UPCOMING => format!("{source}\nnot done\ndue after today"),
+        _ => source.to_owned(),
+    }
+}
 
 struct Cached {
     source: Arc<str>,
@@ -122,7 +132,13 @@ impl Cached {
         if self.source == source && self.preferences == preferences && self.today == today {
             return false;
         }
+        // This cache belongs to one dashboard. Reparse relative dates and source
+        // without discarding the user's current presentation choices.
+        let filter = self.filter;
+        let grouping = self.grouping;
         *self = Self::new(source, preferences, today);
+        self.filter = filter;
+        self.grouping = grouping;
         true
     }
 }
@@ -144,17 +160,19 @@ pub(super) fn render(
     let today = reader_tasks::today();
     let cache = window.use_keyed_state(
         SharedString::from(format!(
-            "typed-view:{}",
-            reader.vault_root.join(reader.selected_file()).display()
+            "typed-view:{}:overdue-lens={}",
+            reader.vault_root.join(reader.selected_file()).display(),
+            on_overdue
         )),
         cx,
         |_, _| Cached::new(Arc::from(""), Preferences::default(), today),
     );
-    let (view, changed) = cache.update(cx, |cached, _| {
+    let (view, changed, initial) = cache.update(cx, |cached, _| {
+        let initial = cached.source.is_empty();
         let changed = cached.refresh(source, preferences, today);
-        (cached.view.clone(), changed)
+        (cached.view.clone(), changed, initial)
     });
-    if changed && on_overdue {
+    if initial && on_overdue {
         cache.update(cx, |cached, _| cached.filter = FILTER_OVERDUE);
     }
     let dashboard = match view {
@@ -203,6 +221,7 @@ pub(super) fn render(
             (FILTER_ALL, "All"),
             (FILTER_OPEN, "Open"),
             (FILTER_OVERDUE, "Overdue"),
+            (FILTER_UPCOMING, "Upcoming"),
         ]
         .map(|(value, label)| {
             let cache = cache.clone();
@@ -212,6 +231,7 @@ pub(super) fn render(
                 .ghost()
                 .label(label)
                 .selected(filter == value)
+                .debug_selector(move || format!("dashboard-filter-{value}"))
                 .on_click(move |_, _, cx| {
                     cache.update(cx, |s, _| s.filter = value);
                     let _ = reader.update(cx, |_, cx| cx.notify());
@@ -267,13 +287,7 @@ pub(super) fn render(
                 div().id(("dashboard-section", line)).flex_none().child(
                     reader_tasks::dashboard_section(
                         section.title.clone(),
-                        match filter {
-                            FILTER_OPEN => format!("{}\nnot done", section.query_source),
-                            FILTER_OVERDUE => {
-                                format!("{}\nnot done\ndue before today", section.query_source)
-                            }
-                            _ => section.query_source.clone(),
-                        },
+                        filtered_query(&section.query_source, filter),
                         section.source_line,
                         layout,
                         search.clone(),
@@ -290,6 +304,75 @@ pub(super) fn render(
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[test]
+    fn upcoming_keeps_scope_and_selection_across_refresh_and_date_boundary() {
+        use okilum_core::tasks::{Index, Query};
+        let day = time::macros::date!(2026 - 10 - 08);
+        let source: Arc<str> =
+            Arc::from("---\nview: tasks\n---\n## Work\n```tasks\npath includes Work\n```\n");
+        let mut cache = Cached::new(source.clone(), Preferences::default(), day);
+        cache.filter = FILTER_UPCOMING;
+        cache.grouping = Some(layout::Grouping::Note);
+        let mut index = Index::default();
+        index.replace(
+            "Work.md",
+            concat!(
+                "- [ ] Overdue 📅 2026-10-07\n",
+                "- [ ] Today 📅 2026-10-08\n",
+                "- [ ] Tomorrow 📅 2026-10-09\n",
+                "- [x] Completed 📅 2026-10-09\n",
+                "- [ ] No date\n",
+            ),
+        );
+        index.replace("Other.md", "- [ ] Outside scope 📅 2026-10-09\n");
+        let query_source = filtered_query("path includes Work", cache.filter);
+        let query = Query::parse(&query_source, day);
+        assert!(query.unsupported.is_empty());
+        let rows = index.query(&query);
+        assert_eq!(
+            rows.len(),
+            1,
+            "positive control: future open task is visible"
+        );
+        assert_eq!(rows[0].line, 3);
+        assert_eq!(rows[0].path, "Work.md");
+        assert!(!cache.refresh(source.clone(), Preferences::default(), day));
+        assert!(cache.refresh(
+            Arc::from(format!("{source}\n")),
+            Preferences::default(),
+            day
+        ));
+        let mut preferences = Preferences::default();
+        preferences.tasks.grouping = layout::Grouping::None;
+        assert!(cache.refresh(source.clone(), preferences.clone(), day));
+        assert!(cache.refresh(source, preferences, day.next_day().unwrap()));
+        assert_eq!(cache.filter, FILTER_UPCOMING);
+        assert_eq!(cache.grouping, Some(layout::Grouping::Note));
+        let query = Query::parse(
+            &filtered_query("path includes Work", cache.filter),
+            cache.today,
+        );
+        assert!(
+            index.query(&query).is_empty(),
+            "tomorrow becomes today at the local date boundary"
+        );
+        // A westward timezone or clock correction can move local today back.
+        assert!(cache.refresh(cache.source.clone(), cache.preferences.clone(), day));
+        let query = Query::parse(
+            &filtered_query("path includes Work", cache.filter),
+            cache.today,
+        );
+        assert_eq!(cache.filter, FILTER_UPCOMING);
+        assert_eq!(index.query(&query).len(), 1);
+        index.replace("Work.md", "- [ ] Newly indexed 📅 2026-10-10\n");
+        assert_eq!(
+            index.query(&query).len(),
+            1,
+            "index refresh uses the retained filter"
+        );
+        assert_eq!(filtered_query("due today", FILTER_ALL), "due today");
+    }
+
     #[test]
     fn accepted_frontmatter_and_preferences_select_views_without_stale_cache() {
         let day = time::macros::date!(2026 - 10 - 08);
