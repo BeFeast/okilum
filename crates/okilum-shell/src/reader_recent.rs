@@ -2,6 +2,7 @@
 use super::*;
 
 pub(super) mod gallery;
+mod thumb_code;
 mod thumb_markdown;
 
 #[derive(Default)]

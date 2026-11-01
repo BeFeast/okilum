@@ -1,12 +1,10 @@
 //! Bounded, selection-independent Recent previews. Inventory remains caller-owned.
-use super::thumb_markdown;
 use super::*;
+use super::{thumb_code, thumb_markdown};
 use std::collections::HashMap;
-use std::io::Read;
 
 const MAX_CARDS: usize = 40;
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
-const TEXT_BYTES: u64 = 4096;
 
 /// Never resolve a card by its display name, index, or a suffix match.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +19,7 @@ enum Preview {
     Loading,
     Image(Arc<RenderImage>),
     Markdown(thumb_markdown::Prepared),
-    Code(String),
+    Code(thumb_code::Prepared),
     Unavailable(String),
 }
 
@@ -58,6 +56,12 @@ struct Cached {
     preview: Preview,
 }
 
+#[derive(PartialEq, Eq)]
+enum PresentationKey {
+    Markdown(thumb_markdown::Key),
+    Code(thumb_code::Key),
+}
+
 struct Work {
     generation: u64,
     jobs: Vec<(String, Option<Cached>)>,
@@ -68,8 +72,7 @@ pub(crate) struct Gallery {
     entries: Vec<reader_title_nav::Entry>,
     previews: Vec<Preview>,
     cache: HashMap<String, Cached>,
-    code_states: HashMap<String, Entity<TextViewState>>,
-    markdown_keys: HashMap<String, (thumb_markdown::Key, u64)>,
+    presentation_keys: HashMap<String, (PresentationKey, u64)>,
     layout_epoch: u64,
     query: String,
     selected: Option<String>,
@@ -95,8 +98,7 @@ impl Gallery {
             previews: Vec::new(),
             entries: Vec::new(),
             cache: HashMap::new(),
-            code_states: HashMap::new(),
-            markdown_keys: HashMap::new(),
+            presentation_keys: HashMap::new(),
             layout_epoch: 0,
             query: String::new(),
             generation: 0,
@@ -141,9 +143,7 @@ impl Gallery {
             selection::reconcile(self.selected.as_deref(), &old_visible, &visible, renames);
         self.cache
             .retain(|path, _| self.entries.iter().any(|entry| &entry.path == path));
-        self.code_states
-            .retain(|path, _| self.entries.iter().any(|entry| &entry.path == path));
-        self.markdown_keys
+        self.presentation_keys
             .retain(|path, _| self.entries.iter().any(|entry| &entry.path == path));
         // No stale image is presented as current while background revision checks run.
         self.previews = self.entries.iter().map(|_| Preview::Loading).collect();
@@ -190,34 +190,11 @@ impl Gallery {
                         };
                         match result {
                             Ok(cached) => {
-                                if let Preview::Code(source) = &cached.preview {
-                                    let unchanged = this
-                                        .cache
-                                        .get(&relative)
-                                        .is_some_and(|old| old.revision == cached.revision);
-                                    if !unchanged || !this.code_states.contains_key(&relative) {
-                                        let configured = code_view(TextView::markdown(
-                                            "recent-code-prepare",
-                                            "",
-                                        ));
-                                        let state = cx.new(|cx| {
-                                            let mut state =
-                                                TextViewState::markdown("", cx).selectable(false);
-                                            configured.prepare_state(&mut state, cx);
-                                            state.set_text(source, cx);
-                                            state
-                                        });
-                                        this.code_states.insert(relative.clone(), state);
-                                    }
-                                } else {
-                                    this.code_states.remove(&relative);
-                                }
                                 this.previews[index] = cached.preview.clone();
                                 this.cache.insert(relative, cached);
                             }
                             Err(error) => {
                                 this.cache.remove(&relative);
-                                this.code_states.remove(&relative);
                                 this.previews[index] =
                                     Preview::Unavailable(format!("Preview unavailable: {error}"));
                             }
@@ -298,16 +275,28 @@ impl Render for Gallery {
         let palette = brand::palette(cx);
         let visible = self.visible();
         for &index in &visible {
-            if let Preview::Markdown(prepared) = &self.previews[index] {
-                let key = prepared.key(224, self.theme_revision, cx);
+            let key = match &self.previews[index] {
+                Preview::Markdown(prepared) => Some(PresentationKey::Markdown(prepared.key(
+                    224,
+                    self.theme_revision,
+                    cx,
+                ))),
+                Preview::Code(prepared) => Some(PresentationKey::Code(prepared.key(
+                    224,
+                    self.theme_revision,
+                    cx,
+                ))),
+                _ => None,
+            };
+            if let Some(key) = key {
                 let path = &self.entries[index].path;
                 if !self
-                    .markdown_keys
+                    .presentation_keys
                     .get(path)
                     .is_some_and(|(old, _)| *old == key)
                 {
                     self.layout_epoch = self.layout_epoch.wrapping_add(1);
-                    self.markdown_keys
+                    self.presentation_keys
                         .insert(path.clone(), (key, self.layout_epoch));
                 }
             }
@@ -340,24 +329,14 @@ impl Render for Gallery {
                                 .h_full()
                                 .object_fit(ObjectFit::Contain)
                                 .into_any_element(),
-                            Preview::Code(_) => self
-                                .code_states
-                                .get(&entry.path)
-                                .map(|state| {
-                                    code_view(TextView::new(state))
-                                        .style(reader_fonts::text_style(cx))
-                                        .font_family(reader_fonts::code(cx))
-                                        .text_size(px(12.))
-                                        .w_full()
-                                        .into_any_element()
-                                })
-                                .unwrap_or_else(|| {
-                                    div().child("Loading preview…").into_any_element()
-                                }),
+                            Preview::Code(prepared) => thumb_code::render(
+                                ("recent-code-thumbnail", self.presentation_keys[&entry.path].1),
+                                prepared, 224, 144, cx,
+                            ),
                             Preview::Markdown(prepared) => thumb_markdown::render(
                                 (
                                     "recent-markdown-thumbnail",
-                                    self.markdown_keys[&entry.path].1,
+                                    self.presentation_keys[&entry.path].1,
                                 ),
                                 prepared,
                                 224,
@@ -403,60 +382,6 @@ impl Render for Gallery {
     }
 }
 
-/// Parse code as a fenced Markdown block using the Reader's installed highlighter.
-/// No Reader plugins: thumbnails cannot dispatch links, embeds, or diagram jobs.
-fn code_view(view: TextView) -> TextView {
-    view.code_block_language(reader_code_language::resolver())
-        .selectable(false)
-        .on_link_click(|_, _, _, _| {})
-}
-
-mod text_source {
-    /// Ignore only an incomplete final UTF-8 character at the byte-read bound.
-    pub(super) fn prefix(bytes: &[u8]) -> Result<&str, std::str::Utf8Error> {
-        match std::str::from_utf8(bytes) {
-            Ok(text) => Ok(text),
-            Err(error) if error.error_len().is_none() => {
-                std::str::from_utf8(&bytes[..error.valid_up_to()])
-            }
-            Err(error) => Err(error),
-        }
-    }
-    pub(super) fn fenced(source: &str, extension: &str) -> String {
-        // Source may itself contain fences. A longer fence keeps every byte code.
-        let longest = source.split(|c| c != '~').map(str::len).max().unwrap_or(0);
-        let fence = "~".repeat(longest.max(2) + 1);
-        let language = match extension {
-            "js" => "javascript",
-            "ts" => "typescript",
-            "py" => "python",
-            "rs" => "rust",
-            "yml" => "yaml",
-            "txt" | "log" => "text",
-            other => other,
-        };
-        format!("{fence}{language}\n{source}\n{fence}")
-    }
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        #[test]
-        fn bounded_utf8_does_not_corrupt_or_reject_complete_prefix() {
-            assert_eq!(prefix(&[b'a', 0xf0, 0x9f]).unwrap(), "a");
-            assert_eq!(prefix("café".as_bytes()).unwrap(), "café");
-            assert!(prefix(&[b'a', 0xff, b'b']).is_err());
-        }
-        #[test]
-        fn source_cannot_escape_highlighted_code_block() {
-            let code = "const text = `~~~\n# not a heading\n~~~~`;";
-            let rendered = fenced(code, "js");
-            assert!(rendered.starts_with("~~~~~javascript\n"));
-            assert!(rendered.ends_with("\n~~~~~"));
-            assert!(rendered.contains(code));
-        }
-    }
-}
-
 fn load(root: &Path, relative: &str) -> anyhow::Result<Preview> {
     Ok(load_cached(root, relative, None)?.preview)
 }
@@ -471,7 +396,7 @@ fn load_cached(root: &Path, relative: &str, cached: Option<Cached>) -> anyhow::R
         return Ok(cached);
     }
     let path = &before.canonical;
-    let extension = path
+    let extension = Path::new(relative)
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("")
@@ -500,28 +425,8 @@ fn load_cached(root: &Path, relative: &str, cached: Option<Cached>) -> anyhow::R
         Preview::Image(Arc::new(RenderImage::new(vec![image::Frame::new(image)])))
     } else if extension == "md" {
         Preview::Markdown(thumb_markdown::load(root, relative)?)
-    } else if matches!(
-        extension.as_str(),
-        "txt"
-            | "json"
-            | "rs"
-            | "js"
-            | "ts"
-            | "py"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "css"
-            | "html"
-            | "log"
-    ) {
-        let mut bytes = Vec::new();
-        std::fs::File::open(&path)?
-            .take(TEXT_BYTES)
-            .read_to_end(&mut bytes)?;
-        let text = text_source::prefix(&bytes)?;
-        let text = text.lines().take(24).collect::<Vec<_>>().join("\n");
-        Preview::Code(text_source::fenced(&text, &extension))
+    } else if reader_code_file::eligible(relative) || matches!(extension.as_str(), "txt" | "log") {
+        Preview::Code(thumb_code::load(root, relative)?)
     } else {
         Preview::Unavailable("No preview for this file type".into())
     };
@@ -689,14 +594,23 @@ mod tests {
         assert_eq!(thumbnail.size(0).height.0, 288);
         std::fs::write(fixture.path().join("note.txt"), "root text").unwrap();
         std::fs::write(fixture.path().join("nested/note.txt"), "nested text").unwrap();
-        let Preview::Code(root) = load(fixture.path(), "note.txt").unwrap() else {
-            panic!()
-        };
-        let Preview::Code(nested) = load(fixture.path(), "nested/note.txt").unwrap() else {
-            panic!()
-        };
-        assert!(root.contains("root text"));
-        assert!(nested.contains("nested text"));
+        let root = load_cached(fixture.path(), "note.txt", None).unwrap();
+        let nested = load_cached(fixture.path(), "nested/note.txt", None).unwrap();
+        assert!(matches!(root.preview, Preview::Code(_)));
+        assert!(matches!(nested.preview, Preview::Code(_)));
+        assert_eq!(
+            root.revision.canonical,
+            fixture.path().join("note.txt").canonicalize().unwrap()
+        );
+        assert_eq!(
+            nested.revision.canonical,
+            fixture
+                .path()
+                .join("nested/note.txt")
+                .canonicalize()
+                .unwrap()
+        );
+        assert_ne!(root.revision, nested.revision);
         assert!(load(fixture.path(), "missing.md").is_err());
         assert!(load(fixture.path(), "../outside.md").is_err());
     }
