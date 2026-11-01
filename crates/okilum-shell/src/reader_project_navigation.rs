@@ -364,6 +364,7 @@ impl Reader {
     }
 
     pub(super) fn reset_vault_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_workspace_restore();
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));
         }
@@ -387,6 +388,7 @@ impl Reader {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
+        self.cancel_workspace_restore();
         self.project_navigation.section = section;
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         self.project_navigation.loading = false;
@@ -1157,7 +1159,7 @@ impl Reader {
     }
 
     pub(super) fn leave_vault_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ui_state.restoring_workspace = false;
+        self.cancel_workspace_restore();
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));
