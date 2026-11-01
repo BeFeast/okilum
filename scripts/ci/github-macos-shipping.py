@@ -57,7 +57,7 @@ def accepted_run(runs, tooling, label):
 def prepare_verify_mirror(api, source, tooling, env):
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
-    from macos_verify_authorization import authorize, mirror_ref, evidence_bytes
+    from macos_verify_authorization import authorize, mirror_ref, evidence_bytes, REPO
     if authorize(env) != source:
         raise ValueError('Live bridge source admission changed')
     producer, number = env['GITHUB_RUN_ID'], env['VERIFY_PR']
@@ -72,9 +72,9 @@ def prepare_verify_mirror(api, source, tooling, env):
                         ('x-access-token:' + api.token).encode()).decode()}
         subprocess.run(['git', '-C', tmp, 'push',
                         '--force-with-lease=refs/heads/' + ref + ':',
-                        'https://github.com/BeFeast/okilum.git', source + ':refs/heads/' + ref],
+                        'https://github.com/' + REPO + '.git', source + ':refs/heads/' + ref],
                        env=push_env, check=True, capture_output=True, timeout=120)
-    evidence = {'schema': 1, 'repository': 'BeFeast/okilum', 'source': source,
+    evidence = {'schema': 1, 'repository': REPO, 'source': source,
                 'pr': number, 'producer': producer, 'attempt': '1', 'tooling': tooling,
                 'ref': ref, 'fast': 'success', 'issued': datetime.now(timezone.utc).isoformat()}
     # Revalidate after transfer; a changed remote PR must not gain an attestation.
