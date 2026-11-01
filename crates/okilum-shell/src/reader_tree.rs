@@ -26,18 +26,9 @@ pub struct Row {
 
 /// Ancestors already scrolled out above the first visible row. Paths retain
 /// vault identity; a similarly named sibling can never become a sticky parent.
+#[cfg(test)]
 pub(crate) fn sticky_ancestors(rows: &[Option<Row>], first: usize) -> Vec<Row> {
-    let Some(current) = rows.iter().skip(first).find_map(Option::as_ref) else {
-        return Vec::new();
-    };
-    rows.iter()
-        .take(first)
-        .filter_map(Option::as_ref)
-        .filter(|row| {
-            row.kind == EntryKind::Directory && current.path.starts_with(&format!("{}/", row.path))
-        })
-        .cloned()
-        .collect()
+    crate::reader_tree_breadcrumbs::Ancestors::new(rows.to_vec()).at(first)
 }
 
 /// Ordinary `_`/`.` paths are hidden in the browser until Show hidden files
@@ -307,18 +298,22 @@ impl Tree {
             if path != self.scope {
                 let kind = self.kinds[&path];
                 let index = self.is_index_note(&path);
-                rows.push(Row {
-                    hidden: hidden(&path)
-                        && !self.template_branch(&path)
-                        && !self.shown_index(&path),
-                    index,
-                    label: tree_label(&path, kind, self.note_titles, &self.titles),
-                    expanded: self.expanded.contains(&path),
-                    kind,
-                    archived: archived(&path),
-                    path: path.clone(),
-                    depth: depth - 1,
-                });
+                // The vault index is the permanent header, not a duplicate list
+                // item. Inventory identity and folder-index resolution stay intact.
+                if !(index && self.scope.is_empty() && !path.contains('/')) {
+                    rows.push(Row {
+                        hidden: hidden(&path)
+                            && !self.template_branch(&path)
+                            && !self.shown_index(&path),
+                        index,
+                        label: tree_label(&path, kind, self.note_titles, &self.titles),
+                        expanded: self.expanded.contains(&path),
+                        kind,
+                        archived: archived(&path),
+                        path: path.clone(),
+                        depth: depth - 1,
+                    });
+                }
                 if kind != EntryKind::Directory || !self.expanded.contains(&path) {
                     continue;
                 }
