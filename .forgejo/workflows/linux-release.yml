@@ -14,8 +14,10 @@ on:
         default: ''
 
 concurrency:
-  group: okilum-arch-build-${{ github.ref }}
-  # Finish useful work even while main keeps advancing. Publication is monotonic.
+  # No workflow-wide group: an Arch compiler must not delay select/AppImage reuse
+  # for a later main. Builds have isolated containers; protected release-publish
+  # retains feed serialization and monotonic stale-build rejection.
+  # Explicit false without a group lets accepted artifacts finish across pushes.
   cancel-in-progress: false
 
 jobs:
