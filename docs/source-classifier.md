@@ -38,4 +38,31 @@ Comrak has no cooperative cancellation/fuel API. Node/depth caps are checked **a
 
 ## Verification
 
+### Retained local-run cache (Refs #1640)
+
+The production `RetainedPresentation` local-reparse path memoizes up to 16
+classifications of runs no larger than 4 KiB. Hash lookup checks exact fragment
+bytes. Cache ownership fixes the canonical root's existing resolved-reference
+context and current local parser policy; every fresh `RetainedPresentation::new`
+starts empty. Remapped descendants share the cache. No global cache or reference
+authority is introduced, and the separate groundwork `fragment_cache` retains its
+full-parent key.
+
+Repeated structural edits and Undo can reuse local-coordinate metadata before
+the next background classification arrives. Every dirty-run structural check
+still executes; callers rebase metadata and rebuild/validate current-source
+projection rather than installing an old snapshot or native mapping. Entry count
+and fragment size bound distinct cached input to 64 KiB; keys and classification
+snapshots each retain a copy, plus bounded metadata. This is not a process-memory
+or frame-time measurement.
+
+This is a partial production step for #1640. The 64 KiB Reader admission, 256 KiB
+mapping/native guard, range/work limits, whole-root background classification and
+existing raw-tail fallback remain. Full top-level segmentation, viewport-first
+work, global piecewise mapping, >20% full-parse policy in the production consumer
+and 1 MiB/native performance acceptance still require integration. These tests
+do not certify that issue's large-note acceptance.
+
+### Classifier coverage
+
 Tests include every admitted syntax family, nested canonical styles, independent expected source/display text, generated delimiter geometries, exact copy/replacement, selection/composition reveal, indentation carets, stale styles/plans, Unicode/grapheme joins, BOM/CRLF/NUL/lone-CR cases, malformed/unsupported blocks alongside a valid positive neighbor, and resource caps. Core all-target tests and Clippy accompany the frozen implementation receipt. Standalone parser timings are supporting measurements on identified synthetic corpora, not a native performance gate.

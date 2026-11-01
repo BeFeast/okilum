@@ -75,10 +75,14 @@ pub fn import(input: &str) -> Result<(String, Discover)> {
     endpoint.set_query(None);
     endpoint.set_fragment(None);
     let fragment = url.fragment().unwrap_or("");
-    let fragment_query = fragment
-        .split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or("");
+    let (route, fragment_query) = fragment.split_once('?').unwrap_or((fragment, ""));
+    // Saved Discover sessions can supply query/filter state absent from _a/_g.
+    // Until those objects are resolved, treating their URL as an unsaved search
+    // could execute a broader query than the user imported.
+    ensure!(
+        matches!(route, "" | "/"),
+        "Unsupported Discover route: saved searches and sessions must be opened as a complete unsaved Discover URL"
+    );
     let mut app = None;
     let mut global = None;
     for (key, value) in url
@@ -459,5 +463,30 @@ impl TimeRange {
             from: from.format(&time::format_description::well_known::Rfc3339)?,
             to: to.format(&time::format_description::well_known::Rfc3339)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_discover_routes_cannot_silently_lose_server_stored_query_state() {
+        let original = "https://logs.example/s/work/app/discover#/?_a=(index:events,query:(language:kuery,query:'service:api'),sort:!(!('@timestamp',desc)))&_g=(time:(from:'2026-10-20T12:00:00.123456789Z',to:'2026-10-20T12:15:00Z'))".to_owned();
+        let (_, expected) = import(&original).unwrap();
+        // Positive controls: both hash-root and query-only full-state URLs work.
+        for accepted in [
+            original.clone(),
+            original.replace("#/?", "?"),
+            original.replace("#/?", "#?"),
+        ] {
+            assert_eq!(import(&accepted).unwrap().1, expected);
+        }
+        for route in ["/view/saved-search", "/session/saved-session", "/unknown"] {
+            let input = original.replace("#/?", &format!("#{route}?"));
+            let error = import(&input).unwrap_err().to_string();
+            assert!(error.contains("Unsupported Discover route"), "{error}");
+        }
+        assert_eq!(import(&original).unwrap().1, expected);
     }
 }

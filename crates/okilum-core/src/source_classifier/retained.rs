@@ -4,7 +4,13 @@ use super::{
     Classification, Reference, Style, StyleSpan, MAX_BYTES,
 };
 use crate::source_projection::{Active, Plan, Region, Snapshot};
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{Arc, Mutex},
+};
+
+#[path = "retained_cache.rs"]
+mod retained_cache;
 
 /// One immutable reveal decision and its projection for an exact source revision.
 /// Native adapters additionally bind this value to their layout/gesture epoch.
@@ -65,6 +71,9 @@ pub struct RetainedPresentation {
     contexts: Vec<Range<usize>>,
     /// Definitions change only through a full parse; local reparses reuse these.
     references: Arc<[Reference]>,
+    // Shared only by remaps of this canonical classification. A fresh root gets
+    // a fresh cache, so its immutable reference context cannot leak across roots.
+    local_cache: Arc<Mutex<retained_cache::Cache<Classification>>>,
 }
 
 #[cfg(test)]
@@ -91,6 +100,7 @@ impl RetainedPresentation {
             decorations: classified.decorations.clone(),
             contexts: classified.contexts.clone(),
             references: classified.references.clone().into(),
+            local_cache: Default::default(),
         }
     }
     pub fn snapshot(&self) -> &Snapshot {
@@ -359,7 +369,27 @@ impl RetainedPresentation {
                 .collect(),
             contexts: self.contexts.iter().filter(|c| above(c)).cloned().collect(),
             references: self.references.clone(),
+            local_cache: self.local_cache.clone(),
         })
+    }
+
+    /// Cache only local-coordinate metadata. All structural/context checks around
+    /// the dirty run still execute on every request; no old projection or native
+    /// lease is returned. The cache owner fixes references and parser policy.
+    fn classify_local(&self, local: &Snapshot) -> Arc<Classification> {
+        if let Some(hit) = self
+            .local_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(local.source()))
+        {
+            return hit;
+        }
+        let classified = Arc::new(super::classify_with(local, &self.references));
+        if let Ok(mut cache) = self.local_cache.lock() {
+            cache.insert(local.source(), classified.clone());
+        }
+        classified
     }
 
     /// Reclassify a bounded run of accepted top-level blocks and whitespace gaps.
@@ -646,7 +676,7 @@ impl RetainedPresentation {
         // Oversized but context-local edits keep only their dirty run raw until
         // async adoption. Do not discard the already validated outer blocks.
         let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
-            .then(|| super::classify_with(&local, &self.references));
+            .then(|| self.classify_local(&local));
         // Indented, tabbed and quote lines can attach to a container, and a
         // fence or HTML opener ends only with its container. Accept them only
         // inside a container of this parse, which includes every container the
@@ -813,6 +843,7 @@ impl RetainedPresentation {
             decorations,
             contexts,
             references: self.references.clone(),
+            local_cache: self.local_cache.clone(),
         })
     }
 
@@ -840,6 +871,7 @@ impl RetainedPresentation {
                 decorations: self.decorations.clone(),
                 contexts: self.contexts.clone(),
                 references: self.references.clone(),
+                local_cache: self.local_cache.clone(),
             });
         }
         if current.generation() == self.snapshot.generation() {
@@ -1017,6 +1049,7 @@ impl RetainedPresentation {
         let result = Self {
             contexts,
             references: self.references.clone(),
+            local_cache: self.local_cache.clone(),
             snapshot: current.clone(),
             base: Ok(Arc::new(base)),
             plan,
@@ -1139,6 +1172,64 @@ fn bare_list_marker(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeated_structural_edit_reuses_local_parse_and_rebases_current_maps() {
+        let before = "**BEFORE**\n\n- a **b**\n  - c *d*\n- e\n\n**AFTER** [l](d)";
+        let after = "**BEFORE**\n\n- a **b**\n  - c *d*\n  - new **x**\n- e\n\n**AFTER** [l](d)";
+        let mut retained = RetainedPresentation::new(&classify(&snapshot(1, before)));
+        for (generation, text, parses) in [(2, after, 1), (3, before, 1), (4, after, 0)] {
+            let current = snapshot(generation, text);
+            let calls = super::super::TEST_PARSE_CALLS.with(|calls| calls.get());
+            retained = retained.remap(&current).expect("local structural edit");
+            assert_eq!(
+                super::super::TEST_PARSE_CALLS.with(|counter| counter.get()) - calls,
+                parses,
+                "generation {generation}: cold controls precede the actual hit"
+            );
+            let fresh = RetainedPresentation::new(&classify(&current));
+            assert_eq!(retained.snapshot(), &current);
+            assert_eq!(retained.styles(), fresh.styles());
+            assert_eq!(retained.decorations(), fresh.decorations());
+            assert_eq!(retained.contexts, fresh.contexts);
+            let actual = retained.project(&Active::default()).unwrap();
+            let expected = fresh.project(&Active::default()).unwrap();
+            assert_eq!(actual.display(), expected.display());
+            for offset in 0..=text.len() {
+                assert_eq!(
+                    actual.source_to_display(&current, offset),
+                    expected.source_to_display(&current, offset)
+                );
+            }
+            for offset in 0..=actual.display().len() {
+                for bias in [Bias::Left, Bias::Right] {
+                    assert_eq!(
+                        actual.display_to_source(&current, offset, bias),
+                        expected.display_to_source(&current, offset, bias)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_cache_is_owned_by_one_canonical_reference_context() {
+        let first =
+            RetainedPresentation::new(&classify(&snapshot(1, "[label][id]\n\n[id]: /first\n")));
+        let second =
+            RetainedPresentation::new(&classify(&snapshot(2, "[label][id]\n\n[id]: /second\n")));
+        let fragment = snapshot(3, "[label][id]");
+        let one = first.classify_local(&fragment);
+        assert_eq!(one.links[0].target, "/first");
+        let calls = super::super::TEST_PARSE_CALLS.with(|calls| calls.get());
+        let two = second.classify_local(&fragment);
+        assert_eq!(
+            super::super::TEST_PARSE_CALLS.with(|counter| counter.get()) - calls,
+            1
+        );
+        assert_eq!(two.links[0].target, "/second");
+        assert!(Arc::ptr_eq(&one, &first.classify_local(&fragment)));
+    }
+
     #[test]
     fn reveal_snapshot_keeps_projection_and_marker_policy_on_one_revision() {
         let text = "plain [first](one) and [second](two)";

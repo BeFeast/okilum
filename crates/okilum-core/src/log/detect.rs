@@ -21,6 +21,8 @@ pub enum Format {
     AccessLog,
     /// syslog, RFC 5424 or the BSD form of RFC 3164.
     Syslog,
+    /// Kubernetes container runtime interface records.
+    Cri,
     /// Less than half the sample parses as records; every line is raw text.
     Plain,
     /// A user-selected regex; its compiled definition belongs to the index.
@@ -37,6 +39,7 @@ impl Format {
             Format::Glog => "glog",
             Format::AccessLog => "Access log",
             Format::Syslog => "syslog",
+            Format::Cri => "Kubernetes CRI",
             Format::Plain => "Plain text",
             Format::Regex => "Regex",
         }
@@ -44,7 +47,8 @@ impl Format {
 }
 
 /// The built-in text line formats, in the order a line is tried.
-const TEXT: [Format; 4] = [
+const TEXT: [Format; 5] = [
+    Format::Cri,
     Format::Spdlog,
     Format::Glog,
     Format::AccessLog,
@@ -142,6 +146,7 @@ fn text_scan(line: &[u8], format: Format) -> Result<(), ()> {
         Format::Glog => text::glog(line, visit),
         Format::AccessLog => text::access(line, visit),
         Format::Syslog => text::syslog(line, visit),
+        Format::Cri => super::cri::scan(line, visit),
         _ => Err(()),
     }
 }
