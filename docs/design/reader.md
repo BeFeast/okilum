@@ -329,6 +329,17 @@ Every icon-only button has a tooltip naming the action and shortcut.
 
 ## Sidebar (R2)
 
+**Recognized agent files (2026-11-01).** Tree, search Agent files and Now share
+the exact, case-sensitive filename classifier: `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md`, `SKILL.md`, `CONTEXT.md`, `ANTIGRAVITY.md`, at any depth. These
+instruction files remain in inventory and can always be opened explicitly;
+Tree lists them with Show hidden files, or temporarily on explicit reveal.
+Ordinary `agent.md`, `agents.md`, `my-AGENTS.md` and backup suffixes do not match.
+Dot/underscore path visibility retains its existing rules and template/index
+exceptions; this is a shared visibility switch, not a filename rename or deletion.
+Scanner-excluded generated service directories remain separate from browsable
+hidden files and are not added back by this switch.
+
 **Tree scroll context (Oleg, 2026-11-01).** The permanent Tree header opens
 the real index as `Vault Index`, with the existing Contents icon and a left-aligned
 title. New note, New folder, Collapse all and Show/Hide hidden remain compact
@@ -341,6 +352,7 @@ items. Tooltip and menu list those earlier folders; selecting one uses the same
 scroll-only navigation as an ancestor click and preserves expansion. The prefix
 disappears at zero. At a root-folder boundary its name remains beside the prefix;
 no additional sticky row or stacked folder headers are introduced.
+
 
 The panel header gives the vault name width priority and a full-name tooltip.
 Clicking it opens vault actions. New note, New folder and Collapse all folders

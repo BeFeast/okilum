@@ -302,8 +302,8 @@ impl Tree {
                 // item. Inventory identity and folder-index resolution stay intact.
                 if !(index && self.scope.is_empty() && !path.contains('/')) {
                     rows.push(Row {
-                        hidden: hidden(&path)
-                            && !self.template_branch(&path)
+                        hidden: (self.agent_file(&path)
+                            || hidden(&path) && !self.template_branch(&path))
                             && !self.shown_index(&path),
                         index,
                         label: tree_label(&path, kind, self.note_titles, &self.titles),
@@ -341,14 +341,17 @@ impl Tree {
     }
 
     fn visible(&self, path: &str) -> bool {
-        self.show_hidden
-            || self.template_branch(path)
-            || !hidden(path)
+        !self.hidden_by_preference(path)
             || self.shown_index(path)
             || self
                 .revealed_hidden
                 .as_deref()
                 .is_some_and(|target| target == path || target.starts_with(&format!("{path}/")))
+    }
+
+    fn agent_file(&self, path: &str) -> bool {
+        self.kinds.get(path) != Some(&EntryKind::Directory)
+            && okilum_core::quick_open::is_agent_file(path)
     }
 
     fn template_branch(&self, path: &str) -> bool {
@@ -396,7 +399,7 @@ impl Tree {
     /// Inbox use this so they list what the tree lists (#635); a navigation
     /// reveal and a folder's index row (#1512) apply to the tree only.
     pub fn hidden_by_preference(&self, path: &str) -> bool {
-        !self.show_hidden && hidden(path) && !self.template_branch(path)
+        !self.show_hidden && (self.agent_file(path) || hidden(path) && !self.template_branch(path))
     }
 
     pub fn set_show_hidden(&mut self, show: bool) {
@@ -409,7 +412,7 @@ impl Tree {
     pub fn reveal(&mut self, path: &str) -> Option<usize> {
         // A previously revealed hidden branch goes away again (#395).
         self.revealed_hidden =
-            (hidden(path) && !self.show_hidden && !self.shown_index(path)).then(|| path.to_owned());
+            (self.hidden_by_preference(path) && !self.shown_index(path)).then(|| path.to_owned());
         if !self.kinds.contains_key(path) {
             // Not in this inventory: select nothing rather than a neighbour.
             self.cursor = None;
@@ -1401,6 +1404,80 @@ mod tests {
         assert!(t.hidden_by_preference("_System/tool.md"));
         t.set_show_hidden(true);
         assert!(!entries.iter().any(|e| t.hidden_by_preference(&e.path)));
+    }
+
+    #[test]
+    fn agent_visibility_uses_exact_shared_names_and_preserves_explicit_access() {
+        use EntryKind::*;
+        let agents = [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "GEMINI.md",
+            "SKILL.md",
+            "CONTEXT.md",
+            "ANTIGRAVITY.md",
+        ];
+        let ordinary = [
+            "agent.md",
+            "agents.md",
+            "my-AGENTS.md",
+            "AGENTS.md.bak",
+            "Agent notes.md",
+        ];
+        let mut entries = vec![
+            entry("Project", Directory),
+            entry("AGENTS.md", Directory),
+            entry("AGENTS.md/ordinary.md", Markdown),
+        ];
+        for name in agents.into_iter().chain(ordinary) {
+            entries.push(entry(&format!("Project/{name}"), Markdown));
+        }
+        let mut tree = Tree::default();
+        tree.refresh(Path::new("/vault"), &entries);
+        tree.set_subtree("Project", true);
+        tree.set_subtree("AGENTS.md", true);
+        for name in agents {
+            let path = format!("Project/{name}");
+            assert!(
+                tree.can_reveal(&path),
+                "classification must retain inventory access"
+            );
+            assert!(tree.hidden_by_preference(&path));
+            assert!(!tree.rows.iter().any(|row| row.path == path));
+        }
+        for name in ordinary {
+            assert!(tree
+                .rows
+                .iter()
+                .any(|row| row.path == format!("Project/{name}")));
+        }
+        assert!(
+            tree.rows
+                .iter()
+                .any(|row| row.path == "AGENTS.md/ordinary.md"),
+            "a directory with that name is not an instruction file"
+        );
+        tree.reveal("Project/AGENTS.md");
+        assert!(tree
+            .rows
+            .iter()
+            .any(|row| row.path == "Project/AGENTS.md" && row.hidden));
+        tree.reveal("Project/agent.md");
+        assert!(!tree.rows.iter().any(|row| row.path == "Project/AGENTS.md"));
+        let expanded = tree.expanded_paths().clone();
+        tree.set_show_hidden(true);
+        for name in agents {
+            assert!(tree
+                .rows
+                .iter()
+                .any(|row| row.path == format!("Project/{name}")));
+        }
+        tree.set_show_hidden(false);
+        assert_eq!(tree.expanded_paths(), &expanded);
+        assert!(agents.into_iter().all(|name| !tree
+            .rows
+            .iter()
+            .any(|row| row.path == format!("Project/{name}"))));
     }
 
     #[test]
