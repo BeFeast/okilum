@@ -16,6 +16,7 @@ use std::{
 };
 
 const VERSION: u32 = 1;
+const METADATA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,6 +134,8 @@ struct Record<A> {
     version: u32,
     identity: (String, String, String),
     snapshot: Snapshot<A>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -178,21 +181,25 @@ impl<A: Serialize + DeserializeOwned> Store<A> {
         Ok(lock)
     }
 
-    fn read(&self) -> Result<Snapshot<A>, Error<A>> {
+    fn read_with_metadata(&self) -> Result<(Snapshot<A>, Option<serde_json::Value>), Error<A>> {
         let bytes = match std::fs::read(self.path()) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Snapshot {
-                    revision: 0,
-                    draft: Draft::default(),
-                })
+                return Ok((
+                    Snapshot {
+                        revision: 0,
+                        draft: Draft::default(),
+                    },
+                    None,
+                ))
             }
             Err(error) => return Err(error.into()),
         };
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| Error::Malformed)?;
         match value.get("version").and_then(serde_json::Value::as_u64) {
-            Some(version) if version == u64::from(VERSION) => {}
+            Some(version)
+                if version == u64::from(VERSION) || version == u64::from(METADATA_VERSION) => {}
             Some(_) => return Err(Error::UnsupportedVersion),
             None => return Err(Error::Malformed),
         }
@@ -203,19 +210,66 @@ impl<A: Serialize + DeserializeOwned> Store<A> {
         if record.snapshot.revision == 0 {
             return Err(Error::Malformed);
         }
-        Ok(record.snapshot)
+        // Version 2 prevents old clients from discarding local metadata.
+        if (record.version == METADATA_VERSION) != record.metadata.is_some() {
+            return Err(Error::Malformed);
+        }
+        Ok((record.snapshot, record.metadata))
     }
 
+    /// Read canonical draft and opaque local metadata together under one lock.
+    /// Legacy v1 records return None without rewriting or migrating their bytes.
+    /// Consumers validate their metadata schema before editing or saving.
+    pub fn load_with_metadata(&self) -> Result<(Snapshot<A>, Option<serde_json::Value>), Error<A>> {
+        let _lock = self.lock()?;
+        self.read_with_metadata()
+    }
+
+    /// Legacy readers fail closed on a metadata-bearing v2 record. Callers
+    /// must explicitly use load_with_metadata to retain the complete state.
     pub fn load(&self) -> Result<Snapshot<A>, Error<A>> {
         let _lock = self.lock()?;
-        self.read()
+        let (snapshot, metadata) = self.read_with_metadata()?;
+        if metadata.is_some() {
+            return Err(Error::UnsupportedVersion);
+        }
+        Ok(snapshot)
     }
 
     /// Compare and save while holding a process-shared lock. On conflict the
     /// winning snapshot is returned intact; no draft or file is overwritten.
     pub fn save(&self, expected_revision: u64, draft: Draft<A>) -> Result<Snapshot<A>, Error<A>> {
         let _lock = self.lock()?;
-        let current = self.read()?;
+        let (current, metadata) = self.read_with_metadata()?;
+        if metadata.is_some() {
+            return Err(Error::UnsupportedVersion);
+        }
+        self.save_locked(expected_revision, draft, None, current)
+    }
+
+    /// Local operational metadata shares the exact identity, lock, revision,
+    /// fsync and atomic publication with text/attachments. Never transport it.
+    pub fn save_with_metadata(
+        &self,
+        expected_revision: u64,
+        draft: Draft<A>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<Snapshot<A>, Error<A>> {
+        if metadata.as_ref().is_some_and(serde_json::Value::is_null) {
+            return Err(Error::Malformed);
+        }
+        let _lock = self.lock()?;
+        let (current, _) = self.read_with_metadata()?;
+        self.save_locked(expected_revision, draft, metadata, current)
+    }
+
+    fn save_locked(
+        &self,
+        expected_revision: u64,
+        draft: Draft<A>,
+        metadata: Option<serde_json::Value>,
+        current: Snapshot<A>,
+    ) -> Result<Snapshot<A>, Error<A>> {
         if current.revision != expected_revision {
             return Err(Error::Conflict(current));
         }
@@ -230,11 +284,18 @@ impl<A: Serialize + DeserializeOwned> Store<A> {
             version: u32,
             identity: &'a (String, String, String),
             snapshot: &'a Snapshot<A>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            metadata: &'a Option<serde_json::Value>,
         }
         let bytes = serde_json::to_vec(&BorrowedRecord {
-            version: VERSION,
+            version: if metadata.is_some() {
+                METADATA_VERSION
+            } else {
+                VERSION
+            },
             identity: &self.identity,
             snapshot: &snapshot,
+            metadata: &metadata,
         })
         .map_err(|_| Error::Malformed)?;
         self.publish(&bytes)?;
@@ -487,6 +548,239 @@ mod tests {
     }
 
     #[test]
+    fn legacy_fixture_loads_without_rewrite_then_explicitly_adds_local_metadata() {
+        let f = Fixture::new();
+        let store = f.store("https://drafts.invalid", "project", "thread");
+        std::fs::create_dir_all(&store.directory).unwrap();
+        // Exact legacy on-disk shape, including opaque attachment data and
+        // whitespace. Reading it must not silently migrate or normalize it.
+        let bytes = br#"{
+  "version": 1,
+  "identity": ["https://drafts.invalid", "project", "thread"],
+  "snapshot": {"revision": 7, "draft": {"text": "FR: keep\nall bytes", "attachments": [{"opaque": {"id": "local-1"}, "order": 2}]}}
+}
+"#;
+        std::fs::write(store.path(), bytes).unwrap();
+        let (legacy, metadata) = store.load_with_metadata().unwrap();
+        assert_eq!(legacy.revision, 7);
+        assert_eq!(legacy.draft.text, "FR: keep\nall bytes");
+        assert_eq!(
+            legacy.draft.attachments,
+            vec![json!({"opaque":{"id":"local-1"},"order":2})]
+        );
+        assert_eq!(metadata, None);
+        assert_eq!(store.load().unwrap(), legacy);
+        assert_eq!(std::fs::read(store.path()).unwrap(), bytes);
+        let typed = json!({"version":1,"selection":"FeatureRequest","token_pill":true});
+        let saved = store
+            .save_with_metadata(legacy.revision, legacy.draft.clone(), Some(typed.clone()))
+            .unwrap();
+        assert_eq!(saved.revision, 8);
+        assert_eq!(saved.draft, legacy.draft);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(store.path()).unwrap())
+                .unwrap()["version"],
+            METADATA_VERSION
+        );
+        drop(store);
+        let reopened = f.store("https://drafts.invalid", "project", "thread");
+        assert_eq!(
+            reopened.load_with_metadata().unwrap(),
+            (saved.clone(), Some(typed))
+        );
+        assert!(matches!(reopened.load(), Err(Error::UnsupportedVersion)));
+        // Removing metadata is an explicit revision-checked write, never an
+        // implicit consequence of reading with the legacy API.
+        let plain = reopened
+            .save_with_metadata(saved.revision, saved.draft, None)
+            .unwrap();
+        assert_eq!(plain.revision, 9);
+        assert_eq!(reopened.load().unwrap(), plain);
+    }
+
+    #[test]
+    fn concurrent_metadata_edits_commit_exactly_one_complete_pair() {
+        let f = Fixture::new();
+        let store = f.store("https://drafts.invalid", "project", "thread");
+        let initial = store
+            .save_with_metadata(0, draft("same text"), Some(json!({"type":"Chat"})))
+            .unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = ["Bug", "Decision"]
+            .into_iter()
+            .map(|kind| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                let initial = initial.clone();
+                std::thread::spawn(move || {
+                    let metadata = json!({"type":kind,"source":"explicit_selection"});
+                    barrier.wait();
+                    (
+                        metadata.clone(),
+                        store.save_with_metadata(initial.revision, initial.draft, Some(metadata)),
+                    )
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        let (winner, metadata) = store.load_with_metadata().unwrap();
+        assert_eq!(winner.revision, initial.revision + 1);
+        assert_eq!(winner.draft, initial.draft);
+        for (proposed_metadata, result) in results {
+            match result {
+                Ok(snapshot) => {
+                    assert_eq!(snapshot, winner);
+                    assert_eq!(metadata, Some(proposed_metadata));
+                }
+                Err(Error::Conflict(snapshot)) => assert_eq!(snapshot, winner),
+                Err(error) => panic!("unexpected writer failure: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn failed_encoding_preserves_the_complete_metadata_snapshot() {
+        #[derive(Deserialize)]
+        struct Unencodable;
+        impl Serialize for Unencodable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("fixture encoding failure"))
+            }
+        }
+        let f = Fixture::new();
+        let store = f.store("https://drafts.invalid", "project", "thread");
+        let initial = store
+            .save_with_metadata(0, Draft::default(), Some(json!({"type":"Bug"})))
+            .unwrap();
+        let bytes = std::fs::read(store.path()).unwrap();
+        let failing: Store<Unencodable> = Store::new(
+            &f.0,
+            &Environment::new("fixture", "https://drafts.invalid").unwrap(),
+            "project",
+            "thread",
+        );
+        let local = Draft {
+            text: "unsaved text".into(),
+            attachments: vec![Unencodable],
+        };
+        assert!(matches!(
+            failing.save_with_metadata(initial.revision, local, Some(json!({"type":"Decision"}))),
+            Err(Error::Malformed)
+        ));
+        assert_eq!(std::fs::read(store.path()).unwrap(), bytes);
+        assert_eq!(
+            store.load_with_metadata().unwrap(),
+            (initial.clone(), Some(json!({"type":"Bug"})))
+        );
+        // Positive control: the same unchanged revision and storage path still
+        // accept a valid complete write; no failed publication advanced it.
+        let saved = store
+            .save_with_metadata(
+                initial.revision,
+                draft("valid"),
+                Some(json!({"type":"Decision"})),
+            )
+            .unwrap();
+        assert_eq!(saved.revision, initial.revision + 1);
+        assert_eq!(
+            store.load_with_metadata().unwrap(),
+            (saved, Some(json!({"type":"Decision"})))
+        );
+    }
+
+    #[test]
+    fn inconsistent_metadata_records_and_null_input_are_preserved() {
+        let f = Fixture::new();
+        let store = f.store("https://drafts.invalid", "project", "thread");
+        let initial = store
+            .save_with_metadata(0, draft("keep"), Some(json!({"type":"Bug"})))
+            .unwrap();
+        let valid = std::fs::read(store.path()).unwrap();
+        assert!(matches!(
+            store.save_with_metadata(
+                initial.revision,
+                draft("replace"),
+                Some(serde_json::Value::Null)
+            ),
+            Err(Error::Malformed)
+        ));
+        assert_eq!(std::fs::read(store.path()).unwrap(), valid);
+        let original: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        for variant in [0, 1, 2, 3] {
+            let mut record = original.clone();
+            match variant {
+                0 => record["version"] = json!(VERSION),
+                1 => record["metadata"] = serde_json::Value::Null,
+                2 => {
+                    record.as_object_mut().unwrap().remove("metadata");
+                }
+                _ => record["identity"][1] = json!("foreign-project"),
+            }
+            let bytes = serde_json::to_vec(&record).unwrap();
+            std::fs::write(store.path(), &bytes).unwrap();
+            assert!(store.load_with_metadata().is_err());
+            assert!(store
+                .save_with_metadata(initial.revision, draft("replace"), None)
+                .is_err());
+            assert_eq!(std::fs::read(store.path()).unwrap(), bytes);
+        }
+        std::fs::write(store.path(), valid).unwrap();
+        assert_eq!(
+            store.load_with_metadata().unwrap(),
+            (initial, Some(json!({"type":"Bug"})))
+        );
+    }
+
+    #[test]
+    fn metadata_is_atomic_revision_checked_and_legacy_clients_fail_closed() {
+        let f = Fixture::new();
+        let store = f.store("https://drafts.invalid", "project", "thread");
+        let metadata = json!({"version":1,"selection":"Bug","suppressed":false});
+        let saved = store
+            .save_with_metadata(0, draft("BUG: body"), Some(metadata.clone()))
+            .unwrap();
+        assert_eq!(
+            store.load_with_metadata().unwrap(),
+            (saved.clone(), Some(metadata.clone()))
+        );
+        let bytes = std::fs::read(store.path()).unwrap();
+        assert!(store.load().is_err());
+        assert!(store
+            .save(saved.revision, draft("legacy overwrite"))
+            .is_err());
+        assert!(store.clear(saved.revision).is_err());
+        assert!(store.save_with_metadata(0, draft("stale"), None).is_err());
+        assert_eq!(std::fs::read(store.path()).unwrap(), bytes);
+        let changed = store
+            .save_with_metadata(
+                saved.revision,
+                saved.draft.clone(),
+                Some(json!({"version":1,"selection":"Decision"})),
+            )
+            .unwrap();
+        assert_eq!(changed.revision, saved.revision + 1);
+        let cleared = store
+            .save_with_metadata(changed.revision, Draft::default(), None)
+            .unwrap();
+        assert_eq!(store.load().unwrap(), cleared);
+        assert!(f
+            .store("https://other.invalid", "project", "thread")
+            .load()
+            .unwrap()
+            .draft
+            .text
+            .is_empty());
+    }
+
+    #[test]
     fn malformed_unsupported_and_wrong_identity_records_are_preserved() {
         let f = Fixture::new();
         let store = f.store("http://127.0.0.1:8080", "project", "thread");
@@ -499,6 +793,7 @@ mod tests {
                 version: VERSION,
                 identity: ("another-origin".into(), "project".into(), "thread".into()),
                 snapshot: snapshot.clone(),
+                metadata: None,
             })
             .unwrap(),
         ] {
