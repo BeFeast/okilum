@@ -173,3 +173,139 @@ fn files_and_notes_shortcut_restore_the_global_tree_after_project_switches(
         assert!(!vault.join("Work/App/After project").exists());
     }
 }
+
+/// Recreate the UI store from disk between Readers; no installed profile or app.
+#[gpui::test]
+fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(vault.join("Work/App/ops")).unwrap();
+    std::fs::write(
+        vault.join("Work/App/ops/project.toml"),
+        "kind = 'knowledge'\n",
+    )
+    .unwrap();
+    std::fs::write(vault.join("home.md"), "# Home\n").unwrap();
+    // A healthy alternative makes selecting an arbitrary discovered project observable.
+    std::fs::create_dir_all(vault.join("Other/ops")).unwrap();
+    std::fs::write(vault.join("Other/ops/project.toml"), "kind = 'knowledge'\n").unwrap();
+    fn open<'a>(
+        cx: &'a mut TestAppContext,
+        vault: &Path,
+        state: &Path,
+        base: &Path,
+        explicit: bool,
+    ) -> (Entity<Reader>, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| reader_ui_state::install(&state, cx));
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.to_path_buf()),
+                        note: Some("home.md".into()),
+                        restore_workspace: !explicit,
+                        index_dir: Some(base.join("index")),
+                        session_directory: Some(state.to_path_buf()),
+                        panel_settings_override: Some(base.join("widths.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        visual.run_until_parked();
+        (entity.unwrap(), visual)
+    }
+    let (first, visual) = open(cx, &vault, &state, temp.path(), false);
+    first.update_in(visual, |reader, window, cx| {
+        reader.tree.set_subtree("Work", true);
+        reader.tree.cursor = Some("home.md".into());
+        reader.finish_enter_vault_project(
+            Project::read(&vault.join("Work/App")).unwrap(),
+            window,
+            cx,
+        );
+        reader.record_ui_state(true, cx);
+        reader_ui_state::flush(cx);
+    });
+    first.update_in(visual, |_, window, _| window.remove_window());
+    let persisted = std::fs::read(state.join("reader-ui.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(
+        json["vaults"][vault.to_str().unwrap()]["project"],
+        "Work/App"
+    );
+    let (restarted, restart_visual) = open(cx, &vault, &state, temp.path(), false);
+    restarted.read_with(restart_visual, |reader, _| {
+        assert_eq!(
+            reader.project_navigation.active.as_ref().unwrap().folder,
+            vault.join("Work/App")
+        );
+        assert!(!reader.workspace_panels().notes);
+        assert_eq!(reader.current_rel, "home.md");
+    });
+    assert!(restart_visual.debug_bounds("project-board").is_some());
+    assert!(restart_visual.debug_bounds("sidebar-tree-body").is_none());
+    restarted.update_in(restart_visual, |reader, window, cx| {
+        reader.show_vault_files(window, cx);
+        assert_eq!(reader.tree.cursor.as_deref(), Some("home.md"));
+        reader.record_ui_state(true, cx);
+        reader_ui_state::flush(cx);
+    });
+    restarted.update_in(restart_visual, |_, window, _| window.remove_window());
+    let (world, world_visual) = open(cx, &vault, &state, temp.path(), false);
+    world.read_with(world_visual, |reader, _| {
+        assert!(reader.project_navigation.active.is_none())
+    });
+    assert!(world_visual.debug_bounds("sidebar-tree-body").is_some());
+    world.update_in(world_visual, |_, window, _| window.remove_window());
+    // Restore the same saved Project and verify an explicit document wins.
+    std::fs::write(state.join("reader-ui.json"), &persisted).unwrap();
+    let (explicit, explicit_visual) = open(cx, &vault, &state, temp.path(), true);
+    explicit.read_with(explicit_visual, |reader, _| {
+        assert!(reader.project_navigation.active.is_none());
+        assert_eq!(reader.current_rel, "home.md");
+    });
+    explicit.update_in(explicit_visual, |_, window, _| window.remove_window());
+    std::fs::create_dir_all(vault.join("ops")).unwrap();
+    std::fs::write(vault.join("ops/project.toml"), "kind = 'knowledge'\n").unwrap();
+    for relative in ["Other", "", "../outside"] {
+        let mut saved: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
+        saved["vaults"][vault.to_str().unwrap()]["project"] = relative.into();
+        std::fs::write(
+            state.join("reader-ui.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        let (restored, visual) = open(cx, &vault, &state, temp.path(), false);
+        restored.read_with(visual, |reader, _| {
+            assert_eq!(
+                reader
+                    .project_navigation
+                    .active
+                    .as_ref()
+                    .map(|project| project.folder.clone()),
+                (relative != "../outside").then(|| vault.join(relative))
+            );
+        });
+        restored.update_in(visual, |_, window, _| window.remove_window());
+    }
+    // Deleted project is a visible problem and safely retains World.
+    std::fs::remove_file(vault.join("Work/App/ops/project.toml")).unwrap();
+    std::fs::write(state.join("reader-ui.json"), &persisted).unwrap();
+    let (deleted, deleted_visual) = open(cx, &vault, &state, temp.path(), false);
+    deleted.read_with(deleted_visual, |reader, _| {
+        assert!(reader.project_navigation.active.is_none());
+        assert!(!reader.project_navigation.discovery.errors.is_empty());
+    });
+    assert_eq!(
+        std::fs::read_to_string(vault.join("home.md")).unwrap(),
+        "# Home\n"
+    );
+}
