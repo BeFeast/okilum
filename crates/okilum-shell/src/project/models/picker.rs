@@ -149,7 +149,16 @@ impl ProjectView {
             });
             let (list_height, option_height) = if has_options && !options_beside {
                 let column_budget = (body_budget - px(8.)).max(px(0.));
-                let options = (column_budget * 0.45).min(px(180.));
+                let option_rows = snapshot
+                    .option_controls(current)
+                    .iter()
+                    .map(|control| 28. * control.choices.len() as f32 + 28.)
+                    .sum::<f32>();
+                let option_natural = px(option_rows + 24.);
+                // Use available height for ordinary supported controls before
+                // asking the user to scroll; unusually long catalogs still own
+                // an independent, bounded option viewport.
+                let options = (column_budget * 0.5).min(option_natural).min(px(340.));
                 ((column_budget - options).min(natural_height), options)
             } else {
                 let shared = body_budget.min(if has_options {
