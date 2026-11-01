@@ -8,7 +8,10 @@ use crate::sidecar::{
     Binding,
 };
 use anyhow::{ensure, Context, Result};
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 
 pub struct Connection<V: SignatureVerifier, D: StateDir, C: Connector> {
     binding: Binding,
@@ -16,6 +19,8 @@ pub struct Connection<V: SignatureVerifier, D: StateDir, C: Connector> {
     link: SupervisorLink<D, C>,
     store: Store<D>,
     budget: Duration,
+    // In-memory attempt ordering only, never durable lifecycle authority.
+    generation: AtomicU64,
 }
 impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
     /// Open outside a controller transaction: this initial journal check takes
@@ -48,7 +53,25 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
             link: SupervisorLink::new(store.clone(), connector, budget),
             store,
             budget,
+            generation: AtomicU64::new(0),
         })
+    }
+
+    fn begin_attempt(&self) -> Result<u64> {
+        self.generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map(|previous| previous + 1)
+            .map_err(|_| anyhow::anyhow!("connection generation exhausted"))
+    }
+
+    fn validate_attempt(&self, generation: u64) -> Result<()> {
+        ensure!(
+            self.generation.load(Ordering::Acquire) == generation,
+            "connection superseded by a newer attempt"
+        );
+        Ok(())
     }
 
     /// Recheck the bundle before authenticating a live process. Absent means no
@@ -57,12 +80,30 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
         self.inspect_until(Instant::now() + self.budget)
     }
     pub fn inspect_until(&self, deadline: Instant) -> Result<Discovered> {
+        let generation = self.begin_attempt()?;
+        self.inspect_attempt(deadline, generation)
+    }
+
+    fn inspect_attempt(&self, deadline: Instant, generation: u64) -> Result<Discovered> {
         ensure!(
             Instant::now() < deadline,
             "supervisor inspection deadline elapsed"
         );
         self.bundle.verify(&self.binding)?;
-        Ok(self.link.detailed_until(&self.binding, deadline))
+        let peer = self.link.detailed_until(&self.binding, deadline);
+        self.validate_attempt(generation)?;
+        if let Discovered::Live(scope) = &peer {
+            // The old transport may finish closing after a reconnect has already
+            // published another generation. Its reply must not restore old state.
+            let hint = self.store.peek_hint()?;
+            if !hint.is_some_and(|hint| hint.generation() == scope.generation) {
+                return Ok(Discovered::Unreachable(
+                    "supervisor generation changed during inspection".into(),
+                ));
+            }
+        }
+        self.validate_attempt(generation)?;
+        Ok(peer)
     }
 
     /// Only the durable, claimed generation AND a verified answering socket can
@@ -71,19 +112,20 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
     pub fn managed_status(&self) -> super::recovery::ManagedStatus {
         use super::recovery::ManagedStatus;
         let attempt = || -> Result<ManagedStatus> {
+            let generation = self.begin_attempt()?;
             let deadline = Instant::now() + self.budget;
             let saved = {
                 let tx = self.store.begin(deadline)?;
                 tx.current()?.context("missing journal")?.clone()
             };
             ensure!(saved.binding() == &self.binding, "binding changed");
-            self.bundle.verify(&self.binding)?;
-            let peer = self.link.detailed_until(&self.binding, deadline);
+            let peer = self.inspect_attempt(deadline, generation)?;
             let tx = self.store.begin(deadline)?;
             ensure!(
                 tx.current()? == Some(&saved),
                 "authority changed during status"
             );
+            self.validate_attempt(generation)?;
             Ok(ManagedStatus::observe(&saved, &peer))
         };
         attempt().unwrap_or(ManagedStatus::RecoveryPending)
@@ -95,6 +137,7 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
     /// The lifecycle controller must revalidate authority and confirm native exit.
     pub fn request_stop(&self, token: &StopToken) -> Result<()> {
         self.request_stop_until(token, Instant::now() + self.budget)
+            .map(|_| ())
     }
 
     fn validate_stop(&self, token: &StopToken, deadline: Instant) -> Result<()> {
@@ -111,10 +154,28 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
         saved.authorize(token, &token.operation.scope)
     }
 
-    fn request_stop_until(&self, token: &StopToken, deadline: Instant) -> Result<()> {
+    fn request_stop_until(&self, token: &StopToken, deadline: Instant) -> Result<u64> {
+        let generation = self.begin_attempt()?;
         self.bundle.verify(&self.binding)?;
         self.validate_stop(token, deadline)?;
-        self.link.stop_until(&self.binding, token, deadline)
+        self.link.stop_until(&self.binding, token, deadline)?;
+        self.validate_attempt(generation)?;
+        self.validate_stop_completion(token, deadline)?;
+        self.validate_attempt(generation)?;
+        Ok(generation)
+    }
+
+    fn validate_stop_completion(&self, token: &StopToken, deadline: Instant) -> Result<()> {
+        self.validate_stop(token, deadline)?;
+        // A clean exit may remove its hint, but a replacement generation must
+        // never be retired using the previous connection's completion evidence.
+        if let Some(hint) = self.store.peek_hint()? {
+            ensure!(
+                hint.generation() == token.operation.scope.generation,
+                "supervisor generation changed during stop"
+            );
+        }
+        Ok(())
     }
 
     #[cfg(any(target_os = "macos", test))]
@@ -124,14 +185,15 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
         deadline: Instant,
         confirm_exit: impl FnOnce(Instant) -> Result<bool>,
     ) -> Result<()> {
-        self.request_stop_until(token, deadline)?;
+        let generation = self.request_stop_until(token, deadline)?;
         ensure!(
             confirm_exit(deadline)?,
             "supervisor process exit was not confirmed"
         );
         // The server's acknowledgement and a kernel exit event do not override
         // a concurrent Enable, new generation/epoch, or other durable operation.
-        self.validate_stop(token, deadline)
+        self.validate_stop_completion(token, deadline)?;
+        self.validate_attempt(generation)
     }
 }
 
