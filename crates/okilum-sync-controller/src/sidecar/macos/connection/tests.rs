@@ -12,7 +12,7 @@ use crate::sidecar::{
     },
 };
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     fs,
     io::{self, Cursor, Read, Write},
     os::unix::fs::PermissionsExt,
@@ -27,11 +27,13 @@ impl SignatureVerifier for Signature {
         Ok(())
     }
 }
+type CloseHook = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
 #[derive(Clone)]
 struct Script {
     calls: Rc<Cell<usize>>,
     status: Rc<Cell<Status>>,
     refuse: Rc<Cell<bool>>,
+    on_close: CloseHook,
 }
 impl Default for Script {
     fn default() -> Self {
@@ -39,6 +41,7 @@ impl Default for Script {
             calls: Rc::new(Cell::new(0)),
             status: Rc::new(Cell::new(Status::Running)),
             refuse: Rc::new(Cell::new(false)),
+            on_close: Rc::new(RefCell::new(None)),
         }
     }
 }
@@ -46,6 +49,15 @@ struct Wire {
     script: Script,
     input: Vec<u8>,
     output: Option<Cursor<Vec<u8>>>,
+}
+impl Drop for Wire {
+    fn drop(&mut self) {
+        // Release the hook borrow before reconnecting through another transport.
+        let on_close = self.script.on_close.borrow_mut().take();
+        if let Some(on_close) = on_close {
+            on_close();
+        }
+    }
 }
 impl Connector for Script {
     type Transport = Wire;
@@ -225,6 +237,98 @@ fn bundle_changes_are_refused_before_any_ipc() -> Result<()> {
 }
 
 #[test]
+fn reconnect_during_previous_transport_close_rejects_the_old_live_completion() -> Result<()> {
+    for same_connection in [true, false] {
+        let fixture = Fixture::new()?;
+        fixture.prepare()?;
+        let script = Script::default();
+        let previous = Rc::new(fixture.connection(script.clone())?);
+        let old_scope = fixture.hint()?;
+        assert_eq!(previous.inspect()?, Discovered::Live(old_scope.clone()));
+
+        let replacement = if same_connection {
+            previous.clone()
+        } else {
+            Rc::new(fixture.connection(script.clone())?)
+        };
+        let new_hint = Hint::new(
+            if same_connection {
+                old_scope.generation
+            } else {
+                Uuid::new_v4()
+            },
+            1,
+        )?;
+        let new_scope = Scope {
+            generation: new_hint.generation(),
+            ..old_scope
+        };
+        let latest = Rc::new(RefCell::new(None));
+        let completed = latest.clone();
+        let reconnected = replacement.clone();
+        let store = fixture.store.clone();
+        *script.on_close.borrow_mut() = Some(Box::new(move || {
+            store.publish_hint(soon(), &new_hint).unwrap();
+            *completed.borrow_mut() = Some(reconnected.inspect().unwrap());
+        }));
+
+        let result = previous.inspect();
+        if same_connection {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "connection superseded by a newer attempt",
+                "reconnect to the same supervisor did not supersede the old attempt"
+            );
+        } else {
+            assert_eq!(
+                result?,
+                Discovered::Unreachable("supervisor generation changed during inspection".into()),
+                "late success from the old connection survived a completed reconnect"
+            );
+        }
+        assert_eq!(
+            latest.borrow().as_ref(),
+            Some(&Discovered::Live(new_scope.clone())),
+            "the new authenticated connection must complete before the old one returns"
+        );
+        assert_eq!(script.calls.get(), 3, "the reconnect hook did not run once");
+        assert_eq!(replacement.inspect()?, Discovered::Live(new_scope));
+    }
+    Ok(())
+}
+
+#[test]
+fn closing_transport_cannot_leave_its_old_generation_reported_as_running() -> Result<()> {
+    use crate::sidecar::macos::recovery::ManagedStatus;
+    let fixture = Fixture::new()?;
+    fixture
+        .store
+        .begin(soon())?
+        .commit(Envelope::first_with_launch(fixture.binding.clone()))?;
+    fixture
+        .store
+        .dispatch_launch(&fixture.binding, soon())?
+        .execute(|_| Ok(()))?;
+    let generation = fixture.store.claim_launch(&fixture.binding, soon())?;
+    let hint = Hint::new(generation, 1)?;
+    fixture.store.publish_hint(soon(), &hint)?;
+    let script = Script::default();
+    let connection = fixture.connection(script.clone())?;
+    assert_eq!(connection.managed_status(), ManagedStatus::Running);
+
+    let store = fixture.store.clone();
+    *script.on_close.borrow_mut() = Some(Box::new(move || {
+        store.clear_hint(soon()).unwrap();
+    }));
+    assert_eq!(connection.managed_status(), ManagedStatus::RecoveryPending);
+    assert_eq!(script.calls.get(), 2);
+    assert!(fixture.store.peek_hint()?.is_none());
+    fixture.store.publish_hint(soon(), &hint)?;
+    assert_eq!(connection.managed_status(), ManagedStatus::Running);
+    Ok(())
+}
+
+#[test]
 fn stop_needs_current_durable_authority_and_exact_generation_and_complete_reply() -> Result<()> {
     let fixture = Fixture::new()?;
     fixture.prepare()?;
@@ -363,6 +467,114 @@ fn stop_completion_requires_both_receipt_and_exit_and_rechecks_authority_after_w
         })
         .is_err());
     assert_eq!(script.calls.get(), calls);
+    Ok(())
+}
+
+#[test]
+fn reconnect_before_stop_receipt_or_exit_completion_supersedes_old_connection() -> Result<()> {
+    for same_connection in [true, false] {
+        for at_receipt in [true, false] {
+            let fixture = Fixture::new()?;
+            fixture.prepare()?;
+            let script = Script::default();
+            let previous = Rc::new(fixture.connection(script.clone())?);
+            let replacement = if same_connection {
+                previous.clone()
+            } else {
+                Rc::new(fixture.connection(script.clone())?)
+            };
+            let old_scope = fixture.hint()?;
+            let token = {
+                let mut tx = fixture.store.begin(soon())?;
+                let (next, token) = tx.current()?.unwrap().disable(old_scope.clone())?;
+                tx.commit(next)?;
+                token
+            };
+            let saved = fixture.store.begin(soon())?.current()?.unwrap().clone();
+            script.status.set(Status::Stopped);
+            previous.stop_and_confirm(&token, soon(), |_| Ok(true))?;
+
+            let new_hint = Hint::new(
+                if same_connection {
+                    old_scope.generation
+                } else {
+                    Uuid::new_v4()
+                },
+                1,
+            )?;
+            let new_scope = Scope {
+                generation: new_hint.generation(),
+                ..old_scope
+            };
+            let latest = Rc::new(RefCell::new(None));
+            let completed = latest.clone();
+            let store = fixture.store.clone();
+            let reconnected = replacement.clone();
+            let peer = script.clone();
+            let mut reconnect: Option<Box<dyn FnOnce()>> = Some(Box::new(move || {
+                store.publish_hint(soon(), &new_hint).unwrap();
+                peer.status.set(Status::Running);
+                *completed.borrow_mut() = Some(reconnected.inspect().unwrap());
+            }));
+            if at_receipt {
+                *script.on_close.borrow_mut() = reconnect.take();
+            }
+            let exits = Cell::new(0);
+            let result = previous.stop_and_confirm(&token, soon(), |_| {
+                exits.set(exits.get() + 1);
+                if let Some(reconnect) = reconnect.take() {
+                    reconnect();
+                }
+                Ok(true)
+            });
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                if same_connection {
+                    "connection superseded by a newer attempt"
+                } else {
+                    "supervisor generation changed during stop"
+                },
+                "stale Stop completed: receipt={at_receipt}, same={same_connection}"
+            );
+            assert_eq!(exits.get(), usize::from(!at_receipt));
+            assert_eq!(
+                latest.borrow().as_ref(),
+                Some(&Discovered::Live(new_scope.clone()))
+            );
+            assert_eq!(script.calls.get(), 3, "the reconnect did not complete once");
+            assert_eq!(fixture.store.begin(soon())?.current()?, Some(&saved));
+            assert_eq!(replacement.inspect()?, Discovered::Live(new_scope));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn clean_exit_without_a_hint_still_completes_the_current_stop() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.prepare()?;
+    let script = Script::default();
+    let connection = fixture.connection(script.clone())?;
+    let scope = fixture.hint()?;
+    let token = {
+        let mut tx = fixture.store.begin(soon())?;
+        let (next, token) = tx.current()?.unwrap().disable(scope)?;
+        tx.commit(next)?;
+        token
+    };
+    script.status.set(Status::Stopped);
+    let store = fixture.store.clone();
+    *script.on_close.borrow_mut() = Some(Box::new(move || {
+        store.clear_hint(soon()).unwrap();
+    }));
+    let exits = Cell::new(0);
+    connection.stop_and_confirm(&token, soon(), |_| {
+        exits.set(exits.get() + 1);
+        assert!(fixture.store.peek_hint()?.is_none());
+        Ok(true)
+    })?;
+    assert_eq!(exits.get(), 1);
+    assert_eq!(script.calls.get(), 1);
     Ok(())
 }
 
