@@ -119,6 +119,35 @@ impl RulesRefresh {
         Ok(dispatch)
     }
 
+    /// Apply a worker result using its captured durable receipt. A save may
+    /// replace the visible offer while delivery is in flight: complete a known
+    /// old pending receipt, but never install it as the new offer's receipt.
+    pub fn record_delivery(&mut self, receipt: &RulesDispatch, acknowledged: bool) -> bool {
+        if self.pending.as_ref() == Some(receipt) {
+            if acknowledged {
+                self.acknowledge(receipt);
+            }
+            return true;
+        }
+        if self.pending.is_some() || self.offer.as_ref() != Some(&receipt.offer) {
+            return false;
+        }
+        if self
+            .prepared(
+                &receipt.offer,
+                &receipt.offer.target,
+                receipt.request_id.clone(),
+            )
+            .is_err()
+        {
+            return false;
+        }
+        if acknowledged {
+            self.acknowledge(receipt);
+        }
+        true
+    }
+
     /// Queue acceptance only, not proof that the Manager re-read its rules.
     /// Late acknowledgements must carry the complete original dispatch receipt.
     pub fn acknowledge(&mut self, receipt: &RulesDispatch) -> bool {
@@ -186,5 +215,29 @@ mod tests {
         assert!(!state.acknowledge(&old));
         assert_eq!(state.pending(), Some(&new));
         assert!(state.acknowledge(&new));
+    }
+    #[test]
+    fn worker_receipts_keep_failed_retry_identity_and_do_not_replace_new_save() {
+        let mut state = RulesRefresh::default();
+        let first = offer("first");
+        state.saved(first.clone()).unwrap();
+        let receipt = RulesDispatch {
+            offer: first.clone(),
+            request_id: "retained-request".into(),
+        };
+        assert!(state.record_delivery(&receipt, false));
+        assert_eq!(state.pending(), Some(&receipt));
+        let mut wrong = receipt.clone();
+        wrong.request_id = "unrelated-request".into();
+        assert!(!state.record_delivery(&wrong, true));
+        assert_eq!(state.pending(), Some(&receipt));
+        let second = offer("second");
+        state.saved(second.clone()).unwrap();
+        assert!(state.record_delivery(&receipt, true));
+        assert!(state.pending().is_none());
+        assert_eq!(state.offer(), Some(&second));
+        assert!(state.message(&second, &second.target).is_ok());
+        assert!(!state.record_delivery(&receipt, true));
+        assert_eq!(state.offer(), Some(&second));
     }
 }

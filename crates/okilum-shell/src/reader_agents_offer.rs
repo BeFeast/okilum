@@ -7,6 +7,15 @@ pub(super) struct Offer {
     relevant: bool,
     busy: bool,
     generation: u64,
+    rules: Option<RulesUi>,
+}
+
+struct RulesUi {
+    root: PathBuf,
+    project: Entity<project::ProjectView>,
+    refresh: okilum_t3::rules_refresh::RulesRefresh,
+    busy: bool,
+    status: Option<String>,
 }
 
 impl Reader {
@@ -20,7 +29,9 @@ impl Reader {
         }
         let root = self.vault_root.clone();
         let generation = self.agents_offer.generation.wrapping_add(1);
+        let rules = self.agents_offer.rules.take();
         self.agents_offer = Offer {
+            rules,
             root: Some(root.clone()),
             generation,
             ..Default::default()
@@ -48,17 +59,23 @@ impl Reader {
     }
 
     pub(super) fn agents_offer_slot(&self, cx: &App) -> bool {
-        !self.single_file && !reader_features::enabled(reader_features::Feature::Agents, cx)
+        self.has_rules_offer(cx)
+            || (!self.single_file
+                && !reader_features::enabled(reader_features::Feature::Agents, cx))
     }
 
     pub(super) fn show_agents_offer(&self, cx: &App) -> bool {
-        self.agents_offer_slot(cx)
-            && !self.sidebar.agents_offer_answered
-            && self.agents_offer.root.as_ref() == Some(&self.vault_root)
-            && self.agents_offer.relevant
+        self.has_rules_offer(cx)
+            || (self.agents_offer_slot(cx)
+                && !self.sidebar.agents_offer_answered
+                && self.agents_offer.root.as_ref() == Some(&self.vault_root)
+                && self.agents_offer.relevant)
     }
 
     pub(super) fn render_agents_offer(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.has_rules_offer(cx) {
+            return self.render_rules_offer(cx);
+        }
         h_flex()
             .id("agents-offer")
             .debug_selector(|| "agents-offer".into())
@@ -108,6 +125,165 @@ impl Reader {
                     })),
             )
             .into_any_element()
+    }
+
+    /// Parent save completion hook: pass the successfully saved absolute path
+    /// and revision receipt. Never call for buffer changes, conflicts, external
+    /// refreshes, unchanged saves or failed saves. No network/I/O occurs here.
+    pub(super) fn agents_rules_saved(
+        &mut self,
+        source: &Path,
+        revision: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.single_file || !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        let Some(project) = self.project.clone() else {
+            return;
+        };
+        let Some(offer) = project
+            .read(cx)
+            .saved_rules_offer(&self.vault_root, source, revision)
+        else {
+            return;
+        };
+        if let Some(ui) = &mut self.agents_offer.rules {
+            if ui.root == self.vault_root && ui.project == project {
+                match ui.refresh.saved(offer) {
+                    Ok(true) => ui.status = None,
+                    _ => return,
+                }
+                cx.notify();
+                return;
+            }
+        }
+        let mut refresh = okilum_t3::rules_refresh::RulesRefresh::default();
+        if refresh.saved(offer).is_err() {
+            return;
+        }
+        self.agents_offer.rules = Some(RulesUi {
+            root: self.vault_root.clone(),
+            project,
+            refresh,
+            busy: false,
+            status: None,
+        });
+        cx.notify();
+    }
+
+    fn has_rules_offer(&self, cx: &App) -> bool {
+        !self.single_file
+            && reader_features::enabled(reader_features::Feature::Agents, cx)
+            && self.agents_offer.rules.as_ref().is_some_and(|ui| {
+                ui.root == self.vault_root && self.project.as_ref() == Some(&ui.project)
+            })
+    }
+
+    fn render_rules_offer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let ui = self
+            .agents_offer
+            .rules
+            .as_ref()
+            .expect("visible rules offer");
+        let acknowledged = ui
+            .refresh
+            .acknowledged()
+            .is_some_and(|r| Some(&r.offer) == ui.refresh.offer());
+        let label = ui
+            .status
+            .clone()
+            .unwrap_or_else(|| "AGENTS.md saved. Ask Manager to read the updated rules?".into());
+        h_flex()
+            .id("rules-refresh-offer")
+            .w_full()
+            .gap_1()
+            .items_center()
+            .child(div().flex_1().min_w_0().child(label))
+            .child(
+                Button::new("rules-refresh-send")
+                    .ghost()
+                    .small()
+                    .label(if ui.refresh.pending().is_some() {
+                        "Retry"
+                    } else {
+                        "Tell Manager"
+                    })
+                    .disabled(ui.busy || acknowledged)
+                    .on_click(cx.listener(|this, _, window, cx| this.send_rules_offer(window, cx))),
+            )
+            .into_any_element()
+    }
+
+    fn send_rules_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_rules_offer(cx) {
+            return;
+        }
+        let ui = self
+            .agents_offer
+            .rules
+            .as_mut()
+            .expect("visible rules offer");
+        if ui.busy {
+            return;
+        }
+        // Resolve the original ambiguous operation first, even if another
+        // source revision was saved meanwhile. Never retry with new contents.
+        let clicked = ui
+            .refresh
+            .pending()
+            .map(|r| r.offer.clone())
+            .or_else(|| ui.refresh.offer().cloned());
+        let Some(clicked) = clicked else {
+            return;
+        };
+        let job = match ui
+            .project
+            .read(cx)
+            .rules_send_job(&ui.refresh, &clicked, cx)
+        {
+            Ok(job) => job,
+            Err(error) => {
+                ui.status = Some(error.into());
+                cx.notify();
+                return;
+            }
+        };
+        ui.busy = true;
+        let root = ui.root.clone();
+        let project = ui.project.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let delivery = cx.background_executor().spawn(async move { job() }).await;
+            let _ = this.update_in(cx, |this, _window, cx| {
+                let Some(ui) = this.agents_offer.rules.as_mut() else {
+                    return;
+                };
+                if ui.root != root || ui.project != project {
+                    return;
+                }
+                ui.busy = false;
+                // Apply only the complete captured durable identity. This also
+                // settles a known old pending request after a newer source save.
+                if let Some(receipt) = &delivery.receipt {
+                    ui.refresh.record_delivery(receipt, delivery.acknowledged);
+                }
+                if ui.refresh.offer() != Some(&clicked) {
+                    cx.notify();
+                    return;
+                }
+                ui.status = Some(match delivery.error {
+                    Some(error) => {
+                        format!("{error}. Delivery is unconfirmed; retry the retained request.")
+                    }
+                    None => {
+                        "Manager accepted the message. Rules reload is not yet confirmed.".into()
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn enable_agents_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
