@@ -1,0 +1,344 @@
+//! Shared, deterministic completion grammar and ranking (#1638).
+//! No filesystem or UI work: providers insert ordinary Markdown source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Note,
+    Heading(String),
+    Emoji,
+    Language,
+    Block,
+}
+
+/// Lower is better. Path fragments match consecutive path segments by prefix;
+/// subsequences are a final fallback for all providers.
+pub(super) fn score(query: &str, title: &str, path: &str) -> Option<u8> {
+    if query.is_empty() || title == query {
+        return Some(0);
+    }
+    if title.starts_with(query) {
+        return Some(1);
+    }
+    if title
+        .match_indices(query)
+        .any(|(at, _)| title[..at].ends_with([' ', '-', '_', '.', '(']))
+    {
+        return Some(2);
+    }
+    if title.contains(query) {
+        return Some(3);
+    }
+    if path.contains(query) {
+        return Some(4);
+    }
+    let fragments: Vec<_> = query.trim_start_matches('/').split('/').collect();
+    if fragments.len() > 1 {
+        let segments: Vec<_> = path.split('/').collect();
+        if segments.windows(fragments.len()).any(|parts| {
+            parts
+                .iter()
+                .zip(&fragments)
+                .all(|(part, fragment)| part.starts_with(fragment))
+        }) {
+            return Some(5);
+        }
+    }
+    let mut chars = query.chars().filter(|c| *c != '/');
+    let mut next = chars.next();
+    for ch in path.chars() {
+        if next == Some(ch) {
+            next = chars.next();
+        }
+        if next.is_none() {
+            return Some(6);
+        }
+    }
+    None
+}
+
+/// (provider, replacement start relative to the line, query).
+pub(super) fn trigger(line: &str, emoji: bool) -> Option<(Kind, usize, String)> {
+    if let Some(open) = line.rfind("[[") {
+        let query = &line[open + 2..];
+        if !query.contains(['[', ']', '|', '^']) && query.chars().count() <= 120 {
+            if let Some((note, heading)) = query.split_once('#') {
+                return (!heading.contains('#'))
+                    .then(|| (Kind::Heading(note.into()), open + 2, heading.into()));
+            }
+            return Some((Kind::Note, open + 2, query.into()));
+        }
+    }
+    // Only a new fence's info string, never a code block's contents.
+    if let Some(query) = line.strip_prefix("```") {
+        if !query.is_empty()
+            && query
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '#' | '-'))
+        {
+            return Some((Kind::Language, 3, query.into()));
+        }
+    }
+    if let Some(query) = line.strip_prefix('/') {
+        if query.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Some((Kind::Block, 0, query.into()));
+        }
+    }
+    if emoji {
+        let at = line.rfind(':')?;
+        let query = &line[at + 1..];
+        if (at == 0 || line[..at].ends_with(|c: char| c.is_whitespace() || matches!(c, '(' | '[')))
+            && query
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'))
+        {
+            return Some((Kind::Emoji, at, query.into()));
+        }
+    }
+    None
+}
+
+/// One replacement, one Undo step. Existing link aliases and closing marks
+/// stay authored; emoji consumes its optional closing colon.
+pub(super) fn replacement(
+    text: &str,
+    start: usize,
+    caret: usize,
+    kind: &Kind,
+    target: &str,
+) -> (std::ops::Range<usize>, String, usize) {
+    if !matches!(kind, Kind::Note | Kind::Heading(_)) {
+        let mut end = caret;
+        while let Some(ch) = text[end..].chars().next() {
+            if !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '-' | '#')) {
+                break;
+            }
+            end += ch.len_utf8();
+        }
+        if matches!(kind, Kind::Emoji) && text[end..].starts_with(':') {
+            end += 1;
+        }
+        let crlf = text
+            .find('\n')
+            .is_some_and(|at| at > 0 && text.as_bytes()[at - 1] == b'\r');
+        let inserted = if matches!(kind, Kind::Block) && crlf {
+            target.replace('\n', "\r\n")
+        } else {
+            target.to_owned()
+        };
+        let after = start
+            + if matches!(kind, Kind::Block) && target == "```\n\n```" {
+                if crlf { 5 } else { 4 }
+            } else {
+                inserted.len()
+            };
+        return (start..end, inserted, after);
+    }
+    let tail = text[caret..]
+        .find(['[', ']', '|', '#', '^', '\n', '\r'])
+        .map_or(text.len(), |at| caret + at);
+    let rest = &text[tail..];
+    if rest.starts_with("]]") {
+        (start..tail, target.into(), start + target.len() + 2)
+    } else if rest.starts_with(['|', '#', '^']) {
+        (start..tail, target.into(), start + target.len())
+    } else if rest.starts_with(']') {
+        (start..tail, format!("{target}]"), start + target.len() + 2)
+    } else {
+        (
+            start..caret,
+            format!("{target}]]"),
+            start + target.len() + 2,
+        )
+    }
+}
+
+/// Keep every candidate selectable while painting at most one page. Keyboard
+/// movement brings the selected row into the same popup, including wraparound.
+pub(super) fn visible_rows(count: usize, selected: usize, limit: usize) -> std::ops::Range<usize> {
+    let end = count.min(selected.saturating_add(1).max(limit));
+    end.saturating_sub(limit)..end
+}
+
+pub(super) const LANGUAGES: &[&str] = &[
+    "bash",
+    "c",
+    "cpp",
+    "csharp",
+    "css",
+    "diff",
+    "dockerfile",
+    "go",
+    "graphql",
+    "html",
+    "java",
+    "javascript",
+    "json",
+    "kotlin",
+    "lua",
+    "markdown",
+    "mermaid",
+    "python",
+    "ruby",
+    "rust",
+    "shell",
+    "sql",
+    "swift",
+    "toml",
+    "typescript",
+    "xml",
+    "yaml",
+];
+pub(super) const EMOJI: &[(&str, &str)] = &[
+    ("smile", "😄"),
+    ("smiley", "😃"),
+    ("grinning", "😀"),
+    ("laughing", "😆"),
+    ("wink", "😉"),
+    ("heart", "❤️"),
+    ("heart_eyes", "😍"),
+    ("thinking", "🤔"),
+    ("thumbsup", "👍"),
+    ("+1", "👍"),
+    ("thumbsdown", "👎"),
+    ("-1", "👎"),
+    ("tada", "🎉"),
+    ("rocket", "🚀"),
+    ("fire", "🔥"),
+    ("warning", "⚠️"),
+    ("check", "✅"),
+    ("white_check_mark", "✅"),
+    ("x", "❌"),
+    ("eyes", "👀"),
+    ("brain", "🧠"),
+    ("bulb", "💡"),
+    ("memo", "📝"),
+    ("calendar", "📅"),
+    ("star", "⭐"),
+    ("sparkles", "✨"),
+    ("bug", "🐛"),
+    ("wave", "👋"),
+    ("pray", "🙏"),
+    ("clap", "👏"),
+    ("muscle", "💪"),
+    ("cry", "😢"),
+    ("sob", "😭"),
+    ("joy", "😂"),
+    ("sunglasses", "😎"),
+    ("ok_hand", "👌"),
+];
+pub(super) const BLOCKS: &[(&str, &str)] = &[
+    ("heading", "## "),
+    ("list", "- "),
+    ("task", "- [ ] "),
+    ("table", "| Column | Column |\n| --- | --- |\n|  |  |"),
+    ("code", "```\n\n```"),
+    ("callout", "> [!note]\n> "),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn keyboard_window_reaches_every_candidate_and_wraps() {
+        for count in [1, 8, 9, 36, 5576] {
+            for selected in 0..count {
+                let visible = visible_rows(count, selected, 8);
+                assert!(visible.contains(&selected));
+                assert!(visible.len() <= 8);
+                assert!(visible.end <= count);
+            }
+        }
+        assert_eq!(visible_rows(36, 35, 8), 28..36);
+        assert_eq!(visible_rows(36, 0, 8), 0..8);
+    }
+
+    #[test]
+    fn triggers_keep_providers_disjoint_and_colons_in_prose_safe() {
+        assert_eq!(
+            trigger("See [[/proj/mac", true),
+            Some((Kind::Note, 6, "/proj/mac".into()))
+        );
+        assert_eq!(
+            trigger("[[Plan#Go", true),
+            Some((Kind::Heading("Plan".into()), 2, "Go".into()))
+        );
+        assert_eq!(
+            trigger("[[#", true),
+            Some((Kind::Heading("".into()), 2, "".into()))
+        );
+        assert_eq!(
+            trigger("```ru", true),
+            Some((Kind::Language, 3, "ru".into()))
+        );
+        assert_eq!(trigger("/", true), Some((Kind::Block, 0, "".into())));
+        assert_eq!(
+            trigger("Hi :smi", true),
+            Some((Kind::Emoji, 3, "smi".into()))
+        );
+        for line in [
+            "[[Done]]",
+            "[[Plan|alias",
+            "[[a#b#c",
+            "https:",
+            "12:30",
+            "word:smile",
+            "x /task",
+            "/tmp/file",
+            "```",
+        ] {
+            assert_eq!(trigger(line, true), None, "{line}");
+        }
+        assert_eq!(trigger(":smile", false), None);
+    }
+    #[test]
+    fn shared_ranker_matches_path_fragments_and_fuzzy_short_names() {
+        assert_eq!(
+            score("/proj/mac", "macbook", "dev/projects/macbook"),
+            Some(5)
+        );
+        assert_eq!(score("rdmp", "roadmap", "work/roadmap"), Some(6));
+        assert_eq!(score("rust", "rust", "rust"), Some(0));
+        assert_eq!(score("smi", "smile", "smile"), Some(1));
+        assert_eq!(score("zzq", "rust", "rust"), None);
+        let mut notes: Vec<_> = (0..5575).map(|n| format!("archive/note{n}")).collect();
+        notes.push("projects/macbook".into());
+        let matches: Vec<_> = notes
+            .iter()
+            .filter(|p| score("mac", p, p).is_some())
+            .collect();
+        assert_eq!(matches, [&"projects/macbook".to_owned()]);
+    }
+    fn accept(marked: &str, target: &str) -> String {
+        let caret = marked.find('¦').unwrap();
+        let mut text = marked.replace('¦', "");
+        let line_start = text[..caret].rfind('\n').map_or(0, |at| at + 1);
+        let (kind, start, _) = trigger(&text[line_start..caret], true).unwrap();
+        let (range, replacement, caret) =
+            replacement(&text, line_start + start, caret, &kind, target);
+        text.replace_range(range, &replacement);
+        text.insert(caret, '¦');
+        text
+    }
+    #[test]
+    fn all_providers_make_one_source_edit_and_preserve_surrounding_text() {
+        assert_eq!(accept("See [[Pl¦]] suffix", "Plan"), "See [[Plan]]¦ suffix");
+        assert_eq!(accept("[[Pl¦an|alias]]", "Plan"), "[[Plan¦|alias]]");
+        assert_eq!(accept("[[Plan#Go¦als]]", "Plan#Goals"), "[[Plan#Goals]]¦");
+        assert_eq!(accept("[[#Go¦", "#Goals"), "[[#Goals]]¦");
+        assert_eq!(accept("[[Pl¦an] suffix", "Plan"), "[[Plan]]¦ suffix");
+        assert_eq!(accept("Hi :smi¦le:!", "😄"), "Hi 😄¦!");
+        assert_eq!(accept("```ru¦st\ncode\n```", "rust"), "```rust¦\ncode\n```");
+        assert_eq!(accept("/ta¦sk", "- [ ] "), "- [ ] ¦");
+        assert_eq!(accept("before\n/co¦", "```\n\n```"), "before\n```\n¦\n```");
+        assert_eq!(
+            accept("before\r\n/co¦", "```\n\n```"),
+            "before\r\n```\r\n¦\r\n```"
+        );
+        for (name, source) in BLOCKS {
+            let marked = format!("/{name}¦");
+            let result = accept(&marked, source);
+            assert_eq!(result.replace('¦', ""), *source);
+        }
+        assert!(LANGUAGES.contains(&"rust"));
+        assert!(EMOJI.contains(&("smile", "😄")));
+    }
+}

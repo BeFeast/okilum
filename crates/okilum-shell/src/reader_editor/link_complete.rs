@@ -1,4 +1,6 @@
-//! Link autocomplete in the note editor (#1921). Typing `[[` and the start of
+//! Shared inline completion in the note editor (#1921, #1638). Notes, headings,
+//! emoji, fence languages and slash blocks reuse one popup and ranker.
+//! Typing `[[` and the start of
 //! a name opens a list of matching notes under the caret; Up and Down move
 //! through it, Enter or Tab writes the link, Escape closes it for this link,
 //! and a click chooses a row. Typing on without choosing keeps the text as
@@ -13,6 +15,7 @@
 //! front matter or an inline code span, while an input method composes, or
 //! in a code or text file.
 use super::ime_guard::Trigger;
+use super::inline_complete::{self as providers, Kind};
 use super::lists::{self, Edit};
 use super::*;
 use gpui_component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp, RopeExt as _};
@@ -21,6 +24,7 @@ use std::ops::Range;
 /// Rows the list shows at most.
 pub(super) const MAX_ROWS: usize = 8;
 /// A longer name is no longer being typed as a link.
+#[cfg(test)]
 const MAX_QUERY_CHARS: usize = 120;
 /// Characters that end a wikilink name.
 const NAME_END: [char; 5] = ['[', ']', '|', '#', '^'];
@@ -34,6 +38,7 @@ pub(super) struct LinkQuery {
     pub caret: usize,
     /// The name typed so far.
     pub query: String,
+    pub kind: Kind,
 }
 
 /// The link being typed at `caret`, if any.
@@ -43,14 +48,13 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     }
     let line_start = text[..caret].rfind('\n').map_or(0, |at| at + 1);
     let before = &text[line_start..caret];
-    let open = before.rfind("[[")?;
-    let start = line_start + open + 2;
-    let query = &text[start..caret];
-    if query.contains(NAME_END) || query.chars().count() > MAX_QUERY_CHARS {
-        return None;
-    }
-    // An odd number of backticks before the `[[` on this line: inline code.
-    if before[..open].matches('`').count() % 2 == 1 {
+    let (kind, offset, query) = providers::trigger(before, true)?;
+    let start = line_start + offset;
+    let delimiter = match kind {
+        Kind::Note | Kind::Heading(_) => offset - 2,
+        _ => offset,
+    };
+    if !matches!(kind, Kind::Language) && before[..delimiter].matches('`').count() % 2 == 1 {
         return None;
     }
     if lists::in_code(text, line_start) {
@@ -59,7 +63,8 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     Some(LinkQuery {
         start,
         caret,
-        query: query.to_owned(),
+        query,
+        kind,
     })
 }
 
@@ -74,6 +79,7 @@ pub(super) struct Candidate {
     pub folder: String,
     /// What goes between `[[` and `]]`.
     pub target: String,
+    pub badge: Option<String>,
 }
 
 /// The vault's notes, lowercased once for matching as the user types.
@@ -133,7 +139,6 @@ impl Index {
         ranked.sort_unstable();
         ranked
             .into_iter()
-            .take(MAX_ROWS)
             .map(|(_, _, _, at)| {
                 let note = &self.vault.notes[at];
                 Candidate {
@@ -141,6 +146,7 @@ impl Index {
                     title: note.title.clone(),
                     folder: folder_of(&note.path).to_owned(),
                     target: target_for(&self.vault, &note.path, from),
+                    badge: None,
                 }
             })
             .collect()
@@ -161,22 +167,7 @@ fn folder_of(path: &str) -> &str {
 
 /// Lower is better; `None` does not match. Both sides are lowercase.
 fn score(query: &str, title: &str, path: &str) -> Option<u8> {
-    if title == query {
-        Some(0)
-    } else if title.starts_with(query) {
-        Some(1)
-    } else if title
-        .match_indices(query)
-        .any(|(at, _)| title[..at].ends_with([' ', '-', '_', '.', '(']))
-    {
-        Some(2)
-    } else if title.contains(query) {
-        Some(3)
-    } else if path.contains(query) {
-        Some(4)
-    } else {
-        None
-    }
+    providers::score(query, title, path)
 }
 
 /// The shortest trailing part of the note's path that resolves to it alone
@@ -204,23 +195,144 @@ pub(super) fn target_for(vault: &Vault, path: &str, from: &str) -> String {
 /// after it. The name around the caret is replaced up to the link's `]]`,
 /// `|` or `#`; with none on the line, `]]` closes the link.
 pub(super) fn completion(text: &str, query: &LinkQuery, target: &str) -> (Vec<Edit>, usize) {
-    let tail = text[query.caret..]
-        .find(|c: char| NAME_END.contains(&c) || c == '\n' || c == '\r')
-        .map_or(text.len(), |at| query.caret + at);
-    let rest = &text[tail..];
-    if rest.starts_with("]]") {
-        let caret = query.start + target.len() + 2;
-        (vec![(query.start..tail, target.to_owned())], caret)
-    } else if rest.starts_with(['|', '#', '^']) {
-        let caret = query.start + target.len();
-        (vec![(query.start..tail, target.to_owned())], caret)
-    } else {
-        let caret = query.start + target.len() + 2;
-        (
-            vec![(query.start..query.caret, format!("{target}]]"))],
-            caret,
-        )
+    let (range, replacement, caret) =
+        providers::replacement(text, query.start, query.caret, &query.kind, target);
+    (vec![(range, replacement)], caret)
+}
+
+/// Reuse the same rows, key handling and acceptance path for every provider.
+fn publish(state: &mut State, query: LinkQuery, items: Vec<Candidate>) {
+    let selected = state
+        .open
+        .as_ref()
+        .and_then(|open| {
+            let old = open.items.get(open.selected)?;
+            items
+                .iter()
+                .position(|item| item.path == old.path && item.target == old.target)
+        })
+        .unwrap_or(0);
+    state.open = (!items.is_empty()).then_some(Open {
+        query,
+        items,
+        selected,
+    });
+}
+
+fn row(title: &str, target: &str, folder: &str) -> Candidate {
+    Candidate {
+        path: String::new(),
+        title: title.into(),
+        folder: folder.into(),
+        target: target.into(),
+        badge: None,
     }
+}
+
+fn catalog(query: &LinkQuery) -> Vec<Candidate> {
+    let items = match query.kind {
+        Kind::Language => providers::LANGUAGES
+            .iter()
+            .map(|name| row(name, name, "Language"))
+            .chain(
+                okilum_core::code_language::ALIASES
+                    .iter()
+                    .map(|(alias, name)| row(alias, alias, name)),
+            )
+            .collect(),
+        Kind::Emoji => providers::EMOJI
+            .iter()
+            .map(|(name, emoji)| row(name, emoji, emoji))
+            .collect(),
+        Kind::Block => {
+            let mut rows: Vec<_> = providers::BLOCKS
+                .iter()
+                .map(|(name, source)| row(name, source, "Markdown"))
+                .collect();
+            rows.push(row(
+                "date",
+                &chrono::Local::now().format("%Y-%m-%d").to_string(),
+                "Today",
+            ));
+            rows
+        }
+        _ => Vec::new(),
+    };
+    rank_rows(&query.query, items)
+}
+
+fn rank_rows(query: &str, items: Vec<Candidate>) -> Vec<Candidate> {
+    let query = query.to_lowercase();
+    let mut ranked: Vec<_> = items
+        .into_iter()
+        .filter_map(|item| {
+            let score = score(
+                &query,
+                &item.title.to_lowercase(),
+                &item.title.to_lowercase(),
+            )?;
+            Some((score, item))
+        })
+        .collect();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.title.cmp(&b.1.title)));
+    ranked.into_iter().map(|(_, row)| row).collect()
+}
+
+/// Metadata reads for the first visible page and Markdown parsing run on the background executor.
+/// Current-note headings use the editor's unsaved source, never the disk copy.
+fn enrich(
+    vault: &Vault,
+    from: &str,
+    source: Option<&str>,
+    query: &LinkQuery,
+    mut items: Vec<Candidate>,
+) -> Vec<Candidate> {
+    use okilum_core::{
+        document_links::HeadingInventory,
+        properties::{self, PropertyValue},
+        vault::ResolutionRef,
+    };
+    if let Kind::Heading(target) = &query.kind {
+        let path = if target.is_empty() {
+            from
+        } else {
+            match vault.resolve_from_ref(target, from) {
+                ResolutionRef::Resolved(path) => path,
+                _ => return Vec::new(), // Never guess an ambiguous note.
+            }
+        };
+        let loaded;
+        let text = if path == from {
+            source.unwrap_or("")
+        } else {
+            loaded = vault.read_note(path);
+            let Ok(text) = &loaded else {
+                return Vec::new();
+            };
+            text
+        };
+        let inventory = HeadingInventory::new(text);
+        items = inventory
+            .entries
+            .iter()
+            .filter(|h| !h.text.contains(NAME_END) && inventory.locate(&h.text).is_ok())
+            .map(|h| row(&h.text, &format!("{target}#{}", h.text), path))
+            .collect();
+        return rank_rows(&query.query, items);
+    }
+    for item in items.iter_mut().take(MAX_ROWS) {
+        let Ok(text) = vault.read_note(&item.path) else {
+            continue;
+        };
+        item.badge = properties::frontmatter_block(&text)
+            .and_then(|yaml| properties::parse(yaml).ok())
+            .and_then(|props| props.into_iter().find(|p| p.key == "type"))
+            .and_then(|p| match p.value {
+                PropertyValue::Text(value) => Some(value),
+                _ => None,
+            });
+    }
+    items
 }
 
 /// The list while it is open.
@@ -233,17 +345,26 @@ pub(super) struct Open {
 /// Per editor: what the list shows, and what it was computed for.
 #[derive(Default)]
 pub(super) struct State {
-    seen: Option<(gpui_component::input::projection::SourceStamp, Range<usize>)>,
+    seen: Option<(
+        gpui_component::input::projection::SourceStamp,
+        Range<usize>,
+        bool,
+    )>,
     pub open: Option<Open>,
     /// The `[[` whose list Escape closed (or a choice completed); it stays
     /// closed until the caret leaves that link.
     dismissed: Option<usize>,
-    index: Option<Index>,
+    index: Option<Arc<Index>>,
+    task: Option<Task<()>>,
+    from: String,
+    composing: bool,
+    editable: bool,
 }
 
 impl Reader {
     /// Recompute the list after the text or the caret changed.
     pub(super) fn refresh_link_complete(&mut self, cx: &mut Context<Self>) {
+        let emoji = reader_ui_state::emoji_completion(cx);
         let show_hidden = self.sidebar.show_hidden;
         let vault = self.vault.clone();
         let from = self.current_rel.clone();
@@ -251,30 +372,49 @@ impl Reader {
             return;
         };
         let input = editing.input.read(cx);
-        let seen = (input.source_stamp(), input.selected_range());
-        if editing.link_complete.seen.as_ref() == Some(&seen) {
+        let seen = (input.source_stamp(), input.selected_range(), emoji);
+        if editing.link_complete.seen.as_ref() == Some(&seen)
+            && editing.link_complete.composing == input.ime_composing()
+            && editing.link_complete.editable == input.is_editable()
+            && editing.link_complete.from == from
+            && editing
+                .link_complete
+                .index
+                .as_ref()
+                .is_some_and(|index| index.current(&vault, show_hidden))
+        {
             return;
         }
         let selection = seen.1.clone();
+        let expected_seen = seen.clone();
         editing.link_complete.seen = Some(seen);
+        editing.link_complete.composing = input.ime_composing();
+        editing.link_complete.editable = input.is_editable();
+        editing.link_complete.from = from.clone();
         let query = (editing.markdown
             && selection.is_empty()
             && input.is_editable()
             && !input.ime_composing())
         .then(|| {
-            // Most carets are on a line without `[[`: read only that line.
             let row = input.cursor_position().line as usize;
-            input
-                .text()
-                .slice_line(row)
-                .to_string()
-                .contains("[[")
-                .then(|| link_query(&input.value(), selection.start))
-                .flatten()
+            let line = input.text().slice_line(row).to_string();
+            (line.contains("[[")
+                || line.contains(':')
+                || line.starts_with('/')
+                || line.starts_with("```"))
+            .then(|| link_query(&input.value(), selection.start))
+            .flatten()
+            .filter(|query| emoji || !matches!(query.kind, Kind::Emoji))
         })
         .flatten();
+        let source = query
+            .as_ref()
+            .filter(|q| matches!(q.kind, Kind::Heading(_)))
+            .map(|_| input.value().to_string());
+        let input_entity = editing.input.clone();
         let state = &mut editing.link_complete;
         let was_open = state.open.is_some();
+        state.task = None;
         let Some(query) = query else {
             state.dismissed = None;
             state.open = None;
@@ -298,25 +438,64 @@ impl Reader {
             .as_ref()
             .is_some_and(|index| index.current(&vault, show_hidden))
         {
-            state.index = Some(Index::new(vault, show_hidden));
+            state.index = Some(Arc::new(Index::new(vault, show_hidden)));
         }
-        let items = state.index.as_ref().unwrap().search(&query.query, &from);
-        // The same rows keep the highlighted one.
-        let selected = state
-            .open
-            .as_ref()
-            .and_then(|open| {
-                items
-                    .get(open.selected)
-                    .filter(|item| **item == open.items[open.selected])
-                    .map(|_| open.selected)
-            })
-            .unwrap_or(0);
-        state.open = (!items.is_empty()).then_some(Open {
-            query,
-            items,
-            selected,
-        });
+        let items = match &query.kind {
+            Kind::Note => Vec::new(),
+            Kind::Heading(_) => Vec::new(),
+            _ => catalog(&query),
+        };
+        publish(state, query.clone(), items.clone());
+        if matches!(query.kind, Kind::Note | Kind::Heading(_)) {
+            let expected_vault = self.vault.clone();
+            let vault = expected_vault.clone();
+            let from_expected = from.clone();
+            let index = state.index.as_ref().unwrap().clone();
+            state.task = Some(cx.spawn(async move |this, cx| {
+                let worker_query = query.clone();
+                let rows = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let items = if matches!(worker_query.kind, Kind::Note) {
+                            index.search(&worker_query.query, &from)
+                        } else {
+                            items
+                        };
+                        enrich(&vault, &from, source.as_deref(), &worker_query, items)
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if !Arc::ptr_eq(&this.vault, &expected_vault)
+                        || this.current_rel != from_expected
+                    {
+                        return;
+                    }
+                    let Some(editing) = this.editing.as_mut() else {
+                        return;
+                    };
+                    if editing.input != input_entity {
+                        return;
+                    }
+                    let input = editing.input.read(cx);
+                    let current = (
+                        input.source_stamp(),
+                        input.selected_range(),
+                        reader_ui_state::emoji_completion(cx),
+                    );
+                    if current != expected_seen
+                        || editing.link_complete.seen.as_ref() != Some(&expected_seen)
+                        || this.sidebar.show_hidden != show_hidden
+                        || input.ime_composing()
+                        || !input.is_editable()
+                        || editing.link_complete.dismissed == Some(query.start)
+                    {
+                        return;
+                    }
+                    publish(&mut editing.link_complete, query, rows);
+                    cx.notify();
+                });
+            }));
+        }
         cx.notify();
     }
 
@@ -325,8 +504,31 @@ impl Reader {
         let editing = self.editing.as_ref()?;
         editing.link_complete.open.as_ref()?;
         let input = editing.input.read(cx);
-        (input.focus_handle(cx).is_focused(window) && input.is_editable())
-            .then(|| editing.input.clone())
+        let current = (
+            input.source_stamp(),
+            input.selected_range(),
+            reader_ui_state::emoji_completion(cx),
+        );
+        if editing.link_complete.seen.as_ref() != Some(&current)
+            || editing.link_complete.from != self.current_rel
+            || !editing
+                .link_complete
+                .index
+                .as_ref()
+                .is_some_and(|index| index.current(&self.vault, self.sidebar.show_hidden))
+        {
+            return None;
+        }
+        if matches!(editing.link_complete.open.as_ref()?.query.kind, Kind::Emoji)
+            && !reader_ui_state::emoji_completion(cx)
+        {
+            return None;
+        }
+        (input.focus_handle(cx).is_focused(window)
+            && input.is_editable()
+            && input.selected_range().is_empty()
+            && !input.ime_composing())
+        .then(|| editing.input.clone())
     }
 
     fn link_complete_step(&mut self, delta: isize, window: &Window, cx: &mut Context<Self>) {
@@ -432,47 +634,67 @@ impl Reader {
         let state = input.read(cx);
         let caret = state.range_to_bounds(&(open.query.caret..open.query.caret))?;
         let p = brand::palette(cx);
-        let rows = open.items.iter().enumerate().map(|(i, item)| {
-            let selected = i == open.selected;
-            h_flex()
-                .id(("link-complete-row", i))
-                .debug_selector(move || format!("link-complete-{i}"))
-                .h(px(28.))
-                .px_2()
-                .gap_2()
-                .rounded_md()
-                .cursor_pointer()
-                .when(selected, |row| row.bg(p.selected))
-                .hover(move |row| row.bg(p.selected))
-                .child(
-                    Icon::new(IconName::FileText)
-                        .small()
-                        .text_color(p.text_muted),
-                )
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .max_w(px(220.))
-                        .text_ellipsis()
-                        .child(item.title.clone()),
-                )
-                .when(!item.folder.is_empty(), |row| {
-                    row.child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_ellipsis()
-                            .text_color(p.text_muted)
-                            .child(item.folder.replace('/', " › ")),
+        let visible = providers::visible_rows(open.items.len(), open.selected, MAX_ROWS);
+        let rows = open
+            .items
+            .iter()
+            .enumerate()
+            .skip(visible.start)
+            .take(visible.len())
+            .map(|(i, item)| {
+                let selected = i == open.selected;
+                h_flex()
+                    .id(("link-complete-row", i))
+                    .debug_selector(move || format!("link-complete-{i}"))
+                    .h(px(28.))
+                    .px_2()
+                    .gap_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(selected, |row| row.bg(p.selected))
+                    .hover(move |row| row.bg(p.selected))
+                    .child(
+                        Icon::new(IconName::FileText)
+                            .small()
+                            .text_color(p.text_muted),
                     )
-                })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.link_complete_accept(Some(i), Trigger::Text, window, cx);
-                    }),
-                )
-        });
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .max_w(px(220.))
+                            .text_ellipsis()
+                            .child(item.title.clone()),
+                    )
+                    .when(!item.folder.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_ellipsis()
+                                .text_color(p.text_muted)
+                                .child(item.folder.replace('/', " › ")),
+                        )
+                    })
+                    .children(item.badge.as_ref().map(|kind| {
+                        let tones = [p.info, p.success, p.warning, p.accent];
+                        let tone =
+                            tones[kind.bytes().fold(0usize, |n, b| n.wrapping_add(b as usize))
+                                % tones.len()];
+                        div()
+                            .px_1()
+                            .rounded_sm()
+                            .text_xs()
+                            .bg(tone.opacity(0.10))
+                            .text_color(tone)
+                            .child(kind.clone())
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.link_complete_accept(Some(i), Trigger::Text, window, cx);
+                        }),
+                    )
+            });
         Some(
             deferred(
                 anchored()
@@ -530,7 +752,11 @@ mod tests {
         // Positive controls for every refusal below.
         assert_eq!(query("[[Plan]] |"), None, "after a closed link");
         assert_eq!(query("[[Plan|alias|"), None, "in the alias");
-        assert_eq!(query("[[Plan#Head|"), None, "in the heading");
+        assert_eq!(
+            query("[[Plan#Head|").as_deref(),
+            Some("Head"),
+            "in the heading"
+        );
         assert_eq!(query("[[\nPlan|"), None, "another line");
         assert_eq!(query("Plan|"), None, "no brackets");
         assert_eq!(query("[Plan|"), None, "one bracket");
@@ -600,7 +826,7 @@ mod tests {
         let mut paths: Vec<&str> = many.iter().map(String::as_str).collect();
         paths.extend(["Mine/Here.md", "Mine/Sibling.md"]);
         let found = Index::new(vault(&paths), false).search("", "Mine/Here.md");
-        assert_eq!(found.len(), MAX_ROWS);
+        assert_eq!(found.len(), 21);
         assert_eq!(found[0].path, "Mine/Sibling.md");
         assert_eq!(found[0].folder, "Mine");
     }
@@ -653,6 +879,54 @@ mod tests {
         );
         assert_eq!(complete("[[Pl|\r\nnext", "Plan"), "[[Plan]]|\r\nnext");
         assert_eq!(complete("[[ש|", "שלום"), "[[שלום]]|");
+    }
+
+    #[test]
+    fn headings_use_unsaved_source_and_never_choose_ambiguous_targets() {
+        let v = vault(&["note.md", "a/Plan.md", "b/Plan.md"]);
+        let (text, caret) = at("# Goals\n\n[[#Go|");
+        let q = link_query(&text, caret).unwrap();
+        let rows = enrich(&v, "note.md", Some(&text), &q, Vec::new());
+        assert_eq!(
+            rows.iter().map(|r| r.target.as_str()).collect::<Vec<_>>(),
+            ["#Goals"]
+        );
+        let (edits, _) = completion(&text, &q, &rows[0].target);
+        assert_eq!(lists::apply(&text, &edits), "# Goals\n\n[[#Goals]]");
+        let ambiguous = link_query("[[Plan#Go", 9).unwrap();
+        assert!(enrich(&v, "note.md", Some(&text), &ambiguous, Vec::new()).is_empty());
+        let duplicate = "# Goals\n# Goals\n[[#Go";
+        let q = link_query(duplicate, duplicate.len()).unwrap();
+        assert!(enrich(&v, "note.md", Some(duplicate), &q, Vec::new()).is_empty());
+        for marked in ["` :smi|`", "```\n/ta|\n```", "---\ntype: :smi|\n---"] {
+            let (text, caret) = at(marked);
+            assert!(link_query(&text, caret).is_none(), "{marked}");
+        }
+    }
+
+    #[test]
+    fn note_rows_read_type_metadata_and_heading_rows_read_the_resolved_note() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("Plan.md"),
+            "---\ntype: project\n---\n# Goals\n",
+        )
+        .unwrap();
+        let mut v = Vault::from_note_paths(["Plan.md".into(), "note.md".into()]);
+        v.root = directory.path().into();
+        let v = Arc::new(v);
+        let q = link_query("[[Pla", 5).unwrap();
+        let candidates = Index::new(v.clone(), false).search("Pla", "note.md");
+        let rows = enrich(&v, "note.md", None, &q, candidates);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].badge.as_deref(), Some("project"));
+        let q = link_query("[[Plan#Go", 9).unwrap();
+        let rows = enrich(&v, "note.md", None, &q, Vec::new());
+        assert_eq!(rows[0].target, "Plan#Goals");
+        let q = link_query("/dat", 4).unwrap();
+        let rows = catalog(&q);
+        assert_eq!(rows[0].title, "date");
+        assert!(chrono::NaiveDate::parse_from_str(&rows[0].target, "%Y-%m-%d").is_ok());
     }
 
     struct Note {
@@ -748,6 +1022,99 @@ mod tests {
     fn undo(visual: &mut VisualTestContext) {
         visual.dispatch_action(Undo);
         visual.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn source_changes_with_the_same_query_cannot_accept_old_headings(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        set(&note, visual, "# Old goals\n\n[[#|");
+        assert!(
+            offered(&note, visual).is_some(),
+            "positive control: headings loaded"
+        );
+        note.input.update_in(visual, |input, window, cx| {
+            let text = "# New goals\n\n[[#";
+            input.set_value(text, window, cx);
+            input.set_selected_range(text.len()..text.len(), cx);
+        });
+        // Before queued refresh/worker publication, the query and caret are
+        // unchanged but the candidate belongs to a different source revision.
+        note.reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.link_complete_input(window, cx).is_none());
+            reader.link_complete_accept(None, Trigger::Tab, window, cx);
+        });
+        assert_eq!(shown(&note, visual), "# New goals\n\n[[#|");
+        visual.run_until_parked();
+        keys(visual, "tab");
+        assert_eq!(shown(&note, visual), "# New goals\n\n[[#New goals]]|");
+    }
+
+    #[gpui::test]
+    fn keyboard_reaches_catalog_tail_in_the_same_popup(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        for source in [":|", "```r|", "/|"] {
+            set(&note, visual, source);
+            let target = note.reader.read_with(visual, |reader, _| {
+                let open = reader
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .link_complete
+                    .open
+                    .as_ref()
+                    .unwrap();
+                open.items.last().unwrap().target.clone()
+            });
+            keys(visual, "up");
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let last = note.reader.read_with(visual, |reader, _| {
+                let open = reader
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .link_complete
+                    .open
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(open.selected, open.items.len() - 1);
+                open.selected
+            });
+            assert!(
+                visual
+                    .debug_bounds(&format!("link-complete-{last}"))
+                    .is_some()
+            );
+            keys(visual, "tab");
+            assert!(shown(&note, visual).contains(&target));
+            undo(visual);
+            assert_eq!(shown(&note, visual), source);
+        }
+    }
+
+    #[gpui::test]
+    fn providers_share_keyboard_acceptance_and_one_step_undo(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        for (source, expected) in [
+            ("Hello :smi|", "Hello 😄|"),
+            ("```rus|\n\n```", "```rust|\n\n```"),
+            ("/tas|", "- [ ] |"),
+            ("# Goals\n\n[[#Go|", "# Goals\n\n[[#Goals]]|"),
+        ] {
+            set(&note, visual, source);
+            assert!(offered(&note, visual).is_some(), "{source}");
+            keys(visual, "tab");
+            assert_eq!(shown(&note, visual), expected);
+            undo(visual);
+            assert_eq!(shown(&note, visual), source, "one Undo step");
+        }
+        set(&note, visual, "/tas|");
+        keys(visual, "escape");
+        assert!(offered(&note, visual).is_none());
+        typed(visual, "k");
+        assert!(
+            offered(&note, visual).is_none(),
+            "dismissed until leaving this command"
+        );
     }
 
     #[gpui::test]
