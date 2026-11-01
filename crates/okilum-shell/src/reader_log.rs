@@ -1078,7 +1078,11 @@ impl LogView {
     /// named and left out.
     fn drop_files(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         if self.source_locked {
-            reader_toast::transient("Change virtual source criteria and Rescan to add files", window, cx);
+            reader_toast::transient(
+                "Change virtual source criteria and Rescan to add files",
+                window,
+                cx,
+            );
             return;
         }
         let (logs, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
@@ -3579,7 +3583,9 @@ impl LogView {
             )
             // A compressed log does not grow (#1164).
             .when(
-                !self.source_locked && !self.compressed() && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
+                !self.source_locked
+                    && !self.compressed()
+                    && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
                 |bar| bar.child(self.follow_button(cx)),
             )
             .child(
