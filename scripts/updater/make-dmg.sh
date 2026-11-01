@@ -3,6 +3,7 @@
 # a first-install DMG (app + Applications link, branded window), signs it with the
 # Developer ID, notarizes and staples it, and checks it the way Gatekeeper sees a
 # download. Sets $DMG. The zip in $ARCHIVE stays the Sparkle update payload.
+source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/updater/stapler.sh"
 SIGNING_KEYCHAIN_ARGS=()
 NOTARY_KEYCHAIN_ARGS=()
 IDENTITY_KEYCHAIN_ARGS=()
@@ -28,8 +29,8 @@ codesign ${SIGNING_KEYCHAIN_ARGS[@]+"${SIGNING_KEYCHAIN_ARGS[@]}"} --force --tim
 codesign --verify --strict --verbose=2 "$DMG"
 xcrun notarytool submit "$DMG" --keychain-profile "$OKILUM_NOTARY_PROFILE" ${NOTARY_KEYCHAIN_ARGS[@]+"${NOTARY_KEYCHAIN_ARGS[@]}"} --wait --output-format json | tee "$OUTPUT/notarization-dmg.json"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["status"]; sys.exit(s!="Accepted" and f"DMG notarization: {s}")' "$OUTPUT/notarization-dmg.json"
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
+okilum_stapler staple "$DMG"
+okilum_stapler validate "$DMG"
 # A quarantined copy must open without a Gatekeeper prompt, and its app must be the stapled one.
 cp "$DMG" "$OUTPUT/fresh-download.dmg"
 xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");OkilumRelease;$(uuidgen)" "$OUTPUT/fresh-download.dmg"
@@ -40,7 +41,7 @@ trap 'hdiutil detach "$MOUNT" -quiet || true' EXIT
 test "$(readlink "$MOUNT/Applications")" = /Applications
 test -f "$MOUNT/.background.tiff"
 codesign --verify --deep --strict "$MOUNT/Okilum.app"
-xcrun stapler validate "$MOUNT/Okilum.app"
+okilum_stapler validate "$MOUNT/Okilum.app"
 # Same app: the code directory hash covers the executable and every sealed resource.
 # (diff -r cannot walk the framework's Versions/Current symlinks and silently skips them.)
 cdhash() { codesign -d --verbose=4 "$1" 2>&1 | sed -n 's/^CDHash=//p'; }

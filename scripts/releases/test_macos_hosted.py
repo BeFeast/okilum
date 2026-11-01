@@ -95,7 +95,8 @@ class ShippingPolicy(unittest.TestCase):
     def test_build_records_executed_source_not_workflow_and_rejects_bad_outputs(self):
         repo = Path(__file__).resolve().parents[2]
         names = ['scripts/build-macos-ci.sh', 'scripts/ci/supervisor-bundle.sh',
-                 'scripts/updater/sign-bundle.sh', 'scripts/updater/make-dmg.sh']
+                 'scripts/updater/sign-bundle.sh', 'scripts/updater/make-dmg.sh',
+                 'scripts/updater/stapler.sh']
         scripts = {name: (repo / name).read_bytes() for name in names}
         for wrong in [None, 'source', 'notary', 'plist']:
             with self.subTest(wrong=wrong), tempfile.TemporaryDirectory() as tmp:
