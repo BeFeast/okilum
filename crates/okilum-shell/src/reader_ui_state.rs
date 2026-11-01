@@ -51,6 +51,8 @@ pub(crate) struct Layout {
     pub project: Option<PathBuf>,
     pub panels: reader_layout::Panels,
     pub widths: reader_layout::Widths,
+    /// Legacy panels/widths stay the Tree layout; absent means first Project entry.
+    pub project_layout: Option<reader_layout::ViewLayout>,
     pub collapsed: BTreeSet<reader_sidebar::Section>,
     pub properties_collapsed: bool,
     pub show_hidden: bool,
@@ -79,6 +81,7 @@ impl Default for Layout {
                 ..Default::default()
             },
             widths: Default::default(),
+            project_layout: None,
             collapsed: Default::default(),
             properties_collapsed: false,
             show_hidden: false,
@@ -1017,6 +1020,7 @@ impl Reader {
             self.panel_widths
                 .set(reader_layout::Panel::Backlinks, saved.widths.backlinks);
         }
+        self.project_navigation.layout = saved.project_layout.clone();
         // Reject legacy asynchronous width publication after this newer restore.
         self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
         self.sidebar.collapsed = saved.collapsed.clone();
@@ -1102,8 +1106,7 @@ impl Reader {
     pub(crate) fn cancel_workspace_restore(&mut self) {
         if self.ui_state.workspace.take().is_some() || self.ui_state.restoring_workspace {
             self.ui_state.restoring_workspace = false;
-            self.project_navigation.generation =
-                self.project_navigation.generation.wrapping_add(1);
+            self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
         }
     }
 
@@ -1280,6 +1283,14 @@ impl Reader {
                 |saved| saved.panels.preferences(),
             ),
             widths: world.map_or_else(|| self.panel_widths.clone(), |saved| saved.widths.clone()),
+            project_layout: if self.project_navigation.active.is_some() {
+                Some(reader_layout::ViewLayout::capture(
+                    &self.panels,
+                    &self.panel_widths,
+                ))
+            } else {
+                self.project_navigation.layout.clone()
+            },
             collapsed: self.sidebar.collapsed.clone(),
             properties_collapsed: self.sidebar.properties_collapsed,
             show_hidden: self.sidebar.show_hidden,
@@ -2120,6 +2131,37 @@ fn mark_saved(generation: u64, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_layout_preserves_tree_preferences_without_inventing_project_state() {
+        let legacy: Layout = serde_json::from_value(serde_json::json!({
+            "panels": { "notes": true, "backlinks": false, "active": "Notes" },
+            "widths": { "notes": 370., "backlinks": 255. }
+        }))
+        .unwrap();
+        assert!(legacy.project_layout.is_none());
+        assert!(legacy.panels.notes && !legacy.panels.backlinks);
+        assert_eq!(legacy.widths.notes, 370.);
+        assert_eq!(legacy.widths.backlinks, 255.);
+        let mut saved = legacy.clone();
+        saved.project_layout = Some(reader_layout::ViewLayout::capture(
+            &reader_layout::Panels {
+                notes: false,
+                backlinks: true,
+                active: reader_layout::Panel::Backlinks,
+                ..Default::default()
+            },
+            &reader_layout::Widths {
+                notes: 280.,
+                backlinks: 830.,
+            },
+        ));
+        let restored: Layout =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(restored.panels, legacy.panels);
+        assert_eq!(restored.widths, legacy.widths);
+        assert_eq!(restored.project_layout, saved.project_layout);
+    }
+
     #[test]
     fn workspace_identity_is_optional_and_never_inherited() {
         let legacy: Layout = serde_json::from_str(r#"{"note":"home.md"}"#).unwrap();
