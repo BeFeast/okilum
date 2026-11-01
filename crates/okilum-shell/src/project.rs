@@ -1146,6 +1146,8 @@ impl ProjectView {
     fn render_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(target_os = "linux")]
         self.attachment_restore_connection(_window, cx);
+        #[cfg(target_os = "linux")]
+        self.sync_native_action_surface(cx);
         if self.local_setup.is_some() {
             return self.render_local_setup(cx).into_any_element();
         }
@@ -1451,6 +1453,12 @@ impl ProjectView {
                                     cx.listener(|this, _, window, cx| this.send(None, window, cx)),
                                 ),
                         ).into_any_element();
+                #[cfg(target_os = "linux")]
+                let view = if self.native_actions_pinned() {
+                    view.child(self.native.actions.clone())
+                } else {
+                    view
+                };
                 #[cfg(target_os = "linux")]
                 let view = view.child(if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)});
                 view.child(div().debug_selector(|| "project-chat-composer".into()).child(composer))

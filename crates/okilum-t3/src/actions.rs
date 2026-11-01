@@ -10,7 +10,7 @@ pub use prompt::{prompt_length_validation, MAX_PROMPT_UNITS};
 mod journal;
 mod state;
 pub use journal::{Journal, Record};
-pub use state::{valid_answers, Request, State};
+pub use state::{valid_answers, Request, State, APPROVAL_FALLBACK_OPTIONS};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

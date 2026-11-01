@@ -619,7 +619,7 @@ fn ambiguous_unsupported_and_wrong_target_requests_never_grant_controls() {
 }
 
 #[test]
-fn approvals_are_live_only_and_absent_options_only_allow_once_or_decline() {
+fn approvals_are_live_only_and_absent_options_offer_t3_fallback_decisions() {
     use crate::actions::Intent;
     let mut item = message("approval", 1, "approval_request");
     item["requestId"] = json!("request");
@@ -630,11 +630,13 @@ fn approvals_are_live_only_and_absent_options_only_allow_once_or_decline() {
         answers: None,
     };
     let state = request_model(vec![item.clone()], json!([request.clone()])).action_state();
-    assert!(state.allows(&approve("accept")));
-    assert!(state.allows(&approve("decline")));
-    for decision in ["cancel", "acceptForSession", "acceptAlways"] {
-        assert!(!state.allows(&approve(decision)));
+    for decision in ["cancel", "decline", "acceptForSession", "accept"] {
+        assert!(
+            state.allows(&approve(decision)),
+            "fallback decision: {decision}"
+        );
     }
+    assert!(!state.allows(&approve("acceptAlways")));
     item["options"] = json!([{"decision":"acceptAlways","label":"Always allow this app","warning":"Persists approval"}]);
     assert!(request_model(vec![item.clone()], json!([request.clone()]))
         .action_state()

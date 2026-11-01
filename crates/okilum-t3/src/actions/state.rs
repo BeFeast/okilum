@@ -3,6 +3,15 @@
 use super::*;
 use crate::projection::Projection;
 
+/// T3's ordered approval choices when the provider omits `options` entirely.
+/// Explicit provider options remain authoritative, including an empty list.
+pub const APPROVAL_FALLBACK_OPTIONS: [(&str, &str); 4] = [
+    ("cancel", "Cancel"),
+    ("decline", "Decline"),
+    ("acceptForSession", "Always allow this session"),
+    ("accept", "Approve"),
+];
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
     pub ready: bool,
@@ -146,9 +155,9 @@ impl State {
                     }
                     match r.item["options"].as_array() {
                         Some(options) => options.iter().any(|o| o["decision"] == *d),
-                        None if r.item.get("options").is_none() => {
-                            matches!(d.as_str(), "accept" | "decline")
-                        }
+                        None if r.item.get("options").is_none() => APPROVAL_FALLBACK_OPTIONS
+                            .iter()
+                            .any(|(decision, _)| *decision == d.as_str()),
                         None => false,
                     }
                 } else {
@@ -230,4 +239,194 @@ fn valid_answers_for_mode(item: &Value, answers: &BTreeMap<String, Value>, messa
             _ => false,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approval(options: Option<Value>) -> State {
+        let mut item = json!({
+            "type": "approval_request", "requestId": "bound-request",
+            "threadId": "bound-thread", "runId": "bound-run",
+        });
+        if let Some(options) = options {
+            item["options"] = options;
+        }
+        State {
+            ready: true,
+            requests: vec![Request {
+                id: "bound-request".into(),
+                item,
+                answerable: true,
+                dismissible: false,
+                response_mode: Some("live".into()),
+                reason: None,
+            }],
+            ..State::default()
+        }
+    }
+
+    fn respond(decision: &str) -> Intent {
+        Intent::Respond {
+            request_id: "bound-request".into(),
+            decision: Some(decision.into()),
+            answers: None,
+        }
+    }
+
+    #[test]
+    fn approval_fallback_order_and_labels_match_t3() {
+        assert_eq!(
+            APPROVAL_FALLBACK_OPTIONS,
+            [
+                ("cancel", "Cancel"),
+                ("decline", "Decline"),
+                ("acceptForSession", "Always allow this session"),
+                ("accept", "Approve"),
+            ]
+        );
+    }
+
+    #[test]
+    fn absent_options_accept_each_fallback_with_exact_retained_command_wire() {
+        let state = approval(None);
+        for (decision, _) in APPROVAL_FALLBACK_OPTIONS {
+            let command = Command::new("bound-thread", respond(decision));
+            assert!(state.allows(&command.intent), "{decision}");
+            let wire = command.wire().unwrap();
+            assert_eq!(
+                wire,
+                json!({
+                    "type": "runtime-request.respond",
+                    "commandId": command.command_id,
+                    "threadId": "bound-thread",
+                    "requestId": "bound-request",
+                    "decision": decision,
+                }),
+                "UI labels must never replace protocol decisions"
+            );
+            let retained: Command =
+                serde_json::from_slice(&serde_json::to_vec(&command).unwrap()).unwrap();
+            assert_eq!(retained.wire().unwrap(), wire);
+            assert_eq!(retained.command_id, command.command_id);
+            assert!(state.allows(&retained.intent));
+        }
+        assert!(!state.allows(&respond("acceptAlways")));
+    }
+
+    #[test]
+    fn explicit_provider_options_replace_fallback_without_losing_provider_metadata() {
+        let options = json!([
+            {"decision": "acceptAlways", "label": "Always allow this app", "warning": "Persists approval"},
+            {"decision": "decline", "label": "Deny this request"},
+        ]);
+        let state = approval(Some(options.clone()));
+        for decision in ["acceptAlways", "decline"] {
+            let intent = respond(decision);
+            assert!(state.allows(&intent));
+            assert_eq!(
+                Command::new("bound-thread", intent).wire().unwrap()["decision"],
+                decision
+            );
+        }
+        for decision in ["cancel", "acceptForSession", "accept"] {
+            assert!(
+                !state.allows(&respond(decision)),
+                "{decision} was not offered"
+            );
+        }
+        assert_eq!(state.requests[0].item["options"], options);
+
+        let decline_only = approval(Some(json!([
+            {"decision": "decline", "label": "Decline"},
+        ])));
+        assert!(decline_only.allows(&respond("decline")));
+        assert!(!decline_only.allows(&respond("acceptAlways")));
+    }
+
+    #[test]
+    fn null_empty_and_malformed_options_never_restore_fallback_authority() {
+        for options in [
+            Value::Null,
+            json!([]),
+            json!(false),
+            json!(1),
+            json!("accept"),
+            json!({"decision": "accept", "label": "Approve"}),
+            json!([null, false, "accept", {}, {"decision": null}, {"decision": 1}]),
+        ] {
+            let state = approval(Some(options.clone()));
+            for decision in [
+                "cancel",
+                "decline",
+                "acceptForSession",
+                "accept",
+                "acceptAlways",
+            ] {
+                assert!(!state.allows(&respond(decision)), "{options}: {decision}");
+            }
+        }
+        // Invalid entries cannot make an otherwise explicit list behave like
+        // an absent list; only the decision actually offered remains usable.
+        let state = approval(Some(
+            json!([null, {"decision": "decline", "label": "Decline"}]),
+        ));
+        assert!(state.allows(&respond("decline")));
+        assert!(!state.allows(&respond("accept")));
+        assert!(!state.allows(&respond("acceptForSession")));
+    }
+
+    #[test]
+    fn explicit_options_cannot_authorize_unknown_or_inexact_wire_decisions() {
+        for decision in [
+            "",
+            "Approve",
+            "acceptforsession",
+            "acceptForSession ",
+            "acceptEverything",
+        ] {
+            let state = approval(Some(
+                json!([{"decision": decision, "label": "Provider choice"}]),
+            ));
+            let intent = respond(decision);
+            assert!(!state.allows(&intent), "{decision}");
+            assert!(Command::new("bound-thread", intent).wire().is_err());
+        }
+    }
+
+    #[test]
+    fn fallback_still_requires_live_ready_answerable_and_exact_request_identity() {
+        for (decision, _) in APPROVAL_FALLBACK_OPTIONS {
+            let intent = respond(decision);
+            let positive = approval(None);
+            assert!(positive.allows(&intent));
+            let mut not_ready = positive.clone();
+            not_ready.ready = false;
+            assert!(!not_ready.allows(&intent));
+            let mut not_answerable = positive.clone();
+            not_answerable.requests[0].answerable = false;
+            assert!(!not_answerable.allows(&intent));
+            for mode in [None, Some("message"), Some("unknown")] {
+                let mut wrong_mode = positive.clone();
+                wrong_mode.requests[0].response_mode = mode.map(str::to_owned);
+                assert!(!wrong_mode.allows(&intent));
+            }
+            assert!(!positive.allows(&Intent::Respond {
+                request_id: "foreign-request".into(),
+                decision: Some(decision.into()),
+                answers: None,
+            }));
+            assert!(!positive.allows(&Intent::Respond {
+                request_id: "bound-request".into(),
+                decision: Some(decision.into()),
+                answers: Some(BTreeMap::from([("q".into(), json!("answer"))])),
+            }));
+            assert!(!State {
+                ready: true,
+                ..State::default()
+            }
+            .allows(&intent));
+        }
+    }
 }

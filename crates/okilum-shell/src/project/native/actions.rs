@@ -1,6 +1,8 @@
 //! Action drafts invalidate this entity, never the virtualized history.
 use super::*;
-use okilum_t3::actions::{DispatchMode, Intent, Journal, Record, State};
+use okilum_t3::actions::{
+    DispatchMode, Intent, Journal, Record, Request, State, APPROVAL_FALLBACK_OPTIONS,
+};
 use serde_json::json;
 #[cfg(test)]
 use serde_json::Value;
@@ -53,8 +55,29 @@ impl Render for RequestCard {
                 .requests
                 .iter()
                 .any(|r| r.id == id && r.item["id"] == self.item["id"]);
+        let pinned = self.local
+            && self.actions.read(cx).pinned
+            && self
+                .actions
+                .read(cx)
+                .display_requests
+                .iter()
+                .any(|request| {
+                    request.id == id
+                        && request.item["id"] == self.item["id"]
+                        && (request.answerable || request.dismissible)
+                });
+        let current = self
+            .actions
+            .read(cx)
+            .current_request()
+            .is_some_and(|(request, _)| request.id == id && request.item["id"] == self.item["id"]);
         let mut row = v_flex().w_full().min_w_0().gap_1();
-        if pending {
+        if pinned {
+            let id = id.to_owned();
+            row = row.debug_selector(move || format!("project-request-history-summary-{id}"));
+        }
+        if pending && !pinned {
             row = row.child(
                 self.actions
                     .update(cx, |actions, cx| actions.render_request(id, &self.item, cx)),
@@ -103,13 +126,24 @@ impl Render for RequestCard {
                     }
                 }
             }
-            row = row.child(div().text_color(brand::palette(cx).text_muted).child(
-                if self.local && self.item["status"] == "pending" {
-                    "Waiting for supported response controls.".to_owned()
-                } else {
-                    self.item["status"].as_str().unwrap_or("Request").to_owned()
-                },
-            ));
+            row = row.child(
+                div()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(if pinned {
+                        if !current {
+                            "Waiting in the request queue.".to_owned()
+                        } else if self.actions.read(cx).state.ready {
+                            "Respond above the composer.".to_owned()
+                        } else {
+                            "Answer draft retained above the composer while reconnecting."
+                                .to_owned()
+                        }
+                    } else if self.local && self.item["status"] == "pending" {
+                        "Waiting for supported response controls.".to_owned()
+                    } else {
+                        self.item["status"].as_str().unwrap_or("Request").to_owned()
+                    }),
+            );
         }
         row
     }
@@ -118,6 +152,13 @@ impl Render for RequestCard {
 pub(crate) struct Actions {
     parent: WeakEntity<ProjectView>,
     pub(crate) state: State,
+    // Presentation survives an unsynchronized reconnect, never grants authority.
+    display_requests: Vec<Request>,
+    pinned: bool,
+    conversation: Option<(String, String)>,
+    lease: Option<Arc<()>>,
+    #[cfg(test)]
+    deferred_dispatches: std::cell::Cell<usize>,
     records: Vec<Record>,
     inputs: HashMap<(String, String), Entity<InputState>>,
     selections: HashMap<(String, String), Vec<String>>,
@@ -132,6 +173,12 @@ impl Actions {
         Self {
             parent,
             state: State::default(),
+            display_requests: Vec::new(),
+            pinned: false,
+            conversation: None,
+            lease: None,
+            #[cfg(test)]
+            deferred_dispatches: std::cell::Cell::new(0),
             records: Vec::new(),
             inputs: HashMap::new(),
             selections: HashMap::new(),
@@ -147,6 +194,40 @@ impl Actions {
             self.enabled = enabled;
             cx.notify();
         }
+    }
+    pub(in crate::project) fn set_pinned(&mut self, pinned: bool, cx: &mut Context<Self>) -> bool {
+        if self.pinned == pinned {
+            return false;
+        }
+        self.pinned = pinned;
+        cx.notify();
+        true
+    }
+    fn set_scope(
+        &mut self,
+        conversation: Option<(String, String)>,
+        lease: &Arc<()>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self.lease.as_ref().is_some_and(|previous| {
+            !Arc::ptr_eq(previous, lease) || self.conversation != conversation
+        });
+        self.conversation = conversation;
+        self.lease = Some(lease.clone());
+        if !changed {
+            return false;
+        }
+        self.state = State::default();
+        self.display_requests.clear();
+        self.inputs.clear();
+        self.selections.clear();
+        self.subscriptions.clear();
+        self.records.clear();
+        self.error = None;
+        self.busy = false;
+        self.revision = self.revision.wrapping_add(1);
+        cx.notify();
+        true
     }
     pub(super) fn set_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
         if self.state == state {
@@ -180,9 +261,19 @@ impl Actions {
                         .placeholder("Your answer")
                         .default_value(initial)
                 });
+                let changed_key = key.clone();
+                let allow_custom = question["allowCustomAnswer"] != false;
                 self.subscriptions.insert(
                     key.clone(),
-                    cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify()),
+                    cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                        if allow_custom
+                            && matches!(event, InputEvent::Change)
+                            && !input.read(cx).value().trim().is_empty()
+                        {
+                            this.selections.remove(&changed_key);
+                        }
+                        cx.notify();
+                    }),
                 );
                 self.inputs.insert(key, input);
             }
@@ -193,8 +284,23 @@ impl Actions {
             self.selections.retain(|key, _| keep.contains(key));
             self.subscriptions.retain(|key, _| keep.contains(key));
         }
+        if state.ready || self.display_requests.is_empty() {
+            self.display_requests = state.requests.clone();
+        }
         self.state = state;
         cx.notify();
+    }
+    fn current_request(&self) -> Option<(&Request, usize)> {
+        // T3 prioritizes approvals; ordinal order within each kind is retained.
+        for kind in ["approval_request", "user_input_request"] {
+            let mut requests = self.display_requests.iter().filter(|request| {
+                request.item["type"] == kind && (request.answerable || request.dismissible)
+            });
+            if let Some(first) = requests.next() {
+                return Some((first, 1 + requests.count()));
+            }
+        }
+        None
     }
     fn request_retained(&self, id: &str) -> bool {
         self.records.iter().any(|r| matches!(&r.command.intent, Intent::Respond { request_id, .. } | Intent::Dismiss { request_id } if request_id == id))
@@ -250,12 +356,24 @@ impl Actions {
         }
     }
     fn dispatch(&self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(lease) = self.lease.clone() else {
+            return;
+        };
+        let conversation = self.conversation.clone();
         let parent = self.parent.clone();
+        #[cfg(test)]
+        self.deferred_dispatches
+            .set(self.deferred_dispatches.get() + 1);
         // Release the request entity before the parent reads its live authority
         // and marks the operation busy. A button callback otherwise re-borrows
         // the Actions entity through native_command.
         window.defer(cx, move |window, cx| {
             let _ = parent.update(cx, |view, cx| {
+                if !Arc::ptr_eq(&lease, &view.native.request_lease)
+                    || conversation != view.native_action_conversation()
+                {
+                    return;
+                }
                 view.native_command(Some(intent), None, None, window, cx)
             });
         });
@@ -268,9 +386,12 @@ impl Actions {
         item: &serde_json::Value,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(request) = self
-            .state
-            .requests
+        let requests = if self.state.ready {
+            &self.state.requests
+        } else {
+            &self.display_requests
+        };
+        let Some(request) = requests
             .iter()
             .find(|r| r.id == id && r.item["id"] == item["id"])
             .cloned()
@@ -313,15 +434,13 @@ impl Actions {
                     _ => "This action requires an additional approval.",
                 });
             }
-            let options = request.item["options"]
-                .as_array()
-                .cloned()
-                .unwrap_or_else(|| {
-                    vec![
-                        json!({"decision":"accept","label":"Allow once"}),
-                        json!({"decision":"decline","label":"Decline"}),
-                    ]
-                });
+            let options = match request.item.get("options") {
+                None => APPROVAL_FALLBACK_OPTIONS
+                    .iter()
+                    .map(|(decision, label)| json!({"decision":decision,"label":label}))
+                    .collect(),
+                Some(options) => options.as_array().cloned().unwrap_or_default(),
+            };
             let mut buttons = h_flex().items_start().flex_wrap().gap_1();
             for (n, option) in options.iter().enumerate() {
                 let Some(decision) = option["decision"].as_str() else {
@@ -335,6 +454,10 @@ impl Actions {
                 let allowed = self.state.allows(&intent);
                 let mut decision_group = v_flex().min_w_0().gap_1().child(
                     Button::new(SharedString::from(format!("approval-{request_id}-{n}")))
+                        .debug_selector({
+                            let request_id = request_id.clone();
+                            move || format!("approval-{request_id}-{n}")
+                        })
                         .ghost()
                         .label(option["label"].as_str().unwrap_or(decision).to_owned())
                         .disabled(disabled || !allowed)
@@ -379,6 +502,11 @@ impl Actions {
                                 "answer-{}-{}-{n}",
                                 request_id, id
                             )))
+                            .debug_selector({
+                                let request_id = request_id.clone();
+                                let question = id.to_owned();
+                                move || format!("answer-{request_id}-{question}-{n}")
+                            })
                             .ghost()
                             .label(format!(
                                 "{}{}",
@@ -412,13 +540,25 @@ impl Actions {
                 }
                 if question["allowCustomAnswer"] != false {
                     if let Some(input) = self.inputs.get(&key) {
-                        card = card.child(Input::new(input).disabled(disabled).w_full());
+                        card = card.child(
+                            div()
+                                .debug_selector({
+                                    let request_id = request_id.clone();
+                                    let question = id.to_owned();
+                                    move || format!("answer-custom-{request_id}-{question}")
+                                })
+                                .child(Input::new(input).disabled(disabled).w_full()),
+                        );
                     }
                 }
             }
             let intent = self.intent(&request_id, cx);
             card = card.child(
                 Button::new(SharedString::from(format!("respond-{request_id}")))
+                    .debug_selector({
+                        let request_id = request_id.clone();
+                        move || format!("respond-{request_id}")
+                    })
                     .ghost()
                     .label("Send answers")
                     .disabled(disabled || !self.state.allows(&intent))
@@ -460,8 +600,18 @@ impl Actions {
 }
 impl Render for Actions {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self
+            .current_request()
+            .filter(|_| self.pinned)
+            .map(|(request, count)| (request.clone(), count));
         let mut panel = v_flex()
-            .id("project-native-actions")
+            .id(SharedString::from(format!(
+                "project-native-actions-{}",
+                current
+                    .as_ref()
+                    .map_or("controls", |(request, _)| request.id.as_str())
+            )))
+            .debug_selector(|| "project-native-actions".into())
             .w_full()
             .min_w_0()
             .max_h(px(280.))
@@ -484,6 +634,37 @@ impl Render for Actions {
                             cx,
                         )
                     })),
+            );
+        }
+        // Recovery details must not bury the current actionable request.
+        if let Some((request, count)) = current {
+            let label = if request.item["type"] == "approval_request" {
+                "Approval requested"
+            } else {
+                "Answer requested"
+            };
+            let form = self.render_request(&request.id, &request.item, cx);
+            panel = panel.child(
+                v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1()
+                    .debug_selector(|| "project-current-request".into())
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(label)
+                            .when(count > 1, |row| {
+                                row.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("project-current-request-count-{count}")
+                                        })
+                                        .child(format!("1/{count}")),
+                                )
+                            }),
+                    )
+                    .child(form),
             );
         }
         for record in self.records.iter().filter(|r| r.sequence.is_none()) {
@@ -526,10 +707,39 @@ impl Render for Actions {
                     .child(error.clone()),
             );
         }
+
         panel
     }
 }
 impl ProjectView {
+    fn native_action_conversation(&self) -> Option<(String, String)> {
+        self.environment
+            .as_ref()
+            .zip(self.chat.as_ref())
+            .map(|(environment, chat)| (environment.origin(), chat.thread_id.clone()))
+    }
+
+    pub(in crate::project) fn sync_native_action_surface(&self, cx: &mut Context<Self>) {
+        let conversation = self.native_action_conversation();
+        let lease = self.native.request_lease.clone();
+        let pinned = self.native_actions_pinned();
+        let changed = self.native.actions.update(cx, |actions, cx| {
+            let changed = actions.set_scope(conversation, &lease, cx);
+            actions.set_pinned(pinned, cx) || changed
+        });
+        if changed {
+            self.feed.update(cx, |feed, cx| feed.requests_changed(cx));
+        }
+    }
+
+    pub(in crate::project) fn native_actions_pinned(&self) -> bool {
+        cfg!(target_os = "linux")
+            && self.local_setup.is_none()
+            && self.binding.is_some()
+            && self.native.active()
+            && !self.executors_open
+    }
+
     pub(crate) fn native_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || !self.can_send() {
             return;
@@ -682,6 +892,9 @@ impl ProjectView {
 }
 
 #[cfg(test)]
+mod current_request_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
@@ -691,7 +904,7 @@ mod tests {
         thread,
     };
 
-    fn inert_native(view: &mut ProjectView) {
+    pub(super) fn inert_native(view: &mut ProjectView) {
         let environment = Environment::new("fixture", "http://127.0.0.1:9").unwrap();
         let token = NativeToken::from_secret(&environment, &serde_json::to_vec(&json!({
             "origin":environment.origin(),"access_token":"fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,
@@ -880,7 +1093,7 @@ mod tests {
         }));
     }
     #[gpui::test]
-    fn inline_question_keystrokes_keep_history_work_bounded_and_parent_silent(
+    fn pinned_question_keystrokes_keep_history_work_bounded_and_parent_silent(
         cx: &mut TestAppContext,
     ) {
         use std::{cell::Cell, rc::Rc};
@@ -956,19 +1169,9 @@ mod tests {
         // or emit model notifications/remeasure requests for each character.
         feed.read_with(visual, |f, _| {
             let positions = f.rendered_positions.borrow();
-            let unique: std::collections::HashSet<_> = positions.iter().copied().collect();
             assert!(
-                !unique.is_empty(),
-                "positive control: interactive list repainted"
-            );
-            assert!(
-                unique.len() <= 32,
-                "typing visited {} distinct rows",
-                unique.len()
-            );
-            assert!(
-                unique.iter().all(|position| *position > 900),
-                "typing rendered offscreen history: {unique:?}"
+                positions.is_empty(),
+                "editing the pinned answer must not render history rows: {positions:?}"
             );
         });
         assert_eq!(counts[0].get(), 0);
