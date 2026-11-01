@@ -630,7 +630,7 @@ impl Actions {
     }
 }
 impl Render for Actions {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self
             .current_request()
             .filter(|_| self.pinned)
@@ -698,6 +698,19 @@ impl Render for Actions {
                     .child(form),
             );
         }
+        if let Some(error) = &self.error {
+            if let Some(banner) = super::recovery::error_banner(
+                self.conversation.clone(),
+                super::recovery_state::ErrorOrigin::Action,
+                error.clone(),
+                None,
+                "project-action-error",
+                window,
+                cx,
+            ) {
+                panel = panel.child(banner);
+            }
+        }
         for record in self.records.iter().filter(|r| r.sequence.is_none()) {
             let retry = record.clone();
             let parent = self.parent.clone();
@@ -728,14 +741,6 @@ impl Render for Actions {
                         });
                     }),
                 ),
-            );
-        }
-        if let Some(error) = &self.error {
-            panel = panel.child(
-                div()
-                    .whitespace_normal()
-                    .text_color(cx.theme().danger)
-                    .child(error.clone()),
             );
         }
 
@@ -1467,3 +1472,6 @@ mod composer_limit_tests {
         visual.run_until_parked();
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;

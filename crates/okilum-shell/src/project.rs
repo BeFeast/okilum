@@ -1343,7 +1343,7 @@ impl ProjectView {
                 },
             )
             .when(self.binding.is_some(),|view| {
-                #[cfg(target_os="linux")] let view=view.child(self.render_native(cx));
+                #[cfg(target_os="linux")] let view=view.child(self.render_native(_window, cx));
                 view
             })
             .when_some(self.reason.clone(), |view, reason| {
@@ -1417,6 +1417,14 @@ impl ProjectView {
                 },
             )
             .when_some(self.error.clone().or_else(|| self.environment.as_ref().and_then(|env| reader_t3_settings::connection_error(&env.origin(), cx))), |view, error| {
+                #[cfg(target_os = "linux")]
+                if self.native.active() {
+                    return if let Some(banner) = self.native_setup_error_banner(error, _window, cx) {
+                        view.child(banner)
+                    } else {
+                        view
+                    };
+                }
                 view.child(
                     div()
                         .debug_selector(|| "project-error".into())
