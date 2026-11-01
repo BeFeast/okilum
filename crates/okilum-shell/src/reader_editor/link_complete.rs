@@ -20,6 +20,7 @@ use super::lists::{self, Edit};
 use super::*;
 use gpui_component::input::projection::SourceStamp;
 use gpui_component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp, RopeExt as _};
+use okilum_core::vault::warm::SourceRevision;
 use std::ops::Range;
 
 /// Rows the list shows at most.
@@ -88,30 +89,15 @@ pub(super) struct Index {
     vault: Arc<Vault>,
     show_hidden: bool,
     /// (lowercase title, lowercase path without `.md`, index into `vault.notes`)
-    notes: Vec<(String, String, usize)>,
+    notes: std::sync::OnceLock<Vec<(String, String, usize)>>,
 }
 
 impl Index {
     pub(super) fn new(vault: Arc<Vault>, show_hidden: bool) -> Self {
-        let notes = vault
-            .notes
-            .iter()
-            .enumerate()
-            .filter(|(_, note)| show_hidden || !reader_tree::hidden(&note.path))
-            // A path holding link syntax cannot be written as a wikilink.
-            .filter(|(_, note)| !note.path.contains(NAME_END))
-            .map(|(at, note)| {
-                (
-                    note.title.to_lowercase(),
-                    strip_md(&note.path).to_lowercase(),
-                    at,
-                )
-            })
-            .collect();
         Self {
             vault,
             show_hidden,
-            notes,
+            notes: Default::default(),
         }
     }
 
@@ -123,8 +109,23 @@ impl Index {
     pub(super) fn search(&self, query: &str, from: &str) -> Vec<Candidate> {
         let query = query.trim().to_lowercase();
         let from_folder = folder_of(from);
-        let mut ranked: Vec<(u8, usize, &str, usize)> = self
-            .notes
+        let notes = self.notes.get_or_init(|| {
+            self.vault
+                .notes
+                .iter()
+                .enumerate()
+                .filter(|(_, note)| self.show_hidden || !reader_tree::hidden(&note.path))
+                .filter(|(_, note)| !note.path.contains(NAME_END))
+                .map(|(at, note)| {
+                    (
+                        note.title.to_lowercase(),
+                        strip_md(&note.path).to_lowercase(),
+                        at,
+                    )
+                })
+                .collect()
+        });
+        let mut ranked: Vec<(u8, usize, &str, usize)> = notes
             .iter()
             .filter(|(_, _, at)| self.vault.notes[*at].path != from)
             .filter_map(|(title, path, at)| {
@@ -325,7 +326,7 @@ fn rank_rows(query: &str, items: Vec<Candidate>) -> Vec<Candidate> {
     ranked.into_iter().map(|(_, row)| row).collect()
 }
 
-/// Metadata reads for the first visible page and Markdown parsing run on the background executor.
+/// Heading source reads and Markdown parsing run on the background executor.
 /// Current-note headings use the editor's unsaved source, never the disk copy.
 fn enrich(
     vault: &Vault,
@@ -334,11 +335,7 @@ fn enrich(
     query: &LinkQuery,
     mut items: Vec<Candidate>,
 ) -> Vec<Candidate> {
-    use okilum_core::{
-        document_links::HeadingInventory,
-        properties::{self, PropertyValue},
-        vault::ResolutionRef,
-    };
+    use okilum_core::{document_links::HeadingInventory, vault::ResolutionRef};
     if let Kind::Heading(target) = &query.kind {
         let path = if target.is_empty() {
             from
@@ -367,19 +364,168 @@ fn enrich(
             .collect();
         return rank_rows(&query.query, items);
     }
-    for item in items.iter_mut().take(MAX_ROWS) {
-        let Ok(text) = vault.read_note(&item.path) else {
-            continue;
-        };
-        item.badge = properties::frontmatter_block(&text)
-            .and_then(|yaml| properties::parse(yaml).ok())
-            .and_then(|props| props.into_iter().find(|p| p.key == "type"))
-            .and_then(|p| match p.value {
-                PropertyValue::Text(value) => Some(value),
-                _ => None,
-            });
-    }
+
     items
+}
+
+/// Filesystem stamps can repeat for a rapid same-size rewrite with restored
+/// mtime. Exact bounded prefix bytes are part of this derived metadata revision,
+/// so a stamp alone never authorizes parsing-cache reuse (at most 8 MiB/128 notes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MetadataRevision {
+    source: SourceRevision,
+    prefix: String,
+}
+
+/// One visible page, bound to the exact editor context. It is also the
+/// coalescing key: navigation during a read queues only the latest page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MetadataPage {
+    seen: (SourceStamp, Range<usize>, bool),
+    query: LinkQuery,
+    root: std::path::PathBuf,
+    from: String,
+    show_hidden: bool,
+    rows: Vec<(String, String)>,
+}
+
+impl MetadataPage {
+    fn rows(open: &Open) -> Vec<(String, String)> {
+        let visible = providers::visible_rows(open.items.len(), open.selected, MAX_ROWS);
+        open.items[visible]
+            .iter()
+            .map(|item| (item.path.clone(), item.target.clone()))
+            .collect()
+    }
+}
+
+struct BadgeUpdate {
+    path: String,
+    target: String,
+    badge: Option<String>,
+}
+
+/// Update only metadata, never rank/order/selection or canonical note source.
+fn apply_metadata(
+    open: &mut Open,
+    page: &MetadataPage,
+    current: &(SourceStamp, Range<usize>, bool),
+    updates: Vec<BadgeUpdate>,
+) -> bool {
+    if current != &page.seen || open.query != page.query || MetadataPage::rows(open) != page.rows {
+        return false;
+    }
+    let visible = providers::visible_rows(open.items.len(), open.selected, MAX_ROWS);
+    for update in updates {
+        if let Some(item) = open.items[visible.clone()]
+            .iter_mut()
+            .find(|item| item.path == update.path && item.target == update.target)
+        {
+            item.badge = update.badge;
+        }
+    }
+    true
+}
+
+const MAX_METADATA_BYTES: u64 = 64 * 1024;
+
+/// A derived badge must not hydrate an evicted file. This bounded prefix reader
+/// uses the same macOS placeholder flag as Vault's ordinary source reader.
+fn metadata_prefix(path: &std::path::Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let metadata = std::fs::symlink_metadata(path)?;
+    #[allow(unused_mut)]
+    let mut unavailable = !metadata.is_file()
+        || path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("icloud"));
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt as _;
+        unavailable |= metadata.st_flags() & 0x4000_0000 != 0;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        // OFFLINE, RECALL_ON_OPEN and RECALL_ON_DATA_ACCESS.
+        unavailable |= metadata.file_attributes() & (0x1000 | 0x40000 | 0x400000) != 0;
+    }
+    if unavailable {
+        return Err(std::io::Error::other(
+            "Completion metadata source is unavailable",
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(MAX_METADATA_BYTES)
+        .read_to_end(&mut bytes)?;
+    // A prefix can end mid-codepoint after a complete frontmatter block.
+    let end = std::str::from_utf8(&bytes).map_or_else(|error| error.valid_up_to(), |_| bytes.len());
+    Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
+}
+
+fn type_badge(text: &str) -> Option<String> {
+    use okilum_core::properties::{self, PropertyValue};
+    properties::frontmatter_block(text)
+        .and_then(|yaml| properties::parse(yaml).ok())
+        .and_then(|props| props.into_iter().find(|p| p.key == "type"))
+        .and_then(|p| match p.value {
+            PropertyValue::Text(value) if value.len() <= 256 => Some(value),
+            _ => None,
+        })
+}
+
+/// Called only on the background executor. At most one page (eight bounded
+/// prefixes) is read per flight; stable no-type values are cached as well.
+fn load_metadata(
+    page: &MetadataPage,
+    cache: &std::sync::Mutex<providers::MetadataCache<MetadataRevision>>,
+) -> Vec<BadgeUpdate> {
+    page.rows
+        .iter()
+        .take(MAX_ROWS)
+        .map(|(path, target)| BadgeUpdate {
+            path: path.clone(),
+            target: target.clone(),
+            // Unknown/unavailable metadata clears a previously painted badge.
+            badge: cached_type_badge(&page.root, path, cache),
+        })
+        .collect()
+}
+
+fn cached_type_badge(
+    root: &std::path::Path,
+    path: &str,
+    cache: &std::sync::Mutex<providers::MetadataCache<MetadataRevision>>,
+) -> Option<String> {
+    if okilum_core::vault::service_path(std::path::Path::new(path)) {
+        return None;
+    }
+    let full_path = root.join(path);
+    let before = SourceRevision::read(&full_path).ok()?;
+    let revision = MetadataRevision {
+        source: before.clone(),
+        prefix: metadata_prefix(&full_path).ok()?,
+    };
+    let cached = if before.is_precise() {
+        cache.lock().ok()?.get(root, path, &revision).cloned()
+    } else {
+        None // Coarse revisions cannot authorize reuse.
+    };
+    let badge = match cached {
+        Some(badge) => badge,
+        None => type_badge(&revision.prefix),
+    };
+    if SourceRevision::read(&full_path).ok()? != before {
+        return None;
+    }
+    if before.is_precise() {
+        cache
+            .lock()
+            .ok()?
+            .insert(root, path, revision, badge.clone());
+    }
+    badge
 }
 
 /// The list while it is open.
@@ -403,6 +549,9 @@ pub(super) struct State {
     dismissed: Option<usize>,
     index: Option<Arc<Index>>,
     task: Option<Task<()>>,
+    metadata_task: Option<Task<()>>,
+    metadata_page: Option<MetadataPage>,
+    metadata_cache: Arc<std::sync::Mutex<providers::MetadataCache<MetadataRevision>>>,
     from: String,
     composing: bool,
     editable: bool,
@@ -448,6 +597,7 @@ impl Reader {
             editing.link_complete.open = None;
             editing.link_complete.preferred = None;
             editing.link_complete.dismissed = None;
+            editing.link_complete.metadata_page = None;
         }
         let selection = seen.1.clone();
         let expected_seen = seen.clone();
@@ -505,13 +655,8 @@ impl Reader {
         {
             state.index = Some(Arc::new(Index::new(vault, show_hidden)));
         }
-        let items = match &query.kind {
-            Kind::Note => Vec::new(),
-            Kind::Heading(_) => Vec::new(),
-            _ => catalog(&query),
-        };
-        publish(state, query.clone(), items.clone());
-        if matches!(query.kind, Kind::Note | Kind::Heading(_)) {
+        publish(state, query.clone(), Vec::new());
+        {
             let expected_vault = self.vault.clone();
             let vault = expected_vault.clone();
             let from_expected = from.clone();
@@ -521,10 +666,10 @@ impl Reader {
                 let rows = cx
                     .background_executor()
                     .spawn(async move {
-                        let items = if matches!(worker_query.kind, Kind::Note) {
-                            index.search(&worker_query.query, &from)
-                        } else {
-                            items
+                        let items = match worker_query.kind {
+                            Kind::Note => index.search(&worker_query.query, &from),
+                            Kind::Heading(_) => Vec::new(),
+                            _ => catalog(&worker_query),
                         };
                         enrich(&vault, &from, source.as_deref(), &worker_query, items)
                     })
@@ -558,11 +703,96 @@ impl Reader {
                         return;
                     }
                     publish(&mut editing.link_complete, query, rows);
+                    this.refresh_link_complete_metadata(cx);
                     cx.notify();
                 });
             }));
         }
         cx.notify();
+    }
+
+    /// Internal hook for initial rows and keyboard paging; slot32's editor
+    /// observer/actions/overlay hooks remain unchanged.
+    fn refresh_link_complete_metadata(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_mut() else {
+            return;
+        };
+        let Some(open) = editing.link_complete.open.as_ref() else {
+            return;
+        };
+        if !matches!(open.query.kind, Kind::Note) || editing.link_complete.metadata_task.is_some() {
+            return;
+        }
+        let input = editing.input.read(cx);
+        let seen = (
+            input.source_stamp(),
+            input.selected_range(),
+            reader_ui_state::emoji_completion(cx),
+        );
+        if editing.link_complete.seen.as_ref() != Some(&seen)
+            || !editing.markdown
+            || !input.is_editable()
+            || input.ime_composing()
+            || !seen.1.is_empty()
+        {
+            return;
+        }
+        let page = MetadataPage {
+            seen,
+            query: open.query.clone(),
+            root: self.vault.root.clone(),
+            from: self.current_rel.clone(),
+            show_hidden: self.sidebar.show_hidden,
+            rows: MetadataPage::rows(open),
+        };
+        if editing.link_complete.metadata_page.as_ref() == Some(&page) {
+            return;
+        }
+        editing.link_complete.metadata_page = Some(page.clone());
+        let input_entity = editing.input.clone();
+        let expected_vault = self.vault.clone();
+        let cache = editing.link_complete.metadata_cache.clone();
+        editing.link_complete.metadata_task = Some(cx.spawn(async move |this, cx| {
+            let request = page.clone();
+            let updates = cx
+                .background_executor()
+                .spawn(async move { load_metadata(&request, &cache) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(editing) = this.editing.as_mut() else {
+                    return;
+                };
+                if editing.input != input_entity {
+                    return;
+                }
+                editing.link_complete.metadata_task = None;
+                let input = editing.input.read(cx);
+                let current = (
+                    input.source_stamp(),
+                    input.selected_range(),
+                    reader_ui_state::emoji_completion(cx),
+                );
+                if Arc::ptr_eq(&this.vault, &expected_vault)
+                    && this.current_rel == page.from
+                    && this.sidebar.show_hidden == page.show_hidden
+                    && current == page.seen
+                    && editing.link_complete.seen.as_ref() == Some(&page.seen)
+                    && editing.markdown
+                    && input.is_editable()
+                    && !input.ime_composing()
+                    && editing.link_complete.dismissed != Some(page.query.start)
+                {
+                    if let Some(open) = editing.link_complete.open.as_mut() {
+                        if apply_metadata(open, &page, &current, updates) {
+                            cx.notify();
+                        }
+                    }
+                }
+                // Coalesce rapid navigation/source edits to the latest visible
+                // page after this worker finishes; never overlap page workers.
+                this.refresh_link_complete_metadata(cx);
+            });
+        }));
     }
 
     /// The editor while its link list is open and may take keys.
@@ -611,6 +841,7 @@ impl Reader {
         };
         let count = open.items.len() as isize;
         open.selected = (open.selected as isize + delta).rem_euclid(count) as usize;
+        self.refresh_link_complete_metadata(cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -817,6 +1048,134 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use gpui_component::input::Undo;
+
+    fn metadata_test_page(open: &Open, root: &std::path::Path) -> MetadataPage {
+        MetadataPage {
+            seen: (
+                SourceStamp {
+                    document: 1,
+                    generation: 1,
+                },
+                4..4,
+                true,
+            ),
+            query: open.query.clone(),
+            root: root.into(),
+            from: "note.md".into(),
+            show_hidden: false,
+            rows: MetadataPage::rows(open),
+        }
+    }
+
+    #[test]
+    fn tail_metadata_enriches_only_the_visible_page_without_moving_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let query = LinkQuery {
+            start: 2,
+            caret: 4,
+            query: "go".into(),
+            kind: Kind::Note,
+        };
+        let mut items: Vec<_> = (0..20)
+            .map(|n| {
+                let mut item = row(&format!("note{n}"), &format!("note{n}"), "");
+                item.path = format!("note{n}.md");
+                item
+            })
+            .collect();
+        // A badge from an older observation must clear if the source vanishes.
+        items[15].badge = Some("obsolete".into());
+        let mut open = Open {
+            query,
+            items,
+            selected: 15,
+        };
+        let page = metadata_test_page(&open, directory.path());
+        assert_eq!(page.rows.len(), MAX_ROWS);
+        for (path, _) in &page.rows {
+            std::fs::write(
+                directory.path().join(path),
+                "---\ntype: project\n---\n# Body\n",
+            )
+            .unwrap();
+        }
+        let cache = std::sync::Mutex::new(providers::MetadataCache::default());
+        let updates = load_metadata(&page, &cache);
+        assert_eq!(updates.len(), MAX_ROWS);
+        assert!(apply_metadata(&mut open, &page, &page.seen, updates));
+        assert_eq!(open.selected, 15);
+        let mut stale = page.seen.clone();
+        stale.0.generation += 1;
+        assert!(
+            !apply_metadata(&mut open, &page, &stale, load_metadata(&page, &cache)),
+            "an unchanged query cannot authorize old-source metadata"
+        );
+        for (n, item) in open.items.iter().enumerate() {
+            assert_eq!(
+                item.badge.as_deref(),
+                (8..16).contains(&n).then_some("project")
+            );
+            assert_eq!(item.path, format!("note{n}.md"), "ranking stays fixed");
+        }
+        // A different page rejects late enrichment entirely.
+        open.selected = 16;
+        assert!(!apply_metadata(
+            &mut open,
+            &page,
+            &page.seen,
+            load_metadata(&page, &cache)
+        ));
+        assert_eq!(open.selected, 16);
+        open.selected = 15;
+        std::fs::remove_file(directory.path().join("note15.md")).unwrap();
+        assert!(apply_metadata(
+            &mut open,
+            &page,
+            &page.seen,
+            load_metadata(&page, &cache)
+        ));
+        assert_eq!(
+            open.items[15].badge, None,
+            "missing source cannot reuse a badge"
+        );
+    }
+
+    #[test]
+    fn metadata_cache_refreshes_same_size_same_mtime_rewrites() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Plan.md");
+        std::fs::write(&path, "---\ntype: project\n---\n").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let cache = std::sync::Mutex::new(providers::MetadataCache::default());
+        assert_eq!(
+            cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
+            Some("project")
+        );
+        std::fs::write(&path, "---\ntype: contact\n---\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(
+            cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
+            Some("contact")
+        );
+    }
+
+    #[test]
+    fn metadata_prefix_bounds_reads_and_handles_a_partial_final_codepoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.md");
+        let mut source = "---\ntype: project\n---\n".to_owned();
+        source.push_str(&"x".repeat(MAX_METADATA_BYTES as usize - source.len() - 1));
+        source.push_str("🙂tail");
+        std::fs::write(&path, source).unwrap();
+        let prefix = metadata_prefix(&path).unwrap();
+        assert!(prefix.len() <= MAX_METADATA_BYTES as usize);
+        assert_eq!(type_badge(&prefix).as_deref(), Some("project"));
+    }
 
     #[test]
     fn source_refresh_keeps_identity_across_pending_rows_and_reorders() {
@@ -1108,9 +1467,35 @@ mod tests {
         let v = Arc::new(v);
         let q = link_query("[[Pla", 5).unwrap();
         let candidates = Index::new(v.clone(), false).search("Pla", "note.md");
-        let rows = enrich(&v, "note.md", None, &q, candidates);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].badge.as_deref(), Some("project"));
+        let mut open = Open {
+            query: q.clone(),
+            items: candidates,
+            selected: 0,
+        };
+        let page = MetadataPage {
+            seen: (
+                SourceStamp {
+                    document: 1,
+                    generation: 1,
+                },
+                5..5,
+                true,
+            ),
+            query: q,
+            root: v.root.clone(),
+            from: "note.md".into(),
+            show_hidden: false,
+            rows: MetadataPage::rows(&open),
+        };
+        let cache = std::sync::Mutex::new(providers::MetadataCache::default());
+        assert!(apply_metadata(
+            &mut open,
+            &page,
+            &page.seen,
+            load_metadata(&page, &cache)
+        ));
+        assert_eq!(open.items.len(), 1);
+        assert_eq!(open.items[0].badge.as_deref(), Some("project"));
         let q = link_query("[[Plan#Go", 9).unwrap();
         let rows = enrich(&v, "note.md", None, &q, Vec::new());
         assert_eq!(rows[0].target, "Plan#Goals");

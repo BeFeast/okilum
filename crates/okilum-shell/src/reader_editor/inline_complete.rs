@@ -158,6 +158,53 @@ pub(super) fn visible_rows(count: usize, selected: usize, limit: usize) -> std::
     end.saturating_sub(limit)..end
 }
 
+/// Disposable worker-only cache. Exact vault path, note path and the complete
+/// source revision form the key; neither filenames nor mtime alone identify it.
+pub(super) struct MetadataCache<R> {
+    entries: std::collections::VecDeque<(std::path::PathBuf, String, R, Option<String>)>,
+}
+
+impl<R> Default for MetadataCache<R> {
+    fn default() -> Self {
+        Self {
+            entries: Default::default(),
+        }
+    }
+}
+
+impl<R: PartialEq> MetadataCache<R> {
+    pub(super) const LIMIT: usize = 128;
+
+    pub(super) fn get(
+        &self,
+        root: &std::path::Path,
+        path: &str,
+        revision: &R,
+    ) -> Option<&Option<String>> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(r, p, v, _)| r == root && p == path && v == revision)
+            .map(|(_, _, _, value)| value)
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        root: &std::path::Path,
+        path: &str,
+        revision: R,
+        badge: Option<String>,
+    ) {
+        // A new revision replaces this identity's older cached value.
+        self.entries.retain(|(r, p, _, _)| r != root || p != path);
+        self.entries
+            .push_back((root.into(), path.into(), revision, badge));
+        while self.entries.len() > Self::LIMIT {
+            self.entries.pop_front();
+        }
+    }
+}
+
 pub(super) const LANGUAGES: &[&str] = &[
     "bash",
     "c",
@@ -237,6 +284,32 @@ pub(super) const BLOCKS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_cache_uses_complete_identity_and_revision_and_bounds_entries() {
+        use std::path::Path;
+        let root = Path::new("/vault-a");
+        let other = Path::new("/vault-b");
+        let mut cache = MetadataCache::default();
+        // Revision includes a change witness, not just equal mtime/size.
+        let revision = (64, 100, 7);
+        cache.insert(root, "Work/Plan.md", revision, Some("project".into()));
+        assert_eq!(
+            cache.get(root, "Work/Plan.md", &revision),
+            Some(&Some("project".into()))
+        );
+        assert_eq!(cache.get(root, "Home/Plan.md", &revision), None);
+        assert_eq!(cache.get(other, "Work/Plan.md", &revision), None);
+        assert_eq!(cache.get(root, "Work/Plan.md", &(64, 100, 8)), None);
+        cache.insert(root, "Work/Plan.md", (64, 100, 8), None);
+        assert_eq!(cache.get(root, "Work/Plan.md", &revision), None);
+        assert_eq!(cache.get(root, "Work/Plan.md", &(64, 100, 8)), Some(&None));
+        for n in 0..MetadataCache::<(i32, i32, i32)>::LIMIT {
+            cache.insert(root, &format!("{n}.md"), revision, None);
+        }
+        assert_eq!(cache.entries.len(), MetadataCache::<(i32, i32, i32)>::LIMIT);
+        assert_eq!(cache.get(root, "Work/Plan.md", &(64, 100, 8)), None);
+    }
+
     #[test]
     fn keyboard_window_reaches_every_candidate_and_wraps() {
         for count in [1, 8, 9, 36, 5576] {
