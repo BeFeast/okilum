@@ -1,0 +1,99 @@
+diff --git a/crates/base/src/text/style.rs b/crates/base/src/text/style.rs
+--- a/crates/base/src/text/style.rs
++++ b/crates/base/src/text/style.rs
+@@ -19,6 +19,8 @@
+     code_background: Hsla,
+     border: Hsla,
+     paragraph_gap: Rems,
++    /// Extra inset for an outer list; nested lists keep their existing step.
++    root_list_indent: Rems,
+     /// Space before the first block, included in its scrollable height.
+     top_padding: Pixels,
+     /// Scrollable space after the final document block.
+@@ -37,6 +39,7 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.root_list_indent == other.root_list_indent
+             && self.top_padding == other.top_padding
+             && self.bottom_padding == other.bottom_padding
+             && self.foreground == other.foreground
+@@ -94,6 +97,7 @@
+             code_background: colors.accent,
+             border: colors.border,
+             paragraph_gap: rems(1.),
++            root_list_indent: rems(0.),
+             top_padding: px(0.),
+             bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+@@ -111,6 +115,17 @@
+         }
+     }
+ 
++    /// Adds an inset before an outer list without doubling nested-list spacing.
++    /// Defaults to zero so callers can opt in without changing other surfaces.
++    pub fn with_root_list_indent(mut self, indent: Rems) -> Self {
++        self.root_list_indent = rems(indent.0.max(0.));
++        self
++    }
++
++    pub fn root_list_indent(&self) -> Rems {
++        self.root_list_indent
++    }
++
+     /// Sets space before the first block, scrolling with that block.
+     pub fn with_top_padding(mut self, padding: Pixels) -> Self {
+         self.top_padding = padding.max(px(0.));
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -2969,6 +2969,10 @@
+                 children, ordered, ..
+             } => v_flex()
+                 .id((if *ordered { "ol" } else { "ul" }, ix))
++                // Nested wrappers already contribute one rem per list level.
++                .when(options.depth == 0, |list| {
++                    list.pl(node_cx.style.root_list_indent())
++                })
+                 .w_full()
+                 .min_w_0()
+                 .pb(mb)
+diff --git a/crates/component/src/text/style.rs b/crates/component/src/text/style.rs
+--- a/crates/component/src/text/style.rs
++++ b/crates/component/src/text/style.rs
+@@ -13,6 +13,8 @@
+ pub struct TextViewStyle {
+     /// Gap of each paragraphs, default is 1 rem.
+     pub paragraph_gap: Rems,
++    /// Additional outer-list inset; zero by default. Nested spacing is unchanged.
++    pub root_list_indent: Rems,
+     /// Space before the first block, included in its scrollable height.
+     pub top_padding: Pixels,
+     /// Scrollable space after the final document block.
+@@ -64,6 +66,7 @@
+     fn default() -> Self {
+         Self {
+             paragraph_gap: rems(1.),
++            root_list_indent: rems(0.),
+             top_padding: px(0.),
+             bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+@@ -83,6 +86,7 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.root_list_indent == other.root_list_indent
+             && self.top_padding == other.top_padding
+             && self.bottom_padding == other.bottom_padding
+             && self.heading_base_font_size == other.heading_base_font_size
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -312,6 +312,7 @@
+ 
+     let mut style = themed
+         .with_paragraph_gap(legacy.paragraph_gap)
++        .with_root_list_indent(legacy.root_list_indent)
+         .with_top_padding(legacy.top_padding)
+         .with_bottom_padding(legacy.bottom_padding)
+         .with_heading_base_font_size(legacy.heading_base_font_size)

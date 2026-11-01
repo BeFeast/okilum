@@ -524,6 +524,13 @@ Esc, ✕ or a click outside close it; the document underneath does not move.
 Following a link from the overlay closes it. Tables that fit get none of these
 cues. There is no separate Expand button below the table.
 
+## List indentation (#2239)
+
+Reader bullet and numbered lists start one rem inside the paragraph edge, using
+the existing nested-list spacing. Nesting adds its normal step; wrapped lines
+stay aligned with the item's text. This changes layout, never Markdown whitespace
+or the editor's Tab/Shift+Tab actions (#2239).
+
 ## Onboarding / empty
 
 No root selected: centred card, 440 px wide. It holds the Okilum mark (52 px), the title «Open your
