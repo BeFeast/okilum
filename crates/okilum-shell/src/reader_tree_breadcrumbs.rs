@@ -111,6 +111,24 @@ fn compact(widths: &[f32], available: f32) -> (Vec<usize>, Vec<usize>) {
     )
 }
 
+const INDEX_CONTENT_HEIGHT: f32 = 20.;
+const INDEX_GLYPH_SIZE: f32 = 14.;
+
+/// The same compact Contents SVG as Icon::small, with its actual paint bounds
+/// exposed to the header regression. Inherit the button's normal/disabled tint.
+#[derive(IntoElement)]
+struct IndexGlyph;
+impl RenderOnce for IndexGlyph {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        svg()
+            .path("icons/list.svg")
+            .size(px(INDEX_GLYPH_SIZE))
+            .flex_none()
+            .text_color(window.text_style().color)
+            .debug_selector(|| "tree-vault-index-glyph".into())
+    }
+}
+
 impl Reader {
     pub(crate) fn vault_index_path(&self) -> Option<String> {
         match self.tree.index_of("") {
@@ -147,18 +165,26 @@ impl Reader {
                 h_flex()
                     .w_full()
                     .min_w_0()
+                    .h(px(INDEX_CONTENT_HEIGHT))
+                    .items_center()
                     .justify_start()
                     .gap_1()
                     .child(
                         div()
                             .flex_none()
-                            .size(px(16.))
+                            .w(px(16.))
+                            .h(px(INDEX_CONTENT_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .debug_selector(|| "tree-vault-index-icon".into())
-                            .child(Icon::default().path("icons/list.svg").small()),
+                            .child(IndexGlyph),
                     )
                     .child(
                         div()
                             .min_w_0()
+                            .h(px(INDEX_CONTENT_HEIGHT))
+                            .line_height(px(INDEX_CONTENT_HEIGHT))
                             .text_ellipsis()
                             .debug_selector(|| "tree-vault-index-label".into())
                             .child("Vault Index"),
@@ -278,6 +304,7 @@ impl Reader {
         h_flex()
             .debug_selector(|| "tree-index-header".into())
             .h(px(32.))
+            .items_center()
             .flex_none()
             .w_full()
             .px_2()
@@ -673,7 +700,20 @@ mod tests {
             let header = visual.debug_bounds("tree-index-header").unwrap();
             let viewport = visual.debug_bounds("sidebar-tree-body").unwrap();
             let icon = visual.debug_bounds("tree-vault-index-icon").unwrap();
+            let glyph = visual.debug_bounds("tree-vault-index-glyph").unwrap();
             let label = visual.debug_bounds("tree-vault-index-label").unwrap();
+            assert_eq!(
+                glyph.center().y,
+                label.center().y,
+                "actual SVG and text line box share a center"
+            );
+            assert_eq!(
+                glyph.center().y,
+                header.center().y,
+                "compact content is centered in the permanent header row"
+            );
+            assert!(glyph.top() >= icon.top() && glyph.bottom() <= icon.bottom());
+            assert!(label.top() >= header.top() && label.bottom() <= header.bottom());
             assert_eq!(
                 icon.left(),
                 viewport.left() + px(4.),
@@ -691,6 +731,7 @@ mod tests {
                     .expect("permanent icon-only action");
                 assert!(action.left() >= header.left() && action.right() <= header.right());
                 assert!(action.top() >= header.top() && action.bottom() <= header.bottom());
+                assert_eq!(action.center().y, header.center().y);
             }
         }
         reader.read_with(visual, |view, _| {
