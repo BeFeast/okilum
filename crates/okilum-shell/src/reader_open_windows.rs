@@ -4,7 +4,7 @@
 //! one; quit writes the final set and later closes no longer change it.
 //! Each window reopens on the note it showed (#1375); a window on its vault's
 //! last note also gets its position back, which is stored per vault.
-//! Quick viewers of a single file are not part of the set.
+//! Each window retains its explicit vault or single-file mode (#1527).
 use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ struct Saved {
     /// unknown (#1375). A separate list, so builds before it still read the
     /// roots.
     notes: Vec<String>,
+    single_file: Vec<bool>,
 }
 
 /// A window to reopen: its vault and the note it showed, if known.
@@ -32,7 +33,7 @@ pub(crate) type Window = (PathBuf, Option<String>);
 
 struct State {
     directory: PathBuf,
-    written: Option<Vec<Window>>,
+    written: Option<(Vec<Window>, Vec<bool>)>,
     quitting: bool,
     /// The vault window focused last; it stays the front one while another
     /// application has the focus (#1329).
@@ -101,42 +102,52 @@ fn record(cx: &mut App) {
     if state.written.as_ref() == Some(&windows) {
         return;
     }
-    match write(&state.directory, &windows) {
+    match write_modes(&state.directory, &windows.0, &windows.1) {
         Ok(()) => cx.global_mut::<State>().written = Some(windows),
         Err(error) => eprintln!("Cannot save the open windows: {error:#}"),
     }
 }
 
 /// Vault windows that are open now, the one focused last at the end.
-fn open_windows(cx: &App) -> Vec<Window> {
+fn open_windows(cx: &App) -> (Vec<Window>, Vec<bool>) {
     let windows = cx.windows();
     let active = cx
         .try_global::<State>()
         .and_then(|state| state.front)
         .or_else(|| cx.active_window());
-    let mut roots: Vec<(bool, Window)> = Vec::new();
+    let mut roots: Vec<(bool, Window, bool)> = Vec::new();
     for reader in super::reader_open::readers(cx) {
         let reader = reader.read(cx);
         // One entry per window: two windows of a vault are listed twice and
         // both come back (#1335).
-        if reader.single_file || !windows.contains(&reader.reader_window) {
+        if !windows.contains(&reader.reader_window) {
             continue;
         }
-        let note = Some(reader.current_rel.clone()).filter(|note| !note.is_empty());
+        let note = Some(reader.selected_file().to_owned()).filter(|note| !note.is_empty());
         roots.push((
             active == Some(reader.reader_window),
             (reader.vault_root.clone(), note),
+            reader.single_file,
         ));
     }
     // A stable sort keeps the opening order and moves the front window last.
-    roots.sort_by_key(|(front, _)| *front);
-    roots.into_iter().map(|(_, window)| window).collect()
+    roots.sort_by_key(|(front, _, _)| *front);
+    roots
+        .into_iter()
+        .map(|(_, window, mode)| (window, mode))
+        .unzip()
 }
 
+#[cfg(test)]
 fn write(directory: &Path, windows: &[Window]) -> anyhow::Result<()> {
+    write_modes(directory, windows, &[])
+}
+
+fn write_modes(directory: &Path, windows: &[Window], modes: &[bool]) -> anyhow::Result<()> {
     std::fs::create_dir_all(directory)?;
     let saved = Saved {
         version: SCHEMA,
+        single_file: modes.to_vec(),
         roots: windows.iter().map(|(root, _)| root.clone()).collect(),
         notes: windows
             .iter()
@@ -159,6 +170,16 @@ pub(crate) fn load(directory: &Path) -> Vec<PathBuf> {
         .into_iter()
         .map(|(root, _)| root)
         .collect()
+}
+
+/// Missing mode entries in older sessions mean vault mode.
+pub(crate) fn load_modes(directory: &Path) -> Vec<bool> {
+    std::fs::read(directory.join(FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok())
+        .filter(|saved| saved.version == SCHEMA)
+        .map(|saved| saved.single_file)
+        .unwrap_or_default()
 }
 
 /// The windows to reopen, each with the note it showed. A note that is not
@@ -191,6 +212,23 @@ pub(crate) fn load_windows(directory: &Path) -> Vec<Window> {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn window_modes_round_trip_independently_for_the_same_vault() {
+        let fixture = tempfile::tempdir().unwrap();
+        let windows = vec![
+            (PathBuf::from("/a"), Some("one.md".into())),
+            (PathBuf::from("/a"), Some("one.md".into())),
+        ];
+        write_modes(fixture.path(), &windows, &[false, true]).unwrap();
+        assert_eq!(load_windows(fixture.path()), windows);
+        assert_eq!(load_modes(fixture.path()), vec![false, true]);
+        write(fixture.path(), &windows).unwrap();
+        assert!(
+            load_modes(fixture.path()).is_empty(),
+            "legacy sessions default to vault mode"
+        );
+    }
 
     #[test]
     fn the_set_round_trips_and_a_damaged_file_reads_as_none() {

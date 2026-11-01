@@ -29,6 +29,15 @@ recursive inventory; document links remain confined to the opened folder root.
 External-file actions retain the existing containment policy. Symlink directories
 are not followed by lazy folder enumeration.
 
+The More menu and the ⌘K palette offer **Switch to single file mode** in a vault
+window and **Open folder as vault** in a quick viewer (#1527). Switching a
+Markdown document retains its rendered content and reading position. A downgrade
+releases that window's index/session references and uses shallow inventories of
+the selected file's parent and its ancestors; other vault windows keep their
+shared resources. Each open window records its mode independently for restart,
+including two windows showing the same file in different modes. Older session
+records continue to restore as vault windows.
+
 The same Reader rendering, source editor, safe-save checks, and navigation history
 are used in both modes. The upgrade saves or refuses a dirty document through the
 existing source transition before starting vault preparation.

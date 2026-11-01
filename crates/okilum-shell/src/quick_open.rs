@@ -89,6 +89,7 @@ impl PaletteSection {
 /// One selectable palette row, in the order shown.
 #[derive(Clone, Debug)]
 pub(super) enum PaletteItem {
+    SwitchWindowMode,
     OpenTerminal,
     TerminalSettings,
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
@@ -766,6 +767,7 @@ impl Reader {
         let key = match item {
             PaletteItem::Note(entry) => entry.path.clone(),
             PaletteItem::Project(row) => row.project.folder.to_string_lossy().into_owned(),
+            PaletteItem::SwitchWindowMode => "switch-window-mode".into(),
             PaletteItem::OpenTerminal => "open-terminal".into(),
             PaletteItem::TerminalSettings => "terminal-settings".into(),
             PaletteItem::AllProjects => String::new(),
@@ -851,6 +853,15 @@ impl Reader {
         }
         let sections = &palette.sections;
         let mut items = Vec::new();
+        if !self.selected_file().is_empty()
+            && !palette.query.trim().is_empty()
+            && self
+                .window_mode_label()
+                .to_lowercase()
+                .contains(&palette.query.trim().to_lowercase())
+        {
+            items.push((PaletteSection::Files, PaletteItem::SwitchWindowMode));
+        }
         if self.project_navigation.active.is_some()
             && !palette.query.trim().is_empty()
             && "open terminal".contains(&palette.query.to_lowercase())
@@ -1206,6 +1217,10 @@ impl Reader {
             return;
         };
         match item {
+            PaletteItem::SwitchWindowMode => {
+                self.close_quick_open(window, cx);
+                self.switch_window_mode(window, cx);
+            }
             PaletteItem::TerminalSettings => {
                 self.close_quick_open(window, cx);
                 if let Some(project) = self.project_navigation.active.clone() {
@@ -1605,6 +1620,11 @@ impl Reader {
                             )
                             .into_any_element()
                     }
+                    PaletteItem::SwitchWindowMode => section_row(*ix)
+                        .h(px(30.))
+                        .text_sm()
+                        .child(self.window_mode_label())
+                        .into_any_element(),
                     PaletteItem::TerminalSettings => section_row(*ix)
                         .h(px(30.))
                         .text_sm()
@@ -3088,6 +3108,7 @@ canaryhidden [[Target]]",
                 let what = match item {
                     PaletteItem::Note(entry) => entry.path.clone(),
                     PaletteItem::Project(row) => row.project.name.clone(),
+                    PaletteItem::SwitchWindowMode => v.window_mode_label().into(),
                     PaletteItem::OpenTerminal => "Open terminal".into(),
                     PaletteItem::TerminalSettings => "Terminal settings".into(),
                     PaletteItem::AllProjects => "All projects…".into(),

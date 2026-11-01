@@ -258,10 +258,20 @@ pub(crate) fn restore_windows(
     cx.spawn(async move |cx| {
         let mut opened = 0;
         let mut skipped = Vec::new();
-        for (root, note) in windows {
+        let modes = base
+            .session_directory
+            .as_deref()
+            .map(super::reader_open_windows::load_modes)
+            .unwrap_or_default();
+        for (index, (root, note)) in windows.into_iter().enumerate() {
+            let single_file = modes.get(index).copied().unwrap_or(false);
             // A second window of a vault already back: New Window's path,
             // sharing that window's session, not a second open (#1335).
-            if let Some(source) = cx.update(|cx| reader_open::reader_of(&root, cx)) {
+            if let Some(source) = cx.update(|cx| {
+                (!single_file)
+                    .then(|| reader_open::reader_of(&root, cx))
+                    .flatten()
+            }) {
                 let duplicating =
                     cx.update(|cx| reader_open::duplicate_window(source, note.clone(), cx));
                 // It waits for the vault to load; one that is still loading
@@ -277,13 +287,24 @@ pub(crate) fn restore_windows(
             let opts = Opts {
                 vault: Some(root.clone()),
                 note,
+                single_file,
                 restore_workspace: true,
                 ..base.clone()
             };
             let resolving = cx.update(|cx| reader_open::resolve(opts, cx));
             match resolving.await {
                 Ok(opts) => {
-                    cx.update(|cx| reader_open::finish_open(Ok(opts), cx));
+                    if single_file {
+                        if let Err(error) =
+                            cx.update(|cx| reader_open::create_window(opts, None, None, cx))
+                        {
+                            eprintln!("Cannot reopen {}: {error:#}", root.display());
+                            skipped.push(root);
+                            continue;
+                        }
+                    } else {
+                        cx.update(|cx| reader_open::finish_open(Ok(opts), cx));
+                    }
                     opened += 1;
                     // One window at a time: the next opens once this one has
                     // its note, so restored windows never prepare at once.
@@ -651,6 +672,49 @@ mod tests {
     use super::*;
     // `gpui::*` brings its own `test`, which `#[gpui::test]` expands into.
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn restore_keeps_vault_and_quick_windows_of_the_same_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("notes");
+        let state = fixture.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+        std::fs::write(
+            state.join("open-windows.json"),
+            serde_json::to_vec(&serde_json::json!({"version": 1, "roots": [&root, &root],
+                "notes": ["note.md", "note.md"], "single_file": [false, true]}))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+            launch(
+                Opts {
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(state.join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let readers = reader_open::readers(cx);
+            assert_eq!(readers.len(), 2);
+            let modes: Vec<_> = readers
+                .iter()
+                .map(|reader| {
+                    let reader = reader.read(cx);
+                    assert_eq!(reader.current_rel, "note.md");
+                    reader.single_file
+                })
+                .collect();
+            assert_eq!(modes, vec![false, true]);
+        });
+    }
 
     fn default_priority(cx: &mut TestAppContext, explicit: bool) {
         use reader_history::ReadingHistory;

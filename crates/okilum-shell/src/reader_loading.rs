@@ -1557,12 +1557,11 @@ impl Reader {
         {
             self.creation = None;
         }
-        // Upgrading the displayed quick-view folder changes its capabilities,
+        // Switching the displayed folder's mode changes its capabilities,
         // not its document. A cold candidate has no attachment inventory yet;
         // replacing the render would drop images and reset the viewport (#593).
         // Ready reconciles any source edits against the complete inventory.
-        let preserve_document = self.single_file
-            && !pending.intent.single_file
+        let preserve_document = self.single_file != pending.intent.single_file
             && self.vault_root == pending.intent.root
             && self.current_rel == pending.rel
             && self.document_ready();
@@ -1572,6 +1571,10 @@ impl Reader {
         self.vault_root = pending.intent.root.clone();
         let opts = &self.loading.as_ref().unwrap().opts;
         self.single_file = pending.intent.single_file;
+        if self.single_file {
+            self.shared_session = None;
+            self.shared_version = 0;
+        }
         self.index_dir = if self.single_file {
             None
         } else {
@@ -1644,7 +1647,10 @@ impl Reader {
                 cx,
             );
         }
-        self.restore_ui_state(window, cx);
+        if !preserve_document {
+            self.restore_ui_state(window, cx);
+        }
+        reader_open_windows::record_soon(cx);
         let first_link = self
             .loading
             .as_ref()
@@ -2196,7 +2202,10 @@ impl Reader {
         }
         self.file_preview = None;
         self.file_menu = None;
-        if opts.vault.as_ref() != Some(&self.vault_root) || opts.open_path.is_some() {
+        if opts.vault.as_ref() != Some(&self.vault_root)
+            || opts.open_path.is_some()
+            || opts.single_file != self.single_file
+        {
             self.reset_vault_projects(window, cx);
             self.shared_session = None;
             self.shared_version = 0;
@@ -2476,11 +2485,19 @@ impl Reader {
                         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
                     }
                     if opts.single_file {
+                        let folders: std::collections::BTreeSet<String> = opts.note.as_deref()
+                            .and_then(|note| Path::new(note).parent())
+                            .into_iter().flat_map(|parent| parent.ancestors())
+                            .map(okilum_core::vault::note_path)
+                            .chain(std::iter::once(String::new())).collect();
                         let watcher = VaultWatcher::for_folders(&root).and_then(|mut watcher| {
-                            watcher.watch_folders(&std::collections::BTreeSet::from([String::new()]))?;
+                            watcher.watch_folders(&folders)?;
                             Ok(watcher)
                         });
-                        let mut vault = quick_folder(&root, "", &[], &cancel)?;
+                        let mut vault = quick_vault(&root, vec![]);
+                        for folder in &folders {
+                            vault = quick_folder(&root, folder, &vault.entries, &cancel)?;
+                        }
                         let watcher = match watcher {
                             Ok(watcher) => Some(watcher),
                             Err(error) => {
@@ -2604,6 +2621,14 @@ impl Reader {
                             Event::Siblings(vault, watcher) => {
                                 this.watcher = watcher;
                                 this.quick_folders.insert(String::new());
+                                let selected = this.selected_file().to_owned();
+                                if let Some(parent) = Path::new(&selected).parent() {
+                                    for parent in parent.ancestors() {
+                                        let folder = okilum_core::vault::note_path(parent);
+                                        this.quick_folders.insert(folder.clone());
+                                        this.tree.set_expanded(&folder, true);
+                                    }
+                                }
                                 this.publish_quick_folder(vault, cx);
                                 this.refresh_quick_document(window, cx);
                                 this.loading.as_mut().unwrap().active = false;
@@ -7425,6 +7450,32 @@ impl QuickFolderRefresh {
 }
 
 impl Reader {
+    pub(super) fn window_mode_label(&self) -> &'static str {
+        if self.single_file {
+            "Open folder as vault"
+        } else {
+            "Switch to single file mode"
+        }
+    }
+
+    pub(super) fn switch_window_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_file().is_empty() || self.loading.as_ref().is_some_and(|load| load.active)
+        {
+            return;
+        }
+        self.start_loading(
+            Opts {
+                vault: Some(self.vault_root.clone()),
+                note: Some(self.selected_file().to_owned()),
+                single_file: !self.single_file,
+                use_html: self.use_html,
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+    }
+
     fn refresh_quick_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_single_folder_document(window, cx);
     }
@@ -8199,6 +8250,39 @@ mod quick_view_tests {
                 .unwrap(),
             None,
             "upgrade persists vault mode even when keeping the rendered document"
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.quick_open.query = "single file mode".into();
+            assert!(reader
+                .palette_items()
+                .iter()
+                .any(|(_, item)| matches!(item, quick_open::PaletteItem::SwitchWindowMode)));
+            reader.switch_window_mode(window, cx);
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, cx| {
+            assert!(reader.single_file && reader.vault.single_file);
+            assert!(reader.index_dir.is_none() && reader.searcher.is_none());
+            assert!(reader.shared_session.is_none() && reader.incremental_state.is_none());
+            assert_eq!(reader.current_rel, "start.md");
+            assert!(reader.note_source.contains("img.png"));
+            let position = reader.content.read(cx).list_state().logical_scroll_top();
+            assert_eq!(position.item_ix, 12);
+            assert_eq!(position.offset_in_item, px(3.));
+            assert!(reader
+                .vault
+                .entries
+                .iter()
+                .any(|entry| entry.path == "img.png"));
+        });
+        assert_eq!(
+            crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
+                .unwrap()
+                .as_deref(),
+            Some("start.md"),
+            "downgrade persists single-file mode"
         );
         std::fs::remove_dir_all(directory).unwrap();
     }
