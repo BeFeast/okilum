@@ -172,6 +172,7 @@ fn catalog_rejects_old_connection_and_replaces_environment_and_provider_instance
             models: vec![okilum_t3::ModelInfo {
                 id: "same-slug".into(),
                 label: None,
+                ..Default::default()
             }],
             runtime_modes: vec![],
         }],

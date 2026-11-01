@@ -43,7 +43,31 @@ pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
 /// Note width toggle: shown in full width (back to normal) and in normal width.
 pub const NOTE_WIDTH_NORMAL_ICON: &str = "icons/fold-horizontal.svg";
 pub const NOTE_WIDTH_FULL_ICON: &str = "icons/unfold-horizontal.svg";
-const IMAGES: [(&str, &[u8]); 36] = [
+const IMAGES: [(&str, &[u8]); 42] = [
+    (
+        "icons/providers/openai.svg",
+        include_bytes!("../assets/icons/providers/openai.svg"),
+    ),
+    (
+        "icons/providers/claude.svg",
+        include_bytes!("../assets/icons/providers/claude.svg"),
+    ),
+    (
+        "icons/providers/grok.svg",
+        include_bytes!("../assets/icons/providers/grok.svg"),
+    ),
+    (
+        "icons/providers/cursor.svg",
+        include_bytes!("../assets/icons/providers/cursor.svg"),
+    ),
+    (
+        "icons/providers/opencode.svg",
+        include_bytes!("../assets/icons/providers/opencode.svg"),
+    ),
+    (
+        "icons/providers/antigravity.svg",
+        include_bytes!("../assets/icons/providers/antigravity.svg"),
+    ),
     (
         "icons/square.svg",
         include_bytes!("../assets/icons/square.svg"),

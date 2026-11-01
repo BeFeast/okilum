@@ -4,19 +4,196 @@ use okilum_t3::{models::Target, ModelSelection};
 
 #[cfg(target_os = "linux")]
 pub(super) mod catalog;
+mod navigation;
+mod options;
+mod preferences;
 #[cfg(test)]
 mod tests;
+mod visuals;
 
 #[derive(Default)]
 pub(super) struct PickerUi {
     search: Option<Entity<InputState>>,
     changes: Option<Subscription>,
     provider: Option<String>,
-    scroll: ScrollHandle,
     follow_current: bool,
+    favorites: bool,
+    highlight: usize,
+    list_scroll: gpui::UniformListScrollHandle,
+    panel_width: std::rc::Rc<std::cell::Cell<Pixels>>,
+    preferences: Option<preferences::Prefs>,
+    preferences_origin: Option<String>,
 }
 
 impl ProjectView {
+    pub(super) fn measure_model_panel(&self, cx: &Context<Self>) -> AnyElement {
+        let width = self.model_ui.panel_width.clone();
+        let owner = cx.entity().downgrade();
+        gpui::canvas(
+            move |bounds, _, cx| {
+                // Project padding (32px) and the toolkit popup wrapper (24px).
+                let available = (bounds.size.width - px(56.)).max(px(0.));
+                if width.replace(available) != available {
+                    cx.notify(owner.entity_id());
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
+    }
+
+    fn load_model_preferences(&mut self) {
+        let Some(environment) = &self.environment else {
+            return;
+        };
+        let origin = environment.origin();
+        if self.model_ui.preferences_origin.as_deref() == Some(&origin) {
+            return;
+        }
+        self.model_ui.preferences_origin = Some(origin.clone());
+        self.model_ui.preferences = None;
+        let Some(state) = self
+            .state
+            .clone()
+            .or_else(|| reader_history::state_directory().ok())
+        else {
+            return;
+        };
+        match preferences::Prefs::load(&state, &origin) {
+            Ok(prefs) => self.model_ui.preferences = Some(prefs),
+            Err(_) => self.model_error = Some("Saved model preferences could not be read.".into()),
+        }
+    }
+
+    fn model_is_favorite(&self, selection: &ModelSelection) -> bool {
+        self.model_ui
+            .preferences
+            .as_ref()
+            .is_some_and(|prefs| prefs.is_favorite(&selection.instance_id, &selection.model))
+    }
+
+    fn toggle_model_favorite(&mut self, selection: ModelSelection, cx: &mut Context<Self>) {
+        let Some(prefs) = &mut self.model_ui.preferences else {
+            return;
+        };
+        prefs.toggle_favorite(&selection.instance_id, &selection.model);
+        if prefs.save().is_err() {
+            self.model_error = Some("Could not save model favorites.".into());
+        }
+        cx.notify();
+    }
+
+    fn remember_model_selection(&mut self, selection: &ModelSelection) {
+        if let Some(prefs) = &mut self.model_ui.preferences {
+            if prefs
+                .remember(selection)
+                .and_then(|_| prefs.save())
+                .is_err()
+            {
+                self.model_error = Some("Could not save model preferences.".into());
+            }
+        }
+    }
+
+    fn visible_model_choices(&self, cx: &App) -> Vec<okilum_t3::models::PickerChoice> {
+        let Some(snapshot) = &self.models else {
+            return Vec::new();
+        };
+        let query = self
+            .model_ui
+            .search
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default();
+        let instance = self
+            .model_ui
+            .provider
+            .as_deref()
+            .unwrap_or(&snapshot.configuration.model_selection.instance_id);
+        let mut choices = if self.model_ui.favorites && query.trim().is_empty() {
+            let mut rows = snapshot
+                .catalog
+                .providers
+                .iter()
+                .flat_map(|provider| snapshot.picker_choices(&provider.provider_instance_id, ""))
+                .filter(|choice| choice.current || self.model_is_favorite(&choice.selection))
+                .collect::<Vec<_>>();
+            if !rows.iter().any(|choice| choice.current) {
+                rows.extend(
+                    snapshot
+                        .picker_choices(&snapshot.configuration.model_selection.instance_id, "")
+                        .into_iter()
+                        .filter(|choice| choice.current),
+                );
+            }
+            rows.sort_by_key(|choice| !choice.current);
+            rows
+        } else {
+            snapshot.picker_choices(instance, &query)
+        };
+        if !query.trim().is_empty() {
+            choices.sort_by_key(|choice| !self.model_is_favorite(&choice.selection));
+        }
+        choices
+    }
+
+    pub(super) fn model_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.active || self.busy || !self.can_read_models() {
+            return false;
+        }
+        if self.compose.read(cx).ime_composing()
+            || self
+                .model_ui
+                .search
+                .as_ref()
+                .is_some_and(|input| input.read(cx).ime_composing())
+        {
+            return false;
+        }
+        let choices = self.visible_model_choices(cx);
+        let Some(intent) =
+            navigation::handle(event, self.model_open, self.model_ui.highlight, &choices)
+        else {
+            return false;
+        };
+        match intent {
+            navigation::Intent::Toggle if self.model_open => {
+                self.model_open = false;
+                self.compose.update(cx, |input, cx| input.focus(window, cx));
+            }
+            navigation::Intent::Toggle => {
+                if let Some(target) = self.manager_model_target() {
+                    self.open_models(target, window, cx);
+                }
+            }
+            navigation::Intent::Close => {
+                self.model_open = false;
+                self.compose.update(cx, |input, cx| input.focus(window, cx));
+            }
+            navigation::Intent::Highlight(index) => {
+                self.model_ui.highlight = index;
+                self.model_ui
+                    .list_scroll
+                    .scroll_to_item(index, gpui::ScrollStrategy::Center);
+            }
+            navigation::Intent::Select(index) => {
+                if let Some(choice) = choices.get(index) {
+                    self.choose_model(choice.selection.clone(), window, cx);
+                }
+            }
+        }
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
     #[cfg(target_os = "linux")]
     pub(super) fn receive_live_model(&mut self, metadata: &okilum_t3::projection::Metadata) {
         if self
@@ -76,6 +253,7 @@ impl ProjectView {
         let Some(client) = self.native.model_client() else {
             return;
         };
+        self.load_model_preferences();
         let catalog = catalog::Catalog::acquire(client, cx);
         self.native.catalog_observer = Some(cx.observe(&catalog, |this, _, cx| {
             this.sync_native_models(cx);
@@ -155,13 +333,15 @@ impl ProjectView {
                     input.update(cx, |input, cx| input.focus(window, cx));
                 }
                 if input.read(cx).value().trim().is_empty() {
-                    if let Some(index) = this.models.as_ref().and_then(|snapshot| {
-                        snapshot
-                            .picker_choices(this.model_ui.provider.as_deref().unwrap_or(""), "")
-                            .iter()
-                            .position(|choice| choice.current)
-                    }) {
-                        this.model_ui.scroll.scroll_to_item(index);
+                    if let Some(index) = this
+                        .visible_model_choices(cx)
+                        .iter()
+                        .position(|choice| choice.current)
+                    {
+                        this.model_ui.highlight = index;
+                        this.model_ui
+                            .list_scroll
+                            .scroll_to_item(index, gpui::ScrollStrategy::Center);
                     }
                 }
                 cx.notify();
@@ -206,8 +386,16 @@ impl ProjectView {
             .map(|snapshot| snapshot.configuration.model_selection.instance_id.clone());
         if self.model_ui.search.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search models…"));
-            self.model_ui.changes =
-                Some(cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify()));
+            self.model_ui.changes = Some(cx.subscribe(&input, |this, _, _: &InputEvent, cx| {
+                this.model_ui.highlight = 0;
+                this.model_ui
+                    .list_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }));
             self.model_ui.search = Some(input);
         }
         self.model_ui
@@ -218,6 +406,16 @@ impl ProjectView {
                 input.set_value("", window, cx);
                 input.focus(window, cx);
             });
+        self.model_ui.favorites = self
+            .model_ui
+            .preferences
+            .as_ref()
+            .is_some_and(preferences::Prefs::has_favorites);
+        self.model_ui.highlight = self
+            .visible_model_choices(cx)
+            .iter()
+            .position(|choice| choice.current)
+            .unwrap_or(0);
         self.model_open = true;
         self.settle_model_layout(true, window, cx);
         self.model_candidate = None;
@@ -238,6 +436,7 @@ impl ProjectView {
     pub(super) fn warm_gateway_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The same completed poll just verified thread/project ownership.
         // Avoid a second history read solely to warm the model catalog.
+        self.load_model_preferences();
         self.model_request_inner(None, true, window, cx);
     }
 
@@ -335,6 +534,7 @@ impl ProjectView {
                                 this.model_ui.provider = Some(snapshot.configuration.model_selection.instance_id.clone());
                             }
                             this.model_ui.follow_current = false;
+                            this.remember_model_selection(&snapshot.configuration.model_selection);
                             this.models = Some(snapshot);
                             this.settle_model_layout(false, window, cx);
                             this.model_candidate = None;
@@ -389,33 +589,35 @@ impl ProjectView {
             .filter(|_| is_target)
             .map(|snapshot| {
                 let current = &snapshot.configuration.model_selection;
-                snapshot
-                    .catalog
-                    .providers
-                    .iter()
-                    .find(|provider| provider.provider_instance_id == current.instance_id)
-                    .and_then(|provider| {
-                        provider
-                            .models
-                            .iter()
-                            .find(|model| model.id == current.model)
-                    })
-                    .and_then(|model| model.label.clone())
-                    .unwrap_or_else(|| current.model.clone())
+                let name = snapshot
+                    .model_info(current)
+                    .map(|model| model.display_name())
+                    .unwrap_or(&current.model);
+                let summary = self.model_chip_summary(snapshot, cx);
+                if summary.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{name} · {summary}")
+                }
             })
             .unwrap_or_else(|| {
                 #[cfg(target_os = "linux")]
-                if self
-                    .chat
-                    .as_ref()
-                    .is_some_and(|chat| chat.thread_id == target.thread_id)
-                {
-                    if let Some(model) = self.native.current_model(&target.thread_id) {
-                        return model.into();
-                    }
+                if let Some(model) = self.native.current_model(&target.thread_id) {
+                    return model.into();
                 }
                 "Model".into()
             });
+        let glyph = self
+            .models
+            .as_ref()
+            .filter(|_| is_target)
+            .and_then(|snapshot| {
+                snapshot.catalog.providers.iter().find(|provider| {
+                    provider.provider_instance_id
+                        == snapshot.configuration.model_selection.instance_id
+                })
+            })
+            .map(|provider| visuals::provider_glyph(&provider.driver_kind));
         let owner = cx.entity().downgrade();
         let search_focus = self
             .model_ui
@@ -426,18 +628,19 @@ impl ProjectView {
             .when_some(search_focus.as_ref(), |popover, focus| {
                 popover.track_focus(focus)
             })
-            .anchor(Anchor::TopRight)
+            .anchor(Anchor::TopLeft)
             .open(self.model_open && is_target)
             .trigger(
                 Button::new("project-model-trigger")
                     .debug_selector(|| "project-manager-model".into())
                     .ghost()
                     .small()
-                    .max_w(px(180.))
+                    .max_w(self.model_ui.panel_width.get().max(px(180.)).min(px(280.)))
                     .overflow_hidden()
-                    .label(label)
-                    .icon(IconName::ChevronDown)
-                    .tooltip("Choose model")
+                    .label(label.clone())
+                    .when_some(glyph, |button, glyph| button.icon(glyph))
+                    .child(Icon::new(IconName::ChevronDown).small())
+                    .tooltip(format!("Choose model · {label}"))
                     .disabled(self.busy || !self.can_read_models()),
             )
             .on_open_change(move |open, window, cx| {
@@ -469,6 +672,27 @@ impl ProjectView {
         if self.model_busy || self.busy || !self.can_write_models() {
             return;
         }
+        if let Some(current) = self
+            .models
+            .as_ref()
+            .map(|snapshot| snapshot.configuration.model_selection.clone())
+        {
+            self.remember_model_selection(&current);
+        }
+        let selection = if let Some(snapshot) = &self.models {
+            let current = &snapshot.configuration.model_selection;
+            self.model_ui
+                .preferences
+                .as_ref()
+                .and_then(|prefs| prefs.remembered(&selection))
+                .filter(|saved| {
+                    (current.instance_id != saved.instance_id || current.model != saved.model)
+                        && snapshot.validate(saved).is_ok()
+                })
+                .unwrap_or(selection)
+        } else {
+            selection
+        };
         self.model_candidate = Some(selection.clone());
         self.model_open = false;
         self.compose.update(cx, |input, cx| input.focus(window, cx));
