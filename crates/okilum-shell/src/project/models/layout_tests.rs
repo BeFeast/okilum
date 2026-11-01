@@ -108,6 +108,18 @@ fn interleaved_open(visual: &mut VisualTestContext) {
         visual.debug_bounds("project-model-panel").is_some(),
         "completed trigger click opens an actual popup after an intervening frame"
     );
+    // Real platform display callbacks run before draw. Deliver both queued
+    // frames so the current-row reveal uses the initialized virtual viewport.
+    for _ in 0..2 {
+        visual.update(|window, cx| {
+            assert!(
+                window.simulate_next_frame(cx) > 0,
+                "positive control: the reveal scheduled a display callback"
+            );
+            window.draw(cx).clear(cx);
+        });
+        visual.run_until_parked();
+    }
 }
 
 fn scroll(visual: &mut VisualTestContext, viewport: Bounds<Pixels>, delta: f32) {
