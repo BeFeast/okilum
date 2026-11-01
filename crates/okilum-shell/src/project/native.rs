@@ -508,14 +508,14 @@ impl ProjectView {
                     };
                     let connect_client = client.clone();
                     let connect_thread = thread.clone();
-                    match cx
-                        .background_executor()
-                        .spawn(async move { connect_client.subscribe(&connect_thread, cursor) })
-                        .await
+                    match recovery::stream_io(cx.background_executor(), move || {
+                        connect_client.subscribe(&connect_thread, cursor)
+                    })
+                    .await
                     {
                         Ok(stream) => {
                             let cancel = stream.cancellation().ok();
-                            if this
+                            if !this
                                 .update_in(cx, |this, _, _| {
                                     if !source.current(this) {
                                         return false;
@@ -524,7 +524,6 @@ impl ProjectView {
                                     true
                                 })
                                 .unwrap_or(false)
-                                == false
                             {
                                 return;
                             }
@@ -562,9 +561,8 @@ impl ProjectView {
                 }
                 let mut stream = socket.take().unwrap();
                 let model = retained.clone();
-                let (stream, result, accepted_sync) = cx
-                    .background_executor()
-                    .spawn(async move {
+                let (stream, result, accepted_sync) =
+                    recovery::stream_io(cx.background_executor(), move || {
                         let result = stream.receive(|updates| {
                             let mut r = model.lock().unwrap();
                             if r.epoch != epoch {

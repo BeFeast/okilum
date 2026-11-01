@@ -1,5 +1,5 @@
 use super::super::recovery::{ConnectionAttempt, ConnectionPhase, ConnectionSource};
-use super::super::recovery_state::{ConnectionContext, ErrorOrigin};
+use super::super::recovery_state::ConnectionContext;
 use super::*;
 use ::core::prelude::v1::test;
 use okilum_t3::projection::Projection;
@@ -190,7 +190,11 @@ async fn real_close_and_cursor_replay_keep_controls_disabled_until_sync_and_reta
             commands.recv_timeout(Duration::from_secs(5)).unwrap(),
             "sync"
         );
-        chunk(&mut second, json!([{"kind":"synchronized"}]));
+        send(
+            &mut second,
+            json!({"_tag":"Chunk","requestId":"1","values":[{"kind":"synchronized"}]}),
+        );
+        assert_eq!(read(&mut second)["_tag"], "Ack");
         assert_eq!(
             commands.recv_timeout(Duration::from_secs(5)).unwrap(),
             "stop"
@@ -427,9 +431,10 @@ async fn history_failure_stays_connected_and_exact_dismissals_survive_navigation
     let preview = visual
         .debug_bounds("project-action-error-preview")
         .expect("positive control: actual long error preview");
+    let max_preview_height = visual.update(|window, _| window.line_height() * 3.);
     assert!(
-        preview.size.height <= px(72.),
-        "error preview is bounded to three lines"
+        preview.size.height <= max_preview_height,
+        "error preview is bounded to three defined line boxes: bounds={preview:?}; max={max_preview_height:?}"
     );
     view.update_in(visual, |view, window, cx| {
         view.compose.update(cx, |input, cx| input.focus(window, cx))

@@ -8,6 +8,29 @@ struct ErrorDetailsState {
     scroll: gpui::ScrollHandle,
 }
 
+/// TestScheduler polls blocking work on its own loop. A live socket waiting for
+/// the test's next input would otherwise stop that input from being delivered.
+/// Production keeps its existing background-executor path; test I/O is bounded
+/// by the same client timeouts and cancellation sockets.
+pub(super) async fn stream_io<T: Send + 'static>(
+    executor: &gpui::BackgroundExecutor,
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    #[cfg(test)]
+    {
+        let _ = executor;
+        let (send, receive) = futures::channel::oneshot::channel();
+        let thread = std::thread::spawn(move || {
+            let _ = send.send(operation());
+        });
+        let result = receive.await.expect("native test I/O thread completed");
+        thread.join().expect("native test I/O thread did not panic");
+        result
+    }
+    #[cfg(not(test))]
+    executor.spawn(async move { operation() }).await
+}
+
 /// The mask is presentation-only. Neither dismissal nor opening details mutates
 /// the canonical error, action records, readiness, or a retained Retry command.
 pub(super) fn error_banner<T: 'static>(
@@ -29,6 +52,7 @@ pub(super) fn error_banner<T: 'static>(
         return None;
     }
     let preview = preview.unwrap_or_else(|| full_safe_text.clone());
+    let preview_line_height = window.line_height();
     let preview_selector = format!("{selector}-preview");
     let details_selector = format!("{selector}-details-body");
     let details_id = SharedString::from(format!(
@@ -98,6 +122,11 @@ pub(super) fn error_banner<T: 'static>(
                     .min_w_0()
                     .whitespace_normal()
                     .line_clamp(3)
+                    // GPUI's line clamp does not count explicit newlines.
+                    // Define and bound the same three actual line boxes.
+                    .line_height(preview_line_height)
+                    .max_h(preview_line_height * 3.)
+                    .overflow_hidden()
                     .text_color(cx.theme().danger)
                     .debug_selector(move || preview_selector.clone())
                     .child(preview),
