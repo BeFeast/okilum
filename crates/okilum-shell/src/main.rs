@@ -291,7 +291,9 @@ impl Reader {
         let pane = if reader_layout::overlay(available) {
             available
         } else {
-            let widths = self.panels.widths(&self.panel_widths, available);
+            let widths = self
+                .workspace_panels()
+                .widths(&self.panel_widths, available);
             available - widths.notes - widths.backlinks
         };
         let offset = ((pane - reader_ui_state::note_column_width(cx)) / 2.).max(0.);
@@ -2857,6 +2859,9 @@ impl Reader {
     }
 
     fn focus_sidebar_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_navigation.active.is_some() {
+            self.show_vault_files(window, cx);
+        }
         self.resizing_panel = None;
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
         self.save_sidebar(cx);
@@ -2902,6 +2907,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if panel == reader_layout::Panel::Notes && self.project_navigation.active.is_some() {
+            self.show_vault_files(window, cx);
+            return;
+        }
         self.ui_state.interacted = true;
         self.resizing_panel = None;
         if self
@@ -3763,7 +3772,9 @@ impl Reader {
 
     /// docs/design/reader.md §Layout: icon controls, breadcrumbs, loading status.
     fn render_header(&self, available: f32, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let notes_open = self.panels.visible(reader_layout::Panel::Notes, available);
+        let notes_open = self
+            .workspace_panels()
+            .visible(reader_layout::Panel::Notes, available);
         let backlinks_open = self
             .panels
             .visible(reader_layout::Panel::Backlinks, available);
@@ -3787,20 +3798,42 @@ impl Reader {
             .text_size(px(brand::READER_CHROME_FONT_SIZE))
             .child(
                 header_controls()
-                    .child(preserve_reader_selection(
-                        "reader-notes-preserve",
-                        reader_icon_button(
-                            "reader-notes",
-                            IconName::PanelLeft,
-                            reader_shortcuts::hint("Notes", &ToggleNotes, cx),
-                            cx,
+                    .when(self.project_navigation.active.is_some(), |controls| {
+                        controls.child(
+                            Button::new("reader-files")
+                                .debug_selector(|| "reader-files".into())
+                                .ghost()
+                                .small()
+                                .icon(IconName::Folder)
+                                .label("Files")
+                                .tooltip(reader_shortcuts::hint(
+                                    "Return to Files",
+                                    &ToggleNotes,
+                                    cx,
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_vault_files(window, cx)
+                                })),
                         )
-                        .debug_selector(|| "reader-notes".into())
-                        .selected(notes_open)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_panel(reader_layout::Panel::Notes, window, cx)
-                        })),
-                    ))
+                    })
+                    .when(self.project_navigation.active.is_none(), |controls| {
+                        controls.child(preserve_reader_selection(
+                            "reader-notes-preserve",
+                            reader_icon_button(
+                                "reader-notes",
+                                IconName::PanelLeft,
+                                reader_shortcuts::hint("Notes", &ToggleNotes, cx),
+                                cx,
+                            )
+                            .debug_selector(|| "reader-notes".into())
+                            .selected(notes_open)
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.toggle_panel(reader_layout::Panel::Notes, window, cx)
+                                },
+                            )),
+                        ))
+                    })
                     // Variant A (#1508): switcher, Recent ▾, Pinned ▾, then search.
                     .child(self.render_title_nav(available, cx))
                     .child(
@@ -4504,10 +4537,12 @@ impl Reader {
 
     /// `![alt](relative path)` → `![alt](file:///abs%20path)` via resolve_asset.
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.project_navigation.active.is_some() {
+            return div().into_any_element();
+        }
         let content = if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree
             || !self.sidebar.now_enabled()
             || self.single_file
-            || self.project_navigation.active.is_some()
         {
             self.render_tree(window, cx)
         } else {
@@ -4542,6 +4577,9 @@ impl Reader {
     /// docs/design/reader.md §Sidebar: the real folder hierarchy only
     /// (#335, #1508); Recent and Pinned live in the title bar.
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.project_navigation.active.is_some() {
+            return div().into_any_element();
+        }
         use gpui_component::menu::DropdownMenu as _;
         use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
         use okilum_core::vault::EntryKind;
@@ -5316,7 +5354,7 @@ impl Reader {
                 // the surrounding document margins, never double-scroll text.
                 let body = this.body_bounds;
                 let widths = this
-                    .panels
+                    .workspace_panels()
                     .widths(&this.panel_widths, f32::from(body.size.width));
                 let outside_panels = event.position.x >= body.left() + px(widths.notes)
                     && event.position.x < body.right() - px(widths.backlinks);
@@ -5662,7 +5700,7 @@ impl Reader {
                         if *active {
                             let body = this.body_bounds;
                             let widths = this
-                                .panels
+                                .workspace_panels()
                                 .widths(&this.panel_widths, f32::from(body.size.width));
                             this.hover_note_beside(
                                 key,
@@ -7022,7 +7060,8 @@ impl Render for Reader {
         let overlay = reader_layout::overlay(available);
         self.panels
             .viewport_changed(f32::from(self.body_bounds.size.width), available);
-        let panel_widths = self.panels.widths(&self.panel_widths, available);
+        let workspace_panels = self.workspace_panels();
+        let panel_widths = workspace_panels.widths(&self.panel_widths, available);
         self.sync_project_board_visibility(window, cx);
         if let Some(panel) = &self.project_navigation.manager_panel {
             let visible = self.project_navigation.active.is_some()
@@ -7057,7 +7096,7 @@ impl Render for Reader {
             .children(reader_text_zoom::hud(self, cx));
         let mut panel_bodies =
             [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
-                self.panels.visible(panel, available).then(|| {
+                workspace_panels.visible(panel, available).then(|| {
                     if panel == reader_layout::Panel::Backlinks
                         && self.project_navigation.active.is_some()
                     {
@@ -7078,7 +7117,7 @@ impl Render for Reader {
                 .is_some_and(|p| p.manager != okilum_t3::projects::Manager::NotStarted);
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
-            .filter(|panel| self.panels.visible(*panel, available))
+            .filter(|panel| workspace_panels.visible(*panel, available))
             .map(|panel| {
                 let left = panel == reader_layout::Panel::Notes;
                 let resize_view = cx.entity().downgrade();
@@ -7552,7 +7591,7 @@ impl Render for Reader {
                                             } else {
                                                 this.body_bounds.right() - event.position.x
                                             };
-                                            let width = this.panels.resize_width(
+                                            let width = this.workspace_panels().resize_width(
                                                 panel,
                                                 f32::from(requested),
                                                 &this.panel_widths,
@@ -10210,14 +10249,11 @@ mod document_link_landing_tests {
         }
     }
 
-    /// #1508, #1512: inside a project the header row names the project and
-    /// keeps the same action slots; the project's tree follows directly and
-    /// cannot be stranded folded away.
+    /// #2216: an old/open Notes flag must not recreate a Project folder browser.
     #[gpui::test]
-    fn project_sidebar_header_names_the_project_and_the_tree_follows(
+    fn project_workspace_suppresses_stale_folder_panel_and_its_layout_width(
         cx: &mut gpui::TestAppContext,
     ) {
-        use reader_sidebar::Section;
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
@@ -10226,7 +10262,6 @@ mod document_link_landing_tests {
         let root = temp.path().join("vault");
         std::fs::create_dir_all(root.join("Work/Proj/docs")).unwrap();
         std::fs::write(root.join("Work/Proj/Plan.md"), "# Plan").unwrap();
-        std::fs::write(root.join("Work/Proj/docs/Spec.md"), "# Spec").unwrap();
         std::fs::write(root.join("Other.md"), "# Other").unwrap();
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -10249,17 +10284,17 @@ mod document_link_landing_tests {
         });
         let view = entity.unwrap();
         visual.simulate_resize(size(px(1400.), px(960.)));
-        visual.run_until_parked();
         view.update(visual, |v, cx| {
             v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             cx.notify();
         });
         visual.run_until_parked();
-        let vault_actions = visual.debug_bounds("sidebar-header-actions").unwrap();
+        assert!(
+            visual.debug_bounds("sidebar-tree-body").is_some(),
+            "Files positive control"
+        );
         view.update(visual, |v, cx| {
-            // A Folders fold saved by an older build hides nothing.
-            v.toggle_section(Section::Folders, cx);
             v.tree.scope_to("Work/Proj");
             v.project_navigation.active = Some(okilum_t3::projects::Project {
                 folder: v.vault_root.join("Work/Proj"),
@@ -10270,62 +10305,32 @@ mod document_link_landing_tests {
                 manager: okilum_t3::projects::Manager::NotStarted,
                 appearance: Default::default(),
             });
+            // Leave Notes enabled, as a stale restore or another command can.
+            assert!(v.panels.notes);
             cx.notify();
         });
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            let items = v.sidebar_items();
-            assert!(
-                items.iter().all(|item| matches!(item, SideItem::Tree(_))),
-                "only tree rows in a project"
-            );
-            assert!(items.iter().any(
-                |item| matches!(item, SideItem::Tree(row) if row.path == "Work/Proj/Plan.md")
-            ));
-            assert!(!items
-                .iter()
-                .any(|item| matches!(item, SideItem::Tree(row) if row.path == "Other.md")));
-            assert_eq!(
-                v.sidebar_name_menu(),
-                [
-                    SidebarNameItem::SwitchProject,
-                    SidebarNameItem::ChangeProjectIcon,
-                    SidebarNameItem::RevealProject,
-                    SidebarNameItem::LeaveProject,
-                ]
-            );
-        });
-        assert!(visual.debug_bounds("sidebar-header-Folders").is_none());
-        assert_eq!(
-            visual.debug_bounds("sidebar-header-actions").unwrap(),
-            vault_actions,
-            "a project keeps the vault's action slots"
-        );
-        let header = visual.debug_bounds("sidebar-header").unwrap();
-        // #1627: the project's avatar leads the header, as in T3.
-        let avatar = visual
-            .debug_bounds("sidebar-project-avatar")
-            .expect("the project's avatar in its header");
-        assert!(avatar.left() >= header.left() && avatar.right() < header.center().x);
-        let body = visual.debug_bounds("sidebar-tree-body").expect("tree body");
-        assert_eq!(
-            body.top(),
-            header.bottom(),
-            "the tree follows the header row"
-        );
-        // Leaving restores the vault, still with every root entry listed.
-        view.update(visual, |v, cx| {
-            v.project_navigation.active = None;
-            cx.notify();
-        });
-        visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            assert!(v
-                .sidebar_items()
-                .iter()
-                .any(|item| matches!(item, SideItem::Tree(_))));
-        });
-        assert!(visual.debug_bounds("sidebar-tree-body").is_some());
+        for width in [1400., 800., 600.] {
+            visual.simulate_resize(size(px(width), px(960.)));
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("reader-notes-panel").is_none());
+            assert!(visual.debug_bounds("sidebar-header").is_none());
+            assert!(visual.debug_bounds("sidebar-tree-body").is_none());
+            assert!(visual.debug_bounds("reader-files").is_some());
+            assert!(visual.debug_bounds("title-switcher").is_some());
+            assert!(visual.debug_bounds("title-recent").is_some());
+            assert!(visual.debug_bounds("title-pinned").is_some());
+            assert!(visual.debug_bounds("reader-search").is_some());
+            view.read_with(visual, |v, _| {
+                assert!(v.panels.notes, "presentation must not rewrite raw state");
+                assert_eq!(
+                    v.workspace_panels().widths(&v.panel_widths, width).notes,
+                    0.
+                );
+            });
+            let document = visual.debug_bounds("reader-document").unwrap();
+            assert_eq!(document.left(), px(0.), "no empty sidebar gutter");
+        }
     }
 
     #[gpui::test]
