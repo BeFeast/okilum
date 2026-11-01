@@ -22,6 +22,7 @@ pub mod export;
 mod file;
 pub mod filter;
 pub mod histogram;
+pub mod kubernetes;
 mod index;
 mod json;
 mod level;
