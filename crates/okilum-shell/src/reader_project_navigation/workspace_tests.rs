@@ -224,6 +224,10 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
     }
     let (first, visual) = open(cx, &vault, &state, temp.path(), false);
     first.update_in(visual, |reader, window, cx| {
+        reader.panels.open(reader_layout::Panel::Notes);
+        reader.panels.close(reader_layout::Panel::Backlinks);
+        reader.panel_widths.notes = 333.;
+        reader.panel_widths.backlinks = 244.;
         reader.tree.set_subtree("Work", true);
         reader.tree.cursor = Some("home.md".into());
         reader.finish_enter_vault_project(
@@ -231,6 +235,25 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
             window,
             cx,
         );
+        assert!(!reader.workspace_panels().notes);
+        reader.panel_widths.backlinks = 830.;
+        reader.panels.close(reader_layout::Panel::Backlinks);
+        reader.leave_vault_project(window, cx);
+        assert!(reader.panels.notes);
+        assert!(!reader.panels.backlinks);
+        assert_eq!(reader.panel_widths.notes, 333.);
+        assert_eq!(reader.panel_widths.backlinks, 244.);
+        reader.finish_enter_vault_project(
+            Project::read(&vault.join("Work/App")).unwrap(),
+            window,
+            cx,
+        );
+        assert!(
+            !reader.panels.backlinks,
+            "explicit Project visibility survives a switch"
+        );
+        assert_eq!(reader.panel_widths.backlinks, 830.);
+        reader.panels.open(reader_layout::Panel::Backlinks);
         reader.record_ui_state(true, cx);
         reader_ui_state::flush(cx);
     });
@@ -248,12 +271,22 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
             vault.join("Work/App")
         );
         assert!(!reader.workspace_panels().notes);
+        assert!(reader.panels.backlinks);
+        assert_eq!(
+            reader.panel_widths.backlinks, 830.,
+            "Project width survives restart"
+        );
         assert_eq!(reader.current_rel, "home.md");
     });
     assert!(restart_visual.debug_bounds("project-board").is_some());
     assert!(restart_visual.debug_bounds("sidebar-tree-body").is_none());
     restarted.update_in(restart_visual, |reader, window, cx| {
         reader.show_vault_files(window, cx);
+        assert!(reader.panels.notes);
+        assert!(!reader.panels.backlinks);
+        assert_eq!(reader.panel_widths.notes, 333.);
+        assert_eq!(reader.panel_widths.backlinks, 244.);
+        reader.panel_widths.notes = 375.;
         assert_eq!(reader.tree.cursor.as_deref(), Some("home.md"));
         reader.record_ui_state(true, cx);
         reader_ui_state::flush(cx);
@@ -261,9 +294,24 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
     restarted.update_in(restart_visual, |_, window, _| window.remove_window());
     let (world, world_visual) = open(cx, &vault, &state, temp.path(), false);
     world.read_with(world_visual, |reader, _| {
-        assert!(reader.project_navigation.active.is_none())
+        assert!(reader.project_navigation.active.is_none());
+        assert_eq!(
+            reader.panel_widths.notes, 375.,
+            "Tree has its independent saved width"
+        );
+        assert!(!reader.panels.backlinks);
     });
     assert!(world_visual.debug_bounds("sidebar-tree-body").is_some());
+    world.update_in(world_visual, |reader, window, cx| {
+        reader.finish_enter_vault_project(Project::read(&vault.join("Other")).unwrap(), window, cx);
+        assert_eq!(
+            reader.panel_widths.backlinks, 830.,
+            "Project presentation is shared by existing Project mode"
+        );
+        reader.leave_vault_project(window, cx);
+        assert_eq!(reader.panel_widths.notes, 375.);
+        assert_eq!(reader.panel_widths.backlinks, 244.);
+    });
     world.update_in(world_visual, |_, window, _| window.remove_window());
     // Restore the same saved Project and verify an explicit document wins.
     std::fs::write(state.join("reader-ui.json"), &persisted).unwrap();

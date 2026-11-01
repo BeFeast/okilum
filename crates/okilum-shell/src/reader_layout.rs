@@ -157,6 +157,28 @@ impl Panels {
 }
 
 pub const DEFAULT_PANEL_WIDTH: f32 = 280.;
+
+/// A view's preferred presentation, independent of viewport clamps or maximize.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ViewLayout {
+    pub panels: Panels,
+    pub widths: Widths,
+}
+impl ViewLayout {
+    pub fn capture(panels: &Panels, widths: &Widths) -> Self {
+        Self {
+            panels: panels.preferences(),
+            widths: widths.clone(),
+        }
+    }
+
+    pub fn restore(&self) -> (Panels, Widths) {
+        let mut widths = Widths::default();
+        widths.set(Panel::Notes, self.widths.notes);
+        widths.set(Panel::Backlinks, self.widths.backlinks);
+        (self.panels.preferences(), widths)
+    }
+}
 pub const PANEL_MIN_WIDTH: f32 = 200.;
 pub const DOCUMENT_MIN_WIDTH: f32 = 480.;
 pub const DOCK_MIN_WIDTH: f32 = 1000.;
