@@ -165,9 +165,22 @@ fn show(
     visual.run_until_parked();
 }
 
+fn bounds(visual: &mut VisualTestContext, selector: &str) -> Option<gpui::Bounds<Pixels>> {
+    // GPUI's test-only debug_bounds API requires &'static str and exposes no
+    // owned-selector overload. Intern each finite fixture selector once.
+    static SELECTORS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, &'static str>>> =
+        std::sync::OnceLock::new();
+    let selector = {
+        let mut selectors = SELECTORS.get_or_init(Default::default).lock().unwrap();
+        *selectors
+            .entry(selector.to_owned())
+            .or_insert_with(|| Box::leak(selector.to_owned().into_boxed_str()))
+    };
+    visual.debug_bounds(selector)
+}
+
 fn click(visual: &mut VisualTestContext, selector: &str) {
-    let bounds = visual
-        .debug_bounds(selector)
+    let bounds = bounds(visual, selector)
         .unwrap_or_else(|| panic!("positive control: {selector} is rendered"));
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
@@ -185,7 +198,7 @@ fn key(visual: &mut VisualTestContext, name: &str) {
 }
 
 fn wheel(visual: &mut VisualTestContext, selector: &str, delta: f32) {
-    let bounds = visual.debug_bounds(selector).unwrap();
+    let bounds = bounds(visual, selector).unwrap();
     visual.simulate_event(gpui::ScrollWheelEvent {
         position: bounds.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(delta))),
@@ -237,7 +250,7 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
     let (position, before) = positions
         .into_iter()
         .find_map(|position| {
-            let bounds = visual.debug_bounds(&format!("project-message-{position}"))?;
+            let bounds = bounds(visual, &format!("project-message-{position}"))?;
             (bounds.origin.y >= history.origin.y && bounds.bottom() <= history.bottom())
                 .then_some((position, bounds.origin.y - history.origin.y))
         })
@@ -253,8 +266,7 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
         panel.bottom() <= composer.origin.y,
         "current request is outside history, above composer"
     );
-    let after = visual
-        .debug_bounds(&format!("project-message-{position}"))
+    let after = bounds(visual, &format!("project-message-{position}"))
         .unwrap()
         .origin
         .y
@@ -320,8 +332,7 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
         };
         assert_eq!(answers["q"], json!("   final custom"));
     });
-    let after = visual
-        .debug_bounds(&format!("project-message-{position}"))
+    let after = bounds(visual, &format!("project-message-{position}"))
         .unwrap()
         .origin
         .y
@@ -725,9 +736,7 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
         show(&view, visual, 0, pending);
         assert!(visual.debug_bounds("project-current-request").is_some());
         for option in 0..4 {
-            assert!(visual
-                .debug_bounds(&format!("approval-{id}-{option}"))
-                .is_some());
+            assert!(bounds(visual, &format!("approval-{id}-{option}")).is_some());
         }
         if index == 0 {
             assert!(visual
