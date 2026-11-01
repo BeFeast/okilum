@@ -1556,6 +1556,10 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
                 cx,
             );
             project.active = false;
+            project.identity = Some(ServerIdentity {
+                environment_id: "environment:fixture".into(),
+                label: "Fixture".into(),
+            });
             project
         });
         reader.project_navigation.active =
@@ -1588,7 +1592,7 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
     ] {
         let bounds = visual
             .debug_bounds(selector)
-            .expect("functional header control");
+            .unwrap_or_else(|| panic!("functional header control: {selector}"));
         assert!(
             bounds.top() >= header.top() && bounds.bottom() <= header.bottom(),
             "{selector} stays in the single header"
