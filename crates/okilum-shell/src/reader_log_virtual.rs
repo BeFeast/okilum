@@ -11,6 +11,28 @@ mod worker;
 #[derive(Default)]
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
+
+pub(crate) fn eligible(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "okilog")
+}
+
+/// The ordinary file route owns this entity. Replacing/closing the preview drops
+/// its selection/watcher worker just as closing the standalone source window does.
+pub(crate) fn embedded(
+    vault: PathBuf,
+    path: PathBuf,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<Panel> {
+    cx.new(|cx| {
+        let mut panel = Panel::new(vault, window, cx);
+        panel.embedded = true;
+        panel.load_definition(path, cx);
+        panel
+    })
+}
+
 pub(crate) fn show(vault: PathBuf, cx: &mut App) {
     let scope = okilum_core::remote_log::vault_scope(&vault);
     if let Some(handle) = cx
@@ -49,8 +71,9 @@ struct Pending {
     files: Vec<LogFile>,
     elapsed: Duration,
 }
-struct Panel {
+pub(crate) struct Panel {
     vault: PathBuf,
+    embedded: bool,
     loaded: Option<PathBuf>,
     path: Entity<InputState>,
     name: Entity<InputState>,
@@ -75,6 +98,7 @@ struct Panel {
     error: bool,
     candidates: Vec<Candidate>,
     pending: Option<Pending>,
+    pending_path: Option<String>,
     pending_load: Option<model::Loaded>,
     view: Option<Entity<LogView>>,
     worker: Option<worker::Worker>,
@@ -88,6 +112,7 @@ impl Panel {
         };
         Self {
             vault,
+            embedded: false,
             loaded: None,
             path: input("Saved .okilog path, relative to this vault", cx, window),
             name: input("Name", cx, window),
@@ -112,6 +137,7 @@ impl Panel {
             error: false,
             candidates: Vec::new(),
             pending: None,
+            pending_path: None,
             pending_load: None,
             view: None,
             worker: None,
@@ -142,6 +168,9 @@ impl Panel {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         self.loading = true;
+        self.loaded = None;
+        self.pending_load = None;
+        self.pending_path = Some(path.to_string_lossy().into_owned());
         self.error = false;
         self.message = "Loading definition…".into();
         let vault = self.vault.clone();
@@ -401,6 +430,10 @@ fn field(label: &'static str, input: &Entity<InputState>, disabled: bool) -> Div
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(path) = self.pending_path.take() {
+            self.path
+                .update(cx, |input, cx| input.set_value(path, window, cx));
+        }
         if let Some(loaded) = self.pending_load.take() {
             self.configure(loaded, window, cx);
         }
@@ -517,7 +550,10 @@ impl Render for Panel {
         let mut body = v_flex()
             .size_full()
             .min_h_0()
-            .child(TitleBar::new().child("Virtual logs"))
+            .debug_selector(|| "virtual-definition-view".into())
+            .when(!self.embedded, |body| {
+                body.child(TitleBar::new().child("Virtual logs"))
+            })
             .child(controls);
         body = if let Some(view) = &self.view {
             body.child(
