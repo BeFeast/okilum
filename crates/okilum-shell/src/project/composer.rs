@@ -1,5 +1,6 @@
 //! Linux composer invalidates its own controls, never the history entity.
 use super::*;
+use gpui_component::ThemeStyled as _;
 pub(super) mod history;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,7 +212,7 @@ impl Composer {
                             this.close_send_mode(window, cx);
                         } else {
                             this.mode_open = true;
-                            this.mode_focus.focus(window);
+                            this.mode_focus.focus(window, cx);
                             cx.notify();
                         }
                     })),
