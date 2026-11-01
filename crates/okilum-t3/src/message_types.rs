@@ -2,7 +2,7 @@
 //! Callers retain metadata with its conversation identity outside the index;
 //! absent metadata means ordinary chat, never inferred classification.
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessageType {
     #[default]
     Chat,
@@ -41,25 +41,25 @@ impl MessageType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Provenance {
     ExplicitToken,
     ExplicitSelection,
     ManagerClassification,
     UserCorrection,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Author {
     User,
     Manager,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Metadata {
     pub kind: MessageType,
     pub provenance: Provenance,
     pub author: Author,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DecisionMeaning {
     RecordedDecision,
     AwaitingAnswer,

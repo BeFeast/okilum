@@ -105,9 +105,215 @@ impl TypedDraft {
     }
 }
 
+/// Versioned local draft payload. Store alongside the existing attachments with
+/// the same conversation identity and revision check, outside the derived index.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftMetadata {
+    version: u32,
+    selection: Option<Metadata>,
+    conversion_suppressed: bool,
+    token_pill: bool,
+}
+impl TypedDraft {
+    pub fn retained_metadata(&self) -> DraftMetadata {
+        DraftMetadata {
+            version: 1,
+            selection: self.selection,
+            conversion_suppressed: self.conversion_suppressed,
+            token_pill: self.has_token_pill(),
+        }
+    }
+    /// Unsupported or inconsistent state is surfaced, never silently discarded.
+    pub fn restore_metadata(text: String, retained: DraftMetadata) -> Result<Self, &'static str> {
+        if retained.version != 1 {
+            return Err("Unsupported typed draft version");
+        }
+        if retained.token_pill
+            && (retained.conversion_suppressed
+                || retained.selection.is_none()
+                || initial_token(&text).is_none())
+        {
+            return Err("Retained typed draft token does not match its source");
+        }
+        Ok(Self::restore(
+            text,
+            retained.selection,
+            retained.conversion_suppressed,
+            retained.token_pill,
+        ))
+    }
+}
+
+/// Filtering changes only the panel projection. Legacy untyped messages remain
+/// Chat and can be found through the explicit Chat filter without classification.
+pub fn filtered_messages<'a>(
+    messages: &'a [okilum_t3::message_types::Message],
+    environment: &str,
+    project: &str,
+    filter: Option<MessageType>,
+) -> Vec<&'a okilum_t3::message_types::Message> {
+    messages
+        .iter()
+        .filter(|message| {
+            let kind = message
+                .metadata
+                .map_or(MessageType::Chat, |metadata| metadata.kind);
+            message.key.environment == environment
+                && message.key.project == project
+                && filter.map_or(kind != MessageType::Chat, |filter| filter == kind)
+        })
+        .collect()
+}
+
+/// Compare the full original snapshot before preparing a correction. Persistence
+/// and its revision check belong to the parent; the UI must not publish this
+/// result until that write succeeds. Duplicate identities are ambiguous.
+pub fn corrected_message(
+    messages: &[okilum_t3::message_types::Message],
+    expected: &okilum_t3::message_types::Message,
+    kind: MessageType,
+) -> Result<okilum_t3::message_types::Message, &'static str> {
+    let mut matches = messages
+        .iter()
+        .filter(|message| message.key == expected.key);
+    let source = matches.next().ok_or("Message is no longer available")?;
+    if matches.next().is_some() {
+        return Err("Message identity is ambiguous");
+    }
+    if source != expected {
+        return Err("Message changed; review it before correcting its type");
+    }
+    let author = source
+        .metadata
+        .ok_or("Message author metadata is unavailable")?
+        .author;
+    let mut corrected = source.clone();
+    corrected.metadata = Some(Metadata {
+        kind,
+        provenance: Provenance::UserCorrection,
+        author,
+    });
+    Ok(corrected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filters_keep_legacy_chat_and_acknowledged_corrections_discoverable() {
+        use okilum_t3::message_types::{Message, MessageKey};
+        let source = Message {
+            key: MessageKey {
+                environment: "e".into(),
+                project: "p".into(),
+                thread: "t".into(),
+                message: "m".into(),
+            },
+            text: "Body".into(),
+            metadata: Some(Metadata {
+                kind: MessageType::Bug,
+                provenance: Provenance::ExplicitSelection,
+                author: Author::User,
+            }),
+        };
+        let legacy = Message {
+            key: MessageKey {
+                message: "legacy".into(),
+                ..source.key.clone()
+            },
+            metadata: None,
+            ..source.clone()
+        };
+        let messages = vec![source.clone(), legacy];
+        assert_eq!(
+            filtered_messages(&messages, "e", "p", None),
+            vec![&messages[0]]
+        );
+        assert_eq!(
+            filtered_messages(&messages, "e", "p", Some(MessageType::Chat)),
+            vec![&messages[1]]
+        );
+        assert!(filtered_messages(&messages, "foreign", "p", None).is_empty());
+        assert!(filtered_messages(&messages, "e", "foreign", None).is_empty());
+        let acknowledged = corrected_message(&messages, &source, MessageType::Chat).unwrap();
+        assert_eq!(
+            messages[0], source,
+            "preparing correction cannot publish it"
+        );
+        let messages = vec![acknowledged];
+        assert!(filtered_messages(&messages, "e", "p", None).is_empty());
+        assert_eq!(
+            filtered_messages(&messages, "e", "p", Some(MessageType::Chat)),
+            vec![&messages[0]]
+        );
+    }
+    #[test]
+    fn retained_metadata_round_trip_and_invalid_state_refusal() {
+        let mut draft = TypedDraft::from_text("DEC: approved".into());
+        assert!(draft.detect_token());
+        let bytes = serde_json::to_vec(&draft.retained_metadata()).unwrap();
+        let retained: DraftMetadata = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            TypedDraft::restore_metadata(draft.text.clone(), retained.clone()).unwrap(),
+            draft
+        );
+        assert!(TypedDraft::restore_metadata("different text".into(), retained.clone()).is_err());
+        assert!(TypedDraft::restore_metadata(
+            draft.text.clone(),
+            DraftMetadata {
+                version: 2,
+                ..retained
+            }
+        )
+        .is_err());
+        assert!(draft.undo_token());
+        let restored =
+            TypedDraft::restore_metadata(draft.text.clone(), draft.retained_metadata()).unwrap();
+        assert_eq!(restored, draft);
+        assert!(!draft.detect_token());
+    }
+    #[test]
+    fn correction_checks_exact_snapshot_and_preserves_author_and_text() {
+        use okilum_t3::message_types::{Message, MessageKey};
+        let source = Message {
+            key: MessageKey {
+                environment: "e".into(),
+                project: "p".into(),
+                thread: "t".into(),
+                message: "m".into(),
+            },
+            text: "Original manager question".into(),
+            metadata: Some(Metadata {
+                kind: MessageType::Status,
+                provenance: Provenance::ManagerClassification,
+                author: Author::Manager,
+            }),
+        };
+        let corrected =
+            corrected_message(&[source.clone()], &source, MessageType::Decision).unwrap();
+        assert_eq!(corrected.key, source.key);
+        assert_eq!(corrected.text, source.text);
+        assert_eq!(
+            corrected.metadata.unwrap(),
+            Metadata {
+                kind: MessageType::Decision,
+                provenance: Provenance::UserCorrection,
+                author: Author::Manager
+            }
+        );
+        assert!(corrected_message(&[corrected], &source, MessageType::Bug).is_err());
+        assert!(
+            corrected_message(&[source.clone(), source.clone()], &source, MessageType::Bug)
+                .is_err()
+        );
+        assert!(corrected_message(&[], &source, MessageType::Bug).is_err());
+        let legacy = Message {
+            metadata: None,
+            ..source
+        };
+        assert!(corrected_message(&[legacy.clone()], &legacy, MessageType::Bug).is_err());
+    }
     #[test]
     fn token_edit_undo_and_restore_preserve_source() {
         let mut draft = TypedDraft::from_text("FR: original".into());
