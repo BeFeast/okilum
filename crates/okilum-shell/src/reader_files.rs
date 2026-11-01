@@ -197,6 +197,8 @@ pub(crate) struct FilePreview {
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
     /// The log view, for a log opened in the quick viewer (#602).
     pub log: Option<Entity<reader_log::LogView>>,
+    /// A saved virtual log definition, using the same source UI as Logs.
+    pub virtual_log: Option<Entity<reader_log::virtual_sources::Panel>>,
 }
 impl FilePreview {
     pub fn load(root: &Path, rel: &str) -> anyhow::Result<Self> {
@@ -213,6 +215,7 @@ impl FilePreview {
             thumbnail: None,
             pdf: None,
             log: None,
+            virtual_log: None,
             text: None,
             unavailable: None,
             image_cache: None,
@@ -434,7 +437,14 @@ impl Reader {
                     preview.pdf = Some(viewer);
                 }
                 // Structured logs take precedence in both vault and quick-file mode.
-                if okilum_core::log::is_log_path(&preview.path) {
+                if reader_log::virtual_sources::eligible(&preview.path) {
+                    preview.virtual_log = Some(reader_log::virtual_sources::embedded(
+                        self.vault_root.clone(),
+                        preview.path.clone(),
+                        window,
+                        cx,
+                    ));
+                } else if okilum_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
                     let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, window, cx));
                     view.read(cx).focus_handle().clone().focus(window, cx);
@@ -555,6 +565,14 @@ impl Reader {
                 .min_h_0()
                 .child(self.render_document_header(window, cx))
                 .child(table.clone())
+                .into_any_element();
+        }
+        if let Some(virtual_log) = &preview.virtual_log {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(self.render_document_header(window, cx))
+                .child(div().flex_1().min_h_0().child(virtual_log.clone()))
                 .into_any_element();
         }
         if let Some(log) = &preview.log {
