@@ -122,8 +122,39 @@ def stage(app, arch, archive=None):
     (app / PROVENANCE).write_text(json.dumps(provenance, indent=2) + "\n")
 
 
+def validate_runtime(app, provenance, identifier, details):
+    """Check retained provenance against the exact post-signing runtime bytes."""
+    require(isinstance(provenance, dict), "invalid runtime provenance")
+    require(type(provenance.get("schema")) is int and provenance["schema"] == 1
+            and provenance.get("version") == VERSION, "unsupported runtime provenance")
+    arch = provenance.get("architecture")
+    require(isinstance(arch, str) and arch in CPU, "invalid runtime architecture")
+    require(provenance.get("archive_sha256") == PINS[arch], "archive provenance mismatch")
+    binary = (app / RUNTIME).read_bytes()
+    require(len(binary) > 32 and binary[:4] == b"\xcf\xfa\xed\xfe"
+            and struct.unpack_from("<I", binary, 4)[0] == CPU[arch],
+            "signed runtime architecture mismatch")
+    require(provenance.get("signed_binary_sha256") == digest(binary),
+            "signed runtime SHA256 mismatch")
+    expected = identifier + ".syncthing"
+    identifiers = [line.removeprefix("Identifier=") for line in details.splitlines()
+                   if line.startswith("Identifier=")]
+    require(provenance.get("code_identifier") == expected and identifiers == [expected],
+            "nested identifier mismatch")
+
+
+def verify(app, identifier):
+    require(isinstance(identifier, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", identifier),
+            "invalid bundle identifier")
+    provenance = json.loads((app / PROVENANCE).read_text())
+    run("codesign", "--verify", "--strict", str(app / RUNTIME))
+    details = run("codesign", "-dv", "--verbose=4", str(app / RUNTIME)).stderr
+    validate_runtime(app, provenance, identifier, details)
+
+
 def sign(app, identity, identifier, team=None):
-    require(re.fullmatch(r"[A-Za-z0-9_.-]+", identifier), "invalid bundle identifier")
+    require(isinstance(identifier, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", identifier),
+            "invalid bundle identifier")
     path = app / RUNTIME
     provenance = json.loads((app / PROVENANCE).read_text())
     require(digest(path.read_bytes()) == provenance["upstream_binary_sha256"],
@@ -137,7 +168,6 @@ def sign(app, identity, identifier, team=None):
     run(*args, "--sign", identity, str(path))
     run("codesign", "--verify", "--strict", str(path))
     details = run("codesign", "-dv", "--verbose=4", str(path)).stderr
-    require("Identifier=" + identifier + ".syncthing\n" in details, "nested identifier mismatch")
     if identity != "-":
         require("TeamIdentifier=" + team + "\n" in details, "nested Team mismatch")
         require("Authority=Developer ID Application:" in details, "Developer ID required")
@@ -145,12 +175,13 @@ def sign(app, identity, identifier, team=None):
     provenance.update(signed=identity != "-", signed_binary_sha256=digest(path.read_bytes()),
                       code_identifier=identifier + ".syncthing", team=team,
                       codesign_details=details)
+    validate_runtime(app, provenance, identifier, details)
     (app / PROVENANCE).write_text(json.dumps(provenance, indent=2) + "\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("stage", "sign", "verify-upstream"))
+    parser.add_argument("mode", choices=("stage", "sign", "verify", "verify-upstream"))
     parser.add_argument("--app", type=Path)
     parser.add_argument("--arch", choices=PINS)
     parser.add_argument("--archive", type=Path)
@@ -165,6 +196,8 @@ def main():
         if args.mode == "stage":
             require(args.arch in PINS, "architecture required")
             stage(args.app, args.arch, args.archive)
+        elif args.mode == "verify":
+            verify(args.app, args.identifier)
         else:
             sign(args.app, args.identity, args.identifier, args.team)
 
