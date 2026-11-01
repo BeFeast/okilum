@@ -18,6 +18,7 @@ fn request(id: &str, kind: &str) -> Request {
         answerable: true,
         dismissible: kind == "user_input_request",
         response_mode: Some("live".into()),
+        approval_detail: None,
         reason: None,
     }
 }

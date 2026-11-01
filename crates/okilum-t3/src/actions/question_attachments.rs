@@ -50,6 +50,7 @@ mod tests {
         State {
             ready: true,
             requests: vec![Request {
+                approval_detail: None,
                 id: "request".into(),
                 item: json!({"type":"user_input_request","requestId":"request","questions":[
                     {"id":"choice","question":"Choose","multiSelect":true,"allowCustomAnswer":false,

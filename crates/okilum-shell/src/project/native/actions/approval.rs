@@ -1,8 +1,11 @@
 //! Complete approval context and provider decisions; presentation never grants authority.
 use super::*;
 
-fn approval_kind(item: &serde_json::Value) -> (&'static str, &'static str) {
-    match item["requestKind"].as_str() {
+fn approval_kind(request: &Request) -> (&'static str, &'static str) {
+    if request.approval_detail.is_some() {
+        return ("Command approval", "Command");
+    }
+    match request.item["requestKind"].as_str() {
         Some("command") => ("Command approval", "Command"),
         Some("file-read") => ("File read approval", "File to read"),
         Some("file-change") => ("File change approval", "File change"),
@@ -13,12 +16,24 @@ fn approval_kind(item: &serde_json::Value) -> (&'static str, &'static str) {
     }
 }
 
-fn approval_detail(item: &serde_json::Value) -> String {
-    item["prompt"]
+fn approval_detail(request: &Request) -> String {
+    if request.approval_detail.is_some() || request.item["requestKind"] == "command" {
+        return request
+            .approval_detail
+            .as_deref()
+            .filter(|detail| !detail.is_empty())
+            .unwrap_or("Command detail unavailable")
+            .to_owned();
+    }
+    request.item["prompt"]
         .as_str()
         .filter(|text| !text.is_empty())
-        .or_else(|| item["reason"].as_str().filter(|text| !text.is_empty()))
-        .unwrap_or(approval_kind(item).0)
+        .or_else(|| {
+            request.item["reason"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+        })
+        .unwrap_or(approval_kind(request).0)
         .to_owned()
 }
 
@@ -251,8 +266,8 @@ impl Actions {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let request_id = &request.id;
-        let (kind, detail_label) = approval_kind(&request.item);
-        let detail = approval_detail(&request.item);
+        let (kind, detail_label) = approval_kind(request);
+        let detail = approval_detail(request);
         let scope = format!("{:?}:{request_id}", self.conversation);
         let mut card = v_flex().w_full().min_w_0().gap_1().child(
             div()
@@ -281,15 +296,31 @@ impl Actions {
         card = card.child(ApprovalText {
             id: format!("approval-detail-{scope}").into(),
             selector: format!("approval-detail-{request_id}"),
-            label: detail_label.into(),
+            label: if request.item["requestKind"] == "command" && request.approval_detail.is_none()
+            {
+                "Command detail unavailable".into()
+            } else {
+                detail_label.into()
+            },
             text: detail.clone(),
             code: true,
         });
-        if let Some(reason) = request.item["reason"]
-            .as_str()
-            .filter(|reason| !reason.is_empty() && *reason != detail)
-        {
-            card = card.child(div().whitespace_normal().child(reason.to_owned()));
+        for field in ["prompt", "reason"] {
+            if let Some(text) = request.item[field].as_str().filter(|text| {
+                !text.is_empty()
+                    && *text != detail
+                    && (field != "reason" || Some(*text) != request.item["prompt"].as_str())
+            }) {
+                card = card.child(
+                    div()
+                        .debug_selector({
+                            let request = request_id.clone();
+                            move || format!("approval-provider-{field}-{request}")
+                        })
+                        .whitespace_normal()
+                        .child(text.to_owned()),
+                );
+            }
         }
         if let Some(reason) = request.item["fullAccessOverride"].as_str() {
             card = card.child(match reason {

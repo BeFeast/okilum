@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 mod prompt;
 pub use prompt::{prompt_length_validation, MAX_PROMPT_UNITS};
 
+mod approval_detail;
 mod journal;
 mod question_attachments;
 mod state;

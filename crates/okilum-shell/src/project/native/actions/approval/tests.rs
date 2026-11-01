@@ -2,6 +2,18 @@ use super::*;
 use ::core::prelude::v1::test;
 use std::{cell::RefCell, rc::Rc};
 
+fn request(item: serde_json::Value) -> Request {
+    Request {
+        id: "derived".into(),
+        item,
+        answerable: true,
+        dismissible: false,
+        response_mode: Some("live".into()),
+        reason: None,
+        approval_detail: None,
+    }
+}
+
 #[test]
 fn context_uses_complete_native_fields_and_truthful_kind_fallbacks() {
     let detail = "  command --literal='α'\n\n    LAST_SENTINEL  ";
@@ -17,13 +29,202 @@ fn context_uses_complete_native_fields_and_truthful_kind_fallbacks() {
         ("permission", "Approval requested", "Approval detail"),
         ("future-kind", "Approval requested", "Approval detail"),
     ] {
-        let mut item = json!({"requestKind":kind,"prompt":detail,"reason":"distinct reason"});
-        assert_eq!(approval_kind(&item), (label, aria));
-        assert_eq!(approval_detail(&item), detail);
-        item["prompt"] = json!("");
-        assert_eq!(approval_detail(&item), "distinct reason");
-        item["reason"] = serde_json::Value::Null;
-        assert_eq!(approval_detail(&item), label);
+        let mut request =
+            request(json!({"requestKind":kind,"prompt":detail,"reason":"distinct reason"}));
+        assert_eq!(approval_kind(&request), (label, aria));
+        if kind == "command" {
+            assert_eq!(approval_detail(&request), "Command detail unavailable");
+            request.approval_detail = Some(detail.into());
+            request.item["prompt"] = json!("The provider supplied only a justification");
+            assert_eq!(approval_detail(&request), detail);
+        } else {
+            assert_eq!(approval_detail(&request), detail);
+            request.item["prompt"] = json!("");
+            assert_eq!(approval_detail(&request), "distinct reason");
+            request.item["reason"] = serde_json::Value::Null;
+            assert_eq!(approval_detail(&request), label);
+        }
+    }
+}
+
+fn command_state(command: &str, has_kind: bool) -> State {
+    use okilum_t3::{projection::Projection, stream::ThreadUpdate};
+    let reference = json!({"driver":"codex","nativeId":"exact-command","strength":"strong"});
+    let mut approval = json!({"id":"approval-row","threadId":"thread","runId":"run",
+        "nodeId":"approval-node","providerThreadId":"provider-thread","providerTurnId":"provider-turn",
+        "nativeItemRef":reference,"ordinal":2,"status":"pending","type":"approval_request",
+        "requestId":"derived","requestKind":"command","prompt":"Justification is not the command",
+        "reason":"Distinct provider reason","appName":"Fixture app"});
+    if !has_kind {
+        approval.as_object_mut().unwrap().remove("requestKind");
+    }
+    let execution = json!({"id":"execution-row","threadId":"thread","runId":"run",
+        "nodeId":"execution-node","providerThreadId":"provider-thread","providerTurnId":"provider-turn",
+        "nativeItemRef":reference,"ordinal":1,"status":"running","type":"command_execution",
+        "input":command});
+    let items = vec![execution, approval];
+    let snapshot = ThreadUpdate::Snapshot {
+        sequence: 1,
+        projection: json!({
+            "thread":{"id":"thread","projectId":"project","title":"Approval fixture"},
+            "runs":[{"id":"run","ordinal":1,"status":"waiting","providerThreadId":"provider-thread"}],
+            "attempts":[],"providerThreads":[{"id":"provider-thread"}],"providerSessions":[],
+            "runtimeRequests":[{"id":"derived","threadId":"thread","runId":"run","nodeId":"approval-node",
+                "providerThreadId":"provider-thread","providerTurnId":"provider-turn",
+                "nativeRequestRef":reference,"kind":"command","status":"pending","responseCapability":{"type":"live"}}],
+            "turnItems":items,
+            "visibleTurnItems":items.iter().enumerate().map(|(position,item)|json!({
+                "position":position,"visibility":"local","sourceThreadId":"thread",
+                "sourceItemId":item["id"],"item":item})).collect::<Vec<_>>()
+        }),
+        history_cursor: None,
+        has_more_history: false,
+        latest_local_turn_ordinal: None,
+    };
+    let mut projection = Projection::new("thread", "project");
+    projection.apply(&[snapshot]).unwrap();
+    projection.action_state()
+}
+
+struct ContextHarness {
+    _parent: Entity<ProjectView>,
+    actions: Entity<Actions>,
+    request: Request,
+}
+impl Render for ContextHarness {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let request = self.request.clone();
+        v_flex()
+            .size_full()
+            .min_w_0()
+            .p_2()
+            .child(self.actions.update(cx, |actions, cx| {
+                actions.render_approval(&request, false, cx)
+            }))
+    }
+}
+
+#[gpui::test]
+fn derived_full_command_is_rendered_separately_from_provider_justification(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(crate::test_init);
+    let command = (0..20)
+        .map(|n| format!("  command {n:02} {} CANONICAL_TAIL", "x".repeat(400)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let state = command_state(&command, true);
+    let request = state.requests.first().unwrap().clone();
+    assert_eq!(request.approval_detail.as_deref(), Some(command.as_str()));
+    assert_eq!(request.item["prompt"], "Justification is not the command");
+    let temp = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let parent = cx.new(|cx| {
+            let mut parent = crate::project::fixture::view(
+                temp.path().to_owned(),
+                Arc::new(crate::project::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            parent.active = false;
+            super::super::tests::inert_native(&mut parent);
+            parent
+        });
+        let actions = parent.read(cx).native.actions.clone();
+        actions.update(cx, |actions, cx| {
+            actions.set_state(state, window, cx);
+            actions.set_enabled(true, cx);
+        });
+        let host = cx.new(|_| ContextHarness {
+            _parent: parent,
+            actions,
+            request,
+        });
+        Root::new(host, window, cx)
+    });
+    visual.simulate_resize(size(px(420.), px(600.)));
+    visual.run_until_parked();
+    let viewport = visual.debug_bounds("approval-detail-derived").unwrap();
+    let first = visual
+        .debug_bounds("approval-detail-derived-line-0")
+        .unwrap();
+    let last = visual
+        .debug_bounds("approval-detail-derived-line-19")
+        .unwrap();
+    assert!(first.size.width > viewport.size.width * 2.);
+    assert!(last.origin.y > viewport.bottom());
+    assert!(visual
+        .debug_bounds("approval-provider-prompt-derived")
+        .is_some());
+    assert!(visual
+        .debug_bounds("approval-provider-reason-derived")
+        .is_some());
+    assert!(visual.debug_bounds("approval-app-derived").is_some());
+    for selector in [
+        "approval-derived-0",
+        "approval-derived-1",
+        "approval-derived-2",
+        "approval-derived-3",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some());
+    }
+    // Missing/ambiguous context must stay honest without changing authority.
+    let host = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ContextHarness>().unwrap()
+    });
+    let without_kind = command_state(&command, false).requests.remove(0);
+    assert_eq!(
+        without_kind.approval_detail.as_deref(),
+        Some(command.as_str())
+    );
+    assert!(without_kind.item.get("requestKind").is_none());
+    assert_eq!(
+        approval_kind(&without_kind),
+        ("Command approval", "Command")
+    );
+    host.update(visual, |host, cx| {
+        host.request = without_kind;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("approval-detail-derived-line-19")
+        .is_some());
+    assert!(visual
+        .debug_bounds("approval-provider-prompt-derived")
+        .is_some());
+    host.update(visual, |host, cx| {
+        host.request.item["requestKind"] = json!("command");
+        host.request.approval_detail = None;
+        assert_eq!(approval_detail(&host.request), "Command detail unavailable");
+        let mut authority = host.actions.read(cx).state.clone();
+        authority.requests[0].approval_detail = None;
+        assert!(authority.allows(&Intent::Respond {
+            request_id: "derived".into(),
+            decision: Some("accept".into()),
+            answers: None,
+            attachments_by_question_id: Default::default(),
+        }));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("approval-detail-derived-line-0")
+        .is_some());
+    assert!(visual
+        .debug_bounds("approval-detail-derived-line-19")
+        .is_none());
+    assert!(visual
+        .debug_bounds("approval-provider-prompt-derived")
+        .is_some());
+    for selector in [
+        "approval-derived-0",
+        "approval-derived-1",
+        "approval-derived-2",
+        "approval-derived-3",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some());
     }
 }
 

@@ -13,6 +13,7 @@ fn question(id: &str, required: bool) -> Value {
 
 fn request(questions: Vec<Value>) -> Request {
     Request {
+        approval_detail: None,
         id: "runtime-request".into(),
         item: json!({
             "id": "request-row", "requestId": "runtime-request", "threadId": "thread",

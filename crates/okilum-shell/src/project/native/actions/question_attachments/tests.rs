@@ -42,6 +42,7 @@ fn uploaded(id: &str) -> AttachmentState {
 }
 fn request(custom: bool) -> Request {
     Request {
+        approval_detail: None,
         id: "wizard".into(),
         item: json!({"id":"wizard-row","requestId":"wizard","threadId":"mcp:fixture-manager","type":"user_input_request","status":"pending","questions":[
             {"id":"one","question":"First answer","options":[]},
@@ -411,3 +412,5 @@ fn upload_publication_rejects_old_job_scope_question_revision_and_confirmed_envi
         });
     });
 }
+
+mod pending_intent;

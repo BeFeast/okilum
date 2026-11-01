@@ -23,6 +23,9 @@ pub struct State {
 pub struct Request {
     pub id: String,
     pub item: Value,
+    /// Full command input from a uniquely matched canonical execution. Missing
+    /// context never changes response authority or mutates the source card.
+    pub approval_detail: Option<String>,
     pub answerable: bool,
     pub dismissible: bool,
     /// Runtime response capability, retained independently of card presentation.
@@ -100,6 +103,7 @@ impl Projection {
                         });
                     Some(Request {
                         id: id.into(),
+                        approval_detail: super::approval_detail::command_detail(self, r, item),
                         item: item.as_ref().clone(),
                         answerable,
                         dismissible: answerable && expected == "user_input_request" && message,
@@ -291,6 +295,7 @@ mod tests {
         State {
             ready: true,
             requests: vec![Request {
+                approval_detail: None,
                 id: "bound-request".into(),
                 item,
                 answerable: true,

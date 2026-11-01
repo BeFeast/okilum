@@ -41,6 +41,32 @@ struct Entry {
     revision: uuid::Uuid,
     job: Option<uuid::Uuid>,
 }
+/// A captured source is already part of the question draft, even before the
+/// server confirms upload capabilities. Failed discovery never discards it.
+#[derive(Clone)]
+struct PendingIntent {
+    id: String,
+    control: QuestionControl,
+    row: serde_json::Value,
+    question: serde_json::Value,
+    action: UserAction,
+    error: Option<String>,
+}
+impl PendingIntent {
+    fn key(&self) -> (&str, &str) {
+        (
+            &self.control.transition.request,
+            &self.control.transition.question,
+        )
+    }
+    fn source_count(&self) -> usize {
+        match &self.action {
+            UserAction::Add(sources) => sources.len(),
+            _ => 0,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Runtime {
     context: Option<AttachmentContext>,
@@ -48,6 +74,7 @@ pub(super) struct Runtime {
     loading: Option<uuid::Uuid>,
     epoch: uuid::Uuid,
     entries: HashMap<Key, Vec<Entry>>,
+    pending: Vec<PendingIntent>,
     notice: Option<String>,
 }
 impl Runtime {
@@ -90,6 +117,10 @@ impl Runtime {
     pub(super) fn invalidate_jobs(&mut self) {
         self.epoch = uuid::Uuid::new_v4();
         self.loading = None;
+        for pending in &mut self.pending {
+            pending.error =
+                Some("Connection changed. Retry attaching this file when ready.".into());
+        }
         for entry in self.entries.values_mut().flatten() {
             if entry.job.take().is_some() {
                 entry.row.state = AttachmentState::Error {
@@ -100,6 +131,25 @@ impl Runtime {
     }
     pub(super) fn reconcile(&mut self, state: &State) {
         if state.ready {
+            self.pending.retain_mut(|pending| {
+                let (request, question) = pending.key();
+                let Some(candidate) = state.requests.iter().find(|candidate| {
+                    candidate.id == request && candidate.item["id"] == pending.row
+                }) else {
+                    return false;
+                };
+                let Some(current) = candidate.item["questions"]
+                    .as_array()
+                    .and_then(|questions| questions.iter().find(|q| q["id"] == question))
+                else {
+                    return false;
+                };
+                if current != &pending.question {
+                    pending.error =
+                        Some("The question changed. Retry attaching the selected file.".into());
+                }
+                true
+            });
             self.entries.retain(|(request, question), entries| {
                 let Some(candidate) = state.requests.iter().find(|candidate| {
                     candidate.id == *request
@@ -122,6 +172,13 @@ impl Runtime {
         request: &str,
         question: Option<&str>,
     ) -> anyhow::Result<QuestionAttachments> {
+        anyhow::ensure!(
+            !self.pending.iter().any(|pending| {
+                let (r, q) = pending.key();
+                r == request && question.is_none_or(|question| question == q)
+            }),
+            "Finish attaching the selected file, retry it or remove it before answering"
+        );
         let collections = self
             .entries
             .iter()
@@ -183,7 +240,13 @@ impl Runtime {
             .iter()
             .filter(|((r, _), _)| r == request)
             .map(|(_, rows)| rows.len())
-            .sum()
+            .sum::<usize>()
+            + self
+                .pending
+                .iter()
+                .filter(|pending| pending.key().0 == request)
+                .map(PendingIntent::source_count)
+                .sum::<usize>()
     }
 }
 #[derive(Clone)]
@@ -238,7 +301,7 @@ impl Actions {
     fn question_file_action(
         &mut self,
         control: QuestionControl,
-        action: UserAction,
+        mut action: UserAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -260,10 +323,69 @@ impl Actions {
         else {
             return;
         };
-        if self.question_files.profile.is_some() {
+        // A user's attachment action cancels an already armed choice timer now,
+        // rather than waiting for capabilities, the picker or preparation.
+        self.cancel_question_transition(&control.transition.request);
+        if self
+            .question_files
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.capabilities.question_attachments_available())
+        {
             self.question_file_action_ready(control, action, window, cx);
             return;
         }
+        if !support_only {
+            if let UserAction::Add(sources) = &mut action {
+                let remaining = MAX_ATTACHMENTS
+                    .saturating_sub(self.question_files.count(&control.transition.request));
+                if sources.len() > remaining {
+                    sources.truncate(remaining);
+                    self.question_files.notice =
+                        Some("You can attach up to 8 files across all questions.".into());
+                }
+                if sources.is_empty() {
+                    cx.notify();
+                    return;
+                }
+            }
+            let Some(request) = self
+                .state
+                .requests
+                .iter()
+                .find(|request| request.id == control.transition.request)
+            else {
+                return;
+            };
+            let Some(question) = request.item["questions"]
+                .as_array()
+                .and_then(|questions| {
+                    questions
+                        .iter()
+                        .find(|q| q["id"] == control.transition.question)
+                })
+                .cloned()
+            else {
+                return;
+            };
+            let unsupported = self.question_files.profile.is_some();
+            self.question_files.pending.push(PendingIntent {
+                id: uuid::Uuid::new_v4().to_string(), control: control.clone(), row: request.item["id"].clone(), question, action,
+                error: unsupported.then(|| "This server does not support files in question answers. Retry or remove the selected file.".into()),
+            });
+        }
+        if self.question_files.profile.is_none() {
+            self.question_lookup_profile(control, context, window, cx);
+        }
+        cx.notify();
+    }
+    fn question_lookup_profile(
+        &mut self,
+        control: QuestionControl,
+        context: AttachmentContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.question_files.loading.is_some() {
             return;
         }
@@ -273,43 +395,167 @@ impl Actions {
         self.question_files.notice = None;
         let client = context.client.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = super::super::recovery::stream_io(cx.background_executor(), move || {
-                client.environment_profile()
-            })
-            .await;
+            let result = super::super::recovery::stream_io(cx.background_executor(), move || client.environment_profile()).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.question_files.loading != Some(job)
-                    || this.question_files.epoch != epoch
-                    || !this.question_file_context_current(&context)
-                {
+                if this.question_files.loading != Some(job) || this.question_files.epoch != epoch || !this.question_file_context_current(&context) { return; }
+                this.question_files.loading = None;
+                if !this.question_control_current(&control) || !this.state.ready {
+                    this.question_pending_error("The question changed. Retry attaching the selected file.");
+                    cx.notify();
                     return;
                 }
-                this.question_files.loading = None;
                 match result {
                     Ok(profile) => {
-                        if this
-                            .question_files
-                            .context
-                            .as_ref()
-                            .and_then(|context| context.confirmed_environment.as_ref())
-                            .is_some_and(|expected| expected != &profile.identity.environment_id)
-                        {
-                            this.question_files.notice = Some(
-                                "The T3 environment changed. Reconnect before attaching files."
-                                    .into(),
-                            );
+                        if this.question_files.context.as_ref().and_then(|context| context.confirmed_environment.as_ref()).is_some_and(|expected| expected != &profile.identity.environment_id) {
+                            this.question_pending_error("The T3 environment changed. Reconnect before attaching files.");
                             cx.notify();
                             return;
                         }
+                        let available = profile.capabilities.question_attachments_available();
                         this.question_files.profile = Some(profile);
-                        this.question_file_action_ready(control, action, window, cx);
+                        if available {
+                            let pending = this.question_files.pending.iter().map(|pending| pending.id.clone()).collect::<Vec<_>>();
+                            for id in pending { this.question_materialize_pending(&id, window, cx); }
+                        } else { this.question_pending_error("This server does not support files in question answers. Retry or remove the selected file."); }
                     }
-                    Err(error) => this.question_files.notice = Some(error.to_string()),
+                    Err(error) => this.question_pending_error(&error.to_string()),
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
+    }
+    fn question_pending_error(&mut self, message: &str) {
+        self.question_files.notice = Some(message.into());
+        for pending in &mut self.question_files.pending {
+            pending.error = Some(message.into());
+        }
+    }
+    fn question_materialize_pending(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self
+            .question_files
+            .pending
+            .iter()
+            .find(|pending| pending.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        if !self.question_file_allowed(&pending.control) {
+            if let Some(pending) = self
+                .question_files
+                .pending
+                .iter_mut()
+                .find(|pending| pending.id == id)
+            {
+                pending.error =
+                    Some("Return to this question and retry attaching the selected file.".into());
+            }
+            return;
+        }
+        if !self
+            .question_files
+            .capabilities()
+            .is_some_and(NativeEnvironmentCapabilities::question_attachments_available)
+        {
+            return;
+        }
+        // One UI update removes the intent and creates its pending upload rows.
+        // No render, deferred event or timer observes an empty readiness gap.
+        self.question_files
+            .pending
+            .retain(|pending| pending.id != id);
+        self.question_file_action_ready(pending.control, pending.action, window, cx);
+    }
+    fn question_retry_pending(
+        &mut self,
+        control: &QuestionControl,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.question_file_allowed(control) {
+            return;
+        }
+        let Some(context) = self
+            .question_files
+            .context
+            .clone()
+            .filter(|context| self.question_file_context_current(context))
+        else {
+            return;
+        };
+        let Some(request) = self
+            .state
+            .requests
+            .iter()
+            .find(|request| request.id == control.transition.request)
+        else {
+            return;
+        };
+        let Some(question) = request.item["questions"]
+            .as_array()
+            .and_then(|questions| {
+                questions
+                    .iter()
+                    .find(|q| q["id"] == control.transition.question)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let Some(pending) = self.question_files.pending.iter_mut().find(|pending| {
+            pending.id == id
+                && pending.key()
+                    == (
+                        control.transition.request.as_str(),
+                        control.transition.question.as_str(),
+                    )
+        }) else {
+            return;
+        };
+        pending.control = control.clone();
+        pending.row = request.item["id"].clone();
+        pending.question = question;
+        pending.error = None;
+        self.cancel_question_transition(&control.transition.request);
+        if self
+            .question_files
+            .capabilities()
+            .is_some_and(NativeEnvironmentCapabilities::question_attachments_available)
+        {
+            self.question_materialize_pending(id, window, cx);
+        } else {
+            self.question_files.profile = None;
+            self.question_lookup_profile(control.clone(), context, window, cx);
+        }
+        cx.notify();
+    }
+    fn question_remove_pending(
+        &mut self,
+        control: &QuestionControl,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.question_file_allowed(control) {
+            return;
+        }
+        self.question_files.pending.retain(|pending| {
+            !(pending.id == id
+                && pending.key()
+                    == (
+                        control.transition.request.as_str(),
+                        control.transition.question.as_str(),
+                    ))
+        });
+        self.cancel_question_transition(&control.transition.request);
+        if self.question_files.pending.is_empty() {
+            self.question_files.notice = None;
+        }
         cx.notify();
     }
     fn question_file_action_ready(
@@ -896,6 +1142,11 @@ impl Actions {
             .get(&key)
             .is_none_or(Vec::is_empty)
             && self.question_files.notice.is_none()
+            && !self
+                .question_files
+                .pending
+                .iter()
+                .any(|pending| pending.key() == (request.as_str(), question.as_str()))
         {
             return None;
         }
@@ -906,6 +1157,76 @@ impl Actions {
         });
         if let Some(notice) = &self.question_files.notice {
             tray = tray.child(div().whitespace_normal().child(notice.clone()));
+        }
+        for pending in self
+            .question_files
+            .pending
+            .iter()
+            .filter(|pending| pending.key() == (request.as_str(), question.as_str()))
+        {
+            let id = pending.id.clone();
+            let retry_id = id.clone();
+            let remove_id = id.clone();
+            let retry_control = control.clone();
+            let remove_control = control.clone();
+            let name = match &pending.action {
+                UserAction::Add(sources) => sources
+                    .iter()
+                    .map(|(_, name)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                UserAction::Pick => "File selection".into(),
+                UserAction::Retry(_) => "Selected file".into(),
+                UserAction::Check => "File support".into(),
+            };
+            let status = pending.error.as_deref().unwrap_or("Checking file support…");
+            let mut row = h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("question-file-intent-{id}")
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .child(format!("{name} — {status}")),
+                );
+            if self.question_files.loading.is_none() {
+                row = row.child(
+                    Button::new(SharedString::from(format!(
+                        "question-file-intent-retry-{id}"
+                    )))
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("question-file-intent-retry-{id}")
+                    })
+                    .ghost()
+                    .label("Retry")
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.question_retry_pending(&retry_control, &retry_id, window, cx)
+                    })),
+                );
+            }
+            row = row.child(
+                Button::new(SharedString::from(format!(
+                    "question-file-intent-remove-{id}"
+                )))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("question-file-intent-remove-{id}")
+                })
+                .ghost()
+                .label("Remove")
+                .disabled(disabled)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.question_remove_pending(&remove_control, &remove_id, cx)
+                })),
+            );
+            tray = tray.child(row);
         }
         if let Some(entries) = self.question_files.entries.get(&key) {
             for entry in entries {

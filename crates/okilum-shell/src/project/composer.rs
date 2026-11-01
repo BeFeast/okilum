@@ -626,6 +626,7 @@ mod tests {
                     answerable: true,
                     dismissible: false,
                     response_mode: Some("live".into()),
+                    approval_detail: None,
                     reason: None,
                 });
             })

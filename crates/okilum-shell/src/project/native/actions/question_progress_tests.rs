@@ -17,6 +17,7 @@ fn choice(id: &str, value: &str, custom: bool) -> Value {
 }
 fn request(questions: Vec<Value>) -> Request {
     Request {
+        approval_detail: None,
         id: ID.into(),
         item: json!({"id":"wizard-row","threadId":THREAD,"requestId":ID,"type":"user_input_request","status":"pending","questions":questions}),
         answerable: true,
@@ -558,6 +559,7 @@ fn repeat_single_click_restarts_exact_200ms_and_multi_and_optional_never_auto_ad
         &view,
         visual,
         Request {
+            approval_detail: None,
             id: "optional".into(),
             item: json!({"id":"optional-row","type":"user_input_request","requestId":"optional","threadId":THREAD,"questions":optional.item["questions"]}),
             ..optional
@@ -643,7 +645,7 @@ fn pending_timers_are_invalidated_without_rearming_after_edits_navigation_and_au
             "scope" => {view.update(visual,|view,cx|{view.native.clear(); super::tests::inert_native(view); view.sync_native_action_surface(cx);}); show(&view,visual,template.clone());}
             "replacement" => {let mut replacement=template.clone(); replacement.item["id"]=json!("replacement-row"); show(&view,visual,replacement);}
             "priority" => view.update_in(visual,|view,window,cx|view.native.actions.update(cx,|actions,cx| {
-                let ready=actions.state.clone(); let mut queued=ready.clone(); queued.requests.push(Request{id:"approval".into(),item:json!({"id":"approval-row","type":"approval_request","requestId":"approval","threadId":THREAD}),answerable:true,dismissible:false,response_mode:Some("live".into()),reason:None}); actions.set_state(queued,window,cx); actions.set_state(ready,window,cx);
+                let ready=actions.state.clone(); let mut queued=ready.clone(); queued.requests.push(Request { approval_detail: None,id:"approval".into(),item:json!({"id":"approval-row","type":"approval_request","requestId":"approval","threadId":THREAD}),answerable:true,dismissible:false,response_mode:Some("live".into()),reason:None}); actions.set_state(queued,window,cx); actions.set_state(ready,window,cx);
             })),
             "retained" => view.update(visual,|view,cx|view.native.actions.update(cx,|actions,cx| {
                 actions.records.push(Record {command:okilum_t3::actions::Command::new(THREAD,Intent::Respond { attachments_by_question_id: Default::default(),request_id:ID.into(),decision:None,answers:Some(BTreeMap::from([("one".into(),json!(" exact ")),("two".into(),json!("second")),("three".into(),json!("complete"))]))}),sequence:None}); actions.cancel_retained_transitions(); cx.notify();

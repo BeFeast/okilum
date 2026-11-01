@@ -1752,6 +1752,7 @@ mod tests {
         let state = State {
             ready: true,
             requests: vec![okilum_t3::actions::Request {
+                approval_detail: None,
                 id: "approval".into(),
                 item: json!({"type":"approval_request","options":[{"decision":"decline","label":"Decline"}]}),
                 answerable: true,
@@ -1790,7 +1791,7 @@ mod tests {
                 view.active=false;
                 inert_native(&mut view);
                 let question = Arc::new(json!({"id":"request-row","threadId":"thread","ordinal":2,"status":"pending","type":"user_input_request","requestId":"r","questions":[{"id":"q","question":"Your choice","options":[]}]}));
-                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request{id:"r".into(),item:question.as_ref().clone(),answerable:true,dismissible:true,response_mode:Some("message".into()),reason:None}],..Default::default()},window,cx));
+                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request { approval_detail: None,id:"r".into(),item:question.as_ref().clone(),answerable:true,dismissible:true,response_mode:Some("message".into()),reason:None}],..Default::default()},window,cx));
                 // Native history must contain real unrelated messages: the
                 // first native projection deliberately replaces any MCP rows.
                 let mut rows:Vec<_>=(0..1000).map(|n| Arc::new(okilum_t3::projection::TurnRow {
@@ -1951,7 +1952,7 @@ mod tests {
                 {"id":"custom","question":"Why","options":[]}
             ]});
             view.native.actions.update(cx, |a,cx| {
-                let request=okilum_t3::actions::Request{id:"r".into(),item:item.clone(),answerable:true,dismissible:true,response_mode:Some("live".into()),reason:None};
+                let request=okilum_t3::actions::Request { approval_detail: None,id:"r".into(),item:item.clone(),answerable:true,dismissible:true,response_mode:Some("live".into()),reason:None};
                 a.set_state(State{ready:true,requests:vec![request],..Default::default()},window,cx);
                 assert_eq!(a.selections[&("r".into(),"one".into())],vec![" exact "]);
                 a.selections.insert(("r".into(),"many".into()),vec!["A".into(),"B".into()]);
