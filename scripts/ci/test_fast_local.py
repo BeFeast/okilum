@@ -77,5 +77,54 @@ exit "${COMPILER_STATUS:-0}"
             result=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_stable_source_avoids_legacy_metadata_and_reuses_its_own_target(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);env=self.fixture(root);(root/'gate').touch()
+            env.update(OKILUM_FAST_SLOTS='1',GITHUB_RUN_NUMBER='0')
+            legacy=root/'pool/0/target'
+            legacy.mkdir(parents=True)
+            metadata=legacy/'icons-dir'
+            stale='/removed/hostexecutor/vendor/gpui-kit/assets/icons'
+            metadata.write_text(stale)
+            # Model Cargo reusing build-script metadata rather than rerunning
+            # assets build.rs. The component forwards it into macro expansion.
+            scripts=root/'scripts/ci'
+            (scripts/'fast.sh').write_text('''#!/usr/bin/env bash
+set -eu
+test ! -e /proc/$$/fd/9
+metadata="$CARGO_TARGET_DIR/icons-dir"
+if [ ! -f "$metadata" ]; then
+    printf '%s' "$PWD/vendor/gpui-kit/assets/icons" > "$metadata"
+    printf 'assets-build\\n' >> "$POOL_LOG"
+fi
+export DEP_GPUI_KIT_DEFAULT_ICONS_ICONS_DIR="$(cat "$metadata")"
+component_rustc_env="$DEP_GPUI_KIT_DEFAULT_ICONS_ICONS_DIR"
+test "$component_rustc_env" = "$PWD/vendor/gpui-kit/assets/icons"
+printf '%s\\n' "$CARGO_TARGET_DIR" >> "$POOL_LOG"
+''')
+            subprocess.run(['git','-C',str(root),'add','scripts'],check=True)
+            subprocess.run(['git','-C',str(root),'-c','user.name=Fixture',
+                            '-c','user.email=fixture@example.invalid','commit','-qm','metadata probe'],check=True)
+            env['GITHUB_SHA']=subprocess.check_output(
+                ['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+            # Positive control: the probe detects the legacy stale path.
+            control=subprocess.run(['bash','scripts/ci/fast.sh'],cwd=root,
+                env=dict(env,CARGO_TARGET_DIR=str(legacy)),capture_output=True,text=True,timeout=3)
+            self.assertNotEqual(control.returncode,0)
+            for _ in range(2):
+                result=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,
+                    env=env,capture_output=True,text=True,timeout=3)
+                self.assertEqual(result.returncode,0,result.stderr)
+            rows=(root/'log').read_text().splitlines()
+            self.assertEqual(rows[0],'assets-build')
+            self.assertEqual(len(rows),3)  # One build-script run, two warm consumers.
+            self.assertEqual(rows[1],rows[2])
+            target=Path(rows[1])
+            self.assertEqual(target.parent,legacy.parent)
+            self.assertNotEqual(target,legacy)
+            self.assertEqual((target/'icons-dir').read_text(),
+                             str(root/'pool/0/source/vendor/gpui-kit/assets/icons'))
+            self.assertEqual(metadata.read_text(),stale)
+
 
 if __name__=='__main__':unittest.main()

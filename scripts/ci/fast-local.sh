@@ -16,7 +16,11 @@ while true; do
         exec 9>"$slot_root/$slot.lock"
         if flock -n 9; then
             export OKILUM_FAST_SLOT=$slot
-            export CARGO_TARGET_DIR="$slot_root/$slot/target"
+            # Stable source must not reuse the legacy ephemeral-checkout target:
+            # assets build.rs metadata carries an absolute icons directory through
+            # DEP_GPUI_KIT_DEFAULT_ICONS_ICONS_DIR, component rustc-env and macros.
+            # Keep the old cache intact; this namespace stays warm across runs.
+            export CARGO_TARGET_DIR="$slot_root/$slot/target-stable-source-v1"
             # Four fast jobs consume at most twelve compiler workers on baldr.
             export CARGO_BUILD_JOBS=3 RAYON_NUM_THREADS=3
             mkdir -p "$CARGO_TARGET_DIR"
