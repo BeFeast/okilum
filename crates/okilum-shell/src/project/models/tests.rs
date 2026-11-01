@@ -96,7 +96,7 @@ fn exact_instance_browse_search_and_click_preserve_confirmed_current(cx: &mut Te
     });
     visual
         .executor()
-        .advance_clock(Duration::from_millis(2_000));
+        .advance_clock(Duration::from_millis(15_000));
     visual.run_until_parked();
     let trigger = visual.debug_bounds("project-manager-model").unwrap();
     visual.simulate_click(trigger.center(), Modifiers::default());

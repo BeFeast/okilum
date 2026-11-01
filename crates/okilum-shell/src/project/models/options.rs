@@ -66,7 +66,11 @@ impl ProjectView {
         }
         control.current.as_ref() == Some(&choice.value)
     }
-    pub(super) fn model_chip_summary(&self, snapshot: &Snapshot, cx: &App) -> String {
+    pub(in crate::project::models) fn model_chip_summary(
+        &self,
+        snapshot: &Snapshot,
+        cx: &App,
+    ) -> String {
         snapshot
             .option_controls(&snapshot.configuration.model_selection)
             .iter()
@@ -239,6 +243,7 @@ impl ProjectView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn prompt_only_effort_edits_visible_draft_without_encoding_an_option() {
         assert_eq!(

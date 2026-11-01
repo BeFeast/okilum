@@ -344,6 +344,7 @@ impl ProjectView {
             )
             .child(
                 div()
+                    .debug_selector(move || format!("project-model-provider-label-{index}"))
                     .truncate()
                     .text_size(px(12.))
                     .text_color(palette.text_muted)

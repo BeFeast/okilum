@@ -1,0 +1,320 @@
+//! Real popup interactions over the existing read-only fixture transport. These
+//! verify controls and confirmed state; they make no native/compositor claim.
+use super::*;
+use ::core::prelude::v1::test;
+use serde_json::{json, Value};
+
+fn model(id: &str, short_name: &str, descriptors: Value) -> Value {
+    json!({"id":id,"label":format!("Upstream · {id}"),"shortName":short_name,"subProvider":"OpenAI",
+        "capabilities":{"optionDescriptors":descriptors}})
+}
+fn catalog(driver: &str, descriptors: Value) -> Value {
+    json!({"runtimeMode":"full-access","providers":[
+        {"providerInstanceId":"work-account","driverKind":driver,"displayName":"Work account",
+            "models":[model("same-model","Reasoning Pro",descriptors),model("swift-model","Swift Mini",json!([]))]},
+        {"providerInstanceId":"personal-account","driverKind":driver,"displayName":"Personal account",
+            "models":[model("same-model","Personal Pro",json!([]))]}
+    ]})
+}
+fn selection(instance: &str, model: &str, options: Value) -> ModelSelection {
+    serde_json::from_value(json!({"instanceId":instance,"model":model,"options":options})).unwrap()
+}
+fn reasoning(prompt_injected: bool) -> Value {
+    json!([
+        {"type":"select","id":"reasoningEffort","label":"Reasoning","currentValue":"medium",
+            "promptInjectedValues":if prompt_injected {json!(["ultrathink"])}else{json!([])},
+            "options":[{"id":"low","label":"Low"},{"id":"high","label":"High"},
+                {"id":"ultrathink","label":"Ultracode"}]},
+        {"type":"boolean","id":"fastMode","label":"Fast","currentValue":false}
+    ])
+}
+fn fixture<'a>(
+    cx: &'a mut TestAppContext,
+    catalog: Value,
+    current: ModelSelection,
+) -> (
+    Entity<ProjectView>,
+    &'a mut VisualTestContext,
+    tempfile::TempDir,
+    Arc<super::super::fixture::Fake>,
+) {
+    cx.update(crate::test_init);
+    let state = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(super::super::fixture::Fake::default());
+    *gateway.model_catalog.lock().unwrap() = Some(serde_json::from_value(catalog).unwrap());
+    *gateway.model_current.lock().unwrap() = Some(current);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            super::super::fixture::view(state.path().to_owned(), gateway.clone(), window, cx)
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1000.), px(1000.)));
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.models.is_some(),
+            "positive control: connection warmup completed before opening"
+        );
+    });
+    view.update_in(visual, |view, window, cx| {
+        view.compose.update(cx, |input, cx| input.focus(window, cx));
+    });
+    visual.run_until_parked();
+    (view, visual, state, gateway)
+}
+fn click(visual: &mut VisualTestContext, selector: &str) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("visible control missing: {selector}"));
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+}
+fn key(visual: &mut VisualTestContext, binding: &str) {
+    visual.simulate_keystrokes(binding);
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn readable_rows_stars_and_keyboard_keep_exact_accounts_and_durable_favorites(
+    cx: &mut TestAppContext,
+) {
+    let current = selection("work-account", "same-model", json!([]));
+    let (view, visual, state, gateway) = fixture(cx, catalog("codex", json!([])), current);
+    let warmed_reads = gateway.reads.lock().unwrap().len();
+    // The advertised Linux opening shortcut reaches the actual popover and
+    // search field; open/close itself does not request model/thread reads.
+    key(visual, "ctrl-shift-m");
+    assert!(visual.debug_bounds("project-model-panel").is_some());
+    assert!(visual.debug_bounds("project-model-label-0").is_some());
+    assert!(visual
+        .debug_bounds("project-model-provider-label-0")
+        .is_some());
+    view.read_with(visual, |view, cx| {
+        let choices = view.visible_model_choices(cx);
+        assert_eq!(
+            choices[0].label, "Reasoning Pro",
+            "server displayShortName replaces raw slug"
+        );
+        assert_eq!(choices[0].provider_label, "Work account");
+        assert!(choices[0].current);
+    });
+    click(visual, "project-model-favorite-1");
+    assert!(
+        visual.debug_bounds("project-model-panel").is_some(),
+        "starring leaves the popup open"
+    );
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "starring never chooses a model"
+    );
+    let restored = preferences::Prefs::load(state.path(), "https://t3.example.test").unwrap();
+    assert!(restored.is_favorite("work-account", "swift-model"));
+    assert!(!restored.is_favorite("personal-account", "swift-model"));
+    click(visual, "project-model-favorites");
+    view.read_with(visual, |view, cx| {
+        let visible = view.visible_model_choices(cx);
+        assert_eq!(
+            visible.len(),
+            2,
+            "favorites retain quick access to the current model"
+        );
+        assert!(visible
+            .iter()
+            .any(|choice| choice.selection.model == "swift-model"));
+    });
+    key(visual, "escape");
+    key(visual, "ctrl-shift-m");
+    click(visual, "project-model-provider-1");
+    view.read_with(visual, |view, cx| {
+        let visible = view.visible_model_choices(cx);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].selection.instance_id, "personal-account");
+        assert_eq!(visible[0].label, "Personal Pro");
+        assert!(
+            !view.model_is_favorite(&visible[0].selection),
+            "same-driver accounts do not share stars"
+        );
+    });
+    assert_eq!(
+        gateway.reads.lock().unwrap().len(),
+        warmed_reads,
+        "two open/close cycles start zero reads"
+    );
+    key(visual, "ctrl-1");
+    let writes = gateway.model_writes.lock().unwrap();
+    assert_eq!(
+        writes.len(),
+        1,
+        "the first visible selectable row gets Ctrl+1"
+    );
+    assert_eq!(writes[0].instance_id, "personal-account");
+    assert_eq!(writes[0].model, "same-model");
+    drop(writes);
+    assert!(visual.debug_bounds("project-model-panel").is_none());
+    key(visual, "ctrl-shift-m");
+    assert!(
+        visual.debug_bounds("project-model-current-0").is_some(),
+        "confirmed current is checked after reopening"
+    );
+    assert!(
+        gateway.sends.lock().unwrap().is_empty(),
+        "model actions never send a chat message"
+    );
+}
+
+#[gpui::test]
+fn supported_reasoning_changes_preserve_other_options_and_confirm_the_compact_chip(
+    cx: &mut TestAppContext,
+) {
+    let (view, visual, _state, gateway) = fixture(
+        cx,
+        catalog("codex", reasoning(false)),
+        selection(
+            "work-account",
+            "same-model",
+            json!([
+                {"id":"reasoningEffort","value":"low"},{"id":"fastMode","value":true}
+            ]),
+        ),
+    );
+    click(visual, "project-manager-model");
+    let column = visual
+        .debug_bounds("project-model-option-column")
+        .expect("model has a visible supported option column");
+    let choices = visual.debug_bounds("project-model-choices").unwrap();
+    assert!(
+        column.left() >= choices.right(),
+        "wide popup places reasoning to the right of models"
+    );
+    assert!(
+        visual.debug_bounds("project-model-option-0-1").is_some(),
+        "High comes from this model's descriptor"
+    );
+    click(visual, "project-model-option-0-1");
+    let writes = gateway.model_writes.lock().unwrap();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0]
+            .options
+            .iter()
+            .find(|option| option.id == "reasoningEffort")
+            .unwrap()
+            .value,
+        "high"
+    );
+    assert_eq!(
+        writes[0]
+            .options
+            .iter()
+            .find(|option| option.id == "fastMode")
+            .unwrap()
+            .value,
+        true,
+        "effort does not discard another advertised option"
+    );
+    drop(writes);
+    view.read_with(visual, |view, cx| {
+        let snapshot = view.models.as_ref().unwrap();
+        assert_eq!(
+            snapshot.configuration.model_selection,
+            gateway.model_current.lock().unwrap().clone().unwrap(),
+            "server readback owns the current selection"
+        );
+        assert_eq!(view.model_chip_summary(snapshot, cx), "High · Fast");
+        assert!(view.model_error.is_none());
+    });
+    assert!(visual.debug_bounds("project-model-current-0").is_some());
+    key(visual, "escape");
+    assert!(visual.debug_bounds("project-manager-model").is_some());
+    key(visual, "ctrl-shift-m");
+    view.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.model_chip_summary(view.models.as_ref().unwrap(), cx),
+            "High · Fast"
+        )
+    });
+    assert_eq!(
+        gateway.model_writes.lock().unwrap().len(),
+        1,
+        "reopening does not mutate configuration"
+    );
+    assert!(gateway.sends.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn prompt_injected_reasoning_edits_the_visible_draft_and_never_becomes_a_wire_option(
+    cx: &mut TestAppContext,
+) {
+    let (view, visual, _state, gateway) = fixture(
+        cx,
+        catalog("claudeAgent", reasoning(true)),
+        selection(
+            "work-account",
+            "same-model",
+            json!([
+                {"id":"reasoningEffort","value":"low"},{"id":"fastMode","value":true}
+            ]),
+        ),
+    );
+    view.update_in(visual, |view, window, cx| {
+        view.compose.update(cx, |input, cx| {
+            input.set_value("Explain the result", window, cx)
+        });
+    });
+    click(visual, "project-manager-model");
+    click(visual, "project-model-option-0-2");
+    view.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.compose.read(cx).value().as_str(),
+            "Ultrathink:\nExplain the result"
+        );
+        assert_eq!(
+            view.model_chip_summary(view.models.as_ref().unwrap(), cx),
+            "Ultracode · Fast"
+        );
+        assert!(
+            view.model_open,
+            "reasoning stays available for another choice"
+        );
+    });
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "prompt-only value is not sent to server configuration"
+    );
+    assert!(
+        gateway.sends.lock().unwrap().is_empty(),
+        "editing reasoning does not submit the draft"
+    );
+    click(visual, "project-model-option-0-0");
+    view.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.compose.read(cx).value().as_str(),
+            "Explain the result",
+            "ordinary reasoning removes the injected prefix visibly"
+        );
+        assert_eq!(
+            view.model_chip_summary(view.models.as_ref().unwrap(), cx),
+            "Low · Fast"
+        );
+    });
+    let writes = gateway.model_writes.lock().unwrap();
+    assert_eq!(writes.len(), 1);
+    assert!(!writes[0]
+        .options
+        .iter()
+        .any(|option| option.value == "ultrathink"));
+    assert_eq!(
+        writes[0]
+            .options
+            .iter()
+            .find(|option| option.id == "fastMode")
+            .unwrap()
+            .value,
+        true
+    );
+    assert!(gateway.sends.lock().unwrap().is_empty());
+}

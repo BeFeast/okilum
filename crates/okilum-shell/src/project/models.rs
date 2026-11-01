@@ -4,6 +4,8 @@ use okilum_t3::{models::Target, ModelSelection};
 
 #[cfg(target_os = "linux")]
 pub(super) mod catalog;
+#[cfg(test)]
+mod interaction_tests;
 mod navigation;
 mod options;
 mod preferences;
@@ -49,7 +51,13 @@ impl ProjectView {
             return;
         };
         let origin = environment.origin();
-        if self.model_ui.preferences_origin.as_deref() == Some(&origin) {
+        if self.model_ui.preferences_origin.as_deref() == Some(&origin)
+            && self
+                .model_ui
+                .preferences
+                .as_ref()
+                .is_none_or(|prefs| prefs.origin() == origin)
+        {
             return;
         }
         self.model_ui.preferences_origin = Some(origin.clone());

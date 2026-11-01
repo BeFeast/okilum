@@ -144,3 +144,43 @@ fn warmup_and_provider_status_snapshots_preserve_names_and_typed_option_descript
         "malformed typed metadata rejects the batch before publication/ACK"
     );
 }
+
+#[test]
+#[ignore = "explicit authorized real-T3 read-only typed catalog verification"]
+fn live_catalog_read_only() {
+    let credential =
+        std::env::var("OKILUM_T3_QA_CREDENTIAL_FILE").expect("private native credential file");
+    let origin = std::env::var("OKILUM_T3_QA_ORIGIN").expect("authorized server origin");
+    let environment = Environment::new("catalog-read-only", &origin).unwrap();
+    let token =
+        NativeToken::from_secret(&environment, &std::fs::read(credential).unwrap()).unwrap();
+    let client = NativeClient::new(environment, token, Duration::from_secs(10)).unwrap();
+    let started = Instant::now();
+    let mut stream = client.subscribe_model_catalog().unwrap();
+    let mut snapshot = None;
+    stream
+        .receive(|updates| {
+            for update in updates {
+                if let Update::Snapshot(value) = update {
+                    snapshot = Some(value.clone());
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    let snapshot = snapshot.expect("typed initial configuration");
+    let models: usize = snapshot
+        .providers
+        .iter()
+        .map(|provider| provider.models.len())
+        .sum();
+    assert!(models > 0, "positive control: real model rows decoded");
+    let controls: usize = snapshot
+        .providers
+        .iter()
+        .flat_map(|provider| &provider.models)
+        .filter_map(|model| model.capabilities.as_ref())
+        .map(|caps| caps.option_descriptors.len())
+        .sum();
+    eprintln!("MODEL2207 typed-config=PASS providers={} models={models} descriptors={controls} elapsed_ms={} threadReads=0 mutations=0 UI=UNMEASURED",snapshot.providers.len(),started.elapsed().as_millis());
+}
