@@ -186,6 +186,7 @@ impl Render for Composer {
             .into_iter()
             .map(|(mode, label)| {
                 Button::new(SharedString::from(format!("project-mode-{label}")))
+                    .debug_selector(move || format!("project-mode-{label}"))
                     .ghost()
                     .label(format!(
                         "{}{label}",

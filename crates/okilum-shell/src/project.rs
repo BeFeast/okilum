@@ -1320,6 +1320,23 @@ impl ProjectView {
         v_flex()
             .id("project-tab")
             .debug_selector(|| "project-tab".into())
+            .when(cfg!(target_os = "linux"), |view| {
+                #[cfg(target_os = "linux")]
+                let view = view.on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if this.active
+                        && !this.busy
+                        && this.native_actions_pinned()
+                        && reader_features::enabled(reader_features::Feature::Agents, cx)
+                        && !this.compose.read(cx).focus_handle(cx).is_focused(window)
+                        && !this.origin.read(cx).focus_handle(cx).is_focused(window)
+                    {
+                        this.native.actions.update(cx, |actions, cx| {
+                            actions.handle_question_key(event, window, cx);
+                        });
+                    }
+                }));
+                view
+            })
             .size_full()
             .min_h_0()
             .p_4()

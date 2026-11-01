@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 mod question_progress;
 use question_progress::{QuestionProgress, Transition};
+mod question_keys;
+use question_keys::QuestionKeys;
 
 #[derive(Clone)]
 struct QuestionControl {
@@ -201,6 +203,7 @@ pub(crate) struct Actions {
     subscriptions: HashMap<(String, String), Subscription>,
     question_progress: HashMap<String, QuestionProgress>,
     question_timers: HashMap<String, Task<()>>,
+    question_keys: Option<QuestionKeys>,
     request_revision: u64,
     busy: bool,
     enabled: bool,
@@ -226,6 +229,7 @@ impl Actions {
             subscriptions: HashMap::new(),
             question_progress: HashMap::new(),
             question_timers: HashMap::new(),
+            question_keys: None,
             request_revision: 0,
             busy: false,
             enabled: false,
@@ -272,6 +276,7 @@ impl Actions {
         self.selections.clear();
         self.subscriptions.clear();
         self.question_timers.clear();
+        self.question_keys = None;
         self.question_progress.clear();
         self.records.clear();
         self.error = None;
@@ -778,7 +783,7 @@ impl Actions {
 }
 impl Actions {
     fn render_question_step(
-        &self,
+        &mut self,
         request: &Request,
         disabled: bool,
         cx: &mut Context<Self>,
@@ -911,8 +916,25 @@ impl Actions {
             );
         } else {
             form = form.child(div().whitespace_normal().child(question_text));
+            if question["multiSelect"] == true {
+                form = form.child(
+                    div()
+                        .text_xs()
+                        .text_color(brand::palette(cx).text_muted)
+                        .debug_selector({
+                            let request = request_id.clone();
+                            move || format!("question-multi-guidance-{request}")
+                        })
+                        .child("Select one or more options."),
+                );
+            }
             if let Some(options) = question["options"].as_array() {
-                let mut buttons = h_flex().flex_wrap().gap_1();
+                let shortcuts = self.pinned
+                    && self
+                        .current_request()
+                        .is_some_and(|(current, _)| current.id == request_id);
+                let keys = QuestionKeys::new(control.clone(), options);
+                let mut buttons = v_flex().w_full().min_w_0().gap_1();
                 for (n, option) in options.iter().enumerate() {
                     let Some(value) = option["value"].as_str().or(option["label"].as_str()) else {
                         continue;
@@ -926,6 +948,58 @@ impl Actions {
                     let question = question_id.clone();
                     let value = value.to_owned();
                     let option_control = control.clone();
+                    let label = option["label"].as_str().unwrap_or(&value).to_owned();
+                    let description = option["description"]
+                        .as_str()
+                        .filter(|description| !description.is_empty() && *description != label);
+                    let mut text = v_flex().flex_1().min_w_0().gap_1().child(
+                        div()
+                            .w_full()
+                            .whitespace_normal()
+                            .text_sm()
+                            .debug_selector({
+                                let request = request_id.clone();
+                                let question = question_id.clone();
+                                move || format!("answer-label-{request}-{question}-{n}")
+                            })
+                            .child(label.clone()),
+                    );
+                    if let Some(description) = description {
+                        text = text.child(
+                            div()
+                                .w_full()
+                                .whitespace_normal()
+                                .text_xs()
+                                .text_color(brand::palette(cx).text_muted)
+                                .debug_selector({
+                                    let request = request_id.clone();
+                                    let question = question_id.clone();
+                                    move || format!("answer-description-{request}-{question}-{n}")
+                                })
+                                .child(description.to_owned()),
+                        );
+                    }
+                    let mut content = h_flex().w_full().min_w_0().gap_2().child(text);
+                    if selected || (shortcuts && n < 9) {
+                        content = content.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_sm()
+                                .debug_selector({
+                                    let request = request_id.clone();
+                                    let question = question_id.clone();
+                                    move || {
+                                        let kind = if selected { "check" } else { "key" };
+                                        format!("answer-{kind}-{request}-{question}-{n}")
+                                    }
+                                })
+                                .child(if selected {
+                                    "✓".into()
+                                } else {
+                                    (n + 1).to_string()
+                                }),
+                        );
+                    }
                     buttons = buttons.child(
                         Button::new(SharedString::from(format!(
                             "answer-{request_id}-{question_id}-{n}"
@@ -936,12 +1010,12 @@ impl Actions {
                             move || format!("answer-{request}-{question}-{n}")
                         })
                         .ghost()
-                        .label(format!(
-                            "{}{}",
-                            if selected { "✓ " } else { "" },
-                            option["label"].as_str().unwrap_or(&value)
-                        ))
-                        .tooltip(option["description"].as_str().unwrap_or("").to_owned())
+                        .w_full()
+                        .h_auto()
+                        .py_2()
+                        .px_3()
+                        .accessibility_label(label)
+                        .child(content)
                         .disabled(disabled)
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -953,6 +1027,9 @@ impl Actions {
                             },
                         )),
                     );
+                }
+                if shortcuts {
+                    self.question_keys = Some(keys);
                 }
                 form = form.child(buttons);
             }
@@ -1143,6 +1220,7 @@ impl Actions {
 }
 impl Render for Actions {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.question_keys = None;
         let current = self
             .current_request()
             .filter(|_| self.pinned)
@@ -2009,3 +2087,6 @@ mod recovery_tests;
 
 #[cfg(test)]
 mod question_progress_tests;
+
+#[cfg(test)]
+mod question_options_tests;
