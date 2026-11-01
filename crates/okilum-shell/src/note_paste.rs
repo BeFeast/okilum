@@ -68,29 +68,44 @@ pub trait NoteClipboard: Send + Sync {
 /// What a paste left to do after its text went in: a notice for the toast and
 /// background work for the editor (#1611). Taken by the editor's paste
 /// event handler.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Outbox {
     /// Async acquisition commits follow-ups only after the editor accepts it.
-    pub apply_only: bool,
+    pub request: Option<ClipboardReadRequest>,
     pub notice: Option<Notice>,
     pub follow_up: Option<FollowUp>,
     pub saved_files: Vec<PathBuf>,
 }
+impl std::fmt::Debug for Outbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Outbox")
+            .field("request_pending", &self.request.is_some())
+            .field("has_notice", &self.notice.is_some())
+            .field("has_follow_up", &self.follow_up.is_some())
+            .field("saved_files", &self.saved_files.len())
+            .finish()
+    }
+}
 impl Outbox {
-    pub(crate) fn for_event(
-        self,
+    pub(crate) fn take_for_event(
+        &mut self,
         event: &gpui_component::input::clipboard::ClipboardPasteEvent,
     ) -> Self {
-        if self.apply_only
-            && !matches!(
+        if let Some(request) = &self.request {
+            // One Input allows one pending request. Busy (or another unrelated
+            // failure) must not consume that request's still-uncommitted work.
+            if request.is_cancelled() {
+                *self = Self::default();
+                return Self::default();
+            }
+            if !matches!(
                 event,
                 gpui_component::input::clipboard::ClipboardPasteEvent::Applied { .. }
-            )
-        {
-            Self::default()
-        } else {
-            self
+            ) {
+                return Self::default();
+            }
         }
+        std::mem::take(self)
     }
 }
 pub type PasteOutbox = Arc<Mutex<Outbox>>;
