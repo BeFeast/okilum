@@ -25,6 +25,16 @@ pub struct StoreRuntime<D: StateDir, T> {
     /// Absolute deadline of the current exchange, shared with its transport, so
     /// waiting for the lock cannot extend the exchange budget.
     deadline: Option<Instant>,
+    /// A stop can partially affect the tree even when it returns an error. This
+    /// generation must never advertise Running again after beginning that effect.
+    stopped: Option<Status>,
+}
+
+/// The lock and deadline belong to the same authorization. A later exchange
+/// cannot refresh the budget of an already authorized stop.
+pub struct StopLease<D: StateDir> {
+    _transaction: Transaction<D>,
+    deadline: Instant,
 }
 impl<D: StateDir, T: OwnedTree> StoreRuntime<D, T> {
     pub fn new(store: Store<D>, tree: T) -> Self {
@@ -32,6 +42,7 @@ impl<D: StateDir, T: OwnedTree> StoreRuntime<D, T> {
             store,
             tree,
             deadline: None,
+            stopped: None,
         }
     }
     /// Call before each `Server::serve_one` with that connection's deadline. A
@@ -46,26 +57,33 @@ impl<D: StateDir, T: OwnedTree> StoreRuntime<D, T> {
     /// takes no lock, answers nobody and exists only so the owned tree is flushed
     /// before the supervisor exits.
     pub fn flush_tree(&mut self) -> Result<Status> {
-        self.tree.stop()
+        self.stop_tree()
     }
     #[cfg(all(test, unix))]
     pub(crate) fn tree_mut(&mut self) -> &mut T {
         &mut self.tree
     }
-}
-impl<D: StateDir, T: OwnedTree> OwnedRuntime for StoreRuntime<D, T> {
-    /// The transaction itself: it owns the lock, and dropping it releases it.
-    type Lease = Transaction<D>;
-    fn status(&mut self) -> Result<Status> {
-        self.tree.status()
+
+    fn stop_tree(&mut self) -> Result<Status> {
+        if self.stopped == Some(Status::Stopped) {
+            return Ok(Status::Stopped);
+        }
+        self.stopped = Some(Status::Stopping);
+        let status = self.tree.stop()?;
+        ensure!(status != Status::Running, "stop did not transition runtime");
+        self.stopped = Some(status);
+        Ok(status)
     }
-    fn authorize_stop(
+
+    fn authorize_stop_with_clock(
         &mut self,
         binding: &Binding,
         scope: &Scope,
         token: &StopToken,
-    ) -> Result<Transaction<D>> {
+        now: impl Fn() -> Instant,
+    ) -> Result<StopLease<D>> {
         let deadline = self.deadline.take().context("no exchange deadline set")?;
+        ensure!(now() < deadline, "supervisor exchange deadline expired");
         let transaction = self.store.begin(deadline)?;
         let envelope = transaction
             .current()?
@@ -75,10 +93,58 @@ impl<D: StateDir, T: OwnedTree> OwnedRuntime for StoreRuntime<D, T> {
             "journal binding differs from the supervisor's"
         );
         envelope.authorize(token, scope)?;
-        Ok(transaction)
+        // A free lock may succeed after its deadline, and reading the journal
+        // also consumes budget. Neither authorizes an effect after expiry.
+        ensure!(now() < deadline, "supervisor exchange deadline expired");
+        Ok(StopLease {
+            _transaction: transaction,
+            deadline,
+        })
     }
-    fn stop_owned(&mut self, _lease: &Transaction<D>) -> Result<Status> {
-        self.tree.stop()
+
+    fn stop_owned_with_clock(
+        &mut self,
+        lease: &StopLease<D>,
+        now: impl Fn() -> Instant,
+    ) -> Result<Status> {
+        ensure!(
+            now() < lease.deadline,
+            "supervisor exchange deadline expired"
+        );
+        let status = self.stop_tree()?;
+        // A late result is not a successful exchange, even if a subsequent
+        // authorized retry can observe that the tree really did finish.
+        ensure!(
+            now() < lease.deadline,
+            "supervisor exchange deadline expired"
+        );
+        Ok(status)
+    }
+}
+impl<D: StateDir, T: OwnedTree> OwnedRuntime for StoreRuntime<D, T> {
+    /// The transaction owns the lock; the lease also retains the original
+    /// exchange deadline. Dropping the lease releases the lock.
+    type Lease = StopLease<D>;
+    fn status(&mut self) -> Result<Status> {
+        if self.stopped == Some(Status::Stopped) {
+            return Ok(Status::Stopped);
+        }
+        let status = self.tree.status()?;
+        if status != Status::Running {
+            self.stopped = Some(status);
+        }
+        Ok(self.stopped.unwrap_or(status))
+    }
+    fn authorize_stop(
+        &mut self,
+        binding: &Binding,
+        scope: &Scope,
+        token: &StopToken,
+    ) -> Result<StopLease<D>> {
+        self.authorize_stop_with_clock(binding, scope, token, Instant::now)
+    }
+    fn stop_owned(&mut self, lease: &StopLease<D>) -> Result<Status> {
+        self.stop_owned_with_clock(lease, Instant::now)
     }
 }
 

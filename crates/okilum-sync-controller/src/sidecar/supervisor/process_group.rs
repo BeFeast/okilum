@@ -9,7 +9,8 @@ use anyhow::{ensure, Context, Result};
 use rustix::{
     io::Errno,
     process::{
-        kill_process_group, test_kill_process_group, waitid, Pid, Signal, WaitId, WaitIdOptions,
+        getpgid, kill_process_group, test_kill_process_group, waitid, Pid, Signal, WaitId,
+        WaitIdOptions,
     },
 };
 use std::{
@@ -20,6 +21,50 @@ use std::{
 };
 
 mod scan;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GroupLeader {
+    pid: Pid,
+    group: Pid,
+    started: u64,
+}
+
+/// A process inventory is evidence, not permission to adopt a group. Only the
+/// exact, still-waitable leader captured at launch can authorize a signal.
+fn signal_owned_group(
+    owner: Option<GroupLeader>,
+    inspect: impl FnOnce(Pid) -> Result<GroupLeader>,
+    signal: impl FnOnce(Pid) -> Result<()>,
+) -> Result<()> {
+    let owner = owner.context("no captured unreaped process group leader")?;
+    ensure!(
+        owner.pid == owner.group,
+        "owned process is not the group leader"
+    );
+    ensure!(
+        inspect(owner.pid)? == owner,
+        "process group leader identity changed; refusing to signal"
+    );
+    signal(owner.group)
+}
+
+fn inspect_leader(pid: Pid) -> Result<GroupLeader> {
+    let started = scan::started(pid.as_raw() as u32)?;
+    let group = getpgid(Some(pid))?;
+    // Holding a Child value alone does not prove the PID is reserved: an
+    // external waiter or SIGCHLD auto-reaping may already have released it.
+    // NOWAIT preserves our reservation, including an exited zombie leader.
+    waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+    )
+    .context("process group leader is no longer waitable")?;
+    Ok(GroupLeader {
+        pid,
+        group,
+        started,
+    })
+}
 
 /// Start time of a live process in the platform's native unit, for the supervisor's
 /// own generation hint. Comparable only with values from the same platform.
@@ -59,19 +104,22 @@ impl Launch {
 }
 
 pub struct ProcessGroupTree {
-    /// Some until reaped. An unreaped (even exited) leader keeps the group id
-    /// reserved, which is the only time signals are sent.
+    /// Some until reaped here. Revalidate before signaling: an external reaper can
+    /// invalidate a Child without updating this value. An unreaped (even exited)
+    /// leader keeps the group id reserved.
     root: Option<Child>,
     group: Pid,
     image: PathBuf,
     uid: u32,
-    started: u64,
+    started: Option<u64>,
     stopped: bool,
     budget: Duration,
 }
 impl ProcessGroupTree {
     /// The caller has verified the staged payload and private config/data.
     /// `budget` bounds one Stop and should sit inside the exchange deadline.
+    /// Child reaping must remain exclusive to this tree; inventory checks cannot
+    /// make a concurrent external waiter atomic with a process-group signal.
     pub fn spawn(launch: &Launch, budget: Duration) -> Result<Self> {
         let arguments = launch.unix_arguments()?;
         let image = std::fs::canonicalize(&launch.executable)?;
@@ -92,25 +140,29 @@ impl ProcessGroupTree {
             group,
             image,
             uid: rustix::process::geteuid().as_raw(),
-            started: 0,
+            started: None,
             stopped: false,
             budget,
         };
         match scan::started(pid) {
-            Ok(started) => tree.started = started,
+            Ok(started) => tree.started = Some(started),
             Err(error) => {
                 // Without the root's start time Stopped could never be certified.
-                tree.kill_now();
-                return Err(error.context("cannot read the runtime start time"));
+                // Nor can a numeric PID authorize cleanup of an unknown generation.
+                return Err(error.context(
+                    "cannot read the runtime start time; cleanup incomplete, runtime may still be running",
+                ));
             }
         }
         Ok(tree)
     }
-    fn kill_now(&mut self) {
-        let _ = kill_process_group(self.group, Signal::KILL);
-        if let Some(mut child) = self.root.take() {
-            let _ = child.wait();
+    fn kill_now(&mut self) -> Result<()> {
+        self.signal_group(Signal::KILL)?;
+        if let Some(child) = self.root.as_mut() {
+            child.wait()?;
         }
+        self.root = None;
+        Ok(())
     }
     /// True once the leader has exited (not yet reaped). The supervisor uses it to
     /// notice a crashed runtime; `status` stays Running until `stop` certifies.
@@ -130,10 +182,27 @@ impl ProcessGroupTree {
     /// zombies (present but not signalable). What remains is decided by `group_empty`
     /// and the deadline, so a member we truly cannot signal still ends as Stopping.
     fn signal_group(&self, signal: Signal) -> Result<()> {
-        match kill_process_group(self.group, signal) {
-            Ok(()) | Err(Errno::SRCH) | Err(Errno::PERM) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        let owner = self
+            .root
+            .as_ref()
+            .zip(self.started)
+            .map(|(child, started)| -> Result<GroupLeader> {
+                Ok(GroupLeader {
+                    pid: i32::try_from(child.id())
+                        .ok()
+                        .and_then(Pid::from_raw)
+                        .context("invalid process id")?,
+                    group: self.group,
+                    started,
+                })
+            })
+            .transpose()?;
+        signal_owned_group(owner, inspect_leader, |group| {
+            match kill_process_group(group, signal) {
+                Ok(()) | Err(Errno::SRCH) | Err(Errno::PERM) => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })
     }
     /// The group has no member, or only members we cannot see (EPERM counts as
     /// present). Never signals.
@@ -145,7 +214,8 @@ impl ProcessGroupTree {
         }
     }
     fn escaped(&self) -> Result<bool> {
-        Ok(!scan::live_copies(&self.image, self.uid, self.started)?.is_empty())
+        let started = self.started.context("runtime start time is unknown")?;
+        Ok(!scan::live_copies(&self.image, self.uid, started)?.is_empty())
     }
 }
 impl OwnedTree for ProcessGroupTree {
@@ -221,10 +291,10 @@ impl OwnedTree for ProcessGroupTree {
 }
 impl Drop for ProcessGroupTree {
     fn drop(&mut self) {
-        // Closing the supervisor must not leave a runtime behind (best effort; the
-        // leader is still unreaped here, so the group id is still ours).
+        // Best-effort cleanup only while the captured leader can still be
+        // verified. A stale Child never authorizes signaling a reused group.
         if self.root.is_some() {
-            self.kill_now();
+            let _ = self.kill_now();
         }
     }
 }
