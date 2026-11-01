@@ -214,14 +214,14 @@ fn closer(open: char) -> Option<char> {
         '(' => ')',
         '[' => ']',
         '{' => '}',
-        '"' | '\'' => open,
+        '"' | '\'' | '`' => open,
         _ => return None,
     })
 }
 
 /// Characters the typed-text hook looks at in a code block.
 fn code_pair_char(ch: char) -> bool {
-    matches!(ch, '(' | '[' | '{' | ')' | ']' | '}' | '"' | '\'')
+    matches!(ch, '(' | '[' | '{' | ')' | ']' | '}' | '"' | '\'' | '`')
 }
 
 /// What typing `ch` at `selection` inside `block` does instead of plain
@@ -233,6 +233,16 @@ pub(super) fn typed(
     selection: Range<usize>,
     ch: char,
 ) -> Option<TypedEdit> {
+    // Template quotes belong to JS/TS. In other languages a backtick is
+    // literal syntax, not a guessed string delimiter.
+    if ch == '`'
+        && !matches!(
+            block.language.as_deref(),
+            Some("javascript" | "typescript" | "tsx")
+        )
+    {
+        return None;
+    }
     let width = ch.len_utf8();
     if !selection.is_empty() {
         let close = closer(ch)?;
@@ -268,7 +278,7 @@ pub(super) fn typed(
     let close = closer(ch)?;
     // A pair closes only before a space, the line end or closing punctuation.
     let free = next.is_none_or(|c| c.is_whitespace() || ")]},;:".contains(c));
-    if ch == '"' || ch == '\'' {
+    if matches!(ch, '"' | '\'' | '`') {
         if next == Some(ch) {
             return Some(over);
         }
@@ -831,6 +841,80 @@ mod tests {
         set(note, visual, "```js\nfoo|");
         typed(visual, "[");
         assert_eq!(shown(note, visual), "```js\nfoo[|]");
+    }
+
+    fn template_quotes_in(note: &Note, visual: &mut VisualTestContext) {
+        for language in ["js", "javascript", "ts", "typescript", "tsx"] {
+            let before = format!("```{language}\nconst text = |;\n```");
+            set(note, visual, &before);
+            typed(visual, "`");
+            let paired = format!("```{language}\nconst text = `|`;\n```");
+            assert_eq!(shown(note, visual), paired, "{language}");
+            undo(visual);
+            assert_eq!(shown(note, visual), before, "one Undo removes both quotes");
+            redo(visual);
+            assert_eq!(shown(note, visual), paired);
+            typed(visual, "日");
+            typed(visual, "`");
+            assert_eq!(
+                shown(note, visual),
+                format!("```{language}\nconst text = `日`|;\n```"),
+                "type over the closing template quote"
+            );
+
+            set(
+                note,
+                visual,
+                &format!("```{language}\nconst text = [日];\n```"),
+            );
+            typed(visual, "`");
+            assert_eq!(
+                shown(note, visual),
+                format!("```{language}\nconst text = `[日]`;\n```")
+            );
+            undo(visual);
+            assert_eq!(
+                shown(note, visual),
+                format!("```{language}\nconst text = [日];\n```"),
+                "wrapping is one Undo"
+            );
+        }
+        set(note, visual, "```js\nconst text = `a\\|`;\n```");
+        typed(visual, "`");
+        assert_eq!(
+            shown(note, visual),
+            "```js\nconst text = `a\\`|`;\n```",
+            "an escaped template quote is inserted literally"
+        );
+        for language in ["", "rust", "python", "unknown"] {
+            set(note, visual, &format!("```{language}\nvalue = |\n```"));
+            typed(visual, "`");
+            assert_eq!(
+                shown(note, visual),
+                format!("```{language}\nvalue = `|\n```")
+            );
+            set(note, visual, &format!("```{language}\n[value]\n```"));
+            typed(visual, "`");
+            assert_eq!(shown(note, visual), format!("```{language}\n`|\n```"));
+        }
+    }
+
+    #[gpui::test]
+    fn template_quotes_pair_wrap_and_undo_in_source(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        template_quotes_in(&note, visual);
+    }
+
+    #[gpui::test]
+    fn template_quotes_pair_wrap_and_undo_in_live_preview(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        note.reader
+            .update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        template_quotes_in(&note, visual);
+        assert!(note.reader.read_with(visual, |r, _| {
+            r.editing.as_ref().unwrap().live_preview.enabled
+        }));
     }
 
     #[gpui::test]
