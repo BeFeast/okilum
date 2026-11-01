@@ -1,0 +1,387 @@
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -984,6 +984,84 @@
+             }
+         });
+
++        if self.links.is_empty() {
++            return;
++        }
++        let Some(pointer_owner) = global_id.cloned() else {
++            return;
++        };
++        if let Some(text_view) = GlobalState::global(cx).text_view_state().cloned() {
++            // Capture cancellation even when another control consumes the bubble.
++            let view = text_view.clone();
++            let owner = pointer_owner.clone();
++            window.on_mouse_event(move |_: &gpui::MouseDownEvent, phase, _, cx| {
++                if phase.capture()
++                    && view
++                        .read(cx)
++                        .link_pointer
++                        .key()
++                        .is_some_and(|(pressed, _, _)| pressed == &owner)
++                {
++                    view.update(cx, |state, _| state.link_pointer.cancel());
++                }
++            });
++            let view = text_view.clone();
++            let owner = pointer_owner.clone();
++            window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
++                if phase.capture()
++                    && view
++                        .read(cx)
++                        .link_pointer
++                        .key()
++                        .is_some_and(|(pressed, _, _)| pressed == &owner)
++                {
++                    view.update(cx, |state, _| {
++                        state.link_pointer.moved(
++                            event.pressed_button
++                                == state.link_pointer.key().map(|(_, _, button)| *button),
++                            (event.position.x.into(), event.position.y.into()),
++                        )
++                    });
++                }
++            });
++            let view = text_view.clone();
++            let owner = pointer_owner.clone();
++            window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, _, cx| {
++                if phase.capture()
++                    && view
++                        .read(cx)
++                        .link_pointer
++                        .key()
++                        .is_some_and(|(pressed, _, _)| pressed == &owner)
++                {
++                    view.update(cx, |state, _| state.link_pointer.cancel());
++                }
++            });
++        }
++
++        if let Some(view) = GlobalState::global(cx).text_view_state().cloned() {
++            let links = self.links.clone();
++            let layout = text_layout.clone();
++            let hitbox = hitbox.clone();
++            let segment = pointer_owner.clone();
++            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
++                if !phase.bubble() || !hitbox.is_hovered(window) || event.click_count != 1 {
++                    return;
++                }
++                if let Some(link) = Self::link_for_position(&layout, &links, event.position)
++                    && !link.presentation.inert
++                {
++                    view.update(cx, |state, _| {
++                        state.link_pointer.press(
++                            (segment.clone(), link.url, event.button),
++                            (event.position.x.into(), event.position.y.into()),
++                            event.clone(),
++                        )
++                    });
++                }
++            });
++        }
++
+         {
+             // Click to open a link. Registered whatever the selection was when this frame was
+             // painted: a press on a link clears a stale selection, but the repaint that would
+@@ -995,35 +1073,47 @@
+                 let hitbox = hitbox.clone();
+                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+                 let link_click_handler = self.link_click_handler.clone();
++                let segment = pointer_owner.clone();
+
+                 move |event: &MouseUpEvent, phase, window, cx| {
+-                    if !phase.bubble() || !hitbox.is_hovered(window) {
++                    if !phase.bubble() {
+                         return;
+                     }
+-                    if text_view_state
+-                        .as_ref()
+-                        .is_some_and(|state| state.read(cx).has_selection(cx))
++                    let Some(view) = &text_view_state else {
++                        return;
++                    };
++                    // Only the inline that received Down consumes this release,
++                    // including a release outside its hitbox. Other inlines cannot steal it.
++                    if !view
++                        .read(cx)
++                        .link_pointer
++                        .key()
++                        .is_some_and(|(owner, _, _)| owner == &segment)
+                     {
+                         return;
+                     }
+-
+-                    if let Some(link) =
+-                        Self::link_for_position(&text_layout, &links, event.position)
+-                    {
+-                        if link.presentation.inert {
+-                            // Let the shared selection layer finish the gesture.
+-                            return;
+-                        }
++                    let link = hitbox
++                        .is_hovered(window)
++                        .then(|| Self::link_for_position(&text_layout, &links, event.position))
++                        .flatten()
++                        .filter(|link| !link.presentation.inert);
++                    let key = link
++                        .as_ref()
++                        .map(|link| (segment.clone(), link.url.clone(), event.button));
++                    let selected = view.read(cx).has_selection(cx);
++                    let down = view.update(cx, |state, _| {
++                        state.link_pointer.release(
++                            key.as_ref(),
++                            (event.position.x.into(), event.position.y.into()),
++                            event.click_count == 1,
++                            selected,
++                        )
++                    });
++                    if let (Some(down), Some(link)) = (down, link) {
+                         TextSelection::end(window, cx);
+                         cx.stop_propagation();
+                         let click = ClickEvent::Mouse(MouseClickEvent {
+-                            down: MouseDownEvent {
+-                                button: event.button,
+-                                position: event.position,
+-                                modifiers: event.modifiers,
+-                                click_count: event.click_count,
+-                                first_mouse: false,
+-                            },
++                            down,
+                             up: event.clone(),
+                         });
+                         handle_link_click(&link_click_handler, link.url, click, window, cx);
+diff --git a/crates/base/src/text/link_pointer.rs b/crates/base/src/text/link_pointer.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/base/src/text/link_pointer.rs
+@@ -0,0 +1,127 @@
++//! A link release belongs to its original press, not just its hitbox.
++//! Kept independent of rendering so cancellation sequences can be tested directly.
++
++pub(super) struct LinkPointer<K, T> {
++    pressed: Option<(K, (f32, f32), T)>,
++}
++
++impl<K, T> Default for LinkPointer<K, T> {
++    fn default() -> Self {
++        Self { pressed: None }
++    }
++}
++
++impl<K: PartialEq, T> LinkPointer<K, T> {
++    pub(super) fn key(&self) -> Option<&K> {
++        self.pressed.as_ref().map(|(key, _, _)| key)
++    }
++
++    pub(super) fn press(&mut self, key: K, position: (f32, f32), event: T) {
++        self.pressed = Some((key, position, event));
++    }
++
++    pub(super) fn cancel(&mut self) {
++        self.pressed = None;
++    }
++
++    pub(super) fn moved(&mut self, button_held: bool, position: (f32, f32)) {
++        if !button_held || !self.near_press(position) {
++            self.cancel();
++        }
++    }
++
++    fn near_press(&self, position: (f32, f32)) -> bool {
++        self.pressed.as_ref().is_some_and(|(_, start, _)| {
++            // A drag must stay cancelled even if it returns to its starting link.
++            (position.0 - start.0).abs() <= 4.0 && (position.1 - start.1).abs() <= 4.0
++        })
++    }
++
++    pub(super) fn release(
++        &mut self,
++        key: Option<&K>,
++        position: (f32, f32),
++        single_click: bool,
++        selected: bool,
++    ) -> Option<T> {
++        let near = self.near_press(position);
++        let (pressed_key, _, event) = self.pressed.take()?;
++        (single_click && !selected && near && key == Some(&pressed_key)).then_some(event)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::LinkPointer;
++    const LINK: (usize, &str) = (1, "target.md");
++
++    #[test]
++    fn first_click_after_a_selection_needs_no_repaint() {
++        let mut pointer = LinkPointer::default();
++        // The normal selection layer clears the old word selection on press.
++        pointer.press(LINK, (10.0, 10.0), "original down");
++        assert_eq!(
++            pointer.release(Some(&LINK), (10.0, 10.0), true, false),
++            Some("original down")
++        );
++        assert_eq!(
++            pointer.release(Some(&LINK), (10.0, 10.0), true, false),
++            None
++        );
++    }
++
++    #[test]
++    fn release_outside_or_on_another_link_disarms_the_original_press() {
++        for target in [None, Some(&(2, "target.md")), Some(&(1, "other.md"))] {
++            let mut pointer = LinkPointer::default();
++            pointer.press(LINK, (10.0, 10.0), ());
++            assert_eq!(pointer.key(), Some(&LINK));
++            assert_eq!(pointer.release(target, (10.0, 10.0), true, false), None);
++            assert_eq!(
++                pointer.release(Some(&LINK), (10.0, 10.0), true, false),
++                None
++            );
++        }
++    }
++
++    #[test]
++    fn cancellation_lost_release_and_drag_return_cannot_activate_a_link() {
++        for reason in 0..3 {
++            let mut pointer = LinkPointer::default();
++            pointer.press(LINK, (10.0, 10.0), ());
++            match reason {
++                0 => pointer.cancel(), // exit, deactivation, resize, source change
++                1 => pointer.moved(false, (10.0, 10.0)), // compositor swallowed Up
++                _ => {
++                    pointer.moved(true, (30.0, 10.0));
++                    pointer.moved(true, (10.0, 10.0));
++                }
++            }
++            assert_eq!(
++                pointer.release(Some(&LINK), (10.0, 10.0), true, false),
++                None
++            );
++            pointer.press(LINK, (10.0, 10.0), ());
++            assert_eq!(
++                pointer.release(Some(&LINK), (10.0, 10.0), true, false),
++                Some(())
++            );
++        }
++    }
++
++    #[test]
++    fn selection_and_non_matching_release_remain_inert() {
++        for (primary, selected, position) in [
++            (true, true, (10.0, 10.0)),
++            (false, false, (10.0, 10.0)),
++            (true, false, (30.0, 10.0)),
++        ] {
++            let mut pointer = LinkPointer::default();
++            pointer.press(LINK, (10.0, 10.0), ());
++            assert_eq!(
++                pointer.release(Some(&LINK), position, primary, selected),
++                None
++            );
++        }
++    }
++}
+diff --git a/crates/base/src/text/mod.rs b/crates/base/src/text/mod.rs
+--- a/crates/base/src/text/mod.rs
++++ b/crates/base/src/text/mod.rs
+@@ -3,6 +3,7 @@
+ mod inline;
+ mod inline_flow;
+ mod inline_geometry;
++mod link_pointer;
+ mod markdown_ext;
+ mod node;
+ pub(crate) mod selection;
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -135,6 +135,8 @@
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
+
++    pub(super) link_pointer: super::link_pointer::LinkPointer<(gpui::GlobalElementId, SharedString, gpui::MouseButton), gpui::MouseDownEvent>,
++    link_pointer_lifecycle: Vec<gpui::Subscription>,
+     pub(super) is_selecting: bool,
+     multi_click_selection: Option<TextViewMultiClickSelection>,
+     selected_text_override: Option<String>,
+@@ -255,6 +257,7 @@
+                         state.prepared_revision = parsed_update.revision;
+                         match parsed_update.result {
+                             Ok(content) => {
++                                state.link_pointer.cancel();
+                                 state.parsed_content = content;
+                                 state.prepare_list_for_document();
+                                 state.displayed_source_copy = state.pending_source_copy.clone();
+@@ -318,6 +321,8 @@
+             link_hover_handler: None,
+             link_presentation: None,
+             markdown_extensions: Arc::default(),
++            link_pointer: Default::default(),
++            link_pointer_lifecycle: Vec::new(),
+             is_selecting: false,
+             auto_scroll: AutoScroll::default(),
+             selection_adapter,
+@@ -875,6 +880,7 @@
+     }
+
+     fn increment_update(&mut self, text: &str, append: bool, cx: &mut Context<Self>) {
++        self.link_pointer.cancel();
+         self.revision += 1;
+         if !append {
+             self.selection_revision = self.selection_revision.wrapping_add(1);
+@@ -1124,6 +1130,14 @@
+
+ impl Render for TextViewState {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        if self.link_pointer_lifecycle.is_empty() {
++            self.link_pointer_lifecycle = vec![
++                cx.observe_window_bounds(window, |state, _, _| state.link_pointer.cancel()),
++                cx.observe_window_activation(window, |state, window, _| {
++                    if !window.is_window_active() { state.link_pointer.cancel(); }
++                }),
++            ];
++        }
+         let state = cx.entity();
+         let document = self.parsed_content.document.clone();
+         let mut node_cx = self.parsed_content.node_cx.clone();
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -2034,6 +2034,33 @@
+     }
+
+     #[gpui::test]
++    fn link_release_requires_a_live_matching_press(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let (_, cx) = cx.add_window_view(|_, cx| {
++            TextViewTestRoot::new("[example](https://example.com)", cx)
++        });
++        let cx: &mut VisualTestContext = cx;
++        let link = point(px(10.), px(10.));
++        let outside = point(px(200.), px(100.));
++        // Release-only used to activate a link. No simulated draw is needed
++        // between Down and Up; that would hide the original #1234 regression.
++        cx.simulate_mouse_up(link, MouseButton::Left, Modifiers::default());
++        assert_eq!(cx.opened_url(), None);
++        cx.simulate_mouse_down(link, MouseButton::Left, Modifiers::default());
++        cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
++        cx.simulate_mouse_up(link, MouseButton::Left, Modifiers::default());
++        assert_eq!(cx.opened_url(), None, "outside release consumes the press");
++        cx.simulate_mouse_down(link, MouseButton::Left, Modifiers::default());
++        cx.simulate_event(gpui::MouseExitEvent { pressed_button: Some(MouseButton::Left), ..Default::default() });
++        cx.simulate_mouse_up(link, MouseButton::Left, Modifiers::default());
++        assert_eq!(cx.opened_url(), None, "exit cancels activation");
++        // Positive control: cancellation must leave the next real click usable.
++        cx.simulate_mouse_down(link, MouseButton::Left, Modifiers::default());
++        cx.simulate_mouse_up(link, MouseButton::Left, Modifiers::default());
++        assert_eq!(cx.opened_url(), Some("https://example.com".to_string()));
++    }
++
++    #[gpui::test]
+     fn right_click_does_not_open_url_without_handler(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+         let (_, cx) =
