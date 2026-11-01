@@ -20,6 +20,7 @@ struct Retained {
 pub(super) struct Native {
     input: Entity<InputState>,
     pub(super) actions: Entity<actions::Actions>,
+    request_lease: Arc<()>,
     open: bool,
     busy: bool,
     error: Option<String>,
@@ -43,6 +44,7 @@ impl Native {
         let actions = cx.new(|_| actions::Actions::new(parent));
         Self {
             actions,
+            request_lease: Arc::new(()),
             input: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("One-time T3 pairing token")
@@ -122,6 +124,7 @@ impl Native {
     }
     pub(super) fn clear(&mut self) {
         self.pause();
+        self.request_lease = Arc::new(());
         self.client = None;
         self.retained = None;
         self.error = None;
@@ -390,6 +393,7 @@ impl ProjectView {
         self.native.stream_error = None;
         self.native.expires_at = Some(expiry);
         self.native.open = false;
+        self.sync_native_action_surface(cx);
         if self.native.retained.is_none() {
             if let Some((thread, project)) = target {
                 self.native.retained = Some(Arc::new(Mutex::new(Retained {
@@ -545,6 +549,7 @@ impl ProjectView {
                                 .collect::<Vec<_>>();
                             this.feed
                                 .update(cx, |feed, cx| feed.set_copy_active_runs(unsettled, cx));
+                            this.sync_native_action_surface(cx);
                             this.native
                                 .actions
                                 .update(cx, |a, cx| a.set_state(state, window, cx));
@@ -766,7 +771,11 @@ impl ProjectView {
                     }),
             );
         }
-        view.child(self.native.actions.clone()).into_any_element()
+        if self.native_actions_pinned() {
+            view.into_any_element()
+        } else {
+            view.child(self.native.actions.clone()).into_any_element()
+        }
     }
 }
 fn notice(error: &StreamError) -> String {

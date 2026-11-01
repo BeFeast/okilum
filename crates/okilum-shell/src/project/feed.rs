@@ -125,6 +125,19 @@ impl Feed {
             render_calls: std::cell::Cell::new(0),
         }
     }
+    #[cfg(test)]
+    pub(in crate::project) fn test_scroll_anchor(
+        &self,
+        cx: &App,
+    ) -> Option<(RowKey, usize, Pixels)> {
+        let offset = self.scroller.read(cx).logical_scroll_top();
+        let Row::Message(position) = self.rows.get(offset.item_ix)? else {
+            return None;
+        };
+        self.native_positions.iter().find_map(|(key, member)| {
+            (member == position).then(|| (key.clone(), offset.item_ix, offset.offset_in_item))
+        })
+    }
     /// Sent user prompts in chronological projection order. Native positions
     /// are allocation slots, not chronology; their RowKey element IDs survive
     /// pagination and updates independently of optional messageId receipts.
