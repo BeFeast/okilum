@@ -172,7 +172,29 @@ impl Reader {
                     cx,
                 )
                 .debug_selector(move || action.id().into())
-                .on_click(sidebar_action_click(reader.clone(), action)),
+                .on_click({
+                    let reader = reader.clone();
+                    move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            let folder = this
+                                .tree
+                                .cursor
+                                .as_deref()
+                                .filter(|path| this.tree.is_directory(path))
+                                .unwrap_or("")
+                                .to_owned();
+                            match action {
+                                #[cfg(any(unix, windows))]
+                                SidebarAction::NewNote => this.new_note(Some(&folder), window, cx),
+                                #[cfg(any(unix, windows))]
+                                SidebarAction::NewFolder => {
+                                    this.new_folder(Some(&folder), window, cx)
+                                }
+                                _ => action.run(this, window, cx),
+                            }
+                        });
+                    }
+                }),
             );
         }
         h_flex()
@@ -416,7 +438,8 @@ mod tests {
         });
         reader.update_in(visual, |view, window, cx| {
             view.cancel_creation(window, cx);
-            view.tree.cursor = None;
+            // A selected file is not the explicit destination folder.
+            view.tree.cursor = Some("Area/LongDeepDirectory/Leaf/Note 00.md".into());
         });
         visual.run_until_parked();
         let folder = visual.debug_bounds("sidebar-new-folder").unwrap();
