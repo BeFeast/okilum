@@ -7,6 +7,15 @@ use serde_json::json;
 #[cfg(test)]
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+mod question_progress;
+use question_progress::{QuestionProgress, Transition};
+
+#[derive(Clone)]
+struct QuestionControl {
+    conversation: Option<(String, String)>,
+    lease: Option<Arc<()>>,
+    transition: Transition,
+}
 
 /// A request row observes only action state; editing an answer never rebuilds
 /// the virtualized feed. The source row and live authority must both match.
@@ -187,6 +196,8 @@ pub(crate) struct Actions {
     inputs: HashMap<(String, String), Entity<InputState>>,
     selections: HashMap<(String, String), Vec<String>>,
     subscriptions: HashMap<(String, String), Subscription>,
+    question_progress: HashMap<String, QuestionProgress>,
+    question_timers: HashMap<String, Task<()>>,
     request_revision: u64,
     busy: bool,
     enabled: bool,
@@ -210,6 +221,8 @@ impl Actions {
             inputs: HashMap::new(),
             selections: HashMap::new(),
             subscriptions: HashMap::new(),
+            question_progress: HashMap::new(),
+            question_timers: HashMap::new(),
             request_revision: 0,
             busy: false,
             enabled: false,
@@ -220,6 +233,9 @@ impl Actions {
     pub(super) fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
             self.enabled = enabled;
+            if !enabled {
+                self.cancel_question_transitions();
+            }
             cx.notify();
         }
     }
@@ -228,6 +244,7 @@ impl Actions {
             return false;
         }
         self.pinned = pinned;
+        self.cancel_question_transitions();
         self.request_revision = self.request_revision.wrapping_add(1);
         cx.notify();
         true
@@ -251,6 +268,8 @@ impl Actions {
         self.inputs.clear();
         self.selections.clear();
         self.subscriptions.clear();
+        self.question_timers.clear();
+        self.question_progress.clear();
         self.records.clear();
         self.error = None;
         self.busy = false;
@@ -263,8 +282,28 @@ impl Actions {
         if self.state == state {
             return;
         }
+        let previous_current = self
+            .current_request()
+            .map(|(request, _)| request.id.clone());
+        if !state.ready {
+            self.cancel_question_transitions();
+        }
         let mut keep = std::collections::HashSet::new();
+        let mut progress_keep = std::collections::HashSet::new();
         for request in &state.requests {
+            if request.item["type"] == "user_input_request" {
+                progress_keep.insert(request.id.clone());
+                let changed = if let Some(progress) = self.question_progress.get_mut(&request.id) {
+                    progress.reconcile(request)
+                } else {
+                    self.question_progress
+                        .insert(request.id.clone(), QuestionProgress::new(request));
+                    false
+                };
+                if changed || !request.answerable {
+                    self.cancel_question_transition(&request.id);
+                }
+            }
             let Some(questions) = request.item["questions"].as_array() else {
                 continue;
             };
@@ -296,6 +335,10 @@ impl Actions {
                 self.subscriptions.insert(
                     key.clone(),
                     cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            // Programmatic choice clears do not emit Change.
+                            this.cancel_question_transition(&changed_key.0);
+                        }
                         if allow_custom
                             && matches!(event, InputEvent::Change)
                             && !input.read(cx).value().trim().is_empty()
@@ -313,11 +356,22 @@ impl Actions {
             self.inputs.retain(|key, _| keep.contains(key));
             self.selections.retain(|key, _| keep.contains(key));
             self.subscriptions.retain(|key, _| keep.contains(key));
+            self.question_progress
+                .retain(|id, _| progress_keep.contains(id));
+            self.question_timers
+                .retain(|id, _| progress_keep.contains(id));
         }
         if state.ready || self.display_requests.is_empty() {
             self.display_requests = state.requests.clone();
         }
         self.state = state;
+        if previous_current
+            != self
+                .current_request()
+                .map(|(request, _)| request.id.clone())
+        {
+            self.cancel_question_transitions();
+        }
         self.request_revision = self.request_revision.wrapping_add(1);
         cx.notify();
     }
@@ -386,11 +440,301 @@ impl Actions {
             answers: Some(answers),
         }
     }
+    fn cancel_question_transition(&mut self, request: &str) {
+        if let Some(progress) = self.question_progress.get_mut(request) {
+            progress.invalidate();
+        }
+        self.question_timers.remove(request);
+    }
+    fn cancel_question_transitions(&mut self) {
+        for progress in self.question_progress.values_mut() {
+            progress.invalidate();
+        }
+        self.question_timers.clear();
+    }
+    fn finish_question_submission(&mut self, transition: &Transition) {
+        if let Some(progress) = self.question_progress.get_mut(&transition.request) {
+            if progress.same_instance(transition) {
+                progress.finish_submission();
+            }
+        }
+    }
+    fn cancel_retained_transitions(&mut self) {
+        let requests = self
+            .records
+            .iter()
+            .filter_map(|record| match &record.command.intent {
+                Intent::Respond { request_id, .. } | Intent::Dismiss { request_id } => {
+                    Some(request_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for request in requests {
+            self.cancel_question_transition(&request);
+        }
+    }
+    fn question_enabled(&self, request: &str) -> bool {
+        !self.busy
+            && self.enabled
+            && self.state.ready
+            && self.lease.is_some()
+            && !self.request_retained(request)
+            && self
+                .state
+                .requests
+                .iter()
+                .any(|candidate| candidate.id == request && candidate.answerable)
+            && self
+                .question_progress
+                .get(request)
+                .is_some_and(|progress| progress.position().is_some() && !progress.submitting)
+    }
+    fn question_control_current(&self, control: &QuestionControl) -> bool {
+        self.conversation == control.conversation
+            && self
+                .lease
+                .as_ref()
+                .zip(control.lease.as_ref())
+                .is_some_and(|(current, rendered)| Arc::ptr_eq(current, rendered))
+            && (!self.pinned
+                || self
+                    .current_request()
+                    .is_some_and(|(request, _)| request.id == control.transition.request))
+            && self
+                .question_progress
+                .get(&control.transition.request)
+                .is_some_and(|progress| progress.interaction_current(&control.transition))
+    }
+    fn question_complete(&self, request: &str, question: &str, cx: &App) -> bool {
+        let Intent::Respond {
+            answers: Some(answers),
+            ..
+        } = self.intent(request, cx)
+        else {
+            return false;
+        };
+        self.state
+            .requests
+            .iter()
+            .find(|candidate| candidate.id == request)
+            .is_some_and(|candidate| {
+                question_progress::question_complete(candidate, question, &answers)
+            })
+    }
+    fn advance_question(
+        &mut self,
+        request: &str,
+        question: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.question_enabled(request)
+            || self
+                .question_progress
+                .get(request)
+                .and_then(QuestionProgress::active)
+                != Some(question)
+            || !self.question_complete(request, question, cx)
+        {
+            return;
+        }
+        let Some((index, count)) = self.question_progress[request].position() else {
+            return;
+        };
+        let intent = self.intent(request, cx);
+        if index + 1 == count && !self.state.allows(&intent) {
+            return;
+        }
+        self.cancel_question_transition(request);
+        let progress = self.question_progress.get_mut(request).unwrap();
+        if index + 1 < count {
+            progress.next();
+        } else {
+            // Lock this request before the deferred parent dispatch starts.
+            progress.begin_submission();
+            self.dispatch(intent, window, cx);
+        }
+        cx.notify();
+    }
+    fn previous_question(&mut self, request: &str, question: &str, cx: &mut Context<Self>) {
+        if !self.question_enabled(request)
+            || self
+                .question_progress
+                .get(request)
+                .and_then(QuestionProgress::active)
+                != Some(question)
+        {
+            return;
+        }
+        self.cancel_question_transition(request);
+        if self
+            .question_progress
+            .get_mut(request)
+            .is_some_and(QuestionProgress::previous)
+        {
+            cx.notify();
+        }
+    }
+    fn collapse_question(&mut self, request: &str, question: &str, cx: &mut Context<Self>) {
+        if self
+            .question_progress
+            .get(request)
+            .and_then(QuestionProgress::active)
+            != Some(question)
+        {
+            return;
+        }
+        self.cancel_question_transition(request);
+        self.question_progress
+            .get_mut(request)
+            .unwrap()
+            .toggle_collapsed();
+        cx.notify();
+    }
+    fn select_question_option(
+        &mut self,
+        request: &str,
+        question: &str,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.question_enabled(request)
+            || self
+                .question_progress
+                .get(request)
+                .and_then(QuestionProgress::active)
+                != Some(question)
+            || self.question_progress[request].collapsed()
+        {
+            return;
+        }
+        let Some(item) = self
+            .state
+            .requests
+            .iter()
+            .find(|candidate| candidate.id == request)
+            .and_then(|request| request.item["questions"].as_array())
+            .and_then(|questions| {
+                questions
+                    .iter()
+                    .find(|candidate| candidate["id"] == question)
+            })
+        else {
+            return;
+        };
+        if !item["options"].as_array().is_some_and(|options| {
+            options
+                .iter()
+                .any(|option| option["value"].as_str().or(option["label"].as_str()) == Some(value))
+        }) {
+            return;
+        }
+        let multi = item["multiSelect"] == true;
+        self.cancel_question_transition(request);
+        let key = (request.to_owned(), question.to_owned());
+        let choices = self.selections.entry(key.clone()).or_default();
+        if multi && choices.iter().any(|choice| choice == value) {
+            choices.retain(|choice| choice != value);
+        } else {
+            if !multi {
+                choices.clear();
+            }
+            choices.push(value.to_owned());
+        }
+        if let Some(input) = self.inputs.get(&key) {
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        if !multi
+            && self.pinned
+            && self
+                .current_request()
+                .is_some_and(|(current, _)| current.id == request)
+        {
+            self.schedule_question_transition(request, window, cx);
+        }
+        cx.notify();
+    }
+    fn schedule_question_transition(
+        &mut self,
+        request: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(transition) = self
+            .question_progress
+            .get(request)
+            .and_then(|progress| progress.transition(request))
+        else {
+            return;
+        };
+        let Some(lease) = self.lease.clone() else {
+            return;
+        };
+        let conversation = self.conversation.clone();
+        let parent = self.parent.clone();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(question_progress::AUTO_ADVANCE_DELAY)
+                .await;
+            let _ = this.update_in(cx, |_, window, cx| {
+                // Release Actions before entering the parent's authority guard.
+                window.defer(cx, move |window, cx| {
+                    let _ = parent.update(cx, |view, cx| {
+                        if !view.active
+                            || view.busy
+                            || view.native.deleted()
+                            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+                            || !view.native.stream_error_is_clear()
+                            || !view.native.client_can_operate()
+                            || !Arc::ptr_eq(&lease, &view.native.request_lease)
+                            || conversation != view.native_action_conversation()
+                        {
+                            return;
+                        }
+                        view.native.actions.update(cx, |actions, cx| {
+                            if actions.pinned
+                                && actions.question_enabled(&transition.request)
+                                && actions
+                                    .current_request()
+                                    .is_some_and(|(current, _)| current.id == transition.request)
+                                && actions
+                                    .question_progress
+                                    .get(&transition.request)
+                                    .is_some_and(|progress| progress.accepts(&transition))
+                            {
+                                actions.advance_question(
+                                    &transition.request,
+                                    &transition.question,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    });
+                });
+            });
+        });
+        self.question_timers.insert(request.to_owned(), task);
+    }
     fn dispatch(&self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(lease) = self.lease.clone() else {
             return;
         };
         let conversation = self.conversation.clone();
+        let submission = match &intent {
+            Intent::Respond {
+                request_id,
+                decision: None,
+                ..
+            } => self
+                .question_progress
+                .get(request_id)
+                .filter(|progress| progress.submitting)
+                .and_then(|progress| progress.transition(request_id)),
+            _ => None,
+        };
         let parent = self.parent.clone();
         #[cfg(test)]
         self.deferred_dispatches
@@ -405,12 +749,287 @@ impl Actions {
                 {
                     return;
                 }
-                view.native_command(Some(intent), None, None, window, cx)
+                let eligible = submission.as_ref().is_none_or(|submission| {
+                    view.native
+                        .actions
+                        .read(cx)
+                        .question_progress
+                        .get(&submission.request)
+                        .is_some_and(|progress| progress.same_submission(submission))
+                });
+                let was_busy = view.busy;
+                if eligible {
+                    view.native_command(Some(intent), None, None, window, cx);
+                }
+                if !eligible || was_busy || !view.busy {
+                    if let Some(submission) = &submission {
+                        view.native.actions.update(cx, |actions, cx| {
+                            actions.finish_question_submission(submission);
+                            cx.notify();
+                        });
+                    }
+                }
             });
         });
     }
 }
 impl Actions {
+    fn render_question_step(
+        &self,
+        request: &Request,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(progress) = self.question_progress.get(&request.id) else {
+            return div()
+                .child("These questions cannot be identified safely. Open T3 to answer.")
+                .into_any_element();
+        };
+        let Some((index, count)) = progress.position() else {
+            return div()
+                .child("These questions cannot be identified safely. Open T3 to answer.")
+                .into_any_element();
+        };
+        let question_id = progress.active().unwrap().to_owned();
+        let control = QuestionControl {
+            conversation: self.conversation.clone(),
+            lease: self.lease.clone(),
+            transition: progress.transition(&request.id).unwrap(),
+        };
+        let Some(question) = request.item["questions"].as_array().and_then(|questions| {
+            questions
+                .iter()
+                .find(|question| question["id"] == question_id)
+        }) else {
+            return div()
+                .child("These questions cannot be identified safely. Open T3 to answer.")
+                .into_any_element();
+        };
+        let collapsed = progress.collapsed();
+        let submitting = progress.submitting;
+        let disabled = disabled || submitting;
+        let request_id = request.id.clone();
+        let question_text = question["question"].as_str().unwrap_or("").to_owned();
+        let request_for_header = request_id.clone();
+        let question_for_header = question_id.clone();
+        let header_control = control.clone();
+        let mut header = h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .items_center()
+            .child(
+                Button::new(SharedString::from(format!(
+                    "question-header-{request_id}-{question_id}"
+                )))
+                .debug_selector({
+                    let request = request_id.clone();
+                    let question = question_id.clone();
+                    move || format!("question-header-{request}-{question}")
+                })
+                .ghost()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .icon(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .label(
+                    question["header"]
+                        .as_str()
+                        .filter(|header| !header.trim().is_empty())
+                        .unwrap_or("Question")
+                        .to_owned(),
+                )
+                .tooltip(question_text.clone())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.question_control_current(&header_control) {
+                        this.collapse_question(&request_for_header, &question_for_header, cx);
+                    }
+                })),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .debug_selector({
+                        let request = request_id.clone();
+                        move || format!("question-progress-{request}-{}-{count}", index + 1)
+                    })
+                    .child(format!("{}/{count}", index + 1)),
+            );
+        if request.dismissible {
+            let id = request_id.clone();
+            let dismiss = Intent::Dismiss {
+                request_id: id.clone(),
+            };
+            let allowed = self.state.allows(&dismiss);
+            let dismiss_control = control.clone();
+            header = header.child(
+                Button::new(SharedString::from(format!("dismiss-{request_id}")))
+                    .debug_selector({
+                        let request = request_id.clone();
+                        move || format!("dismiss-{request}")
+                    })
+                    .ghost()
+                    .icon(IconName::Close)
+                    .label("Dismiss")
+                    .tooltip("Dismiss question without answering")
+                    .disabled(
+                        self.busy
+                            || submitting
+                            || !self.enabled
+                            || self.request_retained(&request_id)
+                            || !allowed,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        if !this.question_control_current(&dismiss_control) {
+                            return;
+                        }
+                        this.cancel_question_transition(&id);
+                        this.dispatch(dismiss.clone(), window, cx);
+                    })),
+            );
+        }
+        let mut form = v_flex().w_full().min_w_0().gap_1().child(header);
+        if collapsed {
+            form = form.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .truncate()
+                    .debug_selector({
+                        let request = request_id.clone();
+                        move || format!("question-collapsed-{request}")
+                    })
+                    .child(question_text.lines().next().unwrap_or("").to_owned()),
+            );
+        } else {
+            form = form.child(div().whitespace_normal().child(question_text));
+            if let Some(options) = question["options"].as_array() {
+                let mut buttons = h_flex().flex_wrap().gap_1();
+                for (n, option) in options.iter().enumerate() {
+                    let Some(value) = option["value"].as_str().or(option["label"].as_str()) else {
+                        continue;
+                    };
+                    let key = (request_id.clone(), question_id.clone());
+                    let selected = self
+                        .selections
+                        .get(&key)
+                        .is_some_and(|selected| selected.iter().any(|selected| selected == value));
+                    let request = request_id.clone();
+                    let question = question_id.clone();
+                    let value = value.to_owned();
+                    let option_control = control.clone();
+                    buttons = buttons.child(
+                        Button::new(SharedString::from(format!(
+                            "answer-{request_id}-{question_id}-{n}"
+                        )))
+                        .debug_selector({
+                            let request = request_id.clone();
+                            let question = question_id.clone();
+                            move || format!("answer-{request}-{question}-{n}")
+                        })
+                        .ghost()
+                        .label(format!(
+                            "{}{}",
+                            if selected { "✓ " } else { "" },
+                            option["label"].as_str().unwrap_or(&value)
+                        ))
+                        .tooltip(option["description"].as_str().unwrap_or("").to_owned())
+                        .disabled(disabled)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                if this.question_control_current(&option_control) {
+                                    this.select_question_option(
+                                        &request, &question, &value, window, cx,
+                                    );
+                                }
+                            },
+                        )),
+                    );
+                }
+                form = form.child(buttons);
+            }
+            if question["allowCustomAnswer"] != false {
+                if let Some(input) = self.inputs.get(&(request_id.clone(), question_id.clone())) {
+                    form = form.child(
+                        div()
+                            .debug_selector({
+                                let request = request_id.clone();
+                                let question = question_id.clone();
+                                move || format!("answer-custom-{request}-{question}")
+                            })
+                            .child(Input::new(input).disabled(disabled).w_full()),
+                    );
+                }
+            }
+        }
+        let mut controls = h_flex().gap_1();
+        if index > 0 {
+            let request = request_id.clone();
+            let question = question_id.clone();
+            let previous_control = control.clone();
+            controls = controls.child(
+                Button::new(SharedString::from(format!(
+                    "question-previous-{request_id}"
+                )))
+                .debug_selector({
+                    let request = request_id.clone();
+                    move || format!("question-previous-{request}")
+                })
+                .ghost()
+                .label("Previous")
+                .disabled(disabled)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.question_control_current(&previous_control) {
+                        this.previous_question(&request, &question, cx);
+                    }
+                })),
+            );
+        }
+        let last = index + 1 == count;
+        let complete = self.question_complete(&request_id, &question_id, cx);
+        let can_submit = !last || self.state.allows(&self.intent(&request_id, cx));
+        let request = request_id.clone();
+        let question = question_id;
+        controls = controls.child(
+            Button::new(SharedString::from(if last {
+                format!("respond-{request_id}")
+            } else {
+                format!("question-next-{request_id}")
+            }))
+            .debug_selector({
+                let request = request_id;
+                move || {
+                    if last {
+                        format!("respond-{request}")
+                    } else {
+                        format!("question-next-{request}")
+                    }
+                }
+            })
+            .ghost()
+            .label(if submitting {
+                "Submitting…"
+            } else if !last {
+                "Next"
+            } else if count == 1 {
+                "Submit answer"
+            } else {
+                "Submit answers"
+            })
+            .disabled(disabled || !complete || !can_submit)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.question_control_current(&control) {
+                    this.advance_question(&request, &question, window, cx);
+                }
+            })),
+        );
+        form.child(controls).into_any_element()
+    }
     pub(super) fn render_request(
         &mut self,
         id: &str,
@@ -503,118 +1122,8 @@ impl Actions {
                 buttons = buttons.child(decision_group);
             }
             card = card.child(buttons);
-        } else if let Some(questions) = request.item["questions"].as_array() {
-            for question in questions {
-                let Some(id) = question["id"].as_str() else {
-                    continue;
-                };
-                card = card.child(
-                    div()
-                        .whitespace_normal()
-                        .child(question["question"].as_str().unwrap_or("").to_owned()),
-                );
-                let key = (request_id.clone(), id.to_owned());
-                if let Some(options) = question["options"].as_array() {
-                    let mut buttons = h_flex().flex_wrap().gap_1();
-                    for (n, option) in options.iter().enumerate() {
-                        let Some(value) = option["value"].as_str().or(option["label"].as_str())
-                        else {
-                            continue;
-                        };
-                        let key = key.clone();
-                        let value = value.to_owned();
-                        let multi = question["multiSelect"] == true;
-                        let selected = self
-                            .selections
-                            .get(&key)
-                            .is_some_and(|s| s.contains(&value));
-                        buttons = buttons.child(
-                            Button::new(SharedString::from(format!(
-                                "answer-{}-{}-{n}",
-                                request_id, id
-                            )))
-                            .debug_selector({
-                                let request_id = request_id.clone();
-                                let question = id.to_owned();
-                                move || format!("answer-{request_id}-{question}-{n}")
-                            })
-                            .ghost()
-                            .label(format!(
-                                "{}{}",
-                                if selected { "✓ " } else { "" },
-                                option["label"].as_str().unwrap_or(&value)
-                            ))
-                            .tooltip(option["description"].as_str().unwrap_or("").to_owned())
-                            .disabled(disabled)
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    let choices = this.selections.entry(key.clone()).or_default();
-                                    if choices.contains(&value) {
-                                        choices.retain(|x| x != &value);
-                                    } else {
-                                        if !multi {
-                                            choices.clear();
-                                        }
-                                        choices.push(value.clone());
-                                    }
-                                    if let Some(input) = this.inputs.get(&key) {
-                                        input.update(cx, |input, cx| {
-                                            input.set_value("", window, cx)
-                                        });
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        );
-                    }
-                    card = card.child(buttons);
-                }
-                if question["allowCustomAnswer"] != false {
-                    if let Some(input) = self.inputs.get(&key) {
-                        card = card.child(
-                            div()
-                                .debug_selector({
-                                    let request_id = request_id.clone();
-                                    let question = id.to_owned();
-                                    move || format!("answer-custom-{request_id}-{question}")
-                                })
-                                .child(Input::new(input).disabled(disabled).w_full()),
-                        );
-                    }
-                }
-            }
-            let intent = self.intent(&request_id, cx);
-            card = card.child(
-                Button::new(SharedString::from(format!("respond-{request_id}")))
-                    .debug_selector({
-                        let request_id = request_id.clone();
-                        move || format!("respond-{request_id}")
-                    })
-                    .ghost()
-                    .label("Send answers")
-                    .disabled(disabled || !self.state.allows(&intent))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dispatch(intent.clone(), window, cx)
-                    })),
-            );
-            if request.dismissible {
-                let id = request_id.clone();
-                card = card.child(
-                    Button::new(SharedString::from(format!("dismiss-{request_id}")))
-                        .ghost()
-                        .label("Dismiss")
-                        .disabled(disabled)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.dispatch(
-                                Intent::Dismiss {
-                                    request_id: id.clone(),
-                                },
-                                window,
-                                cx,
-                            )
-                        })),
-                );
-            }
+        } else if request.item["type"] == "user_input_request" {
+            card = card.child(self.render_question_step(&request, disabled, cx));
         }
         if retained {
             card = card.child("Answer retained. Waiting for confirmation in the conversation.");
@@ -853,9 +1362,25 @@ impl ProjectView {
         let Some(journal) = self.native_journal() else {
             return;
         };
+        let question_submission = match &intent {
+            Some(Intent::Respond {
+                request_id,
+                decision: None,
+                ..
+            }) => self
+                .native
+                .actions
+                .read(cx)
+                .question_progress
+                .get(request_id)
+                .filter(|progress| progress.submitting)
+                .and_then(|progress| progress.transition(request_id)),
+            _ => None,
+        };
         self.busy = true;
         self.native.actions.update(cx, |a, cx| {
             a.busy = true;
+            a.cancel_question_transitions();
             a.revision = a.revision.wrapping_add(1);
             a.error = None;
             cx.notify();
@@ -880,6 +1405,8 @@ impl ProjectView {
                     a.busy=false;
                     match records { Ok(records) => a.records=records, Err(e) => a.error=Some(format!("{e:#}")) }
                     if let Err(e) = result { a.error=Some(format!("{e:#}. Delivery may be unconfirmed; retry the retained action or check in T3.")); }
+                    a.cancel_retained_transitions();
+                    if let Some(submission) = &question_submission { a.finish_question_submission(submission); }
                     cx.notify();
                 });
                 this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
@@ -918,6 +1445,7 @@ impl ProjectView {
                         Ok(r) => a.records = r,
                         Err(e) => a.error = Some(format!("{e:#}")),
                     }
+                    a.cancel_retained_transitions();
                     cx.notify();
                 });
                 this.feed.update(cx, |feed, cx| feed.requests_changed(cx));
