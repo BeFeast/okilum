@@ -2,7 +2,6 @@
 //! local sources and prepared bytes never enter the main composer or journal.
 use super::*;
 use crate::project::attachments::{prepare_with_preview, uploaded_references, Prepared, Source};
-use anyhow::Context as _;
 use okilum_t3::{
     actions::QuestionAttachments,
     chat_drafts::{Attachment, AttachmentKind as DraftKind, AttachmentState},
