@@ -4,6 +4,7 @@ use gpui_component::input::EditorState;
 use okilum_core::document_links::HeadingEntry;
 
 mod draft;
+mod incremental;
 pub(super) use draft::DraftOutline;
 
 const STALE_HEADING: &str = "The outline is updating. Click the heading again when it refreshes.";
@@ -24,6 +25,7 @@ impl Reader {
         if self.draft_outline.worker.is_some() {
             return;
         }
+        let mut cache = self.draft_outline.cache.take().unwrap_or_default();
         self.draft_outline.worker = Some(cx.spawn(async move |this, cx| {
             loop {
                 let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
@@ -37,10 +39,14 @@ impl Reader {
                 }) else {
                     return;
                 };
-                let snapshot = cx
+                let (snapshot, next_cache) = cx
                     .background_executor()
-                    .spawn(async move { DraftOutline::new(&source) })
+                    .spawn(async move {
+                        let snapshot = DraftOutline::with_cache(&source, &mut cache);
+                        (snapshot, cache)
+                    })
                     .await;
+                cache = next_cache;
                 let Ok(done) = this.update(cx, |this, cx| {
                     if this
                         .editing
@@ -50,6 +56,7 @@ impl Reader {
                     {
                         return false;
                     }
+                    this.draft_outline.cache = Some(std::mem::take(&mut cache));
                     this.draft_outline.source = snapshot.source;
                     this.draft_outline.entries = snapshot.entries;
                     this.draft_outline.lines = snapshot.lines;

@@ -1,8 +1,9 @@
-use okilum_core::document_links::{HeadingEntry, HeadingInventory};
+use okilum_core::document_links::HeadingEntry;
 
 /// The outline and its click coordinates share one exact editor snapshot.
 #[derive(Default)]
 pub(crate) struct DraftOutline {
+    pub(super) cache: Option<super::incremental::Cache>,
     pub(super) source: String,
     pub(super) entries: Vec<HeadingEntry>,
     pub(super) lines: Vec<usize>,
@@ -11,14 +12,22 @@ pub(crate) struct DraftOutline {
 }
 
 impl DraftOutline {
+    #[cfg(test)]
     pub(super) fn new(source: &str) -> Self {
+        Self::with_cache(source, &mut super::incremental::Cache::default())
+    }
+
+    pub(super) fn with_cache(source: &str, cache: &mut super::incremental::Cache) -> Self {
         let body = okilum_core::render::without_frontmatter(source);
         let prefix = source.len() - body.len();
-        let entries: Vec<_> = HeadingInventory::new(body)
-            .entries
+        let entries: Vec<_> = cache
+            .update(body)
             .into_iter()
             .filter(|heading| heading.supported_container)
-            .map(|mut heading| {
+            .enumerate()
+            .map(|(index, mut heading)| {
+                // Draft clicks use authored lines, never Reader block indexes.
+                heading.target.block = index;
                 heading.target.offset += prefix;
                 heading
             })
@@ -37,6 +46,7 @@ impl DraftOutline {
             })
             .collect();
         Self {
+            cache: None,
             source: source.into(),
             entries,
             lines,
@@ -76,6 +86,44 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use okilum_core::document_links::HeadingTarget;
+
+    #[test]
+    fn incremental_revisions_match_canonical_inventory_and_authored_lines() {
+        let mut cache = super::super::incremental::Cache::default();
+        let initial = "---\r\ntitle: Synthetic\r\n---\r\n# Start\r\n\r\nBody Ω\r\n\r\nTarget\r\n------\r\n\r\n# Same\r\n\r\n# Same\r\n";
+        let renamed = initial.replace("Target", "Renamed 🎯");
+        let inserted = renamed.replace("Body Ω", "Body Ω\r\n\r\n## Inserted");
+        let removed = inserted.replacen("# Same\r\n\r\n", "", 1);
+        let merged = removed.replace("\r\n\r\nRenamed", "\r\nRenamed");
+        let fenced = format!("```\n{merged}\n```\n# Outside\n");
+        let reference = "# [Label][id]\n\n[id]: /target\n";
+        for source in [
+            initial, &renamed, &inserted, &removed, &merged, &fenced, reference, initial, "",
+        ] {
+            let snapshot = DraftOutline::with_cache(source, &mut cache);
+            let body = okilum_core::render::without_frontmatter(source);
+            let prefix = source.len() - body.len();
+            let expected = okilum_core::document_links::HeadingInventory::new(body)
+                .entries
+                .into_iter()
+                .filter(|h| h.supported_container)
+                .enumerate()
+                .map(|(index, mut h)| {
+                    h.target.block = index;
+                    h.target.offset += prefix;
+                    h
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(snapshot.entries, expected, "revision: {source}");
+            for heading in &snapshot.entries {
+                let line = source[..heading.target.offset]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count();
+                assert_eq!(snapshot.line_for(source, heading), Ok(line as u32));
+            }
+        }
+    }
 
     fn snapshot() -> DraftOutline {
         DraftOutline {
