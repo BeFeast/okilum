@@ -26,6 +26,8 @@ use okilum_core::log::{
 use std::ops::Range;
 #[path = "reader_log_remote.rs"]
 pub(crate) mod remote;
+#[path = "reader_log_http.rs"]
+pub(crate) mod http;
 
 const CONTEXT: &str = "ReaderLog";
 const ROW_HEIGHT: f32 = 24.;
@@ -166,6 +168,7 @@ enum State {
     Following { rel: String },
     Failed(String),
     Remote(Arc<okilum_core::remote_log::EventWindow>),
+    Stream(Arc<okilum_core::log::stream::Snapshot>),
 }
 
 /// What the view reads: the indexed file, or the followed file (#1159).
@@ -201,6 +204,15 @@ impl LogData for okilum_core::remote_log::EventWindow {
             ..Default::default()
         }
     }
+}
+
+impl LogData for okilum_core::log::stream::Snapshot {
+    fn index(&self) -> &LogIndex { self.index() }
+    fn bytes(&self) -> &[u8] { self.bytes() }
+    fn raw(&self, index: usize) -> Option<&[u8]> { self.index().raw(self.bytes(), index) }
+    fn record(&self, index: usize) -> Option<Record> { self.index().record(self.raw(index)?) }
+    fn path(&self) -> &Path { self.path() }
+    fn window(&self) -> WindowInfo { self.window() }
 }
 
 impl LogData for LogFile {
@@ -251,6 +263,7 @@ enum Snapshot {
     Segment(Arc<Segment>),
     Held(Arc<LogSnapshot>),
     Remote(Arc<okilum_core::remote_log::EventWindow>),
+    Stream(Arc<okilum_core::log::stream::Snapshot>),
 }
 
 /// The name being typed to save the shown filter (#1169).
@@ -353,6 +366,7 @@ impl Snapshot {
     fn window(&self) -> WindowInfo {
         match self {
             Self::Remote(data) => data.window(),
+            Self::Stream(data) => data.window(),
             Self::File(file) => file.window(),
             Self::Segment(segment) => segment.window(),
             Self::Held(snapshot) => snapshot.window(),
@@ -361,6 +375,7 @@ impl Snapshot {
     fn parts(&self) -> (&LogIndex, &[u8]) {
         match self {
             Self::Remote(data) => (&data.index, &data.bytes),
+            Self::Stream(data) => (data.index(), data.bytes()),
             Snapshot::File(file) => (file.index(), file.bytes()),
             Snapshot::Segment(segment) => (segment.index(), segment.bytes()),
             Snapshot::Held(snapshot) => (snapshot.index(), snapshot.bytes()),
@@ -545,6 +560,36 @@ pub(crate) struct LogView {
 }
 
 impl LogView {
+    pub(crate) fn stream(data: Arc<okilum_core::log::stream::Snapshot>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new(State::Stream(data), window, cx)
+    }
+
+    pub(crate) fn replace_stream(&mut self, data: Arc<okilum_core::log::stream::Snapshot>, cx: &mut Context<Self>) {
+        let positions: std::collections::HashMap<u64, usize> = data.index().entries().iter()
+            .enumerate().map(|(i, entry)| (entry.offset(), i)).collect();
+        let old = match &self.state {
+            State::Stream(old) if old.scope() == data.scope() => Some(old),
+            _ => None,
+        };
+        let remap = |i: usize| old.and_then(|old| old.index().get(i))
+            .and_then(|entry| positions.get(&entry.offset()).copied());
+        self.selected = self.selected.and_then(remap);
+        self.anchor = self.anchor.and_then(remap);
+        self.marks = self.marks.iter().filter_map(|&(source, i)| (source == 0).then(|| remap(i)).flatten().map(|i| (0, i))).collect();
+        self.generations.next();
+        self.window_revision = self.window_revision.wrapping_add(1);
+        self.histogram_for = None;
+        self._filtering = None;
+        self.filter_running = None;
+        self.filter_again = false;
+        self.histogram = None;
+        self._histogram = None;
+        self.state = State::Stream(data);
+        self.rows = None;
+        self.refilter(cx);
+        self.after_rows_changed();
+        cx.notify();
+    }
     pub(crate) fn remote(
         data: Arc<okilum_core::remote_log::EventWindow>,
         window: &mut Window,
@@ -620,7 +665,7 @@ impl LogView {
                 _ => {}
             },
         );
-        let remote = matches!(&state, State::Remote(_));
+        let remote = matches!(&state, State::Remote(_) | State::Stream(_));
         let query_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(if remote {
                 "Local loaded-row query (not KQL)"
@@ -772,9 +817,8 @@ impl LogView {
 
     /// The records shown: the followed file once follow has opened it.
     fn data(&self) -> Option<&dyn LogData> {
-        if let State::Remote(data) = &self.state {
-            return Some(data.as_ref());
-        }
+        if let State::Remote(data) = &self.state { return Some(data.as_ref()); }
+        if let State::Stream(data) = &self.state { return Some(data.as_ref()); }
         match &self.follow {
             Some(follow) => Some(&follow.tail),
             None => self.file().map(|file| file.as_ref() as &dyn LogData),
@@ -786,6 +830,7 @@ impl LogView {
             if let State::Remote(data) = &self.state {
                 return Some(Snapshot::Remote(data.clone()));
             }
+            if let State::Stream(data) = &self.state { return Some(Snapshot::Stream(data.clone())); }
         }
         match (source, &self.follow) {
             (0, Some(follow)) => Some(Snapshot::Held(follow.tail.snapshot())),
@@ -2606,7 +2651,10 @@ impl LogView {
         self.after_rows_changed();
     }
     fn window_notice(&self) -> Option<String> {
-        if matches!(&self.state, State::Remote(_)) {
+        if matches!(&self.state, State::Stream(_)) {
+            return Some("Session stream — only complete loaded lines are shown. Filters, counts and export cover these rows. Loading stops at 8 MiB / 20,000 lines; incomplete lines are retained until newline or Stop.".into());
+        }
+        if matches!(&self.state, State::Remote(_) | State::Stream(_)) {
             return Some("Remote history — only loaded events are shown. Search, local filters and histogram cover these rows, not the full server result. Use Export loaded JSONL for original events and identities.".into());
         }
         let windows: Vec<_> = self
@@ -3460,20 +3508,20 @@ impl LogView {
                     .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
             }))
             .children(history)
-            .when(!matches!(&self.state, State::Remote(_)), |bar| {
+            .when(!matches!(&self.state, State::Remote(_) | State::Stream(_)), |bar| {
                 bar.child(self.regex_button(cx))
             })
             .child(self.saved_button(cx))
-            .when(!matches!(&self.state, State::Remote(_)), |bar| {
+            .when(!matches!(&self.state, State::Remote(_) | State::Stream(_)), |bar| {
                 bar.child(self.export_button(cx))
             })
             .child(self.columns_button(cx))
-            .when(!matches!(&self.state, State::Remote(_)), |bar| {
+            .when(!matches!(&self.state, State::Remote(_) | State::Stream(_)), |bar| {
                 bar.child(self.files_button(cx))
             })
             // A compressed log does not grow (#1164).
             .when(
-                !self.compressed() && !matches!(&self.state, State::Remote(_)),
+                !self.compressed() && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
                 |bar| bar.child(self.follow_button(cx)),
             )
             .child(
@@ -4308,6 +4356,7 @@ impl LogView {
 
     fn status(&self) -> String {
         let mut text = match (&self.state, &self.follow) {
+            (State::Stream(data), _) => format!("{} loaded stream records · Local filters affect loaded rows only", grouped(data.index().len() as u64)),
             (State::Remote(data), _) => format!(
                 "{} loaded remote events · Local filters affect loaded rows only",
                 grouped(data.events.len() as u64)
@@ -4459,6 +4508,7 @@ impl Render for LogView {
             let message = match &self.state {
                 State::Ready(_) | State::Following { .. } => "This log is empty",
                 State::Remote(_) => "No remote events loaded",
+                State::Stream(_) => "No complete stream lines loaded",
                 State::Indexing | State::Failed(_) => "",
             };
             list.flex()
