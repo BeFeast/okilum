@@ -74,6 +74,27 @@ struct Request {
     #[serde(default)]
     syncthing_device: Option<String>,
 }
+impl Request {
+    fn validate(&self, signer: &[u8]) -> Result<()> {
+        validate_name(&self.name)?;
+        ensure!(
+            !self.id.is_nil() && signer.len() == 32 && self.public == signer,
+            "request identity proof differs"
+        );
+        if let Some(device) = &self.syncthing_device {
+            ensure!(
+                device.len() == 63
+                    && device.split('-').count() == 8
+                    && device.split('-').all(|part| part.len() == 7
+                        && part
+                            .bytes()
+                            .all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b))),
+                "invalid Syncthing device identity"
+            );
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Invitation {
@@ -654,11 +675,7 @@ impl Controller {
     ) -> Result<Reply> {
         match operation {
             Operation::Redeem { request } => {
-                validate_name(&request.name)?;
-                ensure!(
-                    request.public == signer && request.id != Uuid::nil(),
-                    "request identity proof differs"
-                );
+                request.validate(&signer)?;
                 let invitation = db.invitation.as_mut().context("no invitation")?;
                 ensure!(
                     invitation.offer.id == scope && invitation.offer.expires > now()?,
@@ -933,6 +950,80 @@ mod tests {
     use super::*;
     fn controller(root: &Path, name: &str) -> Result<Controller> {
         Controller::open(root.join(name), vec![])
+    }
+    #[test]
+    fn direct_request_identity_and_unknown_operations_fail_before_claim() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = controller(root.path(), "request-validation")?;
+        let url = offer(&source)?;
+        let offer = decode_url(&url)?;
+        let signer = wire::public(&wire::random()?)?;
+        let valid = Request {
+            id: Uuid::new_v4(),
+            name: "Олег — מחשב 💻".into(),
+            public: signer.clone(),
+            syncthing_device: Some(["AAAAAAA"; 8].join("-")),
+        };
+        valid.validate(&signer)?;
+        let restored: Request = serde_json::from_slice(&serde_json::to_vec(&valid)?)?;
+        assert_eq!(restored.name, valid.name);
+        let mut malformed = vec![];
+        let mut changed = valid.clone();
+        changed.id = Uuid::nil();
+        malformed.push(changed);
+        let mut changed = valid.clone();
+        changed.public = vec![0; 32];
+        malformed.push(changed);
+        let mut changed = valid.clone();
+        changed.syncthing_device = Some("untrusted-device".into());
+        malformed.push(changed);
+        let mut changed = valid.clone();
+        changed.name = "bad\nname".into();
+        malformed.push(changed);
+        let mut db = source.shared.db.lock().unwrap();
+        for request in malformed {
+            assert!(source
+                .dispatch(
+                    &mut db,
+                    offer.id,
+                    Operation::Redeem { request },
+                    signer.clone()
+                )
+                .is_err());
+            assert!(
+                db.invitation.as_ref().unwrap().request.is_none(),
+                "invalid request claimed invitation"
+            );
+            assert!(db.peers.is_empty());
+        }
+        assert!(matches!(
+            source.dispatch(
+                &mut db,
+                offer.id,
+                Operation::Redeem { request: valid },
+                signer
+            )?,
+            Reply::Pending
+        ));
+        assert!(
+            db.invitation.as_ref().unwrap().request.is_some(),
+            "positive valid claim control"
+        );
+        drop(db);
+        source.shutdown();
+        assert!(serde_json::from_value::<Operation>(
+            serde_json::json!({"operation":"catalog","unexpected":true})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<Operation>(
+            serde_json::json!({"operation":"folder_delete","vault":"private"})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<Request>(
+            serde_json::json!({"id":Uuid::new_v4(),"name":"Name","public":vec![0;32],"extra":true})
+        )
+        .is_err());
+        Ok(())
     }
     #[test]
     fn pairing_preflight_checks_scope_expiry_and_names_without_controller() -> Result<()> {
