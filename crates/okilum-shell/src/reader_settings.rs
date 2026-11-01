@@ -1,6 +1,11 @@
 //! Explicit, lazily opened user settings. No vault scans or startup reads.
 use super::*;
-use gpui_component::{button::ButtonGroup, switch::Switch, ThemeMode};
+use gpui_component::{
+    button::ButtonGroup,
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
+    switch::Switch,
+    Colorize as _, ThemeMode,
+};
 use okilum_core::log::source_link;
 
 gpui::actions!(okilum_settings, [OpenSettings, CloseSettings]);
@@ -539,6 +544,10 @@ struct Settings {
     vault_color_input: Option<(Entity<InputState>, Subscription)>,
     /// The text the last Apply rejected as not a `#RRGGBB` colour.
     vault_color_rejected: Option<SharedString>,
+    vault_color_picker: Option<(Entity<ColorPickerState>, Subscription)>,
+    /// The saved value the draft was opened against; presets and other windows
+    /// reset the draft rather than leaving a picker for a different accent.
+    vault_color_saved: Option<Option<brand::VaultColor>>,
 }
 impl Settings {
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -604,6 +613,8 @@ impl Settings {
             map_from: None,
             vault_color_input: None,
             vault_color_rejected: None,
+            vault_color_picker: None,
+            vault_color_saved: None,
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -664,6 +675,8 @@ impl Settings {
         self.vaults = None;
         // Another vault: the field starts from that vault's own colour.
         self.vault_color_input = None;
+        self.vault_color_picker = None;
+        self.vault_color_saved = None;
         self.vault_color_rejected = None;
         cx.notify();
     }
@@ -864,9 +877,8 @@ impl Settings {
             .into_any_element()
     }
 
-    /// #1399: a colour typed as `#RRGGBB`, applied by Apply or Enter. Text
-    /// that is not a whole colour stays in the field, is named as invalid
-    /// in place, and leaves the vault's colour as it was.
+    /// #2202: the library picker and precise hex input edit one draft. Only
+    /// Apply/Enter changes the saved accent; Cancel restores the saved value.
     fn custom_vault_color_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         let invalid = self.vault_color_rejected.is_some();
@@ -874,33 +886,53 @@ impl Settings {
             .vault_color_input
             .as_ref()
             .map(|(input, _)| input.clone());
-        h_flex()
+        let saved = self
+            .vault(cx)
+            .and_then(|reader| reader_ui_state::vault_color(&reader.read(cx).vault_root, cx));
+        v_flex()
             .w_full()
-            .justify_between()
-            .gap_4()
+            .gap_2()
             .py_2()
+            .child("Custom colour")
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_1()
-                    .child("Custom colour")
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-vault-color-custom-help".into())
-                            .text_sm()
-                            .text_color(if invalid { p.danger } else { p.text_muted })
-                            .child(if invalid {
-                                CUSTOM_COLOR_INVALID
-                            } else {
-                                CUSTOM_COLOR_HELP
-                            }),
-                    ),
+                div()
+                    .debug_selector(|| "settings-vault-color-custom-help".into())
+                    .text_sm()
+                    .text_color(if invalid { p.danger } else { p.text_muted })
+                    .child(if invalid {
+                        CUSTOM_COLOR_INVALID
+                    } else {
+                        CUSTOM_COLOR_HELP
+                    }),
             )
             .child(
                 h_flex()
-                    .flex_none()
+                    .flex_wrap()
+                    .items_center()
                     .gap_2()
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-vault-color-current".into())
+                            .size_5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(saved.map(|color| color.color(cx)).unwrap_or(p.accent))
+                            .tooltip(|window, cx| {
+                                gpui_component::tooltip::Tooltip::new("Current accent")
+                                    .build(window, cx)
+                            }),
+                    )
+                    .children(self.vault_color_picker.as_ref().map(|(picker, _)| {
+                        div()
+                            .debug_selector(|| "settings-vault-color-picker".into())
+                            .child(
+                                ColorPicker::new(picker)
+                                    .label("Choose colour")
+                                    .accessibility_label("Choose custom accent colour")
+                                    .small(),
+                            )
+                    }))
                     .children(input.map(|input| {
                         div()
                             .w(px(110.))
@@ -916,9 +948,49 @@ impl Settings {
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.apply_custom_vault_color(cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("settings-vault-color-cancel")
+                            .debug_selector(|| "settings-vault-color-cancel".into())
+                            .ghost()
+                            .small()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reset_custom_vault_color(window, cx);
+                            })),
                     ),
             )
             .into_any_element()
+    }
+
+    fn reset_custom_vault_color(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = self
+            .vault(cx)
+            .and_then(|reader| reader_ui_state::vault_color(&reader.read(cx).vault_root, cx));
+        let text = saved
+            .filter(|color| matches!(color, brand::VaultColor::Custom(_)))
+            .map(|color| color.key().to_uppercase())
+            .unwrap_or_default();
+        let color = saved
+            .map(|color| match color {
+                brand::VaultColor::Custom([r, g, b]) => {
+                    rgb(u32::from_be_bytes([0, r, g, b])).into()
+                }
+                preset => preset.color(cx),
+            })
+            .unwrap_or_else(|| brand::palette(cx).accent);
+        if let Some((input, _)) = &self.vault_color_input {
+            input.update(cx, |input, cx| input.set_value(text, window, cx));
+        }
+        if let Some((picker, _)) = &self.vault_color_picker {
+            picker.update(cx, |picker, cx| {
+                picker.set_open(false, cx);
+                picker.set_value(color, window, cx);
+            });
+        }
+        self.vault_color_saved = Some(saved);
+        self.vault_color_rejected = None;
+        cx.notify();
     }
 
     fn apply_custom_vault_color(&mut self, cx: &mut Context<Self>) {
@@ -1663,6 +1735,29 @@ impl Render for Settings {
             });
             self.editor_command = Some((input, subscription));
         }
+        if self.vault_color_picker.is_none() {
+            let picker = cx.new(|cx| ColorPickerState::new(window, cx));
+            let subscription = cx.subscribe_in(&picker, window, |this, _, event, window, cx| {
+                let ColorPickerEvent::Change(Some(color)) = event else {
+                    return;
+                };
+                // Accents are opaque RGB. The reusable picker also supports alpha,
+                // which does not change the accent's existing #RRGGBB contract.
+                let rgb = color.to_rgb();
+                let text = format!(
+                    "#{:02X}{:02X}{:02X}",
+                    (rgb.r * 255.).round() as u8,
+                    (rgb.g * 255.).round() as u8,
+                    (rgb.b * 255.).round() as u8
+                );
+                if let Some((input, _)) = &this.vault_color_input {
+                    input.update(cx, |input, cx| input.set_value(text, window, cx));
+                }
+                this.vault_color_rejected = None;
+                cx.notify();
+            });
+            self.vault_color_picker = Some((picker, subscription));
+        }
         if self.vault_color_input.is_none() {
             let current = self
                 .vault(cx)
@@ -1675,25 +1770,50 @@ impl Render for Settings {
                     .placeholder("#RRGGBB")
                     .default_value(current)
             });
-            let subscription = cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
-                match event {
-                    InputEvent::PressEnter { .. } => this.apply_custom_vault_color(cx),
-                    // Editing the rejected text clears the complaint; nothing
-                    // is applied while typing. Enter also reports a change
-                    // without editing, so compare the text itself.
-                    InputEvent::Change
-                        if this
-                            .vault_color_rejected
-                            .as_ref()
-                            .is_some_and(|rejected| *rejected != input.read(cx).value()) =>
-                    {
-                        this.vault_color_rejected = None;
-                        cx.notify();
+            let subscription = cx.subscribe_in(
+                &input,
+                window,
+                |this, input, event: &InputEvent, window, cx| {
+                    match event {
+                        InputEvent::PressEnter { .. } => this.apply_custom_vault_color(cx),
+                        // Editing the rejected text clears the complaint; nothing
+                        // is applied while typing. Enter also reports a change
+                        // without editing, so compare the text itself.
+                        InputEvent::Change => {
+                            let text = input.read(cx).value();
+                            if this
+                                .vault_color_rejected
+                                .as_ref()
+                                .is_some_and(|rejected| *rejected != text)
+                            {
+                                this.vault_color_rejected = None;
+                            }
+                            if let Some(brand::VaultColor::Custom([r, g, b])) =
+                                brand::VaultColor::from_hex(&text)
+                            {
+                                if let Some((picker, _)) = &this.vault_color_picker {
+                                    picker.update(cx, |picker, cx| {
+                                        picker.set_value(
+                                            rgb(u32::from_be_bytes([0, r, g, b])),
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            }
+                            cx.notify();
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-            });
+                },
+            );
             self.vault_color_input = Some((input, subscription));
+        }
+        let saved = self
+            .vault(cx)
+            .and_then(|reader| reader_ui_state::vault_color(&reader.read(cx).vault_root, cx));
+        if self.vault_color_saved != Some(saved) {
+            self.reset_custom_vault_color(window, cx);
         }
         if self.map_from.is_none() {
             self.map_from =
@@ -3155,6 +3275,90 @@ mod tests {
             assert_eq!(input.read(cx).value().as_str(), "#3A7BD5");
             assert!(settings.vault_color_rejected.is_none());
         });
+
+        // #2202: real library picker changes are drafts until Apply. Cancel
+        // restores both controls without writing the selected draft to disk.
+        click(visual, "settings-vault-color-picker");
+        let picker = settings.read_with(visual, |settings, _| {
+            settings.vault_color_picker.as_ref().unwrap().0.clone()
+        });
+        assert!(picker.read_with(visual, |picker, _| picker.is_open()));
+        visual.update(|window, cx| {
+            picker.update(cx, |picker, cx| {
+                picker.select_color(rgb(0x123456).into(), window, cx)
+            });
+        });
+        visual.run_until_parked();
+        settings.read_with(visual, |settings, cx| {
+            assert_eq!(
+                settings
+                    .vault_color_input
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .read(cx)
+                    .value(),
+                "#123456"
+            );
+        });
+        assert_eq!(
+            stored(visual).as_deref(),
+            Some("#3a7bd5"),
+            "picker alone cannot persist"
+        );
+        click(visual, "settings-vault-color-cancel");
+        settings.read_with(visual, |settings, cx| {
+            assert_eq!(
+                settings
+                    .vault_color_input
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .read(cx)
+                    .value(),
+                "#3A7BD5"
+            );
+        });
+        assert_eq!(current(visual), Some(typed));
+        visual.update(|window, cx| {
+            picker.update(cx, |picker, cx| {
+                picker.select_color(rgb(0x123456).into(), window, cx)
+            });
+        });
+        visual.run_until_parked();
+        click(visual, "settings-vault-color-apply");
+        assert_eq!(stored(visual).as_deref(), Some("#123456"));
+        // A fresh Settings entity reopens with the authored RGB, not its
+        // contrast-adapted display colour (the renderer keeps that adaptation).
+        let (settings, visual) = open_settings(&first_reader, cx);
+        settings.read_with(visual, |settings, cx| {
+            let value = settings
+                .vault_color_picker
+                .as_ref()
+                .unwrap()
+                .0
+                .read(cx)
+                .value()
+                .unwrap();
+            let rgb = value.to_rgb();
+            assert_eq!(
+                [
+                    (rgb.r * 255.).round() as u8,
+                    (rgb.g * 255.).round() as u8,
+                    (rgb.b * 255.).round() as u8
+                ],
+                [0x12, 0x34, 0x56]
+            );
+        });
+        type_in_field(visual, "#ABCDEF");
+        click(visual, "settings-vault-color-pink");
+        click(visual, "settings-vault-color-cancel");
+        assert_eq!(
+            current(visual),
+            Some(brand::VaultColor::Pink),
+            "cancel keeps latest saved preset"
+        );
+        assert_eq!(stored(visual).as_deref(), Some("pink"));
 
         // Custom -> preset -> custom (by Enter) -> None.
         click(visual, "settings-vault-color-pink");
