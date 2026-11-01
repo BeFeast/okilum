@@ -28,13 +28,13 @@ fn reasoning(prompt_injected: bool) -> Value {
         {"type":"boolean","id":"fastMode","label":"Fast","currentValue":false}
     ])
 }
-fn fixture<'a>(
-    cx: &'a mut TestAppContext,
+fn fixture(
+    cx: &mut TestAppContext,
     catalog: Value,
     current: ModelSelection,
 ) -> (
     Entity<ProjectView>,
-    &'a mut VisualTestContext,
+    &mut VisualTestContext,
     tempfile::TempDir,
     Arc<super::super::fixture::Fake>,
 ) {
