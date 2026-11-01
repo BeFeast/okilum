@@ -990,10 +990,13 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     assert!(visual.debug_bounds("board-delivery-details").is_some());
     assert!(visual.debug_bounds("board-delivery-line").is_some());
     assert!(visual.debug_bounds("board-delivery-details-line").is_some());
-    assert!(visual.debug_bounds("delivery-problem-Mac-Stable").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Mac").is_some());
     assert!(visual
-        .debug_bounds("board-delivery-details-problem-Mac-Stable")
+        .debug_bounds("board-delivery-details-problem-Mac")
         .is_some());
+    for id in ["delivery-problem-Mac-Stable", "delivery-problem-Mac-Beta"] {
+        assert!(visual.debug_bounds(id).is_none(), "no duplicate channel indicators");
+    }
     for id in [
         "board-delivery-details-Mac-Stable",
         "board-delivery-details-Mac-Beta",
@@ -1017,6 +1020,9 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     ] {
         assert!(visual.debug_bounds(id).is_some(), "visible {id}");
     }
+    assert_eq!(platform_rows.len(), 3, "all platform rows are present");
+    assert!(platform_rows["Mac"] < platform_rows["Windows"]);
+    assert!(platform_rows["Windows"] < platform_rows["Linux"]);
     for id in [
         "board-delivery-Mac-Sprint",
         "board-delivery-Windows-Sprint",
@@ -1130,7 +1136,7 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
 }
 
 #[gpui::test]
-fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext) {
+fn delivery_publications_align_by_platform_at_board_width(cx: &mut TestAppContext) {
     use okilum_t3::board::delivery as d;
     cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
@@ -1201,7 +1207,7 @@ fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext)
     let line = visual
         .debug_bounds("board-delivery-line")
         .expect("delivery line");
-    let mut row_y = None;
+    let mut platform_rows = std::collections::HashMap::new();
     for id in [
         "board-delivery-Mac-Stable",
         "board-delivery-Windows-Stable",
@@ -1212,9 +1218,11 @@ fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext)
     ] {
         let button = visual.debug_bounds(id).expect("publication control");
         assert_eq!(
-            *row_y.get_or_insert(button.origin.y),
+            *platform_rows
+                .entry(id.split('-').nth(2).unwrap())
+                .or_insert(button.origin.y),
             button.origin.y,
-            "same row: {id}"
+            "channels share their platform row: {id}"
         );
         assert!(
             button.right() <= line.right(),
