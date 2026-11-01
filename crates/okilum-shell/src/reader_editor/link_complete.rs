@@ -18,6 +18,7 @@ use super::ime_guard::Trigger;
 use super::inline_complete::{self as providers, Kind};
 use super::lists::{self, Edit};
 use super::*;
+use gpui_component::input::projection::SourceStamp;
 use gpui_component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp, RopeExt as _};
 use std::ops::Range;
 
@@ -201,22 +202,68 @@ pub(super) fn completion(text: &str, query: &LinkQuery, target: &str) -> (Vec<Ed
 }
 
 /// Reuse the same rows, key handling and acceptance path for every provider.
+/// A source edit can temporarily empty an async provider's rows. Remember the
+/// user's choice by identity across that gap, never by its old numeric position.
 fn publish(state: &mut State, query: LinkQuery, items: Vec<Candidate>) {
-    let selected = state
+    let preferred = state
         .open
         .as_ref()
-        .and_then(|open| {
-            let old = open.items.get(open.selected)?;
+        .filter(|open| open.query.kind == query.kind && open.query.start == query.start)
+        .and_then(|open| open.items.get(open.selected))
+        .map(|item| {
+            (
+                query.kind.clone(),
+                query.start,
+                item.path.clone(),
+                item.target.clone(),
+            )
+        })
+        .or_else(|| state.preferred.clone())
+        .filter(|(kind, start, _, _)| *kind == query.kind && *start == query.start);
+    let selected = preferred
+        .as_ref()
+        .and_then(|(_, _, path, target)| {
             items
                 .iter()
-                .position(|item| item.path == old.path && item.target == old.target)
+                .position(|item| item.path == *path && item.target == *target)
         })
         .unwrap_or(0);
+    state.preferred = items
+        .get(selected)
+        .map(|item| {
+            (
+                query.kind.clone(),
+                query.start,
+                item.path.clone(),
+                item.target.clone(),
+            )
+        })
+        .or(preferred);
     state.open = (!items.is_empty()).then_some(Open {
         query,
         items,
         selected,
     });
+}
+
+/// A click belongs to the row that was painted, including its source revision.
+/// A source edit or asynchronous reorder must never retarget an old click.
+struct RowIntent {
+    query: LinkQuery,
+    source: SourceStamp,
+    path: String,
+    target: String,
+}
+
+impl RowIntent {
+    fn choice(&self, open: &Open, source: SourceStamp) -> Option<usize> {
+        if self.source != source || self.query != open.query {
+            return None;
+        }
+        open.items
+            .iter()
+            .position(|item| item.path == self.path && item.target == self.target)
+    }
 }
 
 fn row(title: &str, target: &str, folder: &str) -> Candidate {
@@ -359,6 +406,8 @@ pub(super) struct State {
     from: String,
     composing: bool,
     editable: bool,
+    markdown: bool,
+    preferred: Option<(Kind, usize, String, String)>,
 }
 
 impl Reader {
@@ -376,6 +425,7 @@ impl Reader {
         if editing.link_complete.seen.as_ref() == Some(&seen)
             && editing.link_complete.composing == input.ime_composing()
             && editing.link_complete.editable == input.is_editable()
+            && editing.link_complete.markdown == editing.markdown
             && editing.link_complete.from == from
             && editing
                 .link_complete
@@ -385,11 +435,26 @@ impl Reader {
         {
             return;
         }
+        let was_open = editing.link_complete.open.is_some();
+        // A different document, vault snapshot or visibility policy starts a
+        // new completion session even if the source stamp/query looks equal.
+        if editing.link_complete.from != from
+            || !editing
+                .link_complete
+                .index
+                .as_ref()
+                .is_some_and(|index| index.current(&vault, show_hidden))
+        {
+            editing.link_complete.open = None;
+            editing.link_complete.preferred = None;
+            editing.link_complete.dismissed = None;
+        }
         let selection = seen.1.clone();
         let expected_seen = seen.clone();
         editing.link_complete.seen = Some(seen);
         editing.link_complete.composing = input.ime_composing();
         editing.link_complete.editable = input.is_editable();
+        editing.link_complete.markdown = editing.markdown;
         editing.link_complete.from = from.clone();
         let query = (editing.markdown
             && selection.is_empty()
@@ -413,10 +478,10 @@ impl Reader {
             .map(|_| input.value().to_string());
         let input_entity = editing.input.clone();
         let state = &mut editing.link_complete;
-        let was_open = state.open.is_some();
         state.task = None;
         let Some(query) = query else {
             state.dismissed = None;
+            state.preferred = None;
             state.open = None;
             if was_open {
                 cx.notify();
@@ -485,6 +550,7 @@ impl Reader {
                     if current != expected_seen
                         || editing.link_complete.seen.as_ref() != Some(&expected_seen)
                         || this.sidebar.show_hidden != show_hidden
+                        || !editing.markdown
                         || input.ime_composing()
                         || !input.is_editable()
                         || editing.link_complete.dismissed == Some(query.start)
@@ -509,7 +575,8 @@ impl Reader {
             input.selected_range(),
             reader_ui_state::emoji_completion(cx),
         );
-        if editing.link_complete.seen.as_ref() != Some(&current)
+        if !editing.markdown
+            || editing.link_complete.seen.as_ref() != Some(&current)
             || editing.link_complete.from != self.current_rel
             || !editing
                 .link_complete
@@ -558,6 +625,23 @@ impl Reader {
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    fn link_complete_accept_row(
+        &mut self,
+        intent: &RowIntent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(choice) = self.editing.as_ref().and_then(|editing| {
+            intent.choice(
+                editing.link_complete.open.as_ref()?,
+                editing.input.read(cx).source_stamp(),
+            )
+        }) else {
+            return;
+        };
+        self.link_complete_accept(Some(choice), Trigger::Text, window, cx);
     }
 
     /// Write the chosen note's link: row `choice`, or the highlighted one.
@@ -643,6 +727,12 @@ impl Reader {
             .take(visible.len())
             .map(|(i, item)| {
                 let selected = i == open.selected;
+                let intent = RowIntent {
+                    query: open.query.clone(),
+                    source: state.source_stamp(),
+                    path: item.path.clone(),
+                    target: item.target.clone(),
+                };
                 h_flex()
                     .id(("link-complete-row", i))
                     .debug_selector(move || format!("link-complete-{i}"))
@@ -691,7 +781,7 @@ impl Reader {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            this.link_complete_accept(Some(i), Trigger::Text, window, cx);
+                            this.link_complete_accept_row(&intent, window, cx);
                         }),
                     )
             });
@@ -727,6 +817,107 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use gpui_component::input::Undo;
+
+    #[test]
+    fn source_refresh_keeps_identity_across_pending_rows_and_reorders() {
+        let query = LinkQuery {
+            start: 2,
+            caret: 4,
+            query: "go".into(),
+            kind: Kind::Note,
+        };
+        let a = row("Goals", "Goals", "");
+        let b = row("Good", "Good", "");
+        let mut state = State::default();
+        publish(&mut state, query.clone(), vec![a.clone(), b.clone()]);
+        state.open.as_mut().unwrap().selected = 1;
+        publish(&mut state, query.clone(), Vec::new());
+        assert!(
+            state.open.is_none(),
+            "pending rows cannot accept stale source"
+        );
+        // Multiple source edits may supersede workers before any rows return.
+        publish(&mut state, query.clone(), Vec::new());
+        publish(&mut state, query.clone(), vec![a.clone(), b.clone()]);
+        assert_eq!(
+            state.open.as_ref().unwrap().selected,
+            1,
+            "pending source refresh preserves the selected second row"
+        );
+        publish(&mut state, query.clone(), Vec::new());
+        publish(&mut state, query.clone(), vec![b.clone(), a.clone()]);
+        assert_eq!(state.open.as_ref().unwrap().selected, 0);
+        assert_eq!(state.open.as_ref().unwrap().items[0].target, "Good");
+        // If that choice disappears, select the first remaining current row.
+        publish(&mut state, query.clone(), Vec::new());
+        publish(&mut state, query.clone(), vec![a.clone()]);
+        assert_eq!(state.open.as_ref().unwrap().items[0].target, "Goals");
+        // A new trigger does not inherit the previous session's choice.
+        let next = LinkQuery {
+            start: 12,
+            caret: 14,
+            ..query
+        };
+        publish(&mut state, next, vec![b, a]);
+        assert_eq!(state.open.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn painted_click_cannot_retarget_after_source_edit_or_async_reorder() {
+        let query = LinkQuery {
+            start: 2,
+            caret: 4,
+            query: "go".into(),
+            kind: Kind::Note,
+        };
+        let source = SourceStamp {
+            document: 7,
+            generation: 1,
+        };
+        let intent = RowIntent {
+            query: query.clone(),
+            source,
+            path: String::new(),
+            target: "Good".into(),
+        };
+        let mut open = Open {
+            query,
+            items: vec![row("Goals", "Goals", ""), row("Good", "Good", "")],
+            selected: 0,
+        };
+        assert_eq!(intent.choice(&open, source), Some(1), "positive control");
+        open.items.swap(0, 1);
+        assert_eq!(
+            intent.choice(&open, source),
+            Some(0),
+            "identity follows a reorder"
+        );
+        assert_eq!(
+            intent.choice(
+                &open,
+                SourceStamp {
+                    generation: 2,
+                    ..source
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            intent.choice(
+                &open,
+                SourceStamp {
+                    document: 8,
+                    ..source
+                }
+            ),
+            None
+        );
+        open.query.query.push('d');
+        assert_eq!(intent.choice(&open, source), None, "another query");
+        open.query = intent.query.clone();
+        open.items.remove(0);
+        assert_eq!(intent.choice(&open, source), None, "removed candidate");
+    }
 
     /// `|` is the caret.
     fn at(text: &str) -> (String, usize) {
