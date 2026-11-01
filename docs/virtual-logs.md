@@ -3,7 +3,9 @@
 The core source layer uses a versioned JSON file with extension `.okilog`.
 JSON reuses the existing core serialization stack. The definition is canonical;
 indexes, selection diagnostics and merged rows are rebuildable and never saved.
-Definitions are edited externally in this slice. No source log is modified.
+The desktop can load a saved definition, edit session criteria and copy the
+resulting JSON explicitly. The saved definition is edited externally; session
+changes do not rewrite it. No source log is modified.
 
 ```json
 {
@@ -64,14 +66,34 @@ owner calls `refresh_directories()` before reselection, then drains events queue
 during enumeration to close the discovery race. Backend overflow requires an
 explicit rescan and visible incomplete coverage until that succeeds.
 
-Desktop integration must register `.okilog` in Tree/Quick Open/open routing, load
-and parse the bounded definition, display candidate reasons/progress and consume
-watcher wakes. The owner must retain old immutable snapshots when membership
-disappears and announce removals; replacing a selection alone discards that history.
-Follow must keep existing `LogTail` sessions, consume rotation/reset segments and
-reconcile new matching paths without duplicating the moved source. These desktop
-and Follow integration steps are not implemented or claimed by this source-layer
-packet; #1382 must remain open until they and native acceptance pass.
+Logs → **Virtual logs…** loads a vault-scoped saved `.okilog` through Browse or
+an explicit path. The form exposes name, glob/root, optional file-level query,
+rotation family and all supported time modes (all, relative seconds, absolute
+RFC3339 timestamps). Session edits are separate from the saved file; Copy
+definition returns canonical supported JSON to the clipboard.
+
+Start performs one bounded selection off the render path, reports progress and
+per-candidate reasons, and hands the already-open immutable files to the existing
+LogView. No path is silently reopened for rendering. The result keeps local
+filters, selection, columns and merged export. Its source set and parser are
+locked to that selection; ordinary file views retain their existing controls.
+Errors and canceled/stale passes preserve the last successful result. A successful
+explicit Rescan replaces it, including an intentionally empty selection.
+
+Watch changes installs the existing watcher **before** selection and drains
+queued events afterwards. Mutation/removal invalidates the result visibly and
+retains its immutable history until an explicit Rescan. Lost/overflowed events
+are an explicit incomplete-coverage error. This is an invalidation watch, not
+automatic discovery/tail reconciliation; there is no polling scan. Stop/close
+wakes an idle watcher immediately. A currently running backend selection pass
+finishes within its existing bounds before cleanup; its result is discarded after
+Stop. No immediate interruption inside a file read is claimed.
+
+Tree/Quick Open `.okilog` routing, in-app canonical definition saving and automatic
+membership/rotation Follow remain open. Full Follow must keep existing `LogTail`
+sessions, consume reset segments and avoid duplicating a moved source. #1382
+remains open for these capabilities and native acceptance; a usable desktop
+snapshot flow does not establish them.
 
 ## Verification boundary
 
