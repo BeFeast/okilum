@@ -14,6 +14,7 @@ class ParallelTargets(unittest.TestCase):
     def fixture(self, root):
         scripts=root/'scripts/ci';scripts.mkdir(parents=True)
         shutil.copyfile(SCRIPT,scripts/'fast-local.sh')
+        shutil.copyfile(SCRIPT.with_name('fast-source.sh'),scripts/'fast-source.sh')
         (scripts/'release-cache.sh').write_text('release_cache_stats() { :; }\n')
         (scripts/'fast.sh').write_text('''#!/usr/bin/env bash
 set -eu
@@ -23,7 +24,12 @@ printf '%s|%s|%s\\n' "$OKILUM_FAST_SLOT" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS"
 while [ ! -f "$POOL_GATE" ]; do sleep 0.02; done
 exit "${COMPILER_STATUS:-0}"
 ''')
-        return dict(os.environ,OKILUM_FAST_SLOT_ROOT=str(root/'pool'),OKILUM_FAST_SLOTS='4',
+        subprocess.run(['git','init','-q',str(root)],check=True)
+        subprocess.run(['git','-C',str(root),'add','scripts'],check=True)
+        subprocess.run(['git','-C',str(root),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+                        'commit','-qm','fixture'],check=True)
+        return dict(os.environ,GITHUB_SHA=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip(),
+                    OKILUM_FAST_SLOT_ROOT=str(root/'pool'),OKILUM_FAST_SLOTS='4',
                     OKILUM_FAST_SLOT_WAIT_SECONDS='0',POOL_LOG=str(root/'log'),POOL_GATE=str(root/'gate'))
 
     def test_four_jobs_hold_distinct_targets_and_fifth_waits_outside_them(self):
