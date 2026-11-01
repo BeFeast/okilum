@@ -183,7 +183,9 @@ impl RenderOnce for MessageActions {
         }
         let copied = state.read(cx).copied;
         h_flex()
-            .w_full()
+            .items_center()
+            .flex_shrink_0()
+            .text_color(brand::palette(cx).text_muted)
             .when(user, |row| row.justify_end())
             .tab_group()
             .child(
@@ -367,11 +369,19 @@ mod tests {
         );
         assert!(full.len() > 100_000);
         for user in [true, false] {
-            let (_feed, visual) =
+            let (feed, visual) =
                 fixture(cx, vec![message(1, user, &full, "completed", Some("run"))]);
+            // Whole-message controls live in the heading; bring it into view
+            // even when a long authored message initially follows the tail.
+            feed.update(visual, |feed, cx| {
+                feed.scroller.update(cx, |state, cx| {
+                    assert!(state.scroll_to_item(0, cx));
+                });
+            });
+            visual.run_until_parked();
             let button = visual
                 .debug_bounds("project-message-copy-1")
-                .expect("copy footer at live edge");
+                .expect("copy control in the visible message heading");
             visual.simulate_click(button.center(), Modifiers::default());
             visual.run_until_parked();
             assert_eq!(clipboard(visual), full);
