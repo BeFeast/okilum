@@ -297,7 +297,7 @@ impl Reader {
         cx.notify();
     }
 
-    /// Also usable by an unbound project's Manager setup action.
+    /// Setup for an unbound project, or explicit reconnect of its saved local owner.
     pub(super) fn open_local_project_binding(
         &mut self,
         project: Project,
@@ -317,17 +317,18 @@ impl Reader {
                 .background_executor()
                 .spawn(async move {
                     let binding = Binding::load(&area)?;
-                    let origins = match state {
-                        Some(state) => project::browser_connections(&state, &projects)?,
-                        None => Default::default(),
-                    };
-                    let environments = origins
-                        .into_iter()
-                        .filter_map(|(alias, origin)| {
+                    let environments = if let Some(environment) = binding.pinned_environment() {
+                        vec![environment.clone()]
+                    } else {
+                        let origins = match state {
+                            Some(state) => project::browser_connections(&state, &projects)?,
+                            None => Default::default(),
+                        };
+                        origins.into_iter().filter_map(|(alias, origin)| {
                             okilum_t3::projects::local_manager::environment(&origin).ok()?;
                             okilum_t3::Environment::new(alias, &origin).ok()
-                        })
-                        .collect::<Vec<_>>();
+                        }).collect::<Vec<_>>()
+                    };
                     Ok::<_, anyhow::Error>((binding, environments))
                 })
                 .await;
@@ -354,6 +355,7 @@ impl Reader {
                     _ => None,
                 };
                 let request_access = access.clone();
+                let expected_binding = binding.clone();
                 let result = cx
                     .background_executor()
                     .spawn(async move {
@@ -369,14 +371,21 @@ impl Reader {
                         let mut choices = Vec::new();
                         let mut unresolved = Vec::new();
                         for target in &listing {
+                            if expected_binding.pinned_owner().is_some_and(|owner| owner.project_id != target.id) {
+                                continue;
+                            }
                             // A path is validated only after the server identity has
                             // been read. It never selects an owner automatically.
-                            match Selection::select(
+                            let selected = Selection::select(
                                 &identity.environment_id,
                                 &target.id,
                                 Path::new(&target.workspace_root),
                                 &listing,
-                            ) {
+                            ).and_then(|selection| {
+                                expected_binding.check_selection(&environment, &selection)?;
+                                Ok(selection)
+                            });
+                            match selected {
                                 Ok(selection) => choices.push(LocalOwnerChoice {
                                     environment: environment.clone(),
                                     gateway: gateway.clone(),
@@ -389,6 +398,11 @@ impl Reader {
                                     target.title,
                                     target.id
                                 )),
+                            }
+                        }
+                        if let Some(owner) = expected_binding.pinned_owner() {
+                            if choices.is_empty() && unresolved.is_empty() {
+                                unresolved.push(format!("Saved local owner {} is absent from the complete project listing; binding and drafts retained", owner.project_id));
                             }
                         }
                         Ok::<_, anyhow::Error>((choices, unresolved))
@@ -431,6 +445,10 @@ impl Reader {
             let mut content = v_flex().gap_2().child(
                 "Select the existing T3 project that owns your local source checkout. No T3 project or Manager will be created."
             );
+            if let Some(owner) = binding.pinned_owner() {
+                content = content.child(format!("Reconnect saved owner: {} · {} · {}. Manager, executor and drafts stay retained.",
+                    owner.environment_id, owner.project_id, owner.checkout.display()));
+            }
             if let Some(error) = diagnostic.read(cx) {
                 content = content.child(error.clone());
             }
@@ -454,7 +472,7 @@ impl Reader {
                     if delivered.is_err() { busy.set(false); }
                 }));
             }
-            dialog.title("Connect an existing local T3 project")
+            dialog.title(if binding.pinned_owner().is_some() { "Reconnect local T3 project" } else { "Connect an existing local T3 project" })
                 .width(px(640.)).on_ok(|_, _, _| false).child(content.child(rows))
         });
     }
@@ -474,6 +492,8 @@ impl Reader {
             return;
         }
         let vault = self.vault_root.clone();
+        let alias = choice.environment.alias.clone();
+        let gateway = choice.gateway.clone();
         let access = reader_features::access(reader_features::Feature::Agents, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn(async move {
@@ -486,6 +506,9 @@ impl Reader {
                 if this.vault_root != vault { return; }
                 match result {
                     Ok(linked) => {
+                        // Only a freshly revalidated owner may replace a cached
+                        // authenticated transport used by project navigation.
+                        this.project_navigation.t3_gateways.insert(alias, gateway);
                         window.close_dialog(cx);
                         this.show_new_project(linked, cx);
                         reader_toast::transient(format!("{} is connected to the selected local T3 project", project.name), window, cx);
