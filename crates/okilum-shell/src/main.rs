@@ -615,6 +615,13 @@ fn bind_keys(cx: &mut App) {
             note_paste::PasteAsPlainText,
             Some("ReaderSource > Input"),
         ),
+        // Shift provides an AltGr-safe alternative on Windows.
+        #[cfg(windows)]
+        KeyBinding::new(
+            "ctrl-alt-shift-v",
+            note_paste::PasteAsTitledLink,
+            Some("ReaderSource > Input"),
+        ),
         KeyBinding::new(
             "secondary-alt-v",
             note_paste::PasteAsTitledLink,
