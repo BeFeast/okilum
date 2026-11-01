@@ -1,41 +1,34 @@
 //! Tree-owned file preview. Ordinary activation retains its separate navigation behavior.
 use super::*;
 
+#[path = "reader_quick_look.rs"]
+mod readonly;
+
 #[derive(Default)]
 pub(super) struct Session {
-    active: bool,
-    #[cfg(all(target_os = "macos", not(test)))]
-    panel: Option<native::Panel>,
+    preview: Option<(String, Entity<readonly::Preview>)>,
 }
 impl Session {
-    fn show(&mut self, path: &Path) -> anyhow::Result<()> {
-        #[cfg(all(target_os = "macos", not(test)))]
-        {
-            if self.panel.is_none() {
-                self.panel = Some(native::Panel::new()?);
-            }
-            self.panel.as_ref().unwrap().show(path)?;
-        }
-        #[cfg(any(not(target_os = "macos"), test))]
-        let _ = path;
-        self.active = true;
-        Ok(())
-    }
     pub(super) fn is_open(&self) -> bool {
-        #[cfg(all(target_os = "macos", not(test)))]
-        return self.active && self.panel.as_ref().is_some_and(native::Panel::is_open);
-        #[cfg(any(not(target_os = "macos"), test))]
-        self.active
+        self.preview.is_some()
     }
     pub(super) fn close(&mut self) {
-        self.active = false;
-        #[cfg(all(target_os = "macos", not(test)))]
-        {
-            self.panel = None;
-        }
+        self.preview = None;
     }
 }
 impl Reader {
+    /// Render in the center before the ordinary document/editing surface. The
+    /// underlying document, draft, history and file preview remain untouched.
+    pub(super) fn render_tree_quick_look(&self) -> Option<AnyElement> {
+        self.tree_preview.preview.as_ref().map(|(_, preview)| {
+            div()
+                .size_full()
+                .min_h_0()
+                .child(preview.clone())
+                .into_any_element()
+        })
+    }
+
     pub(super) fn toggle_tree_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let attachment = self
             .tree
@@ -67,65 +60,27 @@ impl Reader {
             self.tree_preview.close();
             return;
         }
-        let result = reader_files::checked_path(&self.vault_root, &row.path)
-            .and_then(|path| self.tree_preview.show(&path));
-        if let Err(error) = result {
-            self.tree_preview.close();
-            eprintln!("Cannot preview file {}: {error:#}", row.path);
-            reader_toast::error(reader_files::preview_error_text(&error), window, cx);
-            return;
-        }
-        #[cfg(any(not(target_os = "macos"), test))]
-        {
-            self.preview_file(&row.path, window, cx);
-            if self.file_preview.as_ref().is_none_or(|p| p.rel != row.path) {
+        let result = reader_files::checked_path(&self.vault_root, &row.path).and_then(|path| {
+            anyhow::ensure!(path.is_file(), "Choose a file to preview");
+            Ok(path)
+        });
+        match result {
+            Ok(path) => {
+                let root = self.vault_root.clone();
+                let rel = row.path.clone();
+                let preview = cx.new(|cx| readonly::Preview::new(root, rel, path, cx));
+                self.tree_preview.preview = Some((row.path, preview));
+            }
+            Err(error) => {
                 self.tree_preview.close();
+                reader_toast::error(reader_files::preview_error_text(&error), window, cx);
+                cx.notify();
+                return;
             }
         }
         // In compact windows this is a browsing session, not a document activation.
         self.tree_focus.focus(window, cx);
         cx.notify();
-    }
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-mod native {
-    use super::*;
-    use std::{
-        ffi::{c_char, c_void, CString},
-        os::unix::ffi::OsStrExt,
-        ptr::NonNull,
-    };
-    unsafe extern "C" {
-        fn okilum_quicklook_new() -> *mut c_void;
-        fn okilum_quicklook_show(panel: *mut c_void, path: *const c_char) -> bool;
-        fn okilum_quicklook_visible(panel: *mut c_void) -> bool;
-        fn okilum_quicklook_release(panel: *mut c_void);
-    }
-    // Owned by Reader on the AppKit/GPUI foreground thread. Not Send or Sync.
-    pub(super) struct Panel(NonNull<c_void>);
-    impl Panel {
-        pub(super) fn new() -> anyhow::Result<Self> {
-            NonNull::new(unsafe { okilum_quicklook_new() })
-                .map(Self)
-                .ok_or_else(|| anyhow::anyhow!("Quick Look could not open"))
-        }
-        pub(super) fn show(&self, path: &Path) -> anyhow::Result<()> {
-            let path = CString::new(path.as_os_str().as_bytes())?;
-            anyhow::ensure!(
-                unsafe { okilum_quicklook_show(self.0.as_ptr(), path.as_ptr()) },
-                "Quick Look could not load this file"
-            );
-            Ok(())
-        }
-        pub(super) fn is_open(&self) -> bool {
-            unsafe { okilum_quicklook_visible(self.0.as_ptr()) }
-        }
-    }
-    impl Drop for Panel {
-        fn drop(&mut self) {
-            unsafe { okilum_quicklook_release(self.0.as_ptr()) };
-        }
     }
 }
 
@@ -172,11 +127,15 @@ mod tests {
             r.tree_focus.focus(window, cx);
         });
         visual.run_until_parked();
+        let history = reader.read_with(visual, |r, _| r.navigation.history.clone());
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
+            assert_eq!(r.navigation.history, history);
+            assert_eq!(r.current_rel, "Start.md");
+            assert!(r.file_preview.is_none());
             assert!(r.tree_preview.is_open());
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "Alpha.bin");
+            assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Alpha.bin");
             assert!(r.tree_focus.is_focused(window));
             assert!(r.panels.visible(
                 reader_layout::Panel::Notes,
@@ -187,24 +146,21 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
             assert_eq!(r.tree.cursor.as_deref(), Some("Beta.bin"));
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "Beta.bin");
+            assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Beta.bin");
             assert!(r.tree_focus.is_focused(window));
         });
         visual.simulate_keystrokes("up");
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "Alpha.bin")
+            assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Alpha.bin")
         });
         visual.simulate_keystrokes("space down");
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(!r.tree_preview.is_open());
             assert_eq!(r.tree.cursor.as_deref(), Some("Beta.bin"));
-            assert_eq!(
-                r.file_preview.as_ref().unwrap().rel,
-                "Alpha.bin",
-                "closed preview must not follow"
-            );
+            assert!(r.tree_preview.preview.is_none());
+            assert!(r.file_preview.is_none(), "preview must not navigate");
         });
         visual.simulate_keystrokes("space escape");
         visual.run_until_parked();
