@@ -1384,7 +1384,6 @@ impl ProjectView {
             .min_h_0()
             .p_4()
             .gap_3()
-            .child(self.measure_model_panel(cx))
             .child(self.render_chat_header(&status, open, cx))
             .when(self.connection_details, |view| view.child(self.render_chat_diagnostics(cx)))
             .when(
@@ -1528,12 +1527,12 @@ impl ProjectView {
                 let attachments = if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)};
                 #[cfg(target_os = "linux")]
                 let composer = v_flex().w_full().min_w_0().gap_2()
-                    .child(self.render_model_controls(cx))
+                    .child(self.render_model_controls(_window, cx))
                     .child(attachments)
                     .child(composer);
                 #[cfg(not(target_os = "linux"))]
                 let composer = v_flex().w_full().min_w_0().gap_2()
-                    .child(self.render_model_controls(cx)).child(composer);
+                    .child(self.render_model_controls(_window, cx)).child(composer);
                 view.child(div().w_full().min_w_0().debug_selector(|| "project-chat-composer".into()).child(composer))
             }).into_any_element()
     }

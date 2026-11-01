@@ -1,11 +1,13 @@
 use super::*;
-use gpui_component::popover::Popover;
+use gpui_component::ThemeStyled as _;
 use okilum_t3::{models::Target, ModelSelection};
 
 #[cfg(target_os = "linux")]
 pub(super) mod catalog;
 #[cfg(test)]
 mod interaction_tests;
+#[cfg(test)]
+mod layout_tests;
 mod navigation;
 mod options;
 mod preferences;
@@ -23,27 +25,22 @@ pub(super) struct PickerUi {
     highlight: usize,
     list_scroll: gpui::UniformListScrollHandle,
     panel_width: std::rc::Rc<std::cell::Cell<Pixels>>,
+    panel_height: std::cell::Cell<Pixels>,
     preferences: Option<preferences::Prefs>,
     preferences_origin: Option<String>,
+    overlay: Option<gpui_base::DeferredPopover>,
 }
 
 impl ProjectView {
-    pub(super) fn measure_model_panel(&self, cx: &Context<Self>) -> AnyElement {
-        let width = self.model_ui.panel_width.clone();
-        let owner = cx.entity().downgrade();
-        gpui::canvas(
-            move |bounds, _, cx| {
-                // Project padding (32px) and the toolkit popup wrapper (24px).
-                let available = (bounds.size.width - px(56.)).max(px(0.));
-                if width.replace(available) != available {
-                    cx.notify(owner.entity_id());
-                }
-            },
-            |_, (), _, _| {},
-        )
-        .absolute()
-        .size_full()
-        .into_any_element()
+    fn close_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "project-ui-harness")]
+        if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
+            eprintln!("QA model-picker close");
+        }
+        self.model_open = false;
+        self.model_ui.overlay.take();
+        self.compose.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
     }
 
     fn load_model_preferences(&mut self) {
@@ -186,8 +183,7 @@ impl ProjectView {
         };
         match intent {
             navigation::Intent::Toggle if self.model_open => {
-                self.model_open = false;
-                self.compose.update(cx, |input, cx| input.focus(window, cx));
+                self.close_models(window, cx);
             }
             navigation::Intent::Toggle => {
                 if let Some(target) = self.manager_model_target() {
@@ -195,8 +191,7 @@ impl ProjectView {
                 }
             }
             navigation::Intent::Close => {
-                self.model_open = false;
-                self.compose.update(cx, |input, cx| input.focus(window, cx));
+                self.close_models(window, cx);
             }
             navigation::Intent::Highlight(index) => {
                 self.model_ui.highlight = index;
@@ -437,7 +432,23 @@ impl ProjectView {
             .iter()
             .position(|choice| choice.current)
             .unwrap_or(0);
+        #[cfg(feature = "project-ui-harness")]
+        if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
+            eprintln!(
+                "QA model-picker open: catalog_ready={}",
+                self.models.is_some()
+            );
+        }
         self.model_open = true;
+        self.model_ui
+            .panel_width
+            .set((window.viewport_size().width - px(48.)).max(px(0.)));
+        self.model_ui
+            .panel_height
+            .set((window.viewport_size().height - px(48.)).max(px(0.)));
+        self.model_ui
+            .overlay
+            .get_or_insert_with(|| gpui_base::GlobalState::register_deferred_popover(cx));
         self.settle_model_layout(true, window, cx);
         self.model_candidate = None;
         #[cfg(target_os = "linux")]
@@ -574,6 +585,7 @@ impl ProjectView {
                             }
                             if applying {
                                 this.model_open = true;
+                                this.model_ui.overlay.get_or_insert_with(||gpui_base::GlobalState::register_deferred_popover(cx));
                                 if let Some(input) = &this.model_ui.search {
                                     input.update(cx, |input, cx| input.focus(window, cx));
                                 }
@@ -601,8 +613,15 @@ impl ProjectView {
         &self,
         id: impl Into<ElementId>,
         target: Target,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.model_ui
+            .panel_width
+            .set((window.viewport_size().width - px(48.)).max(px(0.)));
+        self.model_ui
+            .panel_height
+            .set((window.viewport_size().height - px(48.)).max(px(0.)));
         let is_target = self.model_target.as_ref() == Some(&target);
         let label = self
             .models
@@ -639,50 +658,58 @@ impl ProjectView {
                 })
             })
             .map(|provider| visuals::provider_glyph(&provider.driver_kind));
-        let owner = cx.entity().downgrade();
-        let search_focus = self
-            .model_ui
-            .search
-            .as_ref()
-            .map(|input| input.read(cx).focus_handle(cx));
-        Popover::new(id)
-            .when_some(search_focus.as_ref(), |popover, focus| {
-                popover.track_focus(focus)
-            })
-            .anchor(Anchor::TopLeft)
-            .open(self.model_open && is_target)
-            .trigger(
-                Button::new("project-model-trigger")
-                    .debug_selector(|| "project-manager-model".into())
-                    .ghost()
-                    .small()
-                    .max_w(self.model_ui.panel_width.get().max(px(180.)).min(px(280.)))
-                    .overflow_hidden()
-                    .label(label.clone())
-                    .when_some(glyph, |button, glyph| button.icon(glyph))
-                    .child(Icon::new(IconName::ChevronDown).small())
-                    .tooltip(format!("Choose model · {label}"))
-                    .disabled(self.busy || !self.can_read_models()),
-            )
-            .on_open_change(move |open, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if *open {
-                        if !this.model_open {
-                            this.open_models(target.clone(), window, cx);
-                        }
-                    } else {
-                        this.model_open = false;
-                        this.compose.update(cx, |input, cx| input.focus(window, cx));
-                        cx.notify();
-                    }
-                });
-            })
-            .child(if self.model_open && is_target {
-                self.render_models(cx)
-            } else {
-                div().into_any_element()
-            })
-            .into_any_element()
+        let trigger_target = target.clone();
+        let trigger = Button::new("project-model-trigger")
+            .debug_selector(|| "project-manager-model".into())
+            .ghost()
+            .small()
+            .max_w(px(280.))
+            .overflow_hidden()
+            .label(label.clone())
+            .when_some(glyph, |button, glyph| button.icon(glyph))
+            .child(Icon::new(IconName::ChevronDown).small())
+            .selected(self.model_open && is_target)
+            .tooltip(format!("Choose model · {label}"))
+            .disabled(self.busy || !self.can_read_models())
+            // Open after the click completes. A mouse-down-owned popover can
+            // appear underneath the in-flight pointer release after layout.
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.model_open {
+                    this.close_models(window, cx);
+                } else {
+                    this.open_models(trigger_target.clone(), window, cx);
+                }
+            }));
+        let popup = gpui_base::Popup::new(id, trigger).anchor(Anchor::TopLeft);
+        if self.model_open && is_target {
+            #[cfg(feature = "project-ui-harness")]
+            if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
+                eprintln!(
+                    "QA model-picker render: usable_rows={}",
+                    self.visible_model_choices(cx)
+                        .iter()
+                        .filter(|choice| choice.selectable)
+                        .count()
+                );
+            }
+            let content = v_flex()
+                .id("project-model-popup-surface")
+                .role(gpui::Role::Dialog)
+                .occlude()
+                .tab_group()
+                .popover_style(cx)
+                .text_size(px(brand::READER_CHROME_FONT_SIZE))
+                .line_height(px(20.))
+                .p_3()
+                .when_some(self.model_ui.search.as_ref(), |content, input| {
+                    content.track_focus(&input.read(cx).focus_handle(cx))
+                })
+                .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_models(window, cx)))
+                .child(self.render_models(cx));
+            popup.content(content).into_any_element()
+        } else {
+            popup.into_any_element()
+        }
     }
 
     fn choose_model(
@@ -716,8 +743,7 @@ impl ProjectView {
             selection
         };
         self.model_candidate = Some(selection.clone());
-        self.model_open = false;
-        self.compose.update(cx, |input, cx| input.focus(window, cx));
+        self.close_models(window, cx);
         self.model_request(Some(selection), window, cx);
     }
 }

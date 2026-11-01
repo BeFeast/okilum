@@ -4,13 +4,23 @@ impl ProjectView {
     pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_options = self.has_model_options();
         let measured = self.model_ui.panel_width.get();
+        // The popup may overlay the workspace. Its limit is the visible window,
+        // not the width of the Manager panel that owns the trigger.
         let available = if measured > px(0.) {
             measured
         } else {
-            px(440.)
+            px(760.)
         };
-        let width = available.min(if has_options { px(560.) } else { px(440.) });
-        let options_beside = has_options && width >= px(480.);
+        let width = available.min(if has_options { px(760.) } else { px(680.) });
+        // Keep both names and descriptor labels readable; stack the options
+        // only when the window cannot fit a useful model list beside them.
+        let options_beside = has_options && width >= px(640.);
+        let measured_height = self.model_ui.panel_height.get();
+        let height = if measured_height > px(0.) {
+            measured_height
+        } else {
+            px(480.)
+        };
         let palette = brand::palette(cx);
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
@@ -19,17 +29,31 @@ impl ProjectView {
             }))
             .w(width)
             .max_w_full()
-            .max_h(px(420.))
+            .max_h(height)
+            .text_size(px(brand::READER_CHROME_FONT_SIZE))
             .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .gap_2();
-        let mut search_row = h_flex().w_full().min_w_0().items_center().gap_2();
+        let mut search_row = h_flex()
+            .w_full()
+            .min_w_0()
+            .h(px(32.))
+            .flex_shrink_0()
+            .items_center()
+            .gap_2();
         if let Some(search) = &self.model_ui.search {
             search_row = search_row.child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .debug_selector(|| "project-model-search".into())
-                    .child(Input::new(search).w_full().aria_label("Search models")),
+                    .child(
+                        Input::new(search)
+                            .small()
+                            .w_full()
+                            .aria_label("Search models"),
+                    ),
             );
         }
         panel = panel.child(
@@ -55,9 +79,11 @@ impl ProjectView {
                 .is_none_or(|catalog| catalog.read(cx).loading);
         #[cfg(not(target_os = "linux"))]
         let catalog_loading = false;
-        if self.model_busy || catalog_loading {
+        let loading = self.model_busy || catalog_loading;
+        if loading {
             panel = panel.child(
                 div()
+                    .flex_shrink_0()
                     .text_size(px(12.))
                     .text_color(palette.text_muted)
                     .child(if self.models.is_some() {
@@ -72,6 +98,9 @@ impl ProjectView {
                 div()
                     .debug_selector(|| "project-model-error".into())
                     .whitespace_normal()
+                    .flex_shrink_0()
+                    .max_h(px(48.))
+                    .overflow_hidden()
                     .text_size(px(12.))
                     .text_color(cx.theme().danger)
                     .child(if self.connection_details {
@@ -95,13 +124,43 @@ impl ProjectView {
                 .is_some_and(|input| !input.read(cx).value().trim().is_empty());
             let choices = Arc::new(self.visible_model_choices(cx));
             let row_count = choices.len();
-            let list_height = if has_options && !options_beside {
-                px(160.)
+            // Search, status and errors keep their own line boxes. The body
+            // spends only the remaining visible-window budget, and each column
+            // owns its scroll rather than clipping the popup's final controls.
+            let chrome = px(40.)
+                + if loading { px(24.) } else { px(0.) }
+                + if self.model_error.is_some() {
+                    px(56.)
+                } else {
+                    px(0.)
+                }
+                + if self.connection_details {
+                    px(40.)
+                } else {
+                    px(0.)
+                };
+            let body_budget = (height - chrome).max(px(0.));
+            let rail_rows = snapshot.catalog.providers.len() as f32;
+            let rail_natural = px(72. + rail_rows * 36.);
+            let natural_height = px((row_count as f32 * 36.).clamp(108., 324.)).max(if searching {
+                px(108.)
             } else {
-                px((row_count as f32 * 40.).clamp(160., 280.))
+                rail_natural.min(px(324.))
+            });
+            let (list_height, option_height) = if has_options && !options_beside {
+                let column_budget = (body_budget - px(8.)).max(px(0.));
+                let options = (column_budget * 0.45).min(px(180.));
+                ((column_budget - options).min(natural_height), options)
+            } else {
+                let shared = body_budget.min(if has_options {
+                    natural_height.max(px(288.))
+                } else {
+                    natural_height
+                });
+                (shared, shared)
             };
             let mut rail = v_flex()
-                .w(px(40.))
+                .w(px(32.))
                 .h(list_height)
                 .flex_shrink_0()
                 .gap_1()
@@ -109,7 +168,8 @@ impl ProjectView {
                     Button::new("project-model-favorites")
                         .debug_selector(|| "project-model-favorites".into())
                         .ghost()
-                        .size(px(40.))
+                        .size(px(32.))
+                        .flex_shrink_0()
                         .icon(IconName::StarFill)
                         .tooltip("Favorites")
                         .accessibility_label("Favorite models")
@@ -130,6 +190,7 @@ impl ProjectView {
                 );
             let mut providers = v_flex()
                 .id("project-model-providers")
+                .debug_selector(|| "project-model-providers".into())
                 .w_full()
                 .flex_1()
                 .min_h_0()
@@ -147,9 +208,10 @@ impl ProjectView {
                     Button::new(("project-model-provider", index))
                         .debug_selector(move || format!("project-model-provider-{index}"))
                         .ghost()
-                        .size(px(40.))
-                        .p_2()
-                        .child(visuals::provider_mark(
+                        .size(px(32.))
+                        .flex_shrink_0()
+                        .p_1()
+                        .child(self.render_picker_provider_mark(
                             provider,
                             &snapshot.catalog.providers,
                             cx,
@@ -185,7 +247,8 @@ impl ProjectView {
                     Button::new("project-model-missing-provider")
                         .debug_selector(|| "project-model-missing-provider".into())
                         .ghost()
-                        .size(px(40.))
+                        .size(px(32.))
+                        .flex_shrink_0()
                         .icon(IconName::TriangleAlert)
                         .tooltip("Current provider is unavailable")
                         .selected(!self.model_ui.favorites && instance == current.instance_id)
@@ -203,6 +266,7 @@ impl ProjectView {
                     .debug_selector(|| "project-model-show-current".into())
                     .ghost()
                     .size(px(32.))
+                    .flex_shrink_0()
                     .icon(IconName::Check)
                     .tooltip("Show current model")
                     .accessibility_label("Show current model")
@@ -265,6 +329,7 @@ impl ProjectView {
                 .min_w_0()
                 .min_h_0()
                 .items_start()
+                .flex_shrink_0()
                 .gap_2()
                 .when(!searching, |body| body.child(rail))
                 .child(list);
@@ -273,9 +338,10 @@ impl ProjectView {
                     div()
                         .id("project-model-option-column")
                         .debug_selector(|| "project-model-option-column".into())
-                        .w(px(160.))
+                        .w(px(200.))
                         .flex_shrink_0()
-                        .max_h(list_height)
+                        .h(option_height)
+                        .min_h_0()
                         .overflow_y_scroll()
                         .child(self.render_model_options(cx)),
                 );
@@ -288,7 +354,9 @@ impl ProjectView {
                         .debug_selector(|| "project-model-option-column".into())
                         .w_full()
                         .min_w_0()
-                        .max_h(px(160.))
+                        .h(option_height)
+                        .min_h_0()
+                        .flex_shrink_0()
                         .overflow_y_scroll()
                         .child(self.render_model_options(cx)),
                 );
@@ -297,6 +365,9 @@ impl ProjectView {
         if self.connection_details {
             panel = panel.child(
                 div()
+                    .flex_shrink_0()
+                    .max_h(px(32.))
+                    .overflow_hidden()
                     .text_size(px(12.))
                     .text_color(palette.text_muted)
                     .debug_selector(|| "project-model-scheduler-limit".into())
@@ -304,6 +375,42 @@ impl ProjectView {
             );
         }
         panel.into_any_element()
+    }
+
+    fn render_picker_provider_mark(
+        &self,
+        provider: &okilum_t3::ProviderCapability,
+        providers: &[okilum_t3::ProviderCapability],
+        cx: &App,
+    ) -> AnyElement {
+        let mark = div()
+            .relative()
+            .size(px(20.))
+            .flex_shrink_0()
+            .child(visuals::provider_glyph(&provider.driver_kind).size(px(20.)));
+        if let Some(badge) = visuals::instance_badge(provider, providers) {
+            let palette = brand::palette(cx);
+            mark.child(
+                div()
+                    .absolute()
+                    .right(px(-2.))
+                    .bottom(px(-2.))
+                    .min_w(px(12.))
+                    .h(px(12.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.))
+                    .line_height(px(12.))
+                    .bg(palette.surface_raised)
+                    .text_color(palette.text_muted)
+                    .child(badge),
+            )
+            .into_any_element()
+        } else {
+            mark.into_any_element()
+        }
     }
 
     fn render_model_choice(
@@ -335,6 +442,49 @@ impl ProjectView {
         let selection = choice.selection.clone();
         let favorite_selection = selection.clone();
         let favorite = self.model_is_favorite(&selection);
+        let browsing_provider = !self.model_ui.favorites
+            && self
+                .model_ui
+                .search
+                .as_ref()
+                .is_none_or(|input| input.read(cx).value().trim().is_empty());
+        let sub_provider = self
+            .models
+            .as_ref()
+            .and_then(|snapshot| snapshot.model_info(&choice.selection))
+            .and_then(|model| model.sub_provider.as_deref())
+            .filter(|name| !name.trim().is_empty());
+        let multiple_accounts = provider.is_some_and(|provider| {
+            self.models.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .catalog
+                    .providers
+                    .iter()
+                    .filter(|account| account.driver_kind == provider.driver_kind)
+                    .count()
+                    > 1
+            })
+        });
+        let secondary = if !choice.selectable {
+            Some(sub_provider.map_or_else(
+                || "Unavailable".to_owned(),
+                |vendor| format!("{vendor} · Unavailable"),
+            ))
+        } else if let Some(vendor) = sub_provider {
+            if !browsing_provider || multiple_accounts {
+                if vendor.eq_ignore_ascii_case(&choice.provider_label) {
+                    Some(vendor.to_owned())
+                } else {
+                    Some(format!("{vendor} · {}", choice.provider_label))
+                }
+            } else {
+                Some(vendor.to_owned())
+            }
+        } else if !browsing_provider || multiple_accounts {
+            Some(choice.provider_label.clone())
+        } else {
+            None
+        };
         let mut title = v_flex()
             .flex_1()
             .min_w_0()
@@ -345,18 +495,16 @@ impl ProjectView {
                     .debug_selector(move || format!("project-model-label-{index}"))
                     .child(choice.label.clone()),
             )
-            .child(
-                div()
-                    .debug_selector(move || format!("project-model-provider-label-{index}"))
-                    .truncate()
-                    .text_size(px(12.))
-                    .text_color(palette.text_muted)
-                    .child(if choice.selectable {
-                        choice.provider_label.clone()
-                    } else {
-                        format!("{} · Unavailable", choice.provider_label)
-                    }),
-            );
+            .when_some(secondary, |title, secondary| {
+                title.child(
+                    div()
+                        .debug_selector(move || format!("project-model-provider-label-{index}"))
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(palette.text_muted)
+                        .child(secondary),
+                )
+            });
         if !choice.selectable {
             title = title.text_color(palette.text_muted);
         }
@@ -365,7 +513,7 @@ impl ProjectView {
             .min_w_0()
             .items_center()
             .gap_2()
-            .child(glyph.small())
+            .child(glyph.size(px(18.)))
             .child(title);
         content = content
             .when_some(hint, |content, hint| {
@@ -394,7 +542,7 @@ impl ProjectView {
             .id(("project-model-row", index))
             .debug_selector(move || format!("project-model-row-{index}"))
             .w_full()
-            .h(px(40.))
+            .h(px(36.))
             .min_w_0()
             .items_center()
             .gap_1()
@@ -414,9 +562,9 @@ impl ProjectView {
                     .ghost()
                     .flex_1()
                     .min_w_0()
-                    .h(px(40.))
+                    .h(px(36.))
                     .px_1()
-                    .py_1()
+                    .py(px(2.))
                     .justify_start()
                     .overflow_hidden()
                     .accessibility_label(format!("{} · {}", choice.label, choice.provider_label))
