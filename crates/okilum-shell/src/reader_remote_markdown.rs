@@ -1,5 +1,5 @@
-//! Background controller for explicit SSH quick view. The Reader owns rendering
-//! and routing; remote source is never inserted into the local editor/vault.
+//! Window-owned read-only SSH quick view, with an injectable background loader.
+//! Remote source never enters the local Reader editor, vault or saved history.
 use okilum_core::{
     log::sftp::{OpenSsh, Transport},
     remote_markdown::{self, Source},
@@ -114,6 +114,10 @@ impl Controller {
             .expect("remote view generation exhausted");
         self.state = State::Cancelled;
     }
+    fn is_current(&self, origin: &Source, generation: u64) -> bool {
+        generation == self.generation
+            && matches!(&self.state, State::Ready { source, .. } if source.url() == origin.url())
+    }
     /// Returns a remote target plus preserved heading intent. The caller must
     /// explicitly handle heading landing; never silently report a note-top hit.
     pub(crate) fn resolve_link(&self, link: &str) -> io::Result<(Source, Option<String>)> {
@@ -129,6 +133,386 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+/// Recognize the scheme even for invalid targets, so a rejected SSH link never
+/// falls through into local note handling or an external system URL launcher.
+pub(crate) fn is_ssh_url(url: &str) -> bool {
+    url.split_once(':')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"))
+}
+
+/// Reader rewrites unsupported schemes before the click callback. Recover an
+/// SSH target only from the exact current document's captured link identity;
+/// never parse a diagnostic string as navigation authority.
+pub(crate) fn authored_ssh_url<'a>(
+    url: &str,
+    identities: impl IntoIterator<Item = (&'a str, bool, &'a str)>,
+) -> io::Result<Option<String>> {
+    if is_ssh_url(url) {
+        return Ok(Some(url.into()));
+    }
+    if !url.starts_with("okilum://unsupported/") {
+        return Ok(None);
+    }
+    let mut selected: Option<&str> = None;
+    for (rendered, wiki, target) in identities {
+        if rendered != url || wiki || !is_ssh_url(target) {
+            continue;
+        }
+        if selected.is_some_and(|previous| previous != target) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Ambiguous remote Markdown target",
+            ));
+        }
+        selected = Some(target);
+    }
+    Ok(selected.map(str::to_owned))
+}
+
+fn destination(url: &str) -> io::Result<(Source, Option<String>)> {
+    let (path, fragment) = url
+        .split_once('#')
+        .map_or((url, None), |(p, f)| (p, Some(f)));
+    let source = Source::parse(path)?;
+    let heading = fragment.map(okilum_core::document_links::decode);
+    if heading
+        .as_ref()
+        .is_some_and(|heading| heading.trim().is_empty())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The heading target is empty",
+        ));
+    }
+    Ok((source, heading))
+}
+
+fn literal_remote_html(body: &str) -> String {
+    let html =
+        regex::Regex::new(r"(?is)<(?:/?[a-z][a-z0-9-]*(?:[\s/][^>]*)?|![^>]*|\?[^>]*)>").unwrap();
+    okilum_core::prose::replace_in_prose(body, |prose| {
+        html.replace_all(prose, |capture: &regex::Captures| {
+            capture[0].replace('<', "&lt;").replace('>', "&gt;")
+        })
+        .into_owned()
+    })
+}
+
+pub(crate) use view::show;
+
+// Window-owned GPUI integration. Kept separate from the injectable controller:
+// closing the window releases its entity and cancels the transport publication.
+mod view {
+    use super::*;
+    use crate::*;
+
+    struct Prepared {
+        rendered: String,
+        headings: okilum_core::document_links::HeadingInventory,
+    }
+    fn prepare(markdown: &str) -> Prepared {
+        let body = okilum_core::render::without_frontmatter(markdown);
+        let body = okilum_core::obsidian::before_links(body);
+        // Remote HTML and media have no local filesystem/network authority.
+        // Show authored HTML literally, while retaining code examples verbatim.
+        let body = literal_remote_html(&body);
+        let body = okilum_core::render::rewrite_source_images_with(&body, |_| {
+            Some(okilum_core::render::UNAVAILABLE_IMAGE.into())
+        });
+        let body = okilum_core::render::rewrite_highlights(&body);
+        let rendered = okilum_core::obsidian::after_links(&body);
+        let headings = okilum_core::document_links::HeadingInventory::new(&rendered);
+        Prepared { rendered, headings }
+    }
+
+    pub(crate) fn show(url: &str, cx: &mut App) -> io::Result<()> {
+        let (source, heading) = destination(url)?;
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
+                size(px(900.), px(700.)),
+                cx,
+            ))),
+            window_min_size: Some(size(px(600.), px(400.))),
+            ..TitleBar::window_options()
+        };
+        cx.open_window(options, move |window, cx| {
+            window.set_window_title("Remote Markdown · Read-only");
+            let panel = cx.new(|cx| {
+                let mut panel = Panel {
+                    controller: Controller::default(),
+                    content: None,
+                    prepared: None,
+                    notice: None,
+                    landing: None,
+                    reply_task: None,
+                    landing_task: None,
+                    landing_serial: 0,
+                };
+                panel.open(source, heading, cx);
+                panel
+            });
+            let weak = panel.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                let _ = weak.update(cx, |panel, cx| panel.stop(cx));
+                true
+            });
+            cx.new(|cx| Root::new(panel, window, cx))
+        })
+        .map(|_| ())
+        .map_err(|error| io::Error::other(error.to_string()))
+    }
+
+    struct Panel {
+        controller: Controller,
+        content: Option<Entity<TextViewState>>,
+        prepared: Option<Prepared>,
+        notice: Option<String>,
+        landing: Option<usize>,
+        reply_task: Option<Task<()>>,
+        landing_task: Option<Task<()>>,
+        landing_serial: u64,
+    }
+    impl Panel {
+        fn open(&mut self, source: Source, heading: Option<String>, cx: &mut Context<Self>) {
+            self.landing_serial = self.landing_serial.wrapping_add(1);
+            self.landing_task = None;
+            self.landing = None;
+            self.content = None;
+            self.prepared = None;
+            self.notice = None;
+            let receiver = match self.controller.open(source.url()) {
+                Ok(receiver) => receiver,
+                Err(error) => {
+                    self.notice = Some(error.to_string());
+                    cx.notify();
+                    return;
+                }
+            };
+            self.reply_task = Some(cx.spawn(async move |this, cx| {
+                if let Ok(reply) = receiver.recv().await {
+                    let prepared = if let Ok(markdown) = &reply.result {
+                        let markdown = markdown.clone();
+                        Some(
+                            cx.background_executor()
+                                .spawn(async move { prepare(&markdown) })
+                                .await,
+                        )
+                    } else {
+                        None
+                    };
+                    let _ = this.update(cx, |this, cx| {
+                        if !this.controller.receive(reply) {
+                            return;
+                        }
+                        if let Some(prepared) = prepared {
+                            let content = cx.new(|cx| {
+                                TextViewState::markdown("", cx)
+                                    .scrollable(true)
+                                    .selectable(true)
+                            });
+                            this.prepared = Some(prepared);
+                            this.content = Some(content.clone());
+                            let (source, original) = match &this.controller.state {
+                                State::Ready { source, markdown } => {
+                                    (source.clone(), markdown.clone())
+                                }
+                                _ => return,
+                            };
+                            let view = this.markdown_view(
+                                &content,
+                                source,
+                                this.controller.generation,
+                                cx,
+                            );
+                            content.update(cx, |state, cx| {
+                                view.prepare_state(state, cx);
+                                state.set_text_with_source(
+                                    &this.prepared.as_ref().unwrap().rendered,
+                                    Some(original.into()),
+                                    cx,
+                                );
+                            });
+                            if let Some(heading) = heading {
+                                this.heading(&heading, cx);
+                            }
+                        }
+                        cx.notify();
+                    });
+                }
+            }));
+            cx.notify();
+        }
+        fn stop(&mut self, cx: &mut Context<Self>) {
+            self.controller.cancel();
+            self.reply_task = None;
+            self.landing_serial = self.landing_serial.wrapping_add(1);
+            self.landing_task = None;
+            self.landing = None;
+            self.notice = None;
+            cx.notify();
+        }
+        fn markdown_view(
+            &self,
+            content: &Entity<TextViewState>,
+            origin: Source,
+            generation: u64,
+            cx: &Context<Self>,
+        ) -> TextView {
+            let weak = cx.entity().downgrade();
+            markdown_plugins(
+                TextView::new(content),
+                Arc::new(move |url, _, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.follow(&origin, generation, url, cx);
+                    });
+                }),
+                Arc::new(|_| Some(MarkdownImage::Unavailable)),
+                SelectionFormat::Plain,
+            )
+            .scrollable(true)
+            .selectable(true)
+            .style(reader_text_style(cx.theme()))
+        }
+        fn follow(&mut self, origin: &Source, generation: u64, url: &str, cx: &mut Context<Self>) {
+            if !self.controller.is_current(origin, generation) {
+                self.notice = Some("This link belongs to an inactive remote document.".into());
+                cx.notify();
+                return;
+            }
+            if let Some(landing) = self
+                .prepared
+                .as_ref()
+                .and_then(|prepared| reader_obsidian::footnote_landing(url, &prepared.rendered))
+            {
+                match landing {
+                    Ok(block) => self.land(block, cx),
+                    Err(error) => self.notice = Some(error.into()),
+                }
+                cx.notify();
+                return;
+            }
+            // is_current above proves that this captured origin is still the
+            // controller's published source before resolving anything.
+            match self.controller.resolve_link(url) {
+                Ok((source, heading)) => {
+                    let heading =
+                        heading.map(|heading| okilum_core::document_links::decode(&heading));
+                    if source.url() == origin.url() {
+                        if let Some(heading) = heading {
+                            self.heading(&heading, cx);
+                        } else {
+                            self.land(0, cx);
+                        }
+                    } else {
+                        self.open(source, heading, cx);
+                    }
+                }
+                Err(error) => self.notice = Some(error.to_string()),
+            }
+            cx.notify();
+        }
+        fn heading(&mut self, heading: &str, cx: &mut Context<Self>) {
+            match self.prepared.as_ref().unwrap().headings.locate(heading) {
+                Ok(target) => self.land(target.block, cx),
+                Err(error) => {
+                    self.landing_serial = self.landing_serial.wrapping_add(1);
+                    self.landing_task = None;
+                    self.landing = None;
+                    self.notice = Some(error.reason().into());
+                }
+            }
+        }
+        fn land(&mut self, block: usize, cx: &mut Context<Self>) {
+            self.landing_serial = self.landing_serial.wrapping_add(1);
+            let serial = self.landing_serial;
+            let generation = self.controller.generation;
+            let content = self.content.as_ref().unwrap().clone();
+            self.notice = None;
+            self.landing = Some(block);
+            self.landing_task = Some(cx.spawn(async move |this, cx| {
+                for attempt in 0..100 {
+                    cx.background_executor().timer(Duration::from_millis(50)).await;
+                    let done = this.update(cx, |this, cx| {
+                        let current = generation == this.controller.generation && serial == this.landing_serial;
+                        let same = this.content.as_ref().is_some_and(|now| now.entity_id() == content.entity_id());
+                        match reader_landing_state(current, same, content.read(cx).list_state().item_count(), block, attempt) {
+                            ReaderLanding::Cancelled => true,
+                            ReaderLanding::Waiting => { cx.notify(); false },
+                            ReaderLanding::Failed => {
+                                this.landing = None;
+                                this.notice = Some("Heading landing failed: the remote document did not finish rendering. Try the link again.".into());
+                                cx.notify(); true
+                            }
+                            ReaderLanding::Ready => {
+                                content.update(cx, |state, cx| {
+                                    state.list_state().scroll_to(ListOffset { item_ix: block, offset_in_item: px(0.) });
+                                    cx.notify();
+                                });
+                                this.landing = None;
+                                cx.notify(); true
+                            }
+                        }
+                    }).unwrap_or(true);
+                    if done { break; }
+                }
+            }));
+        }
+    }
+    impl Render for Panel {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let loading = matches!(self.controller.state, State::Loading { .. });
+            let mut body = v_flex().size_full().min_h_0()
+                .child(TitleBar::new().child("Remote Markdown · Read-only"))
+                .child(h_flex().p_3().gap_2()
+                    .child(div().flex_1().child(self.controller.state.message()))
+                    .child(Button::new("remote-markdown-stop").small().label("Stop").disabled(!loading && self.landing.is_none())
+                        .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))))
+                .child(div().px_3().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("Read-only · 2 MiB limit · Existing SSH host alias and known host key required. Remote media and HTML are not loaded."));
+            if let Some(notice) = &self.notice {
+                body = body.child(
+                    div()
+                        .p_3()
+                        .text_color(brand::palette(cx).danger)
+                        .child(notice.clone()),
+                );
+            }
+            if self.landing.is_some() {
+                body = body.child(div().px_3().child("Locating heading…"));
+            }
+            if let (Some(content), State::Ready { source, .. }) =
+                (&self.content, &self.controller.state)
+            {
+                body = body.child(
+                    div().flex_1().min_h_0().px(px(READER_SIDE_PADDING)).child(
+                        self.markdown_view(content, source.clone(), self.controller.generation, cx)
+                            .size_full(),
+                    ),
+                );
+            }
+            body
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ::core::prelude::v1::test;
+        #[test]
+        fn remote_preparation_and_heading_inventory_share_the_exact_rendered_source() {
+            let prepared = prepare("---\ntitle: Remote\n---\n# Start\n\nSetext\n------\n\n## Duplicate\n\n## Duplicate\n\n<img src=\"file:///private/local.png\">\n\n![remote](file:///private/local.png)\n");
+            assert!(prepared.headings.locate("Setext").is_ok());
+            assert!(prepared.headings.locate("Missing").is_err());
+            assert!(prepared.headings.locate("Duplicate").is_err());
+            assert!(!prepared.rendered.contains("<img"));
+            assert!(!prepared.rendered.contains("![remote](file:"));
+            assert!(prepared
+                .rendered
+                .contains(okilum_core::render::UNAVAILABLE_IMAGE));
+        }
     }
 }
 
@@ -171,6 +555,89 @@ mod tests {
         controller.cancel();
         assert!(!controller.receive(receiver.recv_blocking().unwrap()));
         assert!(matches!(controller.state, State::Cancelled));
+    }
+    #[test]
+    fn remote_html_is_literal_while_code_and_autolinks_keep_their_source() {
+        let source = "<img src=\"file:///local\">\n<svg><image href=\"file:///local\"/></svg>\n<ssh://alias/a.md>\n`<img src=\"example\">`\n\n```html\n<img src=\"example\">\n```\n";
+        let rendered = literal_remote_html(source);
+        assert!(rendered.contains("&lt;img src="));
+        assert!(!rendered.contains("<svg>"));
+        assert!(!rendered.contains("<image href="));
+        assert!(rendered.contains("<ssh://alias/a.md>"));
+        assert!(rendered.contains("`<img src=\"example\">`"));
+        assert!(rendered.contains("```html\n<img src=\"example\">\n```"));
+    }
+    #[test]
+    fn reader_rewritten_url_recovers_only_exact_captured_ssh_identity() {
+        let rendered = "okilum://unsupported/captured";
+        let target = "ssh://alias/notes/a.md#Part%20One";
+        assert_eq!(
+            authored_ssh_url(rendered, [(rendered, false, target)])
+                .unwrap()
+                .as_deref(),
+            Some(target)
+        );
+        assert!(authored_ssh_url("other", [(rendered, false, target)])
+            .unwrap()
+            .is_none());
+        assert!(authored_ssh_url(rendered, [(rendered, true, target)])
+            .unwrap()
+            .is_none());
+        assert!(
+            authored_ssh_url(rendered, [(rendered, false, "https://host/a.md")])
+                .unwrap()
+                .is_none()
+        );
+        assert!(authored_ssh_url(
+            rendered,
+            [
+                (rendered, false, target),
+                (rendered, false, "ssh://other/a.md")
+            ]
+        )
+        .is_err());
+        assert_eq!(
+            authored_ssh_url(target, []).unwrap().as_deref(),
+            Some(target)
+        );
+    }
+    #[test]
+    fn explicit_ssh_route_preserves_heading_and_rejects_unsafe_targets() {
+        assert!(is_ssh_url("ssh://alias/a.md#Part%20One"));
+        assert!(is_ssh_url("SSH://alias/a.md"));
+        assert!(!is_ssh_url("https://host/a.md"));
+        assert!(!is_ssh_url("relative.md"));
+        let (source, heading) = destination("ssh://alias/a.md#Part%20One").unwrap();
+        assert_eq!(source.url(), "ssh://alias/a.md");
+        assert_eq!(heading.as_deref(), Some("Part One"));
+        for invalid in [
+            "ssh://user@alias/a.md",
+            "ssh://alias/a.md#",
+            "ssh://alias/a.md#%20",
+            "ssh://alias/a.md?x",
+        ] {
+            assert!(destination(invalid).is_err(), "{invalid}");
+        }
+    }
+    #[test]
+    fn captured_remote_origin_cannot_be_reused_after_replacement_or_cancel() {
+        let mut controller = Controller::default();
+        let source = Source::parse("ssh://alias/a.md").unwrap();
+        controller.state = State::Ready {
+            source: source.clone(),
+            markdown: "# A".into(),
+        };
+        let generation = controller.generation;
+        assert!(controller.is_current(&source, generation));
+        assert!(!controller.is_current(&Source::parse("ssh://other/a.md").unwrap(), generation));
+        controller.cancel();
+        assert!(!controller.is_current(&source, generation));
+        controller.state = State::Ready {
+            source: source.clone(),
+            markdown: "# New A".into(),
+        };
+        assert!(!controller.is_current(&source, generation));
+        assert!(controller.is_current(&source, controller.generation));
     }
     #[test]
     fn disconnected_reply_is_visible_and_never_ready() {
