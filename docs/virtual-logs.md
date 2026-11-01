@@ -70,7 +70,7 @@ Logs → **Virtual logs…** loads a vault-scoped saved `.okilog` through Browse
 an explicit path. Opening a definition through the ordinary file route (including
 Tree and Quick Open activation) embeds the same source form and result viewer
 inside the document, preserving its filename header and navigation/history.
-Opening only loads configuration; selection/watch still requires explicit Start.
+Opening only loads configuration; source selection/root watch still requires explicit Start.
 Malformed definitions remain visible in this typed view, with their attempted
 path available for retry, rather than falling through to a generic file card.
 The form exposes name, glob/root, optional file-level query,

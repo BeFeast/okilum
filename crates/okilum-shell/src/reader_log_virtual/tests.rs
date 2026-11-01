@@ -252,7 +252,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         );
         assert!(
             panel.worker.is_none() && !panel.active,
-            "file-open never selects sources or installs a watch before Start"
+            "file-open never selects sources or installs a source-root watch before Start"
         );
     });
     assert!(visual.debug_bounds("virtual-definition-view").is_some());

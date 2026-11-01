@@ -439,7 +439,10 @@ impl Reader {
                 // Structured logs take precedence in both vault and quick-file mode.
                 if reader_log::virtual_sources::eligible(&preview.path) {
                     preview.virtual_log = Some(reader_log::virtual_sources::embedded(
-                        self.vault_root.clone(), preview.path.clone(), window, cx,
+                        self.vault_root.clone(),
+                        preview.path.clone(),
+                        window,
+                        cx,
                     ));
                 } else if okilum_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
