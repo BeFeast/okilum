@@ -52,6 +52,13 @@ supervisor_stage() {
     cargo run --release --locked --target "$triple" -p okilum-sync-controller \
         --example bundled_plist -- "$SUPERVISOR_RELATIVE" "$app/Contents/Library/LaunchAgents"
     plutil -lint "$app"/Contents/Library/LaunchAgents/*.plist
+    local arch
+    case "$triple" in
+        aarch64-apple-darwin) arch=arm64 ;;
+        x86_64-apple-darwin) arch=amd64 ;;
+        *) echo "unsupported Syncthing bundle target: $triple" >&2; return 1 ;;
+    esac
+    python3 scripts/syncthing/bundle.py stage --app "$app" --arch "$arch"
 }
 
 # supervisor_sign APP IDENTITY BUNDLE_ID [codesign options...]: must run before the outer
@@ -65,4 +72,10 @@ supervisor_sign() {
     codesign ${keychain_args[@]+"${keychain_args[@]}"} --force --options runtime --identifier "$bundle.sync" "$@" \
         --sign "$identity" "$app/$SUPERVISOR_RELATIVE"
     codesign --verify --strict "$app/$SUPERVISOR_RELATIVE"
+    local team_args=()
+    if [[ $identity != - ]]; then
+        team_args=(--team "$(supervisor_team_id "$identity")")
+    fi
+    python3 scripts/syncthing/bundle.py sign --app "$app" --identity "$identity" \
+        --identifier "$bundle" ${team_args[@]+"${team_args[@]}"}
 }

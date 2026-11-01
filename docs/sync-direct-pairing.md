@@ -1,0 +1,119 @@
+# LAN computer pairing and existing replica association
+
+## Approved product decision
+
+Oleg, 2026-11-01, recorded in epic #2039 and issue #2041: pair computers once
+using a pairing URL. The existing computer generates the URL; the new computer
+pastes it and supplies its name. The existing computer confirms that name and
+computer identity. Only after confirmation does the new computer receive its
+private authorized vault catalog. It selects a vault and a local destination;
+an empty destination begins receiving automatically. Later attachments between
+these paired computers need no new invitation. No service, account, T3 install,
+public catalog, public rendezvous, or custom relay is involved. The first slice
+requires both computers on the same LAN. The URL is not a filesystem path.
+Unknown nonempty destinations retain the lossless preview/no-deletion gate.
+There is no invitation-lifetime setting in the UI.
+
+This supersedes the service/passkey product flow in `sync-pairing.md`. That
+service implementation remains available to its existing independent consumers.
+The earlier approved 2026-10-30 direct-peer topology and safe first-sync decisions
+remain in force. A successful source build does not establish native acceptance.
+
+## Application API
+
+`okilum_sync_controller::direct::Controller` is shared by Linux and macOS.
+`open(state, configs)` creates/loads only a private operational journal and device
+identity. It does not listen, discover processes, start Syncthing or mutate its
+configuration. State must be outside canonical folders and disposable indexes.
+A lifetime lock prevents two controllers from owning the same journal.
+
+- `inspect_existing(configs, vault)` authenticates the explicitly inventoried
+  daemon, certificate, selected folder and canonical path using GET requests.
+  Incomplete/unavailable inventory, ambiguous ownership and overlaps fail closed.
+- `attach_existing(inspected, true)` re-inspects that scope, saves the explicit
+  association, and makes that folder available for future owner-approved computer
+  pairing. This association itself never changes peers, folder settings or files.
+- `begin_pairing(name)` opens the application LAN listener and creates the URL.
+  `begin_pairing_at` supplies an explicit bind/advertised IP for isolated fixtures.
+- `redeem(url, name)`, `refresh()`, `approve(request_id)`, `reject(request_id)` and
+  `cancel()` implement the confirmation ceremony. Only incoming pending requests
+  can be approved locally. The first authenticated requester claims an invitation;
+  another identity or changed request cannot replace it invisibly.
+- The approval response includes the authorized catalog in `Snapshot.catalog`.
+  `catalog(peer_id)` subsequently refreshes it using the durable paired capability.
+  Refresh retains the catalog. Authorization is the set of explicitly attached
+  source vaults present at owner confirmation, never arbitrary filesystem paths.
+- `attach(peer_id, vault_id, destination)` requires an authorized catalog entry,
+  one authenticated existing daemon and the empty-folder/overlap gate before any
+  remote share or local configuration mutation. It saves intent before external
+  work, adds only the selected folder membership, preserves external device
+  settings, applies reviewed ignores while paused and starts first receive.
+- `set_configurations` accepts paths from the separately verified platform runtime
+  bootstrap. An empty inventory is an explicit bootstrap-required error, not
+  evidence permitting a second daemon.
+- `shutdown()` is nonblocking: revoke all retained clones and shut down the
+  application's listening socket. It performs no network request, filesystem
+  operation or Syncthing lifecycle action. Last-controller drop also terminates
+  its listener. Disabling Sync must revoke application NetworkAccess and call it.
+
+`configuration_paths()` returns `Result<Vec<PathBuf>>`. Linux includes its existing
+process/config inventory; macOS includes standard user configuration paths only.
+These paths do not prove absence of custom/unknown macOS daemons.
+
+## Wire and authority
+
+The version-one protocol uses bounded length-prefixed JSON over direct LAN TCP.
+Each frame contains a 96-bit random nonce and AES-256-GCM ciphertext; protocol
+version and capability UUID are authenticated associated data. The encrypted body
+is Ed25519-signed by a durable per-computer identity. Requests pin the intended
+recipient, responses echo the fresh request nonce, and both directions verify the
+expected signing identity. The URL pins the first computer's public key and holds
+an independent random 256-bit invitation capability in its fragment. No REST key,
+local path, source files, browser session, account credential or vault catalog is
+in the URL. Treat the complete URL as sensitive; do not log or persist it in vaults.
+
+The owner sees the new computer's signed name and full key fingerprint before
+approval. A different computer cannot replace that request. Approval commits a
+separate random per-peer capability before returning the private catalog. Later
+requests require both that capability and the paired signing key. The invitation
+cannot approve a second computer. Its authenticated original requester may retry
+to recover a lost approval response during the original lifetime. Its durable
+paired credential survives invitation expiry. Syncthing's own certificate-bound
+TLS separately authenticates the actual file-transfer peer.
+
+Implementation bounds: invitations last ten minutes, with no UI setting; at most
+64 paired computers per controller; 100-byte names; 256 KiB maximum wire frame;
+three-second connection/read/write limits; a single bounded connection worker.
+Unknown versions, capabilities, signatures, recipients, fields and stale responses
+fail closed. No unauthenticated operation lists vaults. Encryption/signature failures
+close the connection without diagnostic credentials.
+
+## Runtime and delivery boundaries
+
+`daemon::CLIENT_VERSION` remains **v2.1.6**, the bundled, provenance/checksum-pinned
+runtime. External reuse has a separate explicit compatibility allowlist containing
+**v2.1.6 and v2.1.7**. Other releases, prereleases and legacy hubs cannot silently
+become a selected client. Supporting external v2.1.7 does not replace the packaged
+runtime, its provenance, installation gates or native evidence.
+
+The empty-folder path starts **receiveonly** and keeps versioning at 30 days on
+that new local folder. This is the safe first-receive phase, not accepted complete
+bidirectional Sync. It does not bypass the existing readiness/promotion or native
+data gate. Unknown nonempty directories are rejected; no speculative merge or
+lossless-preview implementation is provided. Existing source settings and global
+network/discovery/relay/lifecycle settings are retained. Syncthing REST has no CAS;
+external administrative writers still require coordination.
+
+Current explicit missing boundaries: fresh macOS native absence inventory and
+signed-package/offline staging composition; native acceptance and safe promotion;
+automatic application listener restoration after process restart; symmetric
+catalog serving from a formerly receiving computer; later catalog authorization
+changes and peer removal. A running source controller serves additional authorized
+vault selections without a new URL, and paired identities/capabilities are durable,
+but these missing lifecycle boundaries must not be presented as delivered.
+
+All acceptance uses isolated temporary states/configs and disposable daemons.
+Never mutate the live brain, working configuration, peers or installed app, or
+start a second daemon. The first harness blocker stops that harness. Parent owns
+integration, packaging, native gate and beta delivery; this source does not claim
+a fresh Mac is ready.
