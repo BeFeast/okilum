@@ -374,6 +374,7 @@ mod managed_configuration_tests {
     fn incomplete_unsafe_and_linked_configuration_is_not_absence() -> Result<()> {
         let root = tempfile::tempdir()?;
         let state = root.path();
+        fs::set_permissions(state, fs::Permissions::from_mode(0o700))?;
         assert!(managed_configuration_path(state).is_err());
         let config = state.join("config");
         fs::create_dir(&config)?;
