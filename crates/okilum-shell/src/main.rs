@@ -2356,6 +2356,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.ui_state.restoring_workspace {
+            self.cancel_workspace_restore();
+        }
         #[cfg(target_os = "macos")]
         let logical = reader_icloud::logical_path(Path::new(rel));
         #[cfg(target_os = "macos")]

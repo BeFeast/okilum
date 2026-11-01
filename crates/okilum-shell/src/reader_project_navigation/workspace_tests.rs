@@ -198,7 +198,7 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
         base: &Path,
         explicit: bool,
     ) -> (Entity<Reader>, &'a mut gpui::VisualTestContext) {
-        cx.update(|cx| reader_ui_state::install(&state, cx));
+        cx.update(|cx| reader_ui_state::install(state, cx));
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| {
@@ -308,4 +308,93 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
         std::fs::read_to_string(vault.join("home.md")).unwrap(),
         "# Home\n"
     );
+}
+
+/// Force user intent between scheduling manifest validation and its completion.
+#[gpui::test]
+fn user_intent_cancels_inflight_workspace_restore(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(vault.join("Work/ops")).unwrap();
+    std::fs::write(vault.join("Work/ops/project.toml"), "kind = 'knowledge'\n").unwrap();
+    std::fs::write(vault.join("home.md"), "# Home\n").unwrap();
+    std::fs::write(vault.join("target.md"), "# Target\n").unwrap();
+    cx.update(|cx| reader_ui_state::install(&state, cx));
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let reader = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(vault.clone()),
+                    note: Some("home.md".into()),
+                    index_dir: Some(temp.path().join("index")),
+                    session_directory: Some(state.clone()),
+                    panel_settings_override: Some(temp.path().join("widths.json")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        entity = Some(reader.clone());
+        Root::new(reader, window, cx)
+    });
+    let reader = entity.unwrap();
+    visual.run_until_parked();
+    for (index, intent) in ["file", "same-note-link", "projects"]
+        .into_iter()
+        .enumerate()
+    {
+        reader.update_in(visual, |reader, window, cx| {
+            // Start the same asynchronous validation as restore_workspace_mode,
+            // but hold the event loop until the newer user action is dispatched.
+            reader.ui_state.restoring_workspace = true;
+            reader.enter_project_folder(vault.join("Work"), window, cx);
+            assert!(
+                reader.ui_state.restoring_workspace,
+                "positive in-flight control"
+            );
+            let restoring_generation = reader.project_navigation.generation;
+            match intent {
+                "file" => reader.open_note("target.md", None, window, cx),
+                "same-note-link" => {
+                    let current = reader.current_rel.clone();
+                    reader.open_link(
+                        &current,
+                        okilum_core::deep_link::Position::default(),
+                        window,
+                        cx,
+                    );
+                }
+                _ => reader.show_app_section(Section::Projects, window, cx),
+            }
+            assert!(!reader.ui_state.restoring_workspace);
+            assert_ne!(reader.project_navigation.generation, restoring_generation);
+        });
+        visual.run_until_parked();
+        reader.update(visual, |reader, cx| {
+            assert!(
+                reader.project_navigation.active.is_none(),
+                "old validation must not enter Project"
+            );
+            if intent == "file" {
+                assert_eq!(reader.current_rel, "target.md");
+            }
+            reader.panel_widths.notes = 321. + index as f32;
+            reader.record_ui_state(true, cx);
+            reader_ui_state::flush(cx);
+        });
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("reader-ui.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved["vaults"][vault.to_str().unwrap()]["widths"]["notes"],
+            321. + index as f32
+        );
+        assert!(
+            saved["vaults"][vault.to_str().unwrap()]["project"].is_null(),
+            "World persists after cancellation"
+        );
+    }
 }

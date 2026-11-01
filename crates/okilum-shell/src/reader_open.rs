@@ -1261,6 +1261,9 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
     if handle
         .update(cx, |_, window, cx| {
             reader.update(cx, |reader, cx| {
+                // External delivery wins immediately, including a same-note link
+                // or a request queued while the restored document is loading.
+                reader.cancel_workspace_restore();
                 if !reader.document_ready()
                     && reader.loading.as_ref().is_some_and(|load| !load.active)
                 {

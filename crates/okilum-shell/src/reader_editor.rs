@@ -1,4 +1,5 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
+mod block_context;
 mod block_entry;
 mod code_comforts;
 mod external_edit;
@@ -12,6 +13,7 @@ mod paste_jobs;
 mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
+use block_context::BlockNote;
 pub(crate) use block_entry::OpenRenderedBlock;
 pub(crate) use external_edit::{OpenBlockExternally, StopBlockExternally};
 use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError, PasteMode};
@@ -654,8 +656,8 @@ impl Reader {
             let value = input.update(cx, |state, _| {
                 let value = state.value();
                 state.set_direction_exempt_lines(direction_exempt_lines(&value));
-                // Rendered blocks resolve references and number footnotes
-                // against the whole note.
+                // Publish the exact context without scanning for definitions
+                // on the input path; reference-capable blocks request them.
                 *block_context.borrow_mut() = BlockNote::new(value.clone());
                 value
             });
@@ -1835,22 +1837,6 @@ impl Reader {
     }
 }
 
-/// The note a rendered block belongs to, kept current as the note changes:
-/// its text, for footnote numbering, and its link reference definitions, so
-/// a block resolves references against the whole note (#1067).
-#[derive(Clone, Default)]
-struct BlockNote {
-    text: SharedString,
-    definitions: SharedString,
-}
-
-impl BlockNote {
-    fn new(text: SharedString) -> Self {
-        let definitions = okilum_core::render::reference_definitions(&text).into();
-        Self { text, definitions }
-    }
-}
-
 type BlockContext = Rc<std::cell::RefCell<BlockNote>>;
 
 /// Live Preview's rendered blocks (tables, images; S7, #936), drawn the way
@@ -1912,11 +1898,7 @@ fn live_blocks(
                     )
                     .unwrap_or_else(|| source.to_owned())
                 });
-            let input: SharedString = if note.definitions.is_empty() {
-                block_source.into()
-            } else {
-                format!("{block_source}\n\n{}", note.definitions).into()
-            };
+            let input = note.with_definitions(block_source);
             let entry = prepared.1.entry(block.key).or_default();
             if entry.1.is_empty() || entry.0 != input {
                 let source = input.to_string();
