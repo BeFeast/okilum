@@ -506,6 +506,9 @@ pub struct Recovered {
     pub continuation: Option<HistoryCursor>,
     pub history_complete: bool,
     pub closure: Option<ClosureRecord>,
+    /// Present only after an explicit, snapshot-checked chooser selection.
+    pub selected_target: Option<SessionTarget>,
+    selection_revision: Option<String>,
 }
 
 /// Explicit reconnect/refresh only. The serial owner must check its current
@@ -557,7 +560,6 @@ fn reconnect_inner(
     closure_scope: Option<(&std::path::Path, &crate::Environment)>,
 ) -> Result<Option<Recovered>> {
     let mut retained = Vec::new();
-    let mut last_closed = None;
     for record in journal.records()? {
         if let Some(payload) = record.message.text.strip_prefix(PREFIX) {
             let request: Request = serde_json::from_str(payload)
@@ -581,20 +583,34 @@ fn reconnect_inner(
             } else {
                 None
             };
-            if let Some(closure) = closure {
-                last_closed = Some((request, record, Some(closure)));
-            } else {
-                retained.push((request, record, None));
-            }
+            retained.push((request, record, closure));
         }
     }
     ensure!(
         retained.len() <= 1,
-        "Multiple express requests need explicit reconciliation; no session was selected"
+        "Multiple retained express requests require the explicit session chooser; no session was selected"
     );
-    let Some((request, record, closure)) = retained.pop().or(last_closed) else {
+    let Some((request, record, closure)) = retained.pop() else {
         return Ok(None);
     };
+    Ok(Some(recover_record(
+        gateway,
+        request,
+        record,
+        closure,
+        executor_project_id,
+    )?))
+}
+
+fn recover_record(
+    gateway: &dyn ManagerGateway,
+    request: Request,
+    record: MessageRecord,
+    closure: Option<ClosureRecord>,
+    executor_project_id: &str,
+) -> Result<Recovered> {
+    let manager_thread_id = request.manager_thread_id.as_str();
+    let project_id = request.project_id.as_str();
     let identity = gateway.server_identity()?;
     ensure!(
         !identity.environment_id.trim().is_empty(),
@@ -614,7 +630,7 @@ fn reconnect_inner(
     } else {
         Err(anyhow::anyhow!("Retained request server identity is absent or changed; reconcile in T3 before accepting a result"))
     };
-    Ok(Some(apply_history(
+    Ok(apply_history(
         Recovered {
             conversation_link: identity.thread_url(manager_thread_id),
             request,
@@ -624,9 +640,469 @@ fn reconnect_inner(
             continuation: None,
             history_complete: false,
             closure,
+            selected_target: None,
+            selection_revision: None,
         },
         outcome,
-    )))
+    ))
+}
+
+const SESSION_PAGE_ITEMS: usize = 32;
+const MAX_RETAINED_SESSIONS: usize = 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SessionTarget {
+    pub origin: String,
+    pub environment_id: String,
+    pub manager_project_id: String,
+    pub manager_thread_id: String,
+    pub executor_project_id: String,
+}
+
+impl SessionTarget {
+    /// Parent supplies the current approved binding, then applies its usual
+    /// on-disk binding/generation check before presenting or applying any reply.
+    pub fn load(
+        gateway: &dyn ManagerGateway,
+        environment: &crate::Environment,
+        manager_project_id: &str,
+        manager_thread_id: &str,
+        executor_project_id: &str,
+    ) -> Result<Self> {
+        let target = Self {
+            origin: environment.origin(),
+            environment_id: gateway.server_identity()?.environment_id,
+            manager_project_id: manager_project_id.into(),
+            manager_thread_id: manager_thread_id.into(),
+            executor_project_id: executor_project_id.into(),
+        };
+        target.validate(gateway, environment)?;
+        Ok(target)
+    }
+
+    fn validate(
+        &self,
+        gateway: &dyn ManagerGateway,
+        environment: &crate::Environment,
+    ) -> Result<()> {
+        ensure!(
+            self.origin == environment.origin(),
+            "Session chooser origin changed"
+        );
+        field(
+            &self.environment_id,
+            1024,
+            "Session chooser environment is missing",
+        )?;
+        field(
+            &self.manager_project_id,
+            1024,
+            "Session chooser Manager project is missing",
+        )?;
+        field(
+            &self.manager_thread_id,
+            1024,
+            "Session chooser Manager thread is missing",
+        )?;
+        field(
+            &self.executor_project_id,
+            1024,
+            "Session chooser executor project is missing",
+        )?;
+        ensure!(
+            gateway.server_identity()?.environment_id == self.environment_id,
+            "Session chooser server identity changed"
+        );
+        let mut query = ThreadQuery::messages(&self.manager_thread_id);
+        query.limit = Some(1);
+        query.max_chars_per_item = Some(256);
+        let manager = gateway.read_thread(&query)?.thread;
+        ensure!(
+            manager.thread_id == self.manager_thread_id
+                && manager.project_id == self.manager_project_id,
+            "Session chooser Manager binding changed"
+        );
+        Ok(())
+    }
+}
+
+/// Opaque exact operation/revision selection, not a list index or a title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSelection {
+    target: SessionTarget,
+    snapshot: String,
+    request_id: String,
+    operation_id: String,
+    request_fingerprint: String,
+    record_fingerprint: String,
+}
+
+impl SessionSelection {
+    pub fn target(&self) -> &SessionTarget {
+        &self.target
+    }
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    /// UI uses the exact token alongside its generation guard; a late response
+    /// for another selected request/operation/target must not overwrite the form.
+    pub fn matches(&self, recovered: &Recovered) -> bool {
+        recovered.selected_target.as_ref() == Some(&self.target)
+            && recovered.selection_revision.as_deref() == Some(self.snapshot.as_str())
+            && recovered.request.request_id == self.request_id
+            && recovered.record.message.client_request_id == self.operation_id
+            && fingerprint(&recovered.request).is_ok_and(|key| key == self.request_fingerprint)
+            && serialized_digest(&recovered.record).is_ok_and(|key| key == self.record_fingerprint)
+    }
+
+    pub fn matches_closure(&self, record: &ClosureRecord) -> bool {
+        record.request_id == self.request_id
+            && record.request_fingerprint == self.request_fingerprint
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionRow {
+    pub selection: Option<SessionSelection>,
+    pub request_id: Option<String>,
+    pub operation_id: String,
+    pub created_at_millis: u64,
+    pub goal: String,
+    pub recipient: String,
+    pub platforms: Vec<Platform>,
+    pub environment_id: Option<String>,
+    pub manager_project_id: Option<String>,
+    pub manager_thread_id: String,
+    pub operation_thread_id: String,
+    pub acknowledged: bool,
+    pub closure: Option<CloseReason>,
+    pub held: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedCursor {
+    target: SessionTarget,
+    snapshot: String,
+    offset: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct RetainedPage {
+    pub target: SessionTarget,
+    pub rows: Vec<SessionRow>,
+    pub total: usize,
+    pub next: Option<RetainedCursor>,
+}
+
+type RetainedEntry = (
+    SessionRow,
+    Option<Request>,
+    MessageRecord,
+    Option<ClosureRecord>,
+);
+
+fn serialized_digest(value: &impl Serialize) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+/// Existing MessageJournal::records materializes the journal; this bounds the
+/// Express projection and page output, not that underlying journal API's IO.
+/// No records are deleted, skipped as healthy, auto-selected, or dispatched.
+fn retained_snapshot(
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    target: &SessionTarget,
+) -> Result<(String, Vec<RetainedEntry>)> {
+    let records: Vec<_> = journal
+        .records()?
+        .into_iter()
+        .filter(|record| record.message.text.starts_with(PREFIX))
+        .collect();
+    ensure!(records.len() <= MAX_RETAINED_SESSIONS, "Retained Express sessions exceed the 1024-entry safety bound; chooser held without truncation");
+    let mut entries = Vec::new();
+    let mut signatures = Vec::new();
+    let mut request_counts = std::collections::BTreeMap::new();
+    let mut operation_counts = std::collections::BTreeMap::new();
+    for record in records {
+        let mut row = SessionRow {
+            selection: None,
+            request_id: None,
+            operation_id: record.message.client_request_id.clone(),
+            created_at_millis: record.created_at_millis,
+            goal: "Unreadable retained request".into(),
+            recipient: String::new(),
+            platforms: Vec::new(),
+            environment_id: None,
+            manager_project_id: None,
+            manager_thread_id: record.message.thread_id.clone(),
+            operation_thread_id: record.message.thread_id.clone(),
+            acknowledged: record.receipt.is_some(),
+            closure: None,
+            held: None,
+        };
+        let parsed = (|| {
+            let payload = record
+                .message
+                .text
+                .strip_prefix(PREFIX)
+                .context("Missing Express request prefix")?;
+            ensure!(
+                payload.len() <= 64 * 1024,
+                "Retained request exceeds its source bound"
+            );
+            let request: Request =
+                serde_json::from_str(payload).context("Invalid retained Express request")?;
+            request.draft.validate()?;
+            field(
+                &request.request_id,
+                128,
+                "Retained request identity is invalid",
+            )?;
+            ensure!(
+                request
+                    .request_id
+                    .strip_prefix("okilum-express-")
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+                "Retained request identity is invalid"
+            );
+            Ok::<_, anyhow::Error>(request)
+        })();
+        let mut closure = None;
+        let request = match parsed {
+            Ok(request) => {
+                row.request_id = Some(request.request_id.clone());
+                row.goal = request.draft.goal.clone();
+                row.recipient = request.draft.recipient.clone();
+                row.platforms = request.draft.platforms.clone();
+                row.environment_id = request.environment_id.clone();
+                row.manager_project_id = Some(request.project_id.clone());
+                row.manager_thread_id = request.manager_thread_id.clone();
+                *request_counts
+                    .entry(request.request_id.clone())
+                    .or_insert(0usize) += 1;
+                if request.environment_id.as_deref() != Some(target.environment_id.as_str())
+                    || request.project_id != target.manager_project_id
+                    || request.manager_thread_id != target.manager_thread_id
+                    || record.message.thread_id != target.manager_thread_id
+                    || record
+                        .receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.thread_id != target.manager_thread_id)
+                {
+                    row.held = Some("Retained request target is missing or differs from the current exact server/Manager binding".into());
+                }
+                match ClosureStore::new(state, environment, &request).and_then(|store| store.read())
+                {
+                    Ok(value) => {
+                        row.closure = value.as_ref().map(|record| record.reason.clone());
+                        closure = value;
+                    }
+                    Err(error) => {
+                        row.held = Some(format!("Closure needs reconciliation: {error:#}"))
+                    }
+                }
+                Some(request)
+            }
+            Err(error) => {
+                row.held = Some(format!("Held retained source: {error:#}"));
+                None
+            }
+        };
+        *operation_counts
+            .entry(row.operation_id.clone())
+            .or_insert(0usize) += 1;
+        signatures.push((
+            serialized_digest(&record)?,
+            closure.clone(),
+            row.held.clone(),
+        ));
+        entries.push((row, request, record, closure));
+    }
+    let snapshot = serialized_digest(&(target, signatures))?;
+    for (row, request, record, _) in &mut entries {
+        if row
+            .request_id
+            .as_ref()
+            .is_some_and(|id| request_counts[id] > 1)
+            || operation_counts[&row.operation_id] > 1
+        {
+            row.held = Some("Duplicate request/operation identity; result and closure cannot be attributed safely".into());
+        }
+        if row.held.is_none() {
+            let request = request
+                .as_ref()
+                .context("Missing retained request source")?;
+            row.selection = Some(SessionSelection {
+                target: target.clone(),
+                snapshot: snapshot.clone(),
+                request_id: request.request_id.clone(),
+                operation_id: row.operation_id.clone(),
+                request_fingerprint: fingerprint(request)?,
+                record_fingerprint: serialized_digest(record)?,
+            });
+        }
+    }
+    Ok((snapshot, entries))
+}
+
+/// Read one chooser page. Every row is explicit, including closed/held entries;
+/// there is no preference for latest, active, acknowledged, title, or result.
+pub fn list_retained(
+    gateway: &dyn ManagerGateway,
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    target: &SessionTarget,
+    cursor: Option<&RetainedCursor>,
+) -> Result<RetainedPage> {
+    target.validate(gateway, environment)?;
+    let (snapshot, entries) = retained_snapshot(journal, state, environment, target)?;
+    let offset = if let Some(cursor) = cursor {
+        ensure!(cursor.target == *target && cursor.snapshot == snapshot,
+            "Retained chooser cursor target or journal/closure revision changed; refresh without selecting a winner");
+        ensure!(
+            cursor.offset < entries.len(),
+            "Retained chooser cursor is exhausted"
+        );
+        cursor.offset
+    } else {
+        0
+    };
+    let total = entries.len();
+    let end = (offset + SESSION_PAGE_ITEMS).min(total);
+    let rows = entries
+        .into_iter()
+        .skip(offset)
+        .take(SESSION_PAGE_ITEMS)
+        .map(|entry| entry.0)
+        .collect();
+    ensure!(
+        gateway.server_identity()?.environment_id == target.environment_id,
+        "Chooser server changed during page read"
+    );
+    Ok(RetainedPage {
+        target: target.clone(),
+        rows,
+        total,
+        next: (end < total).then(|| RetainedCursor {
+            target: target.clone(),
+            snapshot,
+            offset: end,
+        }),
+    })
+}
+
+/// Explicit chosen row only. Re-read its exact operation and whole catalog
+/// revision before loading bounded Manager history. This has no send path.
+pub fn reconnect_selected(
+    gateway: &dyn ManagerGateway,
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    selection: &SessionSelection,
+) -> Result<Recovered> {
+    selection.target.validate(gateway, environment)?;
+    let (snapshot, entries) = retained_snapshot(journal, state, environment, &selection.target)?;
+    ensure!(
+        snapshot == selection.snapshot,
+        "Selected retained session changed; refresh the chooser before reconciliation"
+    );
+    let (_, request, record, closure) = entries
+        .into_iter()
+        .find(|entry| entry.0.selection.as_ref() == Some(selection))
+        .context("Selected operation is missing, held or ambiguous; no session was selected")?;
+    let request = request.context("Selected retained request source is unavailable")?;
+    let mut recovered = recover_record(
+        gateway,
+        request,
+        record,
+        closure,
+        &selection.target.executor_project_id,
+    )?;
+    recovered.selected_target = Some(selection.target.clone());
+    recovered.selection_revision = Some(selection.snapshot.clone());
+    require_selection_snapshot(journal, state, environment, selection)?;
+    ensure!(
+        selection.matches(&recovered),
+        "Selected request/operation/target identity changed"
+    );
+    Ok(recovered)
+}
+
+fn require_selection_snapshot(
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    selection: &SessionSelection,
+) -> Result<()> {
+    ensure!(
+        selection.target.origin == environment.origin(),
+        "Selected session origin changed"
+    );
+    let (snapshot, entries) = retained_snapshot(journal, state, environment, &selection.target)?;
+    ensure!(
+        snapshot == selection.snapshot
+            && entries
+                .iter()
+                .any(|entry| entry.0.selection.as_ref() == Some(selection)),
+        "Selected request/operation or journal/closure revision changed; refresh the chooser"
+    );
+    Ok(())
+}
+
+pub fn continue_selected_history(
+    gateway: &dyn ManagerGateway,
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    selection: &SessionSelection,
+    recovered: &Recovered,
+) -> Result<Recovered> {
+    ensure!(
+        selection.matches(recovered),
+        "History response belongs to another explicit selection"
+    );
+    require_selection_snapshot(journal, state, environment, selection)?;
+    let next = continue_history(gateway, recovered, &selection.target.executor_project_id)?;
+    require_selection_snapshot(journal, state, environment, selection)?;
+    Ok(next)
+}
+
+#[derive(Clone, Debug)]
+pub enum ClosureIntent {
+    FollowUpPr,
+    Discard(String),
+}
+
+/// Explicit selected-session user decision only. Even local discard rechecks
+/// the exact operation and catalog revision; no queue receipt closes anything.
+pub fn close_selected(
+    gateway: &dyn ManagerGateway,
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    selection: &SessionSelection,
+    recovered: &Recovered,
+    intent: &ClosureIntent,
+) -> Result<ClosureRecord> {
+    ensure!(
+        selection.matches(recovered),
+        "Closure belongs to another explicit request/target selection"
+    );
+    require_selection_snapshot(journal, state, environment, selection)?;
+    let store = ClosureStore::new(state, environment, &recovered.request)?;
+    match intent {
+        ClosureIntent::FollowUpPr => {
+            store.close_follow_up(gateway, recovered, &selection.target.executor_project_id)
+        }
+        ClosureIntent::Discard(reason) => store.discard(reason),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1544,23 +2020,474 @@ mod tests {
         next.submit_with_closures(&gateway, &journal, &directory, &environment)
             .unwrap();
         assert_eq!(journal.records().unwrap().len(), 2);
-        let reopened = reconnect_with_closures(
-            &gateway,
-            &journal,
-            "project",
-            "manager",
-            "project",
-            &directory,
-            &environment,
-        )
-        .unwrap()
-        .unwrap();
+        assert!(
+            reconnect_with_closures(
+                &gateway,
+                &journal,
+                "project",
+                "manager",
+                "project",
+                &directory,
+                &environment
+            )
+            .is_err(),
+            "Closed plus active records still require explicit choice"
+        );
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let selection = page
+            .rows
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some(next.request_id.as_str()))
+            .unwrap()
+            .selection
+            .as_ref()
+            .unwrap();
+        let reopened =
+            reconnect_selected(&gateway, &journal, &directory, &environment, selection).unwrap();
         assert_eq!(reopened.request.request_id, next.request_id);
         assert!(reopened.closure.is_none());
         assert!(Request::prepare(&gateway, "project", "manager", draft())
             .unwrap()
             .submit_with_closures(&gateway, &journal, &directory, &environment)
             .is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    fn choices_fixture(
+        count: usize,
+    ) -> (
+        std::path::PathBuf,
+        crate::Environment,
+        MessageJournal,
+        Gateway,
+        Vec<Request>,
+    ) {
+        let gateway = Gateway {
+            unsupported: false.into(),
+            sends: Default::default(),
+            history: Default::default(),
+        };
+        let directory =
+            std::env::temp_dir().join(format!("okilum-express-chooser-{}", uuid::Uuid::new_v4()));
+        let environment = crate::Environment::new("test", "https://example.invalid").unwrap();
+        let journal = MessageJournal::new(&directory, &environment, "manager");
+        let requests = (0..count)
+            .map(|index| {
+                let mut value = draft();
+                value.source = Some(SourceContext {
+                    path: "brief.md".into(),
+                    revision: format!("revision-{index}"),
+                    text: format!("Exact source {index}"),
+                });
+                let request = Request::prepare(&gateway, "project", "manager", value).unwrap();
+                journal.prepare(&request.message().unwrap()).unwrap();
+                request
+            })
+            .collect();
+        (directory, environment, journal, gateway, requests)
+    }
+
+    #[test]
+    fn chooser_never_picks_latest_active_or_acknowledged_and_selection_is_exact() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(3);
+        ClosureStore::new(&directory, &environment, &requests[0])
+            .unwrap()
+            .discard("Explicit earlier discard")
+            .unwrap();
+        let last = journal
+            .records()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.message.text.contains(&requests[2].request_id))
+            .unwrap();
+        journal.send(&gateway, &last).unwrap();
+        let original = journal.records().unwrap();
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(page.target, target);
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| original
+                .iter()
+                .any(
+                    |record| record.message.client_request_id == row.operation_id
+                        && record.created_at_millis == row.created_at_millis
+                )));
+        assert!(page.next.is_none());
+        assert!(page.rows.iter().all(|row| row.selection.is_some()));
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row.goal == requests[0].draft.goal));
+        assert_eq!(page.rows.iter().filter(|row| row.acknowledged).count(), 1);
+        assert!(reconnect_with_closures(
+            &gateway,
+            &journal,
+            "project",
+            "manager",
+            "project",
+            &directory,
+            &environment
+        )
+        .is_err());
+        let choose = |index: usize| {
+            page.rows
+                .iter()
+                .find(|row| row.request_id.as_deref() == Some(requests[index].request_id.as_str()))
+                .unwrap()
+                .selection
+                .as_ref()
+                .unwrap()
+        };
+        let first = choose(0);
+        let second = choose(1);
+        assert_eq!(first.target(), &target);
+        assert_eq!(first.request_id(), requests[0].request_id);
+        assert!(original
+            .iter()
+            .any(|record| record.message.client_request_id == first.operation_id()));
+        *gateway.history.lock().unwrap() = Some(result_history(&requests[0]));
+        let selected =
+            reconnect_selected(&gateway, &journal, &directory, &environment, first).unwrap();
+        assert!(first.matches(&selected));
+        assert!(!second.matches(&selected));
+        assert_eq!(selected.request.draft, requests[0].draft);
+        assert!(selected.closure.is_some());
+        assert!(
+            selected.record.receipt.is_none(),
+            "A matching result does not fabricate a queue acknowledgement"
+        );
+        assert_eq!(
+            selected.result.unwrap().receipt.request_id,
+            requests[0].request_id
+        );
+        let selected =
+            reconnect_selected(&gateway, &journal, &directory, &environment, second).unwrap();
+        assert!(
+            selected.result.is_none(),
+            "Another request's build cannot become the chosen request's success"
+        );
+        assert!(selected.closure.is_none());
+        assert!(!first.matches(&selected));
+        assert!(close_selected(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            first,
+            &selected,
+            &ClosureIntent::Discard("Wrong operation".into())
+        )
+        .is_err());
+        let closure = close_selected(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            second,
+            &selected,
+            &ClosureIntent::Discard("Explicitly discard this chosen request".into()),
+        )
+        .unwrap();
+        assert!(second.matches_closure(&closure));
+        assert!(!first.matches_closure(&closure));
+        assert!(
+            reconnect_selected(&gateway, &journal, &directory, &environment, first).is_err(),
+            "Closure changes invalidate an old chooser snapshot"
+        );
+        assert_eq!(journal.records().unwrap(), original);
+        assert_eq!(
+            gateway.sends.lock().unwrap().len(),
+            1,
+            "Only the fixture's explicit acknowledgement send occurred"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retained_chooser_pages_are_bounded_and_cursors_hold_on_target_or_source_change() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(35);
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let first =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        assert_eq!(first.total, 35);
+        assert_eq!(first.rows.len(), 32);
+        let cursor = first.next.as_ref().unwrap();
+        let second = list_retained(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &target,
+            Some(cursor),
+        )
+        .unwrap();
+        assert_eq!(second.rows.len(), 3);
+        assert!(second.next.is_none());
+        let ids: std::collections::BTreeSet<_> = first
+            .rows
+            .iter()
+            .chain(&second.rows)
+            .map(|row| row.request_id.clone().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 35);
+        assert!(requests
+            .iter()
+            .all(|request| ids.contains(&request.request_id)));
+        assert!(first
+            .rows
+            .iter()
+            .chain(&second.rows)
+            .all(|row| !row.acknowledged && row.closure.is_none()));
+        let mut replaced = target.clone();
+        replaced.executor_project_id = "another-executor-project".into();
+        assert!(list_retained(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &replaced,
+            Some(cursor)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("cursor target"));
+        let mut foreign = target.clone();
+        foreign.origin = "https://another.example".into();
+        assert!(list_retained(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &foreign,
+            Some(cursor)
+        )
+        .is_err());
+        let selection = first.rows[0].selection.as_ref().unwrap();
+        let mut forged = selection.clone();
+        forged.operation_id = first.rows[1].operation_id.clone();
+        assert!(reconnect_selected(&gateway, &journal, &directory, &environment, &forged).is_err());
+        ClosureStore::new(&directory, &environment, &requests[0])
+            .unwrap()
+            .discard("User decision changes the chooser revision")
+            .unwrap();
+        assert!(list_retained(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &target,
+            Some(cursor)
+        )
+        .is_err());
+        assert!(
+            reconnect_selected(&gateway, &journal, &directory, &environment, selection).is_err()
+        );
+        let refreshed =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let new_request = Request::prepare(&gateway, "project", "manager", draft()).unwrap();
+        journal.prepare(&new_request.message().unwrap()).unwrap();
+        assert!(list_retained(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &target,
+            refreshed.next.as_ref()
+        )
+        .is_err());
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        assert_eq!(journal.records().unwrap().len(), 36);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn chooser_surfaces_corrupt_foreign_and_duplicate_request_identities_as_held_rows() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(1);
+        journal.prepare(&format!("{PREFIX}{{broken")).unwrap();
+        let mut foreign = Request::prepare(&gateway, "project", "manager", draft()).unwrap();
+        foreign.environment_id = None;
+        journal.prepare(&foreign.message().unwrap()).unwrap();
+        let mut wrong_manager = Request::prepare(&gateway, "project", "manager", draft()).unwrap();
+        wrong_manager.manager_thread_id = "another-manager".into();
+        journal.prepare(&wrong_manager.message().unwrap()).unwrap();
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        assert_eq!(page.total, 4);
+        assert_eq!(
+            page.rows
+                .iter()
+                .filter(|row| row.selection.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(page.rows.iter().filter(|row| row.held.is_some()).count(), 3);
+        assert!(page
+            .rows
+            .iter()
+            .any(|row| row.manager_thread_id == "another-manager"
+                && row.operation_thread_id == "manager"));
+        let selection = page
+            .rows
+            .iter()
+            .find_map(|row| row.selection.as_ref())
+            .unwrap();
+        let selected =
+            reconnect_selected(&gateway, &journal, &directory, &environment, selection).unwrap();
+        assert_eq!(selected.request.request_id, requests[0].request_id);
+        journal.prepare(&requests[0].message().unwrap()).unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        assert_eq!(page.total, 5);
+        let duplicates: Vec<_> = page
+            .rows
+            .iter()
+            .filter(|row| row.request_id.as_deref() == Some(requests[0].request_id.as_str()))
+            .collect();
+        assert_eq!(duplicates.len(), 2);
+        assert_ne!(duplicates[0].operation_id, duplicates[1].operation_id);
+        assert!(
+            duplicates
+                .iter()
+                .all(|row| row.selection.is_none()
+                    && row.held.as_ref().unwrap().contains("Duplicate"))
+        );
+        assert!(page.rows.iter().all(|row| row.selection.is_none()));
+        assert!(
+            reconnect_selected(&gateway, &journal, &directory, &environment, selection).is_err()
+        );
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn chosen_session_retains_exact_identity_through_partial_history_and_explicit_closure() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(2);
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let selection = page
+            .rows
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some(requests[1].request_id.as_str()))
+            .unwrap()
+            .selection
+            .as_ref()
+            .unwrap();
+        let other = page
+            .rows
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some(requests[0].request_id.as_str()))
+            .unwrap()
+            .selection
+            .as_ref()
+            .unwrap();
+        let last = result_history(&requests[1]);
+        let mut first = last.clone();
+        first["items"] = (1..=64).map(|position| serde_json::json!({"position":position, "itemId":format!("item-{position}"),
+            "type":"user_message", "status":"completed", "updatedAt":"test", "text":"ordinary history"})).collect::<Vec<_>>().into();
+        first["hasMore"] = true.into();
+        first["nextPosition"] = 64.into();
+        let mut history = last.clone();
+        history["items"] = serde_json::json!([]);
+        history["mockPages"] = serde_json::json!({"start":first, "64":last});
+        history["mockLinkedPr"] = "https://git.example/team/repo/pulls/42".into();
+        *gateway.history.lock().unwrap() = Some(history);
+        let partial =
+            reconnect_selected(&gateway, &journal, &directory, &environment, selection).unwrap();
+        assert!(selection.matches(&partial));
+        assert!(partial.continuation.is_some());
+        assert!(partial.result.is_none());
+        assert!(continue_selected_history(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            other,
+            &partial
+        )
+        .is_err());
+        let complete = continue_selected_history(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            selection,
+            &partial,
+        )
+        .unwrap();
+        assert!(selection.matches(&complete));
+        assert!(complete.history_complete);
+        assert_eq!(
+            complete.result.as_ref().unwrap().receipt.request_id,
+            requests[1].request_id
+        );
+        assert_eq!(complete.request.draft, requests[1].draft);
+        let closure = close_selected(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            selection,
+            &complete,
+            &ClosureIntent::FollowUpPr,
+        )
+        .unwrap();
+        assert!(selection.matches_closure(&closure));
+        assert!(!other.matches_closure(&closure));
+        assert!(
+            continue_selected_history(
+                &gateway,
+                &journal,
+                &directory,
+                &environment,
+                selection,
+                &partial
+            )
+            .is_err(),
+            "Closure invalidates stale continuation"
+        );
+        assert!(reconnect_with_closures(
+            &gateway,
+            &journal,
+            "project",
+            "manager",
+            "project",
+            &directory,
+            &environment
+        )
+        .is_err());
+        let fresh =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        assert_eq!(
+            fresh
+                .rows
+                .iter()
+                .filter(|row| row.closure.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            fresh
+                .rows
+                .iter()
+                .filter(|row| row.closure.is_none())
+                .count(),
+            1
+        );
+        assert!(fresh.rows.iter().all(|row| row.selection.is_some()));
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        assert_eq!(journal.records().unwrap().len(), 2);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
