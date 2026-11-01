@@ -7,7 +7,7 @@ use gpui_component::input::projection::{
     ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
     ProjectionStyle, SourceByte, SourceStamp,
 };
-use gpui_component::input::{Input, InputEvent, InputState, Redo, Undo};
+use gpui_component::input::{Input, InputEvent, TextareaState, Redo, Undo};
 use gpui_component::Sizable as _;
 
 struct Binding {
@@ -21,7 +21,7 @@ pub(in crate::reader_editor) struct TableGrid {
     reader: WeakEntity<Reader>,
     input: Entity<EditorState>,
     binding: Option<Binding>,
-    cells: Vec<Vec<Entity<InputState>>>,
+    cells: Vec<Vec<Entity<TextareaState>>>,
     subscriptions: Vec<Subscription>,
     _source: Subscription,
     error: Option<&'static str>,
@@ -273,7 +273,7 @@ impl TableGrid {
             let mut cells = Vec::new();
             for (c, value) in row.into_iter().enumerate() {
                 let cell = cx.new(|cx| {
-                    let mut state = InputState::new(window, cx).auto_grow(1, 6);
+                    let mut state = TextareaState::new(window, cx).auto_grow(1, 6);
                     state.set_submit_on_enter(false, cx);
                     state.set_ime_settle(std::time::Duration::from_millis(100));
                     state.set_value(model::cell_text(&value), window, cx);
