@@ -196,6 +196,7 @@ impl Composer {
         let bounds = self.mode_trigger_bounds.clone();
         let trigger = div()
             .id("project-send-mode-anchor")
+            .relative()
             .on_prepaint(move |measured, _, _| bounds.set(measured))
             .child(
                 Button::new("project-send-mode")
@@ -217,10 +218,8 @@ impl Composer {
                         }
                     })),
             );
-        let popup =
-            gpui_base::Popup::new("project-send-mode-popup", trigger).anchor(Anchor::BottomRight);
         if !self.mode_open {
-            return popup.into_any_element();
+            return trigger.into_any_element();
         }
         let mut menu = v_flex()
             .id("project-send-mode-menu")
@@ -228,6 +227,7 @@ impl Composer {
             .role(gpui::Role::Menu)
             .track_focus(&self.mode_focus)
             .occlude()
+            .on_prepaint(gpui_base::GlobalState::record_native_overlay)
             .popover_style(cx)
             .text_size(px(13.))
             .line_height(px(20.))
@@ -288,7 +288,21 @@ impl Composer {
                     })),
             );
         }
-        popup.content(menu).into_any_element()
+        // The measured trigger stays in the composer flow; only the menu is
+        // deferred. Opening must not change the trigger's bounds or its own
+        // outside-click exclusion region.
+        trigger
+            .child(
+                gpui::deferred(
+                    gpui::anchored()
+                        .anchor(Anchor::BottomRight)
+                        .position(self.mode_trigger_bounds.get().top_right())
+                        .snap_to_window_with_margin(px(12.))
+                        .child(menu),
+                )
+                .with_priority(gpui_base::POPUP_PRIORITY),
+            )
+            .into_any_element()
     }
 }
 impl Render for Composer {
@@ -518,7 +532,16 @@ mod tests {
         visual.simulate_click(trigger.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("project-send-mode-menu").is_some());
-        visual.simulate_click(trigger.center(), Modifiers::default());
+        let open_trigger = visual.debug_bounds("project-send-mode").unwrap();
+        assert_eq!(
+            open_trigger, trigger,
+            "opening cannot move the disclosure trigger"
+        );
+        composer.read_with(visual, |composer, _| {
+            assert!(composer.mode_trigger_bounds.get().contains(&open_trigger.center()),
+                "outside-click exclusion uses the real trigger bounds: measured={:?}, trigger={open_trigger:?}", composer.mode_trigger_bounds.get());
+        });
+        visual.simulate_click(open_trigger.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(
             visual.debug_bounds("project-send-mode-menu").is_none(),
