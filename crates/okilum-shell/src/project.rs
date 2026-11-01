@@ -1551,9 +1551,11 @@ impl ProjectView {
                             .id("project-message-surface")
                             .debug_selector(|| "project-chat-composer".into())
                             .w_full().min_w_0()
-                            .track_focus(&self.compose.read(cx).focus_handle(cx))
-                            .border_1().border_color(palette.border_subtle)
-                            .focus(move |style| style.border_color(palette.focus))
+                            .border_1().border_color(if self.compose.read(cx).focus_handle(cx).is_focused(_window) {
+                                palette.focus
+                            } else {
+                                palette.border_subtle
+                            })
                             .rounded(px(design::RADIUS))
                             .bg(palette.surface_raised)
                             .p(px(design::INSET))
