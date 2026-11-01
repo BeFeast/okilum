@@ -201,6 +201,47 @@ fn mounted_start_stream_rows_stop_and_stale_reply_keep_the_visible_session(
         );
     });
     assert!(calls.load(Ordering::SeqCst) >= 1);
+    panel.update(visual, |p, cx| {
+        let data = p.data.as_ref().unwrap();
+        let mut assembler = okilum_core::log::stream::Assembler::new(
+            data.path().to_path_buf(),
+            data.scope().into(),
+        )
+        .unwrap();
+        let next = assembler
+            .append(b"level=info msg=hello\nlevel=warn msg=next\n")
+            .unwrap()
+            .unwrap();
+        let view = p.view.as_ref().unwrap().clone();
+        view.update(cx, |view, _| {
+            view.selected = Some(0);
+            view.marks.insert((0, 0));
+        });
+        p.receive(
+            generation,
+            worker::Frame {
+                data: Some(next),
+                message: "Connected".into(),
+                active: true,
+            },
+            cx,
+        );
+        {
+            let view = view.read(cx);
+            assert_eq!(view.selected, Some(0));
+            assert!(view.marks.contains(&(0, 0)));
+            let job = view
+                .export_job(reader_log::ExportScope::Shown)
+                .expect("stream export snapshot");
+            let mut out = Vec::new();
+            assert_eq!(
+                job.write(&mut out, &okilum_core::log::export::ExportFormat::Raw)
+                    .unwrap(),
+                2
+            );
+            assert_eq!(out, b"level=info msg=hello\nlevel=warn msg=next\n");
+        }
+    });
     let stop = visual
         .debug_bounds("https-log-stop")
         .expect("Stop control mounted");
@@ -217,6 +258,9 @@ fn mounted_start_stream_rows_stop_and_stale_reply_keep_the_visible_session(
             cx,
         );
         assert!(!p.active && p.message.starts_with("Stopped"));
-        assert_eq!(p.data.as_ref().unwrap().bytes(), b"level=info msg=hello\n");
+        assert_eq!(
+            p.data.as_ref().unwrap().bytes(),
+            b"level=info msg=hello\nlevel=warn msg=next\n"
+        );
     });
 }
