@@ -8,48 +8,55 @@ impl ProjectView {
         open: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = h_flex()
+        // Keep conversation identity separate from configuration: a long model
+        // name must not squeeze the title or push connection actions offscreen.
+        let mut heading = h_flex()
             .w_full()
             .min_w_0()
             .items_center()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(72.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .debug_selector(|| "project-manager-title".into())
+                    .child("Manager"),
+            );
+        let mut actions = h_flex()
+            .items_center()
             .gap_1()
-            .debug_selector(|| "project-chat-header".into());
-        #[cfg(target_os = "linux")]
-        let title = if self.native.title().trim().is_empty() {
-            "Manager"
-        } else {
-            self.native.title()
-        };
-        #[cfg(not(target_os = "linux"))]
-        let title = "Manager";
-        row = row.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .debug_selector(|| "project-manager-title".into())
-                .child(title.to_owned()),
-        );
+            .child(self.connection_line(status, cx));
+        let mut controls = h_flex()
+            .w_full()
+            .min_w_0()
+            .items_center()
+            .flex_wrap()
+            .gap_2();
+        let mut has_controls = false;
         if let Some(target) = self.manager_model_target() {
-            row = row.child(self.model_picker("project-manager-model", target, cx));
+            controls = controls.child(self.model_picker("project-manager-model", target, cx));
+            has_controls = true;
         }
         #[cfg(target_os = "linux")]
         if !self.native.active() {
-            row = row.child(
+            controls = controls.child(
                 Button::new("project-pair")
                     .debug_selector(|| "project-pair".into())
+                    .ghost()
                     .small()
                     .label("Pair")
                     .disabled(self.native_pairing_busy())
                     .on_click(cx.listener(|this, _, window, cx| this.pair_manager(window, cx))),
             );
+            has_controls = true;
         }
-        row = row.child(self.connection_line(status, cx));
         let can_open = open.is_some();
         #[cfg(target_os = "linux")]
         let can_open = can_open || (self.native.active() && self.chat.is_some());
         if can_open {
-            row = row.child(
+            actions = actions.child(
                 Button::new("project-open-t3")
                     .debug_selector(|| "project-open-t3".into())
                     .ghost()
@@ -60,7 +67,18 @@ impl ProjectView {
                     .on_click(cx.listener(|this, _, window, cx| this.open_in_t3(window, cx))),
             );
         }
-        row.into_any_element()
+        heading = heading.child(actions);
+        let header = v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .debug_selector(|| "project-chat-header".into())
+            .child(heading);
+        if has_controls {
+            header.child(controls).into_any_element()
+        } else {
+            header.into_any_element()
+        }
     }
 
     pub(super) fn render_chat_diagnostics(&self, cx: &mut Context<Self>) -> AnyElement {

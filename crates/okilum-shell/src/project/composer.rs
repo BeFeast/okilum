@@ -188,10 +188,15 @@ impl Render for Composer {
                 Button::new(SharedString::from(format!("project-mode-{label}")))
                     .debug_selector(move || format!("project-mode-{label}"))
                     .ghost()
-                    .label(format!(
-                        "{}{label}",
-                        if self.mode == mode { "✓ " } else { "" }
-                    ))
+                    .small()
+                    .label(if mode == Mode::Auto { "Auto" } else { label })
+                    .selected(self.mode == mode)
+                    .toggled(self.mode == mode)
+                    .tooltip(match mode {
+                        Mode::Auto => "Send normally; let the manager handle an active turn",
+                        Mode::Queue => "Queue this message after the current turn",
+                        Mode::Steer => "Send this message into the current turn",
+                    })
                     .disabled(self.busy || (mode == Mode::Steer && !self.steer))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.mode = mode;
@@ -202,12 +207,13 @@ impl Render for Composer {
         } else {
             Vec::new()
         };
-        let modes = h_flex().gap_1().children(modes);
+        let modes = h_flex().items_center().gap_1().children(modes);
         v_flex()
             .id("project-composer")
             .relative()
             .w_full()
-            .gap_1()
+            .min_w_0()
+            .gap_2()
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::MoveUp, window, cx| {
                     if !this.navigate_history(history::Direction::Backward, window, cx) {
@@ -242,35 +248,45 @@ impl Render for Composer {
             .on_drop(cx.listener(|_, paths: &ExternalPaths, _, cx| {
                 cx.emit(AttachmentRequested::Paths(paths.0.to_vec()))
             }))
-            .child(modes)
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .debug_selector(|| "project-composer-input".into())
+                    .child(Textarea::new(&self.input).w_full().aria_label("Message")),
+            )
             .child(
                 h_flex()
-                    .items_end()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .flex_wrap()
                     .gap_2()
                     .child(
                         Button::new("project-attach")
                             .debug_selector(|| "project-attach".into())
                             .ghost()
-                            .label("Attach")
+                            .small()
+                            .icon(IconName::Plus)
                             .tooltip("Attach images or files")
                             .disabled(!self.can_attach)
                             .on_click(
                                 cx.listener(|_, _, _, cx| cx.emit(AttachmentRequested::Choose)),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .debug_selector(|| "project-composer-input".into())
-                            .child(Textarea::new(&self.input).w_full().aria_label("Message")),
-                    )
+                    .child(modes)
+                    .child(div().flex_1())
                     .child(
                         Button::new("project-send")
                             .debug_selector(|| "project-send".into())
-                            .ghost()
+                            .primary()
+                            .small()
                             .icon(IconName::ArrowUp)
-                            .tooltip("Send to manager")
+                            .tooltip(match self.mode {
+                                Mode::Auto => "Send to manager (Enter)",
+                                Mode::Queue => "Queue message (Enter)",
+                                Mode::Steer => "Steer current turn (Enter)",
+                            })
                             .disabled(
                                 self.busy
                                     || validation.is_some()

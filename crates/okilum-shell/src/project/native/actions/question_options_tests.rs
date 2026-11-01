@@ -101,8 +101,10 @@ fn focus_composer_control(view: &Entity<ProjectView>, visual: &mut VisualTestCon
         view.compose.update(cx, |input, cx| input.focus(window, cx));
     });
     // Kit buttons deliberately preserve mouse focus. Use real Tab navigation
-    // to the preceding enabled composer control before exercising bubbling keys.
-    key(visual, "shift-tab", false);
+    // to the following toolbar control before exercising bubbling keys.
+    // The textarea is above its stable composer toolbar. Going backward now
+    // reaches the question card, whose controls change during auto-advance.
+    key(visual, "tab", false);
     visual.update(|window, cx| {
         assert!(
             window.focused(cx).is_some(),
@@ -110,7 +112,7 @@ fn focus_composer_control(view: &Entity<ProjectView>, visual: &mut VisualTestCon
         );
         assert!(
             !window.has_focused_input(cx),
-            "positive control: the preceding control is noneditable"
+            "positive control: the following toolbar control is noneditable"
         );
         assert!(
             !view
