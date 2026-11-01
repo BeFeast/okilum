@@ -7,7 +7,7 @@ use gpui_component::input::projection::{
     ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
     ProjectionStyle, SourceByte, SourceStamp,
 };
-use gpui_component::input::{Input, InputEvent, TextareaState, Redo, Undo};
+use gpui_component::input::{InputEvent, Redo, Textarea, TextareaState, Undo};
 use gpui_component::Sizable as _;
 
 struct Binding {
@@ -590,7 +590,7 @@ impl Render for TableGrid {
         for (r, row) in self.cells.iter().enumerate() {
             let mut line = div().flex();
             for (c, cell) in row.iter().enumerate() {
-                let input = Input::new(cell).disabled(stale);
+                let input = Textarea::new(cell).disabled(stale);
                 let input = match alignment.get(c) {
                     Some(Alignment::Center) => input.text_center(),
                     Some(Alignment::Right) => input.text_right(),
