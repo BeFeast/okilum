@@ -189,6 +189,8 @@ fn local_card_conflict_keeps_the_draft_and_external_file_and_failed_refresh_keep
     assert!(visual
         .debug_bounds(selector("board-local-card-", &id))
         .is_some());
+    assert!(visual.debug_bounds("board-source-problem").is_none());
+    click(visual, "board-source-status");
     assert!(visual.debug_bounds("board-source-problem").is_some());
     board.read_with(visual, |board, _| {
         assert_eq!(board.local_cards.last_success, last);
