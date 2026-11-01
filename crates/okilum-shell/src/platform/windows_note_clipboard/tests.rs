@@ -300,33 +300,194 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
 }
 
 #[test]
-fn async_followups_only_commit_after_the_editor_accepts_the_selection() {
-    use crate::note_paste::{router::Notice, Outbox};
-    use gpui_component::input::clipboard::ClipboardPasteEvent;
-    let pending = |apply_only| Outbox {
-        apply_only,
+fn busy_does_not_consume_the_originating_request_followup() {
+    use crate::note_paste::{
+        anchor::Anchor,
+        router::{FollowUp, Notice},
+        Outbox,
+    };
+    use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadRequest};
+    let mut pending = Outbox {
+        request: Some(ClipboardReadRequest::default()),
         notice: Some(Notice {
             text: "pending".into(),
             error: false,
         }),
+        follow_up: Some(FollowUp::Title {
+            url: "https://example.org".into(),
+            anchor: Anchor::at("", 0),
+        }),
         ..Default::default()
     };
-    assert!(pending(true)
-        .for_event(&ClipboardPasteEvent::Failed(Error::Cancelled))
+    assert!(pending
+        .take_for_event(&ClipboardPasteEvent::Failed(Error::Busy))
+        .follow_up
+        .is_none());
+    assert!(
+        pending.follow_up.is_some(),
+        "Busy belongs to the second command"
+    );
+    assert!(pending
+        .take_for_event(&ClipboardPasteEvent::Failed(Error::Unavailable))
         .notice
         .is_none());
-    assert!(pending(true)
-        .for_event(&ClipboardPasteEvent::Applied {
+    assert!(
+        pending.follow_up.is_some(),
+        "unrelated failure is not an acknowledgement"
+    );
+    assert!(pending
+        .take_for_event(&ClipboardPasteEvent::Applied {
             request: 1,
-            bytes: 5
+            bytes: 0
         })
-        .notice
+        .follow_up
         .is_some());
     assert!(
-        pending(false)
-            .for_event(&ClipboardPasteEvent::Failed(Error::Unavailable))
-            .notice
-            .is_some(),
-        "existing synchronous outbox behavior is unchanged"
+        pending.follow_up.is_none(),
+        "only its accepted Input event drains the outbox"
     );
+    let mut legacy = Outbox {
+        notice: Some(Notice {
+            text: "legacy".into(),
+            error: false,
+        }),
+        ..Default::default()
+    };
+    assert!(legacy
+        .take_for_event(&ClipboardPasteEvent::Failed(Error::Unavailable))
+        .notice
+        .is_some());
+}
+
+fn deferred_offer_reaches_editor(cx: &mut gpui::TestAppContext, data_image: bool) {
+    use crate::*;
+    use gpui_component::input::clipboard::{ClipboardReadRequest, ExactClipboardProvider};
+    use gpui_component::input::{Paste, Undo};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    struct Plain;
+    impl ExactClipboardProvider for Plain {
+        fn read_text(
+            &self,
+            _: ClipboardReadRequest,
+            _: &gpui::App,
+        ) -> gpui::Task<Result<Option<String>, Error>> {
+            gpui::Task::ready(Ok(Some("Docs label".into())))
+        }
+    }
+    cx.update(|cx| {
+        crate::test_init(cx);
+        crate::bind_keys(cx);
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("vault");
+    std::fs::create_dir_all(&root).unwrap();
+    let original = "seed\n";
+    std::fs::write(root.join("note.md"), original).unwrap();
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let reader = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(root.clone()),
+                    open_path: Some(root.join("note.md")),
+                    index_dir: Some(temp.path().join("index")),
+                    session_directory: Some(temp.path().join("state")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        entity = Some(reader.clone());
+        Root::new(reader, window, cx)
+    });
+    let reader = entity.unwrap();
+    visual.run_until_parked();
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    let input = reader.read_with(visual, |reader, _| reader.source_input().unwrap());
+    let outbox = reader.read_with(visual, |reader, _| reader.source_paste_outbox());
+    let raw = if data_image {
+        use base64::Engine as _;
+        let image = ::image::DynamicImage::ImageRgba8(::image::RgbaImage::from_pixel(
+            1,
+            1,
+            ::image::Rgba([0, 0, 0, 255]),
+        ));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut png, ::image::ImageFormat::Png).unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        cf_html(&format!("<p><a href='https://example.org/deferred'>Docs label</a><img alt='dot' src='data:image/png;base64,{data}'></p>"))
+    } else {
+        cf_html(&format!(
+            "<p><a href='https://example.org/deferred'>Docs label</a> {}</p>",
+            "a".repeat(512 * 1024)
+        ))
+    };
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = reads.clone();
+    let provider = WindowsNoteClipboard::with_reader(
+        Arc::new(Plain),
+        root.clone(),
+        "note.md".into(),
+        Arc::new(std::sync::Mutex::new(None)),
+        outbox.clone(),
+        Arc::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(Snapshot {
+                plain: Some("Docs label".into()),
+                html: Some(raw.clone()),
+            })
+        }),
+    );
+    input.update(visual, |input, cx| {
+        input.set_exact_clipboard_provider(Some(Arc::new(provider)), cx);
+        input.set_selected_range(original.len()..original.len(), cx);
+    });
+    visual.run_until_parked();
+    visual.dispatch_action(Paste);
+    visual.run_until_parked();
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "actual acquisition positive control"
+    );
+    let text = input.read_with(visual, |input, _| input.value().to_string());
+    assert!(
+        text.contains("[Docs label](https://example.org/deferred)"),
+        "accepted deferred paste must reach event drain and insertion"
+    );
+    if data_image {
+        assert!(text.contains("![["), "data image is stored and embedded");
+    } else {
+        assert!(
+            text.len() > 512 * 1024,
+            "large fragment is not lost or silently replaced by plain fallback"
+        );
+    }
+    assert!(
+        outbox.lock().unwrap().follow_up.is_none(),
+        "the actual Reader subscriber drained this request's work"
+    );
+    visual.dispatch_action(Undo);
+    visual.run_until_parked();
+    assert_eq!(
+        input.read_with(visual, |input, _| input.value().to_string()),
+        original,
+        "one Undo restores the empty-caret paste"
+    );
+}
+
+#[gpui::test]
+fn empty_caret_large_html_commits_deferred_paste(cx: &mut gpui::TestAppContext) {
+    deferred_offer_reaches_editor(cx, false);
+}
+#[gpui::test]
+fn empty_caret_data_image_commits_deferred_paste(cx: &mut gpui::TestAppContext) {
+    deferred_offer_reaches_editor(cx, true);
 }

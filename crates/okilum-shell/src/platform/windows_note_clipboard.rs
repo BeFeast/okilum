@@ -297,7 +297,7 @@ mod provider {
                     stamp: &stamp,
                     ask_above: job.ask_above,
                 };
-                let routed = match route_snapshot(snapshot, &context)
+                let mut routed = match route_snapshot(snapshot, &context)
                     .map_err(note_paste::clipboard_error)?
                 {
                     Paste::Plain(text) => {
@@ -326,8 +326,13 @@ mod provider {
                     }
                     return Err(Error::Io);
                 }
+                // Deferred rich work is an accepted no-op now, then one guarded
+                // background insertion. None would mean Unavailable to Input.
+                if routed.insert.is_none() && routed.follow_up.is_some() {
+                    routed.insert = Some(String::new());
+                }
                 if let Ok(mut slot) = outbox.lock() {
-                    slot.apply_only = true;
+                    slot.request = Some(request.clone());
                     slot.notice = routed.notice;
                     slot.follow_up = routed.follow_up;
                     slot.saved_files = routed.saved_files;

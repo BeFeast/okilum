@@ -100,6 +100,8 @@ pub(super) struct Editing {
     current_input: Entity<EditorState>,
     /// Snapshot for the editor's context menu, which cannot read the editor.
     menu_facts: reader_reminder::MenuFacts,
+    #[cfg(test)]
+    paste_outbox: crate::note_paste::PasteOutbox,
     /// A Markdown note, not a code or text file: lists continue (#1635).
     markdown: bool,
     /// Backspace right after the last list continuation (#1635).
@@ -274,6 +276,8 @@ impl Editing {
             saved_at,
             current_input,
             menu_facts,
+            #[cfg(test)]
+            paste_outbox,
             markdown,
             list_revert,
             external,
@@ -299,6 +303,8 @@ impl Editing {
             saved_at,
             current_input,
             menu_facts,
+            #[cfg(test)]
+            paste_outbox,
             markdown,
             list_revert,
             external,
@@ -333,6 +339,11 @@ impl Reader {
     /// The source editor's input, while editing.
     pub(super) fn source_input(&self) -> Option<Entity<EditorState>> {
         self.editing.as_ref().map(|editing| editing.input.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_paste_outbox(&self) -> crate::note_paste::PasteOutbox {
+        self.editing.as_ref().unwrap().paste_outbox.clone()
     }
 
     /// The editor's caret line, 1-based, for «Open in ▸» (#873).
@@ -808,6 +819,8 @@ impl Reader {
         );
         // #1602: every paste outcome reaches the log (sizes and kinds only,
         // never clipboard text); one that inserts nothing also says why.
+        #[cfg(test)]
+        let test_paste_outbox = paste_outbox.clone();
         let pasted = cx.subscribe_in(
             &input,
             window,
@@ -816,7 +829,7 @@ impl Reader {
                 // a page title) run whatever was inserted now.
                 let pending = paste_outbox
                     .lock()
-                    .map(|mut outbox| std::mem::take(&mut *outbox).for_event(event))
+                    .map(|mut outbox| outbox.take_for_event(event))
                     .unwrap_or_default();
                 this.pasted_attachments_saved(&pending.saved_files, cx);
                 let handled = pending.notice.is_some() || pending.follow_up.is_some();
@@ -884,6 +897,8 @@ impl Reader {
             saved_at: None,
             current_input,
             menu_facts,
+            #[cfg(test)]
+            paste_outbox: test_paste_outbox,
             markdown: !plain_file,
             list_revert: None,
             external: Default::default(),
