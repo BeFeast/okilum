@@ -48,6 +48,28 @@ This is a conservative implementation slice, not completion of #1390:
   subsystem execution, homelab disconnect/reconnect, native disconnected display,
   full crate compilation and platform acceptance have not been run.
 
+## Desktop source flow
+
+Logs → **SFTP logs…** opens a vault-scoped source window. Enter
+`sftp://host-alias/absolute/path/app.log`, select Follow or a finite snapshot,
+then Start. Opening the window does not connect. Authentication and known-host
+trust remain in existing OpenSSH configuration; the UI never asks for a password
+or changes host keys. Inputs and loaded rows are session-only.
+
+The worker feeds complete lines into the shared leased stream assembler and the
+ordinary LogView, with local filters, selection and export. History stops at
+8 MiB / 20,000 lines or a 64 KiB line. Errors and continuity loss retain the
+previously loaded rows. Retry/rotation recovery starts a new session explicitly;
+there is no automatic retry or gap-free rotation claim.
+
+Stop and window close set a session-specific cancellation flag. The worker checks
+it before every positional operation, including each prefix proof read; it does
+not finish an entire multi-read poll after cancellation. An already running
+OpenSSH exchange still waits for the connector's existing response deadline.
+The UI shows Stopping until actual cleanup completes. Persistent connections,
+scalable prefix proof and interruption inside an active exchange remain open.
+Offline fake/UI tests are separate from real SSH/native acceptance.
+
 ## Lightweight regression command
 
 No Cargo graph, SSH connection or daemon is needed:
