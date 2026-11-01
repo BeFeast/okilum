@@ -266,6 +266,30 @@ impl Composer {
         draft.edit_body(self.input.read(cx).value().as_str());
         draft.text
     }
+    pub(super) fn typed_has_authored_metadata(&self) -> bool {
+        self.typed_scope.is_some()
+            && (self.typed_draft.selection.is_some() || self.typed_draft.conversion_suppressed)
+    }
+    /// Replace the source under the current exact owner without resetting
+    /// panel state or reparsing an existing pill as an ordinary body edit.
+    pub(super) fn replace_typed_draft(
+        &mut self,
+        text: String,
+        metadata: Option<DraftMetadata>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let draft = match metadata {
+            Some(metadata) => TypedDraft::restore_metadata(text, metadata)?,
+            None => TypedDraft::from_text(text),
+        };
+        self.typed_draft = draft;
+        self.input.update(cx, |input, cx| {
+            input.set_value(self.typed_draft.visible_text().to_owned(), window, cx)
+        });
+        cx.notify();
+        Ok(())
+    }
     pub(super) fn typed_metadata(&self) -> Option<TypeMetadata> {
         self.typed_scope.as_ref()?;
         self.typed_draft.selection

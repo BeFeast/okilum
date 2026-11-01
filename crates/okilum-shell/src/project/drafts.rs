@@ -1,6 +1,7 @@
 //! Per-conversation durable composer state. Disk work is serialized off the UI
 //! thread, and quit awaits a barrier behind every queued edit.
 use super::*;
+use super::{composer::TypedScope, message_types::DraftMetadata};
 use futures::channel::oneshot;
 use okilum_t3::chat_drafts::{Attachment, Draft, Snapshot, Store};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -8,7 +9,54 @@ use std::sync::{mpsc, Mutex, OnceLock};
 type Key = (String, String, String);
 type ChatDraft = Draft<Attachment>;
 type Saved = Snapshot<Attachment>;
-type Barrier = oneshot::Receiver<Result<(), String>>;
+pub(super) type Barrier = oneshot::Receiver<Result<(), String>>;
+
+/// One atomic composer value: metadata is local operational state, not an
+/// attachment, source-text annotation, or a T3 transport field.
+#[derive(Clone, Default, Debug, PartialEq)]
+struct LocalDraft {
+    draft: ChatDraft,
+    metadata: Option<DraftMetadata>,
+}
+impl From<ChatDraft> for LocalDraft {
+    fn from(draft: ChatDraft) -> Self {
+        Self {
+            draft,
+            metadata: None,
+        }
+    }
+}
+impl LocalDraft {
+    fn validate(&self) -> Result<(), String> {
+        if let Some(metadata) = &self.metadata {
+            super::message_types::TypedDraft::restore_metadata(
+                self.draft.text.clone(),
+                metadata.clone(),
+            )
+            .map_err(str::to_owned)?;
+        }
+        Ok(())
+    }
+}
+
+/// Rotation compares this with its saved owner immediately before apply and
+/// again after the durable barrier. Metadata-only edits increment the revision.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ComposerSnapshot {
+    pub draft: ChatDraft,
+    pub edit_revision: u64,
+    pub has_authored_metadata: bool,
+    pub typed_metadata: Option<DraftMetadata>,
+}
+
+/// A barrier receipt is valid only for this exact owner, restore epoch and full
+/// snapshot. Awaiting its receiver alone never authorizes rotation claim ack.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DraftCheckpoint {
+    key: Key,
+    epoch: u64,
+    pub snapshot: ComposerSnapshot,
+}
 
 enum Work {
     Save(Arc<Mutex<Pending>>),
@@ -18,17 +66,35 @@ enum Work {
 
 struct Pending {
     store: Store<Attachment>,
-    desired: Arc<Mutex<ChatDraft>>,
+    desired: Arc<Mutex<LocalDraft>>,
     saved: Saved,
+    metadata: Option<DraftMetadata>,
     failure: Option<String>,
 }
 impl Pending {
     fn flush(&mut self) -> Result<(), String> {
         let draft = self.desired.lock().unwrap().clone();
-        if self.failure.is_none() && draft != self.saved.draft {
-            match self.store.save(self.saved.revision, draft) {
-                Ok(next) => self.saved = next,
-                Err(error) => self.failure = Some(error.to_string()),
+        if self.failure.is_none()
+            && (draft.draft != self.saved.draft || draft.metadata != self.metadata)
+        {
+            let result = (|| {
+                draft.validate()?;
+                let metadata = draft
+                    .metadata
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|_| "Typed draft metadata cannot be encoded".to_owned())?;
+                self.store
+                    .save_with_metadata(self.saved.revision, draft.draft.clone(), metadata)
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(next) => {
+                    self.saved = next;
+                    self.metadata = draft.metadata;
+                }
+                Err(error) => self.failure = Some(error),
             }
         }
         self.failure.clone().map_or(Ok(()), Err)
@@ -72,7 +138,7 @@ fn queue() -> std::io::Result<mpsc::Sender<Work>> {
 }
 
 struct Writer {
-    desired: Arc<Mutex<ChatDraft>>,
+    desired: Arc<Mutex<LocalDraft>>,
     pending: Arc<Mutex<Pending>>,
     sender: mpsc::Sender<Work>,
 }
@@ -108,11 +174,23 @@ fn install_shutdown(cx: &mut App) {
 }
 impl Writer {
     fn new(store: Store<Attachment>, initial: Saved) -> std::io::Result<Self> {
-        let desired = Arc::new(Mutex::new(initial.draft.clone()));
+        Self::new_retained(store, initial, None)
+    }
+
+    fn new_retained(
+        store: Store<Attachment>,
+        initial: Saved,
+        metadata: Option<DraftMetadata>,
+    ) -> std::io::Result<Self> {
+        let desired = Arc::new(Mutex::new(LocalDraft {
+            draft: initial.draft.clone(),
+            metadata: metadata.clone(),
+        }));
         let pending = Arc::new(Mutex::new(Pending {
             store,
             desired: desired.clone(),
             saved: initial,
+            metadata,
             failure: None,
         }));
         Ok(Self {
@@ -123,6 +201,10 @@ impl Writer {
     }
 
     fn save(&self, draft: ChatDraft) {
+        self.save_retained(draft.into());
+    }
+
+    fn save_retained(&self, draft: LocalDraft) {
         *self.desired.lock().unwrap() = draft;
         let _ = self.sender.send(Work::Save(self.pending.clone()));
     }
@@ -143,6 +225,8 @@ pub(super) struct State {
     attachments: Vec<Attachment>,
     error: Option<String>,
     subscriptions: Vec<Subscription>,
+    edit_revision: u64,
+    last_edit: Option<LocalDraft>,
     handoff: HandoffIdentity,
     handoff_receiver: okilum_t3::draft_handoff::Receiver,
 }
@@ -152,7 +236,9 @@ pub(super) struct State {
 #[derive(Clone)]
 pub(super) struct Sent {
     key: Option<Key>,
+    edit_revision: u64,
     draft: ChatDraft,
+    metadata: Option<DraftMetadata>,
 }
 
 impl ProjectView {
@@ -161,6 +247,10 @@ impl ProjectView {
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft_key() != self.threads.draft.key {
             self.threads.draft.handoff.invalidate();
+            // Capture has already been queued by edits for the previous owner.
+            // Never reinterpret that owner's hidden token under the next key.
+            self.composer
+                .update(cx, |composer, cx| composer.clear_typed_context(cx));
             self.composer
                 .update(cx, |composer, cx| composer.reset_history(cx));
             self.threads.draft.loading = true;
@@ -208,6 +298,24 @@ impl ProjectView {
                 |this, _, _: &InputEvent, window, cx| this.draft_changed(window, cx),
             );
             self.threads.draft.subscriptions.push(input);
+            let typed = cx.subscribe_in(
+                &self.composer,
+                window,
+                |this, _, event: &super::composer::TypedDraftChanged, window, cx| {
+                    let key = (
+                        event.scope.environment.clone(),
+                        event.scope.project.clone(),
+                        event.scope.thread.clone(),
+                    );
+                    if this.threads.draft.key.as_ref() != Some(&key)
+                        || this.draft_key().as_ref() != Some(&key)
+                    {
+                        return;
+                    }
+                    this.draft_changed(window, cx);
+                },
+            );
+            self.threads.draft.subscriptions.push(typed);
         }
         let Some(key) = self.draft_key() else { return };
         if self.threads.draft.key.as_ref() == Some(&key) {
@@ -217,12 +325,13 @@ impl ProjectView {
             .update(cx, |composer, cx| composer.reset_history(cx));
         // Text may have been entered while the first connection was loading.
         // Preserve it, but never transfer an established key's text elsewhere.
-        let initial = self
-            .threads
-            .draft
-            .key
-            .is_none()
-            .then(|| self.draft_sent(cx).draft);
+        let initial = self.threads.draft.key.is_none().then(|| {
+            let sent = self.draft_sent(cx);
+            LocalDraft {
+                draft: sent.draft,
+                metadata: sent.metadata,
+            }
+        });
         self.draft_capture(cx);
         let draft = &mut self.threads.draft;
         draft.handoff.invalidate();
@@ -231,8 +340,11 @@ impl ProjectView {
         draft.key = Some(key.clone());
         draft.writer = None;
         draft.attachments.clear();
+        draft.last_edit = None;
         draft.error = None;
         draft.loading = true;
+        self.composer
+            .update(cx, |composer, cx| composer.clear_typed_context(cx));
         self.compose.update(cx, |input, cx| {
             input.set_value("", window, cx);
             input.set_disabled(true, cx);
@@ -242,14 +354,18 @@ impl ProjectView {
             self.threads.draft.error = Some(
                 "Draft storage is unavailable. Text is kept only while this window is open.".into(),
             );
-            self.compose.update(cx, |input, cx| {
-                input.set_value(
-                    initial.as_ref().map_or("", |draft| draft.text.as_str()),
-                    window,
-                    cx,
-                );
-                input.set_disabled(false, cx);
+            let local = initial.clone().unwrap_or_default();
+            self.threads.draft.attachments = local.draft.attachments;
+            let scope = TypedScope {
+                environment: key.0.clone(),
+                project: key.1.clone(),
+                thread: key.2.clone(),
+            };
+            let _ = self.composer.update(cx, |composer, cx| {
+                composer.restore_typed_context(scope, local.draft.text, local.metadata, window, cx)
             });
+            self.compose
+                .update(cx, |input, cx| input.set_disabled(false, cx));
             return;
         };
         let environment = self.environment.clone().unwrap();
@@ -261,8 +377,21 @@ impl ProjectView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut saved = store.load().map_err(|error| error.to_string())?;
+                    let (mut saved, metadata) = store
+                        .load_with_metadata()
+                        .map_err(|error| error.to_string())?;
+                    let metadata: Option<DraftMetadata> = metadata
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|_| {
+                            "Retained typed draft metadata cannot be decoded".to_owned()
+                        })?;
                     let original = saved.draft.clone();
+                    LocalDraft {
+                        draft: original.clone(),
+                        metadata: metadata.clone(),
+                    }
+                    .validate()?;
                     let has_uploaded = saved.draft.attachments.iter().any(|attachment| {
                         matches!(
                             attachment.state,
@@ -282,12 +411,18 @@ impl ProjectView {
                     saved
                         .draft
                         .restore_for(environment_id.as_deref().unwrap_or(""));
-                    let restored = merge_initial(initial_copy, saved.draft.clone())?;
+                    let restored = merge_initial_typed(
+                        initial_copy,
+                        LocalDraft {
+                            draft: saved.draft.clone(),
+                            metadata: metadata.clone(),
+                        },
+                    )?;
                     // Start from the actual disk version, then retain restored status.
                     saved.draft = original;
-                    let writer = Writer::new(store, saved)
+                    let writer = Writer::new_retained(store, saved, metadata)
                         .map_err(|_| "Could not start draft storage".to_owned())?;
-                    writer.save(restored.clone());
+                    writer.save_retained(restored.clone());
                     Ok::<_, String>((writer, restored))
                 })
                 .await;
@@ -300,15 +435,41 @@ impl ProjectView {
                     Ok((writer, restored)) => {
                         let writer = Arc::new(writer);
                         this.threads.draft.writer = Some(writer);
-                        this.threads.draft.attachments = restored.attachments;
-                        this.compose
-                            .update(cx, |input, cx| input.set_value(restored.text, window, cx));
+                        this.threads.draft.attachments = restored.draft.attachments;
+                        let scope = TypedScope {
+                            environment: key.0.clone(),
+                            project: key.1.clone(),
+                            thread: key.2.clone(),
+                        };
+                        if let Err(error) = this.composer.update(cx, |composer, cx| {
+                            composer.restore_typed_context(
+                                scope,
+                                restored.draft.text,
+                                restored.metadata,
+                                window,
+                                cx,
+                            )
+                        }) {
+                            this.threads.draft.error = Some(error.to_owned());
+                        }
                     }
                     Err(error) => {
                         if let Some(initial) = initial {
-                            this.threads.draft.attachments = initial.attachments;
-                            this.compose
-                                .update(cx, |input, cx| input.set_value(initial.text, window, cx));
+                            this.threads.draft.attachments = initial.draft.attachments;
+                            let scope = TypedScope {
+                                environment: key.0.clone(),
+                                project: key.1.clone(),
+                                thread: key.2.clone(),
+                            };
+                            let _ = this.composer.update(cx, |composer, cx| {
+                                composer.restore_typed_context(
+                                    scope,
+                                    initial.draft.text,
+                                    initial.metadata,
+                                    window,
+                                    cx,
+                                )
+                            });
                         }
                         this.threads.draft.error =
                             Some(format!("{error}. The saved draft was preserved."))
@@ -316,6 +477,11 @@ impl ProjectView {
                 }
                 this.compose
                     .update(cx, |input, cx| input.set_disabled(false, cx));
+                // Observe the restoration write as well: failed attachment or
+                // metadata retention must be visible without another keystroke.
+                if this.threads.draft.writer.is_some() {
+                    this.draft_changed(window, cx);
+                }
                 cx.notify();
             });
         })
@@ -328,8 +494,65 @@ impl ProjectView {
             return;
         }
         if let Some(writer) = &self.threads.draft.writer {
-            writer.save(self.draft_sent(cx).draft);
+            let sent = self.draft_sent(cx);
+            writer.save_retained(LocalDraft {
+                draft: sent.draft,
+                metadata: sent.metadata,
+            });
         }
+    }
+
+    pub(super) fn composer_snapshot(&self, cx: &App) -> ComposerSnapshot {
+        let sent = self.draft_sent(cx);
+        ComposerSnapshot {
+            draft: sent.draft,
+            edit_revision: self.threads.draft.edit_revision,
+            has_authored_metadata: sent.metadata.is_some(),
+            typed_metadata: sent.metadata,
+        }
+    }
+
+    /// Capture now, then wait on the existing serialized durable writer. Owner
+    /// must re-check draft_checkpoint_matches after Ok(Ok(())) and before ack.
+    /// This never prepares a message or dispatches an executor operation.
+    pub(super) fn draft_durable_barrier(
+        &self,
+        cx: &App,
+    ) -> Result<(DraftCheckpoint, Barrier), String> {
+        let key = self
+            .draft_key()
+            .filter(|key| {
+                !self.threads.draft.loading
+                    && self.threads.draft.edit_revision != u64::MAX
+                    && Some(key) == self.threads.draft.key.as_ref()
+            })
+            .ok_or("Composer owner changed or draft is still loading")?;
+        let writer = self
+            .threads
+            .draft
+            .writer
+            .as_ref()
+            .ok_or("Durable draft storage is unavailable")?;
+        let snapshot = self.composer_snapshot(cx);
+        writer.save_retained(LocalDraft {
+            draft: snapshot.draft.clone(),
+            metadata: snapshot.typed_metadata.clone(),
+        });
+        let checkpoint = DraftCheckpoint {
+            key,
+            epoch: self.threads.draft.epoch,
+            snapshot,
+        };
+        Ok((checkpoint, writer.barrier()))
+    }
+
+    pub(super) fn draft_checkpoint_matches(&self, checkpoint: &DraftCheckpoint, cx: &App) -> bool {
+        !self.threads.draft.loading
+            && self.threads.draft.edit_revision != u64::MAX
+            && self.threads.draft.epoch == checkpoint.epoch
+            && self.draft_key().as_ref() == Some(&checkpoint.key)
+            && self.threads.draft.key.as_ref() == Some(&checkpoint.key)
+            && self.composer_snapshot(cx) == checkpoint.snapshot
     }
 
     pub(super) fn draft_flush(&self, cx: &App) {
@@ -338,16 +561,36 @@ impl ProjectView {
     }
 
     pub(super) fn draft_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.threads.draft.loading || self.draft_key() != self.threads.draft.key {
+            return;
+        }
+        let sent = self.draft_sent(cx);
+        let local = LocalDraft {
+            draft: sent.draft,
+            metadata: sent.metadata,
+        };
+        if self.threads.draft.last_edit.as_ref() != Some(&local) {
+            let Some(revision) = self.threads.draft.edit_revision.checked_add(1) else {
+                self.threads.draft.error = Some(
+                    "Composer edit revision exhausted; keep this window open and copy your draft"
+                        .into(),
+                );
+                return;
+            };
+            self.threads.draft.edit_revision = revision;
+            self.threads.draft.last_edit = Some(local);
+        }
         self.draft_capture(cx);
         let Some(writer) = self.threads.draft.writer.as_ref() else {
             return;
         };
         let barrier = writer.barrier();
         let key = self.threads.draft.key.clone();
+        let epoch = self.threads.draft.epoch;
         cx.spawn_in(window, async move |this, cx| {
             let result = barrier.await;
             let _ = this.update(cx, |this, cx| {
-                if this.threads.draft.key != key { return; }
+                if this.threads.draft.key != key || this.threads.draft.epoch != epoch { return; }
                 let error = match result {
                     Ok(Ok(())) => None,
                     Ok(Err(error)) => Some(format!("{error}. Keep this window open and copy your draft before closing.")),
@@ -364,10 +607,16 @@ impl ProjectView {
     pub(super) fn draft_sent(&self, cx: &App) -> Sent {
         Sent {
             key: self.draft_key(),
+            edit_revision: self.threads.draft.edit_revision,
             draft: ChatDraft {
-                text: self.compose.read(cx).value().to_string(),
+                text: self.composer.read(cx).typed_source_text(cx),
                 attachments: self.threads.draft.attachments.clone(),
             },
+            metadata: self
+                .composer
+                .read(cx)
+                .typed_has_authored_metadata()
+                .then(|| self.composer.read(cx).typed_draft_metadata()),
         }
     }
 
@@ -378,10 +627,17 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) {
         let now = self.draft_sent(cx);
-        if now.key == sent.key && now.draft == sent.draft {
+        if now.key == sent.key
+            && now.edit_revision == sent.edit_revision
+            && now.draft == sent.draft
+            && now.metadata == sent.metadata
+        {
             self.threads.draft.attachments.clear();
-            self.compose
-                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.composer.update(cx, |composer, cx| {
+                // Default metadata is intentionally absent after clearing. The
+                // next draft must not inherit type selection or Undo suppression.
+                let _ = composer.replace_typed_draft(String::new(), None, window, cx);
+            });
             self.draft_changed(window, cx);
         }
     }
@@ -462,6 +718,17 @@ impl ProjectView {
     }
 }
 
+fn merge_initial_typed(
+    initial: Option<LocalDraft>,
+    saved: LocalDraft,
+) -> Result<LocalDraft, String> {
+    match initial.filter(|initial| *initial != LocalDraft::default()) {
+        None => Ok(saved),
+        Some(initial) if saved == LocalDraft::default() || saved == initial => Ok(initial),
+        Some(_) => Err("Current draft differs from the saved draft; neither was overwritten. Keep this window open and copy your draft before closing".into()),
+    }
+}
+
 fn merge_initial(initial: Option<ChatDraft>, saved: ChatDraft) -> Result<ChatDraft, String> {
     match initial.filter(|initial| *initial != ChatDraft::default()) {
         None => Ok(saved),
@@ -526,6 +793,128 @@ mod tests {
                 format!("Retained after close {n}")
             );
         }
+    }
+
+    fn typed_local(text: &str, kind: okilum_t3::message_types::MessageType) -> LocalDraft {
+        let mut typed = super::super::message_types::TypedDraft::from_text(text.into());
+        typed.select(kind);
+        LocalDraft {
+            draft: ChatDraft {
+                text: typed.text.clone(),
+                attachments: vec![],
+            },
+            metadata: Some(typed.retained_metadata()),
+        }
+    }
+
+    #[test]
+    fn typed_metadata_and_undo_survive_writer_release_and_restart() {
+        use okilum_t3::message_types::MessageType;
+        let state = tempfile::tempdir().unwrap();
+        let env = Environment::new("qa", "https://drafts.invalid").unwrap();
+        let store = Store::<Attachment>::new(state.path(), &env, "project", "typed-thread");
+        let writer = Writer::new(store.clone(), store.load().unwrap()).unwrap();
+        let first = typed_local("same text", MessageType::Bug);
+        writer.save_retained(first.clone());
+        futures::executor::block_on(writer.barrier())
+            .unwrap()
+            .unwrap();
+        let (snapshot, metadata) = store.load_with_metadata().unwrap();
+        assert_eq!(snapshot.draft, first.draft);
+        assert_eq!(
+            metadata,
+            first
+                .metadata
+                .as_ref()
+                .map(|value| serde_json::to_value(value).unwrap())
+        );
+        let revision = snapshot.revision;
+        let second = typed_local("same text", MessageType::Decision);
+        writer.save_retained(second.clone());
+        futures::executor::block_on(writer.barrier())
+            .unwrap()
+            .unwrap();
+        drop(writer);
+        let (snapshot, metadata) = store.load_with_metadata().unwrap();
+        assert_eq!(
+            snapshot.revision,
+            revision + 1,
+            "metadata-only edit must commit a new revision"
+        );
+        let metadata = metadata.map(serde_json::from_value).transpose().unwrap();
+        let writer = Writer::new_retained(store.clone(), snapshot, metadata).unwrap();
+        assert_eq!(*writer.desired.lock().unwrap(), second);
+        let mut typed = super::super::message_types::TypedDraft::from_text("BUG body".into());
+        assert!(typed.detect_token());
+        assert!(typed.undo_token());
+        let suppressed = LocalDraft {
+            draft: ChatDraft {
+                text: typed.text.clone(),
+                attachments: vec![],
+            },
+            metadata: Some(typed.retained_metadata()),
+        };
+        writer.save_retained(suppressed.clone());
+        futures::executor::block_on(writer.barrier())
+            .unwrap()
+            .unwrap();
+        let (snapshot, metadata) = store.load_with_metadata().unwrap();
+        let restored = super::super::message_types::TypedDraft::restore_metadata(
+            snapshot.draft.text,
+            serde_json::from_value(metadata.unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(restored.conversion_suppressed);
+        assert_eq!(restored.source_text(), "BUG body");
+        assert!(
+            Store::<Attachment>::new(state.path(), &env, "project", "other-thread")
+                .load()
+                .unwrap()
+                .draft
+                .text
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_typed_save_keeps_winning_disk_and_full_local_draft() {
+        use okilum_t3::message_types::MessageType;
+        let state = tempfile::tempdir().unwrap();
+        let env = Environment::new("qa", "https://drafts.invalid").unwrap();
+        let store = Store::<Attachment>::new(state.path(), &env, "project", "typed-conflict");
+        let writer = Writer::new(store.clone(), store.load().unwrap()).unwrap();
+        let winner = typed_local("other window", MessageType::Decision);
+        store
+            .save_with_metadata(
+                0,
+                winner.draft.clone(),
+                winner
+                    .metadata
+                    .as_ref()
+                    .map(|value| serde_json::to_value(value).unwrap()),
+            )
+            .unwrap();
+        let local = typed_local("unsaved local text", MessageType::Bug);
+        writer.save_retained(local.clone());
+        assert!(futures::executor::block_on(writer.barrier())
+            .unwrap()
+            .is_err());
+        assert_eq!(*writer.desired.lock().unwrap(), local);
+        let (snapshot, metadata) = store.load_with_metadata().unwrap();
+        assert_eq!(snapshot.draft, winner.draft);
+        assert_eq!(
+            metadata,
+            winner
+                .metadata
+                .as_ref()
+                .map(|value| serde_json::to_value(value).unwrap())
+        );
+        // Repeated flush cannot silently rebase a failed writer onto the winner.
+        assert!(futures::executor::block_on(writer.barrier())
+            .unwrap()
+            .is_err());
+        assert_eq!(store.load_with_metadata().unwrap().0, snapshot);
+        assert!(merge_initial_typed(Some(local), winner).is_err());
     }
 
     fn binding(project: &str, thread: &str) -> AreaBinding {
@@ -687,7 +1076,7 @@ mod tests {
             .unwrap()
             .is_err());
         assert_eq!(store.load().unwrap().draft.text, "other window");
-        assert_eq!(writer.desired.lock().unwrap().text, "local window");
+        assert_eq!(writer.desired.lock().unwrap().draft.text, "local window");
     }
     #[gpui::test]
     fn history_recall_is_durable_and_same_text_thread_switch_ends_browsing(

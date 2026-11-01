@@ -1465,7 +1465,7 @@ impl ProjectView {
         if self.busy || !self.can_send() {
             return;
         }
-        let draft = self.compose.read(cx).value().to_string();
+        let draft = self.composer.read(cx).typed_source_text(cx);
         if let Some(error) = okilum_t3::actions::prompt_length_validation(&draft) {
             self.error = Some(error);
             cx.notify();
