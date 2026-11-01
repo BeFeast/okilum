@@ -119,6 +119,48 @@ class MaestroTests(unittest.TestCase):
         with self.assertRaises(Unavailable):self.runner.step()
         self.assertEqual(op['state'],'accepted')
 
+    def test_partial_source_recovers_original_receipt_and_retains_questions(self):
+        op=self.queue();self.runner.step()
+        key=op['request']['operation_id'];self.source.ack(key)
+        previous=copy.deepcopy(self.inbox.questions)
+        observation=self.j.db.execute('SELECT * FROM observation').fetchall()
+        snapshot=self.source.snapshot
+        def partial():raise Unavailable('partial_source')
+        self.source.snapshot=partial
+        # A receipt from another native attempt must still fail closed.
+        self.source.receipts[key][1]['question']['worker_generation']='other'
+        with self.assertRaisesRegex(Unavailable,'receipt_identity_mismatch'):
+            self.runner.step()
+        self.assertEqual(op['state'],'accepted')
+        self.source.receipts[key][1]['question']['worker_generation']='attempt'
+        restarted=Runner(self.c,self.j,self.source,self.inbox)
+        with self.assertRaisesRegex(Unavailable,'partial_source'):restarted.step()
+        self.assertEqual(op['state'],'delivered')
+        self.assertFalse(restarted.ready)
+        self.assertEqual(self.inbox.questions,previous)
+        self.assertEqual(self.j.db.execute('SELECT * FROM observation').fetchall(),observation)
+        self.assertEqual(len(self.source.sent),1)
+        self.source.snapshot=snapshot;restarted.step()
+        self.assertTrue(restarted.ready)
+        self.assertEqual(self.inbox.questions[op['question']['id']]['state'],'answered')
+
+    def test_partial_source_quarantines_queued_work_without_dispatch(self):
+        op=self.queue()
+        def partial():raise Unavailable('partial_source')
+        self.source.snapshot=partial
+        with self.assertRaisesRegex(Unavailable,'partial_source'):self.runner.step()
+        self.assertEqual(op['state'],'uncertain')
+        self.assertEqual(op['error_code'],'recovery_required')
+        self.assertEqual(self.source.sent,[])
+
+    def test_unknown_observation_failure_does_not_reconcile(self):
+        op=self.queue();self.runner.step()
+        self.source.ack(op['request']['operation_id'])
+        def wrong_instance():raise Unavailable('source_instance_changed')
+        self.source.snapshot=wrong_instance
+        with self.assertRaisesRegex(Unavailable,'source_instance_changed'):self.runner.step()
+        self.assertEqual(op['state'],'accepted')
+
 
 class GlobalApprovalTests(unittest.TestCase):
     def test_global_null_and_absent_project_and_recover_without_resending(self):
@@ -162,6 +204,21 @@ class GlobalApprovalTests(unittest.TestCase):
 
 
 class PaginationTests(unittest.TestCase):
+    def test_bounded_backlog_exposes_partial_source_without_partial_snapshot(self):
+        source=Source(config(),'fixture-secret');calls=[]
+        def read(path):
+            calls.append(path)
+            if path=='/questions':
+                return {'truncated':True,'questions':[question()],'snapshot_cursor':101}
+            self.assertTrue(path.startswith('/changes?cursor='))
+            cursor=int(path.split('=')[1])+1
+            return {'changes':[{'cursor':cursor,'question':question()}],
+                    'next_cursor':cursor,'has_more':True}
+        source.read=read
+        with self.assertRaisesRegex(Unavailable,'^partial_source$'):source.snapshot()
+        self.assertEqual(len(calls),101)
+        self.assertEqual(calls[-1],'/changes?cursor=99')
+
     def test_truncated_snapshot_replays_all_changes_and_rejects_partial_pages(self):
         c=config();source=Source(c,'fixture-secret');q=question();a=approval();calls=[]
         def read(path):

@@ -154,7 +154,7 @@ class Source:
                 if not page['has_more']:
                     break
             else:
-                raise Unavailable('source_page_limit')
+                raise Unavailable('partial_source')
         require(cursor >= snap['snapshot_cursor'], 'incomplete_change_feed')
         approvals = unique(self.read('/approvals').get('approvals'), 'id')
         result = {}
@@ -303,10 +303,21 @@ class Runner:
 
     def step(self):
         operations = list(self.inbox.operations())
-        self.observe()
+        observation_error = None
+        try:
+            self.observe()
+        except Unavailable as error:
+            # A known incomplete source is not evidence that pending questions
+            # disappeared. Reconcile retained operation receipts, but never
+            # release a new command without a complete observation.
+            if str(error) != 'partial_source':
+                raise
+            observation_error = error
         for op in operations:
             if op['state'] not in ('delivered','rejected'):
-                self.reconcile(op, recovery=not self.ready)
+                self.reconcile(op, recovery=observation_error is not None or not self.ready)
+        if observation_error is not None:
+            raise observation_error
         self.ready = True
 
 
