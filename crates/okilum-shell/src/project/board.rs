@@ -1367,12 +1367,56 @@ impl Reader {
                     }
                 }
                 Action::Discuss(text) => {
-                    let appended = this.project.as_ref().is_some_and(|manager| manager.update(cx, |manager, cx|
-                        manager.append_board_context(&owner, text.clone(), window, cx)));
-                    if appended { this.panels.open(reader_layout::Panel::Backlinks); }
+                    #[cfg(target_os = "linux")]
+                    let result = this.project.as_ref().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
+                        .and_then(|manager| manager.update(cx, |manager, cx| {
+                            use okilum_t3::draft_handoff::{ComposerPort, Refusal, Request};
+                            // Retain the originating Board owner and the exact currently
+                            // visible composer. Do not select/replace a Manager thread here.
+                            if manager.area.as_deref() != Some(owner.as_path()) {
+                                return Err(Refusal::WrongTarget);
+                            }
+                            let target = manager.draft_handoff_target(cx).ok_or(Refusal::Unavailable)?;
+                            // The receiver survives individual clicks. IDs must therefore
+                            // outlive this callback too, including switching A → B → A.
+                            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                            let id = NEXT.fetch_update(
+                                std::sync::atomic::Ordering::Relaxed,
+                                std::sync::atomic::Ordering::Relaxed,
+                                |id| id.checked_add(1),
+                            ).map_err(|_| Refusal::Exhausted)?;
+                            if text.trim().is_empty() {
+                                return Err(Refusal::Empty);
+                            }
+                            let request = Request { id, target, text: format!("---\n{text}") };
+                            // UI-thread validation and the single undoable insertion share
+                            // this update. No gateway, send intent or async retry is involved.
+                            let ack = manager.draft_handoff_port(window, cx).append(&request)?;
+                            if ack.id != request.id || ack.target != request.target
+                                || manager.draft_handoff_target(cx).as_ref() != Some(&request.target)
+                            {
+                                return Err(Refusal::StaleAcknowledgement);
+                            }
+                            Ok(())
+                        }));
+                    #[cfg(target_os = "linux")]
+                    let notice = match result {
+                        Ok(()) => {
+                            this.panels.open(reader_layout::Panel::Backlinks);
+                            "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block."
+                        }
+                        Err(okilum_t3::draft_handoff::Refusal::StaleAcknowledgement) =>
+                            "Manager target changed. Check its draft before trying again.",
+                        Err(_) => "Manager draft unavailable. Open the Manager and try again.",
+                    };
+                    // No supported atomic web composer bridge is published. Never
+                    // report success after changing an invisible native fallback.
+                    #[cfg(target_os = "macos")]
+                    let notice = "Draft handoff to the Manager webview is unavailable. No draft was changed.";
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    let notice = "Draft handoff to this Manager panel is unavailable. No draft was changed.";
                     board.update(cx, |board, cx| {
-                        board.notice = Some(if appended { "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block." }
-                            else { "Manager is still loading; the draft was not changed. Try again." }.into());
+                        board.notice = Some(notice.into());
                         cx.notify();
                     });
                 }
