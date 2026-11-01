@@ -10,7 +10,7 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         invitation: cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL")),
         selected_peer: None,
         busy: false,
-        epoch: 0,
+        epoch: Epoch::default(),
         error: None,
     }
 }
@@ -289,6 +289,54 @@ fn invalid_pasted_pairing_url_never_starts_controller(cx: &mut TestAppContext) {
         assert!(view.error.is_some());
         assert!(view.controller.is_none());
         assert!(!view.busy);
-        assert_eq!(view.epoch, 0, "no background operation was dispatched");
+        assert_eq!(
+            view.epoch.current(),
+            0,
+            "no background operation was dispatched"
+        );
     });
+}
+
+#[test]
+fn controller_opened_after_sync_suspend_is_revoked_before_publication() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let epoch = Epoch::default();
+    let ticket = epoch.begin();
+    // Suspend while open is in progress, before the view has any handle to stop.
+    epoch.invalidate();
+    let controller = Controller::open(root.path().join("direct"), vec![])?;
+    let retained = controller.clone();
+    assert!(
+        retained.snapshot().is_ok(),
+        "positive control: open is usable"
+    );
+    {
+        let guard = ControllerGuard {
+            ticket,
+            controller: controller.clone(),
+        };
+        assert!(guard.check().is_err());
+    }
+    assert!(
+        retained.snapshot().is_err(),
+        "stale clones must lose access"
+    );
+    drop(retained);
+    drop(controller);
+
+    let fresh = epoch.begin();
+    let controller = Controller::open(root.path().join("direct"), vec![])?;
+    {
+        let guard = ControllerGuard {
+            ticket: fresh,
+            controller: controller.clone(),
+        };
+        guard.check()?;
+    }
+    assert!(
+        controller.snapshot().is_ok(),
+        "fresh completion remains usable"
+    );
+    controller.shutdown();
+    Ok(())
 }

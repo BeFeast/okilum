@@ -1,5 +1,6 @@
 // Shared desktop Sync settings. All controller IO runs off the GPUI thread.
 use super::*;
+use epoch::{Epoch, Ticket};
 use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
 
@@ -20,7 +21,7 @@ pub(super) fn shared(window: &mut Window, cx: &mut App) -> Entity<SyncSettings> 
 pub(super) fn suspend(cx: &mut App) {
     if let Some(view) = cx.try_global::<BackgroundSync>().map(|s| s.0.clone()) {
         view.update(cx, |view, cx| {
-            view.epoch += 1;
+            view.epoch.invalidate();
             if let Some(controller) = view.controller.take() {
                 controller.shutdown();
             }
@@ -58,7 +59,7 @@ pub(super) struct SyncSettings {
     invitation: Entity<InputState>,
     selected_peer: Option<uuid::Uuid>,
     busy: bool,
-    epoch: u64,
+    epoch: Epoch,
     error: Option<String>,
 }
 impl SyncSettings {
@@ -71,7 +72,7 @@ impl SyncSettings {
             invitation: cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL")),
             selected_peer: None,
             busy: false,
-            epoch: 0,
+            epoch: Epoch::default(),
             error: None,
         };
         this.run(Operation::Read, cx);
@@ -81,8 +82,7 @@ impl SyncSettings {
         if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
             return;
         }
-        self.epoch += 1;
-        let epoch = self.epoch;
+        let epoch = self.epoch.begin();
         self.busy = true;
         self.error = None;
         if matches!(operation, Operation::Inspect(_) | Operation::Cancel) {
@@ -92,17 +92,21 @@ impl SyncSettings {
         let access = reader_features::access(reader_features::Feature::Sync, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
+            let worker_epoch = epoch.clone();
             okilum_t3::scope_network(access, async move {
                 let result = cx
                     .background_executor()
                     .spawn(okilum_t3::scope_current_network(async move {
-                        perform(controller, operation)
+                        perform_scoped(controller, operation, &worker_epoch)
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    if this.epoch != epoch
+                    if !epoch.is_current()
                         || !reader_features::enabled(reader_features::Feature::Sync, cx)
                     {
+                        if let Ok(output) = result {
+                            output.controller.shutdown();
+                        }
                         return;
                     }
                     this.busy = false;
@@ -148,11 +152,11 @@ impl SyncSettings {
         if !self.snapshot.as_ref().is_some_and(sync_refresh_needed) || self.error.is_some() {
             return;
         }
-        let epoch = self.epoch;
+        let epoch = self.epoch.ticket();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(2)).await;
             let _ = this.update(cx, |this, cx| {
-                if this.epoch == epoch && !this.busy {
+                if epoch.is_current() && !this.busy {
                     this.run(Operation::Read, cx);
                 }
             });
@@ -199,12 +203,12 @@ impl SyncSettings {
                 .into(),
             ),
         });
-        let epoch = self.epoch;
+        let epoch = self.epoch.ticket();
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = this.update(cx, |this, cx| {
-                        if this.epoch != epoch {
+                        if !epoch.is_current() {
                             return;
                         }
                         this.run(
@@ -289,60 +293,97 @@ fn mac_direct_state(managed: &Path) -> anyhow::Result<PathBuf> {
     ensure_private_sync_directory(parent)?;
     Ok(parent.join("SyncDirect"))
 }
+// A worker can open a controller after suspend has taken the view's old handle.
+// Revoke every clone of that late controller when its worker exits stale.
+struct ControllerGuard {
+    ticket: Ticket,
+    controller: Controller,
+}
+impl ControllerGuard {
+    fn check(&self) -> anyhow::Result<()> {
+        self.ticket.check()?;
+        Ok(())
+    }
+}
+impl Drop for ControllerGuard {
+    fn drop(&mut self) {
+        if !self.ticket.is_current() {
+            self.controller.shutdown();
+        }
+    }
+}
+#[cfg(test)]
 fn perform(controller: Option<Controller>, operation: Operation) -> anyhow::Result<Output> {
-    anyhow::ensure!(
-        okilum_t3::NetworkAccess::current().allowed(),
-        "Sync is disabled"
-    );
-    // Validate before filesystem discovery and macOS runtime bootstrap.
-    match &operation {
-        Operation::Begin(name) => direct::validate_name(name)?,
-        Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
-        _ => {}
-    }
-    let (state, configs) = locations()?;
-    let controller = match controller {
-        Some(c) => c,
-        None => Controller::open(state, configs.clone())?,
-    };
-    #[cfg(target_os = "macos")]
-    if matches!(&operation, Operation::Begin(_) | Operation::Redeem(_, _))
-        && controller.configuration_paths()?.is_empty()
-    {
-        connect_managed_runtime(&controller)?;
-    }
-    let mut inspected = None;
-    let snapshot = match operation {
-        Operation::Read => controller.refresh()?,
-        Operation::Begin(name) => controller.begin_pairing(&name)?,
-        Operation::Redeem(url, name) => controller.redeem(&url, &name)?,
-        Operation::Approve(id) => controller.approve(id)?,
-        Operation::Reject(id) => controller.reject(id)?,
-        Operation::Cancel => controller.cancel()?,
-        Operation::Catalog(peer) => {
-            let catalog = controller.catalog(peer)?;
-            let mut snapshot = controller.snapshot()?;
-            snapshot.catalog = catalog;
-            snapshot
+    perform_scoped(controller, operation, &Epoch::default().ticket())
+}
+fn perform_scoped(
+    controller: Option<Controller>,
+    operation: Operation,
+    ticket: &Ticket,
+) -> anyhow::Result<Output> {
+    ticket.run(|| {
+        anyhow::ensure!(
+            okilum_t3::NetworkAccess::current().allowed(),
+            "Sync is disabled"
+        );
+        // Validate before filesystem discovery and macOS runtime bootstrap.
+        match &operation {
+            Operation::Begin(name) => direct::validate_name(name)?,
+            Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
+            _ => {}
         }
-        Operation::Inspect(path) => {
-            inspected = Some(direct::inspect_existing(
-                &controller.configuration_paths()?,
-                &path,
-            )?);
-            controller.snapshot()?
+        let (state, configs) = locations()?;
+        ticket.check()?;
+        let controller = match controller {
+            Some(c) => c,
+            None => Controller::open(state, configs.clone())?,
+        };
+        let guard = ControllerGuard {
+            ticket: ticket.clone(),
+            controller: controller.clone(),
+        };
+        guard.check()?;
+        #[cfg(target_os = "macos")]
+        if matches!(&operation, Operation::Begin(_) | Operation::Redeem(_, _))
+            && controller.configuration_paths()?.is_empty()
+        {
+            connect_managed_runtime(&controller)?;
         }
-        Operation::Consent(vault) => {
-            controller.attach_existing(&vault, true)?;
-            controller.snapshot()?
-        }
-        Operation::Attach(peer, vault, path) => controller.attach(peer, &vault, &path)?,
-    };
-    Ok(Output {
-        controller,
-        snapshot,
-        inspected,
-    })
+        guard.check()?;
+        let mut inspected = None;
+        let snapshot = match operation {
+            Operation::Read => controller.refresh()?,
+            Operation::Begin(name) => controller.begin_pairing(&name)?,
+            Operation::Redeem(url, name) => controller.redeem(&url, &name)?,
+            Operation::Approve(id) => controller.approve(id)?,
+            Operation::Reject(id) => controller.reject(id)?,
+            Operation::Cancel => controller.cancel()?,
+            Operation::Catalog(peer) => {
+                let catalog = controller.catalog(peer)?;
+                let mut snapshot = controller.snapshot()?;
+                snapshot.catalog = catalog;
+                snapshot
+            }
+            Operation::Inspect(path) => {
+                inspected = Some(direct::inspect_existing(
+                    &controller.configuration_paths()?,
+                    &path,
+                )?);
+                controller.snapshot()?
+            }
+            Operation::Consent(vault) => {
+                controller.attach_existing(&vault, true)?;
+                controller.snapshot()?
+            }
+            Operation::Attach(peer, vault, path) => controller.attach(peer, &vault, &path)?,
+        };
+        guard.check()?;
+        Ok(Output {
+            controller,
+            snapshot,
+            inspected,
+        })
+    })?
 }
 #[cfg(target_os = "macos")]
 fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
@@ -396,6 +437,8 @@ fn user_error(error: &anyhow::Error) -> String {
     }
 }
 
+#[path = "reader_settings_sync/epoch.rs"]
+mod epoch;
 #[cfg(test)]
 #[path = "reader_settings_sync/tests.rs"]
 mod tests;
