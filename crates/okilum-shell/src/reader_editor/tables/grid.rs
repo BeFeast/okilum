@@ -802,6 +802,7 @@ impl SourceProjection for GridProjection {
 #[cfg(test)]
 mod projection_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     struct Linear(SourceSnapshot);
     impl ProjectionProvider for Linear {
