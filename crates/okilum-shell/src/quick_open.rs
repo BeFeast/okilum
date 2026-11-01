@@ -3385,7 +3385,7 @@ canaryhidden [[Target]]",
             std::fs::write(root.join(path), body).unwrap();
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
