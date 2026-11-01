@@ -73,7 +73,9 @@ struct ApprovalText {
 impl RenderOnce for ApprovalText {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = window.use_keyed_state(self.id.clone(), cx, |_, cx| TextState {
-            focus: cx.focus_handle(),
+            // GPUI registers the tracked handle's tab-stop flag; setting the
+            // element's flag does not change an explicit tracked handle.
+            focus: cx.focus_handle().tab_stop(true),
             scroll: gpui::ScrollHandle::new(),
         });
         let focus = state.read(cx).focus.clone();
@@ -89,7 +91,6 @@ impl RenderOnce for ApprovalText {
             })
             .key_context("ProjectApprovalDetail")
             .track_focus(&focus)
-            .tab_stop(true)
             .aria_label(self.label)
             .aria_description(self.text.clone())
             .w_full()
@@ -212,7 +213,8 @@ impl RenderOnce for ApprovalDecision {
                 }
             },
         );
-        let focus = state.read(cx).focus.clone();
+        // Disabled decisions keep a read-only keyboard target for the caution.
+        let focus = state.read(cx).focus.clone().tab_stop(self.disabled);
         let focused = focus.contains_focused(window, cx);
         let selector = format!("{}-warning", self.selector);
         let mut group = v_flex()
@@ -220,9 +222,8 @@ impl RenderOnce for ApprovalDecision {
                 "approval-warning-{}",
                 self.scope
             )))
+            .key_context("ProjectApprovalDecision")
             .track_focus(&focus)
-            // Disabled decisions still expose their caution to the keyboard.
-            .tab_stop(self.disabled)
             .aria_label("Approval warning")
             .aria_description(warning.clone())
             .min_w_0()

@@ -177,7 +177,6 @@ impl Render for WarningHarness {
             .child(
                 div()
                     .track_focus(&self.anchor)
-                    .tab_stop(true)
                     .child("Keyboard focus start"),
             )
             .child(ApprovalDecision {
@@ -193,7 +192,11 @@ impl Render for WarningHarness {
                 warning: Some("Full provider warning\nincluding the final WARNING_SENTINEL".into()),
                 disabled: self.disabled,
             })
-            .child(Button::new("following-control").label("Following control"))
+            .child(
+                div()
+                    .key_context("FollowingApprovalControl")
+                    .child(Button::new("following-control").label("Following control")),
+            )
     }
 }
 
@@ -206,7 +209,7 @@ fn keyboard_focus_exposes_full_provider_warning_without_activating_the_decision(
     let decisions = Rc::new(RefCell::new(Vec::new()));
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
-            let anchor = cx.focus_handle();
+            let anchor = cx.focus_handle().tab_stop(true);
             anchor.focus(window, cx);
             WarningHarness {
                 anchor,
@@ -226,6 +229,15 @@ fn keyboard_focus_exposes_full_provider_warning_without_activating_the_decision(
             window.focused(cx).is_some(),
             "positive control: keyboard focus exists"
         );
+        assert!(
+            window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("ProjectApprovalDecision")),
+            "positive control: actual Tab reached the provider decision; focus={:?}, contexts={:?}",
+            window.focused(cx),
+            window.context_stack()
+        );
     });
     assert!(
         visual.debug_bounds("warning-choice-warning").is_some(),
@@ -235,11 +247,33 @@ fn keyboard_focus_exposes_full_provider_warning_without_activating_the_decision(
     key(visual, "enter");
     assert_eq!(&*decisions.borrow(), &["acceptAlways"]);
     key(visual, "tab");
+    visual.update(|window, cx| {
+        assert!(
+            window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("ProjectApprovalDetail")),
+            "positive control: actual Tab entered the focusable full warning; focus={:?}, contexts={:?}",
+            window.focused(cx),
+            window.context_stack()
+        );
+    });
     assert!(
         visual.debug_bounds("warning-choice-warning").is_some(),
         "the full warning remains available while its text area has focus"
     );
     key(visual, "tab");
+    visual.update(|window, cx| {
+        assert!(
+            window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("FollowingApprovalControl")),
+            "positive control: actual Tab left the warning for the following control; focus={:?}, contexts={:?}",
+            window.focused(cx),
+            window.context_stack()
+        );
+    });
     assert!(
         visual.debug_bounds("warning-choice-warning").is_none(),
         "leaving the option and its details restores the compact row"
