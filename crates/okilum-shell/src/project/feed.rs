@@ -635,6 +635,7 @@ mod tests;
 #[cfg(test)]
 mod design_layout_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn concept_message_surfaces_keep_copy_reachable_inside_narrow_reading_columns(
