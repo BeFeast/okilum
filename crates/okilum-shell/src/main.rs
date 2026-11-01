@@ -146,6 +146,7 @@ mod reader_agent_imports;
 mod reader_agent_language;
 mod reader_agent_search;
 mod reader_file_access_notice;
+mod reader_sync_help;
 mod reader_agents_context;
 mod reader_agents_offer;
 mod reader_features;
