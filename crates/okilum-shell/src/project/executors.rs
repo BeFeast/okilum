@@ -2,7 +2,7 @@ use super::*;
 use okilum_t3::ThreadSummary;
 
 impl ProjectView {
-    pub(super) fn render_executors(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_executors(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex()
             .id("project-executors-list")
             .debug_selector(|| "project-executors-list".into())
@@ -35,7 +35,12 @@ impl ProjectView {
                         thread_id: thread.thread_id.clone(),
                         project_id: binding.executor.project_id.clone(),
                     };
-                    entry = entry.child(self.model_picker(("executor-model", index), target, cx));
+                    entry = entry.child(self.model_picker(
+                        ("executor-model", index),
+                        target,
+                        window,
+                        cx,
+                    ));
                 }
                 entry = entry.child(match row.pending_questions {
                     Some(0) => "No pending questions".to_owned(),

@@ -1494,7 +1494,7 @@ impl ProjectView {
             })
             .when(self.launch.open, |view| view.child(self.render_launch(cx)))
             .child(if self.executors_open {
-                self.render_executors(cx)
+                self.render_executors(_window, cx)
             } else {
                 history.into_any_element()
             })
