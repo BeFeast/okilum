@@ -1495,27 +1495,11 @@ impl Render for ProjectView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(target_os = "linux")]
         if self.threads.enabled {
-            let selected = self.threads.selected.clone();
-            let content = if let Some(id) = selected {
-                let available = self
-                    .threads
-                    .model
-                    .as_ref()
-                    .is_some_and(|m| m.lock().unwrap().threads.contains_key(&id));
-                if available {
-                    self.native_thread_view(&id)
-                        .map(|view| div().size_full().child(view.clone()).into_any_element())
-                        .unwrap_or_else(|| div().child("Loading thread…").into_any_element())
-                } else {
-                    div().p_3().child("This thread is no longer available in the bound project. Choose another thread.").into_any_element()
-                }
-            } else {
-                self.render_body(window, cx)
-            };
+            let content = self.render_body(window, cx);
             return v_flex()
                 .size_full()
                 .min_h_0()
-                .child(self.render_thread_directory(cx))
+                .child(self.render_manager_notices(cx))
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element();
         }
