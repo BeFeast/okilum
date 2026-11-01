@@ -21,6 +21,7 @@ pub mod thread_create;
 pub mod turn_item;
 pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
+pub mod model_catalog;
 
 #[cfg(test)]
 mod tests;
