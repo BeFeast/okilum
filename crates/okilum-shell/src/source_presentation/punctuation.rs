@@ -34,6 +34,13 @@ fn scan(
         (('а'..='я').contains(&ch) || ('А'..='Я').contains(&ch) || ch == 'ё' || ch == 'Ё')
             && eligible(&(paragraph.start + at..paragraph.start + at + ch.len_utf8()))
     });
+    // Derive boundaries from the complete paragraph, not a suffix starting at
+    // a quote: that suffix could hide an attached mark or preceding joiner.
+    let boundaries: Vec<_> = text
+        .grapheme_indices(true)
+        .map(|(at, _)| paragraph.start + at)
+        .chain(std::iter::once(paragraph.end))
+        .collect();
     let mut double = None;
     let mut single = None;
     let mut at = paragraph.start;
@@ -57,10 +64,15 @@ fn scan(
             (ch.len_utf8(), None)
         };
         let range = at..at + len;
-        if !escaped && eligible(&range) {
+        if !escaped {
             if let Some(glyph) = glyph {
-                out.push((range, glyph));
+                if eligible(&range) {
+                    out.push((range, glyph));
+                }
             } else if ch == '"' || ch == '\'' {
+                let admitted = eligible(&range)
+                    && boundaries.binary_search(&range.start).is_ok()
+                    && boundaries.binary_search(&range.end).is_ok();
                 // Bidi formatting controls affect visual order, not quote
                 // boundaries. Keep every authored byte and pair in logical
                 // source order, including isolates around embedded LTR text.
@@ -79,7 +91,7 @@ fn scan(
                     // Context must belong to the same approved prose span.
                     // The replacement itself covers only the ASCII apostrophe,
                     // never a neighbouring letter, mark or bidi control.
-                    if eligible(&context) {
+                    if admitted && eligible(&context) {
                         out.push((range, "’"));
                     }
                 } else {
@@ -87,9 +99,18 @@ fn scan(
                     if before.is_none_or(|c| !c.is_alphanumeric() && c != '"' && c != '\'')
                         && after.is_some_and(|c| !c.is_whitespace())
                     {
-                        *pending = Some(range);
+                        // Keep a rejected opener until its closer: dropping it
+                        // could let that closer start a different, partial pair.
+                        *pending = Some((range, admitted));
                     } else if before.is_some_and(|c| !c.is_whitespace()) {
-                        if let Some(open) = pending.take() {
+                        if let Some((open, open_admitted)) = pending.take() {
+                            // A pair is one decoration decision. Never emit an
+                            // opener if its closer splits an authored cluster
+                            // or lies in excluded source (and vice versa).
+                            if !open_admitted || !admitted {
+                                at += len;
+                                continue;
+                            }
                             let (left, right) = if ch == '\'' {
                                 ("‘", "’")
                             } else if russian {
@@ -242,6 +263,42 @@ mod tests {
         assert_eq!(shown("can'\r\n\r\n't", |_| true), "can'\r\n\r\n't");
         assert_eq!(shown("can\\'t", |_| true), "can\\'t");
         assert_eq!(shown("a'\u{301}b", |_| true), "a'\u{301}b");
+    }
+
+    #[test]
+    fn quote_pairs_are_admitted_atomically_at_authored_grapheme_boundaries() {
+        for quote in ['\'', '"'] {
+            for raw in [
+                format!("{quote}a{quote}\u{301}"),
+                format!("{quote}\u{301}a{quote}"),
+                format!("{quote}a{quote}\u{200d}"),
+            ] {
+                assert!(replacements(&raw, |_| true).is_empty(), "{raw:?}");
+                assert_eq!(shown(&raw, |_| true), raw);
+            }
+            let raw = format!("{quote}a{quote}");
+            for excluded in [0..1, 2..3] {
+                assert!(replacements(&raw, |r| !(r.start < excluded.end
+                    && excluded.start < r.end))
+                .is_empty());
+            }
+            // Positive control: valid pairs following a refused pair still render.
+            let raw = format!("{quote}a{quote}\u{301} {quote}ok{quote}");
+            let candidates = replacements(&raw, |_| true);
+            assert_eq!(candidates.len(), 2);
+            let start = raw.find("ok").unwrap() - 1;
+            assert_eq!(candidates[0].0, start..start + 1);
+            assert_eq!(candidates[1].0, raw.len() - 1..raw.len());
+            let boundaries: Vec<_> = raw
+                .grapheme_indices(true)
+                .map(|(at, _)| at)
+                .chain(std::iter::once(raw.len()))
+                .collect();
+            assert!(candidates
+                .iter()
+                .all(|(r, _)| boundaries.contains(&r.start) && boundaries.contains(&r.end)));
+        }
+        assert_eq!(shown("'cafe\u{301}'", |_| true), "‘cafe\u{301}’");
     }
 
     #[test]

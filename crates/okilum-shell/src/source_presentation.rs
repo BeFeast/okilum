@@ -1232,6 +1232,7 @@ mod tests {
                 "cafe\u{301}’s isn’t שָׁלוֹם’s…",
                 4,
             ),
+            ("'a'\u{301} ... 'ok'", "'a'\u{301} … ‘ok’", 3),
         ] {
             let replacements = punctuation::replacements(raw, |_| true);
             assert_eq!(replacements.len(), count);
