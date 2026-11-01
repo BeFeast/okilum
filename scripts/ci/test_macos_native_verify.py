@@ -35,6 +35,37 @@ def api(path):
 
 
 class NativeVerifyTests(unittest.TestCase):
+    def test_hosted_checkout_uses_only_authenticated_exact_mirror_ref(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ref = 'okilum-verify-source/2218-' + SOURCE + '-700'
+            environment = env() | dict(HOSTED_VERIFY='true', SHIPPING_BUILD='5700',
+                VERIFY_EVIDENCE=json.dumps({'ref': ref}), VERIFY_GITHUB_TOKEN='fixture-token',
+                GITHUB_WORKSPACE=tmp, RUNNER_TEMP=tmp, ACTIONS_RUNTIME_TOKEN='must-not-pass')
+            commands = []
+            def command(*args, **kwargs):
+                commands.append((args, kwargs))
+                sha = SOURCE if kwargs.get('cwd') == root / 'verify-product' else WORKFLOW
+                return SimpleNamespace(stdout=sha + '\n')
+            def build(*args, **kwargs):
+                (root / 'native-verify').mkdir()
+            with patch.object(verify, 'admission', return_value=SOURCE), \
+                 patch.object(verify.sys, 'platform', 'darwin'), \
+                 patch.object(verify, 'command', side_effect=command), \
+                 patch.object(verify.subprocess, 'run', side_effect=build) as product, \
+                 patch.object(verify, 'verify_artifact', return_value={'verify_only': True}):
+                verify.execute(environment)
+            fetches = [(a, kw) for a, kw in commands if 'fetch' in a]
+            self.assertEqual(len(fetches), 1)
+            self.assertEqual(fetches[0][0][-1], 'refs/heads/' + ref)
+            self.assertIn('GIT_CONFIG_VALUE_0', fetches[0][1]['env'])
+            self.assertFalse(any('git.oklabs.uk' in str(a) for a, _ in commands))
+            build_env = product.call_args.kwargs['env']
+            self.assertEqual(build_env['OKILUM_BUILD_VERSION'], '5700')
+            self.assertNotIn('VERIFY_GITHUB_TOKEN', build_env)
+            self.assertNotIn('ACTIONS_RUNTIME_TOKEN', build_env)
+
     def test_only_explicit_first_attempt_exact_green_trusted_pr_enters(self):
         self.assertEqual(verify.admission(env(), api), SOURCE)
         for key, value in (("VERIFY_ONLY", "false"), ("VERIFY_ONLY", ""),
@@ -73,6 +104,7 @@ class NativeVerifyTests(unittest.TestCase):
         hosted = (repo / '.github/workflows/forgejo-macos-shipping.yml').read_text()
         self.assertIn('python3 scripts/ci/macos-native-verify.py', hosted)
         self.assertIn('macos-verify', hosted)
+        self.assertEqual(yaml.safe_load(hosted)['permissions'], {'contents': 'read'})
         self.assertNotIn('publication.py', hosted)
 
     def test_full_verify_only_execution_builds_once_without_publisher_or_write_api(self):

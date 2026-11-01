@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
+import base64
+from datetime import datetime, timezone
 import time
 
 spec = importlib.util.spec_from_file_location('macos_bridge', Path(__file__).with_name('github-macos.py'))
@@ -51,6 +54,42 @@ def accepted_run(runs, tooling, label):
     return matches[0] if matches else None
 
 
+def prepare_verify_mirror(api, source, tooling, env):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
+    from macos_verify_authorization import authorize, mirror_ref, evidence_bytes, REPO
+    if authorize(env) != source:
+        raise ValueError('Live bridge source admission changed')
+    producer, number = env['GITHUB_RUN_ID'], env['VERIFY_PR']
+    ref = mirror_ref(number, source, producer)
+    # Bare transfer: never check out or execute product code with bridge credentials.
+    with tempfile.TemporaryDirectory(prefix='okilum-verify-mirror-') as tmp:
+        subprocess.run(['git', 'init', '--bare', '-q', tmp], check=True)
+        subprocess.run(['git', '-C', tmp, 'fetch', '--no-tags', str(Path.cwd()), source], check=True)
+        push_env = {**os.environ, 'GIT_CONFIG_COUNT': '1',
+                    'GIT_CONFIG_KEY_0': 'http.extraHeader',
+                    'GIT_CONFIG_VALUE_0': 'Authorization: Basic ' + base64.b64encode(
+                        ('x-access-token:' + api.token).encode()).decode()}
+        subprocess.run(['git', '-C', tmp, 'push',
+                        '--force-with-lease=refs/heads/' + ref + ':',
+                        'https://github.com/' + REPO + '.git', source + ':refs/heads/' + ref],
+                       env=push_env, check=True, capture_output=True, timeout=120)
+    evidence = {'schema': 1, 'repository': REPO, 'source': source,
+                'pr': number, 'producer': producer, 'attempt': '1', 'tooling': tooling,
+                'ref': ref, 'fast': 'success', 'issued': datetime.now(timezone.utc).isoformat()}
+    # Revalidate after transfer; a changed remote PR must not gain an attestation.
+    if authorize(env) != source:
+        raise ValueError('Live admission changed while mirroring')
+    # GitHub binds workflow dispatch to the protected App actor. Bind its exact
+    # admission payload to the source with a write-once annotated tag using the
+    # App's EXISTING contents permission; never require/grant status permission.
+    name = 'okilum-verify-admission/' + number + '-' + source + '-' + producer
+    tag = api.request('git/tags', 'POST', {'tag': name,
+        'message': evidence_bytes(evidence).decode(), 'object': source, 'type': 'commit'})
+    api.request('git/refs', 'POST', {'ref': 'refs/tags/' + name, 'sha': tag['sha']})
+    return evidence_bytes(evidence).decode()
+
+
 def main():
     source, tooling, build = identity(os.environ)
     verify_only = os.environ.get("VERIFY_ONLY") == "true"
@@ -80,7 +119,8 @@ def main():
             'signing_identity': os.environ['OKILUM_SIGNING_IDENTITY'],
             'notary_profile': os.environ['OKILUM_NOTARY_PROFILE']}}
     if verify_only:
-        data['inputs'].update(verify_only='true', verify_pr=os.environ['VERIFY_PR'])
+        data['inputs'].update(verify_only='true', verify_pr=os.environ['VERIFY_PR'],
+                              verify_evidence=prepare_verify_mirror(api, source, tooling, os.environ))
     # Exactly one POST. Ambiguous response or failure is not retried.
     api.request('actions/workflows/forgejo-macos-shipping.yml/dispatches', 'POST', data)
     print(json.dumps({'event': 'hosted_dispatch_accepted', 'source': source,

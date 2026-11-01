@@ -46,7 +46,7 @@ def admission(env, api):
     if env.get('HOSTED_VERIFY') == 'true':
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
         from macos_verify_authorization import authorize
-        return authorize(env, api)
+        return authorize(env)
     # Validate before checkout, code execution or signing. No automatic events.
     require(env.get("VERIFY_ONLY") == "true", "verify_only=true required")
     require(env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
@@ -135,10 +135,23 @@ def execute(env, api=api_get):
     require(command("git", "rev-parse", "HEAD", cwd=root).stdout.strip() == env["GITHUB_SHA"],
             "trusted workflow checkout mismatch")
     command("git", "init", "-q", str(checkout))
-    command("git", "-C", str(checkout), "remote", "add", "origin",
-            "https://git.oklabs.uk/" + REPO + ".git")
-    command("git", "-C", str(checkout), "fetch", "--no-tags", "--depth", "1",
-            "origin", source, timeout=120)
+    if env.get('HOSTED_VERIFY') == 'true':
+        import base64
+        evidence = json.loads(env['VERIFY_EVIDENCE'])
+        mirror = 'https://github.com/' + REPO + '.git'
+        ref = 'refs/heads/' + evidence['ref']
+        fetch_env = {**os.environ, 'GIT_CONFIG_COUNT': '1',
+                     'GIT_CONFIG_KEY_0': 'http.extraHeader',
+                     'GIT_CONFIG_VALUE_0': 'Authorization: Basic ' + base64.b64encode(
+                         ('x-access-token:' + env['VERIFY_GITHUB_TOKEN']).encode()).decode()}
+        command('git', '-C', str(checkout), 'remote', 'add', 'origin', mirror)
+        command('git', '-C', str(checkout), 'fetch', '--no-tags', '--depth', '1',
+                'origin', ref, env=fetch_env, timeout=120)
+    else:
+        command("git", "-C", str(checkout), "remote", "add", "origin",
+                "https://git.oklabs.uk/" + REPO + ".git")
+        command("git", "-C", str(checkout), "fetch", "--no-tags", "--depth", "1",
+                "origin", source, timeout=120)
     command("git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD")
     require(command("git", "rev-parse", "HEAD", cwd=checkout).stdout.strip() == source,
             "product checkout mismatch")
