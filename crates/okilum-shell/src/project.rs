@@ -894,6 +894,16 @@ impl ProjectView {
                         this.generation,
                         window.is_window_active(),
                         this.binding.as_ref()?.manager.project_id.clone()?,
+                        this.models.is_some() && {
+                            #[cfg(target_os = "linux")]
+                            {
+                                !this.native.active() && !this.threads.enabled
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                true
+                            }
+                        },
                         this.executors_open
                             .then(|| this.area.clone().zip(this.binding.clone()))
                             .flatten(),
@@ -908,6 +918,7 @@ impl ProjectView {
                 generation,
                 focused,
                 expected_project,
+                read_model_configuration,
                 executor_binding,
             )) = job
             else {
@@ -929,7 +940,9 @@ impl ProjectView {
                     let executors = executor_binding.map(|(area, binding)| {
                         okilum_t3::executors::Snapshot::load(gateway.as_ref(), &area, &binding)
                     });
-                    Ok::<_, anyhow::Error>((chat, identity, records, executors))
+                    let configuration = read_model_configuration
+                        .then(|| gateway.thread_configuration(&chat.thread_id));
+                    Ok::<_, anyhow::Error>((chat, identity, records, executors, configuration))
                 })
                 .await;
             let next = this
@@ -942,7 +955,7 @@ impl ProjectView {
                     let mut changed = this.last_poll_status != status;
                     this.last_poll_status = status;
                     match result {
-                        Ok((chat, identity, records, executors)) => {
+                        Ok((chat, identity, records, executors, configuration)) => {
                             if chat.has_more {
                                 delay = 100;
                             }
@@ -981,6 +994,18 @@ impl ProjectView {
                                     cx,
                                 )
                             });
+                            if !this.model_busy {
+                                if let Some(Ok(configuration)) = configuration {
+                                    if let Some(snapshot) = &mut this.models {
+                                        if configuration.thread_id == snapshot.target.thread_id
+                                            && snapshot.configuration != configuration
+                                        {
+                                            snapshot.configuration = configuration;
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(result) = executors {
                                 match result {
                                     Ok(snapshot) => {
