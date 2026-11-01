@@ -450,6 +450,71 @@ impl Board {
         }
         problem_line(problems)
     }
+    fn source_indicator(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::popover::Popover;
+
+        let problem = self.problem(now());
+        let has_problem = problem.is_some();
+        let colors = brand::palette(cx);
+        let detail = problem.unwrap_or_else(|| "No source errors reported.".into());
+        // Reserve the same control in every state. Polling may change its color,
+        // never the position of the Board's cards or the user's scroll anchor.
+        Popover::new("board-source-status-popover")
+            .anchor(Anchor::TopRight)
+            .trigger(
+                Button::new("board-source-status")
+                    .debug_selector(|| "board-source-status".into())
+                    .ghost()
+                    .size(px(28.))
+                    .flex_none()
+                    .accessibility_label(if has_problem {
+                        "Board source error. Show diagnostics"
+                    } else {
+                        "Board source status. Show diagnostics"
+                    })
+                    .tooltip(if has_problem {
+                        "Board needs attention — show details"
+                    } else {
+                        "Board source status"
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "board-source-status-dot".into())
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(if has_problem {
+                                colors.danger
+                            } else {
+                                colors.text_muted.opacity(0.4)
+                            }),
+                    ),
+            )
+            .content(move |_, _, _| {
+                v_flex()
+                    .id("board-source-details-scroll")
+                    .debug_selector(|| "board-source-details".into())
+                    .w(px(360.))
+                    .max_w_full()
+                    .max_h(px(240.))
+                    .overflow_y_scroll()
+                    .gap_2()
+                    .p_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Board sources"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "board-source-problem".into())
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_size(px(12.))
+                            .child(detail.clone()),
+                    )
+            })
+            .into_any_element()
+    }
     fn agent_filter(&self, binding: &Binding, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let roles: std::collections::BTreeSet<_> =
@@ -926,6 +991,7 @@ impl Render for Board {
         let colors = brand::palette(cx);
         let mut root = v_flex()
             .id("project-board")
+            .relative()
             .debug_selector(|| "project-board".into())
             .track_focus(&self.focus)
             .size_full()
@@ -946,16 +1012,14 @@ impl Render for Board {
                     }
                 }
             }));
-        if let Some(problem) = self.problem(now()) {
+        let Some(binding) = self.binding.as_ref() else {
             root = root.child(
                 div()
-                    .debug_selector(|| "board-source-problem".into())
-                    .text_size(px(12.))
-                    .text_color(colors.text_muted)
-                    .child(problem),
+                    .absolute()
+                    .top_4()
+                    .right_4()
+                    .child(self.source_indicator(cx)),
             );
-        }
-        let Some(binding) = self.binding.as_ref() else {
             if !self.binding_loading && self.binding_error.is_none() {
                 root = root.child(
                     v_flex()
@@ -1180,7 +1244,7 @@ impl Render for Board {
                 .disabled(self.editor_loading)
                 .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
         );
-        root.child(columns.child(end.child(toggle)))
+        root.child(columns.child(end.child(self.source_indicator(cx)).child(toggle)))
             .into_any_element()
     }
 }

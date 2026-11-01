@@ -764,12 +764,26 @@ impl Snapshot {
             return;
         }
         let value = value.and_then(|threads| {
-            let mut ids = std::collections::BTreeSet::new();
-            if threads.iter().all(|t| ids.insert(t.thread_id.clone())) {
-                Ok(threads)
-            } else {
-                Err("T3 returned duplicate thread IDs; previous source retained".into())
+            let mut positions = BTreeMap::new();
+            let mut unique: Vec<ThreadSummary> = Vec::with_capacity(threads.len());
+            // MCP lists one project's threads with offset pagination. A newly
+            // created thread can shift the next page across an already read
+            // boundary. An identical repeated summary adds no ambiguity; two
+            // different states for the same identity still invalidate the read.
+            for thread in threads {
+                if let Some(&position) = positions.get(&thread.thread_id) {
+                    if unique[position] != thread {
+                        return Err(
+                            "T3 returned conflicting duplicate thread IDs; previous source retained"
+                                .into(),
+                        );
+                    }
+                } else {
+                    positions.insert(thread.thread_id.clone(), unique.len());
+                    unique.push(thread);
+                }
             }
+            Ok(unique)
         });
         self.t3.accept(value, now);
         self.pending = self.pending.saturating_sub(1);
