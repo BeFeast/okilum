@@ -165,6 +165,19 @@ impl ProjectView {
         {
             return false;
         }
+        // Enter on a focused Star/provider/option button belongs to that
+        // control. Search owns list navigation; numbered shortcuts and Escape
+        // still work throughout the open picker.
+        if self.model_open
+            && matches!(event.keystroke.key.as_str(), "enter" | "up" | "down")
+            && self
+                .model_ui
+                .search
+                .as_ref()
+                .is_none_or(|input| !input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            return false;
+        }
         let choices = self.visible_model_choices(cx);
         let Some(intent) =
             navigation::handle(event, self.model_open, self.model_ui.highlight, &choices)
