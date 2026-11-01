@@ -178,3 +178,92 @@ fn ready_readback_requires_exact_identity_and_rejects_redirects() -> Result<()> 
     }
     Ok(())
 }
+
+#[test]
+fn approval_then_explicit_connect_retry_requires_live_peer_and_rest_identity() -> Result<()> {
+    struct FakeOs {
+        native: Status,
+        dispatched: bool,
+        register_calls: usize,
+        polls: usize,
+        waits: usize,
+    }
+    impl ConnectRegistration for FakeOs {
+        fn register_prepared(&mut self) -> Result<ManagedStatus> {
+            if !self.dispatched {
+                self.dispatched = true;
+                self.register_calls += 1;
+            }
+            Ok(ManagedStatus::RecoveryPending)
+        }
+        fn native_status(&mut self) -> Result<Status> {
+            Ok(self.native)
+        }
+        fn managed_status(&mut self) -> ManagedStatus {
+            self.polls += 1;
+            ManagedStatus::Running
+        }
+        fn wait(&mut self) {
+            self.waits += 1;
+        }
+    }
+    let root = tempfile::tempdir()?;
+    let identity = DaemonIdentity {
+        config_file: root.path().join("config.xml"),
+        device_id: ["AAAAAAA"; 8].join("-"),
+        certificate_hash: "fixture-certificate".into(),
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut os = FakeOs {
+        native: Status::RequiresApproval,
+        dispatched: false,
+        register_calls: 0,
+        polls: 0,
+        waits: 0,
+    };
+    let approved = complete_explicit_connect(&mut os, identity.clone(), deadline, |_, _| {
+        panic!("approval is not REST readiness")
+    })?;
+    assert!(matches!(approved, ConnectOutcome::RequiresApproval { .. }));
+    assert_eq!((os.register_calls, os.polls, os.waits), (1, 0, 0));
+    // No background continuation: only the next explicit Connect enters again.
+    os.native = Status::Enabled;
+    let reads = std::cell::Cell::new(0);
+    let ready = complete_explicit_connect(&mut os, identity.clone(), deadline, |bound, _| {
+        assert_eq!(bound.device_id, identity.device_id);
+        assert_eq!(bound.config_file, identity.config_file);
+        reads.set(reads.get() + 1);
+        Ok(())
+    })?;
+    let ConnectOutcome::Ready {
+        config_path,
+        device_id,
+    } = ready
+    else {
+        panic!("not ready")
+    };
+    assert_eq!(config_path, identity.config_file);
+    assert_eq!(device_id, identity.device_id);
+    assert_eq!(
+        (os.register_calls, os.polls, os.waits, reads.get()),
+        (1, 1, 1, 1)
+    );
+    // Positive failure control: a live peer cannot bypass failed REST identity.
+    assert!(
+        complete_explicit_connect(&mut os, identity.clone(), deadline, |_, _| anyhow::bail!(
+            "wrong REST identity"
+        ))
+        .is_err()
+    );
+    for native in [Status::NotFound, Status::NotRegistered] {
+        os.native = native;
+        assert!(
+            complete_explicit_connect(&mut os, identity.clone(), deadline, |_, _| panic!(
+                "missing registration cannot reach REST"
+            ))
+            .is_err()
+        );
+    }
+    assert_eq!(os.register_calls, 1);
+    Ok(())
+}

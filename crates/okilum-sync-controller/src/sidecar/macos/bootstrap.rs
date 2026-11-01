@@ -209,24 +209,59 @@ pub fn connect_current_app(
         policy.helper,
         remaining,
     )?;
-    // RegistrationGuard consumes Ready exactly once, and only outside the store lock.
-    // Existing dispatched/claimed generations are only observed, never re-armed.
+    complete_explicit_connect(&mut registration, identity, deadline, verify_rest)
+}
+
+/// The same observation mapping is used by production and offline OS adapters.
+/// Service approval is permission, not proof of a running authenticated runtime.
+trait ConnectRegistration {
+    fn register_prepared(&mut self) -> Result<ManagedStatus>;
+    fn native_status(&mut self) -> Result<Status>;
+    fn managed_status(&mut self) -> ManagedStatus;
+    fn wait(&mut self) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+impl ConnectRegistration for NativeRegistrationGuard {
+    fn register_prepared(&mut self) -> Result<ManagedStatus> {
+        NativeRegistrationGuard::register_prepared(self)
+    }
+    fn native_status(&mut self) -> Result<Status> {
+        super::native::registration_status()
+    }
+    fn managed_status(&mut self) -> ManagedStatus {
+        NativeRegistrationGuard::status(self)
+    }
+}
+
+fn complete_explicit_connect(
+    registration: &mut impl ConnectRegistration,
+    identity: DaemonIdentity,
+    deadline: Instant,
+    verify_identity: impl FnOnce(&DaemonIdentity, Instant) -> Result<()>,
+) -> Result<ConnectOutcome> {
+    // RegistrationGuard consumes Ready exactly once. An explicit retry only
+    // observes an existing dispatched/claimed generation, never re-arms it.
     let mut status = registration.register_prepared()?;
     loop {
         ensure!(
             Instant::now() < deadline,
             "recovery pending: Sync did not become authenticated before the deadline"
         );
-        if super::native::registration_status()? == Status::RequiresApproval {
+        let native = registration.native_status()?;
+        if native == Status::RequiresApproval {
             return Ok(ConnectOutcome::RequiresApproval {
                 config_path: identity.config_file,
                 device_id: identity.device_id,
             });
         }
+        // Missing/removed registration cannot become Ready from a stale peer.
+        ensure!(
+            native == Status::Enabled,
+            "recovery pending: Sync registration unavailable"
+        );
         if status == ManagedStatus::Running {
-            // Authenticate the saved credential, device and pinned version under
-            // the same deadline; approval alone never becomes Ready.
-            verify_rest(&identity, deadline)?;
+            verify_identity(&identity, deadline)?;
             ensure!(
                 Instant::now() < deadline,
                 "REST readback exceeded Connect deadline"
@@ -236,8 +271,8 @@ pub fn connect_current_app(
                 device_id: identity.device_id,
             });
         }
-        std::thread::sleep(Duration::from_millis(20));
-        status = registration.status();
+        registration.wait();
+        status = registration.managed_status();
     }
 }
 
