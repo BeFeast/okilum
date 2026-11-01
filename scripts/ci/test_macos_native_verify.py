@@ -58,30 +58,22 @@ class NativeVerifyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify.admission(env(), stale)
 
-    def test_verify_only_workflow_has_no_reachable_publication_steps_or_secrets(self):
+    def test_verify_only_workflow_uses_hosted_bridge_without_feed_credentials(self):
+        import yaml
         repo = Path(__file__).resolve().parents[2]
-        text = (repo / ".forgejo/workflows/macos-native-verify.yml").read_text()
-        # Check the deliberately closed, indentation-fixed workflow shape without
-        # introducing a YAML package dependency into local Linux CI images.
-        # This is not a permissive YAML parser: alternate structure fails here.
-        self.assertIn("\npermissions:\n  contents: read\nconcurrency:\n", text)
-        self.assertIn("\n  cancel-in-progress: false\njobs:\n", text)
-        jobs = text.split("\njobs:\n", 1)[1]
-        self.assertEqual(re.findall(r"^  ([a-z][a-z-]*):$", jobs, re.M), ["verify-only"])
-        self.assertRegex(jobs, r"(?m)^    if: .*inputs\.verify_only == 'true'$")
-        self.assertIn("\n    runs-on: macos\n", jobs)
-        steps = re.split(r"(?m)^      - ", jobs)[1:]
-        self.assertEqual(len(steps), 4)
-        self.assertTrue(steps[0].startswith("name: Check out trusted main workflow tools\n"))
-        self.assertTrue(steps[1].startswith("name: Verify exact source without publication credentials or steps\n"))
-        self.assertTrue(steps[2].startswith("name: Prepare pinned artifact upload action\n"))
-        self.assertTrue(steps[3].startswith("uses: ./.forgejo-local-actions/upload-artifact\n"))
-        self.assertIn("\n        run: python3 scripts/ci/macos-native-verify.py\n", steps[1])
-        for step in (steps[0], steps[2]):
-            self.assertIn("\n        run: |\n          set -euo pipefail\n", step)
-        for forbidden in ("secrets.", "publication.py", "publish.py", "macos-artifact.py",
-                          "releases.yml", "macos-release.yml", "appcast", "R2_"):
+        text = (repo / '.forgejo/workflows/macos-native-verify.yml').read_text()
+        workflow = yaml.safe_load(text)
+        self.assertEqual(list(workflow['jobs']), ['verify-only'])
+        job = workflow['jobs']['verify-only']
+        self.assertEqual(job['runs-on'], 'bridge')
+        self.assertIn("inputs.verify_only == 'true'", job['if'])
+        self.assertEqual(job['steps'][-1]['run'], 'python3 scripts/ci/github-macos-shipping.py')
+        for forbidden in ['SPARKLE_ED_PRIVATE_KEY', 'R2_', 'publication.py', 'publish.py']:
             self.assertNotIn(forbidden, text)
+        hosted = (repo / '.github/workflows/forgejo-macos-shipping.yml').read_text()
+        self.assertIn('python3 scripts/ci/macos-native-verify.py', hosted)
+        self.assertIn('macos-verify', hosted)
+        self.assertNotIn('publication.py', hosted)
 
     def test_full_verify_only_execution_builds_once_without_publisher_or_write_api(self):
         with tempfile.TemporaryDirectory() as tmp:

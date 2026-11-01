@@ -160,7 +160,8 @@ class ShippingPolicy(unittest.TestCase):
         self.assertNotIn('security import', gh)
         self.assertNotIn('publication.py', gh)
         self.assertNotIn('release-publish', gh)
-        self.assertIn('path: dist/shipping-download/*', gh)
+        self.assertIn("|| 'dist/shipping-download/*'", gh)
+        self.assertIn("inputs.verify_only == 'true'", gh)
         self.assertIn("github.run_attempt == 1", gh)
 
 

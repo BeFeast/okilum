@@ -5,6 +5,11 @@ run-name: Mac shipping Forgejo ${{ inputs.producer }} attempt ${{ inputs.attempt
 on:
   workflow_dispatch:
     inputs:
+      verify_only:
+        description: 'Exact maintainer-authorized PR validation artifact; NEVER publish'
+        default: 'false'
+      verify_pr:
+        default: ''
       source:
         required: true
       build:
@@ -19,6 +24,11 @@ on:
         required: true
       notary_profile:
         required: true
+env:
+  VERIFY_ONLY: ${{ inputs.verify_only }}
+  HOSTED_VERIFY: ${{ inputs.verify_only }}
+  VERIFY_SOURCE: ${{ inputs.source }}
+  VERIFY_PR: ${{ inputs.verify_pr }}
 permissions:
   contents: read
 concurrency:
@@ -58,7 +68,12 @@ jobs:
           PRODUCER_ATTEMPT: ${{ inputs.attempt }}
           OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
           OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
-        run: python3 scripts/releases/macos-hosted.py preflight
+        run: |
+          if [ "$VERIFY_ONLY" = true ]; then
+            python3 -c 'import sys,os; sys.path.insert(0,"scripts/releases"); from macos_verify_authorization import authorize; authorize(dict(os.environ))'
+          else
+            python3 scripts/releases/macos-hosted.py preflight
+          fi
       - uses: actions/cache@v4
         with:
           path: |
@@ -76,11 +91,16 @@ jobs:
           OKILUM_SIGNING_IDENTITY: ${{ inputs.signing_identity }}
           OKILUM_NOTARY_PROFILE: ${{ inputs.notary_profile }}
           SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=
-        run: python3 scripts/releases/macos-hosted.py build
+        run: |
+          if [ "$VERIFY_ONLY" = true ]; then
+            python3 scripts/ci/macos-native-verify.py
+          else
+            python3 scripts/releases/macos-hosted.py build
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-shipping-${{ inputs.source }}-${{ inputs.build }}
-          path: dist/shipping-download/*
+          name: ${{ inputs.verify_only == 'true' && 'macos-verify' || 'macos-shipping' }}-${{ inputs.source }}-${{ inputs.build }}
+          path: ${{ inputs.verify_only == 'true' && format('{0}/native-verify/*', runner.temp) || 'dist/shipping-download/*' }}
           if-no-files-found: error
           retention-days: 7
       - name: Remove ephemeral signing material

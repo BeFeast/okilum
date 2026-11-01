@@ -28,7 +28,14 @@ def identity(env):
     for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_NUMBER', 'GITHUB_RUN_ATTEMPT']:
         if not re.fullmatch('[1-9][0-9]*', env.get(name, '')):
             raise ValueError('Missing positive producer identity: ' + name)
-    subprocess.run(['git', 'merge-base', '--is-ancestor', source, tooling], check=True)
+    if env.get('VERIFY_ONLY') == 'true':
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
+        from macos_verify_authorization import authorize
+        if authorize(env) != source:
+            raise ValueError('Verify source mismatch')
+    else:
+        subprocess.run(['git', 'merge-base', '--is-ancestor', source, tooling], check=True)
     actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     if actual != tooling:
         raise ValueError('Bridge checkout differs from trusted workflow SHA')
@@ -46,6 +53,7 @@ def accepted_run(runs, tooling, label):
 
 def main():
     source, tooling, build = identity(os.environ)
+    verify_only = os.environ.get("VERIFY_ONLY") == "true"
     api = bridge.GitHub()
     api.log_quota()
     remote = api.request('git/ref/heads/main')
@@ -59,7 +67,7 @@ def main():
         subprocess.run(['git', 'fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main'], check=True)
         trusted = subprocess.run(['git', 'merge-base', '--is-ancestor', candidate, 'origin/main']).returncode == 0
         contains_source = subprocess.run(['git', 'merge-base', '--is-ancestor', source, candidate]).returncode == 0
-        if trusted and contains_source:
+        if trusted and (verify_only or contains_source):
             tooling = candidate
             break
         if time.monotonic() >= mirror_deadline:
@@ -71,6 +79,8 @@ def main():
             'producer': os.environ['GITHUB_RUN_ID'], 'producer_number': os.environ['GITHUB_RUN_NUMBER'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
             'signing_identity': os.environ['OKILUM_SIGNING_IDENTITY'],
             'notary_profile': os.environ['OKILUM_NOTARY_PROFILE']}}
+    if verify_only:
+        data['inputs'].update(verify_only='true', verify_pr=os.environ['VERIFY_PR'])
     # Exactly one POST. Ambiguous response or failure is not retried.
     api.request('actions/workflows/forgejo-macos-shipping.yml/dispatches', 'POST', data)
     print(json.dumps({'event': 'hosted_dispatch_accepted', 'source': source,
@@ -90,7 +100,7 @@ def main():
                 if len(jobs) != 1 or len(valid) != 1:
                     raise ValueError('Required signing/notarization job did not execute')
                 artifacts = api.request(f"actions/runs/{run['id']}/artifacts?per_page=100")['artifacts']
-                expected = f'macos-shipping-{source}-{build}'
+                expected = f"{'macos-verify' if verify_only else 'macos-shipping'}-{source}-{build}"
                 matches = [a for a in artifacts if a['name'] == expected and not a['expired']
                            and re.fullmatch('sha256:[0-9a-f]{64}', a.get('digest', ''))]
                 if len(matches) != 1:
@@ -98,7 +108,7 @@ def main():
                 print(json.dumps({'event': 'signed_artifact_available', 'source': source,
                                   'workflow_sha': tooling, 'build': build, 'run': run['html_url'],
                                   'artifact': matches[0], 'publication': 'NONE; QA download only'}))
-                if os.environ.get('GITHUB_EVENT_NAME') == 'push':
+                if not verify_only and os.environ.get('GITHUB_EVENT_NAME') == 'push':
                     import sys
                     sys.path.insert(0, str(Path(__file__).parents[1] / 'releases'))
                     import appimage_artifact

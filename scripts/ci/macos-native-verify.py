@@ -43,6 +43,10 @@ def sha(path):
 
 
 def admission(env, api):
+    if env.get('HOSTED_VERIFY') == 'true':
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
+        from macos_verify_authorization import authorize
+        return authorize(env, api)
     # Validate before checkout, code execution or signing. No automatic events.
     require(env.get("VERIFY_ONLY") == "true", "verify_only=true required")
     require(env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
@@ -123,7 +127,7 @@ def execute(env, api=api_get):
     # A full 90-minute job must finish before the existing 02:20 night guard.
     # Native verification never competes with the 03:05 beta or its catch-up lane.
     now = datetime.now(ZoneInfo("Asia/Jerusalem")).time()
-    require(not time(0, 50) <= now < time(9), "night Mac beta has priority; verify deferred")
+    require(env.get("HOSTED_VERIFY") == "true" or not time(0, 50) <= now < time(9), "night Mac beta has priority; verify deferred")
     root = Path(env["GITHUB_WORKSPACE"]).resolve()
     checkout = root / "verify-product"
     output = Path(env["RUNNER_TEMP"]) / "native-verify"
@@ -139,7 +143,12 @@ def execute(env, api=api_get):
     require(command("git", "rev-parse", "HEAD", cwd=checkout).stdout.strip() == source,
             "product checkout mismatch")
     build_env = {key: value for key, value in env.items() if key in BUILD_ENVIRONMENT}
-    build_env["OKILUM_BUILD_VERSION"] = str(5000 + int(env["GITHUB_RUN_NUMBER"]))
+    if env.get('HOSTED_VERIFY') == 'true':
+        require(re.fullmatch('[1-9][0-9]*', env.get('SHIPPING_BUILD', '')),
+                'Explicit hosted verification build required')
+        build_env['OKILUM_BUILD_VERSION'] = env['SHIPPING_BUILD']
+    else:
+        build_env["OKILUM_BUILD_VERSION"] = str(5000 + int(env["GITHUB_RUN_NUMBER"]))
     # Packaging's existing script signs/notarizes/staples locally and emits files.
     # There is deliberately no publication module, API client, or feed-writing step.
     subprocess.run(["bash", "scripts/build-macos-ci.sh", str(output)],
