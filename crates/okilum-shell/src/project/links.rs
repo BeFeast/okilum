@@ -63,13 +63,6 @@ impl ProjectView {
             }
         }
     }
-
-    pub(super) fn forward_chat_links(child: &Entity<Self>, cx: &mut Context<Self>) {
-        cx.subscribe(child, |_, _, request: &OpenFile, cx| {
-            cx.emit(request.clone())
-        })
-        .detach();
-    }
 }
 
 impl Reader {
