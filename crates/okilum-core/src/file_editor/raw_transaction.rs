@@ -102,7 +102,10 @@ impl FileEditor {
             raw_transaction: Some(transaction),
         };
         let result = editor.save_before_exchange(before_exchange);
-        if !matches!(result, Ok(Save::Saved)) {
+        let retain_recovery = result.as_ref().err().is_some_and(|error| {
+            error.is::<UnconfirmedSave>() || error.is::<PublishedSaveNeedsAttention>()
+        });
+        if !matches!(result, Ok(Save::Saved)) && !retain_recovery {
             editor
                 .rollback_raw_transaction()
                 .context("Encoding change failed; recovery must be inspected")?;
@@ -611,7 +614,7 @@ mod partial_write_tests {
     }
 
     #[test]
-    fn unsupported_exchange_raw_failures_preserve_bytes_and_leave_no_tails() {
+    fn unsupported_exchange_raw_failures_clean_before_publish_and_retain_after_publish() {
         for restoring in [false, true] {
             for failure in 0..3 {
                 crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
@@ -648,6 +651,18 @@ mod partial_write_tests {
                         ),
                         _ => assert!(format!("{error:#}").contains("History acknowledgement")),
                     }
+                    if failure == 2 {
+                        assert!(error.is::<UnconfirmedSave>());
+                        assert_eq!(fs::read(&note).unwrap(), after);
+                        let listing = crate::source_history::list(&state, &root).unwrap();
+                        assert!(listing.versions.iter().any(|v| v.bytes() == before));
+                        assert!(fs::read_dir(&root).unwrap().any(|e| e
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".okilum-save-")));
+                        return;
+                    }
                     assert_clean(&root, &note, before);
                     assert!(crate::source_history::list(&state, &root)
                         .unwrap()
@@ -660,6 +675,52 @@ mod partial_write_tests {
                     assert_clean(&root, &note, after);
                 });
             }
+        }
+    }
+
+    #[test]
+    fn raw_unconfirmed_publication_never_blindly_rolls_back() {
+        use network_save_tests::{fail_publication, PublicationFailure};
+        for failure in [
+            PublicationFailure::LostReply,
+            PublicationFailure::OutcomeProbe,
+            PublicationFailure::DirectorySync,
+        ] {
+            crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                let state = fixture.path().join("state");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("Synthetic.md");
+                let before = b"\xef\xbb\xbfBefore \xff\r\n";
+                let after = b"\xef\xbb\xbfRepaired\r\n";
+                fs::write(&note, before).unwrap();
+                let error = fail_publication(failure, || {
+                    FileEditor::replace_bytes(&note, &state, before, after)
+                })
+                .unwrap_err();
+                assert!(error.is::<UnconfirmedSave>());
+                assert_eq!(
+                    fs::read(&note).unwrap(),
+                    if failure == PublicationFailure::OutcomeProbe {
+                        before.as_slice()
+                    } else {
+                        after.as_slice()
+                    }
+                );
+                let listing = crate::source_history::list(&state, &root).unwrap();
+                assert!(listing.versions.iter().any(|v| v.bytes() == before));
+                let history = fs::read_dir(state.join("source-history"))
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .find(|p| crate::source_history::RawRecord::is_path(p))
+                    .unwrap();
+                let record = crate::source_history::RawRecord::load(&history).unwrap();
+                assert_eq!(record.before, before);
+                assert_eq!(record.after, after);
+                assert_eq!(fs::read(&record.displaced).unwrap(), before);
+                assert!(!record.completed);
+            });
         }
     }
 
