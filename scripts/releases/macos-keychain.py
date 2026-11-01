@@ -35,7 +35,13 @@ def validate(env):
     source, workflow = env.get('PRODUCT_SOURCE', ''), env.get('GITHUB_SHA', '')
     if not all(re.fullmatch('[0-9a-f]{40}', s) for s in [source, workflow]):
         raise ValueError('Full source/workflow identities required')
-    call(['git', 'merge-base', '--is-ancestor', source, workflow])
+    if env.get('VERIFY_ONLY') == 'true':
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from macos_verify_authorization import authorize
+        if authorize(env) != source:
+            raise ValueError('Verify source differs from signing source')
+    else:
+        call(['git', 'merge-base', '--is-ancestor', source, workflow])
     if call(['git', 'rev-parse', 'HEAD']).decode().strip() != workflow:
         raise ValueError('Tooling checkout mismatch')
     if call(['uname', '-sm']).decode().strip() != 'Darwin arm64':
