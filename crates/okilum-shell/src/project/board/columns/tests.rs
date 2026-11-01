@@ -83,6 +83,13 @@ fn loading_is_not_empty_and_refresh_does_not_unfold_completed_empty_columns(
             compact
         );
     }
+    click(visual, "board-verified-toggle");
+    assert!(
+        visual.debug_bounds("board-lane-Verified").is_some(),
+        "the existing explicit Verified expansion is respected even at zero cards"
+    );
+    click(visual, "board-collapse-empty-Verified");
+    assert!(visual.debug_bounds("board-lane-Verified").is_none());
 }
 
 #[gpui::test]

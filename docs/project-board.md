@@ -127,8 +127,8 @@ not a persisted setting. A newly nonempty lane always opens. Initial loading is
 not zero cards; refreshes retain the last completed layout decision. An all-empty
 Board shows a short empty state and keeps Add card available.
 The Verified toggle remains a narrow native icon/count strip with a full
-accessible label and tooltip; opening it exposes its column under the same rules
-instead of forcing the first column off-screen.
+accessible label and tooltip; opening it explicitly expands the fifth lane,
+even at zero cards, instead of forcing the first column off-screen.
 `stage: ready` and `stage: verified` on an issue are optional, explicit human-owned
 marks in `ops/board.toml`. Issue closure alone still means Checks. No current
 binding is marked ready/verified by this implementation. The optional `stuck: true`

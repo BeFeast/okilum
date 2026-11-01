@@ -1128,7 +1128,7 @@ impl Render for Board {
             counts[column as usize] = count;
             // Never fold a lane that actually has a rendered card, even if a
             // delivery freshness boundary changed since the count snapshot.
-            if self.columns.collapsed(column, count) {
+            if column != Column::Verified && self.columns.collapsed(column, count) {
                 compact = compact.child(self.expand_empty_column(column, cx));
                 collapsed += 1;
                 continue;

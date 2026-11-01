@@ -104,6 +104,9 @@ impl Board {
             ))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.columns.expanded[column as usize] = false;
+                if column == Column::Verified {
+                    this.verified_open = false;
+                }
                 cx.notify();
             }))
     }
