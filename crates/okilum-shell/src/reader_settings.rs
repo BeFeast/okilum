@@ -4,7 +4,7 @@ use gpui_component::{
     button::ButtonGroup,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     switch::Switch,
-    Colorize as _, ThemeMode,
+    ThemeMode,
 };
 use okilum_core::log::source_link;
 
@@ -912,6 +912,7 @@ impl Settings {
                     .gap_2()
                     .child(
                         div()
+                            .id("settings-vault-color-current")
                             .debug_selector(|| "settings-vault-color-current".into())
                             .size_5()
                             .rounded_md()
