@@ -243,22 +243,37 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
         visual.debug_bounds("project-message-1000").is_none(),
         "real wheel left the latest history"
     );
+    let logical_before = view.read_with(visual, |view, cx| {
+        view.feed
+            .read(cx)
+            .test_scroll_anchor(cx)
+            .expect("positive control: source-keyed interior list offset")
+    });
     let history = visual.debug_bounds("project-history").unwrap();
     let positions = view.read_with(visual, |view, cx| {
         view.feed.read(cx).rendered_positions.borrow().clone()
     });
     let (position, before) = positions
         .into_iter()
-        .find_map(|position| {
+        .filter_map(|position| {
             let bounds = bounds(visual, &format!("project-message-{position}"))?;
             (bounds.origin.y >= history.origin.y && bounds.bottom() <= history.bottom())
                 .then_some((position, bounds.origin.y - history.origin.y))
         })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
         .expect("positive control: fully visible interior source message");
     let mut question = request("question", "user_input_request");
     question.item["questions"][0]["question"] =
         json!("Long question keeps every detail accessible. ".repeat(70));
     show(&view, visual, 1000, vec![question]);
+    let logical_after =
+        view.read_with(visual, |view, cx| view.feed.read(cx).test_scroll_anchor(cx));
+    eprintln!("request arrival: logical_before={logical_before:?}; logical_after={logical_after:?}; topmost_full_source={position}; pixel_offset={before:?}");
+    assert_eq!(
+        Some(logical_before.clone()),
+        logical_after,
+        "request arrival preserves the actual list source key, item index and intra-row offset"
+    );
     let panel = visual.debug_bounds("project-native-actions").unwrap();
     let composer = visual.debug_bounds("project-chat-composer").unwrap();
     assert!(panel.size.height <= px(280.));
@@ -340,6 +355,11 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
     assert_eq!(
         before, after,
         "typing, internal wheel and response preserve history's anchor"
+    );
+    assert_eq!(
+        Some(logical_before),
+        view.read_with(visual, |view, cx| view.feed.read(cx).test_scroll_anchor(cx)),
+        "answering preserves the actual source-keyed list offset"
     );
 }
 
@@ -751,23 +771,27 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
         view.read_with(visual, |view, cx| {
             let actions = view.native.actions.read(cx);
             assert_eq!(actions.records.len(), index + 1);
-            assert!(
-                actions.records[index].sequence.is_some(),
-                "native RPC acknowledged the exact action"
+            let expected = Intent::Respond {
+                request_id: id.clone(),
+                decision: Some((*decision).into()),
+                answers: None,
+            };
+            let record = actions
+                .records
+                .iter()
+                .find(|record| record.command.intent == expected)
+                .expect("the receipt retains the exact request identity and full intent");
+            assert_eq!(
+                record.sequence,
+                Some((index + 1) as u64),
+                "native RPC acknowledged this exact action with its sequence"
             );
             assert_eq!(
                 actions.current_request().unwrap().0.id,
                 id,
                 "ACK alone does not advance the request"
             );
-            assert_eq!(
-                actions.records[index].command.intent,
-                Intent::Respond {
-                    request_id: id.clone(),
-                    decision: Some((*decision).into()),
-                    answers: None
-                }
-            );
+            assert_eq!(record.command.intent, expected);
         });
         if index == 0 {
             assert!(visual.debug_bounds("project-request-approval-0").is_some());
