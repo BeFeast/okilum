@@ -689,7 +689,16 @@ impl RenderOnce for TasksList {
             return list.into_any_element();
         }
         if results.rows.is_empty() {
-            return div().into_any_element();
+            return div()
+                .when(self.native, |empty| {
+                    empty
+                        .text_sm()
+                        .text_color(muted)
+                        .debug_selector(|| "tasks-empty".into())
+                        .child(self.title.clone().unwrap_or_else(|| "Tasks".into()))
+                        .child(": No tasks match this section.")
+                })
+                .into_any_element();
         }
         if !self.has_heading {
             list = list.child(
