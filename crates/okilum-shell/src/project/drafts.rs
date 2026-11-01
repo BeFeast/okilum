@@ -143,6 +143,8 @@ pub(super) struct State {
     attachments: Vec<Attachment>,
     error: Option<String>,
     subscriptions: Vec<Subscription>,
+    handoff: HandoffIdentity,
+    handoff_receiver: okilum_t3::draft_handoff::Receiver,
 }
 
 /// Captures exactly the local draft handed to durable message preparation.
@@ -158,6 +160,7 @@ impl ProjectView {
     /// credential is being restored. The old writer already owns its snapshot.
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft_key() != self.threads.draft.key {
+            self.threads.draft.handoff.invalidate();
             self.composer
                 .update(cx, |composer, cx| composer.reset_history(cx));
             self.threads.draft.loading = true;
@@ -222,6 +225,7 @@ impl ProjectView {
             .then(|| self.draft_sent(cx).draft);
         self.draft_capture(cx);
         let draft = &mut self.threads.draft;
+        draft.handoff.invalidate();
         draft.epoch = draft.epoch.wrapping_add(1);
         let epoch = draft.epoch;
         draft.key = Some(key.clone());
@@ -811,5 +815,163 @@ mod tests {
                 "the new scope owns its own history"
             )
         });
+    }
+}
+
+// BEGIN PURE HANDOFF IDENTITY
+/// Separate from the disk restore epoch: hiding/replacing a composer must also
+/// revoke pending handoffs, even when the durable conversation key is unchanged.
+#[derive(Default)]
+struct HandoffIdentity {
+    visible: bool,
+    scope: Option<(Key, u64)>,
+    generation: Option<u64>,
+}
+impl HandoffIdentity {
+    fn invalidate(&mut self) {
+        self.scope = None;
+        self.generation = None;
+    }
+
+    fn resolve(&mut self, scope: Option<(Key, u64)>) -> Option<u64> {
+        let scope = scope.filter(|_| self.visible);
+        if scope.is_none() {
+            self.invalidate();
+            return None;
+        }
+        if self.scope != scope {
+            // Process-wide identity also prevents replay into a new ProjectView
+            // whose per-view connection/draft epochs start at zero again.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            self.generation = NEXT
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |id| id.checked_add(1),
+                )
+                .ok();
+            self.scope = scope;
+        }
+        self.generation
+    }
+}
+#[cfg(test)]
+mod handoff_identity_tests {
+    use super::*;
+    #[test]
+    fn visible_identity_revokes_on_hide_access_and_replacement() {
+        let scope = (("origin".into(), "project".into(), "thread".into()), 1);
+        let mut state = HandoffIdentity::default();
+        assert_eq!(state.resolve(Some(scope.clone())), None);
+        state.visible = true;
+        let first = state.resolve(Some(scope.clone())).unwrap();
+        assert_eq!(state.resolve(Some(scope.clone())), Some(first));
+        state.visible = false;
+        assert_eq!(state.resolve(Some(scope.clone())), None);
+        state.visible = true;
+        let reopened = state.resolve(Some(scope.clone())).unwrap();
+        assert_ne!(first, reopened);
+        assert_eq!(state.resolve(None), None); // live access was revoked
+        let restored = state.resolve(Some(scope.clone())).unwrap();
+        assert_ne!(restored, reopened);
+        state.invalidate(); // owner replaced same-thread surface/access
+        assert_ne!(state.resolve(Some(scope.clone())).unwrap(), restored);
+        let mut other_view = HandoffIdentity {
+            visible: true,
+            ..Default::default()
+        };
+        assert_ne!(other_view.resolve(Some(scope)).unwrap(), restored);
+    }
+}
+// END PURE HANDOFF IDENTITY
+
+/// A short-lived UI-thread adapter; target validation and insertion cannot be
+/// separated by an async await. The owner must never use it for a webview panel.
+pub(super) struct NativeComposerPort<'a, 'cx> {
+    view: &'a mut ProjectView,
+    window: &'a mut Window,
+    cx: &'a mut Context<'cx, ProjectView>,
+}
+
+impl ProjectView {
+    /// Required owner hook before showing/hiding/replacing the native surface,
+    /// and before revoking/replacing access (even for the same thread). Repeated
+    /// calls deliberately invalidate old requests. Webview visibility uses false.
+    pub(super) fn draft_handoff_visibility(&mut self, visible: bool) {
+        self.threads.draft.handoff.invalidate();
+        self.threads.draft.handoff.visible = visible;
+    }
+
+    pub(super) fn draft_handoff_target(
+        &mut self,
+        cx: &App,
+    ) -> Option<okilum_t3::draft_handoff::Target> {
+        let allowed = self.active
+            && !self.executors_open
+            && !self.threads.draft.loading
+            && !self.native.deleted()
+            && reader_features::enabled(reader_features::Feature::Agents, cx)
+            && self
+                .native
+                .model_client()
+                .is_some_and(|client| client.access_allowed());
+        let key = self
+            .draft_key()
+            .filter(|key| allowed && Some(key) == self.threads.draft.key.as_ref());
+        let scope = key.clone().map(|key| (key, self.generation));
+        let generation = self.threads.draft.handoff.resolve(scope)?;
+        let (_, project, thread) = key?;
+        Some(okilum_t3::draft_handoff::Target {
+            project,
+            thread,
+            generation,
+        })
+    }
+
+    pub(super) fn draft_handoff_port<'a, 'cx>(
+        &'a mut self,
+        window: &'a mut Window,
+        cx: &'a mut Context<'cx, Self>,
+    ) -> NativeComposerPort<'a, 'cx> {
+        NativeComposerPort {
+            view: self,
+            window,
+            cx,
+        }
+    }
+}
+
+impl okilum_t3::draft_handoff::ComposerPort for NativeComposerPort<'_, '_> {
+    fn append(
+        &mut self,
+        request: &okilum_t3::draft_handoff::Request,
+    ) -> Result<okilum_t3::draft_handoff::Acknowledgement, okilum_t3::draft_handoff::Refusal> {
+        let target = self.view.draft_handoff_target(self.cx);
+        // Move only the replay guard out, allowing the normal InputEvent capture
+        // to run without borrowing draft state across the input transaction.
+        let mut receiver = std::mem::take(&mut self.view.threads.draft.handoff_receiver);
+        let result = receiver.apply(target.as_ref(), request, |text| {
+            self.view.compose.update(self.cx, |input, cx| {
+                let end = input.value().len();
+                input.set_selected_range(end..end, cx);
+                let insertion = if end == 0 {
+                    text.to_owned()
+                } else {
+                    format!("\n\n{text}")
+                };
+                input.insert(insertion, self.window, cx);
+                self.window.focus(&input.focus_handle(cx), cx);
+            });
+            Ok(())
+        });
+        self.view.threads.draft.handoff_receiver = receiver;
+        if result.is_ok() {
+            // Preserve the ordinary serialized revision-aware writer and its
+            // visible failure path. This acknowledgement confirms insertion,
+            // never disk durability or message preparation/send.
+            self.view.draft_changed(self.window, self.cx);
+            self.cx.notify();
+        }
+        result
     }
 }
