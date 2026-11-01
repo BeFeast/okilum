@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -262,20 +262,13 @@ fn read_source(root: &Path, relative: &Path) -> (Option<String>, Option<String>)
     }
 }
 
-fn import_path(from: &Path, reference: &str) -> Result<PathBuf, String> {
-    if reference.is_empty() || Path::new(reference).is_absolute() {
-        return Err("Import must name a file relative to its source".into());
-    }
-    let mut path = from.parent().unwrap_or(Path::new("")).to_path_buf();
-    for component in Path::new(reference).components() {
-        match component {
-            Component::Normal(part) => path.push(part),
-            Component::CurDir => {}
-            Component::ParentDir if path.pop() => {}
-            _ => return Err("Import leaves this vault".into()),
-        }
-    }
-    Ok(path)
+fn import_path(root: &Path, from: &Path, reference: &str) -> Result<PathBuf, String> {
+    let absolute = crate::agent_imports::reference_path(&root.join(from), reference)
+        .map_err(|error| format!("Invalid import: {error:?}"))?;
+    absolute
+        .strip_prefix(root)
+        .map(Path::to_path_buf)
+        .map_err(|_| "Import leaves this vault".into())
 }
 
 fn expand(
@@ -310,12 +303,19 @@ fn expand(
     }
     let expand_imports = error.is_none();
     let imports: Vec<_> = if expand_imports {
-        source
-            .as_deref()
-            .unwrap_or_default()
-            .lines()
-            .enumerate()
-            .filter_map(|(i, line)| line.strip_prefix('@').map(|s| (i + 1, s.trim().to_owned())))
+        let text = source.as_deref().unwrap_or_default();
+        crate::agent_imports::parse_bounded(text, MAX_LAYERS + 1)
+            .into_iter()
+            .map(|import| {
+                (
+                    text[..import.line.start]
+                        .bytes()
+                        .filter(|b| *b == b'\n')
+                        .count()
+                        + 1,
+                    import.target,
+                )
+            })
             .collect()
     } else {
         vec![]
@@ -331,9 +331,15 @@ fn expand(
         return;
     }
     seen.insert(identity.clone(), path.clone());
-    active.push(identity);
-    for (line, reference) in imports {
-        match import_path(&path, &reference) {
+    active.push(identity.clone());
+    if imports.len() > MAX_LAYERS {
+        stack.diagnostics.push(format!(
+            "{}: import count exceeds the {MAX_LAYERS} reference limit",
+            path.display()
+        ));
+    }
+    for (line, reference) in imports.into_iter().take(MAX_LAYERS) {
+        match import_path(root, &identity, &reference) {
             Ok(target) => expand(
                 root,
                 target,
@@ -396,6 +402,41 @@ fn mark_duplicates(stack: &mut RuleStack) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rules_share_import_parser_and_ignore_fenced_examples() {
+        let root = std::env::temp_dir().join(format!("okilum-rules-parser-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        fs::write(
+            root.join("AGENTS.md"),
+            format!(
+                "```md\n@fenced.md\n```\n    @indented.md\n@{}\n",
+                root.join("actual.md").display()
+            ),
+        )
+        .unwrap();
+        fs::write(root.join("actual.md"), "Actual imported rule\n").unwrap();
+        let stack = discover(&root, &root);
+        assert_eq!(
+            stack.layers.len(),
+            2,
+            "examples never become missing imports"
+        );
+        assert_eq!(
+            stack.layers[1].source.as_deref(),
+            Some("Actual imported rule\n")
+        );
+        assert_eq!(
+            stack.layers[1].provenance,
+            Provenance::Import {
+                from: "AGENTS.md".into(),
+                line: 5
+            }
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn refresh_coalesces_writes_and_rejects_old_project_and_disabled_results() {
         let mut refresh = Refresh::default();
